@@ -2638,16 +2638,17 @@ is given. The guard stops a mistaken target before the first write:
    caller writes: the guard's `-token-file`, `-listener-token-file` and `-pg-file`,
    `loop-seed-check`'s, `loop-seed-export`'s, `pg-statements`' and `pg-size`'s `-pg-file`,
    `seed-finish`'s `-pg-file` and `-token-file`, and `stub-embed`'s `-key-file`. `-token`,
-   `-listener-token` and `stub-embed`'s `-key` are removed: given at all, with a value or without
-   one, each is refused right after the flags are parsed, before the command checks, reads or
-   opens anything else, naming its file form, and the refusal holds nothing of the value. `-pg`
-   still takes a URL that sets no password, as the local stack's own does. Every `-pg` the
-   command line gives is judged, not the last alone: one in which pgx's own parser finds a
-   password or an `sslpassword` (in the userinfo, a query parameter or a keyword, however it is
-   spelled) is refused the same way, naming `-pg-file`, and so is one pgx cannot parse at all,
-   since its password cannot be told from the rest and pgx's own error quotes it. The other URL
-   flags are not judged: no caller puts a user or a password in one, so a check of them guards
-   against nothing anyone has seen. One reader serves every credential (`readCredentials`), so
+   `-listener-token` and `stub-embed`'s `-key` are removed: given a value, empty or not, each is
+   refused right after the flags are parsed, before the command checks, reads or opens anything
+   else, naming its file form, and the refusal holds nothing of the value (given none, the flag
+   package refuses it as it refuses any flag that needs a value). `-pg` still takes a URL that
+   sets no password, as the local stack's own does. Every `-pg` the command line gives is judged,
+   not the last alone, and as text, before anything reads a file it names: one that sets a
+   password where pgx reads one (a `postgres://` URL's userinfo, which pgx ends at the first `@`
+   before any `/`, or a `password` or `sslpassword` key of a keyword list or of a URL's query,
+   percent-encoded or not) is refused the same way, naming `-pg-file`. The other URL flags are
+   not judged: no caller puts a user or a password in one, so a check of them guards against
+   nothing anyone has seen. One reader serves every credential (`readCredentials`), so
    each reads the same way: the file's content, with its trailing white space trimmed, is the
    value, so a file written with a final newline carries the credential itself. The file form
    satisfies `-allow-foreign`.
@@ -2891,9 +2892,10 @@ runner's `sh` writes them into `/work/secrets/<job>.<random>`, a directory of mo
 start alone claims (its `mkdir` fails on one that is there, and then nothing is written, removed
 or started), each in a file of mode 600, and `loadgen` is given `-token-file`,
 `-listener-token-file` and `-pg-file` (The guard, above). The `sh` that waits on the job removes
-the directory once the job has ended, however it ended, and on a `HUP`, `INT` or `TERM` of its
-own too, so no credential outlives the job that read it, and two starts of one job name never
-share a directory. Browser typing is given none.
+the directory once the job has ended, however it ended, and on a `HUP` or `TERM` of its own
+(a detached job's shell ignores `INT`, as `sh` does in every background job, so an `INT` leaves
+it running with its job), so no credential outlives the job that read it, and two starts of one
+job name never share a directory. Browser typing is given none.
 
 | Subcommand | What it does |
 | --- | --- |

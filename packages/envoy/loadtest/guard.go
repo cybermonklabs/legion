@@ -10,12 +10,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -204,10 +204,10 @@ func (r *removedFlag) refusal() error {
 }
 
 // argvFlag is -pg as the command line gave it. Its value is the last one given, as a StringVar's
-// is, and refused is check's refusal of the first one given that sets a password or that pgx
-// cannot read (pgValueRefusal): every value given is in the command line, not the last alone.
-// Set refuses nothing itself, for the reason removedFlag gives; parseArgs and readCredentials
-// refuse.
+// is, and refused is check's refusal of the first one given that sets a password (pgValueRefusal):
+// every value given is in the command line, not the last alone. Set refuses nothing itself, for
+// the reason removedFlag gives, and check reads no file, so the parse never waits on one;
+// parseArgs and readCredentials refuse.
 type argvFlag struct {
 	value   *string
 	check   func(string) error
@@ -246,9 +246,9 @@ type commandLineForm interface {
 
 // parseArgs parses args into fs, then refuses the first secret the command line gave any flag of
 // fs that records one (commandLineForm): a removed flag given at all, or a -pg that sets a
-// password or that pgx cannot read. Every command whose flags take a credential parses with it,
-// so the refusal comes before the command reads, opens or checks anything else. A parse error is
-// the flag package's own, and an ExitOnError set exits there.
+// password. Every command whose flags take a credential parses with it, so the refusal comes
+// before the command reads, opens or checks anything else. A parse error is the flag package's
+// own, and an ExitOnError set exits there.
 func parseArgs(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -322,10 +322,10 @@ func readCredentials(creds ...credentialFile) error {
 }
 
 // refuseCommandLineSecrets refuses the first secret the command line gave any of forms: a removed
-// flag given at all, naming its file form, or a -pg value that sets a password or that pgx cannot
-// read, naming -pg-file. It judges every value -pg was given, not its last alone (argvFlag).
-// parseArgs does the same for every flag of a command right after the parse; this is the same
-// refusal again where the credentials are read.
+// flag given at all, naming its file form, or a -pg value that sets a password, naming -pg-file.
+// It judges every value -pg was given, not its last alone (argvFlag). parseArgs does the same for
+// every flag of a command right after the parse; this is the same refusal again where the
+// credentials are read.
 func refuseCommandLineSecrets(forms ...commandLineForm) error {
 	for _, form := range forms {
 		if err := form.refusal(); err != nil {
@@ -374,45 +374,63 @@ func (e *pgPasswordError) Error() string {
 	return fmt.Sprintf("%s sets a password, and a value on the command line is readable by every user of the machine (/proc/<pid>/cmdline): give the connection string in a file of mode 600 with %s <path>, or give %s one with no password in it", e.Flag, e.FileFlag, e.Flag)
 }
 
-// pgUnreadableError refuses a -pg value pgx cannot read at all (pgValueRefusal).
-type pgUnreadableError struct {
-	Flag, FileFlag string
-}
-
-func (e *pgUnreadableError) Error() string {
-	return fmt.Sprintf("%s is not a Postgres URL or connection string that pgx reads, so whether it holds a password cannot be told, and a value on the command line is readable by every user of the machine (/proc/<pid>/cmdline): give a postgres:// URL with no password in it, or the value in a file of mode 600 with %s <path>", e.Flag, e.FileFlag)
-}
-
-// pgNonSecretKeys are the connection keys pgx reads itself that hold no secret: every key of
-// pgconn's notRuntimeParams (pgconn/config.go, pgx v5.13.0) but password and sslpassword, with
-// the two other spellings it reads them under (dbname for database, ssl for sslmode).
-var pgNonSecretKeys = []string{
-	"host", "port", "database", "dbname", "user", "passfile", "connect_timeout",
-	"ssl", "sslmode", "sslkey", "sslcert", "sslcertmode", "sslrootcert", "sslnegotiation", "sslsni",
-	"krbspn", "krbsrvname", "target_session_attrs", "service", "servicefile",
-	"min_protocol_version", "max_protocol_version", "channel_binding", "require_auth",
-}
+// pgPasswordKey matches, in a -pg value percent-decoded, a password or an sslpassword key
+// wherever one could start: pgx reads a keyword=value string's keys as they are written, and a
+// URL's query keys percent-decoded, each with any of pgx's white space around its = (a vertical
+// tab among it, which Go's \s leaves out). It is read without regard to case and at every place
+// such a key could start, so a value that only looks like one is refused too, and a key pgx would
+// read is never missed.
+var pgPasswordKey = regexp.MustCompile(`(?i)(^|[^a-z0-9_])(ssl)?password[\t\n\v\f\r ]*=`)
 
 // pgValueRefusal is the refusal of raw, a -pg value given on the command line, or nil when it sets
-// no password. pgx's own parser reads it twice (pgconn.ParseConfigWithOptions), the second time
-// allowing the keys raw may set -- its runtime parameters, as the first read found them, and
-// pgNonSecretKeys -- so pgx refuses a password or an sslpassword wherever it would find one (the
-// userinfo, a query parameter, a keyword, any spelling it decodes to one of them), and a key pgx
-// reads that pgNonSecretKeys does not know yet as well. net/url is no such reader: it ends a
-// userinfo where pgx does not, so a password that starts with # is one pgx sends and one net/url
-// reads as a fragment, finding no user at all (TestAPostgresPasswordOnTheCommandLineIsRefused).
-// A value pgx cannot read at all is refused too: no check can tell a password in it from the
-// rest, and pgx's own refusal of it, which the command would print, can quote it.
+// no password. It reads raw as text alone, never as pgx does: pgx's parser reads the files a value
+// names (sslrootcert, sslcert, sslkey, passfile, a service file) before it says anything of the
+// value's keys, and a file that blocks its reader would keep the command, and the secret in its
+// argv, waiting at the parse. So it finds a password where pgx would read one (pgx/v5 pgconn's
+// parse_url.go and config.go): the userinfo of a postgres:// or postgresql:// URL, which pgx ends
+// at the first @ before any / (so a password that starts with # is one pgx sends and one net/url
+// reads as a fragment), and a password or sslpassword key of a keyword=value string or of a URL's
+// query (pgPasswordKey).
 func pgValueRefusal(raw string) error {
-	config, err := pgconn.ParseConfig(raw)
-	if err != nil {
-		return &pgUnreadableError{Flag: "-pg", FileFlag: "-pg-file"}
-	}
-	allowed := append(slices.Collect(maps.Keys(config.RuntimeParams)), pgNonSecretKeys...)
-	if _, err := pgconn.ParseConfigWithOptions(raw, pgconn.ParseConfigOptions{ConnStringAllowedKeys: allowed}); err != nil {
+	if pgUserinfoPassword(raw) || pgPasswordKey.MatchString(percentDecoded(raw)) {
 		return &pgPasswordError{Flag: "-pg", FileFlag: "-pg-file"}
 	}
 	return nil
+}
+
+// pgUserinfoPassword reports whether raw is a URL as pgx tells one (its postgres:// or
+// postgresql:// prefix, case-sensitive) whose userinfo, which pgx ends at the first @ before any
+// /, holds a password after its first :.
+func pgUserinfoPassword(raw string) bool {
+	p, ok := strings.CutPrefix(raw, "postgresql://")
+	if !ok {
+		if p, ok = strings.CutPrefix(raw, "postgres://"); !ok {
+			return false
+		}
+	}
+	i := strings.IndexAny(p, "@/")
+	if i < 0 || p[i] != '@' {
+		return false
+	}
+	_, password, _ := strings.Cut(p[:i], ":")
+	return password != ""
+}
+
+// percentDecoded is s with each % and two hex digits replaced by the byte they name and every
+// other byte as it is: what pgx's decode of a URL's query key gives (uriDecode), refusing nothing.
+func percentDecoded(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+2 < len(s) {
+			if v, err := strconv.ParseUint(s[i+1:i+3], 16, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 2
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
 
 // bothCredentialFormsError refuses a credential given as a value and as a file at once.

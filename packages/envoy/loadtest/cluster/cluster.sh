@@ -236,9 +236,10 @@
 # (runner_start -c, replay_checksum), whose sh writes them into /work/secrets/<job>.<random>, a
 # directory of mode 700 that one start alone claims (mkdir fails on one that is there) with each
 # file mode 600, and loadgen is given their -…-file forms (endpoints). Once the job has ended,
-# however it ended, the sh that waits on it removes that directory, and on a HUP, INT or TERM of
-# that sh too, so none outlives the job that read it and no start removes another's; loadgen
-# refuses -token, -listener-token and a -pg that sets a password outright (guard.go). The
+# however it ended, the sh that waits on it removes that directory, and on a HUP or TERM of that
+# sh too, so none outlives the job that read it and no start removes another's (a detached job's
+# sh ignores INT, as sh does in every background job, so an INT leaves it running with its job);
+# loadgen refuses -token, -listener-token and a -pg that sets a password outright (guard.go). The
 # stored-order check takes its URL on standard input too (STORED_ORDER_SCRIPT), and browser typing
 # is given none.
 #
@@ -876,14 +877,17 @@ RUNNER_SECRETS=/work/secrets
 # which fails on a directory that is there, so a start never writes into, or removes, another
 # start's. Only sh builtins (read, printf) touch a credential, so none is an argument of a process
 # there either. A claim that fails ends the sh with 1 and removes nothing; a read or a write that
-# fails, or a HUP, INT or TERM while they run, removes the directory and ends the sh, before
-# anything is started.
+# fails, or a HUP or TERM that reaches it while it writes, removes the directory and ends the sh,
+# before anything is started (a signal that comes while read waits on standard input is taken once
+# that read returns).
 # shellcheck disable=SC2016 # expanded by the runner's sh
 RUNNER_CREDENTIALS='(umask 077 && mkdir -p -- "${secrets%/*}" && mkdir -- "$secrets") || exit 1; trap "rm -rf -- \"\$secrets\"; exit 143" HUP INT TERM; (umask 077 && for f in dispatch-token listener-token pg-url; do IFS= read -r v && printf "%s\n" "$v" >"$secrets/$f" || exit 1; done) || { rm -rf -- "$secrets"; exit 1; }'
 
 # RUNNER_SECRETS_CLEANUP: the traps of the runner sh that waits on a job given credentials: its
 # EXIT removes the directory $secrets names, and a HUP, INT or TERM exits through that EXIT, which
-# dash, the runner image's sh, runs on no signal it does not trap.
+# dash, the runner image's sh, runs on no signal it does not trap. A sh started ignoring a signal
+# cannot trap it: a detached job's sh ignores INT, as sh does in every background job, so an INT
+# leaves it and its job running, and the directory goes when the job ends.
 # shellcheck disable=SC2016 # expanded by the runner's sh
 RUNNER_SECRETS_CLEANUP='trap "rm -rf -- \"\$secrets\"" EXIT; trap "exit 143" HUP INT TERM; '
 
@@ -1700,9 +1704,9 @@ put_loadgen() { put_executable "$LOADGEN" /work/loadgen; }
 # -c, the copy's three credentials go to the runner on the exec's standard input and are written
 # into DIR, the JOB_SECRETS endpoints gave CMD's -…-file flags, before CMD starts
 # (RUNNER_CREDENTIALS); the shell that waits on CMD removes DIR once CMD has ended, whatever ended
-# it (a SIGTERM or SIGKILL runner_stop sends goes to CMD alone), and on a HUP, INT or TERM of its
-# own (RUNNER_SECRETS_CLEANUP), so no credential outlives the job that read it. A job started
-# without -c is given none.
+# it (a SIGTERM or SIGKILL runner_stop sends goes to CMD alone), and on a HUP or TERM of its own
+# (RUNNER_SECRETS_CLEANUP; it ignores INT, as a background job), so no credential outlives the
+# job that read it. A job started without -c is given none.
 runner_start() {
   local input="" stdin=() creds="" on_exit="" dir="" name
   if [ "$1" = -c ]; then
@@ -2806,9 +2810,9 @@ step_at_exit() {
 # most SECONDS), given the copy's credentials in the runner for as long as it runs (runner_start
 # -c, into the JOB_SECRETS the caller's endpoints JOB gave CMD's flags), with the Postgres data
 # volume read before the load and refusing it with too little free space (pg_disk_low: the step
-# fails with kind pg_disk and sends nothing), a watcher
-# reading it while the load runs (pg_disk_watch, which this shell's pid and start time end when
-# this shell is killed outright), Postgres's write-out counters before and after it
+# fails with kind pg_disk and sends nothing), a watcher reading it while the load runs
+# (pg_disk_watch, which this shell's pid and start time end when this shell is killed outright),
+# Postgres's write-out counters before and after it
 # (pg-stats-before.json, pg-stats-after.json) and, with --typing, browser typing from just before
 # it (typing_start) until the stored-order command ends (typing_stop, and at the latest when the
 # step ends); then the

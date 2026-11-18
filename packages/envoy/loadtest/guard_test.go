@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // isolatePG keeps a test's -pg values from the environment: pgconn.ParseConfig, which the guard
@@ -370,6 +372,31 @@ func TestACommandLineSecretIsRefusedBeforeAnyOtherInput(t *testing.T) {
 			t.Errorf("loadgen %s %q: refusal %q holds the value", c.command, c.args, err)
 		}
 	}
+	// A -pg naming a file that blocks its reader -- a FIFO nobody writes, as its sslrootcert -- is
+	// judged as text, so the parse never waits on that file with a secret in the argv: neither a
+	// -pg with a password nor a removed flag beside a -pg with none.
+	fifo := filepath.Join(t.TempDir(), "blocked-ca.fifo")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocking := "host=127.0.0.1 port=1 user=postgres sslmode=verify-full sslrootcert=" + fifo
+	for _, args := range [][]string{
+		{"-token", secret, "-pg", blocking},
+		{"-pg", blocking + " password=" + secret},
+	} {
+		done := make(chan error, 1)
+		go func() { done <- runSeedFinish(args) }()
+		select {
+		case err := <-done:
+			var removed *removedFlagError
+			var password *pgPasswordError
+			if !errors.As(err, &removed) && !errors.As(err, &password) {
+				t.Errorf("loadgen seed-finish %q: error %v, want the secret refused", args, err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Errorf("loadgen seed-finish %q: still running after 10 s, waiting on %s with the secret in its argv", args, fifo)
+		}
+	}
 }
 
 // TestTheTokenFilesAreRead: what a command reads in place of a token flag is the file its
@@ -407,25 +434,25 @@ func TestAPostgresPasswordOnTheCommandLineIsRefused(t *testing.T) {
 	isolatePG(t)
 	const frag = "pw-frag"
 	pgOnce := func(pg string) []string { return []string{"-pg", pg} }
-	withPassword := []struct {
-		pg         []string
-		unreadable bool
-	}{
-		{pg: pgOnce("postgres://postgres:" + frag + "1@db.example:5432/dispatch")},
-		{pg: pgOnce("postgresql://db.example/dispatch?sslmode=disable&password=" + frag + "2")},
+	withPassword := [][]string{
+		pgOnce("postgres://postgres:" + frag + "1@db.example:5432/dispatch"),
+		pgOnce("postgresql://db.example/dispatch?sslmode=disable&password=" + frag + "2"),
 		// pgx decodes a parameter's name as it decodes its value.
-		{pg: pgOnce("postgres://db.example/dispatch?pass%77ord=" + frag + "3")},
+		pgOnce("postgres://db.example/dispatch?pass%77ord=" + frag + "3"),
 		// pgx ends the userinfo at the first @ before any /, so this is a password pgx sends,
 		// where net/url reads a fragment from the # on and finds no user at all.
-		{pg: pgOnce("postgres://u:#" + frag + "4@db.example/dispatch")},
-		{pg: pgOnce("postgres://db.example/dispatch?sslpassword=" + frag + "5")},
-		{pg: pgOnce("host=db.example user=postgres password=" + frag + "6")},
+		pgOnce("postgres://u:#" + frag + "4@db.example/dispatch"),
+		pgOnce("postgres://db.example/dispatch?sslpassword=" + frag + "5"),
+		pgOnce("host=db.example user=postgres password=" + frag + "6"),
 		// Every -pg given is on the command line, not the last alone, which is the one a
 		// StringVar keeps.
-		{pg: []string{"-pg", "postgres://postgres:" + frag + "7@db.example/dispatch", "-pg", "postgres://postgres@db.example/dispatch"}},
-		// A value pgx cannot parse is refused too: its password cannot be told from the rest,
-		// and pgx's own refusal quotes it.
-		{pg: pgOnce("host=db.example user=postgres password = '" + frag + "8' sslmode=invalid"), unreadable: true},
+		{"-pg", "postgres://postgres:" + frag + "7@db.example/dispatch", "-pg", "postgres://postgres@db.example/dispatch"},
+		// A value pgx cannot parse: pgx's own refusal of it quotes it, password included.
+		pgOnce("host=db.example user=postgres password = '" + frag + "8' sslmode=invalid"),
+		// pgx's keyword grammar takes a vertical tab as white space around the =, as it takes a
+		// tab or a space.
+		pgOnce("host=db.example user=postgres password\v=" + frag + "9"),
+		pgOnce("host=db.example user=postgres sslpassword\v=" + frag + "10"),
 	}
 	withoutPassword := []string{
 		"postgres://postgres@127.0.0.1:15432/dispatch?sslmode=disable",
@@ -475,22 +502,20 @@ func TestAPostgresPasswordOnTheCommandLineIsRefused(t *testing.T) {
 		},
 	}
 	for command, resolve := range commands {
-		for _, c := range withPassword {
-			err := resolve(c.pg)
+		for _, pg := range withPassword {
+			err := resolve(pg)
 			var password *pgPasswordError
-			var unreadable *pgUnreadableError
-			if refused := errors.As(err, &password) && !c.unreadable || errors.As(err, &unreadable) && c.unreadable; !refused {
-				t.Errorf("loadgen %s %q: error %v, want it refused (as a value pgx cannot read: %t)", command, c.pg, err, c.unreadable)
+			if !errors.As(err, &password) {
+				t.Errorf("loadgen %s %q: error %v, want the password refused", command, pg, err)
 				continue
 			}
 			if msg := err.Error(); !strings.Contains(msg, "-pg-file") || strings.Contains(msg, frag) {
-				t.Errorf("loadgen %s %q: refusal %q, want one naming -pg-file and holding nothing of the value", command, c.pg, msg)
+				t.Errorf("loadgen %s %q: refusal %q, want one naming -pg-file and holding nothing of the value", command, pg, msg)
 			}
 		}
 		for _, pg := range withoutPassword {
 			var password *pgPasswordError
-			var unreadable *pgUnreadableError
-			if err := resolve(pgOnce(pg)); errors.As(err, &password) || errors.As(err, &unreadable) {
+			if err := resolve(pgOnce(pg)); errors.As(err, &password) {
 				t.Errorf("loadgen %s -pg %q: refused %v, want a URL with no password taken", command, pg, err)
 			}
 		}

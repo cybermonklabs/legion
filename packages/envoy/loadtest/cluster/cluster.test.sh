@@ -2183,11 +2183,12 @@ pass "the sampler writes an error line with no number when its exec fails, and a
   [ "$(cat "$secrets_root/seed.taken/dispatch-token")" = keep ] || fail "a start wrote into a directory another start holds"
   ! grep -q started "$tmp/claim.out" || fail "a start whose claim failed went on to start its job"
   # The shell that waits on a job -- in the foreground, as replay_checksum's, or with the job in
-  # the background, as runner_start's -- removes the directory on a TERM of its own, which dash
-  # otherwise ends on without running its EXIT trap.
+  # the background, as runner_start's -- removes the directory on a TERM or a HUP of its own, on
+  # which dash otherwise ends without running its EXIT trap.
   # shellcheck disable=SC2016 # expanded by dash
-  for wrapper in foreground detached; do
-    dir=$secrets_root/job-$wrapper
+  for case in foreground:TERM foreground:HUP detached:TERM detached:HUP detached:INT; do
+    wrapper=${case%:*} sig=${case#*:}
+    dir=$secrets_root/job-$wrapper-$sig
     case $wrapper in
       foreground) script='secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' ;;
       detached) script='secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; trap - HUP INT TERM; '"$RUNNER_SECRETS_CLEANUP"'"$@" & wait $!' ;;
@@ -2201,14 +2202,33 @@ pass "the sampler writes an error line with no number when its exec fails, and a
     done
     [ "$(stat -c %a "$dir")" = 700 ] && [ "$(stat -c %a "$dir/pg-url")" = 600 ] ||
       fail "the $wrapper shell's directory is mode $(stat -c %a "$dir") and its pg-url $(stat -c %a "$dir/pg-url"), not 700 and 600"
-    kill -TERM "$pid"
+    kill -"$sig" "$pid"
     rc=0
-    wait "$pid" || rc=$?
-    ((rc == 143)) || fail "the $wrapper shell ended with $rc on a TERM, not 143"
-    [ ! -e "$dir" ] || fail "the $wrapper shell left its job's credentials in $dir after a TERM"
+    if [ "$sig" = INT ]; then
+      # A background job of a non-interactive sh ignores INT, the runner's detached wait shell as
+      # much as this one, so an INT ends neither it nor its job: the directory stays while the job
+      # runs and goes when it ends.
+      sleep 0.3
+      { kill -0 "$pid" 2>/dev/null && [ -d "$dir" ]; } ||
+        fail "an INT ended the detached shell or removed its job's credentials while the job ran"
+      wait "$pid" || rc=$?
+      ((rc == 0)) || fail "the detached shell ended with $rc once its job did, not 0"
+    else
+      wait "$pid" || rc=$?
+      ((rc == 143)) || fail "the $wrapper shell ended with $rc on a $sig, not 143"
+    fi
+    [ ! -e "$dir" ] || fail "the $wrapper shell left its job's credentials in $dir after a $sig"
   done
+  # An INT that reaches a foreground shell, one not started ignoring it, ends it through the
+  # cleanup too.
+  dir=$secrets_root/job-foreground-INT
+  rc=0
+  # shellcheck disable=SC2016 # expanded by dash
+  timeout -s INT 0.5 dash -c 'secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' sh "$dir" sleep 2 <<<"$creds" || rc=$?
+  ((rc == 124)) || fail "the foreground shell given an INT by timeout ended with $rc, not timeout's 124"
+  [ ! -e "$dir" ] || fail "the foreground shell left its job's credentials in $dir after an INT"
 )
-pass "two starts of one runner job name get directories of their own, a start never writes into or removes one it did not claim, and the shell that waits on a job removes its directory on a TERM too"
+pass "two starts of one runner job name get directories of their own, a start never writes into or removes one it did not claim, and the shell that waits on a job removes its directory on a TERM or a HUP, and a foreground one on an INT, while an INT leaves a detached one running until its job ends"
 
 # ---- (h) nats.yaml against a fresh render of the vendored chart ---------------------------------
 
