@@ -10,8 +10,10 @@ import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
 import { jump, onFakeClock } from "./fake-clock";
 import { answerAgentStates } from "./send-answers";
-// The issue page is a lazy route of the app. Its module's first compile is not what a wait is
-// for, so the module is loaded here, with the test file, and no wait measures that load.
+// The issue page is a lazy route of the app, and the live view's page a lazy part of the shell
+// (`MountedLiveViews.tsx`). A module's first compile is not what a wait is for, so both modules
+// are loaded here, with the test file, and no wait measures that load.
+import "../features/agent-view/AgentConversationPage";
 import "../features/issue-page/IssuePage";
 
 const issue: IssueDetails = {
@@ -457,8 +459,7 @@ test("the shell tells the live-view registry which agents the person pinned", as
   api.getMyAgentState = async () => ({
     "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
   });
-  // A view the registry mounts reads its session's messages once its page's chunk has arrived,
-  // which in one process is every run after the first (`MountedLiveViews.tsx`); none are asserted.
+  // The page of the view the registry mounts reads its session's messages; none are asserted.
   api.listAgentMessages = async () => [];
   const queryClient = renderShellAt(1280, [], 0, [agent("planner-session", "Planner")]);
   await screen.findByRole("button", { name: "Unpin Planner from the sidebar" });
@@ -473,6 +474,12 @@ test("the shell tells the live-view registry which agents the person pinned", as
     views.show("third-session");
     views.show(null);
   });
+  // The third view lingers, so the registry mounts its page, a lazily loaded part
+  // (`MountedLiveViews.tsx`): in a process's first run the page arrives after this commit, and in
+  // each later run it is already there. The row waits for the page either way, so it mounts the
+  // same page in every order, and the updates the page's reads make land inside this wait, not
+  // after the row.
+  await screen.findByTestId("agent-conversation");
 
   expect(views.place("planner-session")).toEqual({ id: "dispatch:m-4", top: -120 });
   expect(views.place("other-session")).toBeNull();
