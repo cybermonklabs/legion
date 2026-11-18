@@ -20,15 +20,18 @@ export function scriptFunctions(path: string): (name: string) => string {
 /**
  * Reads the shell script at `path` once and returns `assignment`, which gives the assignment of
  * the variable `name` exactly as the script writes it at the start of a line: `name='…'` through
- * the first line that ends in a quote when the value is single-quoted, else `name=…` to the end of
- * its line. `assignment` throws, naming the script by its path under scripts/e2e, when the script
- * assigns no such variable.
+ * the first line that ends in a quote when the value is single-quoted, `name=(` through the first
+ * line that is `)` alone when the value is an array written over several lines, else `name=…` to
+ * the end of its line, an array written on one line among them. `assignment` throws, naming the
+ * script by its path under scripts/e2e, when the script assigns no such variable.
  */
 export function scriptAssignments(path: string): (name: string) => string {
   const script = readFileSync(path, "utf8");
   const shown = relative(dirname(import.meta.dir), path);
   return (name) => {
-    const found = new RegExp(`^${name}=(?:'[\\s\\S]*?'|.*)$`, "m").exec(script);
+    const found = new RegExp(`^${name}=(?:'[\\s\\S]*?'|\\(\\n[\\s\\S]*?\\n\\)|.*)$`, "m").exec(
+      script
+    );
     if (found === null) throw new Error(`${shown} assigns no ${name}`);
     return found[0];
   };

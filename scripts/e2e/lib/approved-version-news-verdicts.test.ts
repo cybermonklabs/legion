@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
@@ -49,11 +49,6 @@ function proofLog(lines: string[] | null): string {
   return path;
 }
 
-// The script's part_two_steps, a list of lines that scriptAssignments, which reads one line or one
-// quoted string, does not take whole.
-const partTwoSteps =
-  /^part_two_steps=\(\n[\s\S]*?\n\)$/m.exec(readFileSync(script, "utf8"))?.[0] ?? "";
-
 /** Runs BODY after the script's control settings, its control and part-two functions and the
  * lib's note. */
 function controls(body: string) {
@@ -66,7 +61,7 @@ ${note}
 ${assignment("control_step")}
 ${assignment("control_setup_checks")}
 ${assignment("control_failure")}
-${partTwoSteps}
+${assignment("part_two_steps")}
 ${assignment("part_two_arm_pick")}
 ${assignment("part_two_runs")}
 ${assignment("part_two_minutes")}
@@ -322,6 +317,15 @@ describe("part two's count of each arm", () => {
     expect(step.said).toBe("off head 3/3 (no control: the pick leaves the base arm out)");
     expect(step.missed).toBe("");
   });
+
+  // "head only" is a4 in a run that picks no arm, where its base arm's retirement is the reason
+  // no base ran. A pick of the head arm leaves out a4's base arm as it does every step's, and says
+  // so in the same words.
+  test("is no control for a4 too when the pick names the head arm", () => {
+    const step = partTwoStep(a4, "a4", headPassed(a4), "part_two_arm_pick=head");
+    expect(step.said).toBe("a4 head 3/3 (no control: the pick leaves the base arm out)");
+    expect(step.missed).toBe("");
+  });
 });
 
 /** part_two_deadline after PICK, the settings the arguments check makes of a pick ("" for none). */
@@ -346,6 +350,84 @@ describe("part two's deadline", () => {
         `part_two_steps=("\${part_two_steps[0]}") part_two_arm_pick=base part_two_runs=10`
       )
     ).toBe(`${10 * 9 + 20}m`);
+  });
+});
+
+const fail = scriptFunctions(join(import.meta.dir, "live-daemon-proof.sh"))("fail");
+
+/** A scratch directory holding a jj that prints SAID for `jj --version`. */
+function fakeJJ(said: string) {
+  const bin = scratch();
+  writeFileSync(join(bin, "jj"), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(said)}\n`);
+  chmodSync(join(bin, "jj"), 0o755);
+  return bin;
+}
+
+/** check_jj with PATH holding a jj that prints SAID for `jj --version`, or no jj at all for null,
+ * and LEGION_JJ_PATH naming a jj that prints OVERRIDE where it is given: its exit status and what
+ * it printed on stderr. */
+function checkJJ(said: string | null, override?: string) {
+  const bin = said === null ? scratch() : fakeJJ(said);
+  const env: Record<string, string> = { PATH: `${bin}:/usr/bin:/bin` };
+  if (override !== undefined) {
+    env.LEGION_JJ_PATH = join(fakeJJ(override), "jj");
+  }
+  const result = Bun.spawnSync(
+    [
+      Bun.which("bash") ?? "bash",
+      "-c",
+      `set -euo pipefail
+${helperGuard}
+check=arguments
+${fail}
+${fn("check_jj")}
+check_jj`,
+    ],
+    { env }
+  );
+  const err = result.stderr.toString();
+  expectNoMissingHelpers(result.stdout.toString(), err);
+  return { code: result.exitCode, err };
+}
+
+// Both parts boot the whole daemon, whose boot refuses a jj below 0.38, so the arguments check
+// fails the run before it builds anything on a jj below that, on one whose version it cannot read
+// and on none, and takes 0.38 and every later release, a build's suffix included. It reads the jj
+// the daemon runs: LEGION_JJ_PATH where it is set, and the jj on PATH otherwise.
+describe("the arguments check's jj", () => {
+  for (const said of ["jj 0.38.0", "jj 0.45.1-sami.2026-11-09-abc123", "jj 1.0.0"]) {
+    test(`takes ${said}`, () => {
+      expect(checkJJ(said)).toEqual({ code: 0, err: "" });
+    });
+  }
+
+  test("fails on jj 0.37", () => {
+    expect(checkJJ("jj 0.37.9")).toEqual({
+      code: 1,
+      err: "FAIL arguments: jj is jj 0.37, below 0.38, the oldest jj the daemon's boot starts with\n",
+    });
+  });
+
+  test("takes the jj LEGION_JJ_PATH names where PATH holds none", () => {
+    expect(checkJJ(null, "jj 0.38.0")).toEqual({ code: 0, err: "" });
+  });
+
+  test("fails on the jj LEGION_JJ_PATH names, whatever the jj on PATH", () => {
+    const run = checkJJ("jj 0.45.1", "jj 0.37.9");
+    expect(run.code).toBe(1);
+    expect(run.err).toContain("is jj 0.37, below 0.38");
+  });
+
+  test("fails on a version it cannot read", () => {
+    const run = checkJJ("jujutsu, a build of no release");
+    expect(run.code).toBe(1);
+    expect(run.err).toContain("names no release");
+  });
+
+  test("fails where PATH holds no jj", () => {
+    const run = checkJJ(null);
+    expect(run.code).toBe(1);
+    expect(run.err).toContain("FAIL arguments: jj --version failed");
   });
 });
 
@@ -409,9 +491,8 @@ describe("the last line", () => {
 
 // Part one's steps and the checks each makes, read from the script's own part_one_checks, so the
 // stand-in driver below prints what the script counts.
-const partOneChecks = (
-  /^part_one_checks=\(\n([\s\S]*?)\n\)$/m.exec(readFileSync(script, "utf8"))?.[1] ?? ""
-)
+const partOneChecks = assignment("part_one_checks")
+  .slice("part_one_checks=(".length, -")".length)
   .trim()
   .split(/\s+/)
   .map((entry) => {

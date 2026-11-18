@@ -1,14 +1,15 @@
 // The reads part two of dispatch://INFRA-175's c-live (approved_version_news_sessions_live_test.go,
 // built with -tags e2e) makes of a session's transcript and of the comments on an issue, the word
-// each of its runs ends with, and the tests that hold them against fixture transcripts written as
-// Oh My Pi writes a session file: which Envoy card counts as a holder told of a new version, which
-// call of the architect's counts as its own envoy_publish to that holder's role topic, which
-// comment counts as a parent's approving review of a child's new version, which tool result is the
-// plugin refusing a daemon answer, and which word a run's line prints, which the script counts. A
-// run of real sessions costs forty-five minutes of model calls, so these reads are proved here,
-// where each wrong message is one line. The file is untagged so `go test` runs these tests on
-// every run: a change that breaks a read fails this package's tests, not the live proof the next
-// time its sessions run.
+// each of its runs ends with, the steps it makes and the picks of them, and the tests that hold
+// them against fixture transcripts written as Oh My Pi writes a session file: which steps and arms
+// a pick makes, which Envoy card counts as a holder told of a new version, which call of the
+// architect's counts as its own envoy_publish to that holder's role topic, which comment counts as
+// a parent's approving review of a child's new version, which tool result is the plugin refusing
+// a daemon answer, and which word a run's line prints, which the script counts. A run of real
+// sessions costs forty-five minutes of model calls, so these reads are proved here, where each
+// wrong message is one line. The file is untagged so `go test` runs these tests on every run: a
+// change that breaks a read fails this package's tests, not the live proof the next time its
+// sessions run.
 package daemon
 
 import (
@@ -18,13 +19,144 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 )
+
+// The three variables that narrow a run of part two to one step, one arm or another count of
+// runs (pickSessions), each unset for every step, each step's own arms and sessionsRuns.
+const (
+	sessionsStepEnv = "APPROVED_VERSION_NEWS_STEP"
+	sessionsArmEnv  = "APPROVED_VERSION_NEWS_ARM"
+	sessionsRunsEnv = "APPROVED_VERSION_NEWS_RUNS"
+)
+
+// The steps of part two, which the script counts under these names.
+const (
+	sessionsA4      = "a4-the-architect-tells-the-child-reviewer"
+	sessionsOff     = "off-the-architect-tells-the-holders"
+	sessionsAnswers = "answers-a-stale-reviewer-moves-back-a-current-one-comments"
+)
+
+// The two arms: the prompts this checkout composes, and the base commit's.
+const (
+	sessionsHead = "head"
+	sessionsBase = "base"
+)
+
+// sessionsRuns is how many runs each arm makes of each step, unless APPROVED_VERSION_NEWS_RUNS
+// names another count.
+const sessionsRuns = 3
+
+// sessionsStep is one step of part two: its name, which each run's line prints and the driver
+// finds its body by (sessionsBodies, under the e2e tag); its word, which the script's last line
+// names it by and APPROVED_VERSION_NEWS_STEP picks it by; the design gate its runs boot under; and
+// the arms a run that picks no arm makes it in.
+type sessionsStep struct {
+	name, word string
+	gates      config.DesignGate
+	arms       []string
+}
+
+// sessionsSteps is every step of part two, in the order a run makes them. a4 runs in the head arm
+// alone, since its base arm passed every run of the measurement the driver's file comment names,
+// and the script's head_only_step names the same step.
+var sessionsSteps = []sessionsStep{
+	{sessionsA4, "a4", config.DesignGateRootIssues, []string{sessionsHead}},
+	{sessionsOff, "off", config.DesignGateOff, []string{sessionsHead, sessionsBase}},
+	{sessionsAnswers, "answers", config.DesignGateRootIssues, []string{sessionsHead, sessionsBase}},
+}
+
+// sessionsPick is what one run of part two makes: the steps, the one arm every step runs in (""
+// for each step's own arms: arms), and how many runs each arm makes of each step.
+type sessionsPick struct {
+	steps []sessionsStep
+	arm   string
+	runs  int
+}
+
+// arms is the arms the pick makes step in: its one arm, or else the step's own.
+func (pick sessionsPick) arms(step sessionsStep) []string {
+	if pick.arm != "" {
+		return []string{pick.arm}
+	}
+	return step.arms
+}
+
+// pickSessions is the pick that APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and
+// APPROVED_VERSION_NEWS_RUNS name, given here as step, arm and runs: one step by its word, one
+// arm for every step, and a count of runs of 1 or more. Each left empty picks every step, each
+// step's own arms, or sessionsRuns runs. A value that names none of these is refused, naming what
+// it may be.
+func pickSessions(step, arm, runs string) (sessionsPick, error) {
+	pick := sessionsPick{steps: sessionsSteps, runs: sessionsRuns}
+	if step != "" {
+		at := slices.IndexFunc(sessionsSteps, func(each sessionsStep) bool { return each.word == step })
+		if at < 0 {
+			words := make([]string, len(sessionsSteps))
+			for i, each := range sessionsSteps {
+				words[i] = each.word
+			}
+			return sessionsPick{}, fmt.Errorf("%s=%q names no step of part two: it is one of %s", sessionsStepEnv, step, strings.Join(words, ", "))
+		}
+		pick.steps = sessionsSteps[at : at+1]
+	}
+	switch arm {
+	case "":
+	case sessionsHead, sessionsBase:
+		pick.arm = arm
+	default:
+		return sessionsPick{}, fmt.Errorf("%s=%q names no arm: it is %s or %s", sessionsArmEnv, arm, sessionsHead, sessionsBase)
+	}
+	if runs != "" {
+		count, err := strconv.Atoi(runs)
+		if err != nil || count < 1 {
+			return sessionsPick{}, fmt.Errorf("%s=%q is no count of runs: it is a whole number of 1 or more", sessionsRunsEnv, runs)
+		}
+		pick.runs = count
+	}
+	return pick, nil
+}
+
+// A run that picks no arm makes a4 in the head arm alone, its base arm retired, and off and
+// answers in both; a pick of a4's base arm still makes it, so the measurement that retired it can
+// be repeated, and an arm the pick names is every step's one arm. Each pick is read as the runs it
+// makes, `<word> <arm>` in order, with the count of runs of each.
+func TestApprovedVersionNewsAFullRunMakesA4InTheHeadArmAloneAndAPickStillMakesItsBase(t *testing.T) {
+	for _, tc := range []struct {
+		name, step, arm, runs string
+		want                  []string
+		count                 int
+	}{
+		{"a full run", "", "", "", []string{"a4 head", "off head", "off base", "answers head", "answers base"}, sessionsRuns},
+		{"a4 alone", "a4", "", "", []string{"a4 head"}, sessionsRuns},
+		{"the measurement of a4's base arm", "a4", "base", "10", []string{"a4 base"}, 10},
+		{"the base arm of every step", "", "base", "", []string{"a4 base", "off base", "answers base"}, sessionsRuns},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pick, err := pickSessions(tc.step, tc.arm, tc.runs)
+			if err != nil {
+				t.Fatalf("pickSessions(%q, %q, %q) = %v", tc.step, tc.arm, tc.runs, err)
+			}
+			var made []string
+			for _, step := range pick.steps {
+				for _, arm := range pick.arms(step) {
+					made = append(made, step.word+" "+arm)
+				}
+			}
+			if !slices.Equal(made, tc.want) || pick.runs != tc.count {
+				t.Fatalf("pickSessions(%q, %q, %q) makes %v, %d runs each; want %v, %d runs each",
+					tc.step, tc.arm, tc.runs, made, pick.runs, tc.want, tc.count)
+			}
+		})
+	}
+}
 
 // sessionsOutcome is how one run of a step ended: the word its `run` line prints, which the script
 // counts. Only a run that reached the step's assertion counts for its arm. A run that stopped
@@ -457,7 +589,7 @@ func TestApprovedVersionNewsCountsOnlyTheParentsApprovalOfVersion2(t *testing.T)
 		name, comment string
 		want          bool
 	}{
-		{"the approval a live parent posted in round 12", "Spec review of AS0001-2 v1 by AS0001-1: approved\nVerification document v2" + reasons, true},
+		{"the approval a live parent posted", "Spec review of AS0001-2 v1 by AS0001-1: approved\nVerification document v2" + reasons, true},
 		{"a review that requests changes", "Spec review of AS0001-2 v1 by AS0001-1: changes requested\nVerification document v2" + reasons, false},
 		{"an approval of version 1", "Spec review of AS0001-2 v1 by AS0001-1: approved\nVerification document v1" + reasons, false},
 		{"an approval by another issue's architect", "Spec review of AS0001-2 v1 by AS0001-9: approved\nVerification document v2" + reasons, false},

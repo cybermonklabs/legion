@@ -250,25 +250,17 @@ func (r *versionNewsLive) seedTree(ctx context.Context, tx pgx.Tx, engine *workf
 func startRoles(ctx context.Context, tx pgx.Tx, records record.Store, engine *workflow.Engine, issue record.Issue, roles []claim.Role) error {
 	for _, role := range roles {
 		switch {
-		case role == claim.RoleArchitect && claim.IsTreeRoot(issue.Key, issue.Tree):
-			admitted := issue
-			admitted.Phase = phase.Admitted
-			if err := records.PutIssue(ctx, tx, admitted); err != nil {
-				return err
-			}
-			if err := engine.StartArchitect(ctx, tx, admitted); err != nil {
-				return fmt.Errorf("start the architect of %s: %w", issue.Key, err)
-			}
-			if err := records.PutIssue(ctx, tx, issue); err != nil {
-				return err
-			}
 		case role == claim.RoleArchitect:
 			admitted := issue
 			admitted.Phase = phase.Admitted
 			if err := records.PutIssue(ctx, tx, admitted); err != nil {
 				return err
 			}
-			if err := engine.StartFirstPhase(ctx, tx, admitted, nil); err != nil {
+			if claim.IsTreeRoot(issue.Key, issue.Tree) {
+				if err := engine.StartArchitect(ctx, tx, admitted); err != nil {
+					return fmt.Errorf("start the architect of %s: %w", issue.Key, err)
+				}
+			} else if err := engine.StartFirstPhase(ctx, tx, admitted, nil); err != nil {
 				return fmt.Errorf("start the first phase of %s, which starts its own architect: %w", issue.Key, err)
 			}
 			if err := records.PutIssue(ctx, tx, issue); err != nil {

@@ -100,7 +100,8 @@
 #     bash scripts/e2e/approved-version-news.sh
 # with the variables of the usage below beside them.
 #
-# Run it from a checkout on a Linux host with go, git, tar, awk, bun and python3, as
+# Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
+# to start without them), tar, awk, bun and python3, as
 #   LEGION_OMP_PATH=/opt/omp/bin/omp ANTHROPIC_BASE_URL=<model gateway> \
 #     LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     [APPROVED_VERSION_NEWS_STEP=a4|off|answers] [APPROVED_VERSION_NEWS_ARM=head|base] \
@@ -289,6 +290,21 @@ control_verdict() {
   return 1
 }
 
+# check_jj fails the run unless the jj the daemon runs is 0.38 or later: LEGION_JJ_PATH where it is
+# set, which the daemon reads first (packages/daemon/internal/daemon/tools.go, toolEnv), and the jj
+# on PATH otherwise. Both parts boot the whole daemon over the tmux runtime with a project, and its
+# boot refuses a jj older than that (tools.go, minimumJJ), deep inside a driver this run has built
+# by then. The release is read as the daemon reads it: `jj <major>.<minor>.<patch>` opening the
+# first line of `jj --version`, a build's suffix after it ignored.
+check_jj() {
+  local jj=${LEGION_JJ_PATH:-jj} said
+  said=$("$jj" --version 2>/dev/null) || fail "$jj --version failed, so this run cannot tell its jj is 0.38 or later"
+  [[ "$said" =~ ^jj\ ([0-9]+)\.([0-9]+)\.[0-9]+ ]] ||
+    fail "$jj --version printed '${said%%$'\n'*}', which names no release, so this run cannot tell its jj is 0.38 or later"
+  ((BASH_REMATCH[1] > 0 || BASH_REMATCH[2] >= 38)) ||
+    fail "$jj is jj ${BASH_REMATCH[1]}.${BASH_REMATCH[2]}, below 0.38, the oldest jj the daemon's boot starts with"
+}
+
 # step_arms WORD prints the arms part two runs the step WORD in, as the driver runs them
 # (pickSessions): the one arm the pick names for every step, or else head_only_step's head arm
 # alone and both arms of every other step.
@@ -323,9 +339,9 @@ part_two_deadline() {
 # in is not read. It sets step_said, the step's part of the last line: WORD, each arm's passed
 # runs of those that reached the assertion, the runs not counted, and the control's verdict. The
 # control bites only when a base run failed at its assertion. A step that runs in the head arm
-# alone has none: head_only_step's says why (head_only_why), and any other step's says the pick
-# left its base arm out. It also sets head_missed: each head run that did not reach its assertion
-# and pass, by its line, each after `; `.
+# alone has none: head_only_step in a run that picks no arm says why (head_only_why), and a step
+# whose base arm the pick left out says so. It also sets head_missed: each head run that did not
+# reach its assertion and pass, by its line, each after `; `.
 part_two_step() {
   local proof=$1 step=$2 word=$3 arms arm lines ran passed failed line count counts='' base_ran=0 base_passed=0 base_failed=0
   head_missed=''
@@ -357,10 +373,12 @@ part_two_step() {
     fi
   done
   step_said="$word $counts"
-  if [[ " $arms " != *" base "* ]] && [ "$word" = "$head_only_step" ]; then
-    step_said="$step_said (head only: $head_only_why)"
-  elif [[ " $arms " != *" base "* ]]; then
-    step_said="$step_said (no control: the pick leaves the base arm out)"
+  if [[ " $arms " != *" base "* ]]; then
+    if [ -z "$part_two_arm_pick" ] && [ "$word" = "$head_only_step" ]; then
+      step_said="$step_said (head only: $head_only_why)"
+    else
+      step_said="$step_said (no control: the pick leaves the base arm out)"
+    fi
   elif [ "$base_ran" -eq 0 ]; then
     step_said="$step_said (base did not run)"
   elif [ "$base_failed" -gt 0 ]; then
@@ -443,6 +461,7 @@ fi
 for tool in go git tar awk python3; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
+check_jj
 [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
   refuse "LEGION_TEST_PG_DSN is required: it names the PostgreSQL the daemon migrates and runs on (postgres://<user>@<host>:<port>/<database>?sslmode=disable). This script starts no database."
 # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears

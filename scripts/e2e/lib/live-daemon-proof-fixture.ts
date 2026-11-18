@@ -46,6 +46,8 @@ const stopHere = `stop_here() {
  *   - `go` answers `go version`, and for `go … test -c … -o FILE` writes the stand-in driver to
  *     FILE;
  *   - `python3` answers lib/loopback-dsn.py with 127.0.0.1, the host a loopback DSN names;
+ *   - `jj` answers `jj --version` with the oldest release the daemon's boot starts with, which
+ *     approved-version-news.sh's check_jj reads, on a host that has no jj;
  *   - the nats-server LEGION_E2E_NATS_BIN names logs the two lines the `broker` check reads, then
  *     waits to be stopped;
  *   - the driver prints `run.driverOutput`.
@@ -74,6 +76,11 @@ stop_here build
 cp "$LIVE_DAEMON_STAND_IN_DIR/driver" "$out"`
   );
   script(join(bin, "python3"), "echo 127.0.0.1");
+  script(
+    join(bin, "jj"),
+    `[ "$1" = --version ] || { echo "the fixture's jj answers --version alone" >&2; exit 1; }
+echo "jj 0.38.0"`
+  );
   script(
     join(dir, "nats-server"),
     `if [ "\${1:-}" = --version ]; then echo "nats-server: v2.15.1"; exit 0; fi
