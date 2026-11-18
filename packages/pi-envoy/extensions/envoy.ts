@@ -1276,25 +1276,21 @@ export default function envoyExtension(pi: PiApi): void {
   });
 
   // When each card reached each session this process serves, which every model request shows
-  // beside the card's send time (`../src/card-age`): a card's `message_end` in a session fixes it
-  // for that session, so a session the host moves to reads when it was shown the card itself. The
+  // beside the card's send time (`../src/card-age`): a card's delivery in a session is the one the
+  // session records for it, else what that session's own `message_end`, ledger record or entry
+  // position gives, so a session the host moves to reads when it was shown the card itself. The
   // listener's clock, from its replies, says how much of the gap this machine's clock made.
   const cardAges = new CardAges({
     now: () => Date.now(),
     clockOffset: () => serverClock.offset(),
     // The delivery a session first gives a card goes into its file, so every later request, and
-    // the first of a process that resumes the session, shows the card with the same bytes. The
-    // write is guarded as the answers record is: an entry for a session the host is not on would
-    // land in that other session's file, so nothing is written and the log says so; the request
-    // still shows the card's time, and a process that resumes the session takes it from the
-    // card's ledger record or its place in the session.
+    // the first of a process that resumes the session, shows the card with the same bytes.
+    // `CardAges` calls this synchronously while the request or the card's `message_end` is
+    // handled, so the session it names is the one the host is on and no guard is needed, unlike
+    // the answers record, which is written after an await. A write that throws is logged; the
+    // request still shows the card's time, and a process that resumes the session takes it from
+    // the card's ledger record or its place in the session.
     record: (session, entry) => {
-      if (hostSessionID() !== session) {
-        logger.warn(
-          `envoy: the time card ${entry.event_id} reached session ${session} was not recorded: the host is on another session`
-        );
-        return;
-      }
       try {
         pi.appendEntry(CARD_DELIVERED_ENTRY, entry);
       } catch (error) {
