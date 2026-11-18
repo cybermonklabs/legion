@@ -1488,3 +1488,74 @@ func TestATickWhoseLinePanicsKeepsWhatItDecidedBeforeIt(t *testing.T) {
 		}
 	})
 }
+
+// run tries a held report after a panic of switchOff only when that report is the switched-off
+// one, held by deliver before a line of it panicked (run). A panic earlier in switchOff, in the
+// bound of the last report or in the fold, leaves the held report the sweep report it was, and
+// that panic ends the trimmer under R1's stated rule: the last report is not tried again, and no
+// report older than it is sent in its place, under a line that says the last report is held. The
+// case holds the first sweep's report, makes the bound panic on the switched-off report alone, and
+// makes three readings in a row panic; the connection is up from the third. The negative control
+// is a copy of run that takes any held report for the last one, under which the sweep report is
+// sent at the next try of the wait as the switched-off trimmer's last report (INFRA-2009, tester's
+// round 42: no case failed with the switched-off test taken out).
+func TestASwitchOffWhoseBoundPanicsSendsNoOlderReportInItsPlace(t *testing.T) {
+	const fell = "the bound fell over on the last report"
+	f := newTrimFixture(t, 10) // forty entries, four points: the first sweep leaves 86% and sets no pause
+	f.useVolume(f.modelled(90))
+	f.setSettings(trimSettings())
+	var up atomic.Bool
+	previous := boundReport
+	boundReport = func(trim *trimmer, report shimwire.LauncherVolumeReport) shimwire.LauncherVolumeReport {
+		if report.SwitchedOff {
+			panic(fell)
+		}
+		return previous(trim, report)
+	}
+	t.Cleanup(func() { boundReport = previous })
+	tr := f.trimmer()
+	tr.send = func(report shimwire.LauncherVolumeReport) error {
+		if !up.Load() {
+			return errors.New("no daemon connection is up to carry it")
+		}
+		return f.send(report)
+	}
+	_, done := f.start(tr)
+	f.tick("holding it for the next attempt")
+
+	var panics atomic.Int32
+	f.setOnRead(func(int) {
+		if panics.Add(1) == volumeFaultLimit {
+			up.Store(true)
+		}
+		panic("the volume reader fell over")
+	})
+	for range volumeFaultLimit {
+		f.tick("recovered a panic")
+	}
+	// The trimmer ends, or, where run took the held report for the last one, waits to try it: a
+	// try is offered so that such a copy sends it.
+	deadline := time.Now().Add(testwait.Bounded(t, 10*time.Second, time.Second))
+	for ended := false; !ended && time.Now().Before(deadline); {
+		select {
+		case <-done:
+			ended = true
+		default:
+			if at, waiting := f.ticks.live(volumeSettingsWait); waiting {
+				f.ticks.offer(t, at, 200*time.Millisecond)
+			}
+			time.Sleep(testwait.Poll)
+		}
+	}
+	if sent := f.reports(); len(sent) != 0 {
+		t.Errorf("the trimmer sent %d reports after its last report's bound panicked, the first with the stop reason %q, want none: the sweep report it held is no last report", len(sent), sent[0].StopReason)
+	}
+	if f.logged("the last report of the switched-off trimmer panicked") != 1 || f.logged("the last report of the switched-off trimmer is held") != 0 {
+		t.Errorf("the trimmer wrote %q, want the last report's panic written once and no line saying a last report is held", f.linesWritten())
+	}
+	select {
+	case <-done:
+	default:
+		t.Error("the trimmer's loop still runs after its last report's bound panicked, want it ended")
+	}
+}
