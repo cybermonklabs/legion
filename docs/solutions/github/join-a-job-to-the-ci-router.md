@@ -307,18 +307,18 @@ fails the pull request that adds it.
   workflow, no `container:` on the job, no `env:` name outside `ENV_ALLOWED` in the workflow's,
   job's or step's `env:` (test configuration go never reads; `GO*`, `CGO_*`, `BASH_ENV`, `ENV`,
   `HOME`, `XDG_CONFIG_HOME` and `PATH` are outside it, and a new name joins it only when go does
-  not read it), no step of the job writing `$GITHUB_ENV` or `$GITHUB_PATH` or running
-  `go env -w`, and the step's working directory (its own, else a `defaults.run` one, else the
-  root) the `Run`'s; its packages, tags, `-race` and mode must then be exactly the `Run`'s (a
-  `-race` line's `Run` says `race=True`, and its closure is what `go list -race` lists), and a
-  script's line must be exactly the pinned text. Any other claimed command (`GOFLAGS=...`,
-  another flag, a pipe, a quote, a continuation, a `cd`, another line in its step), and one whose
-  step runs in another directory, counts as reading every Go file of the repository, every file
-  under a Go module's directory (each directory with a `go.mod`, testdata and embedded files
-  included) and every `go.mod`, `go.sum`, `go.work` and `go.work.sum`, and fails naming the
-  command unless its filter selects them all. Pass a value to a later step as a step output set
-  in that step's `env:`, not through `$GITHUB_ENV`. The check fails wide rather than parse
-  further.
+  not read it), no step of the job up to and including its own writing `$GITHUB_ENV` or
+  `$GITHUB_PATH` or running `go env -w` (a write after it reaches none of its go commands), and
+  the step's working directory (its own, else a `defaults.run` one, else the root) the `Run`'s;
+  its packages, tags, `-race` and mode must then be exactly the `Run`'s (a `-race` line's `Run`
+  says `race=True`, and its closure is what `go list -race` lists), and a script's line must be
+  exactly the pinned text. Any other claimed command (`GOFLAGS=...`, another flag, a pipe, a
+  quote, a continuation, a `cd`, another line in its step), and one whose step runs in another
+  directory, counts as reading every Go file of the repository, every file under a Go module's
+  directory (each directory with a `go.mod`, testdata and embedded files included) and every
+  `go.mod`, `go.sum`, `go.work` and `go.work.sum`, and fails naming the command unless its filter
+  selects them all. Pass a value to a later step as a step output set in that step's `env:`, not
+  through `$GITHUB_ENV`. The check fails wide rather than parse further.
 
   The check reads `ci.yaml`'s own steps, `env:` blocks and defaults and the scripts and steps the
   table pins. It does not read the environment a local action or a repository script writes (a
@@ -342,11 +342,13 @@ fails the pull request that adds it.
   `ci_job_reads.py` builds from one declaration to it: the text-check job's guard step runs
   exactly `TEXT_CHECK_TESTS`, the names envoy-go's plain step leaves out, so a test dropped from
   one side fails `ci-filters` rather than running in no job. An env, shell, container or
-  environment write that could move what the step compiles or which tests it runs fails the
-  check too, naming it: `GOFLAGS: -skip=...` in the step's env skips a test its `-run` names, and
-  the pinned text would not show it. Put such a setting on the script's own line, where the pin
-  holds it and the entry's run can say it. envoy-go's unit-test step, envoy-go-checks' pack step
-  and envoy-smoke's plugin-schema step are exact entries.
+  environment write up to and including the step that could move what it compiles or which tests
+  it runs fails the check too, naming it: `GOFLAGS: -skip=...` in the step's env skips a test its
+  `-run` names, and the pinned text would not show it. Put such a setting on the script's own
+  line, where the pin holds it and the entry's run can say it, or, for a name with which go
+  compiles the same files and runs the same tests (`GOMAXPROCS`), add it to `ENV_ALLOWED`.
+  envoy-go's unit-test step, envoy-go-checks' pack step and envoy-smoke's plugin-schema step are
+  exact entries.
 
   It fails too when a pinned text or an exact entry's step is gone, and when a job or step is
   gated on a filter neither `GATES` nor `EXCLUDED` lists. A job with no go commands still gets a

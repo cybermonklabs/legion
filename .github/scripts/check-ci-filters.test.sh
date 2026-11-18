@@ -1572,6 +1572,15 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file that closure reads outside the filter, or the GITHUB_ENV write" "$(contains "$out" 'other\|GITHUB_ENV')"
 
+# A write after the step reaches none of its go commands, so the command stays reduced.
+echo "case: a later step writes GITHUB_PATH after a claimed simple go command"
+root=$(fixture github-path-after)
+replace "$root/.github/workflows/ci.yaml" "      - name: Report ci-ok when this job decides a merge-group run" \
+  $'      - name: Put a tool on the path of the steps after\n        run: echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"\n      - name: Report ci-ok when this job decides a merge-group run'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and still reduces the command to its closure" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+
 echo "case: go env -w sets GOFLAGS before a claimed simple go command"
 root=$(fixture go-env-w-goflags)
 cat > "$root/mod/cmd/app/probe_test.go" <<'GO'
@@ -1803,6 +1812,16 @@ check "names the line and the character" \
   "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 reads `.*` where the pinned text.s reads `  go test -count=1 ".pkg"`, and holds the character U+00A0 there; ')"
 check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
 
+echo "case: a step off its pin by a blank line names the blank line and the pinned line it stands for"
+root=$(fixture exact-step-blank-line)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" $'; do\n            go test' $'; do\n\n            go test'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the blank line and the pinned line" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 is a blank line where the pinned text.s reads `  go test -count=1 ".pkg"`; ')"
+check "and quotes no empty line" "$(is "$(contains "$out" 'reads ``')" false)"
+
 # What surrounds a pinned step can move what it compiles or which tests it runs while its text
 # stays the pin's - a GOFLAGS -skip in its env skips a test its -run names - so such a step is
 # refused too, naming what moves it, rather than read as reading everything. Each plant below is
@@ -1841,7 +1860,20 @@ for around in env shell container github-env; do
   check "names the step, the gate and what moves it" \
     "$(contains "$out" "::error file=.github/workflows/ci.yaml::job app step \"Test the app\" is pinned whole by gate app.s exact entry, but $why, and that can change what its go commands compile, or which tests they run, where no pin holds it; ")"
   check "and is that one problem, reading nothing wide" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+  check "and says how to keep a setting that moves nothing" "$(contains "$out" 'or, for a name with which go compiles the same files and runs the same tests, add it to ENV_ALLOWED$')"
 done
+
+# A write of $GITHUB_ENV or $GITHUB_PATH reaches only the steps after the one that makes it, so a
+# write after the pinned step moves nothing it runs, while the same write before it does (the
+# github-env case above).
+echo "case: a step that writes GITHUB_PATH after a step pinned whole moves nothing it runs"
+root=$(fixture exact-step-github-path-after)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" "      - name: Report ci-ok when this job decides a merge-group run" \
+  $'      - name: Put a tool on the path of the steps after\n        run: echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"\n      - name: Report ci-ok when this job decides a merge-group run'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and reads the step as its runs" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
 
 # Both at once: a step off its pin and under an env that moves it fails on each, so neither
 # refusal hides the other - a check that asked about the env first, and compared the text only

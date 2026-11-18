@@ -346,14 +346,15 @@
 # on the step and no defaults.run.shell on the job or the workflow, no container: on the job, no
 # name outside ENV_ALLOWED (test configuration go never reads; GO*, CGO_*, BASH_ENV, ENV, HOME,
 # XDG_CONFIG_HOME and PATH are outside it) in the workflow's, job's or step's env or in front of
-# the command itself, no step of the job writing $GITHUB_ENV or $GITHUB_PATH or running
-# `go env -w` on a line of its script that is not a comment (each reaches every later go command
-# unseen), and the step's working directory (its own, else the job's or workflow's defaults.run,
-# else the root) joined with the command's own `go -C` the Run's. A -race line's closure is the
-# one `go list -race` lists, so its Run says race too. A script_run is held exact instead: the
-# script's line holding its text must be that text alone and uncontinued, under such an env,
-# shell and container (the job's and every one of its steps') and such a job; the script's
-# variables are the Run author's to read, and anything appended to that line falls to everything.
+# the command itself, no step of the job up to and including its own writing $GITHUB_ENV or
+# $GITHUB_PATH or running `go env -w` on a line of its script that is not a comment (each reaches
+# every later go command unseen, and a write after the step reaches none of its), and the step's
+# working directory (its own, else the job's or workflow's defaults.run, else the root) joined
+# with the command's own `go -C` the Run's. A -race line's closure is the one `go list -race`
+# lists, so its Run says race too. A script_run is held exact instead: the script's line holding
+# its text must be that text alone and uncontinued, under such an env, shell and container (the
+# job's and every one of its steps') and such a job; the script's variables are the Run author's
+# to read, and anything appended to that line falls to everything.
 # A step whose go commands are in no such form can be an exact entry instead: it pins the step's
 # whole run: script (compared as text after trailing whitespace, nothing parsed) and directory,
 # and lists Runs that stand for what the script compiles. While the step holds exactly that, under
@@ -369,17 +370,18 @@
 # pin once did, says nothing where the filter already selects every Go file, as text_checks'
 # does. For the same reason a pinned step fails, naming what does it, when its env, shell,
 # container or job could move what it compiles or which tests it runs: an env of the step, the
-# job or the workflow naming anything outside ENV_ALLOWED, a step of the job writing $GITHUB_ENV
-# or $GITHUB_PATH or running `go env -w`, a shell: or defaults.run.shell, or a container: -
-# `GOFLAGS: -skip=^TestOnlyTheBrokerInsertsEvents$` in the guard step's env would skip that test
-# though its -run names it, and its pin would still match. Any other claimed command - an
-# assignment of a name outside ENV_ALLOWED such as GOFLAGS or GOOS, another flag, a pipe, a
-# quote, a substitution, a cd, another line in
-# its step - counts as reading every Go file of the repository, every file under a Go module's
-# directory (each directory holding a go.mod: testdata, embedded files and all) and every go.mod,
-# go.sum, go.work and go.work.sum, and fails naming the command unless its filter selects all of
-# them. So a cd, a `go -C` naming another directory than the Run's or a step in one can only
-# widen what it reads. It fails wide, never narrow: a new evasion is answered by falling to
+# job or the workflow naming anything outside ENV_ALLOWED, a step of the job up to and including
+# it writing $GITHUB_ENV or $GITHUB_PATH or running `go env -w`, a shell: or defaults.run.shell,
+# or a container: - `GOFLAGS: -skip=^TestOnlyTheBrokerInsertsEvents$` in the guard step's env
+# would skip that test though its -run names it, and its pin would still match. A name with which
+# go compiles the same files and runs the same tests, such as GOMAXPROCS, may join ENV_ALLOWED;
+# until it does, it refuses the step. Any other claimed command - an assignment of a name outside
+# ENV_ALLOWED such as GOFLAGS or GOOS, another flag, a pipe, a quote, a substitution, a cd, another
+# line in its step - counts as reading every Go file of the repository, every file under a Go
+# module's directory (each directory holding a go.mod: testdata, embedded files and all) and every
+# go.mod, go.sum, go.work and go.work.sum, and fails naming the command unless its filter selects
+# all of them. So a cd, a `go -C` naming another directory than the Run's or a step in one can
+# only widen what it reads. It fails wide, never narrow: a new evasion is answered by falling to
 # everything, not by more parsing.
 #
 # What it reads, and what it does not: ci.yaml's own steps and those of the jobs of a local
