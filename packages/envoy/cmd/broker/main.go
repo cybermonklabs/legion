@@ -50,7 +50,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/machine"
-	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -1043,8 +1042,10 @@ func validateRulesFile(rules airlock.Rules) error {
 //
 // A host name with a trailing dot (api.github.com.) is the name a client writes without one, and
 // matches only a request that writes the dot, so for the requests clients make it binds nothing:
-// it is refused naming the name without the dot, when that is plain host-name text, and naming
-// no form otherwise. An empty host names nothing a request can reach.
+// it is refused naming the name without the dot when that name is one airlock.HostShapeOK
+// accepts (its letters, digits, hyphens and dots are all a refusal may repeat, since h arrives
+// folded by fold.ASCII), and naming no form otherwise. An empty host names nothing a request can
+// reach.
 //
 // The rest are hosts no request names, each refused naming no form, since all they hold is the
 // file's own text: a host with a scheme; a host with a port; a bracket or a % around no address;
@@ -1059,9 +1060,6 @@ func validateRulesFile(rules airlock.Rules) error {
 func ruleHostRefusal(h string) string {
 	if strings.Contains(h, "://") {
 		return "holds a scheme, and a host is a name alone, so it binds nothing; write the service's host name with no scheme, path or port"
-	}
-	if netaddr.Host(h) != h {
-		return ipAddressHost
 	}
 	if _, err := netip.ParseAddr(h); err == nil {
 		return ipAddressHost
@@ -1088,29 +1086,12 @@ func ruleHostRefusal(h string) string {
 		return "ends in a number, which no host name does, and is no IP address netip reads: clients read a leading zero, fewer than four parts or a hex part as different addresses, and an address binds no secret in any form, so the host binds nothing; write the service's host name"
 	case h == "":
 		return "is empty, so it names no host a request can reach and binds nothing; write the service's host name"
-	case strings.HasSuffix(h, ".") && hostNameText(bare) && airlock.HostShapeOK(bare):
+	case strings.HasSuffix(h, ".") && airlock.HostShapeOK(bare):
 		return "is a host name with a trailing dot, and a client writes a name without one, so the host binds nothing it asks for; write it as " + bare
 	case !airlock.HostShapeOK(h):
 		return "is no DNS name: a host is labels of letters, digits and hyphens between single dots, none empty and none opening or closing with a hyphen, after an optional leading wildcard label, so the airlock binds it nowhere; write the service's host name"
 	}
 	return ""
-}
-
-// hostNameText reports whether name is plain host-name text that a refusal may repeat: labels of
-// lower-case letters, digits, hyphens and underscores between single dots, or a "*." wildcard
-// before them. Anything else is the file's own free text, which no refusal repeats.
-func hostNameText(name string) bool {
-	name = strings.TrimPrefix(name, "*.")
-	if name == "" || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.Contains(name, "..") {
-		return false
-	}
-	for i := range len(name) {
-		c := name[i]
-		if !('a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '-' || c == '_' || c == '.') {
-			return false
-		}
-	}
-	return true
 }
 
 // ipAddressHost is ruleHostRefusal's refusal of a host that is an IP address in any spelling.
