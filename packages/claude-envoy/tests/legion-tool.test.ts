@@ -3,7 +3,11 @@ import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 import type { LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
-import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
+import {
+  createLegionDaemonClient,
+  type LegionDaemonClient,
+  LegionDaemonContractError,
+} from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
@@ -284,6 +288,53 @@ test("read_record answers the issue's record, and request_backward_move posts wi
       body: { grantId: "grant-for-one-command", to: "planning", reason: "The plan misses X." },
     },
   ])
+})
+
+// Contract 159 marks a claim Envoy cannot reach on its claim view (`unreachable`), and the daemon
+// serves that mark only to a caller at 159 or above, holding it back from a caller below
+// (`api.stateFor`). So this plugin reads both shapes of a claim view: read_record hands on the mark
+// as the daemon wrote it, and reads a view without it, the one a caller below 159 is served, as it
+// did before. A mark the schema does not take is refused, never dropped in silence.
+test("read_record hands on a claim's unreachable mark, reads a claim view without one, and refuses a malformed one", async () => {
+  /** LEGION-207's record, down to the implementer's claim view, which carries the mark. */
+  interface MarkedRecord {
+    workers: { implementer: { claim: { unreachable?: unknown } } }
+  }
+  const golden = (await daemonFixture("state.json")) as {
+    issues: { "LEGION-207": MarkedRecord }
+  }
+  // LEGION-207's record, read from a daemon whose `GET /legion/v1/state` answers `state`.
+  const record = (state: unknown) =>
+    executeLegionTool(
+      {
+        daemon: createLegionDaemonClient("http://daemon.test", (async () =>
+          Response.json(state)) as unknown as typeof fetch),
+        claim: () => implementer,
+        handoffReport: async (): Promise<never> => {
+          throw new Error("no handoff report expected")
+        },
+        branchHead: noBranchHead,
+      },
+      { op: "read_record", issue: "LEGION-207" },
+    ) as Promise<{ record: MarkedRecord }>
+  const mark = { since: "2026-09-22T08:51:40Z", lastSeen: "2026-09-22T08:51:40Z" }
+  expect(golden.issues["LEGION-207"].workers.implementer.claim.unreachable).toEqual(mark)
+
+  const marked = await record(golden)
+  expect(marked.record).toEqual(golden.issues["LEGION-207"])
+  expect(marked.record.workers.implementer.claim.unreachable).toEqual(mark)
+
+  const servedBelow = structuredClone(golden)
+  delete servedBelow.issues["LEGION-207"].workers.implementer.claim.unreachable
+  const unmarked = await record(servedBelow)
+  expect(unmarked.record).toEqual(servedBelow.issues["LEGION-207"])
+  expect(unmarked.record.workers.implementer.claim).not.toHaveProperty("unreachable")
+
+  const malformed = structuredClone(golden)
+  malformed.issues["LEGION-207"].workers.implementer.claim.unreachable = {
+    lastSeen: "2026-09-22T08:51:40Z",
+  }
+  await expect(record(malformed)).rejects.toBeInstanceOf(LegionDaemonContractError)
 })
 
 test("read_release_records posts the claim's own credential and counts the window; a refusal is the caller's", async () => {
