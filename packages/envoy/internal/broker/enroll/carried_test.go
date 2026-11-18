@@ -140,7 +140,7 @@ func TestCarriedAnswersADaemonsOwnPodEnrollments(t *testing.T) {
 		svc, enrol, acme, _ := carriedDaemons(t)
 		row := enrol(acme, session, "acme-pod-1")
 		// No route writes this spelling any more: an older replica does while the broker rolls
-		// (adopt, migration 0034), so the row is rewritten to it here.
+		// (adopt, migration 0033), so the row is rewritten to it here.
 		spellAccountAlone(t, svc, row.ID)
 		wantCarried(t, "a legacy row of the daemon's own login", askCarried(t, svc, acme, session),
 			CarriedEnrollment{SessionID: session, EnrollmentID: row.ID, State: "live", EndsAt: leaseEnd(t, svc, row.ID)})
