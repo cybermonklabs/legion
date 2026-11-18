@@ -61,14 +61,15 @@ const (
 	githubSubjects      = "notifications.github.>"
 )
 
-// redeliveredRepositories serves acme/widgets at main, as the daemon's mapping would.
+// redeliveredRepositories records an issue on acme/widgets at main, as the daemon would once
+// GitHub answers for it; a repository nothing has read GitHub for is answered as unread.
 type redeliveredRepositories struct{}
 
 func (redeliveredRepositories) ResolveRepository(resolved string) (workflow.Resolution, error) {
 	if resolved == redeliveredRepo {
 		return workflow.Resolution{Repo: redeliveredRepo, DefaultBranch: "main", GitHubRepo: redeliveredRepo}, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + redeliveredProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
 // GitHub sends a pull request opened on an issue's branch while the stream does not capture

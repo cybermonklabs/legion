@@ -1,0 +1,5 @@
+kind: Changed
+body: Dispatch's repair of lost CI records covers every repository an issue names as its own, beside the repositories its projects map, so a head in a repository no project maps settles. A repository only an issue names that Dispatch's GitHub App is not installed on is no fault. The pass counts it in `repositories_without_app`, a new last field of its `ci reconcile pass` line, and not in `mappings_skipped`, and names it at INFO in place of WARN. The pass holds GitHub's answer that the App is not installed for an hour, for a mapped repository too, so it asks about such a repository once an hour and not at every pass.
+time: 2026-11-12T06:26:27.309359692Z
+custom:
+    Issue: pr3730

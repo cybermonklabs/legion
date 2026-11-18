@@ -72,11 +72,25 @@ type specs struct {
 	// workflow does not record); nil for a daemon with no workflow, whose launches work no
 	// repository.
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
-	// repositories is the project's repository mapping as the daemon serves it (repositories.view),
-	// in the daemon's own order: what a worker's addressing names beside its own issue's
-	// repository and the controller's names after its design gate steps (RepositoriesClause). The
-	// daemon sets it at boot whether or not a workflow is configured.
-	repositories func() api.RepositoriesView
+	// appOwners is the owner accounts the role's own GitHub App is installed on AND the role's gh
+	// bundle holds a directory for, lowercased and sorted: the reach a worker's addressing names
+	// beside its own issue's repository, and the controller's after its design gate steps
+	// (RepositoriesClause). The two conditions are one rule, GitHubDirs': an installed owner the
+	// last bundle left out — not installed, suspended, granted none, permissions refused, or a
+	// login that is no directory name — holds no token this role could use, so naming it would
+	// promise a reach the role does not have. Under runtime: kubernetes the Apps read are the
+	// POD's (sandbox.PodAppRoles): an issue pod projects only the directories both Apps' bundles
+	// hold, so an owner one App alone reaches is in no container of that pod and `legion gh`
+	// refuses it there, while a tmux pane holds the role's own bundle and reads that App alone.
+	// The daemon answers it from
+	// what the last gh bundle of that App read from GitHub (appauth.Installed, plan.appOwners),
+	// which costs no read of its own on a launch; a role whose App no bundle has been built for
+	// yet — the first launch of a daemon that has built none — is answered the owners of the
+	// repositories the project is mapped, every one of which has both Apps installed, so the
+	// clause names a true part of the reach and never more than it. The daemon sets it at boot
+	// whether or not a workflow is configured; a nil one names no owner, as an App installed
+	// nowhere does.
+	appOwners func(role claim.Role) []string
 	// owner is the architect that owns a claim on an issue that is not its tree's root, as the
 	// store records the architect claims of the issue's tree at the launch
 	// (workflowRuntime.owningArchitect): what the claim's addressing names (ownerOf). It is nil
@@ -105,6 +119,16 @@ type specs struct {
 // rolePromptPath is where a claim's role prompt is kept for every launch of it.
 func rolePromptPath(stateDir string, token claim.Token) string {
 	return filepath.Join(stateDir, "prompts", string(token)+".md")
+}
+
+// ownersOf is the owner accounts role's own GitHub App is installed on (appOwners), and none
+// for a specs built without that function, which is a test's literal: a launch is told its App
+// reaches nothing rather than told nothing at all.
+func (s specs) ownersOf(role claim.Role) []string {
+	if s.appOwners == nil {
+		return nil
+	}
+	return s.appOwners(role)
 }
 
 // SpawnSpec is the launch's secrets (launchSecrets: the Envoy bearer and the NATS nkey seed, each
@@ -199,7 +223,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	if err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.repositories())
+	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
 	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
@@ -382,11 +406,11 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 }
 
 // controllerSpawnSpec is the daemon's controller's launch (`controller: daemon`): its role part and
-// the headless part; as its addressing the design-gate steps the project gates, then the
-// project's repositories as a sentence of their own (RepositoriesSentence, which also says when
-// the daemon maps none) and, when it names any, its Slack channels; then the deployment
-// instructions and the launch secrets. The operator's controller (`legion controller start`) is
-// told the steps and the repositories the same way, never channels, since only the daemon's may
+// the headless part; as its addressing the design-gate steps the project gates, then the reach
+// its GitHub App gives it as a sentence of its own (RepositoriesSentence, which also says when
+// its App is installed on no owner) and, when it names any, its Slack channels; then the
+// deployment instructions and the launch secrets. The operator's controller (`legion controller
+// start`) is told the steps and the reach the same way, never channels, since only the daemon's may
 // have channels (config.checkSlackChannels). The channels reach its environment as
 // LEGION_SLACK_CHANNELS from the runtime (sandbox.Options.ControllerSlackChannels), which
 // compares them with the list a running controller was launched under and relaunches it when
@@ -409,7 +433,7 @@ func (s specs) controllerSpawnSpec() (runtime.SpawnSpec, error) {
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
-	addressing := DesignGateFragment(s.designSteps) + " " + RepositoriesSentence(s.repositories())
+	addressing := DesignGateFragment(s.designSteps) + " " + RepositoriesSentence(s.ownersOf(claim.RoleController))
 	if len(s.slackChannels) > 0 {
 		addressing += " " + SlackChannelsFragment(s.slackChannels)
 	}
@@ -447,30 +471,29 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 
 // AddressingFragment is addressingFragment for a claim whose owner is its tree's architect, a pane
 // on its tree's root: it names the tree's architect, spelled from project and c.Tree. It is
-// exported for the rigs under packages/pi-legion/scripts, which tell a worker what a pane is told,
-// and keeps the form those rigs call, since they run one program against each label's checkout
-// of this module, an older one among them.
-func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, repositories api.RepositoriesView) (string, error) {
+// exported for the rigs under packages/pi-legion/scripts, which tell a worker what a pane is told.
+// Its last parameter became the owners the role's App reaches with INFRA-2543, where it was the
+// project's mapping view before, so a label checked out before that change does not build against
+// a rig that passes owners.
+func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, owners []string) (string, error) {
 	architect, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {
 		return "", fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	return addressingFragment(project, c, architect, repo, defaultBranch, repositories), nil
+	return addressingFragment(project, c, architect, repo, defaultBranch, owners), nil
 }
 
 // addressingFragment is the sentence that tells an agent where it and its peers are reached: its
 // own role topic, the topic of architect, and the project controller's, spelled from the tokens so
 // the model never hand-encodes one; then, when repo is not the zero repository, the issue's own
-// repository and default branch and the project's repositories (RepositoriesClause) — left off
-// entirely for a daemon that runs no workflow, whose claims name no repository. The clause names
-// the project's mapping as it is now, which may hold none: a recorded issue keeps its repository
-// after a refresh unmaps or refuses it.
+// repository and default branch and the reach its role's own App gives it (RepositoriesClause) —
+// left off entirely for a daemon that runs no workflow, whose claims name no repository.
 //
 // architect is the architect that owns c (specs.ownerOf): its tree's architect for a claim on the
 // tree root, and for a claim on any other issue the end of the owner walk read at the launch. The
 // architect of such an issue, a sub-architect, owns that issue itself, so its architect is the one
 // above it, and the sentence names it that way.
-func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, repositories api.RepositoriesView) string {
+func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, owners []string) string {
 	owner := "the architect that owns your issue is"
 	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
 		owner = "the architect above you is"
@@ -491,38 +514,43 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 		return fragment
 	}
 	return fragment + " " + fmt.Sprintf("Your issue's repository is %s (default branch %s); %s",
-		repo.String(), defaultBranch, RepositoriesClause(repositories))
+		repo.String(), defaultBranch, RepositoriesClause(owners))
 }
 
-// RepositoriesClause tells an agent which repositories the project maps, as a clause that ends in
-// a full stop and starts in lower case, to follow a worker's `; `: "the project's repositories are
-// a, b, c." in the order the daemon serves them (repositories.Mapped sorts them by name, whatever
-// the case), or, when the daemon maps none, "the daemon maps no repository to this project now."
-// with each repository it leaves out and why. An empty mapping is a state a running project
-// reaches (an App uninstalled, a refresh that unmapped every repository), never a refusal to
-// launch, so every launch path names it.
-func RepositoriesClause(view api.RepositoriesView) string {
-	if len(view.Mapped) > 0 {
-		names := make([]string, len(view.Mapped))
-		for i, mapped := range view.Mapped {
-			names[i] = mapped.Repo
-		}
-		return "the project's repositories are " + strings.Join(names, ", ") + "."
+// RepositoriesClause tells an agent how far its GitHub token reaches, as a clause that ends in a
+// full stop and starts in lower case, to follow a worker's `; `: "your role's GitHub App is
+// installed on the owners a, b, and its token reaches every repository of those owners." owners
+// are the owner accounts of the role's own App, lowercased and sorted (specs.appOwners), and not
+// the owners of the repositories the project is mapped: since INFRA-2543 a role's reach is its
+// App's installations and the mapping bounds none of it, so naming the mapping's owners told an
+// agent its reach was smaller than it is wherever the App reaches an owner the project maps
+// nothing of — the case cmd/legion's own gh tests pin, where a repository of such an owner is
+// answered from that owner's directory.
+//
+// It names no repository list: a role's token is its App's own, with no repository narrowing,
+// so the project's repositories are no bound on the work and the list would be a whole
+// installation's worth of names — 216 of them for this deployment's largest owner when that
+// spec was written. What the agent needs is the account its token acts on and that it reaches
+// every repository there; its own issue's repository is named before this clause, and its gh
+// bundle holds a directory per owner.
+//
+// An App installed on no owner, which a deployment with no installation has, is told so
+// plainly: a clause that named nothing would read as one the daemon failed to fill.
+func RepositoriesClause(owners []string) string {
+	if len(owners) == 0 {
+		return "your role's GitHub App is installed on no owner, so its token reaches no repository."
 	}
-	if len(view.Refused) == 0 {
-		return "the daemon maps no repository to this project now."
+	if len(owners) == 1 {
+		return "your role's GitHub App is installed on the owner " + owners[0] + ", and its token reaches every repository of that owner."
 	}
-	refused := make([]string, len(view.Refused))
-	for i, r := range view.Refused {
-		refused[i] = fmt.Sprintf("%s (%s)", r.Repo, r.Reason)
-	}
-	return "the daemon maps no repository to this project now: " + strings.Join(refused, "; ") + "."
+	return "your role's GitHub App is installed on the owners " + strings.Join(owners, ", ") + ", and its token reaches every repository of those owners."
 }
 
 // RepositoriesSentence is RepositoriesClause as a sentence of its own, for the controller's
-// addressing, which follows the design gate steps' sentence.
-func RepositoriesSentence(view api.RepositoriesView) string {
-	clause := RepositoriesClause(view)
+// addressing, which follows the design gate steps' sentence. The controller works Dispatch and
+// no checkout, so it is told the reach without an issue's repository before it.
+func RepositoriesSentence(owners []string) string {
+	clause := RepositoriesClause(owners)
 	return strings.ToUpper(clause[:1]) + clause[1:]
 }
 

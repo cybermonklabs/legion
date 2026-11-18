@@ -67,7 +67,8 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 }
 
 // mapCIReconcileRepository maps the stand-in's repository to a project of its own, as Settings →
-// Repositories does: the pass reads GitHub for the repositories repo_projects names and no other.
+// Repositories does: the pass reads GitHub for the repositories repo_projects names and the ones
+// an issue names as its own, and its callers record no issue.
 func mapCIReconcileRepository(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(t.Context(), `

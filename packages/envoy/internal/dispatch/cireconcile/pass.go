@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
-// cursor is one place in the order a pass walks: a mapped repository, one page of its open pull
+// cursor is one place in the order a pass walks: a covered repository, one page of its open pull
 // requests, and a pull request number within that page.
 //
 // As the Reconciler's resume it is where the next pass starts, and it is set only by a pass
@@ -186,10 +186,10 @@ func (r *Reconciler) Pass(ctx context.Context) {
 	r.report(&c, at, time.Since(started))
 }
 
-// reconcile is one pass over the mapped repositories from the cursor onwards, and the stop that
-// ended it early.
+// reconcile is one pass over the repositories covered() answers — the ones repo_projects maps and
+// the ones an issue names as its own — from the cursor onwards, and the stop that ended it early.
 //
-// The order is mapped()'s, which is sorted, and within a repository its open pull requests by
+// The order is covered()'s, which is sorted, and within a repository its open pull requests by
 // number (headsQuery orders them, and the REST fallback sorts them): one order every pass
 // walks, so a pass that does not reach the end of it can say where the next pass is to take it
 // up. A pass starts at the cursor, reads to the end of the order and ends there -- it does not
@@ -200,9 +200,9 @@ func (r *Reconciler) Pass(ctx context.Context) {
 // the end of the order closes it (closeCycle) and leaves the cursor at the start of the order,
 // so the pass after it begins the next cycle there.
 func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *stop {
-	rows, err := r.mapped(ctx)
+	rows, mapped, err := r.covered(ctx)
 	if err != nil {
-		r.Logger.Warn("ci reconcile read no repository mappings", "error", err)
+		r.Logger.Warn("ci reconcile read no repositories to cover", "error", err)
 		return nil
 	}
 	// The gap is set before the pass's first REST request and left between every one of them
@@ -216,7 +216,10 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 	// of, which two rows naming one repository share.
 	read := make(map[int64]struct{}, len(rows))
 	for _, from := range order(rows, r.resume) {
-		end := r.visitRepository(ctx, writer, from, c, read)
+		// Whether a mapping names this repository decides how the pass reads the App missing
+		// from it (appAbsent).
+		_, byMapping := mapped[from.repository]
+		end := r.visitRepository(ctx, writer, from, byMapping, c, read)
 		if end == nil {
 			continue
 		}
@@ -236,10 +239,11 @@ func (r *Reconciler) reconcile(ctx context.Context, writer Writer, c *counts) *s
 
 // visitRepository reads one repository of the order from the cursor the pass begins it at: the
 // checks every repository is read under -- the pass's own bound, the shared rate limits, and
-// what the mapped row resolves to -- and then the walk of its pages. It answers the ending that
+// what the covered name resolves to -- and then the walk of its pages. It answers the ending that
 // stopped the pass within this repository, and nil for a repository the pass read to the end
-// of, which includes one it passed over.
-func (r *Reconciler) visitRepository(ctx context.Context, writer Writer, from cursor, c *counts, read map[int64]struct{}) *ending {
+// of, which includes one it passed over. mapped says a mapping names the repository, which
+// resolve reads the App missing from it by.
+func (r *Reconciler) visitRepository(ctx context.Context, writer Writer, from cursor, mapped bool, c *counts, read map[int64]struct{}) *ending {
 	// The walk stands at this repository from here on, so every way out below leaves the next
 	// pass where it has reached: until a page is read, that is this repository from the top.
 	w := walk{r: r, writer: writer, c: c, here: from}
@@ -255,18 +259,19 @@ func (r *Reconciler) visitRepository(ctx context.Context, writer Writer, from cu
 	if at := r.limited(ctx, githubapp.AppScope, githubapp.GraphQLScope); at != nil {
 		return w.stopped(at)
 	}
-	repository, at := r.resolve(ctx, from.repository, c, read)
+	repository, at := r.resolve(ctx, from.repository, mapped, c, read)
 	if at != nil {
 		return w.stopped(at)
 	}
 	if r.cutShort(ctx, c) {
 		// The bound fell while this repository was being resolved, which is no fault of the
-		// mapping's and no head of it read: the next pass reads it from the top.
+		// repository's and no head of it read: the next pass reads it from the top.
 		return w.cut()
 	}
 	if !repository.reconcile {
-		// A repository the pass holds no token for, one GitHub did not answer about, or one
-		// another row naming the same repository was read under. resolve has said so once.
+		// A repository the App is not installed on, one the pass holds no token for, one
+		// GitHub did not answer about, or one another row naming the same repository was
+		// read under. resolve has said so once.
 		return nil
 	}
 	w.repository = repository
@@ -543,10 +548,12 @@ func pagesOf(items []object) []pageOf[object] {
 // closeCycle ends the cycle this pass has just walked the last of. What no pass of the cycle
 // reached is forgotten here and nowhere else: a pass forgetting by its own sight alone would
 // drop the ETags of every head the passes before it read, and the cycle after it would read all
-// of those heads over REST in full.
+// of those heads over REST in full. The answers held about repositories the App is not on are
+// forgotten by the same rule, so the Reconciler holds one for no repository the order has left.
 func (r *Reconciler) closeCycle(c *counts) {
 	c.cycle = true
 	forget(r.rows, r.seenRows)
+	forget(r.absent, r.seenRows)
 	forget(r.pulls, r.seenRepositories)
 	forget(r.listed, r.seenRepositories)
 	forget(r.heads, r.seenHeads)
@@ -575,7 +582,7 @@ func (r *Reconciler) cutShort(ctx context.Context, c *counts) bool {
 }
 
 // order is the repositories a pass reads, in the order it reads them and each as the cursor the
-// pass begins it at: mapped()'s own order from the cursor onwards and no further. A pass ends at
+// pass begins it at: covered()'s own order from the cursor onwards and no further. A pass ends at
 // the last repository rather than beginning the order again, so the order holds each repository
 // once and the pass that reaches the end of it closes the cycle.
 //
@@ -583,8 +590,8 @@ func (r *Reconciler) cutShort(ctx context.Context, c *counts) bool {
 // that repository, which is the zero page and the zero number of its cursor.
 //
 // A cursor naming something the order no longer holds strands no pass: a repository that has
-// dropped out of the mapping leaves the pass starting at the first repository after it, and a
-// cursor every mapped repository sorts before -- the repository it named was the last and has
+// dropped out of the order leaves the pass starting at the first repository after it, and a
+// cursor every covered repository sorts before -- the repository it named was the last and has
 // gone -- is a cursor into a cycle that cannot be finished, so the pass begins a fresh one at
 // the first repository rather than reading nothing at all.
 func order(rows []string, at cursor) []cursor {

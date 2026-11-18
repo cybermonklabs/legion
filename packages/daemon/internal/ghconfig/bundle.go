@@ -3,122 +3,216 @@ package ghconfig
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
 // Bundle is one role's gh directories: Default, the lowercased owner whose directory GH_CONFIG_DIR
-// names (the issue's owner; the controller's first owner), and Dirs, each directory's Rendered
-// files keyed by the directory's name under the bundle root. A name is a lowercased owner login,
-// whose token reaches what the role may do across that owner, or `<owner>/<repo>`, both
-// lowercased, a directory under the owner's own whose token reaches that one repository and no
-// other. Dirs[Default] is the write token's where the role writes to one; every other entry is
-// read-only. The name authorises nothing — the token in the directory does — so a reader that
-// wants the narrowest token for a repository reads `<owner>/<repo>` where the bundle holds it.
+// names (the one the issue's own repository routes to, RouteDir; the controller's asked-for or
+// first owner), Dirs, each directory's Rendered files keyed by the directory's name under the
+// bundle root, and Pairs, the configured renames that route a request by repository. A
+// directory's name is a lowercased owner login (IsOwner) and nothing narrower,
+// whose token is that account's installation lease and reaches every repository it holds. A
+// workflow role's every directory carries that lease at the role's own permissions and none is
+// read-only; a controller's bundle is the one made of reading leases (appauth's
+// GitHubCredential and ControllerCredential, INFRA-2543). The name authorises nothing — the
+// token in the directory does. A run of before that ruling also wrote `<owner>/<repo>`
+// directories under an owner's own; no bundle holds one now, and the one trace of that shape left
+// here is WriteBundle's prune, which removes every subdirectory of an owner's directory such a
+// run left behind.
+//
+// Pairs are the configured renames that moved a repository to another owner's installation and
+// resolve for this project (ghrepo.Renames.Moving), which WriteBundle writes into the root as
+// PairsFile. They are what makes the routing key the repository rather than the owner: a request
+// for a pair's `from` repository is answered from the directory of the owner it moved to, whose
+// installation holds it, while every other repository of the `from` owner is answered from that
+// owner's own directory. The App being installed on both accounts of a pair is what makes the
+// difference matter — one directory per owner cannot answer both — and it is this deployment's
+// own case, where the implement App's sjawhar installation holds 151 repositories and not
+// cybermonklabs/legion. A pair whose `to` owner the bundle holds no directory for is left in the
+// file and refused by the wrapper that reads it (cmd/legion's ghConfigDirFor), naming the pair:
+// no lease of this bundle reaches that repository, and answering the `from` owner's token
+// instead would be a push that cannot land.
 type Bundle struct {
 	Default string
 	Dirs    map[string]Rendered
+	Pairs   []ghrepo.Rename
 }
 
-// ownerLogin is a lowercased GitHub login: letters, digits and hyphens, never starting with a
-// hyphen. A login is a path segment under a bundle's root, so nothing else is one.
-var ownerLogin = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
-
-// repositoryName is a lowercased GitHub repository name: at most 100 letters, digits, `-`, `_`
-// and `.`, which is GitHub's own grammar (ghrepo.Parse) lowercased. A name is a path segment
-// under an owner's directory, and `.` and `..` are refused beside it, since either would name
-// another directory than the repository's.
-var repositoryName = regexp.MustCompile(`^[a-z0-9._-]{1,100}$`)
+// ownerLogin is a lowercased GitHub login, ghrepo's ownerName lowercased: a letter or digit and
+// then up to 38 letters, digits, hyphens and underscores. An underscore is admitted because a
+// managed user's login ends in `_<shortcode>` (`mona-cat_octo`), and a repository of such an
+// account is one ghrepo parses and the daemon admits an issue on: a rule here narrower than
+// ghrepo's left that issue with no directory for its own repository, so no role of it launched.
+// The 39 characters are GitHub's own bound, which no login exceeds. A login is a path segment
+// under a bundle's root, so nothing else is one.
+var ownerLogin = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,38}$`)
 
 // IsOwner says whether owner is a lowercased GitHub login, and so a directory a bundle may hold.
-// It is the rule for a caller that means an owner and nothing narrower: the bundle's Default,
-// which GH_CONFIG_DIR names, and the owner a `gh` or a git-credential request names.
+// It is the rule for every directory of a bundle, its Default among them, and for the owner a
+// `gh` or a git-credential request names: a bundle's directory is one owner's whole lease, so
+// there is no narrower name for one to have. PairsFile can never collide with it: its name holds
+// a dot, which no GitHub login does.
 func IsOwner(owner string) bool { return ownerLogin.MatchString(owner) }
 
-// IsDirName says whether name is a directory a bundle may hold: a lowercased owner login
-// (IsOwner), or that login and one of its repositories as `<owner>/<repo>`, both lowercased. A
-// GitHub login holds no slash and a repository name holds none either, so the one slash of a
-// name splits it exactly.
-//
-// HostsFile and ConfigFile are no repository directory, though both are repository names GitHub
-// allows: an owner's own two gh files sit beside its repositories' directories, so a bundle
-// holding `<owner>/hosts.yml` would have WriteBundle make a directory where that owner's
-// hosts.yml is and fail every directory of the bundle. A repository of either name is left out
-// of the bundle instead (appauth's bundleDirs).
-func IsDirName(name string) bool {
-	owner, repo, nested := strings.Cut(name, "/")
-	if !IsOwner(owner) {
-		return false
-	}
-	if !nested {
-		return true
-	}
-	return repo != "." && repo != ".." && repo != HostsFile && repo != ConfigFile && repositoryName.MatchString(repo)
-}
-
-// Dir is the directory a bundle entry's two gh files live in under a bundle root: <root>/<name>,
-// which for a `<owner>/<repo>` entry is a directory under the owner's own.
+// Dir is the directory an owner's two gh files live in under a bundle root: <root>/<owner>.
 func Dir(root, name string) string { return filepath.Join(root, name) }
 
-// RepositoryName is a repository's name as the bundle directory holding its token is named for
-// it: lowercased, and without the `.git` a git credential request's path and a clone URL carry,
-// which gh trims as it reads a remote (ghrepo.FromURL) and which no GitHub repository's own name
-// ends in. One trim is all a spelling of such a name needs, so a second call changes nothing; a
-// name ending `.git.git` would lose one suffix a call, and GitHub holds no repository of that
-// name.
+// RepositoryName is the one key a repository's every spelling has: lowercased, and without the
+// `.git` a git credential request's path and a clone URL carry, which gh trims as it reads a
+// remote (ghrepo.FromURL) and which no GitHub repository's own name ends in. One trim is all a
+// spelling of such a name needs, so a second call changes nothing; a name ending `.git.git`
+// would lose one suffix a call, and GitHub holds no repository of that name. The gh wrapper
+// keys the repositories a command names by it, so two spellings of one repository are one
+// repository (cmd/legion's gh_selectors).
 func RepositoryName(repo string) string {
 	return strings.TrimSuffix(strings.ToLower(repo), ".git")
 }
 
-// RepositoryDir is the directory of the bundle under root whose token reaches owner's repository
-// repo: the repository's own, `<owner>/<repo>`, whose token reaches that one repository, where
-// the bundle holds it; the owner's own, `<owner>`, where it holds that; and "" where it holds
-// neither, which the caller answers in its own way. It normalizes the repository's name
-// (RepositoryName), so a caller may hand it the name as it was given it, and a repo no bundle
-// directory could be named for (IsDirName) is one the bundle holds none for, so the owner's is
-// answered rather than nothing.
+// PairsFile is the bundle's own file in its root, beside the owners' directories: the configured
+// renames a request is routed by (Bundle.Pairs), one pair a line, `<from> <to>`, each side an
+// `<owner>/<name>` as GitHub spells it, in configured order and ending in a newline. A bundle
+// with no pair to route by holds the file empty, so a root this daemon wrote always has it and a
+// root without one was written before that ruling (sandbox's movedGhDirs).
 //
-// It is the one place that choice is made. `legion git-credential` answers git's request from it
-// and refuses a miss (cmd/legion's repositoryGHConfigDir, which `legion gh` picks a call's
-// directory with too). What a miss means is that caller's to decide, not this function's.
-func RepositoryDir(root, owner, repo string) string {
-	if name := owner + "/" + RepositoryName(repo); repo != "" && IsDirName(name) {
-		if dir := Dir(root, name); isDirectory(dir) {
-			return dir
+// It is a line a field rather than YAML because `legion git-credential` reads it on every object
+// git asks a credential for, and a text line needs no decoder; a name GitHub allows holds no
+// space and no newline (ghrepo.Parse), so the two fields of a line split exactly. Its name holds
+// a dot, which no GitHub login does, so it can never collide with an owner's directory.
+const PairsFile = "renames.txt"
+
+// RenderPairs is pairs as PairsFile holds them, and "" for a bundle with none.
+func RenderPairs(pairs []ghrepo.Rename) string {
+	var text strings.Builder
+	for _, pair := range pairs {
+		text.WriteString(pair.From.String())
+		text.WriteString(" ")
+		text.WriteString(pair.To.String())
+		text.WriteString("\n")
+	}
+	return text.String()
+}
+
+// ParsePairs reads what RenderPairs wrote: one pair a line, two `<owner>/<name>` names a line
+// (ghrepo.Parse), blank lines ignored. A line that is no such pair is an error naming the line
+// and its number, since a caller that routes by these pairs must fail rather than route by half
+// of them; the text holds no token, so the error may quote it.
+func ParsePairs(data []byte) ([]ghrepo.Rename, error) {
+	var pairs []ghrepo.Rename
+	for at, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		from, to, two := strings.Cut(line, " ")
+		if !two {
+			return nil, fmt.Errorf("line %d of the gh bundle's %s is no `<from> <to>` rename pair: %q", at+1, PairsFile, line)
+		}
+		moved, err := ghrepo.Parse("the repository a rename moved", from)
+		if err != nil {
+			return nil, fmt.Errorf("line %d of the gh bundle's %s: %w", at+1, PairsFile, err)
+		}
+		serving, err := ghrepo.Parse("the repository a rename moved it to", to)
+		if err != nil {
+			return nil, fmt.Errorf("line %d of the gh bundle's %s: %w", at+1, PairsFile, err)
+		}
+		pairs = append(pairs, ghrepo.Rename{From: moved, To: serving})
+	}
+	return pairs, nil
+}
+
+// ReadPairs is the pairs the bundle at root holds, read from PairsFile and from nowhere else
+// (ParsePairs): the one way `legion gh` and `legion git-credential` learn what a configured
+// rename moved, since the bundle the daemon writes is all either of them reads. A root with no
+// such file holds no pair — a pod launched before this file existed projects none, and its drift
+// check replaces it — while a file that cannot be read or parsed is an error, which the caller
+// answers nothing on.
+func ReadPairs(root string) ([]ghrepo.Rename, error) {
+	data, err := os.ReadFile(filepath.Join(root, PairsFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return ParsePairs(data)
+}
+
+// RouteDir is the directory that answers for the repository owner/name in a bundle routing by
+// pairs, lowercased: the `to` owner of the pair whose `from` is that repository, compared
+// without case as GitHub compares a repository's two halves, and owner's own directory for
+// every other repository. pair is the pair that routed it, and moved whether one did, so a
+// caller refusing a directory the bundle lacks can name the pair that sent it there.
+//
+// It is the one rule a repository is routed to a directory by, so no two places can route one
+// repository to two directories: `legion gh` and `legion git-credential` route every command
+// and every credential request by it over the bundle's own pairs file (cmd/legion's
+// ghConfigDirFor), and appauth's bundleDirs routes the issue's own repository by it to the
+// bundle's Default, the directory GH_CONFIG_DIR names. A Default picked by the recorded owner
+// alone is the `from` owner's directory for a repository a pair moved away from it, and where
+// the App is installed on that owner too, that directory holds the owner's own lease, which
+// cannot write the repository that moved.
+func RouteDir(pairs []ghrepo.Rename, owner, name string) (dir string, pair ghrepo.Rename, moved bool) {
+	repository := owner + "/" + name
+	for _, pair := range pairs {
+		if strings.EqualFold(pair.From.String(), repository) {
+			return strings.ToLower(pair.To.Owner()), pair, true
 		}
 	}
-	if dir := Dir(root, owner); isDirectory(dir) {
-		return dir
+	return strings.ToLower(owner), ghrepo.Rename{}, false
+}
+
+// RoutedByOwner is b as a reader that routes by owner alone must be handed it: a pod whose gh
+// projection holds no PairsFile, launched before a bundle carried one, whose wrappers answer
+// every repository of an owner from that owner's directory. Each pair's `from` owner's directory
+// holds the `to` owner's lease, the one that reaches the repository the pair moved — and is left
+// out where b holds no `to` directory, there being no lease of that repository to put there —
+// and Default is recorded's own owner, the directory such a pod's GH_CONFIG_DIR was fixed at. That
+// is the layout the pod was launched with, so it neither loses what it reaches nor gains what it
+// cannot read until its update round replaces it with a pod that projects the pairs (sandbox's
+// movedGhDirs). A zero recorded keeps b's Default: a controller's is the owner it asked for. b is
+// not changed.
+func (b Bundle) RoutedByOwner(recorded ghrepo.Repository) Bundle {
+	routed := Bundle{Default: b.Default, Dirs: maps.Clone(b.Dirs), Pairs: b.Pairs}
+	for _, pair := range b.Pairs {
+		from := strings.ToLower(pair.From.Owner())
+		if lease, held := b.Dirs[strings.ToLower(pair.To.Owner())]; held {
+			routed.Dirs[from] = lease
+		} else {
+			delete(routed.Dirs, from)
+		}
 	}
-	return ""
+	if !recorded.IsZero() {
+		routed.Default = strings.ToLower(recorded.Owner())
+	}
+	return routed
 }
 
-// isDirectory says whether path is a directory that is there, which is what makes a bundle entry
-// one a gh or a git request may be answered from.
-func isDirectory(path string) bool {
-	info, err := os.Stat(path)
-	return err == nil && info.IsDir()
-}
-
-// DirNames is the bundle's directory names, sorted. An owner sorts before its own repositories'
-// directories, since each of those begins with the owner's name.
+// DirNames is the bundle's directory names, sorted.
 func (b Bundle) DirNames() []string { return slices.Sorted(maps.Keys(b.Dirs)) }
 
 // Validate refuses a bundle with no Default, a Default absent from Dirs or that is not a
-// lowercased GitHub login — GH_CONFIG_DIR always names an owner's directory, never a
-// repository's — or a directory that is neither shape a bundle holds (IsDirName), each name being a
-// path under the bundle's root.
+// lowercased GitHub login, a directory that is not one either (IsOwner) — each name being a path
+// under the bundle's root, and a `<owner>/<repo>` name among what it refuses — or a pair naming
+// no repository on either side, which PairsFile could hold no line for.
+//
+// A pair whose `to` owner the bundle holds no directory for is no refusal here: the bundle is
+// written and served, and the wrapper that routes a request to that missing directory is what
+// refuses, naming the pair (cmd/legion's ghConfigDirFor). Refusing the bundle would leave the
+// role no gh at all over a repository it may never touch.
 func (b Bundle) Validate() error {
 	if b.Default == "" {
 		return errors.New("gh bundle names no default owner")
 	}
 	for _, name := range b.DirNames() {
-		if !IsDirName(name) {
-			return fmt.Errorf("gh bundle directory %q is no lowercased GitHub login or owner/repository", name)
+		if !IsOwner(name) {
+			return fmt.Errorf("gh bundle directory %q is no lowercased GitHub login", name)
 		}
 	}
 	if !IsOwner(b.Default) {
@@ -127,19 +221,25 @@ func (b Bundle) Validate() error {
 	if _, ok := b.Dirs[b.Default]; !ok {
 		return fmt.Errorf("gh bundle default owner %q has no gh files in the bundle", b.Default)
 	}
+	for _, pair := range b.Pairs {
+		if pair.From.IsZero() || pair.To.IsZero() {
+			return fmt.Errorf("gh bundle rename pair %q -> %q names no repository on one side", pair.From, pair.To)
+		}
+	}
 	return nil
 }
 
-// WriteBundle brings root to bundle: root made 0700, each directory as Write brings one, and both
-// levels cleaned of what the bundle no longer holds. An entry of the root that is no owner of the
-// bundle goes — an owner no longer served, the two files of a directory written before bundles,
-// which held one role's files at its top, and anything else — and under each owner's directory a
-// subdirectory that is no repository entry of the bundle goes too, so a repository the mapping no
-// longer serves is left holding no stale token; the owner's own hosts.yml and config.yml stay.
-// root is the bundle's alone, and it records nothing of the bundle but the gh files: the pane's own
-// user can write it, so a reader of the bundle's default or write owner reads the daemon's own
-// record instead. It returns the directories whose hosts.yml changed, sorted, and writes nothing
-// for a bundle Validate refuses.
+// WriteBundle brings root to bundle: root made 0700, each owner's directory as Write brings one,
+// the bundle's pairs written into the root as PairsFile, and both levels cleaned of what the
+// bundle does not hold. An entry of the root that is neither an owner of the bundle nor that file
+// goes — an owner no longer served, the two files of a directory written before bundles, which
+// held one role's files at its top, and anything else — and so does every subdirectory of an
+// owner's directory, the `<owner>/<repo>` directories a run of before INFRA-2543 cut a token per
+// repository into, so none of them is left holding a stale token; the owner's own hosts.yml and
+// config.yml stay. root is the bundle's alone, and it records nothing of the bundle but the gh
+// files and those pairs: the pane's own user can write it, so a reader of the bundle's default or
+// write owner reads the daemon's own record instead. It returns the directories whose hosts.yml
+// changed, sorted, and writes nothing for a bundle Validate refuses.
 func WriteBundle(root string, bundle Bundle) (changed []string, err error) {
 	if err := bundle.Validate(); err != nil {
 		return nil, err
@@ -150,8 +250,7 @@ func WriteBundle(root string, bundle Bundle) (changed []string, err error) {
 	if err := os.Chmod(root, 0o700); err != nil {
 		return nil, err
 	}
-	// Sorted, so an owner's own directory is written before any of its repositories' are made
-	// under it.
+	// Sorted, so the directories a log line names come in one order.
 	for _, name := range bundle.DirNames() {
 		dirChanged, err := Write(Dir(root, name), bundle.Dirs[name])
 		if err != nil {
@@ -161,39 +260,36 @@ func WriteBundle(root string, bundle Bundle) (changed []string, err error) {
 			changed = append(changed, name)
 		}
 	}
-	// held is each owner of the bundle by the repository directories it holds, which is the whole
-	// of what either level of the root may keep.
-	held := map[string]map[string]bool{}
-	for name := range bundle.Dirs {
-		owner, repo, nested := strings.Cut(name, "/")
-		repos, ok := held[owner]
-		if !ok {
-			repos = map[string]bool{}
-			held[owner] = repos
-		}
-		if nested {
-			repos[repo] = true
-		}
+	// The pairs file is the root's own, written whether or not the bundle has a pair to route
+	// by: the two wrappers read what a configured rename moved from here and from nowhere else,
+	// and an empty file says that nothing is routed, where a missing one says only that nothing
+	// wrote it.
+	if _, err := replaceFile(filepath.Join(root, PairsFile), RenderPairs(bundle.Pairs)); err != nil {
+		return nil, fmt.Errorf("write the gh bundle's %s: %w", PairsFile, err)
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
 	}
 	for _, entry := range entries {
-		repos, owned := held[entry.Name()]
-		if !owned || !entry.IsDir() {
+		if entry.Name() == PairsFile && !entry.IsDir() {
+			continue
+		}
+		if _, owned := bundle.Dirs[entry.Name()]; !owned || !entry.IsDir() {
 			if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
 				return nil, fmt.Errorf("remove %s from the gh bundle: %w", entry.Name(), err)
 			}
 			continue
 		}
+		// Nothing under an owner's directory but its own two files is the bundle's: a
+		// subdirectory there was cut by a run of before INFRA-2543 for one repository, and goes.
 		ownerDir := Dir(root, entry.Name())
 		under, err := os.ReadDir(ownerDir)
 		if err != nil {
 			return nil, err
 		}
 		for _, sub := range under {
-			if !sub.IsDir() || repos[sub.Name()] {
+			if !sub.IsDir() {
 				continue
 			}
 			if err := os.RemoveAll(filepath.Join(ownerDir, sub.Name())); err != nil {
