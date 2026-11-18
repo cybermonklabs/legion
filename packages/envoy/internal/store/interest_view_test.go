@@ -103,6 +103,18 @@ func TestCoveringTopicsDropsOnlyWhatAnotherTopicCovers(t *testing.T) {
 	if want := []string{"notifications.team.x.*", "notifications.team.x.y.z"}; !slices.Equal(got, want) {
 		t.Fatalf("CoveringTopics answered %v, want %v: `*` covers one token, not two", got, want)
 	}
+	// An issue topic in its new form and its old form name the same subjects (contracts.TopicForms),
+	// so each covers the other, and one of them stays.
+	canonical, legacy := "notifications.dispatch.issue.INFRA.INFRA-1", "notifications.dispatch.issue.INFRA-1"
+	if got := CoveringTopics([]string{canonical, legacy}); !slices.Equal(got, []string{legacy}) {
+		t.Fatalf("CoveringTopics of a topic in both its forms answered %v, want the first, %s", got, legacy)
+	}
+	// A wildcard over the new form alone does not cover a topic whose old form it misses: the index
+	// matches both forms, so the topic stays.
+	wildcard := "notifications.dispatch.issue.INFRA.>"
+	if got := CoveringTopics([]string{wildcard, canonical}); !slices.Equal(got, []string{wildcard, canonical}) {
+		t.Fatalf("CoveringTopics answered %v, want both %s and %s: the wildcard misses the topic's old form", got, wildcard, canonical)
+	}
 }
 
 // A view takes the covering topics when they fit, falls back to the consumer filter's reduction
