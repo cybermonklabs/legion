@@ -66,15 +66,14 @@ import (
 // room's drain that landed it did.
 //
 // A replica's document that holds nothing parked has no drain to refuse, and is given no check
-// (holdParkedIn): a check costs every apply of the document two walks of all its clients in ygo,
-// whatever the check answers - one asking whether the apply changed anything before its check of
-// the update, and one asking whether the drain after it landed anything (theorem-labs/ygo
-// v1.55.1-theorem.8, crdt/apply_check.go:124 and :143-166) - and the replica applies every commit
-// the room makes. On the tangled browser row's document, 40,001 clients, the replica's two walks
-// took about 15 ms of a keystroke's 170 ms of CPU in a profile of its typing, and
-// BenchmarkATangledRoomTakesAKeystroke measures the keystroke with and without them. Nothing the
-// replica takes parks in it afterwards: every commit's update carries only what the room
-// integrated, all of it built on what the replica holds already, and a replica started from an
+// (holdParkedIn): the replica applies every commit the room makes, and a check costs each of
+// those applies its rollback record and the check's own call. Until theorem-labs/ygo
+// v1.55.1-theorem.9 it also cost two walks of every client of the document, whatever the check
+// answered - on the tangled browser row's document, 40,001 clients, about 15 ms of a keystroke's
+// 170 ms of CPU in a profile of its typing - and BenchmarkATangledRoomTakesAKeystroke measures the
+// keystroke's cost with the room's check and the replica's. Nothing the replica takes parks in it
+// afterwards: every commit's update carries only what the room integrated, all of it built on
+// what the replica holds already, and a replica started from an
 // encode of the room (start, startFromRead, atPoint) holds nothing the room parks, which its
 // encodes leave out.
 //

@@ -262,4 +262,10 @@ require (
 // ResyncPeer, which close or resync a browser from any goroutine after the answers it is owed
 // (closeDiscardedSenders, resyncLanded); and HeldStructsDifferV1, which compares an update's
 // structs with what the document holds at the same clocks (refusedDuplicate).
-replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.8
+// v1.55.1-theorem.9 makes an apply check cost each apply what it touched: whether the apply
+// changed the document is read from its delete set and the clocks of the clients it added structs
+// for, and a drain is checked only where the pending queue holds anything, so a keystroke into a
+// document of 40,000 clients no longer walks every client for the room's render check
+// (BenchmarkATangledRoomTakesAKeystroke; the fork's BenchmarkApplyUpdateV1_ApplyCheckManyClients,
+// 87.65 ms to 63.86 ms).
+replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.9
