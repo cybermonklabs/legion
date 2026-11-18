@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  `agent-secrets`: when a gcloud call reaches its deadline, the command now kills gcloud's whole
+  process group, not the gcloud process alone. A `gcloud` on `PATH` that is a shell script
+  running gcloud's Python as its child no longer leaves that child running after each call that
+  did not answer in time. A hang-up, Ctrl-C, Ctrl-\ or termination that ends `agent-secrets`
+  while a gcloud call runs kills that gcloud's group too, and the command still ends by that
+  signal.
