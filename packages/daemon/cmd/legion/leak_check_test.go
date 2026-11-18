@@ -384,7 +384,7 @@ func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *test
 			code: 2,
 			says: []string{
 				"LEAK CHECK SETUP ERROR: the push to origin: the visibility of other-owner/invented-repo could not be read: " +
-					`gh api repos/other-owner/invented-repo exited 2: legion gh: "other-owner" is not an owner of this project: ` + root + " holds no gh directory for it, " +
+					`gh api repos/other-owner/invented-repo exited 2: legion gh: the role's GitHub App is not installed on "other-owner": ` + root + " holds no gh directory for it, " +
 					"and git ls-remote with no credential could not answer: git ls-remote of other-owner/invented-repo exited 128",
 				"could not read Username",
 			},

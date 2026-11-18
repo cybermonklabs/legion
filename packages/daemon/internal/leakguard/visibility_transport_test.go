@@ -306,9 +306,12 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 		},
 		{name: "a malformed answer", rest: included("HTTP/2.0 200 OK", "banana") + "exit 0\n", fails: "answered no visibility GitHub reports"},
 		{
+			// `legion gh`'s refusal of an owner the bundle holds no directory for stays a refusal
+			// that runs no curl and no git here: the rig's environment (fixtureenv.Isolated) names
+			// no LEGION_GH_OWNERS_DIR, so Guard.unservedOwner does not read it as an unserved owner.
 			name:  "a refusal by legion gh",
-			rest:  printsToStderr(`legion gh: "invented-org" is not an owner of this project: /invented holds no gh directory for it`) + "exit 2\n",
-			fails: "is not an owner of this project",
+			rest:  printsToStderr(notAnOwner("invented-org", "/invented")) + "exit 2\n",
+			fails: (&OwnerNotServedError{Owner: "invented-org", OwnersDir: "/invented"}).Error(),
 		},
 		{
 			name:  "a failed DNS lookup",

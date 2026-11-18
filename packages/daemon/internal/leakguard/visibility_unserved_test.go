@@ -12,10 +12,12 @@ import (
 )
 
 // notAnOwner is the line `legion gh` refuses a call with when the gh bundle under ownersDir holds
-// no directory for owner, before any gh runs, exit 2: the line a push to another owner's public
-// fork was refused with on 2026-11-17, through the guard's REST read, owner and bundle aside.
+// no directory for owner, before any gh runs, exit 2: `legion gh: ` and the words of
+// OwnerNotServedError, the type `legion gh` prints that refusal from, so the two cannot part. It
+// is the refusal a push to another owner's public fork met on 2026-11-17, through the guard's
+// REST read.
 func notAnOwner(owner, ownersDir string) string {
-	return `legion gh: "` + owner + `" is not an owner of this project: ` + ownersDir + " holds no gh directory for it"
+	return "legion gh: " + (&OwnerNotServedError{Owner: owner, OwnersDir: ownersDir}).Error()
 }
 
 // ghAnswers is a stand-in gh whose every call appends a line to the file reads names, prints
@@ -34,9 +36,10 @@ func ghAnswers(reads string, exit int, lines ...string) string {
 // on to the scan, which refuses this one's ref name. Where GitHub asks ls-remote for a credential,
 // as it does for a private repository and for a name no repository has, and where ls-remote
 // fails another way, the push is refused as a setup failure naming both reads. gh is asked once,
-// and never through GraphQL.
+// and never through GraphQL, and curl never runs: the guard makes no REST read with no credential,
+// whose budget every reader of GitHub from the address shares (readUnservedOwner).
 func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *testing.T) {
-	scanned := func(t *testing.T, err error, sources []VisibilitySource) {
+	scanned := func(t *testing.T, _ string, err error, sources []VisibilitySource) {
 		t.Helper()
 		if refused := refusal(t, err); refused.By != byRules {
 			t.Errorf("the push was refused by %q, want the rules: a public destination is scanned", refused.By)
@@ -45,13 +48,13 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 			t.Errorf("the guard reported the sources %q, want %q", sources, want)
 		}
 	}
-	refusedSaying := func(wants ...string) func(*testing.T, error, []VisibilitySource) {
-		return func(t *testing.T, err error, sources []VisibilitySource) {
+	refusedSaying := func(wants ...string) func(*testing.T, string, error, []VisibilitySource) {
+		return func(t *testing.T, owners string, err error, sources []VisibilitySource) {
 			t.Helper()
 			says(t, setupFailure(t, err), append([]string{
 				"the visibility of " + theRepo + " could not be read",
-				"gh api repos/" + theRepo + ` exited 2: legion gh: "invented-org" is not an owner of this project`,
-				"git ls-remote with no credential could not answer: git ls-remote of " + theRepo + " exited 128",
+				"gh api repos/" + theRepo + " exited 2: " + notAnOwner("invented-org", owners) +
+					", and git ls-remote with no credential could not answer: git ls-remote of " + theRepo + " exited 128",
 			}, wants...)...)
 			if len(sources) != 0 {
 				t.Errorf("the guard reported the sources %q for a read that failed, want none", sources)
@@ -62,8 +65,9 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 		name string
 		// git is what the stand-in git does after it records its call.
 		git string
-		// check reads the push's answer and the sources the guard reported.
-		check func(t *testing.T, err error, sources []VisibilitySource)
+		// check reads the push's answer and the sources the guard reported, given the bundle
+		// LEGION_GH_OWNERS_DIR names.
+		check func(t *testing.T, owners string, err error, sources []VisibilitySource)
 	}{
 		{name: "ls-remote lists the refs", git: answersTheRefs, check: scanned},
 		{name: "GitHub asks ls-remote for a credential", git: asksForACredential, check: refusedSaying("could not read Username")},
@@ -72,7 +76,9 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			bin, records, owners := t.TempDir(), t.TempDir(), t.TempDir()
 			reads, graphql, record := filepath.Join(records, "reads"), filepath.Join(records, "graphql"), filepath.Join(records, "git")
+			curl := filepath.Join(records, "curl")
 			writeProgram(t, bin, "gh", ghStandIn(ghAnswers(reads, 2, notAnOwner("invented-org", owners)), graphQLAnswers(graphql, "PRIVATE")))
+			writeProgram(t, bin, "curl", curlStandIn(curl, filepath.Join(records, "curl-stdin"), curlAnswers("private")))
 			writeProgram(t, bin, "git", recordsItsCall(record)+tc.git)
 			var sources []VisibilitySource
 			guard := New(Options{
@@ -88,12 +94,15 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 				URL:     theURL,
 				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: noSHA, RemoteRef: "refs/heads/legion/" + theHost, RemoteSHA: noSHA}},
 			})
-			tc.check(t, err, sources)
+			tc.check(t, owners, err, sources)
 			if got := countLines(t, reads); got != 1 {
 				t.Errorf("gh's REST read ran %d times, want once", got)
 			}
 			if got := len(readCalls(t, graphql)); got != 0 {
 				t.Errorf("gh's GraphQL read ran %d times, want none: the pod holds no token for the owner", got)
+			}
+			if got := countLines(t, curl); got != 0 {
+				t.Errorf("curl ran %d times, want never: the read with no credential is ls-remote's, which makes no API request", got)
 			}
 			calls := readCalls(t, record)
 			if len(calls) != 1 {
@@ -116,11 +125,15 @@ func TestTheVisibilityOfAnOwnerLegionGhDoesNotServeIsReadWithNoCredential(t *tes
 // at the URL as it was spelled. Every other answer is the setup failure it was, and git never
 // runs, although the stand-in git would answer public: another refusal of `legion gh`; the line
 // for another owner, for another bundle, under another exit status, beside another line or with
-// no `legion gh: ` in front; GitHub's own 404 through gh; and the line where the guard's
-// environment names no bundle at all.
+// no `legion gh: ` in front; the refusal of a configured rename whose new owner the bundle holds
+// no directory for, which holds these words inside a longer line; GitHub's own 404 through gh;
+// and the line where the guard's environment names no bundle at all.
 func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 	const owners = "/var/run/invented/gh"
 	theRefusal := notAnOwner("invented-org", owners)
+	renameRefusal := "legion gh: the configured rename invented-org/invented-repo -> moved-org/invented-repo serves invented-org/invented-repo " +
+		"from moved-org's gh directory, and " + (&OwnerNotServedError{Owner: "moved-org", OwnersDir: owners}).Error() +
+		"; GitHub holds the repository under the name it moved to, so no other token of this bundle reaches it"
 	notFound := []string{"HTTP/2.0 404 Not Found", "", `{"message":"Not Found","status":"404"}`, "gh: Not Found (HTTP 404)"}
 	for _, tc := range []struct {
 		name string
@@ -143,12 +156,19 @@ func TestOnlyLegionGhsRefusalOfTheOwnerIsReadWithNoCredential(t *testing.T) {
 			lines: []string{"legion gh: GH_CONFIG_DIR is unset: a Legion pane or pod sets it, and nothing else runs this gh"},
 			fails: "exited 2: legion gh: GH_CONFIG_DIR is unset",
 		},
-		{name: "the refusal of another owner", exit: 2, lines: []string{notAnOwner("other-owner", owners)}, fails: `exited 2: legion gh: "other-owner" is not an owner`},
+		{name: "the refusal of another owner", exit: 2, lines: []string{notAnOwner("other-owner", owners)}, fails: "exited 2: " + notAnOwner("other-owner", owners)},
 		{name: "the refusal for another bundle", exit: 2, lines: []string{notAnOwner("invented-org", "/var/run/other/gh")}, fails: "exited 2: " + notAnOwner("invented-org", "/var/run/other/gh")},
 		{name: "the refusal under exit 1", exit: 1, lines: []string{theRefusal}, fails: "exited 1: " + theRefusal},
 		{name: "the refusal and another line after it", exit: 2, lines: []string{theRefusal, "usage: legion gh"}, fails: "exited 2: " + theRefusal},
 		{name: "another line and the refusal after it", exit: 2, lines: []string{"warning: invented", theRefusal}, fails: "exited 2: warning: invented"},
-		{name: "the refusal with no legion gh in front", exit: 2, lines: []string{strings.TrimPrefix(theRefusal, "legion gh: ")}, fails: `exited 2: "invented-org" is not an owner`},
+		{
+			name: "the refusal with no legion gh in front", exit: 2, lines: []string{strings.TrimPrefix(theRefusal, "legion gh: ")},
+			fails: "exited 2: " + (&OwnerNotServedError{Owner: "invented-org", OwnersDir: owners}).Error(),
+		},
+		{
+			name: "the refusal of a configured rename whose new owner has no directory", exit: 2,
+			lines: []string{renameRefusal}, fails: "exited 2: " + renameRefusal,
+		},
 		{name: "GitHub's own 404", exit: 1, lines: notFound, fails: "exited 1: HTTP/2.0 404 Not Found"},
 		{name: "the refusal where no bundle is named", exit: 2, lines: []string{theRefusal}, env: []string{"LEGION_GH_OWNERS_DIR="}, fails: "exited 2: " + theRefusal},
 	} {
