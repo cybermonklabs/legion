@@ -270,17 +270,22 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   The browser suite is no `bun run test` at all — `bun run e2e` and `bun run e2e:clock` in packages/dispatch build @legion/contracts and the SPA and run Playwright, and refuse before they start a harness or a Postgres when `bun run e2e:install` has not downloaded the browsers (docs/testing.md, "Bun tests")
   `bun run e2e` runs the default selection and `bun run e2e:clock` the three wall-clock projects, which are out of that selection because their rows are read from the clock and need the machine to themselves, so the two commands together are the whole suite.
 
-- `legion start [--config <legion.yaml>] [--check-config]`
+- `legion start [--config <legion.yaml>]`
 
   Run the daemon in the foreground for the project that file names (./legion.yaml by default);
   with `LEGION_LISTEN_FD=<n>` it serves its API on that inherited listening socket instead of binding, and refuses to start unless the file's `bind` and `port` name the socket's address (docs/deployment.md "Serving on a socket the harness holds");
-  --check-config never reads it, and also prints the configuration's open capability gaps after its OK line (exit 0), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache each mapped repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline")
+  `--check-config` is refused with exit 2 and a line naming `legion config check`, the command that checks a file without starting the daemon
+
+- `legion config check [--config <legion.yaml>]`
+
+  Check that file (./legion.yaml by default) as boot reads it, starting nothing and running none of its key commands, and print its `Config OK` line (exit 0) or the first refusal (exit 1);
+  it never reads `LEGION_LISTEN_FD`, and also prints the configuration's open capability gaps after its OK line (exit 0), the intake handler limit under either runtime when `worker_rpc_timeout_seconds` derives one above the ten-minute floor (the daemon's boot log names it at every boot, derived or not), and under `runtime: kubernetes` the repository cache each mapped repository gets (docs/kubernetes.md "The repository cache") and the plugin pair a stale-plugin relaunch would install or the gap that leaves it relaunching none (docs/kubernetes.md "Contract discipline")
 
 - `legion status <team>`
 
   Check daemon status
 
-- `legion status <issue> <status>`
+- `legion issue status <issue> <status>`
 
   The operator's: set an issue's Dispatch lifecycle status (`todo|backlog|icebox`) from an operator shell;
   `--operator-token-file <file>` is required (the controller sets a status through its `legion` tool's `set_status`, never from bash)
@@ -300,7 +305,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   a forget or a start the machine refuses after the claim was stopped is answered 200, with that refusal and the state it left the claim in printed under the claim's line, because the request changed the claim: a suspended claim is started by running the same command again, and a claim left in another state, such as `launching` with its launch tried again at the probe interval, starts by itself;
   `--failed` lists the claims and retries every failed one in turn, printing each it retried and exiting 1 naming each the daemon refused, and passes over a stopped claim, which is retired and not failed (docs/deployment.md "Moving a project onto tmux");
   a failed claim carries the one cause word the daemon failed it under, which `legion claims list` prints after the claim's state word, `-` where the daemon holds none, and which `--json` gives with the sentence beside it, the moment and the four counts;
-  a held issue has a release that costs nothing besides this retry: `legion status <KEY> todo` on a tree's own root releases the hold, returning the issue to the phase it was held from and starting that phase's worker at the same generation, in the same pod and at the same place in the admission line
+  a held issue has a release that costs nothing besides this retry: `legion issue status <KEY> todo` on a tree's own root releases the hold, returning the issue to the phase it was held from and starting that phase's worker at the same generation, in the same pod and at the same place in the admission line
 
 - `legion claims compact --operator-token-file <file> --claim <token>`
 
@@ -463,7 +468,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   - version
 
-  - config-reference
+  - config
 
   - start
 
@@ -474,6 +479,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   - legions
 
   - status
+
+  - issue
 
   - restart
 
@@ -526,9 +533,9 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
     that call names the contract, and the daemon refuses another with 409, naming both, before it mints a capability, so a `legion` and a daemon of different releases never revoke the running controller;
     and its controller registers on `/legion/v1/claims/register`, which refuses another contract naming both
 
-  - `legion start --check-config` validates a file without running its key commands
+  - `legion config check` validates a file without running its key commands
 
-  - `legion status <issue> <status> --operator-token-file <file> [--config|--port]` sets a status from an operator shell over the operator bearer, whose file `legion status` and `legion claims` refuse when its group or others can read it, as `controller start` does
+  - `legion issue status <issue> <status> --operator-token-file <file> [--config|--port]` sets a status from an operator shell over the operator bearer, whose file `legion issue status` and `legion claims` refuse when its group or others can read it, as `controller start` does
 
 - `bash scripts/e2e/stage1-skeleton.sh`
 
@@ -616,12 +623,12 @@ one the daemon holds a default branch for, from its last read or a record of an 
 one it holds none for is waited out for as long as GitHub asks (the `Retry-After` it names, else until the reset when no call is left, at most an hour, else a minute), with one log line that names the repository, the limit's headers and the time it waits until, and is then read once more, and left out for now and read again as above if GitHub still does not answer.
 A repository that moved is named in `repository_renames`, a top-level key of `legion.yaml` (`- from: <old owner>/<name>` with `to: <new owner>/<name>`), and the daemon then treats the pair's two names as one repository wherever it compares a name, so the trees it recorded under the old name take the events GitHub sends under the new one, a pull request open at the transfer included.
 The equivalence is read-side only and rewrites no record, so keep the pair configured for as long as any record names the old repository;
-it serves no repository of its own, which is why a pair may be configured before the transfer, and `legion start --check-config` prints one line per pair.
+it serves no repository of its own, which is why a pair may be configured before the transfer, and `legion config check` prints one line per pair.
 
 `projects.<KEY>.production_check` decides whether a merge that closes one of the project's issues opens a production check and who works it:
 it takes `off` or `tester`, is `tester` by default, and the loader refuses every other value, naming the key and the value it read.
 `projects.<KEY>.deploys` is still accepted and read for nothing, since another repository's deployment still sets it:
-the loader warns once per project that sets it, `legion start` logs each warning as it boots, and `legion start --check-config` prints each after its `Config OK` line and exits 0.
+the loader warns once per project that sets it, `legion start` logs each warning as it boots, and `legion config check` prints each after its `Config OK` line and exits 0.
 
 ## Version Control
 
@@ -1036,7 +1043,7 @@ The record is that result and the pull request: a closed issue takes a result fo
 
 Statuses above are native Dispatch issue statuses, not GitHub labels
 — the daemon writes `in_progress`/`testing`/`needs_review`/`retro` through its outbox (a `dispatch_status` row it delivers to Dispatch) for the issues it runs, and a human may set any lifecycle status from the Dispatch dashboard.
-The controller moves an issue to `todo`/`backlog`/`icebox` through its `legion` tool's `set_status`, and an operator through `legion status <issue> <status> --operator-token-file <file>`.
+The controller moves an issue to `todo`/`backlog`/`icebox` through its `legion` tool's `set_status`, and an operator through `legion issue status <issue> <status> --operator-token-file <file>`.
 A human can also close an issue into `done` and reopen it into `backlog` from the Dispatch dashboard.
 
 **Handover:** the daemon (`packages/daemon`) works only the issues handed to it with the Dispatch label `legion` (in any case), so it can share a Dispatch project with humans and other agents;
@@ -1220,7 +1227,7 @@ A decision no person made (a deployment that gates no step) is not relayed.
 A session's reply on such an ask is not relayed either: the daemon logs `workflow: a session's reply on a parked tree is not relayed`, the reply stays on the Dispatch ask for the person who asked, and the controller's walk skips it.
 The controller sets the root `todo` when the park is its own hold and a decision gives its work a next step.
 Its own hold is a park by `session legion-daemon:<PROJECT>` with the controller's comment `Parked by Legion while it waits on: …` beside it, which the controller posts when it parks a tree on a person's `Park it` answer to its ask about a hold, a failed architect or an event outside Legion.
-Every other park — a person's, another session's, and an operator's `legion status`, which the daemon writes under the same session with no mark — stays parked until a person sets the root to `todo`, the daemon queues a person's approval of its spec (above), or a person asks the controller to start it.
+Every other park — a person's, another session's, and an operator's `legion issue status`, which the daemon writes under the same session with no mark — stays parked until a person sets the root to `todo`, the daemon queues a person's approval of its spec (above), or a person asks the controller to start it.
 The controller says so in a comment, and the start task names the decision then.
 The controller answers a question on the question's own ask, from the record when the record holds the answer, and otherwise says that `todo` on the root brings its architect back to answer.
 Its parked-root walk, at its start and on each `tick`, finds a decision sent while no controller ran.

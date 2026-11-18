@@ -49,9 +49,10 @@ type ghCommand struct {
 
 var (
 	// ghFlagLine is one option line of gh's help: an optional shorthand, the long name, the
-	// placeholder naming its value when it takes one, with pflag's optional-value marker, and the
-	// option's description.
-	ghFlagLine = regexp.MustCompile(`^\s+(?:-([A-Za-z0-9]), )?--([A-Za-z0-9][A-Za-z0-9-]*)(?: (\S+))?(?:\s{2,}(.*)|\s*)$`)
+	// boolean marker `[=true|false]` gh 2.104.0 and later print right after a boolean option's
+	// name, the placeholder naming its value when it takes one, with pflag's optional-value
+	// marker, and the option's description.
+	ghFlagLine = regexp.MustCompile(`^\s+(?:-([A-Za-z0-9]), )?--([A-Za-z0-9][A-Za-z0-9-]*)(\[=true\|false\])?(?: (\S+))?(?:\s{2,}(.*)|\s*)$`)
 	// ghCommandWord is one word of a command path.
 	ghCommandWord = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 	// ghSlotName is a named argument of a USAGE line, `<name>`.
@@ -273,13 +274,20 @@ func (c *ghCommand) mayRead(word string) error {
 // addFlag records one option line of a FLAGS section, refusing one this cannot read: a line of no
 // form gh prints, a placeholder that is pflag's optional-value marker alone (`--web [=true]`,
 // which pflag never prints apart from a type), and an option or a shorthand the help already
-// listed, which would otherwise replace the first silently.
+// listed, which would otherwise replace the first silently. A boolean option takes no value of
+// its own after it, only after `=`, which the argument reader takes of every option that takes
+// none (`--help=false`), so `--web[=true|false]`, as gh 2.104.0 prints it, is the `--web` gh
+// 2.98.0 prints; a line marking an option boolean that also names a value is no form gh prints,
+// and is refused.
 func (c *ghCommand) addFlag(line string) error {
 	match := ghFlagLine.FindStringSubmatch(line)
 	if match == nil {
 		return fmt.Errorf("an option line %q", strings.TrimSpace(line))
 	}
-	if strings.HasPrefix(match[3], "[=") {
+	if match[3] != "" && match[4] != "" {
+		return fmt.Errorf("an option line %q, which marks its option boolean and names a value", strings.TrimSpace(line))
+	}
+	if strings.HasPrefix(match[4], "[=") {
 		return fmt.Errorf("an option line %q, whose optional-value marker names no type", strings.TrimSpace(line))
 	}
 	if _, repeated := c.flags[match[2]]; repeated {
@@ -290,7 +298,7 @@ func (c *ghCommand) addFlag(line string) error {
 			return fmt.Errorf("an option line %q, whose -%s the help already gives --%s", strings.TrimSpace(line), match[1], prior)
 		}
 	}
-	flag := ghFlag{placeholder: match[3], description: match[4]}
+	flag := ghFlag{placeholder: match[4], description: match[5]}
 	if flag.placeholder != "" {
 		flag.value = true
 		if before, _, found := strings.Cut(flag.placeholder, "[="); found && before != "" {

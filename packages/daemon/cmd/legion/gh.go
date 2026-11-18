@@ -53,6 +53,12 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // (sharedCheckVisibilityRead), the exact `gh api rate_limit` (ghRateLimitRead) and `gh auth
 // git-credential`.
 //
+// ghTargetOf reads each command from gh's own help, which gh prints the same way until its
+// binary, its configuration, its extensions or the variables it prints under change: runGh keeps
+// each help it reads under the role's state directory and reads it from gh again only after such
+// a change (ghHelpKeep). The visibility reads named above and the rate-limit read are exact argv
+// and read no help at all.
+//
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
 // refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
 // guard's own message, and gh never runs. A call that writes nothing, by the rule ghWritesNothing
@@ -123,24 +129,53 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	helpEnv := ghChildEnviron(os.Environ(), map[string]string{"GH_CONFIG_DIR": env["GH_CONFIG_DIR"], "GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1"})
 	rateLimitRead := ghRateLimitRead(args)
 	visibilityRead, isVisibilityRead := ghVisibilityRead(args, env)
-	// The guard's own visibility read under the caller's GH_TOKEN or GITHUB_TOKEN runs with that
-	// token (ghVisibilityRead says why). So it does not go through ghTargetOf, which refuses
-	// every call under either. Its argv is exact, so the resolver has nothing of it to read.
-	callerTokenRead := isVisibilityRead && ghCallerToken(env) != ""
+	// What the call targets, and the gh directory it runs with, chosen here once for every call.
+	// The two exact reads go through no ghTargetOf, and so read no gh help: the resolver has
+	// nothing of their argv to read.
 	var target ghTarget
-	if rateLimitRead || callerTokenRead {
+	switch {
+	case rateLimitRead:
+		// It names no repository, and runs with GH_CONFIG_DIR.
 		target.command = "api"
-	} else {
+	case isVisibilityRead:
+		// The guard's own request. Its enclosing user call records the source of that request, so
+		// logging it again would count one wrapped call twice.
+		logCall = false
+		target.command = "api"
+		// Its token is that of the repository PUBLIC_LEAK_CHECK_VISIBILITY_READ names, which
+		// ghVisibilityRead matched to the read's exact argv, routed by the one rule
+		// (ghConfigDirFor): a configured rename serves the repository from the `to` owner's
+		// directory, and the `from` owner's token cannot read it. The GraphQL read names its
+		// repository only in variables, so the variable is where its owner and name are read.
+		// Its argv names the host, `--hostname github.com`, so no GH_HOST sends it elsewhere.
+		//
+		// Under the caller's GH_TOKEN or GITHUB_TOKEN it keeps GH_CONFIG_DIR and is routed by
+		// nothing, because gh sends that token in place of any directory's: the bundle may hold
+		// no directory for the read's repository at all, and this routing would then refuse a
+		// read the caller's token can make, which is the second reason #4219 gives for running
+		// these reads under it (ghVisibilityRead).
+		if ghCallerToken(env) == "" {
+			target.owner, target.repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
+			target.dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo)
+		}
+	default:
 		// Every repository the command names is routed through the bundle's own pick, and the
 		// command refused where they route to two directories (selectors.dir), before the guard
-		// reads anything of it.
+		// reads anything of it. gh's help of each command on the way is read once per gh binary
+		// and kept for the calls after (ghHelpKeep).
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
-		target, err = ghTargetOf(args, env, func(path []string) (string, error) { return readGhHelp(gh, helpEnv, path) }, readGitRemotes,
+		target, err = ghTargetOf(args, env, newGhHelpKeep(gh, env, helpEnv).read, readGitRemotes,
 			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
-		if err != nil {
-			fmt.Fprintf(stderr, "legion gh: %v\n", err)
-			return 2
-		}
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		return 2
+	}
+	// The directory gh will run with must not send its requests anywhere but github.com: a pane
+	// can write its own gh files between two of the daemon's refreshes (ghConfigShape).
+	if err := ghConfigShape(ghCallDir(env, target)); err != nil {
+		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		return 2
 	}
 	commandPath = target.command
 	if target.owner != "" && target.repo != "" {
@@ -187,26 +222,8 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	case ghRateLimitCall:
 		// This read has no repository or body for the guard to inspect.
 	case ghVisibilityCall:
-		// This process is the guard's own request. Its enclosing user call records the source of
-		// that request, so logging it again would count one wrapped call twice.
-		logCall = false
-		// Its token is the repository's, which ghVisibilityRead matched to the read's exact argv.
-		// The GraphQL read names that repository only in variables, read above as an owner alone,
-		// so the directory this process resolved from the argv is that owner's. Route it by the
-		// repository instead: a configured rename serves the repository from the `to` owner's
-		// directory, and the `from` owner's token cannot read it (ghConfigDirFor, INFRA-2543).
-		//
-		// Under the caller's token it keeps GH_CONFIG_DIR and is routed by nothing, because gh
-		// sends that token in place of any directory's: the bundle may hold no directory for the
-		// read's repository at all, and this routing would then refuse a read the caller's token
-		// can make, which is the second reason #4219 gives for running these reads under it.
-		if !callerTokenRead {
-			target.owner, target.repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
-			if target.dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo); err != nil {
-				fmt.Fprintf(stderr, "legion gh: %v\n", err)
-				return 2
-			}
-		}
+		// This read is the guard's own, which the switch above routed: checking it would call
+		// the guard again.
 	case ghReadCall, ghGuardedCall:
 		guard := leakguard.New(leakguard.Options{
 			OnVisibility: func(source leakguard.VisibilitySource) {
@@ -231,10 +248,10 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		}
 	}
 	dir := env["GH_CONFIG_DIR"]
-	// Every mode runs with the directory the command's repositories route to: ghTargetOf chose
-	// it by the one rule (ghConfigDirFor) and refused a command whose repositories route to two,
-	// and the visibility arm above re-chose it for the repository its own variable names. No mode
-	// picks a directory any other way.
+	// Every mode runs with the directory chosen once above: by ghTargetOf, through the one rule
+	// (ghConfigDirFor), refusing a command whose repositories route to two, and for the guard's
+	// visibility read by that rule for the repository its variable names. No mode picks a
+	// directory any other way.
 	if target.dir != "" {
 		dir = target.dir
 	}
@@ -305,14 +322,7 @@ func appendGhCallLog(env map[string]string, repo, commandPath, visibility string
 		return
 	}
 	dir := filepath.Join(state, "legion-gh")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return
-	}
-	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+	if !ghStateDir(dir, os.Getuid()) {
 		return
 	}
 	lock, err := os.OpenFile(filepath.Join(dir, "calls.log.lock"), os.O_CREATE|os.O_RDWR, 0o600)
@@ -376,23 +386,7 @@ func trimGhCallLog(path string) {
 	if cut := bytes.IndexByte(kept, '\n'); cut >= 0 {
 		kept = kept[cut+1:]
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".calls-")
-	if err != nil {
-		return
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return
-	}
-	if _, err := tmp.Write(kept); err != nil {
-		tmp.Close()
-		return
-	}
-	if err := tmp.Close(); err != nil {
-		return
-	}
-	_ = os.Rename(tmp.Name(), path)
+	ghReplaceFile(path, ".calls-", kept)
 }
 
 // ghVisibilityRead is the repository argv reads, and whether argv is one of the guard's own two
@@ -406,6 +400,10 @@ func trimGhCallLog(path string) {
 // that name must parse as a repository GitHub could serve, so a variable someone else set lets
 // through one read of one repository and nothing else. The shared check's own read, the same
 // argv without `--include`, is not one of them (sharedCheckVisibilityRead).
+//
+// runGh reads no gh help for these reads: their argv is exact, and their directory is the one the
+// repository the variable names routes to (ghConfigDirFor), or GH_CONFIG_DIR under a caller's
+// token.
 //
 // A caller's GH_TOKEN or GITHUB_TOKEN, which refuses every other call that reads the command
 // (ghTargetOf), does not refuse these reads. runGh runs them with that token, which gh sends in
@@ -738,49 +736,6 @@ var ghChildNames = map[string]bool{
 	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true,
 	"LEGION_GH_PATH": true, "LEGION_GH_OWNERS_DIR": true, leakguard.CheckVar: true, wrappedGitAt: true,
 	"LEGION_ROLE": true, "LEGION_ISSUE": true,
-}
-
-// ghConfigShape refuses the gh directory dir when its config.yml is no regular file, holds a
-// `hosts` block, or names an alias that shadows a command `legion gh` refuses, naming the file and
-// the key and never a value. The daemon writes config.yml as the version line alone
-// (ghconfig.Config), so none of these is the daemon's; a pane can write its own between two of the
-// daemon's refreshes. A `hosts` block holds settings gh reads per host — an editor, a pager, a
-// browser, an http_unix_socket gh sends its requests through — and no Legion role sets one. An
-// alias whose name is a refused command's first word would be expanded by gh into another command
-// than the one whose help this reads. A config.yml that is no regular file is refused before it is
-// opened, so a named pipe there stalls nothing; one that is not there holds nothing, and one that
-// does not parse is refused, since gh's reading of it is then not this one's.
-func ghConfigShape(dir string) error {
-	path := filepath.Join(dir, ghconfig.ConfigFile)
-	info, err := os.Lstat(path)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		return nil
-	case err != nil:
-		return fmt.Errorf("cannot read %s: %w; it sends nothing", path, err)
-	case !info.Mode().IsRegular():
-		return fmt.Errorf("%s is no regular file, so it is not opened, and gh is not run with it; it sends nothing; the daemon rewrites it within a minute", path)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("cannot read %s: %w; it sends nothing", path, err)
-	}
-	var config struct {
-		Hosts   yaml.Node         `yaml:"hosts"`
-		Aliases map[string]string `yaml:"aliases"`
-	}
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return fmt.Errorf("%s does not parse as YAML, so it cannot be read for what it changes of gh; it sends nothing", path)
-	}
-	if config.Hosts.Kind != 0 {
-		return fmt.Errorf("%s holds a hosts block, settings gh reads per host that the daemon never writes, so it sends nothing; the daemon rewrites this file within a minute", path)
-	}
-	for name := range config.Aliases {
-		if ghRefusedCommandWord(name) {
-			return fmt.Errorf("%s names an alias that shadows a command `legion gh` refuses, so it sends nothing; the daemon rewrites this file within a minute", path)
-		}
-	}
-	return nil
 }
 
 // ghRefusedCommandWord is whether word is the first word of a command of ghRefusedCommands.
@@ -1155,15 +1110,22 @@ func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) erro
 	return nil
 }
 
-// ghRefusedOptions are the options, by long name, `legion gh` refuses on any leaf, each with why.
-// --editor (-e on `gh issue comment`, `gh issue create`, `gh pr comment` and `gh pr create`, at gh
-// 2.98.0 and 2.104.0 alike) runs an editor program after the leak guard has read the call and
-// posts whatever it wrote: gh picks the program from GH_EDITOR, gh's config `editor`, VISUAL or
-// EDITOR, or else its own default (cmdutil.DetermineEditor), and asks GitHub for the issue before
-// it runs it (pkg/cmd/pr/shared/commentable.go, CommentableRun), so no environment gh is given
-// keeps the text from GitHub.
+// ghRefusedOptions are the options, by long name, `legion gh` refuses on any leaf, each with why:
+//
+//   - --editor (-e on `gh issue comment`, `gh issue create`, `gh pr comment` and `gh pr create`, at
+//     gh 2.98.0 and 2.104.0 alike) runs an editor program after the leak guard has read the call
+//     and posts whatever it wrote: gh picks the program from GH_EDITOR, gh's config `editor`, VISUAL
+//     or EDITOR, or else its own default (cmdutil.DetermineEditor), and asks GitHub for the issue
+//     before it runs it (pkg/cmd/pr/shared/commentable.go, CommentableRun), so no environment gh is
+//     given keeps the text from GitHub.
+//   - --attach, gh 2.104.0's, on eight leaves (`gh issue` and `gh pr` comment, create and edit,
+//     and `gh issue artifact create` and `edit`), uploads the file it names as an asset GitHub
+//     then serves: an image up to 10 MiB, an SVG's text among them, or a video up to 100 MiB
+//     (cli/cli v2.104.0 internal/attachments). It has no short spelling. The leak guard reads no
+//     such file.
 var ghRefusedOptions = map[string]string{
 	"editor": "runs an editor program after the leak guard has read the call and posts the text that program wrote, which the guard never read; write the text in --body or --body-file, which it reads",
+	"attach": "uploads the file it names to GitHub, which the leak guard does not read; write the text in --body or --body-file, which the guard reads",
 }
 
 // ghRefusedCommands are the gh commands `legion gh` runs for nobody, by the path their help names,
@@ -1176,6 +1138,10 @@ var ghRefusedOptions = map[string]string{
 //     holds, which the daemon alone writes (ghconfig.WriteBundle): login takes one on standard input
 //     or from a browser, for any host; refresh fetches a new one; switch makes another account's
 //     the active one; logout removes it.
+//   - `gh config set` writes the gh directory the call runs with, and gh 2.104.0 sends every API
+//     request for github.com, with its token, to the host its `api_host` key names; its
+//     `http_unix_socket` sends them through a socket; and gh writes a key it does not know all
+//     the same, a token's `oauth_token` among them.
 //   - `gh gist edit` opens an editor program by default and posts the text it wrote, which the
 //     leak guard never read (cli/cli v2.104.0 pkg/cmd/gist/edit/edit.go:302-326): the editor
 //     opens unless a file is named, and gh reads it whatever prompts allow.
@@ -1185,6 +1151,7 @@ var ghRefusedCommands = map[string]string{
 	"auth logout":  "removes the token from the gh directory, which the daemon alone writes",
 	"auth refresh": "writes a new token into the gh directory, which the daemon alone writes",
 	"auth switch":  "makes another account's token the one the gh directory sends, which the daemon alone decides",
+	"config set":   "writes the gh directory's configuration, where api_host or http_unix_socket would send the token's requests somewhere other than github.com and any other key is written all the same; the daemon writes that directory, and no Legion role runs this command",
 	"gist edit":    "opens an editor program and posts the text it wrote, which the leak guard never read",
 }
 
@@ -1202,7 +1169,8 @@ func ghRefusedCommand(path []string) error {
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
 // gh's own), run with env (runGh's ghChildEnviron of the caller's GH_CONFIG_DIR) and refused when
-// gh answers it with an error.
+// gh answers it with an error. runGh reads it through ghHelpKeep, which keeps what gh printed for
+// the calls after.
 func readGhHelp(gh string, env, path []string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1217,4 +1185,101 @@ func readGhHelp(gh string, env, path []string) (string, error) {
 		return "", errors.New("gh printed no help")
 	}
 	return stdout.String(), nil
+}
+
+// ghRoutingKeys are the keys of a gh directory's files that send gh's requests, with the
+// directory's token, somewhere other than github.com: gh 2.104.0's api_host, read from a host's
+// block of hosts.yml, and http_unix_socket, read globally or per host. gh writes both with
+// `gh config set`, which ghRefusedCommands refuses, but a pane's user can write its own gh files
+// between two of the daemon's refreshes, which put them back a minute later at most
+// (ghconfig.WriteBundle, the runtimes' gitHubRefreshInterval).
+var ghRoutingKeys = []string{"api_host", "http_unix_socket"}
+
+// ghCallDir is the gh directory a call runs with: the one its repositories route to, or the
+// pane's own GH_CONFIG_DIR for a call that names none.
+func ghCallDir(env map[string]string, target ghTarget) string {
+	if target.dir != "" {
+		return target.dir
+	}
+	return env["GH_CONFIG_DIR"]
+}
+
+// ghConfigShape refuses the gh directory dir, naming the file and the key and never a value, when:
+//
+//   - its hosts.yml or config.yml is no regular file, which is refused before it is opened, so a
+//     named pipe there stalls nothing, or does not parse, since gh's reading of it is then not
+//     this one's;
+//   - either holds a key of ghRoutingKeys at any depth, so gh never runs with a directory that
+//     would send its token elsewhere;
+//   - its config.yml holds a `hosts` block, settings gh reads per host (an editor, a pager, a
+//     browser) that the daemon never writes, or names an alias that shadows a command `legion gh`
+//     refuses, which gh would expand into another command than the one whose help this reads.
+//
+// The daemon writes config.yml as the version line alone (ghconfig.Config) and hosts.yml from the
+// installation token, so none of these is the daemon's. A file that is not there holds nothing.
+//
+// Its limit: it reads the files before gh does, so a pane that writes them between this check and
+// gh's own read wins that race. Such a pane can already read the token in the same files, so the
+// check guards against an induced `config set` or a stray edit, not against the pane itself.
+func ghConfigShape(dir string) error {
+	for _, name := range []string{ghconfig.HostsFile, ghconfig.ConfigFile} {
+		path := filepath.Join(dir, name)
+		info, err := os.Lstat(path)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			continue
+		case err != nil:
+			return fmt.Errorf("cannot read %s: %w; it sends nothing", path, err)
+		case !info.Mode().IsRegular():
+			return fmt.Errorf("%s is no regular file, so it is not opened, and gh is not run with it; it sends nothing; the daemon rewrites it within a minute", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("cannot read %s: %w; it sends nothing", path, err)
+		}
+		var doc yaml.Node
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			return fmt.Errorf("%s does not parse as YAML, so it cannot be read for a key that sends gh's requests elsewhere; it sends nothing", path)
+		}
+		if key := ghRoutingKeyIn(&doc); key != "" {
+			return fmt.Errorf("%s sets %s, which sends gh's requests with this directory's token somewhere other than github.com, so it sends nothing; the daemon rewrites this file within a minute", path, key)
+		}
+		if name != ghconfig.ConfigFile {
+			continue
+		}
+		var config struct {
+			Hosts   yaml.Node         `yaml:"hosts"`
+			Aliases map[string]string `yaml:"aliases"`
+		}
+		if err := doc.Decode(&config); err != nil {
+			return fmt.Errorf("%s does not parse as gh's configuration, so it cannot be read for what it changes of gh; it sends nothing", path)
+		}
+		if config.Hosts.Kind != 0 {
+			return fmt.Errorf("%s holds a hosts block, settings gh reads per host that the daemon never writes, so it sends nothing; the daemon rewrites this file within a minute", path)
+		}
+		for alias := range config.Aliases {
+			if ghRefusedCommandWord(alias) {
+				return fmt.Errorf("%s names an alias that shadows a command `legion gh` refuses, so it sends nothing; the daemon rewrites this file within a minute", path)
+			}
+		}
+	}
+	return nil
+}
+
+// ghRoutingKeyIn is the first key of ghRoutingKeys a mapping of node holds, at any depth, and "" for
+// none.
+func ghRoutingKeyIn(node *yaml.Node) string {
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if slices.Contains(ghRoutingKeys, node.Content[i].Value) {
+				return node.Content[i].Value
+			}
+		}
+	}
+	for _, child := range node.Content {
+		if key := ghRoutingKeyIn(child); key != "" {
+			return key
+		}
+	}
+	return ""
 }
