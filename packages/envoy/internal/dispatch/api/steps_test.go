@@ -118,20 +118,6 @@ func stepOf(t *testing.T, handler http.Handler, issue, id string) model.StepReco
 	return steps[index]
 }
 
-// requireStepRefusal fails unless response is status with code, its message naming each of words.
-func requireStepRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, status int, code string, words ...string) {
-	t.Helper()
-	refusal := decodeBody[refusalAnswer](t, response)
-	if response.Code != status || refusal.Code != code {
-		t.Fatalf("%s: status=%d body=%s, want %d %s", what, response.Code, response.Body.String(), status, code)
-	}
-	for _, word := range words {
-		if !strings.Contains(refusal.Error, word) {
-			t.Fatalf("%s: the refusal %q does not name %q", what, refusal.Error, word)
-		}
-	}
-}
-
 // stepJSON is a record as the wire carries it, so two records compare field by field and a
 // difference prints whole.
 func stepJSON(t *testing.T, step model.StepRecord) string {
@@ -292,10 +278,10 @@ func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 	path := "/api/v1/issues/" + issue + "/steps/"
 
 	person := dispatchRequest(t, handler, http.MethodPut, path+uuid.NewString(), implementerStart(nil), "alice")
-	requireStepRefusal(t, "a person's write", person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+	expectRefusal(t, "a person's write", person, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
 	for _, session := range []string{legionDaemonSessionPrefix + "OTHER", "ses_agent"} {
 		refused := putStep(t, handler, issue, uuid.NewString(), implementerStart(map[string]any{"kind": "session", "id": session}))
-		requireStepRefusal(t, "a write as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
+		expectRefusal(t, "a write as "+session, refused, http.StatusForbidden, codeStepWriter, "legion-daemon:LEG", issue)
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused writes left %d records, want none", len(steps))
@@ -337,7 +323,7 @@ func TestAnUnknownIssueIsIssueNotFound(t *testing.T) {
 	createTestIssue(t, handler, "LEG", "A run of steps")
 
 	missing := putStep(t, handler, "LEG-999", uuid.NewString(), implementerStart(daemonSession("LEG")))
-	requireStepRefusal(t, "a write to LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
+	expectRefusal(t, "a write to LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
 	unrouted := sessionRequest(t, handler, http.MethodPut, "/api/v1/issues/LEG-999/no-such-records/"+uuid.NewString(),
 		implementerStart(daemonSession("LEG")))
 	if unrouted.Code != http.StatusNotFound || strings.Contains(unrouted.Body.String(), "ISSUE_NOT_FOUND") {
@@ -354,7 +340,7 @@ func TestAnUnknownIssueReadsAsTheIssueRead(t *testing.T) {
 	issue := createTestIssue(t, handler, "LEG", "An issue Legion never ran")
 
 	read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/LEG-999", nil, "alice")
-	requireStepRefusal(t, "the issue read of LEG-999", read, http.StatusNotFound, "NOT_FOUND")
+	expectRefusal(t, "the issue read of LEG-999", read, http.StatusNotFound, "NOT_FOUND")
 	steps := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/LEG-999/steps", nil, "alice")
 	if steps.Code != read.Code || strings.TrimSpace(steps.Body.String()) != strings.TrimSpace(read.Body.String()) {
 		t.Fatalf("the steps of LEG-999: status=%d body=%s, want the issue read's status=%d body=%s",
@@ -442,7 +428,7 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			id := cmp.Or(row.id, uuid.NewString())
-			requireStepRefusal(t, row.name, putStep(t, handler, issue, id, row.body), http.StatusBadRequest, codeStepInput, row.field)
+			expectRefusal(t, row.name, putStep(t, handler, issue, id, row.body), http.StatusBadRequest, codeStepInput, row.field)
 		})
 	}
 	for name, raw := range map[string]string{
@@ -456,7 +442,7 @@ func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 			request.Header.Set("Authorization", "Bearer agent-token")
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
-			requireStepRefusal(t, name, response, http.StatusBadRequest, "INVALID_JSON")
+			expectRefusal(t, name, response, http.StatusBadRequest, "INVALID_JSON")
 		})
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
@@ -608,7 +594,7 @@ func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 	putStepOK(t, handler, issues[0], id, implementerStart(daemonSession("LEG")))
 
 	other := putStep(t, handler, issues[1], id, implementerEnd(daemonSession("LEG"), "passed", stepEnd))
-	requireStepRefusal(t, "the same id on "+issues[1], other, http.StatusConflict, codeStepOtherIssue, issues[0], issues[1])
+	expectRefusal(t, "the same id on "+issues[1], other, http.StatusConflict, codeStepOtherIssue, issues[0], issues[1])
 	if steps := stepsOf(t, handler, issues[1]); len(steps) != 0 {
 		t.Fatalf("%s lists %+v, want nothing", issues[1], steps)
 	}
@@ -642,7 +628,7 @@ func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
 
 	refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+other+"/steps/"+uuid.NewString(), token,
 		implementerStart(daemonSession("OTH"))))
-	requireStepRefusal(t, "a write to "+other, refused, http.StatusForbidden, codeProjectScope, brokerTestProject, "OTH")
+	expectRefusal(t, "a write to "+other, refused, http.StatusForbidden, codeProjectScope, brokerTestProject, "OTH")
 	answered := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+own+"/steps/"+uuid.NewString(), token,
 		implementerStart(daemonSession(brokerTestProject))))
 	if answered.Code != http.StatusOK {
