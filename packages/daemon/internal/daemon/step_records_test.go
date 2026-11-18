@@ -373,16 +373,15 @@ func (r *stepRecordsRig) rollBackStepRecords() {
 
 // stepRecordsRig is one walk: the booted daemon over the real Dispatch, the stand-ins it reads,
 // the issues of the run and their pull requests, and each role's agent as the test plays it. The
-// walk's steps act on one issue at a time, key and number, which on moves to another of issues.
+// walk's steps act on one issue of issues at a time, its walkIssue, which on moves to another.
 type stepRecordsRig struct {
 	liveProof
+	walkIssue
 	rt       *fake.Runtime
 	built    *built
 	dispatch *scratchDispatch
 	github   *stepRecordsGitHub
 	issues   []walkIssue
-	key      string
-	number   int
 	claims   map[claim.Token]*stepClaimant
 	// reviews counts the reviews published, which numbers each.
 	reviews int
@@ -477,7 +476,7 @@ func (r *stepRecordsRig) on(key string) {
 	r.t.Helper()
 	for _, issue := range r.issues {
 		if issue.key == key {
-			r.key, r.number = issue.key, issue.number
+			r.walkIssue = issue
 			return
 		}
 	}

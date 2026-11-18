@@ -286,7 +286,7 @@ func (b *liveDispatch) daemonWrite(key, what string, req *http.Request, w http.R
 func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates bool, w http.ResponseWriter) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	stored, refused := nodeOf(b.steps, key, id, "STEP_OTHER_ISSUE", "step", w)
+	stored, refused := nodeOf(b.steps, "step", key, id, w)
 	if refused {
 		return
 	}
@@ -304,7 +304,7 @@ func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates boo
 	if stored == nil {
 		b.stepOrder = append(b.stepOrder, id)
 	}
-	stored = setOnce(b.steps, stored, key, id, write)
+	stored = setOnce(b.steps, key, id, write)
 	answer := map[string]any{}
 	for field, value := range stored {
 		answer[field] = value
@@ -327,22 +327,24 @@ func (b *liveDispatch) writeStep(key, id string, write map[string]any, rates boo
 
 // nodeOf is the node id of nodes as Dispatch's store finds it before a write under key
 // (workflowstore's putNode): nil where none is made yet, and refused where the id is a node of
-// another issue, which is answered 409 code (STEP_OTHER_ISSUE for a step record, what "step";
-// PLAN_OTHER_ISSUE for a plan, what "plan") and keeps nothing of the write. The caller holds b.mu.
-func nodeOf(nodes map[string]map[string]any, key, id, code, what string, w http.ResponseWriter) (stored map[string]any, refused bool) {
+// another issue, which is answered 409 under the code of what, the node's kind ("step" answers
+// STEP_OTHER_ISSUE, "plan" PLAN_OTHER_ISSUE), and keeps nothing of the write. The caller holds
+// b.mu.
+func nodeOf(nodes map[string]map[string]any, what, key, id string, w http.ResponseWriter) (stored map[string]any, refused bool) {
 	stored = nodes[id]
 	if stored != nil && stored["issue"] != key {
 		w.WriteHeader(http.StatusConflict)
-		_, _ = fmt.Fprintf(w, `{"code":%q,"error":"%s %s is part of %v, and this write names %s"}`, code, what, id, stored["issue"], key)
+		_, _ = fmt.Fprintf(w, `{"code":"%s_OTHER_ISSUE","error":"%s %s is part of %v, and this write names %s"}`, strings.ToUpper(what), what, id, stored["issue"], key)
 		return nil, true
 	}
 	return stored, false
 }
 
 // setOnce writes write onto the node id of key in nodes as Dispatch's store does: it makes the node
-// where stored, the node nodeOf found, is nil, and sets each field the node does not hold yet,
-// leaving every field it holds. It answers the node. The caller holds b.mu.
-func setOnce(nodes map[string]map[string]any, stored map[string]any, key, id string, write map[string]any) map[string]any {
+// where nodes holds none, and sets each field the node does not hold yet, leaving every field it
+// holds. It answers the node. The caller holds b.mu.
+func setOnce(nodes map[string]map[string]any, key, id string, write map[string]any) map[string]any {
+	stored := nodes[id]
 	if stored == nil {
 		stored = map[string]any{"id": id, "issue": key}
 		nodes[id] = stored
@@ -386,11 +388,10 @@ func (b *liveDispatch) putPlan(key, id string, req *http.Request, w http.Respons
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	stored, refused := nodeOf(b.plans, key, id, "PLAN_OTHER_ISSUE", "plan", w)
-	if refused {
+	if _, refused := nodeOf(b.plans, "plan", key, id, w); refused {
 		return
 	}
-	stored = setOnce(b.plans, stored, key, id, write)
+	stored := setOnce(b.plans, key, id, write)
 	if err := json.NewEncoder(w).Encode(stored); err != nil {
 		b.t.Errorf("write the plan %s: %v", id, err)
 	}
