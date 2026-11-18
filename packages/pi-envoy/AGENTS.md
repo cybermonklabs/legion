@@ -352,8 +352,9 @@ import so a host without the module still loads the extension), each marked `ter
 the terminal runs it; the extension, custom and skill commands (`pi.getCommands`); then the
 markdown file commands and prompt templates the live session expands, read from the host's own
 `AgentSession` (`slashCommands`, `promptTemplates`) by finding, in `AgentRegistry.global().list()`,
-the ref whose live session id is this session's. At the pin, `createAgentSession` defaults its
-main session to that registry (sdk.ts:2204) and registers it (sdk.ts:4067), so print and `--mode rpc`
+the ref whose live session id is this session's. At the pin, `createAgentSession` (`sdk.ts`)
+defaults its main session to that registry (`options.agentRegistry ?? AgentRegistry.global()`)
+and registers it there (`agentRegistry.register`, or `registerIfAvailable`), so print and `--mode rpc`
 main sessions list file commands and templates too. The ref is looked up whenever commands refresh,
 since the host keeps one `AgentSession` across `/new`, `/resume` and a fork and changes its id; a
 host without the registry export, or one listing no session under this id, lists none of those two
