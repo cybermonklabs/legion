@@ -342,8 +342,8 @@ fails the pull request that adds it.
   step runs exactly `TEXT_CHECK_TESTS`, the names envoy-go's plain step leaves out, so a test
   dropped from one side fails `ci-filters` rather than running in no job. An env, shell,
   container or environment write that could move what the step compiles makes every one of its
-  runs count as reading everything, as above. envoy-go's unit-test and pack steps and
-  envoy-smoke's plugin-schema step are exact entries.
+  runs count as reading everything, as above. envoy-go's unit-test step, envoy-go-checks' pack
+  step and envoy-smoke's plugin-schema step are exact entries.
 
   It fails too when a pinned text or an exact entry's step is gone, and when a job or step is
   gated on a filter neither `GATES` nor `EXCLUDED` lists. A job with no go commands still gets a

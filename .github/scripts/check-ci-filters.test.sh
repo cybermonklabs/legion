@@ -1837,7 +1837,7 @@ root=$(fixture guard-list)
 guard_list_table "$root"
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "counts the runs' closure" "$(contains "$out" '^report: app: [0-9][0-9]* files, 0 uncovered (filter app)$')"
+check "counts the runs' closure" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
 
 echo "case: a test the list names and the step's -run drops is refused, naming the step and the test"
 root=$(fixture guard-list-dropped)
@@ -1868,6 +1868,16 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the step and the test the step lacks" \
   "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: on its line 1, its -run leaves out TestNewGuard, which the pinned -run names; ')"
+
+echo "case: a -run that turns a name into a pattern is refused, quoting the line rather than naming tests"
+root=$(fixture guard-list-pattern)
+guard_list_table "$root"
+replace "$root/.github/workflows/ci.yaml" "|TestGuard)" "|TestGuard.*)"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "quotes both lines around the difference" \
+  "$(contains "$out" 'is off the script and directory gate app.s exact entry pins it to: its line 1 reads `[.][.][.]test -count=1 -run ..(TestData|TestGuard[.][*])[$]. ./lib` where the pinned text.s reads `[.][.][.]test -count=1 -run ..(TestData|TestGuard)[$]. ./lib`; ')"
+check "and does not read the pattern as a test it leaves out" "$(is "$(contains "$out" 'leaves out TestGuard')" false)"
 
 for odd in cr nbsp; do
   echo "case: a hidden command after a ${odd} that Python reads as a comment and bash runs"

@@ -969,10 +969,15 @@ def script_reason(text: str) -> str:
 
 
 # The anchored alternation of whole test names ci_job_reads.py writes into the -run or -skip of a
-# pinned script, `-run '^(Name|Name)$'`. Where that list is all a step's line and its pin differ
-# in, the refusal names the tests either side lacks rather than quoting the line, which can run
-# past a thousand characters: the text-check step's -run holds fifteen names.
-NAME_LIST = re.compile(r"(-run|-skip) '\^\(([^()'|]+(?:\|[^()'|]+)*)\)\$'")
+# pinned script, `-run '^(Name|Name)$'`, each name a Go identifier. Where those lists are all a
+# step's line and its pin differ in, the refusal names the tests either side lacks rather than
+# quoting the line, which can run past a thousand characters: the text-check step's -run holds
+# fifteen names. A list holding any other pattern (`TestA.*`) is quoted like any other line,
+# since which tests a pattern selects is go's to say, not a set difference of its text.
+NAME_LIST = re.compile(r"(-run|-skip) '\^\(([A-Za-z_][A-Za-z0-9_]*(?:\|[A-Za-z_][A-Za-z0-9_]*)*)\)\$'")
+# A run of what bash splits words at, which the "spaces or tabs alone" reading compares lines by:
+# not Python's str.split(), which also splits at a no-break space bash reads as part of a word.
+BASH_BLANKS = re.compile(r"[ \t]+")
 # How much of a differing line a refusal quotes on each side of the difference.
 DIFFERENCE_CONTEXT = 40
 
@@ -1013,12 +1018,14 @@ def pin_difference(script: str, pinned: str) -> str:
             if got != wanted and not gone and not extra:
                 parts.append(f"its {flag} names the pinned {flag}'s tests in another order or more than once")
         return f"on its line {i + 1}, {'; '.join(parts)}"
-    if line.split() == pin.split():
+    if BASH_BLANKS.split(line.strip(" \t")) == BASH_BLANKS.split(pin.strip(" \t")):
         return f"its line {i + 1} differs from the pinned text's in spaces or tabs alone"
     start = len(os.path.commonprefix([line, pin]))
     same_end = len(os.path.commonprefix([line[start:][::-1], pin[start:][::-1]]))
+    odd = next((c for c in line[start:len(line) - same_end] if c != "\t" and not " " <= c <= "~"), None)
     return (f"its line {i + 1} reads `{excerpt(line, start, len(line) - same_end)}` where the pinned text's reads "
-            f"`{excerpt(pin, start, len(pin) - same_end)}`")
+            f"`{excerpt(pin, start, len(pin) - same_end)}`"
+            + (f", and holds the character U+{ord(odd):04X} there" if odd else ""))
 
 
 def go_lines(text: str) -> list:
@@ -1365,7 +1372,7 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
             # refusal.
             pins = defaultdict(set)  # (the script an entry pins, its directory) -> the gates pinning it
             for name, e in entries:
-                pins[(e.script, clean_dir(e.workdir))].add(name)
+                pins[(e.script.rstrip(), clean_dir(e.workdir))].add(name)  # as pin_difference compares them
             for (pinned_script, directory), names in pins.items():
                 drift = [d for d in (pin_difference(script, pinned_script),
                                      "" if workdir == directory else f"it runs in {workdir}, the entry's in {directory}") if d]
