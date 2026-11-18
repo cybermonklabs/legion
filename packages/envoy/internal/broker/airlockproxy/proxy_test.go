@@ -476,28 +476,32 @@ func TestTheProxyRefusesTheBrokerClustersOwnRanges(t *testing.T) {
 		// Each address a refused row names is wired to the echo service, the zoned forms as the
 		// proxy would dial them, so a proxy that let one through opens a tunnel and answers 200.
 		for _, addr := range []string{clusterIPs[0], clusterIPs[1], clusterIPs[2], "34.118.224.0", "34.118.239.255", "2001:db8:5::10",
-			"2001:db8:5::10%eth0", "2001:db8:5::10%0", "2001:db8:5::10%x",
+			"2001:db8:5::10%eth0", "2001:db8:5::10%0", "2001:db8:5::10%x", "::%x",
 			"34.118.240.0", "34.118.223.255", "2001:db8:6::10", "93.184.216.40"} {
 			r.dialTo[net.JoinHostPort(addr, "443")] = echo
 		}
 		return r
 	}
-	refused := func(t *testing.T, r *rig, host, family string) {
+	refusedWith := func(t *testing.T, r *rig, host, want, why string) {
 		t.Helper()
 		before := r.dials.Load()
 		answer, _, _ := r.connectRaw(net.JoinHostPort(host, "443"), basic(workerPlaceholder))
 		// The status first: a CONNECT answered 200 is an open tunnel, whose body never ends.
 		if answer.StatusCode != http.StatusForbidden {
-			t.Fatalf("CONNECT %s = %d after %d dial(s); want 403 and none: it is inside BROKER_AIRLOCK_CLUSTER_RANGES",
-				host, answer.StatusCode, r.dials.Load()-before)
+			t.Fatalf("CONNECT %s = %d after %d dial(s); want 403 and none: %s",
+				host, answer.StatusCode, r.dials.Load()-before, why)
 		}
 		body := bodyOf(t, answer)
-		if want := "an " + family + " address " + clusterRangeRule; !strings.Contains(body, want) {
+		if !strings.Contains(body, want) {
 			t.Errorf("the refusal of %s reads %q; want it to name %q", host, body, want)
 		}
 		if after := r.dials.Load(); after != before {
 			t.Fatalf("the proxy dialled %s %d time(s); want none: the refusal comes before any dial", host, after-before)
 		}
+	}
+	refused := func(t *testing.T, r *rig, host, family string) {
+		t.Helper()
+		refusedWith(t, r, host, "an "+family+" address "+clusterRangeRule, "it is inside BROKER_AIRLOCK_CLUSTER_RANGES")
 	}
 	admitted := func(t *testing.T, r *rig, host string) {
 		t.Helper()
@@ -529,6 +533,13 @@ func TestTheProxyRefusesTheBrokerClustersOwnRanges(t *testing.T) {
 	} {
 		t.Run("refuses "+row.name, func(t *testing.T) { refused(t, r, row.host, row.family) })
 	}
+	// The unspecified address with a zone. netip's IsGlobalUnicast compares an address with ::
+	// whole, zone included, so ::%x was global unicast to a check that kept the zone, and Linux
+	// connects a socket to the unspecified address on the loopback: a tunnel to [::%x] reached the
+	// broker's own pod. Read without its zone it is ::, which the fixed rules refuse.
+	t.Run("refuses the unspecified address with a zone (::%25x), which a socket connects on the loopback", func(t *testing.T) {
+		refusedWith(t, r, "::%25x", "not a global unicast IPv6 address", "a socket to it connects on the pod's own loopback")
+	})
 	for _, row := range []struct{ name, host string }{
 		{"the address after the range", "34.118.240.0"},
 		{"the address before the range", "34.118.223.255"},
