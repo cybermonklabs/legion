@@ -105,7 +105,8 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // Replacing a live pod — its Sandbox Running, the pod its own, not ended, its init containers
 // passed, and not a pod its node never started (neverStarted) — ends the process of every role
 // still running in it, wherever its turn stood, so the Suspended patch that replaces it names it on
-// the Sandbox in the same write (suspendDisplacing): evaluate then reports each of those roles
+// the Sandbox in the same write (suspendReplaced), as the one reading of the clock that decided to
+// replace it says (replacement's podReplacement): evaluate then reports each of those roles
 // ended by the daemon's replacement (Displaced), which the supervisor resumes uncharged
 // (LEGION-729). A pod already ended, or never the Sandbox's, is named nothing, and nor is a pod
 // that never started, where no role ran: the launch that waited the boot timeout on such a pod was
@@ -162,48 +163,37 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		return fail("ensure its sandbox", err)
 	}
 	pod := r.storedPod(s.Name)
-	live := notLive(s, pod) == ""
-	// A pod its node never started (neverStarted) is not live either: no launcher connects from it,
-	// so a launch that kept it would wait out the boot timeout on it, be charged a launch failure,
-	// and leave it for the next try to find again. It is replaced as a pod whose init failed is
-	// (replacement), and names nothing displaced, since no role ever ran in it. The warning gives
-	// the pod's age and how long its node has had it, which is what says whether that node is the
-	// one to look at.
-	if unstarted, scheduledFor, stuck := neverStarted(pod, r.now(), r.bootTimeout); live && stuck {
-		r.log.Warn("sandbox runtime: replacing a pod older than the boot timeout that its node has not made ready to start its containers",
-			"pod", pod.Name, "uid", pod.UID, "node", pod.Spec.NodeName, "notStartedFor", unstarted.Round(time.Second),
-			"scheduledFor", scheduledFor.Round(time.Second), "bootTimeout", r.bootTimeout, "claim", spec.Claim)
-		live = false
-	}
 	installing := l.spec.Plugins != nil
 	migrate := supersededDisk(s, l)
-	why, err := r.replacement(bounded, s, pod, &l)
+	decided, err := r.replacement(bounded, s, pod, &l)
 	if err != nil {
 		return fail("read its pod's launcher bindings", err)
 	}
-	replace := why != ""
+	// A pod its node never started (neverStarted) is replaced as a pod whose init failed is, since
+	// no launcher connects from it: a launch that kept it would wait out the boot timeout on it, be
+	// charged a launch failure, and leave it for the next try to find again. The warning gives the
+	// pod's age and how long its node has had it, which is what says whether that node is the one
+	// to look at.
+	if decided.unstarted > 0 {
+		r.log.Warn("sandbox runtime: replacing a pod older than the boot timeout that its node has not made ready to start its containers",
+			"pod", pod.Name, "uid", pod.UID, "node", pod.Spec.NodeName, "notStartedFor", decided.unstarted.Round(time.Second),
+			"scheduledFor", decided.scheduledFor.Round(time.Second), "bootTimeout", r.bootTimeout, "claim", spec.Claim)
+	}
+	replace := decided.why != ""
 	if installing && replace {
 		// Replaced for some other reason: the fresh pod's image is already current, so nothing is
 		// installed into it.
 		l.spec.Plugins = nil
 	}
 	if replace {
-		switch {
-		case live:
-			suspended, err := r.suspendDisplacing(bounded, s, pod.UID, launchReplacement)
-			if err != nil {
-				return fail("suspend its sandbox", err)
-			}
-			// The patch's own copy, which carries the annotation naming the replaced pod: a
-			// migrating launch reads it from here onto the Sandbox it creates
-			// (replaceSupersededSandbox).
-			s = suspended
-		case s.mode() != modeSuspended:
-			if err := r.setMode(bounded, s, modeSuspended); err != nil {
-				return fail("suspend its sandbox", err)
-			}
+		// The suspension's own copy of the Sandbox carries the annotation naming the replaced pod:
+		// a migrating launch reads it from there onto the Sandbox it creates
+		// (replaceSupersededSandbox).
+		suspended, old, err := r.suspendReplaced(bounded, s, pod, decided.displacesRoles)
+		if suspended == nil {
+			return fail("suspend its sandbox", err)
 		}
-		old, err := r.awaitPodGone(bounded, s)
+		s = suspended
 		if err != nil {
 			return fail("wait out its previous pod", err)
 		}
@@ -281,8 +271,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 
 // notLive is why the Sandbox read as s runs no live pod, its stored pod being pod — the Sandbox
 // Suspended, no pod of its own, its pod ended, or an init container of it failed — and "" where
-// it runs one. Only a live pod has a role running in it that replacing the pod ends, so only a
-// live pod's replacement names it on the Sandbox (suspendDisplacing).
+// it runs one. Only a live pod has a role running in it that replacing the pod ends (runsNoRole).
 func notLive(s *sandbox, pod *corev1.Pod) string {
 	failed, initExit := failedInit(pod)
 	switch {
@@ -298,17 +287,55 @@ func notLive(s *sandbox, pod *corev1.Pod) string {
 	return ""
 }
 
-// replacement is why a launch of l into the Sandbox read as s, whose stored pod is pod, replaces
-// that pod rather than starting l's role in it, and "" where it keeps it: relaunch's one decision,
-// which a relaunch of a claim on its same session also asks before it stops anything
-// (RelaunchRefusal), so the check and the launch never disagree about a pod. Where it keeps the
-// pod it records on l what the pod was built with (keptBy, l.kept) and the default owner its
-// launchers' Secrets record (launcherBound, l.gitHubDefault). The launcher Secrets are read only
-// once nothing the stores hold has answered, since each is an API request; an error is such a read
-// that failed, which proves nothing about the pod.
+// runsNoRole is why no role runs in the pod of the Sandbox read as s, its stored pod being pod, at
+// now — the pod not live (notLive), or live and never started by its node (neverStarted), where
+// no launcher ever connected — and "" where roles may run in it. Replacing a pod roles may run in
+// ends every one of them, so only such a pod's replacement names it on the Sandbox
+// (suspendReplaced). It is the one reading of that question, which relaunch's decision
+// (replacement) and the end of a controller's pod for its relaunch (endPod) both take, each
+// reading the clock once for it. unstarted and scheduledFor are, for a pod its node never
+// started, how long ago it was created and how long ago its node was given it; 0 otherwise.
+func (r *Runtime) runsNoRole(s *sandbox, pod *corev1.Pod, now time.Time) (why string, unstarted, scheduledFor time.Duration) {
+	if why := notLive(s, pod); why != "" {
+		return why, 0, 0
+	}
+	unstarted, scheduledFor, stuck := neverStarted(pod, now, r.bootTimeout)
+	if !stuck {
+		return "", 0, 0
+	}
+	return fmt.Sprintf("its pod %s has not started its containers %s after its creation and %s after node %s was given it, past the boot timeout %s",
+		pod.UID, unstarted.Round(time.Second), scheduledFor.Round(time.Second), pod.Spec.NodeName, r.bootTimeout), unstarted, scheduledFor
+}
+
+// podReplacement is relaunch's one decision about the pod a launch finds (replacement): whether
+// it replaces the pod and whether that replacement ends roles running in it, both from one
+// reading of the clock, so a pod the launch replaces as never started is never named as one whose
+// roles it ended.
+type podReplacement struct {
+	// why is why the launch replaces the pod, "" where it keeps it.
+	why string
+	// displacesRoles is whether that replacement ends roles running in the pod, which its
+	// suspension then names on the Sandbox (suspendReplaced): a pod roles may run in (runsNoRole)
+	// that the launch replaces all the same.
+	displacesRoles bool
+	// unstarted and scheduledFor are, for a live pod its node never started, how long ago it was
+	// created and how long ago its node was given it, which the launch's warning gives; 0 for
+	// every other pod.
+	unstarted, scheduledFor time.Duration
+}
+
+// replacement is whether a launch of l into the Sandbox read as s, whose stored pod is pod,
+// replaces that pod rather than starting l's role in it: relaunch's one decision, which a relaunch
+// of a claim on its same session also asks before it stops anything (RelaunchRefusal), so the
+// check and the launch never disagree about a pod. Where it keeps the pod it records on l what the
+// pod was built with (keptBy, l.kept) and the default owner its launchers' Secrets record
+// (launcherBound, l.gitHubDefault). The launcher Secrets are read only once nothing the stores
+// hold has answered, since each is an API request; an error is such a read that failed, which
+// proves nothing about the pod.
 //
-// A pod its node never started (neverStarted) is replaced as a pod that is not live is, since no
-// launcher connects from it and a launch that kept it would wait out the boot timeout on it.
+// A pod no role runs in (runsNoRole) — one not live, or one its node never started, from which no
+// launcher connects and on which a launch that kept it would wait out the boot timeout — is
+// replaced displacing nothing. Every other pod it replaces displaces the roles running in it.
 //
 // A live pod no round covers is the launch's to replace for every kind of drift: every facet of
 // the pod itself but the account comes through movedInPod, the account is read here, and the shape
@@ -329,44 +356,43 @@ func notLive(s *sandbox, pod *corev1.Pod) string {
 // template says nothing the daemon can read, it cannot tell what the pod carries, and the launch
 // replaces the pod where it stands, which is what every launch into a drifted pod did before the
 // round existed.
-func (r *Runtime) replacement(ctx context.Context, s *sandbox, pod *corev1.Pod, l *launch) (string, error) {
-	if why := notLive(s, pod); why != "" {
-		return why, nil
+func (r *Runtime) replacement(ctx context.Context, s *sandbox, pod *corev1.Pod, l *launch) (podReplacement, error) {
+	if why, unstarted, scheduledFor := r.runsNoRole(s, pod, r.now()); why != "" {
+		return podReplacement{why: why, unstarted: unstarted, scheduledFor: scheduledFor}, nil
 	}
-	if unstarted, scheduledFor, stuck := neverStarted(pod, r.now(), r.bootTimeout); stuck {
-		return fmt.Sprintf("its pod %s has not started its containers %s after its creation and %s after node %s was given it, past the boot timeout %s",
-			pod.UID, unstarted.Round(time.Second), scheduledFor.Round(time.Second), pod.Spec.NodeName, r.bootTimeout), nil
+	displacing := func(why string) (podReplacement, error) {
+		return podReplacement{why: why, displacesRoles: true}, nil
 	}
 	covered := roundCovers(l.kind)
 	if runs, drifted := accountDrift(pod, r.pod.ServiceAccount); drifted && !covered {
-		return fmt.Sprintf("its pod runs as ServiceAccount %s, now %s", runs, serviceAccountOr(r.pod.ServiceAccount)), nil
+		return displacing(fmt.Sprintf("its pod runs as ServiceAccount %s, now %s", runs, serviceAccountOr(r.pod.ServiceAccount)))
 	}
 	if supersededDisk(s, *l) {
-		return "its Sandbox owns the volume claim template of the release before the pod-owned disk", nil
+		return displacing("its Sandbox owns the volume claim template of the release before the pod-owned disk")
 	}
 	for _, role := range l.roles {
 		if moved := r.movedInPod(pod, role); len(moved) > 0 {
-			return fmt.Sprintf("its pod holds, for %s, %s", role, describeMoved(moved)), nil
+			return displacing(fmt.Sprintf("its pod holds, for %s, %s", role, describeMoved(moved)))
 		}
 	}
 	if l.spec.Plugins == nil && !covered {
 		if drifted := r.shapeDrift(s, l.shapeKey()); len(drifted) > 0 {
-			return "its pod was built from " + strings.Join(drifted, "; "), nil
+			return displacing("its pod was built from " + strings.Join(drifted, "; "))
 		}
 	}
 	bound, err := r.launcherBound(ctx, s, pod, l)
 	if err != nil {
-		return "", err
+		return podReplacement{}, err
 	}
 	if !bound {
-		return "a launcher Secret of its roles does not bind its pod " + string(pod.UID), nil
+		return displacing("a launcher Secret of its roles does not bind its pod " + string(pod.UID))
 	}
 	kept, readable := r.keptBy(s, *l)
 	if !readable {
-		return "its stored pod template holds nothing this daemon can read for " + string(l.spec.Role), nil
+		return displacing("its stored pod template holds nothing this daemon can read for " + string(l.spec.Role))
 	}
 	l.kept = &kept
-	return "", nil
+	return podReplacement{}, nil
 }
 
 // keptBy is what the live pod of the Sandbox read as s was built with, for the role l starts in
@@ -1231,6 +1257,33 @@ const (
 	launchReplacement replacementKind = false
 	roundReplacement  replacementKind = true
 )
+
+// suspendReplaced sets the Sandbox read as s Suspended to replace pod, its pod, and waits the pod
+// out (awaitPodGone): the one way each act that ends a pod for a launch ends it, a launch that
+// replaces its pod (relaunch) and the stop of a controller whose launcher is not connected
+// (endPod). A replacement that ends roles running in the pod (displacesRoles, from runsNoRole)
+// names the pod on the Sandbox in the same write (suspendDisplacing, launchReplacement), so each
+// of those roles' end is read as the daemon's own act and not a death; any other only suspends
+// the Sandbox, where it is not Suspended already. It returns the Sandbox as the suspension left
+// it, the one copy that carries that name, and every uid the wait saw holding the Sandbox's name.
+// A suspension the API server refused ended nothing, and returns no Sandbox with its error; a pod
+// still there when the wait ends returns the suspended Sandbox with the wait's.
+func (r *Runtime) suspendReplaced(ctx context.Context, s *sandbox, pod *corev1.Pod, displacesRoles bool) (*sandbox, map[types.UID]bool, error) {
+	switch {
+	case displacesRoles:
+		suspended, err := r.suspendDisplacing(ctx, s, pod.UID, launchReplacement)
+		if err != nil {
+			return nil, nil, err
+		}
+		s = suspended
+	case s.mode() != modeSuspended:
+		if err := r.setMode(ctx, s, modeSuspended); err != nil {
+			return nil, nil, err
+		}
+	}
+	old, err := r.awaitPodGone(ctx, s)
+	return s, old, err
+}
 
 // suspendDisplacing sets the Sandbox read as s Suspended and names uid on it as the live pod that
 // suspension replaces (displacedAnnotation), in one JSON merge patch: the API server applies both

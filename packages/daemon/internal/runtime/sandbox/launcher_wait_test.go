@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"log/slog"
+	goruntime "runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -359,6 +360,69 @@ func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing
 				t.Errorf("the Sandbox names the pod that never started, %s, displaced", stuck)
 			}
 		})
+	}
+}
+
+// A launch judges a pod its node never started by one reading of the clock (replacement): the
+// reading that replaces such a pod is the one that says it ran no role, so the suspension names
+// nothing displaced. Two readings could disagree about a pod at the boot timeout's edge — live by
+// the first, never started by the second — and a launch that replaced the pod by the second while
+// it named it displaced by the first would have the roles recorded in it, which never ran there,
+// read as ended by the daemon's replacement. The clock here is that edge: relaunch's own reading
+// of it is the boot timeout after the pod's creation, not past it, and every other reading is a
+// second later, past it, as two readings straddling the edge would be.
+func TestAPodReplacedAtTheBootTimeoutsEdgeIsNamedDisplacedByNoReadingOfTheClock(t *testing.T) {
+	boot := testOptions().BootTimeout
+	g := newRig(t, nil, func(g *rig, o *Options) {
+		o.Now = func() time.Time {
+			if readByRelaunch() {
+				return g.now.Load().Add(-time.Second)
+			}
+			return *g.now.Load()
+		}
+	})
+	g.autoStart.Store(false)
+	spec := workerSpec(t)
+	name := SandboxName(spec.Claim)
+	result := make(chan error, 1)
+	go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
+	g.pendingPod(name, notReadyToStart(*g.now.Load()))
+	stuck := g.pod(name).UID
+	select {
+	case err := <-result:
+		want := "wait for its role launcher: timed out after " + boot.String()
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("Spawn = %v, want %q, the failure the supervisor charges", err, want)
+		}
+	case <-time.After(90 * time.Second):
+		t.Fatal("hang guard: the launch never ended for a pod that never started")
+	}
+
+	g.advance(boot + time.Second)
+	g.autoStart.Store(true)
+	spec.Generation = 2
+	loc := g.spawn(spec)
+	if loc.Sandbox.PodUID == string(stuck) {
+		t.Fatalf("the next try launched in pod %s, which its node never started past the boot timeout, want it replaced", stuck)
+	}
+	if displaced := g.sandbox(name).Annotations[displacedAnnotation]; displaced == string(stuck) {
+		t.Fatalf("the Sandbox names the pod that never started, %s, displaced: the launch replaced it by one reading of the clock and named it displaced by another", stuck)
+	}
+}
+
+// readByRelaunch reports whether the clock is being read by relaunch itself rather than by
+// anything it calls: the runtime's method nearest the reading on its stack.
+func readByRelaunch() bool {
+	pcs := make([]uintptr, 32)
+	frames := goruntime.CallersFrames(pcs[:goruntime.Callers(1, pcs)])
+	for {
+		frame, more := frames.Next()
+		if strings.Contains(frame.Function, ".(*Runtime).") {
+			return strings.HasSuffix(frame.Function, ".(*Runtime).relaunch")
+		}
+		if !more {
+			return false
+		}
 	}
 }
 
