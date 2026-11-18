@@ -34,8 +34,9 @@ jobs:
     runs-on: ubuntu-24.04
     # The step's -timeout must fire before the runner cancels the job, so a hung search prints the
     # dump that names it: the job's limit is the step's and ten minutes of checkout, setup, cache
-    # restore and the package's test build.
-    timeout-minutes: 90
+    # restore and the package's test build. The step's -timeout is twice the 19 min 18 s the step
+    # took on this runner (CLAIM_MODEL_TIMEOUT in .github/scripts/ci_job_reads.py).
+    timeout-minutes: 50
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -83,7 +84,7 @@ jobs:
       # CLAIM_MODEL_TESTS builds this -run and leaves exactly these two out of envoy-go's plain
       # step. -v prints the model's table of states and checks to the log.
       - name: Search every order of the mention sender's claims
-        run: go test -count=1 -timeout 80m -v -run '^(TestTheClaimModelsRulesAreTheSQLsRules|TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
+        run: go test -count=1 -timeout 40m -v -run '^(TestTheClaimModelsRulesAreTheSQLsRules|TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

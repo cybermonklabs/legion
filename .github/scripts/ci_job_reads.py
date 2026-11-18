@@ -1891,7 +1891,9 @@ GUARD_SCRIPT = ("go test -count=1 -run "
 CLAIM_MODEL_JOB = "envoy-go-claim-model"
 CLAIM_MODEL_PACKAGE = "./internal/dispatch/api"
 CLAIM_MODEL_STEP = "Search every order of the mention sender's claims"
-CLAIM_MODEL_TIMEOUT = "80m"
+# Twice the 19 min 18 s the step took on an ubuntu-24.04 runner at three periods; the job's
+# timeout-minutes is this and ten.
+CLAIM_MODEL_TIMEOUT = "40m"
 CLAIM_MODEL_SCRIPT = (f"go test -count=1 -timeout {CLAIM_MODEL_TIMEOUT} -v -run "
                       f"'^({'|'.join(sorted(name for names in CLAIM_MODEL_TESTS.values() for name in names))})$' "
                       f"{CLAIM_MODEL_PACKAGE}")
