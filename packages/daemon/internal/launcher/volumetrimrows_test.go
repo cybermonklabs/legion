@@ -24,9 +24,11 @@ import (
 // still has made again, the pause an interval spends whatever its reading, its resend of a held
 // report or its line of new settings did, a held report whose resend panics in the wait for
 // settings, tried once over one refusal, and what a line that panics leaves standing: the pause
-// after its sweep and its countdown, a refusal and the held report it tries, the line of a volume
-// that cannot be read, what a tick decided before its line, and the switched-off trimmer's last
-// report, whether the line that says it is off panics or one written once that report is held.
+// after its sweep and its countdown, the pause or the recovery after a sweep whose line written
+// once its outcome was settled panicked, a refusal and the held report it tries, the line of a
+// volume that cannot be read, what a tick decided before its line, and the switched-off trimmer's
+// last report, whether the line that says it is off panics or one written once that report is
+// held.
 // The file builds only under Linux because its cases drive volumetrim_test.go's fixture, which
 // does.
 
@@ -664,6 +666,139 @@ func TestAPanicOfTheFirstEpisodesLineLeavesALaterFallARecovery(t *testing.T) {
 	if tr.episode != 2 || tr.raisedBy != shimwire.VolumeEpisodeRecovery {
 		t.Errorf("after the fall to 65%% the trimmer is in episode %d raised by %q, want 2 by %q: the first reading at the high mark marks the volume above it before its line",
 			tr.episode, tr.raisedBy, shimwire.VolumeEpisodeRecovery)
+	}
+}
+
+// A sweep writes four lines once its outcome is settled (sweep): that its deleter could not be
+// started, that its deleter ended, that the volume could not be read at its end, and how many more
+// entries of a root it passed over than it named (passedOver.said). Each is written inside
+// contain, so a panic of it, which only the logger can raise, is dropped and counted in no row,
+// and tick still acts on that outcome: R1 has a sweep that frees less than one percent of the
+// volume start no new sweep for the next ten intervals, and a reading of the trimmer's own at or
+// below the low mark after one at or above the high mark is a recovery (episodeOf). Each subtest's
+// line panics once. In a pause's subtest the sweep frees nothing: the ten readings after it must
+// each pause, the eleventh must sweep, and both sweeps must report. In a recovery's the sweep
+// deletes and its last reading is 65%: the trimmer must be in episode 2, raised by a recovery,
+// with no report sent. Only the passed-over count and the line of a deleter that ended can follow
+// deletions that reach the low mark: a deleter that could not be started deletes nothing, and a
+// sweep whose last reading failed keeps the last one it took, which stood above the low mark or
+// the sweep would have ended there. At 3b696b83 each line's panic unwound out of the sweep, so
+// tick set no pause and the next reading swept, and read no last reading, so the fall to 65%
+// raised no recovery (INFRA-2009, round 46).
+func TestASweepWhoseLinePanicsOnceItsOutcomeIsSettledStillPausesOrRecovers(t *testing.T) {
+	const fell = "the log fell over writing a line of a sweep whose outcome is settled"
+	// passOver leaves eleven links in bun's install cache, one past the ten a sweep names
+	// (volumePassedOverLines), so the sweep counts the eleventh in its last line (said).
+	passOver := func(t *testing.T, f *trimFixture, _ *trimmer) {
+		t.Helper()
+		bun := f.roots[3]
+		if bun.Entry != ImmediateChildren {
+			t.Fatalf("the fourth reclaimable root is %+v, want bun's install cache", bun)
+		}
+		target := t.TempDir()
+		for at := range 11 {
+			if err := os.Symlink(target, filepath.Join(bun.Path, fmt.Sprintf("link-%02d", at))); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// dies has each sweep's deleter end once it has removed after entries (dyingRemover).
+	dies := func(after int) func(*testing.T, *trimFixture, *trimmer) {
+		return func(_ *testing.T, _ *trimFixture, tr *trimmer) {
+			closed := 0
+			tr.removals = func(RoleCover, []*sweepDir) (entryRemover, error) {
+				return &dyingRemover{after: after, err: fmt.Errorf("%w: read its answer: EOF", errRemoverGone), closed: &closed}, nil
+			}
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		line     string // what the line that panics holds, as written
+		perRoot  int    // the fixture's entries in each root
+		volume   func(int) volumeUsage
+		stage    func(*testing.T, *trimFixture, *trimmer)
+		recovery bool // the sweep's last reading is at the low mark or under it, where the others pause
+	}{
+		{"the passed-over count of a sweep that pauses", "more entries of the reclaimable root", 0, steady(90), passOver, false},
+		{"the passed-over count of a sweep that recovers", "more entries of the reclaimable root", 1, script(90, 65), passOver, true},
+		{"the deleter that could not be started", volumeTrimLog + "the sweep's deleter could not be started", 1, steady(90), func(_ *testing.T, _ *trimFixture, tr *trimmer) {
+			tr.removals = func(RoleCover, []*sweepDir) (entryRemover, error) {
+				return nil, errors.New("start the sweep's deleter in a mount namespace of its own: operation not permitted")
+			}
+		}, false},
+		{"the deleter that ended in a sweep that pauses", volumeTrimLog + "the sweep's deleter ended", 1, steady(90), dies(0), false},
+		{"the deleter that ended in a sweep that recovers", volumeTrimLog + "the sweep's deleter ended", 1, script(90, 65), dies(1), true},
+		{"the last reading that failed", "the volume could not be read at the end of the sweep", 1, steady(90), func(t *testing.T, _ *trimFixture, _ *trimmer) {
+			// The interval's own reading is the tick's first; the sweep's last, after its four
+			// deletions, is the second. The case calls tick itself, on its own goroutine, so the
+			// count needs no lock.
+			fixture, reads := readVolumeUsage, 0
+			readVolumeUsage = func(path string) (volumeUsage, error) {
+				if reads++; reads == 2 {
+					return volumeUsage{}, errors.New("launcher: statfs " + path + ": input/output error")
+				}
+				return fixture(path)
+			}
+			t.Cleanup(func() { readVolumeUsage = fixture })
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newTrimFixture(t, tc.perRoot)
+			f.useVolume(tc.volume)
+			f.setSettings(trimSettings())
+			tr := f.trimmer()
+			var falling atomic.Bool
+			falling.Store(true)
+			tr.logf = func(format string, args ...any) {
+				if strings.Contains(fmt.Sprintf(format, args...), tc.line) && falling.CompareAndSwap(true, false) {
+					panic(fell)
+				}
+				f.log(format, args...)
+			}
+			tc.stage(t, f, tr)
+			set := *trimSettings()
+			interval := func(what string) {
+				t.Helper()
+				if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
+					t.Fatalf("%s ended the trimmer (%v), want it to go on", what, ending)
+				}
+			}
+			interval("the sweep whose line panics")
+			if falling.Load() || f.logged("sweeping") != 1 {
+				t.Fatalf("the trimmer wrote %q, want one sweep, whose line fell over", f.linesWritten())
+			}
+
+			if tc.recovery {
+				if tr.episode != 2 || tr.raisedBy != shimwire.VolumeEpisodeRecovery {
+					t.Errorf("after the sweep that left 65%% the trimmer is in episode %d raised by %q, want 2 by %q: its last reading is read for a recovery though its line panicked; it wrote %q",
+						tr.episode, tr.raisedBy, shimwire.VolumeEpisodeRecovery, f.linesWritten())
+				}
+				if sent := len(f.reports()); sent != 0 {
+					t.Errorf("the trimmer sent %d reports, want none: the sweep reached the low mark", sent)
+				}
+			} else {
+				// Written out rather than read off volumeQuietIntervals: R1's ten intervals.
+				const pause = 10
+				swept, paused := f.logged("sweeping"), f.logged("no sweep for another")
+				for reading := 1; reading <= pause; reading++ {
+					interval("a reading of the pause")
+					if f.logged("sweeping") != swept || f.logged("no sweep for another") != paused+reading {
+						t.Fatalf("reading %d after the sweep whose line panicked did not pause, want each of the %d readings after it to pause: %q",
+							reading, pause, f.linesWritten())
+					}
+				}
+				interval("the reading after the pause")
+				if f.logged("sweeping") != swept+1 {
+					t.Errorf("the reading after the pause wrote %q, want it to sweep: the pause is ten intervals and no more", f.linesWritten())
+				}
+				if sent := len(f.reports()); sent != 2 {
+					t.Errorf("the trimmer sent %d reports, want 2: the sweep whose line panicked and the one after its pause, each ended above the low mark", sent)
+				}
+			}
+			if faults := f.logged("recovered a panic"); faults != 0 {
+				t.Errorf("the trimmer recovered %d panics, want the line's dropped: it comes once the sweep's outcome is settled, and is counted in no row; it wrote %q", faults, f.linesWritten())
+			}
+		})
 	}
 }
 

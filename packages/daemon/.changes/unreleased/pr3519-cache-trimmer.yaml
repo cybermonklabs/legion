@@ -54,10 +54,12 @@ body: |-
   switched-off notice is sent whatever the bounds stand at. A rollback below this release has the operator
   delete the queued notices first, as docs/kubernetes.md says.
 
-  A `worker-died` notice of the tree architect, and of a held phase, now names the pod's own end
-  — `Evicted: The node was low on resource: ephemeral-storage. ...` above all — when the claim's
-  process died of one, and, where the notice carries no failure record, the sentence the daemon
-  wrote when it gave up on the claim, quoted and cut at 400 characters; the one that ends a
-  closed issue's production-check look, which carried that sentence whole, now quotes and cuts it
-  the same way. The pod end is kept on the claim, in a new `claims.pod_end` column, so a failure
-  the daemon replays after a restart names it too.
+  A `worker-died` notice of the tree architect, and of a held phase, now names the pod end of the
+  process the notice is about — `Evicted: The node was low on resource: ephemeral-storage. ...`
+  above all — where that process died of one, and, where the notice carries no failure record,
+  the sentence the daemon wrote when it gave up on the claim, quoted and cut at 400 characters;
+  the one that ends a closed issue's production-check look, which carried that sentence whole,
+  now quotes and cuts it the same way. The pod end is kept on the claim, in a new
+  `claims.pod_end` column, so a failure the daemon replays after a restart names it too; each
+  launch of the claim clears it, and the death of the process that launch started writes its own
+  in its place.

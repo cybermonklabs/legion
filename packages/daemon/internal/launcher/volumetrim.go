@@ -755,10 +755,11 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 		// Read here, once the sweep has returned and before this tick writes its lines about the
 		// sweep or makes its report, so a reported sweep whose line here or whose report then
 		// panics has been read all the same, as riseAt says of every reported sweep. The lines
-		// the sweep writes itself come before this, and a panic of one of them is the sweep's own:
-		// that sweep never returns, so it is not read. The sweep's refused /proc reads need no
-		// hand-over here or below: the sweep gave each to the trimmer the moment it met it (sweep,
-		// carryRefused).
+		// the sweep writes itself come before this: a panic of one written before the sweep has
+		// settled why it ends is the sweep's own, and that sweep never returns, so it is not read,
+		// where one written after is dropped and the sweep is read (sweep). The sweep's refused
+		// /proc reads need no hand-over here or below: the sweep gave each to the trimmer the
+		// moment it met it (sweep, carryRefused).
 		t.riseAt(reading.Percent())
 	}
 	// The reading is written as the sweep left it rather than as another "the volume is" line,
@@ -999,18 +1000,21 @@ func (row faultRow) String() string {
 // panicked.
 //
 // A panic in a line the logger writes can skip what follows that line in the same interval, and
-// PID 1 keeps running. It is counted as a fault in its row, but for three kinds of line, which are
-// counted in no row (run): the lines run writes of a panic it caught, which run drops, since the
-// logger that raised it is the one place there is to write it and the panic each was about is
-// counted already or is the last report's; the line that says the trimmer is off, which run drops
-// as well; and the lines of the last report, as switchOff makes and sends it or as deliverLast
-// tries it again, where a panic ends the trimmer unless that report is still held when it comes,
-// which the trimmer then still tries: run after a line of switchOff's, and deliverLast at its next
-// attempt after the line of a failed one (switchOff, deliverLast). Where a line written once the
-// last report was sent or discarded panics, saidLeftOut's line of what the bound left out,
-// deliverLast's line that says the report was sent or its line that says an answer with no
-// settings discarded it, run's closing line says the report panicked and was not tried again,
-// although the daemon has it or, for the last of those lines, R2 had it discarded.
+// PID 1 keeps running. It is counted as a fault in its row, but for four kinds of line, which are
+// counted in no row (run, sweep): the lines run writes of a panic it caught, which run drops,
+// since the logger that raised it is the one place there is to write it and the panic each was
+// about is counted already or is the last report's; the line that says the trimmer is off, which
+// run drops as well; the four lines a sweep writes once it has settled why it ends — that its
+// deleter could not be started or ended, that the volume could not be read at its end, and how
+// many more entries of a root it passed over than it named — which the sweep drops, so tick still
+// acts on that sweep's outcome; and the lines of the last report, as switchOff makes and sends it
+// or as deliverLast tries it again, where a panic ends the trimmer unless that report is still
+// held when it comes, which the trimmer then still tries: run after a line of switchOff's, and
+// deliverLast at its next attempt after the line of a failed one (switchOff, deliverLast). Where
+// a line written once the last report was sent or discarded panics, saidLeftOut's line of what
+// the bound left out, deliverLast's line that says the report was sent or its line that says an
+// answer with no settings discarded it, run's closing line says the report panicked and was not
+// tried again, although the daemon has it or, for the last of those lines, R2 had it discarded.
 //
 // Each row counts the recovered panics of its kind since the last work of that kind ran to its
 // end (ran, tick), a panic tick recovered and one of the work run contained alike, and a panic of
@@ -1283,6 +1287,18 @@ type sweepEntry struct {
 // its install cache into a workspace's node_modules, so unlinking the cached copy frees nothing
 // at all while those links stand — a sweep counting bytes would empty the cache and report a
 // volume it had not changed.
+//
+// Four lines are written once the sweep has settled why it ends, with nothing after them but its
+// last reading and the sums of what it freed: that its deleter could not be started, that its
+// deleter ended, that the volume could not be read at its end, and how many more entries of a
+// root it passed over than it named, written as the sweep ends (passedOver.said). Each is written
+// inside contain, as deliverLast writes the line of a failed attempt, so a panic of one, which
+// only the logger can raise, is dropped and counted in no row, and the sweep still returns its
+// outcome: tick reads its last reading for a recovery, sets the pause after a sweep that freed
+// under a point, and reads a reported sweep's start for a rise and makes its report, as it does
+// for a sweep whose lines were written (tick). Every other line the sweep writes comes before it
+// has settled why it ends, and a panic of one ends the sweep, which tick recovers and counts as a
+// fault of the sweep row.
 func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, first volumeUsage) sweepOutcome {
 	start := t.now()
 	deadline := start.Add(volumeSweepBudget)
@@ -1294,7 +1310,10 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 		under[at] = filepath.Clean(root.Path)
 	}
 	passed := &passedOver{logf: t.logf, roots: t.roots, count: map[string]int{}}
-	defer passed.said()
+	// Written as the sweep ends, whichever way it ends, and once a sweep that returns has settled
+	// its outcome, so its panic is dropped (above). Where the sweep itself panicked, the panic
+	// that goes on to tick is the sweep's own, and not this line's.
+	defer contain(passed.said)
 
 	used := readUsedPaths(t.procRoot, under, t.self)
 	usedAt := t.now()
@@ -1351,8 +1370,8 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 		started, err := t.removals(t.cover, dirs)
 		if err != nil {
 			out.reason = fmt.Sprintf("the sweep's deleter could not be started, so nothing was deleted: %v", err)
-			t.logf(volumeTrimLog+"%s", out.reason)
 			out.report = first.Percent() > float64(set.LowPercent)
+			contain(func() { t.logf(volumeTrimLog+"%s", out.reason) }) // its panic dropped (above)
 			return out
 		}
 		remover = started
@@ -1442,7 +1461,7 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 			// here, as it does for a /proc read the kernel refused while it ran. Deleting the
 			// rest in the launcher's own view is the one thing it must not do.
 			out.reason = fmt.Sprintf("the sweep's deleter ended after %d deletions, so the sweep kept what it had deleted and stopped: %v", out.deletions, ended)
-			t.logf(volumeTrimLog+"%s", out.reason)
+			contain(func() { t.logf(volumeTrimLog+"%s", out.reason) }) // its panic dropped (above)
 			break
 		}
 		if !removed {
@@ -1483,7 +1502,7 @@ func (t *trimmer) sweep(ctx context.Context, set shimwire.LauncherVolumeTrim, fi
 		// The sweep's last reading: the deletions since the last one are not in any reading yet,
 		// and the report's freed bytes are the difference between the first reading and this.
 		if reading, err := readVolumeUsage(t.volumeRoot); err != nil {
-			t.logf(volumeTrimLog+"the volume could not be read at the end of the sweep: %v", err)
+			contain(func() { t.logf(volumeTrimLog+"the volume could not be read at the end of the sweep: %v", err) }) // its panic dropped (above)
 		} else {
 			out.last = reading
 		}
