@@ -311,9 +311,6 @@ function readJunit(xml: string): Junit {
   const describe: string[] = [];
   let file: string | undefined;
   let testcase: OpenTestcase | undefined;
-  // Whether the text of the open `<failure>` is its testcase's message: the failure is the
-  // testcase's first, and has no message of its own.
-  let bodyIsMessage = false;
   let rooted = false;
 
   const enter = (tag: Tag) => {
@@ -351,10 +348,9 @@ function readJunit(xml: string): Junit {
           if (testcase.outcome === "passed") testcase.outcome = "skipped";
         } else if (testcase.outcome !== "failed") {
           testcase.outcome = "failed";
-          testcase.message = tag.attributes.get("message") ?? "";
           // Bun writes no `message` for an error with no message, and writes the error's text and
-          // stack only as the failure's body.
-          bodyIsMessage = testcase.message === "";
+          // stack only as the failure's body, which `read` then takes as the message.
+          testcase.message = tag.attributes.get("message") ?? "";
         }
         break;
       default:
@@ -367,9 +363,7 @@ function readJunit(xml: string): Junit {
   const leave = (name: string) => {
     const expected = open.pop();
     if (expected !== name) throw new Error(`a </${name}> closes <${expected ?? "nothing"}>`);
-    if (name === "failure") {
-      bodyIsMessage = false;
-    } else if (name === "testcase" && testcase !== undefined) {
+    if (name === "testcase" && testcase !== undefined) {
       testcases.push(testcase);
       testcase = undefined;
     } else if (name === "testsuite") {
@@ -383,7 +377,7 @@ function readJunit(xml: string): Junit {
     if (parent !== "failure") {
       throw new Error(`a text inside <${parent ?? "nothing"}>: ${JSON.stringify(text)}`);
     }
-    if (bodyIsMessage && testcase !== undefined) testcase.message += text;
+    if (testcase !== undefined && testcase.message === "") testcase.message = text;
   };
 
   for (const token of tags(xml)) {
