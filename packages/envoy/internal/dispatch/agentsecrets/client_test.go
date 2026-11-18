@@ -59,7 +59,9 @@ func tokenFile(t *testing.T, token string) string {
 	return path
 }
 
-func TestPendingSendsBearerAndApproverQuery(t *testing.T) {
+// Pending asks for both states on every call, the pending rows and the expired ones nobody has
+// dismissed, whatever the browser asked Dispatch for: Dispatch's own list URL stays ?approver=me.
+func TestPendingSendsBearerApproverAndBothStates(t *testing.T) {
 	server, captured := serveCapturing(t, http.StatusOK, `{"requests":[]}`)
 	defer server.Close()
 
@@ -67,8 +69,8 @@ func TestPendingSendsBearerAndApproverQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Pending: %v", err)
 	}
-	if captured.Method != http.MethodGet || captured.Path != "/v1/pending?approver=sjawhar" {
-		t.Fatalf("request = %s %s, want GET /v1/pending?approver=sjawhar", captured.Method, captured.Path)
+	if want := "/v1/pending?approver=sjawhar&state=pending&state=expired"; captured.Method != http.MethodGet || captured.Path != want {
+		t.Fatalf("request = %s %s, want GET %s", captured.Method, captured.Path, want)
 	}
 	if captured.Auth != "Bearer account-token" {
 		t.Fatalf("Authorization = %q, want Bearer account-token", captured.Auth)
@@ -162,6 +164,30 @@ func TestRevokeByApproverSendsBearerPathAndTheApprover(t *testing.T) {
 	}
 	if string(captured.Body) != `{"approver":"sjawhar"}` {
 		t.Fatalf("body = %s, want {\"approver\":\"sjawhar\"}", captured.Body)
+	}
+}
+
+// Dismiss sends the approver Dispatch names and nothing else, as a revoke does, to the record's
+// own dismiss route.
+func TestDismissSendsBearerPathAndTheApprover(t *testing.T) {
+	server, captured := serveCapturing(t, http.StatusOK, `{"record_id":"rec-1"}`)
+	defer server.Close()
+
+	body, err := New(server.URL, tokenFile(t, "account-token")).Dismiss(context.Background(), "rec-1", "sjawhar")
+	if err != nil {
+		t.Fatalf("Dismiss: %v", err)
+	}
+	if captured.Method != http.MethodPost || captured.Path != "/v1/credential-requests/rec-1/dismiss" {
+		t.Fatalf("request = %s %s, want POST /v1/credential-requests/rec-1/dismiss", captured.Method, captured.Path)
+	}
+	if captured.Auth != "Bearer account-token" {
+		t.Fatalf("Authorization = %q, want Bearer account-token", captured.Auth)
+	}
+	if string(captured.Body) != `{"approver":"sjawhar"}` {
+		t.Fatalf("body = %s, want {\"approver\":\"sjawhar\"}", captured.Body)
+	}
+	if string(body) != `{"record_id":"rec-1"}` {
+		t.Fatalf("answer = %s, want the broker's response relayed verbatim", body)
 	}
 }
 

@@ -1,22 +1,23 @@
 // Package agentsecrets relays Dispatch's credential pages to the secrets broker's named-caller
 // API (its account routes: https://cybermonklabs.github.io/legion/broker/reference/api/). Dispatch lists
-// the credential requests waiting on a person, each secret request linking to the broker's own
-// page, where that person, signed in to the broker, decides it; it relays a machine login's
-// decision with the code the person typed; it relays a person's revoke of a grant, a machine
+// the credential requests waiting on a person, and the expired ones nobody has dismissed, each
+// secret request linking to the broker's own page, where that person, signed in to the broker,
+// decides it; it relays a machine login's decision with the code the person typed; it relays a
+// person's dismissal of an expired request; it relays a person's revoke of a grant, a machine
 // login or one of their own sign-ins; and it reads the broker's public RFC 8414 metadata, so a
 // page can know which grants this broker serves. Reads and the machine-login lookup carry and
 // return json.RawMessage, so a broker read-shape change never requires a Dispatch code change.
-// Every decision (a machine login's approve or deny, a revoke) instead carries a body Dispatch
-// builds itself: the person it names is the login Dispatch's own session resolved, so nothing
-// the browser sends can name who decided.
+// Every decision (a machine login's approve or deny, a dismissal, a revoke) instead carries a
+// body Dispatch builds itself: the person it names is the login Dispatch's own session resolved,
+// so nothing the browser sends can name who decided.
 //
 // Dispatch authenticates to the broker as itself: every call carries Dispatch's own projected
 // Kubernetes ServiceAccount token, which the broker verifies against its cluster issuer and
 // matches against BROKER_API_ACCOUNTS. That names the caller and nothing more: the broker takes a
-// machine login's approver, and the person a revoke names, from the body, on the word of that
-// listed caller. It decides no secret request on that word: it refuses an approve or deny of one
-// with 403 DECIDE_ON_BROKER_PAGE carrying the record's approve_url, an *Error the routes relay
-// like any other.
+// machine login's approver, and the person a dismissal or a revoke names, from the body, on the
+// word of that listed caller. It decides no secret request on that word: it refuses an approve
+// or deny of one with 403 DECIDE_ON_BROKER_PAGE carrying the record's approve_url, an *Error the
+// routes relay like any other.
 package agentsecrets
 
 import (
@@ -149,15 +150,20 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 	return json.RawMessage(responseBody), nil
 }
 
-// Pending lists the credential requests awaiting the named approver's decision.
+// Pending lists the credential requests awaiting the named approver's decision, and the expired
+// ones nobody has dismissed: it always asks the broker for both states, the pending rows first
+// and then the expired ones, each newest first. Asking here, rather than taking the states from
+// the browser, keeps Dispatch's own list URL what every page and recording already asks for. A
+// broker from before records had a state ignores the two values and answers its pending rows,
+// none of which then carries a state.
 func (c *Client) Pending(ctx context.Context, approver string) (json.RawMessage, error) {
-	query := url.Values{"approver": {approver}}
+	query := url.Values{"approver": {approver}, "state": {"pending", "expired"}}
 	return c.do(ctx, http.MethodGet, "/v1/pending?"+query.Encode(), nil)
 }
 
-// Decision is every approve, deny and revoke body Dispatch sends: Approver is the deciding
-// human's canonical login as Dispatch's session resolved it, and Code, for a machine login, is the
-// typed confirmation code the human entered.
+// Decision is every approve, deny, dismiss and revoke body Dispatch sends: Approver is the
+// deciding human's canonical login as Dispatch's session resolved it, and Code, for a machine
+// login, is the typed confirmation code the human entered.
 type Decision struct {
 	Approver string  `json:"approver"`
 	Code     *string `json:"code,omitempty"`
@@ -212,6 +218,18 @@ func (c *Client) RevokeByApprover(ctx context.Context, grantID, approver string)
 		return nil, err
 	}
 	return c.do(ctx, http.MethodPost, "/v1/grants/"+url.PathEscape(grantID)+"/revoke-by-approver", body)
+}
+
+// Dismiss relays a person's dismissal of an expired credential request, a secret request or a
+// machine login whose deadline passed before anybody decided it, which takes it off every list
+// for good. It carries the approver alone, as a revoke does: a dismissal decides nothing and
+// releases nothing, and the broker allows it only for a person whose list holds the record.
+func (c *Client) Dismiss(ctx context.Context, recordID, approver string) (json.RawMessage, error) {
+	body, err := Decision{Approver: approver}.body()
+	if err != nil {
+		return nil, err
+	}
+	return c.do(ctx, http.MethodPost, "/v1/credential-requests/"+url.PathEscape(recordID)+"/dismiss", body)
 }
 
 // MachineLogins lists the machine logins the named person may revoke that can still reach a

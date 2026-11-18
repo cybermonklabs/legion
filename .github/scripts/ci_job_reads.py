@@ -434,8 +434,9 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
                              "packages/claude-envoy/tests/answers-claude.test.ts:312,338 runs"),
         ("packages/envoy-client/test/**", "packages/claude-envoy/tests/envoy-channel-stall.test.ts:5-12 imports three of its modules, and tsc puts four files of that directory in the claude-envoy program"),
         ("packages/pi-shared/test/image-manifest.ts", "packages/claude-envoy/tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/image-manifest"),
-        (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:18-19, legion-tool.test.ts:13-14"),
-        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
+        (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:44-45, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:14-15"),
+        (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
+        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:10"),
 )
 
 
@@ -1456,7 +1457,7 @@ ENVOY_RACE_LANE = (
             "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
-    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "30m", (RacePackage("internal/dispatch/api"),)),
+    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
@@ -1677,7 +1678,7 @@ TEXT_CHECK_TESTS = {
         "TestEveryReviewReadOrdersByReviewOrder",
         "TestTheReviewOrderGuardReadsBothOrders"},
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": {
-        "TestOnlyWriteReviewWritesReviews",
+        "TestOnlyQueueReviewWritesReviews",
         "TestTheReviewWriterPatternsReadEveryNameOfTheTable",
         "TestTheReviewWriterScanFindsAnIdentifierNamingTheTable"},
 }

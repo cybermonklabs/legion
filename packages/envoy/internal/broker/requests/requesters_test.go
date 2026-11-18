@@ -478,7 +478,7 @@ func TestServiceRequesterAwaitsOwner(t *testing.T) {
 	if pending.Approver == nil || *pending.Approver != fixtureOperator {
 		t.Fatalf("the pod's card names approver %v, want the secret's one person owner %s", pending.Approver, fixtureOperator)
 	}
-	waiting, err := m.PendingForApprover(ctx, fixtureOperator)
+	waiting, err := m.PendingForApprover(ctx, fixtureOperator, PendingStates{})
 	if err != nil || len(waiting) != 1 || waiting[0].RecordID != *pending.RecordID {
 		t.Fatalf("the owner's pending list = %+v, %v; want the pod's card %s waiting on it", waiting, err, *pending.RecordID)
 	}
@@ -495,10 +495,10 @@ func TestServiceRequesterAwaitsOwner(t *testing.T) {
 	// The owner's page is as it was, and the refused person's is empty: a request the list denied
 	// leaves nothing for anyone to approve, neither under the owner the secret names nor under
 	// the person who asked, whose page would also show a card any approver may decide.
-	if waiting, err := m.PendingForApprover(ctx, fixtureOperator); err != nil || len(waiting) != 1 || waiting[0].RecordID != *pending.RecordID {
+	if waiting, err := m.PendingForApprover(ctx, fixtureOperator, PendingStates{}); err != nil || len(waiting) != 1 || waiting[0].RecordID != *pending.RecordID {
 		t.Fatalf("the owner's pending list after the refusal = %+v, %v; want the pod's card %s still alone on it", waiting, err, *pending.RecordID)
 	}
-	if waiting, err := m.PendingForApprover(ctx, otherPerson); err != nil || len(waiting) != 0 {
+	if waiting, err := m.PendingForApprover(ctx, otherPerson, PendingStates{}); err != nil || len(waiting) != 0 {
 		t.Fatalf("the refused person's pending list = %+v, %v; want it empty", waiting, err)
 	}
 }
@@ -532,7 +532,7 @@ func TestUncappedListedLoginAwaitsOwner(t *testing.T) {
 	if req.LifetimeSeconds == nil || *req.LifetimeSeconds != eightHours {
 		t.Fatalf("the pending request asks for %v seconds, want the %d seconds it signed: nothing changes a signed lifetime, and a secret with no cap does not refuse it", req.LifetimeSeconds, eightHours)
 	}
-	waiting, err := m.PendingForApprover(ctx, fixtureOperator)
+	waiting, err := m.PendingForApprover(ctx, fixtureOperator, PendingStates{})
 	if err != nil || len(waiting) != 1 || waiting[0].RecordID != *req.RecordID {
 		t.Fatalf("the owner's pending list = %+v, %v; want the uncapped request's card %s waiting on it", waiting, err, *req.RecordID)
 	}
