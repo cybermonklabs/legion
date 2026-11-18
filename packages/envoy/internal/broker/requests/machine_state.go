@@ -1000,11 +1000,16 @@ type Dismissal struct {
 // It is one transaction, and it reads the record's state under a share lock taken before the read:
 // on the requests row for a secret request, which waits for ApplyDecision's `for update` of that
 // row, and on the credential_requests row for a machine login, which waits for machine's
-// ApplyDecision's `for no key update` of it. So a decision that began before the deadline and
-// commits after it is read as what it decided, and refused ErrTerminal, rather than dismissed
-// under it; and a decision that comes after the read waits for this one and then answers its own
-// expiry. The state is read by a statement of its own, after the lock, so it sees what the
-// decision it waited for committed. Two dismissals of one record meet on the table's primary key:
+// ApplyDecision's `for no key update` of it. So a decision that holds that lock first, one that
+// began before the deadline and commits after it included, is read as what it decided, and the
+// dismissal is refused ErrTerminal rather than written under it. The state is read by a statement
+// of its own, after the lock, so it sees what the decision it waited for committed. A decision
+// that takes the lock after this read waits for this transaction and then compares the deadline
+// with its own now(), the moment its own transaction began: one that began after the deadline
+// answers its expiry, and one that began before it may still decide the record. That record is
+// then decided with a dismissal row beside it, which nothing reads: the list reads a dismissal
+// only for a record recordStateSQL reads as expired, and a later Dismiss refuses a decided record
+// ErrTerminal before it reads one. Two dismissals of one record meet on the table's primary key:
 // the first's insert returns the row it wrote, and the second inserts nothing and reads the first
 // one's row back.
 func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissal, error) {

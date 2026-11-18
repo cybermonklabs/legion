@@ -28,7 +28,9 @@ type PendingEntry struct {
 	Session RecordSessionResp `json:"session"`
 	// A secret request's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>, where a person
 	// signed in to the broker decides it; absent for a machine login, which is decided with its
-	// typed code, and on a broker with BROKER_SIGNIN=off, which serves no page.
+	// typed code, and on a broker with BROKER_SIGNIN=off, which serves no page. An expired row
+	// carries it too, and that page shows the request expired, with nothing left to decide; the
+	// Inbox and `dispatch inbox` link no expired row to it.
 	ApproveURL string `json:"approve_url,omitempty"`
 	// "pending" for a record a decision may still settle, and "expired" for one whose deadline
 	// passed before anybody decided it, which every decision refuses and which a list asking for
@@ -252,7 +254,8 @@ type RecordResponse struct {
 	ExpiresAt time.Time `json:"expires_at"`
 	// When it was asked.
 	RequestedAt time.Time `json:"requested_at"`
-	// How it was decided; null while pending.
+	// How it was decided; null while nobody has decided it: while it is pending, and while it is
+	// expired before the expiry sweep records its expiry.
 	Decided *RecordDecisionResp `json:"decided"`
 }
 
