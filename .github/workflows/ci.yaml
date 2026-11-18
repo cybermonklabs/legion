@@ -1641,16 +1641,19 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-test-step-expansion.test.sh'
-              # :38 loads the script by path, and the script imports the engine, which imports
+              # :40 loads the script by path, and the script imports the engine, which imports
               # the path model and the Go build-tag module.
               - '.github/scripts/go-test-step-expansion.py'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/scripts/go_build_tags.py'
-              # Its last case reads the two step lines the reader exists for, out of the files
-              # that hold them.
+              # One case reads the two step lines the reader exists for, out of the files that
+              # hold them.
               - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
               - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
+              # Its last case hashes each script AUDITED_SCRIPTS reads, so a pull request that
+              # edits one runs it and is told to read the script again.
+              - 'packages/envoy/scripts/database-skips.sh'
 
             # The test job: the Claude Code plugin build, the changelog fold, the script
             # harnesses above and the Bun suites of scripts/. The daemon's Go tests are the

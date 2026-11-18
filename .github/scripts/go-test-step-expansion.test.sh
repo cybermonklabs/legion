@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Tests for `go-test-step-expansion.py`'s reading of one line of a step's script: which command a
-# line runs, and which shapes it refuses rather than guesses at.
+# line runs, and which shapes it refuses rather than guesses at; and that each script
+# AUDITED_SCRIPTS reads still has the SHA-256 its entry pins.
 #
-# Only the line reader. What the script makes of a command - the packages a `go test -list` names,
-# the pairs two steps share, the exceptions - needs all three Go modules' test binaries built,
-# which is minutes of compile and why no CI job runs that script (its own header says so). This
-# harness needs no Go at all: every case is one line of text.
+# Only the line reader and the pins. What the script makes of a command - the packages a
+# `go test -list` names, the pairs two steps share, the exceptions - needs all three Go modules'
+# test binaries built, which is minutes of compile and why no CI job runs that script (its own
+# header says so). This harness needs no Go at all: every case is one line of text, or a file's
+# hash.
 #
 # The case that named this harness: a step whose line sets a variable before its command, or runs
 # it under the memory wrapper, was refused, and the refusal stopped the whole run at exit 2 with
@@ -129,5 +131,19 @@ else:
   check "$form does not leave its pattern among the packages" "$(is "$in_packages" "no")"
   check "$form is kept, so the tests it skips can be subtracted" "$(is "$retained" "yes")"
 done
+
+# AUDITED_SCRIPTS holds a person's reading of each script, pinned by its SHA-256, and the script
+# refuses a step whose script's text has moved on. The script runs by hand, so nothing else tells
+# the pull request that edits an audited script: #2856 changed database-skips.sh's
+# EXPECTED_SKIPS, the pin went stale, and the next by-hand run ended at exit 2 with no verdict.
+# ci.yaml's go_test_step_expansion_test filter names each audited script, so this case runs on
+# that pull request.
+echo "case: each script AUDITED_SCRIPTS reads still has the text its entry was read from"
+repo=$(cd "$script_dir/../.." && pwd)
+while IFS=$'\t' read -r path pinned; do
+  actual=$(sha256sum "$repo/$path" | cut -d' ' -f1)
+  check "$path has its entry's SHA-256 (read the script again, then update its AuditedScript entry in go-test-step-expansion.py)" \
+    "$(is "$actual" "$pinned")"
+done < <(py 'for path, audited in ex.AUDITED_SCRIPTS.items(): print(path + "\t" + audited.sha256)')
 
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"
