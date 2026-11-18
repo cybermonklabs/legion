@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -27,8 +29,8 @@ const (
 	askQuestionHintLimit = 120
 )
 
-func (s *server) askIDInputForOwner(ctx context.Context, q queryer, owner owner) error {
-	asks, _, err := s.queryOwnerAsks(ctx, q, owner, "open")
+func (s *server) askIDInputForOwner(ctx context.Context, q queryer, who model.Actor, owner owner) error {
+	asks, _, err := s.queryOwnerAsks(ctx, q, who, owner, "open")
 	if err != nil {
 		return err
 	}
@@ -196,8 +198,12 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The ask's id and its created_at, drawn before anything is written: the node goes in before
+	// the row, and each relation it states is dated as graph_edges' old arm dates the row, by the
+	// transaction's now(), which is the default the insert below gives created_at.
 	var rowID string
-	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text`).Scan(&rowID); err != nil {
+	var createdAt time.Time
+	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, now()`).Scan(&rowID, &createdAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -225,16 +231,47 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			return
 		}
 	}
-	var ask model.Ask
-	if err := tx.QueryRow(r.Context(), `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		returning created_at
-	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind).Scan(&ask.CreatedAt); err != nil {
+	// The ask's node goes in before its row, in the project of the issue or the document it is
+	// asked on, with the documents it is anchored to and belongs to and who asked it
+	// (graphstore.AskFacts); what that write states waits for the ask.opened event below
+	// (graphstore.Caused), and the row names the node.
+	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := asks.FollowAuthor(r.Context(), tx, rowID, actor); err != nil {
+	var anchorArtifact *string
+	if anchor != nil {
+		anchorArtifact = &anchor.ArtifactID
+	}
+	places, err := graphstore.ReadAskPlaces(r.Context(), tx, anchorArtifact, owner.ArtifactID, nil)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	nodes, facts, marked := graphstore.AskFacts(rowID, project, parties, actor, createdAt, graphstore.NoEvent, places)
+	// The ask is the node this create makes, first of the nodes AskFacts answers
+	// (graphstore.Created).
+	nodes[0] = graphstore.Created(nodes[0])
+	askNode, err := graphstore.WriteUncaused(r.Context(), tx, nodes, facts)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	nodeKind, nodeAddress := graphstore.AskRowNode(rowID, marked)
+	var ask model.Ask
+	if err := tx.QueryRow(r.Context(), `
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		returning created_at
+	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind, nodeKind, nodeAddress).Scan(&ask.CreatedAt); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The asker follows the ask it opened, and a session asker is a node of the store from this
+	// write on; its node learns the ask.opened event below once that is appended.
+	followed, err := asks.FollowAuthor(r.Context(), tx, rowID, actor, ask.CreatedAt, graphstore.NoEvent)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -301,6 +338,14 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "ask", ask.ID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, followed.Uncaused, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, askNode, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -563,12 +608,46 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// An edit of an ask's words made for a run (graphstore.WithRun, which withinGoingRun puts on
+	// a request naming its run) names the ask as changed by that run where it changed them
+	// (dispatch://INFRA-1950/spec#b-r-interaction): its question, or the words of an option
+	// (askWordsChanged); an edit of its urgency or of multiple alone changes no fact the store
+	// holds of the ask and no words of it, and names no change. Nothing else this route writes
+	// reaches the ask's node, so under a run it writes that node as the create and the backfill
+	// write it (graphstore.AskNode): in the project, or between the parties, of what it is asked
+	// on (graphstore.ScopeOf), made by its asker at its created_at, and marked changed. The node
+	// restates the ask, so a node already there keeps the state, the visibility, the made_at and
+	// the made_by the store holds and moves nothing else, and an ask a process of the release
+	// before created gets here the node the backfill would give it. The changed_by_run is this
+	// edit's, dated at its edited_at and signed by its writer (graphstore.Node's ChangedAt and
+	// ChangedBy). It is the last node row this transaction takes, after the ask's row and its
+	// document, and what it states waits for ask.edited (graphstore.Caused), as an issue's own
+	// field write does (patchIssue). A write made for no run writes no node and sends no
+	// statement more than it did.
+	var askNode graphstore.Uncaused
+	if graphstore.MadeForRun(documentCtx) && askWordsChanged(previous, ask) {
+		project, parties, err := graphstore.ScopeOf(documentCtx, tx, ask.IssueKey, ask.ArtifactID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		node := graphstore.AskNode(ask.ID, project, parties, ask.Author, ask.CreatedAt)
+		node.Changed, node.ChangedAt, node.ChangedBy = true, editedAt, actor
+		if askNode, err = graphstore.WriteUncaused(documentCtx, tx, []graphstore.Node{node}, nil); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	event, err := s.appendEvent(documentCtx, tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.edited",
 		actor,
 		model.NewAskEditEventPayload(ask, previous, actor, askChanges),
 	))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(documentCtx, tx, askNode, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -596,6 +675,17 @@ func blockArtifactOf(ask model.Ask) (string, error) {
 		return "", fmt.Errorf("ask %q has block id without block artifact", ask.ID)
 	}
 	return *ask.BlockArtifactID, nil
+}
+
+// askWordsChanged is whether an edit changed the words of the ask, as the row now stores them
+// against what it held before: its question, or the label or the description of an option, an
+// option added or an option dropped. An option's block id is no word of it, and multiple and
+// urgency are none either. It is what an edit made for a run names the ask's node changed by
+// (editAsk).
+func askWordsChanged(previous model.AskEditPrevious, ask model.Ask) bool {
+	return previous.Question != ask.Question || !slices.EqualFunc(previous.Options, ask.Options, func(was, now model.AskOption) bool {
+		return was.Label == now.Label && was.Description == now.Description
+	})
 }
 
 func timestampPtr(value *time.Time) *string {
@@ -785,7 +875,11 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, issueOwner(r.PathValue("key")), state)
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, who, issueOwner(r.PathValue("key")), state)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -802,7 +896,7 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if withThread {
-		if err := s.attachIssueAskThreads(r.Context(), rows, reader); err != nil {
+		if err := s.attachIssueAskThreads(r.Context(), who, rows, reader); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -811,15 +905,15 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, rows)
 }
 
-// attachIssueAskThreads hangs each row's thread off it. loadAskThreads leaves `answers` empty -
-// an Inbox row, its other caller, is an open ask and can have none - so this list, which does
-// carry answered asks, merges them over the same ask ids itself.
-func (s *server) attachIssueAskThreads(ctx context.Context, rows []issueAskRow, reader *displayTreeReader) error {
+// attachIssueAskThreads hangs each row's thread off it, read for who. loadAskThreads leaves
+// `answers` empty - an Inbox row, its other caller, is an open ask and can have none - so this
+// list, which does carry answered asks, merges them over the same ask ids itself.
+func (s *server) attachIssueAskThreads(ctx context.Context, who model.Actor, rows []issueAskRow, reader *displayTreeReader) error {
 	askIDs := make([]string, len(rows))
 	for index := range rows {
 		askIDs[index] = rows[index].ID
 	}
-	threads, err := s.loadAskThreads(ctx, askIDs, reader)
+	threads, err := s.loadAskThreads(ctx, who, askIDs, reader)
 	if err != nil {
 		return err
 	}
@@ -874,6 +968,10 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "ask") {
 		return
 	}
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
 	ask, err := s.loadAsk(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -882,7 +980,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	// The ask read is the one caller that serialises the count; the write paths load the row
 	// only to check its owner and answer from their own re-read, so they do not pay for it. The
 	// same goes for the part ids of its options and of its answer, and its part revision.
-	if err := attachAskReadFields(r.Context(), s.deps.Store.Pool, []*model.Ask{&ask}); err != nil {
+	if err := attachAskReadFields(r.Context(), s.deps.Store.Pool, who, []*model.Ask{&ask}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -891,7 +989,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, "ask_id", ask.ID)
+	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "ask_id", ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1092,7 +1190,7 @@ var (
 // options and answer with its part revision (attachAskPartIDs), and WaitingOn when open. The
 // newest reply in each ask's thread is returned keyed by ask id; an ask nobody has replied to has
 // no entry. The issue detail's `open_asks` and the issue's own ask list read through it.
-func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, state string) ([]model.Ask, map[string]model.AskLastReply, error) {
+func (s *server) queryOwnerAsks(ctx context.Context, q queryer, who model.Actor, owner owner, state string) ([]model.Ask, map[string]model.AskLastReply, error) {
 	var query, value string
 	switch {
 	case owner.IssueKey != nil:
@@ -1127,7 +1225,7 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, sta
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := loadAskDetails(ctx, q, askReadPointers(asks)); err != nil {
+	if err := loadAskDetails(ctx, q, who, askReadPointers(asks)); err != nil {
 		return nil, nil, err
 	}
 	return asks, replies, nil

@@ -266,12 +266,14 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 	}
 }
 
-// An answer is written into its ask's block, and the answer itself - its words, and the options it
-// selects, whose labels are the asker's text and render escaped, a `>` as seven bytes - is caller
-// text. Where the document has no room for it the ask still takes the answer whole, and its block
-// is written without it, saying who answered and when, so no answer grows the document past what
-// one upload may hold: one choice of a 1,000,000-character option took a 1 MB document to 8 MB,
-// and an answer of 900 KB to a document with no room for it was refused and recorded nowhere.
+// An answer is held on its ask's node (dispatch://INFRA-1150 R3), and the text an agent reads
+// renders it into its ask's block on read (docs.TextWithAnswers); the answer itself - its words,
+// and the options it selects, whose labels are the asker's text and render escaped, a `>` as seven
+// bytes - is caller text. Where the document has no room for it the ask still takes the answer
+// whole, and its block reads without it, saying who answered and when, so no answer takes the text
+// an agent reads, and uploads back, past what one upload may hold: one choice of a
+// 1,000,000-character option took a 1 MB document to 8 MB, and an answer of 900 KB to a document
+// with no room for it was refused and recorded nowhere.
 func TestAnAnswerTheDocumentHasNoRoomForIsKeptOnItsAskAndLeftOutOfItsBlock(t *testing.T) {
 	t.Run("words", func(t *testing.T) {
 		prose := boundedAnswer()
@@ -514,14 +516,15 @@ func refusedTooLarge(t *testing.T, response *httptest.ResponseRecorder) bool {
 	return body.Code == "CAP_EXCEEDED" && strings.HasPrefix(body.Error, "document too large to store: ")
 }
 
-// An answer is stored on its ask as well as in its block, and when a deleted block returns to the
-// document settlement writes the stored answer back into it, so it is caller text in the document
-// as the answer route's is: settlement writes it back where the document has room for it, and where
-// the document would pass what one upload may hold and grow, it restores the block's state and
-// withholds the answer's text, which the ask keeps. A 75-byte insert of an answered ask's block
-// left a 225 KB document, and twenty-four answers of 900 KB, each weighed against a document their
-// deleted blocks had left small, came back in one 1,852-byte edit as a 21.6 MB document. The
-// document here has room for one answer at the bound and not for two (roomForOneAnswer).
+// An answer is held on its ask's node, and the text an agent reads renders it into its block
+// whenever the block stands in the document, a block that left and returned among them, so it is
+// caller text in that text as the answer route's is: the text carries it where the document has
+// room for it, and where the document would pass what one upload may hold and grow, the block
+// reads its state and who answered without the answer's text, which the ask keeps. A 75-byte
+// insert of an answered ask's block left a 225 KB document, and twenty-four answers of 900 KB, each
+// weighed against a document their deleted blocks had left small, came back in one 1,852-byte edit
+// as a 21.6 MB document. The document here has room for one answer at the bound and not for two
+// (roomForOneAnswer).
 func TestSettlementCannotGrowADocumentPastWhatOneUploadMayHoldByRestoringAnswers(t *testing.T) {
 	handler, _ := blockAskHandler(t)
 	prose := boundedAnswer()
@@ -595,7 +598,7 @@ func TestSettlementCannotGrowADocumentPastWhatOneUploadMayHoldByRestoringAnswers
 	}
 }
 
-// Settlement weighs each answer it writes back into a returning block on its own, in document
+// The text an agent reads weighs each answer it renders into a block on its own, in document
 // order: two answers at the ask bound returned in one edit to a document with room for one leave
 // the first block with its answer and the second saying who answered and when without it, and the
 // second's answer comes back once the document has room for it. Withheld together, neither came

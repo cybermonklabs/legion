@@ -15,7 +15,7 @@ import (
 
 // issueSummary is GET /api/v1/issues/{key}/summary: the issue's key, project, title and status,
 // and its documents and files in the order the full read lists its artifacts, so an issue link and
-// its documents' links share one read.
+// its documents' links share one read. A retired document is in neither list.
 type issueSummary struct {
 	Key       string                 `json:"key"`
 	Project   string                 `json:"project"`
@@ -66,7 +66,7 @@ func (s *server) getIssueSummary(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select a.id::text, a.slug, a.name, a.kind, `+summaryLatestVersion+`, a.is_primary
-		from artifacts a where a.issue_key = $1 order by a.created_at, a.id
+		from artifacts a where a.issue_key = $1 and a.retired_at is null order by a.created_at, a.id
 	`, summary.Key)
 	if err != nil {
 		s.writeHandlerError(w, err)

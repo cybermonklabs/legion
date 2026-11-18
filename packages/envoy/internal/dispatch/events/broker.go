@@ -61,7 +61,8 @@ type lockedOwner struct {
 // lockOwners validates every event's owner, then locks each distinct owner once, in the order
 // of their owner keys, so two transactions that share owners always take them in one order.
 // It returns each event's owner key, by index, and what each owner's lock read, by owner key.
-// LockOwners and AppendAll share it, so the one lock order serves both.
+// LockOwners and AppendAll share it, so the one lock order serves both, and LockOwnerRows takes
+// owner rows by key in the same order for the writers that take them and append no event.
 func lockOwners(ctx context.Context, tx pgx.Tx, events []model.Event) ([]string, map[string]*lockedOwner, error) {
 	keys := make([]string, len(events))
 	order := make([]int, len(events))
@@ -354,10 +355,10 @@ func eventOwnerKey(e model.Event) (string, error) {
 		return "", fmt.Errorf("event requires at most one owner")
 	}
 	if e.IssueKey != nil {
-		return "issue:" + *e.IssueKey, nil
+		return issueOwnerPrefix + *e.IssueKey, nil
 	}
 	if e.ArtifactID != nil {
-		return "artifact:" + *e.ArtifactID, nil
+		return artifactOwnerPrefix + *e.ArtifactID, nil
 	}
 	return "project:" + *e.ProjectKey, nil
 }

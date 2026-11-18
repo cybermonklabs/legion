@@ -1,0 +1,43 @@
+kind: Added
+body: |-
+  A Dispatch node now has one of five states: live, proposed, settled, overtaken or gone. The store
+  refuses any other state. A lens, a finding, a risk and a constraint can be kept for their author,
+  and a run of the command bar always is: such a node answers its author and no other reader, at
+  every read, count and excerpt. The store refuses `author` visibility on every other kind. The
+  author is the person a credential proves, else a session, only where its recorded actor is proven
+  (`proven: true`, which a broker-issued token's session carries), else a pod's workload, the
+  session a pod's request body names included. A session only a request body names, with no
+  workload, proves no author.
+
+  Dispatch adds a lens (`POST /api/v1/issues/{key}/lenses`), its findings, a risk, a constraint and
+  the pointers between them (`prevented_by` from a risk to the checks that prevent it,
+  `constrained_by` from a block to its constraints). When a block goes, its `constrained_by`
+  pointers and the `prevented_by` pointers at it are retracted. `GET /api/v1/lenses?on=<address>`
+  reads the lenses invoked on a node in invocation order, and a trigger walks at most 50 lenses
+  down a chain. The lens kinds are a catalogue that two migrations seed with 22 kinds, ten and then
+  twelve more, and `envoy-dispatch lens-kind-add` is its one writer.
+
+  `POST /api/v1/issues/{key}/nodes/{id}/state` moves a node's state, `GET
+  /api/v1/issues/{key}/proposed` lists the proposed nodes of an issue, and
+  `POST /api/v1/issues/{key}/nodes/{id}/settle` lets a person or the node's author settle a proposed
+  node. A requirement's coverage counts no proposed check or plan task.
+  `GET /api/v1/issues/{key}/decisions` lists a decision, an ask and a reading at every state but
+  gone, and each entry and each reading carries its node's `state`.
+
+  A run of the command bar is now an interaction node, kept with its frames past its deadline and
+  read only by the credential that asked it, where the release before deleted a run after one hour.
+  A write sent with the `Dispatch-Going-Run` header adds one `changed_by_run` tuple from each node
+  that it created or changed to that run: an issue PATCH, an ask's answer, resolution or decline, a
+  follow or an unfollow of an ask, and an edit of an ask's or a comment's words included. A removed
+  document's node is marked gone and keeps no `changed_by_run` tuple, so a document made again
+  under the same title is not listed under the old run. The sweep ends the overdue runs whose
+  deadline passed in the last day, and one pass at each boot ends every older overdue run.
+  `envoy-dispatch erase` removes a run with its frames.
+
+  `envoy-dispatch premortem-convert` and
+  `POST /api/v1/issues/{key}/artifacts/{slug}/premortem-convert` turn a pre-mortem document into a
+  lens with one risk for risk 0 and for each numbered risk, each with `prevented_by` pointers to the
+  checks that a map names. It then retires the document: the document leaves its issue's document
+  list, takes no new text, and holds one `document.retired` event whose reason names the lens. Its
+  old address answers that lens on `GET /api/v1/references?to=` and in the reference closure of any
+  issue that cites it.

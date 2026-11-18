@@ -37,16 +37,23 @@ type operationStamped interface {
 	setOperation(int)
 }
 
-// ErrInvalidOp identifies the malformed user-facing operation field.
+// ErrInvalidOp identifies the malformed user-facing operation field. Err is the refusal Reason
+// reports where another check made it - a block pointer the write may not hold
+// (pmdoc.ErrBlockPointer), the caller's markdown the schema refuses (ErrInvalidMarkdown) - so a
+// caller tells that refusal by its kind, as it does where no operation reports it; it is nil where
+// the reason is the operation's own.
 type ErrInvalidOp struct {
 	opIndex
 	Field  string
 	Reason string
+	Err    error
 }
 
 func (e *ErrInvalidOp) Error() string {
 	return fmt.Sprintf("%sinvalid document operation field %q: %s", e.prefix(), e.Field, e.Reason)
 }
+
+func (e *ErrInvalidOp) Unwrap() error { return e.Err }
 
 func invalidOp(field string) error {
 	return &ErrInvalidOp{Field: field}
@@ -1755,7 +1762,7 @@ func invalidSchemaOp(field string, err error) error {
 // the route's other attribute refusals are.
 func invalidBlockPointerOp(err error) error {
 	if errors.Is(err, pmdoc.ErrBlockPointer) {
-		return &ErrInvalidOp{Field: "attributes", Reason: err.Error()}
+		return &ErrInvalidOp{Field: "attributes", Reason: err.Error(), Err: err}
 	}
 	return err
 }
@@ -1797,7 +1804,7 @@ func invalidTableIndex(tree *pmdoc.Node, blockID, axis, supplied, problem string
 
 func invalidMarkdownOp(field string, err error) error {
 	if errors.Is(err, ErrInvalidMarkdown) {
-		return &ErrInvalidOp{Field: field, Reason: err.Error()}
+		return &ErrInvalidOp{Field: field, Reason: err.Error(), Err: err}
 	}
 	return err
 }

@@ -1836,6 +1836,15 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_HOLD_DECISIONS_STEP": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"}); !boot.HoldDecisionsStep {
+				t.Error("DISPATCH_TEST_HOLD_DECISIONS_STEP=1: HoldDecisionsStep false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_DECISIONS_STEP": "true"}); boot.HoldDecisionsStep {
+				t.Error("DISPATCH_TEST_HOLD_DECISIONS_STEP=true: HoldDecisionsStep true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
 				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL unset: CIReconcileInterval = %v, want 0 (cireconcile.Interval's five minutes)", boot.CIReconcileInterval)

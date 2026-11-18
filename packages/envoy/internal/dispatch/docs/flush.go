@@ -140,46 +140,48 @@ func (s *Service) forkPoint(room string, live *crdt.Doc, client crdt.ClientID, a
 
 // treePoint is the tree live, the room document resident for room, holds as of an exact commit
 // position (readSettlementTree): the tree the room's replica holds, read under the replica's lock
-// through pmdoc.ReadUnshared (treeOfUnshared), with the position it was read at (atPoint). Only a
-// holder of the replica's mu reads or writes the replica (renderedReplica), which is what
-// ReadUnshared's lock-free walk of each text asks for, and the tree it hands back is the caller's
-// own (ownedValue), as pmdoc.Read's is. A replica holding no state is started from the copy the
-// read takes from the room, and its tree is then walked. A room whose load listed no replica has
-// no tree to walk, nor has a copy the replica could not start from: that copy is decoded and
-// read here, holding no lock (stateTree).
+// through pmdoc.ReadUnshared (treeOfFragmentsUnshared), with the position it was read at
+// (atPoint). Only a holder of the replica's mu reads or writes the replica (renderedReplica),
+// which is what ReadUnshared's lock-free walk of each text asks for, and the tree it hands back is
+// the caller's own (ownedValue), as pmdoc.Read's is. A replica holding no state is started from the
+// copy the read takes from the room, and its tree is then walked. A room whose load listed no
+// replica has no tree to walk, nor has a copy the replica could not start from: that copy is
+// decoded and read here, holding no lock (stateTree). The tree is the room's whole tree, every
+// fragment its layout names joined as the room renders them (layoutOf, joinFragments), with how
+// many top-level blocks each fragment holds; a room that is its own document has no counts.
 //
 // It arms no settlement for the updates it classified and reports instead whether any is one a
 // settlement follows: the settlement reading them is the one they would arm, and arming another
 // moves the room's generation under it, which ends it as superseded. It reports that whether or
 // not the tree could be read, so its caller arms what the drain classified exactly where a caller
 // of readPoint would. The caller holds no state lock and is not inside a Yjs transaction on live.
-func (s *Service) treePoint(room string, live *crdt.Doc) (*pmdoc.Node, roomPoint, bool, error) {
+func (s *Service) treePoint(room string, live *crdt.Doc) (*pmdoc.Node, []int, roomPoint, bool, error) {
+	fragments := s.layoutOf(live).fragments()
 	var tree *pmdoc.Node
+	var counts []int
 	var treeErr error
 	copied, point, _, settles, err := s.atPoint(room, live, func(_ roomPoint, doc *crdt.Doc) {
-		var valid pmdoc.ValidDocument
-		if valid, treeErr = treeOfUnshared(doc); treeErr == nil {
-			tree = valid.Node()
-		}
+		tree, counts, treeErr = treeOfFragmentsUnshared(doc, fragments)
 	})
 	if err != nil {
-		return nil, roomPoint{}, settles, err
+		return nil, nil, roomPoint{}, settles, err
 	}
 	if copied != nil {
-		tree, treeErr = stateTree(copied)
+		tree, counts, treeErr = stateTree(copied, fragments)
 	}
-	return tree, point, settles, treeErr
+	return tree, counts, point, settles, treeErr
 }
 
-// stateTree is the tree of state, a room's state as a read point copied it (readPoint): a
-// version's capture of the room it versions, and the tree read of a room that has no replica to
-// read, or whose copy its replica could not start from (treePoint).
-func stateTree(state []byte) (*pmdoc.Node, error) {
+// stateTree is the tree of state, a room's state as a read point copied it (readPoint), over the
+// fragments the read takes (treeOfFragments): a version's capture of the room it versions, and the
+// tree read of a room that has no replica to read, or whose copy its replica could not start from
+// (treePoint).
+func stateTree(state []byte, fragments []string) (*pmdoc.Node, []int, error) {
 	doc := newDocumentCopy()
 	if err := crdt.ApplyUpdateV1(doc, state, nil); err != nil {
-		return nil, fmt.Errorf("decode the room's read state: %w", err)
+		return nil, nil, fmt.Errorf("decode the room's read state: %w", err)
 	}
-	return treeOf(doc)
+	return treeOfFragments(doc, fragments)
 }
 
 // committedSince reports whether live, the room document resident for room, has committed anything

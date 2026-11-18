@@ -196,6 +196,24 @@ const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
     rowsOf<Ask>(data).some(openAndNotHandedOn),
 };
 
+/** Every document's live text (`["artifact", id, "text"]`) that renders a copy of an ask on
+ *  another document (`copied_from`): a project document's page reads a copy's source from that
+ *  text (`renderedAskOf`), since no route lists a project's asks, and an answer, a resolution or a
+ *  reopening of the source changes no byte of the copy's document, so no event of that document
+ *  refreshes it. Of any document, since the key names the document by id alone; a text that
+ *  renders no copy is not read again. */
+const LIVE_TEXTS_RENDERING_COPIES: RefreshTarget = {
+  queryKey: ["artifact"],
+  when: (data, query) =>
+    query.queryKey.length === 3 &&
+    query.queryKey[2] === "text" &&
+    typeof data === "object" &&
+    data !== null &&
+    "markdown" in data &&
+    typeof data.markdown === "string" &&
+    data.markdown.includes("copied_from="),
+};
+
 /** The project the ask of a cached thread names, or undefined when it names none: its issue's
  *  (`issueProject`), else the project of the document an anchored ask or an approval request sits
  *  on. A block ask on a project document names its document by id alone (`block_artifact`). */
@@ -628,7 +646,9 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
       const changes = issueChanges(event);
       return (
         changes === undefined ||
-        ["parent", "blocked_by", "components", "title"].some((field) => changes.has(field))
+        ["parent", "needs", "blocked_by", "duplicate_of", "filed_from", "components", "title"].some(
+          (field) => changes.has(field)
+        )
       );
     }
     default:
@@ -747,29 +767,51 @@ function issueWriteTargets(
     targets.push({ queryKey: ["priorities"] }, { queryKey: ["issues", "advances"] });
   }
 
-  // A `child_of` edge into the parent and a `blocked_by` edge into each blocker are rows of their
-  // backlink panels: the new parent and blockers are the payload's, the old ones are the panels
-  // that still list an edge from this issue.
-  if (moved("parent") || moved("blocked_by")) {
+  // A `child_of` edge into the parent, a `needs` edge into each issue it waits on, a
+  // `duplicate_of` edge into the issue it repeats and a `filed_from` edge into the item it was
+  // filed out of are rows of their backlink panels: the new far ends are the payload's, the old
+  // ones are the panels that still list an edge from this issue. A Dispatch of the release before
+  // writes `blocked_by` alone, which is read where the payload holds no `needs`, and names the
+  // edge blocked_by.
+  if (
+    moved("parent") ||
+    moved("needs") ||
+    moved("blocked_by") ||
+    moved("duplicate_of") ||
+    moved("filed_from")
+  ) {
     const parent = payloadString(event, "parent");
-    const blockers = payloadStrings(event, "blocked_by") ?? [];
+    const waits = payloadStrings(event, "needs") ?? payloadStrings(event, "blocked_by") ?? [];
+    const duplicate = payloadString(event, "duplicate_of");
+    const filed = payloadString(event, "filed_from")?.split("/").pop();
     targets.push(
       referencePanels(
         ({ edges, node }) =>
-          node.kind === "issue" &&
-          (node.id === parent ||
-            blockers.includes(node.id) ||
-            (edges ?? []).some(
-              (edge) =>
-                edge.node.kind === "issue" &&
-                edge.node.id === key &&
-                (edge.kind === "child_of" || edge.kind === "blocked_by")
-            ))
+          (node.kind === "issue" &&
+            (node.id === parent || node.id === duplicate || waits.includes(node.id))) ||
+          (filed !== undefined && node.id === filed) ||
+          (edges ?? []).some(
+            (edge) =>
+              edge.node.kind === "issue" &&
+              edge.node.id === key &&
+              ISSUE_RELATION_KINDS[edge.kind] === true
+          )
       )
     );
   }
   return targets;
 }
+
+/** The kinds of edge an issue states out of its own node: its parent, its waits under both the
+ *  spelling this Dispatch answers and the one a Dispatch of the release before answers, the
+ *  issue it repeats and the item it was filed out of. */
+const ISSUE_RELATION_KINDS: Partial<Record<string, true>> = {
+  child_of: true,
+  needs: true,
+  blocked_by: true,
+  duplicate_of: true,
+  filed_from: true,
+};
 
 /**
  * What one write of priority `id` changes, by which of the three writes it was. Every one moves
@@ -827,6 +869,43 @@ function priorityWriteTargets(
  *  neither a version nor an ask names those sources, so the prefix is refreshed rather than one
  *  key. */
 const EVERY_QUESTION_MAP: RefreshTarget = { queryKey: ["references", "questions"] };
+
+/**
+ * The batched read the new issue page's names come from (`referenceTargetsQuery`): the words
+ * shown for every `dispatch://` address one page holds - an issue's title, a document's name, a
+ * block's excerpt, an ask's question, a comment's or a message's first words - in one answer
+ * (part G, R12). Its key is the set of addresses it asked for and names no
+ * issue, so there is no narrower target than the prefix: a retitled issue, an edited block or a
+ * reworded ask moves the words of a page whose addresses reach it, whichever issue the event is
+ * on. Only the new page reads it, and the server resolves every address of the set before it can
+ * answer an unchanged one `304` (`reference_targets.go`), so only an event that can change a
+ * name marks it stale (`changesReferenceName`).
+ */
+const EVERY_REFERENCE_NAME: RefreshTarget = { queryKey: ["reference-targets"] };
+
+/**
+ * Whether the event can change the words the batched name read gives an address, or give words
+ * to an address that found nothing: an issue's new title (or a write that does not say what it
+ * moved), a document's upload, correction or new version - a block's words are a version's - and
+ * an edit of an ask or a comment. A new comment, message or ask adds an address to the page that
+ * names it, which is a new key and a read of its own, so it renames nothing a held read names.
+ */
+function changesReferenceName(event: DispatchEvent): boolean {
+  switch (event.type) {
+    case "artifact.created":
+    case "artifact.renamed":
+    case "artifact.version":
+    case "ask.edited":
+    case "comment.edited":
+      return true;
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("title");
+    }
+    default:
+      return false;
+  }
+}
 
 /** Whether the event can change what a `#id` names: a new version of a document, which decides
  *  which `:::ask{#id}` blocks the latest version declares, or an ask settling into a block,
@@ -894,6 +973,11 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
   }
+  // A new name or version of a document outside any issue, or an edit of an ask or a comment on
+  // it, can move the words a page's chip draws, which come from the batched name read.
+  if (changesReferenceName(event)) {
+    targets.push(EVERY_REFERENCE_NAME);
+  }
   // A reference to the document shows its name, kind and latest version. A correction moves the
   // name it shows. A new document can be the one a reference that found nothing named (no data
   // to test), so it refreshes those too.
@@ -912,6 +996,15 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   }
   if (isAskEvent(event)) {
     appendAskReads(targets, event);
+    // A copy of the ask on another of the project's documents reads its source's state from that
+    // document's live text.
+    if (
+      event.type === "ask.answered" ||
+      event.type === "ask.resolved" ||
+      event.type === "ask.opened"
+    ) {
+      targets.push(LIVE_TEXTS_RENDERING_COPIES);
+    }
   }
   if (isCommentLikeEvent(event)) {
     appendCommentReads(targets, event);
@@ -1085,6 +1178,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (changesReferenceGraph(event)) {
     targets.push({ exact: true, queryKey: ["issue", key, "references"] });
   }
+  if (changesReferenceName(event)) {
+    targets.push(EVERY_REFERENCE_NAME);
+  }
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
   }
@@ -1139,10 +1235,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     );
     if (event.type === "artifact.version") {
       targets.push({ queryKey: ["artifact", event.payload.artifact_id] });
-      // The Decisions view reads two of the issue's documents - its decisions.md for the
-      // decisions and its spec for each link's target - and the event names its document by
-      // name alone, which does not say which the spec is, so every version of the issue
-      // refreshes it. The query exists only while that tab is open.
+      // The Decisions view reads every document of the issue - each one's decision blocks and
+      // the spec nodes they shaped - and the event names its document by name alone, so every
+      // version of the issue refreshes it. The query exists only while that tab is open.
       targets.push({ exact: true, queryKey: ["decisions", key] });
     } else {
       // An uploaded document is an `attached_to` edge into its issue.
@@ -1451,12 +1546,63 @@ function askThreadsOn(issue: string): RefreshTarget {
 }
 
 /**
+ * Every names read the app holds (`referenceTargetsQuery`, `["reference-targets", <sorted
+ * addresses>]`, by that prefix) on an event that changes the words under an address a names read
+ * can already name, and none on any other: a comment's edit (its body), an ask's edit (its
+ * question) and a document's new version (its blocks' words), on whichever issue or project
+ * document it is, since a page's words can cite another issue's target. The issue page's
+ * names reads are kept fresh by events (`useIssueTree`'s `EVENT_FRESH`), never by their age,
+ * and a names read's key is the set of addresses it names, so a page that comes to hold
+ * another set reads again under a key of its own: only a change of words under the same
+ * address needs a rule.
+ * An issue's write that changes its title (`issue.updated` naming `title` among its changes, or
+ * naming none, as an older server sends it) renames every address to that issue, since a names
+ * read names an issue by its title, so it refreshes them too.
+ * A document's rename (`artifact.renamed`) moves the name the read answers for an address to the
+ * document, and its removal (`artifact.removed`) makes every address to it and to its blocks
+ * name nothing (`gone`), so each refreshes them too.
+ *
+ * A person's edit of a document (`artifact.human_edited`) is none of them: it is the notice sent
+ * once the document has been quiet after those edits, each of which wrote a version that sent
+ * its own `artifact.version` (the notice's branch of `ownerTargets`), so it changes no text. Nor
+ * is a message: the feed has no `message.edited` (its message events are `message.created`,
+ * `message.delivery`, `message.accepted` and `message.answered`), so a message's body never
+ * changes under its address.
+ *
+ * It costs one read per names query the app holds and renders (one request per batch of its
+ * addresses, which no ordinary issue passes), at most two for an open issue page - the tree's
+ * own and the one naming what a typed block's words cite (`useIssueTree`) - and marks stale one
+ * the app holds and renders not. It refreshes through the same `refreshQueries` every other
+ * rule does, so a read already out, or begun under a second ago, is fetched again once those
+ * rules allow.
+ */
+function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
+  switch (event.type) {
+    case "artifact.removed":
+    case "artifact.renamed":
+    case "artifact.version":
+    case "ask.edited":
+    case "comment.edited":
+      return [{ queryKey: ["reference-targets"] }];
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("title")
+        ? [{ queryKey: ["reference-targets"] }]
+        : [];
+    }
+    default:
+      return [];
+  }
+}
+
+/**
  * The reads one event of the feed can change, each a query key (a prefix unless `exact`) and, where
  * only some of a family's reads can have moved, a test of the read's data. `signedInLogin` is the
  * viewer's: the per-viewer events and the Replies rule read it.
  */
 export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string): RefreshTarget[] {
   const targets = [...ownerTargets(event, signedInLogin), ...changedReferenceTargets(event)];
+  targets.push(...referenceNameTargets(event));
   const threadsIssue = askThreadsIssue(event);
   if (threadsIssue !== null) {
     targets.push(askThreadsOn(threadsIssue));

@@ -162,6 +162,7 @@ async function withProvider(
     const admissions: boolean[] = [];
     const pending: PendingState[] = [];
     connection = connect(artifact, {
+      fragment: "prosemirror",
       onAdmission: (readOnly) => admissions.push(readOnly),
       onOutsideSchema() {},
       onPending: (state) => pending.push(state),

@@ -10,57 +10,17 @@
  *  root's own stack without a reload.
  *
  *  Every family name the rows compare in Node is compared whole and whatever its case; the two
- *  helpers copied from the source, `typefaceAddress` and `typefaceStatuses`, compare the declared
- *  name exactly, in the page. A part of a name never counts: `Inter` is inside `Inter fallback`
- *  and `Dispatch Inter`, and the root's own stack names `Inter`, which is a face the reader's
- *  machine may hold and not one the font set declares. */
+ *  helpers copied from the source, `typefaceAddress` and `typefaceStatuses`
+ *  (`issue-page-typeface.ts`), compare the declared name exactly, in the page. A part of a name
+ *  never counts: `Inter` is inside `Inter fallback` and `Dispatch Inter`, and the root's own stack
+ *  names `Inter`, which is a face the reader's machine may hold and not one the font set
+ *  declares. */
 
 import { createIssue, createProject, createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
-import { COMPACT_VIEWPORT_WIDTH, sidebarInbox } from "./inbox-threads";
 import { withIssuePage } from "./issue-page-option";
+import { TYPEFACE, typefaceAddress, typefaceStatuses } from "./issue-page-typeface";
 import { expect, type Locator, type Page, type Response, test } from "./test";
-
-/** The family `web/src/styles.css` declares for the typeface the app ships and the new issue
- *  page draws in. */
-const TYPEFACE = "Dispatch Inter";
-
-/** The address the page's stylesheet loads the typeface from, read from its own `@font-face`
- *  rule; null when no rule declares the family. c-typeface. */
-function typefaceAddress(page: Page): Promise<string | null> {
-  return page.evaluate((family) => {
-    const find = (rules: CSSRuleList, base: string): string | null => {
-      for (const rule of rules) {
-        if (rule instanceof CSSFontFaceRule) {
-          const named = rule.style.getPropertyValue("font-family").replace(/["']/g, "").trim();
-          const source = /url\(["']?([^"')]+)["']?\)/.exec(rule.style.getPropertyValue("src"));
-          if (named === family && source?.[1] !== undefined) return new URL(source[1], base).href;
-        } else if (rule instanceof CSSGroupingRule) {
-          const found = find(rule.cssRules, base);
-          if (found !== null) return found;
-        }
-      }
-      return null;
-    };
-    for (const sheet of document.styleSheets) {
-      const found = find(sheet.cssRules, sheet.href ?? document.baseURI);
-      if (found !== null) return found;
-    }
-    return null;
-  }, TYPEFACE);
-}
-
-/** How each face of the typeface's family stands in the document's font set: `loaded` once the
- *  file arrived, `error` once its request failed. c-typeface. */
-function typefaceStatuses(page: Page): Promise<string[]> {
-  return page.evaluate(
-    (family) =>
-      [...document.fonts]
-        .filter((face) => face.family.replace(/["']/g, "") === family)
-        .map((face) => face.status),
-    TYPEFACE
-  );
-}
 
 /** A family name without the quotes Chromium writes around a name that holds a space. */
 function unquoted(name: string): string {
@@ -256,13 +216,19 @@ test("the new issue page draws the whole document in the shipped typeface @phone
   await page.evaluate(() => {
     Object.assign(window, { __noReload: 1 });
   });
-  // Below `xl` (`COMPACT_VIEWPORT_QUERY`, `web/src/features/shell/useDialog.ts`) the shell draws
-  // its top bar, whose `Dispatch` link goes to the Inbox, and no navigation column.
-  const compact = (page.viewportSize()?.width ?? 0) < COMPACT_VIEWPORT_WIDTH;
-  const toInbox = compact
-    ? page.getByRole("banner").getByRole("link", { exact: true, name: "Dispatch" })
-    : sidebarInbox(page);
-  await toInbox.click();
+  // The new page's frame (part D) draws an icon rail in place of today's sidebar and top bar
+  // from 768 px up, whose Inbox link goes to the Inbox. Below that it draws no navigation of its
+  // own until the header's menu comes, so the row moves through the router's history there: the
+  // move a link makes, with no reload.
+  const rail = page.getByTestId("icon-rail");
+  if ((await rail.count()) > 0) {
+    await rail.getByRole("link", { name: /^Inbox/ }).click();
+  } else {
+    await page.evaluate(() => {
+      window.history.pushState({}, "", "/");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+  }
   await expect(
     page.locator("main").getByRole("heading", { exact: true, level: 1, name: "Inbox" })
   ).toBeVisible();

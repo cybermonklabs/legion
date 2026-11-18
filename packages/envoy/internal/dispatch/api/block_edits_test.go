@@ -22,6 +22,11 @@ func TestDocumentEditsAddressBlocksByID(t *testing.T) {
 	handler := newTestHandler(t)
 	const ask = ":::ask{#decision urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich transport?\n:::\n"
 	issue := createInteractionIssue(t, handler, "TEST", "Block edits", "# Title\n\n"+ask+"\nContext ends with no drift.\n\n1. only\n")
+	// The text an agent reads renders an ask block's state from its ask (docs.TextWithAnswers),
+	// which the settlement of the spec opens; a block no settlement has opened yet reads with no
+	// state. So the edits wait for it, and the read after them shows the ask open wherever its
+	// block moved.
+	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "decision", "Which transport?")
 	blocks := decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/blocks", nil, "alice"))
 	var listID string
 	for _, block := range blocks {

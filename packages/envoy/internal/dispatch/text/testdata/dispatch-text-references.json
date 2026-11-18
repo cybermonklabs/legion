@@ -280,6 +280,47 @@
     ]
   },
   {
+    "body": "Ran dispatch://interaction/7c1e0000-0000-4000-8000-000000000001 and dispatch://lens/7c1e0000-0000-4000-8000-000000000002.",
+    "refs": [
+      "dispatch://interaction/7c1e0000-0000-4000-8000-000000000001",
+      "dispatch://lens/7c1e0000-0000-4000-8000-000000000002"
+    ],
+    "links": []
+  },
+  {
+    "body": "**dispatch://risk/7c1e0000-0000-4000-8000-000000000003** (dispatch://constraint/7c1e0000-0000-4000-8000-000000000004)",
+    "refs": [
+      "dispatch://risk/7c1e0000-0000-4000-8000-000000000003",
+      "dispatch://constraint/7c1e0000-0000-4000-8000-000000000004"
+    ],
+    "links": []
+  },
+  {
+    "body": "Of the kind dispatch://lens_kind/pre-mortem.",
+    "refs": [
+      "dispatch://lens_kind/pre-mortem"
+    ],
+    "links": []
+  },
+  {
+    "body": "Found in dispatch://lens/7c1e0000-0000-4000-8000-000000000002#b-f%c3%a9-1.",
+    "refs": [
+      "dispatch://lens/7c1e0000-0000-4000-8000-000000000002#b-f%C3%A9-1"
+    ],
+    "links": []
+  },
+  {
+    "body": "See `dispatch://lens/7c1e0000-0000-4000-8000-000000000002` here.",
+    "refs": [
+      "dispatch://lens/7c1e0000-0000-4000-8000-000000000002"
+    ],
+    "links": []
+  },
+  {
+    "body": "Not one: dispatch://lens/7c1e0000-0000-4000-8000-000000000002#b-x@v1, dispatch://lens/7C1E0000-0000-4000-8000-000000000002, dispatch://lens/7c1e0000, dispatch://risk/7c1e0000-0000-4000-8000-000000000003/x, dispatch://lens_kind/Pre-mortem, dispatch://lens_kind/pre_mortem, dispatch://risk/7c1e0000-0000-4000-8000-000000000003#b-x, dispatch://CORE-1/lens/7c1e0000-0000-4000-8000-000000000002 and dispatch://interaction/ here.",
+    "refs": []
+  },
+  {
     "body": "dispatch://CORE-1/spec#b-",
     "refs": []
   },

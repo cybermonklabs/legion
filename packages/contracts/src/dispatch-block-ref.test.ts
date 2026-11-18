@@ -8,10 +8,12 @@ import {
   decodeBlockId,
   encodeBlockId,
   formatBlockReference,
+  formatItemBlockReference,
   MAX_BLOCK_ID_BYTES,
   parseBlockFragment,
   parseBlockPointerValue,
   parseCanonicalBlockReference,
+  parseCanonicalItemBlockReference,
   typedBlockIdAttribute,
 } from "./dispatch-block-ref";
 
@@ -103,21 +105,60 @@ test("the Go encoder's table is the same table", async () => {
 });
 
 test.each([...DISPATCH_BLOCK_POINTER_VALUES])("decides block[] value %p", (row) => {
-  expect(parseBlockPointerValue(row.value) !== undefined).toBe(row.ok);
+  expect(parseBlockPointerValue(row.value, row.items) !== undefined).toBe(row.ok);
   // A refused value has a reason, and an accepted one none.
-  expect(blockPointerValueProblem(row.value) === undefined).toBe(row.ok);
+  expect(blockPointerValueProblem(row.value, row.items) === undefined).toBe(row.ok);
   if (row.problem !== undefined) {
-    expect(blockPointerValueProblem(row.value)).toContain(row.problem);
+    expect(blockPointerValueProblem(row.value, row.items)).toContain(row.problem);
   }
 });
 
+// A reference of an accepted value is written back as it was: a block of a document by
+// formatBlockReference, a block of an issue's item by formatItemBlockReference, and an issue is
+// its own reference.
 test("each reference of an accepted value is written back as it was", () => {
   for (const row of DISPATCH_BLOCK_POINTER_VALUES.filter((row) => row.ok && row.value !== "")) {
     for (const value of row.value.split(" ")) {
-      const reference = parseCanonicalBlockReference(value);
-      expect(reference && formatBlockReference(reference)).toBe(value);
+      const document = parseCanonicalBlockReference(value);
+      const item = parseCanonicalItemBlockReference(value);
+      const written =
+        document !== undefined
+          ? formatBlockReference(document)
+          : item !== undefined
+            ? formatItemBlockReference(item)
+            : value;
+      expect(written).toBe(value);
+      expect(document !== undefined || item !== undefined || row.items?.includes("issue")).toBe(
+        true
+      );
     }
   }
+});
+
+// An item reference names an issue's ask, comment or message, or an unpinned block of one, by the
+// item's whole lower-case uuid, as Go's text.CanonicalItemBlockRef reads it: each row's want is
+// the item's kind and the block id it reads, or "" for a value it refuses.
+test.each([
+  ["dispatch://CORE-1/ask/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f#b-q%3A1", "ask q:1"],
+  ["dispatch://CORE-1/comment/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f#b-b1", "comment b1"],
+  ["dispatch://CORE-1/message/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f#b-b1", "message b1"],
+  ["dispatch://CORE-1/ask/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "ask"],
+  ["dispatch://CORE-1/comment/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "comment"],
+  ["dispatch://CORE-1/message/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f", "message"],
+  ["dispatch://CORE-1/comment/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f#b-b1@v1", ""],
+  ["dispatch://CORE-1/comment/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f@v1", ""],
+  ["dispatch://CORE-1/comment/4F1C2D3E-5A6B-4C7D-8E9F-0A1B2C3D4E5F#b-b1", ""],
+  ["dispatch://CORE-1/comment/4F1C2D3E-5A6B-4C7D-8E9F-0A1B2C3D4E5F", ""],
+  ["dispatch://CORE-1/comment/4f1c2d3e#b-b1", ""],
+  ["dispatch://CORE-1/comment/4f1c2d3e", ""],
+  ["dispatch://CORE/artifact/handbook-md/comment/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f#b-b1", ""],
+  ["dispatch://CORE/artifact/handbook-md/comment/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f", ""],
+  ["dispatch://CORE-1/comment/4f1c2d3e-5a6b-4c7d-8e9f-0a1b2c3d4e5f#b-%62", ""],
+  ["dispatch://CORE-1/spec#b-b1", ""],
+])("reads item block reference %p", (value, want) => {
+  const read = parseCanonicalItemBlockReference(value);
+  const parts = read === undefined ? [] : [read.item, read.block];
+  expect(parts.filter((part) => part !== undefined).join(" ")).toBe(want);
 });
 
 test("the Go schema's table of block[] values is the same table", async () => {

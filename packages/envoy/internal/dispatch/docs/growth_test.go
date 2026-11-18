@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -147,32 +151,48 @@ func seedByWriter(t *testing.T, service *Service, artifactID string, client crdt
 	}
 }
 
-// An ask's state and who answered it and when are what the server knows of the ask's text rather
-// than text a caller writes, so the asks of a document already past what one upload may hold -
-// stored before the bound, or grown by a browser - can still be answered and resolved, though each
-// makes the document's markdown longer. The answer itself - its words, and the options it selects,
-// whose labels are the asker's text - is caller text, so on such a document it is left out of the
-// block, which says who answered and when, and the document grows by the server's state alone.
+// The asks of a document already past what one upload may hold - stored before the bound, or grown
+// by a browser - can still be answered and resolved, and none of it grows the document: an answer,
+// a choice and its words, and a resolution are held on the ask's node and its row alone
+// (asks.Settle), and on a fleet of one build the routes write no byte of any document
+// (dispatch://INFRA-1150 R3, "Once the whole fleet runs this build, a person's answer changes no
+// byte of any document"). An agent reads each ask's state on its block, rendered on read from the
+// ask (TextWithAnswers), and an answered block says who answered and when. What the text routes
+// answer is held to what one upload may hold, and this document has no room for the options chosen
+// or the words, so the block withholds them (answersWithRoom), as the release before wrote such a
+// block, and the ask keeps them whole.
 func TestTheAsksOfADocumentPastTheBoundCanStillBeAnsweredAndResolved(t *testing.T) {
 	service, _ := newTestService(t)
+	service.settle = time.Hour
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	ask := func(id string) string {
-		return fmt.Sprintf(":::ask{#%s urgency=\"med\" multiple=\"false\" state=\"open\"}\nShip it?\n\n- Yes: now\n- No: later\n:::\n", id)
+		return fmt.Sprintf(":::ask{#%s urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: now\n- No: later\n:::\n", id)
 	}
 	artifactID := createDocument(t, service.store, "One line.\n")
 	seedByWriter(t, service, artifactID, 1, strings.Repeat("word ", 230_000)+"\n\n"+ask("chosen")+"\n"+ask("resolved")+"\n"+ask("worded"))
-	answered := map[string]any{"state": "answered", "answered_by": "alice", "answered_at": "2026-10-03T00:00:00Z", "selected": []string{"Yes"}}
-	if err := joinedSetBlockAttributes(service, artifactID, "chosen", answered, alice); err != nil {
-		t.Fatalf("answering an ask with a choice on a document past the bound: %v", err)
+	settleCurrentGeneration(t, service, artifactID)
+	before, err := service.Text(context.Background(), artifactID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := joinedSetBlockAttributes(service, artifactID, "resolved", map[string]any{"state": "resolved"}, alice); err != nil {
-		t.Fatalf("resolving an ask on a document past the bound: %v", err)
+	if len(before) <= pmdoc.MaxDocumentBytes {
+		t.Fatalf("the document holds %d bytes, want it past the %d one upload may hold, so this test would prove nothing", len(before), pmdoc.MaxDocumentBytes)
 	}
-	answered["answer"] = "Ship it now."
-	if err := joinedSetBlockAttributes(service, artifactID, "worded", answered, alice); err != nil {
-		t.Fatalf("answering an ask in words on a document past the bound: %v", err)
+	at := time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC)
+	words := "Ship it now."
+	for block, change := range map[string]asks.Change{
+		"chosen":   asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"Yes"}, At: at}),
+		"resolved": asks.Resolved(model.AskResolution{Kind: "resolved", Reason: "Waived.", Actor: alice, At: at}),
+		"worded":   asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"Yes"}, Text: &words, At: at}),
+	} {
+		change.Who, change.At = alice, at
+		settleAskAs(t, service, artifactID, block, blockAskOn(t, service, artifactID, block).ID, alice, change)
 	}
-	markdown, err := service.Text(context.Background(), artifactID)
+	settleCurrentGeneration(t, service, artifactID)
+	if after, err := service.Text(context.Background(), artifactID); err != nil || after != before {
+		t.Fatalf("answering and resolving left the document %d bytes (%v), want the %d it held: no byte of it holds an answer", len(after), err, len(before))
+	}
+	shown, _, _, err := service.TextWithAnswers(context.Background(), artifactID, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,8 +201,26 @@ func TestTheAsksOfADocumentPastTheBoundCanStillBeAnsweredAndResolved(t *testing.
 		`{#resolved urgency="med" multiple="false" state="resolved"}`,
 		`{#worded urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-03T00:00:00Z"}`,
 	} {
-		if !strings.Contains(markdown, want) {
-			t.Errorf("the %d-byte document holds no %s", len(markdown), want)
+		if !strings.Contains(shown, want) {
+			t.Errorf("the %d-byte document as an agent reads it holds no %s", len(shown), want)
 		}
+	}
+	wordsOf := func(text *string) string {
+		if text == nil {
+			return "none"
+		}
+		return fmt.Sprintf("%q", *text)
+	}
+	for block, text := range map[string]*string{"chosen": nil, "worded": &words} {
+		held := blockAskOn(t, service, artifactID, block)
+		answer := held.Answer
+		if held.State != "answered" || answer == nil || answer.User != "alice" || !answer.At.Equal(at) ||
+			!slices.Equal(answer.Selected, []string{"Yes"}) || !reflect.DeepEqual(answer.Text, text) {
+			t.Errorf("the ask of %s = %s %+v, want answered by alice at %s choosing Yes, with the words %s", block, held.State, answer, at, wordsOf(text))
+		}
+	}
+	if held := blockAskOn(t, service, artifactID, "resolved"); held.State != "resolved" || held.Resolution == nil ||
+		held.Resolution.Kind != "resolved" || held.Resolution.Reason != "Waived." {
+		t.Errorf("the ask of resolved = %s %+v, want resolved with the reason Waived.", held.State, held.Resolution)
 	}
 }

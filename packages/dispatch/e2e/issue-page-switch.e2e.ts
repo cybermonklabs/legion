@@ -1,3 +1,4 @@
+import { EMPTY_STATE_LINES } from "../web/src/features/issue-page/page-words";
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import { openRail } from "./rail";
@@ -43,8 +44,20 @@ async function navigation(page: Page): Promise<Locator> {
 }
 
 async function openSettings(page: Page): Promise<void> {
-  const links = await navigation(page);
-  await links.getByRole("link", { exact: true, name: "Settings" }).click();
+  // The new page's frame (part D) draws no navigation below 768 px until the header's menu
+  // comes, so there the reader goes to Settings with its key, `g s`, which moves with no reload
+  // as a link does.
+  const frameWithoutNavigation =
+    (await page.locator("[data-issue-page]").count()) > 0 &&
+    (await page.getByRole("button", { name: "Open navigation" }).count()) === 0;
+  if (frameWithoutNavigation) {
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press("g");
+    await page.keyboard.press("s");
+  } else {
+    const links = await navigation(page);
+    await links.getByRole("link", { exact: true, name: "Settings" }).click();
+  }
   await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
 }
 
@@ -82,17 +95,55 @@ function newPageHeading(page: Page): Locator {
   return page.locator("[data-issue-page]").getByRole("heading", { level: 1 });
 }
 
-/** The new page as this part draws it: the key and the title as the page's one `h1`, no tab, and
+/** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
+ *  header, which draws the key and the title, the view row, the outline's one line for an issue
+ *  that holds nothing, the Contents pane and the Spec view that their own slots fill, and
  *  nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  await expect(newPage.locator("h1"), "the new page draws an h1 beside its title").toHaveCount(1);
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: each slot drawn so far adds no text or control.
-  await expect(newPage).toHaveText(`${issue.key} ${issue.title}`, { useInnerText: true });
-  await expect(newPage.locator("button, a, input, select, textarea")).toHaveCount(0);
+  // The slots filled so far change these readings: the header (`[data-issue-header]`), the view
+  // row (`[data-filter-row]`), the outline's one line for an issue that holds nothing at the
+  // issue's own address, and the Contents pane and the Spec view, whose own rows read them; each
+  // other slot drawn so far adds no text or control.
+  const filled =
+    '[data-issue-header], [data-filter-row], [data-testid="issue-contents"], [data-spec-body]';
+  const header = newPage.locator("[data-issue-header]");
+  const row = newPage.locator("[data-filter-row]");
+  await expect(header).toHaveCount(1);
+  await expect(row).toHaveCount(1);
+  const atIssue = new URL(page.url()).pathname === `/issues/${issue.key}`;
+  const body = atIssue ? EMPTY_STATE_LINES.conversation : "";
+  await expect
+    .poll(
+      () =>
+        newPage.evaluate((root, parts) => {
+          let text = (root as HTMLElement).innerText;
+          for (const part of root.querySelectorAll<HTMLElement>(parts)) {
+            text = text.replace(part.innerText, " ");
+          }
+          return text.replace(/\s+/g, " ").trim();
+        }, filled),
+      {
+        message:
+          "the new page draws text outside its header, its view row, the Contents pane and the Spec view",
+      }
+    )
+    .toBe(body);
+  const controls = "button, a, input, select, textarea";
+  expect(
+    await newPage
+      .locator(controls)
+      .evaluateAll(
+        (found, parts) => found.filter((control) => control.closest(parts) === null).length,
+        filled
+      ),
+    "the new page draws a control outside its header, its view row, the Contents pane and the Spec view"
+  ).toBe(0);
 }
 
 /** Every request to `/api/` or `/ws/` the page sends, with its body, and every frame it sends on

@@ -86,6 +86,9 @@ type statusRecorder struct {
 	// approvals maps a document id to the whole approval Dispatch shows for it, read ahead of
 	// approved.
 	approvals map[string]dispatch.Approval
+	// secondary names the documents the case gave no role that are not their issue's primary
+	// document either (Approval).
+	secondary map[string]bool
 	issues    map[string]dispatch.Issue
 	// handoffs is each Dispatch handoff record this fake knows, by id; handoffErr, when set, is
 	// every handoff read's answer instead, Dispatch's trouble.
@@ -177,9 +180,9 @@ func (r *statusRecorder) EventsAfter(context.Context, string, int64) ([]json.Raw
 }
 
 // Approval answers Dispatch's document read. A document this fake knows that the case under test
-// gave neither a role nor a slug is its issue's primary document, which is what the spec step of
-// the design gate binds to and what nearly every registration here registers; a case that drives
-// another step says so by setting the role or the slug it gave the document.
+// gave no role, and did not name secondary, is its issue's primary document, which is what the spec
+// step of the design gate binds to and what nearly every registration here registers; a case that
+// drives another step says so by setting the role it gave the document.
 func (r *statusRecorder) Approval(_ context.Context, artifactID string) (dispatch.Approval, error) {
 	r.reads = append(r.reads, "approval:"+artifactID)
 	issue, ok := r.documents[artifactID]
@@ -188,7 +191,7 @@ func (r *statusRecorder) Approval(_ context.Context, artifactID string) (dispatc
 	}
 	primary := func(approval dispatch.Approval) dispatch.Approval {
 		approval.IssueKey = issue
-		approval.Primary = approval.Role == "" && approval.Slug == ""
+		approval.Primary = approval.Role == "" && !r.secondary[artifactID]
 		return approval
 	}
 	if approval, shown := r.approvals[artifactID]; shown {
@@ -1211,7 +1214,7 @@ func TestAnArchitectClosesItsAdmittedRoot(t *testing.T) {
 	}
 }
 
-// theDecisionBlock is a decision block as a writer writes one into a text the daemon posts: a
+// theDecisionBlock is an ask block as a writer writes one into a text the daemon posts: a
 // question and its options inside an `ask` directive, which the reader draws a decision card for
 // and nobody can answer where it stands.
 const theDecisionBlock = ":::ask{urgency=\"med\"}\n" +
@@ -1223,7 +1226,7 @@ const theDecisionBlock = ":::ask{urgency=\"med\"}\n" +
 // make a post it refuses: one of exactly as many lines as Dispatch holds a body to blocks, where
 // the marker is one block more, and one ending inside an open code fence, where the marker is
 // code inside the last block and carries it over the unit bound; each is CLOSE_REASON_TOO_LONG,
-// naming the bound. A reason holding a decision block is CLOSE_REASON_DECISION_BLOCK however
+// naming the bound. A reason holding an ask block is CLOSE_REASON_DECISION_BLOCK however
 // short it is, since a question in a message is one nobody can answer; that refusal names the
 // block and where the question belongs, and asks neither for a shorter reason nor for less of
 // what the reason quotes (INFRA-1201). Its post is refused too, and for the same block: the
@@ -1246,10 +1249,12 @@ func TestAnArchitectsCloseIsRefusedForWhatItsPostHolds(t *testing.T) {
 		{name: "a reason that ends inside an open code fence",
 			reason: "see log\n\n```\n" + strings.Repeat("y", 31980), code: "CLOSE_REASON_TOO_LONG", takenAlone: true,
 			want: []string{fmt.Sprintf("block 2 (code_block) is 28 characters over the %d-character block limit", dispatchbody.BlockUnits)}},
-		{name: "a reason holding a decision block",
+		// The two sentences after the daemon's own are Dispatch's reader's (dispatchbody.Check),
+		// which spells the block its own way; the daemon passes them on as they are.
+		{name: "a reason holding an ask block",
 			reason: "The transport is still open.\n\n" + theDecisionBlock + "\n", code: "CLOSE_REASON_DECISION_BLOCK",
-			want: []string{"the reason holds a decision block", "body block 2 (ask) holds a decision block, which nobody can answer where it stands",
-				"ask the question in the issue's own document, as a decision block there, or open an ask with `dispatch ask`"},
+			want: []string{"the reason holds an ask block", "body block 2 (ask) holds an ask block, which nobody can answer where it stands",
+				"ask the question in the issue's own document, as an ask block there, or open an ask with `dispatch ask`"},
 			absent: []string{"shorten", "quot"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

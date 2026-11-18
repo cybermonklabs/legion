@@ -653,7 +653,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 	holder := holderOf(t, service, spec, "dispatch://CORE-2")
 
 	before := eventID - 1
-	edges, err := refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
+	edges, err := refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
 	if err != nil {
 		t.Fatalf("read the references to CORE-2 since %d: %v", before, err)
 	}
@@ -661,7 +661,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 		edges[0].SourceSeq == nil || *edges[0].SourceSeq != eventID {
 		t.Fatalf("references to CORE-2 since %d = %#v, want the block %s's mention from event %d", before, edges, holder, eventID)
 	}
-	edges, err = refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
+	edges, err = refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
 	if err != nil {
 		t.Fatal(err)
 	}

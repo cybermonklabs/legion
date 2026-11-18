@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -76,7 +77,8 @@ func unindexedAskBlockIDs(blocks []askBlock, rows map[string]model.Ask) []string
 
 // readCopiedAskSources is copiedAskSources for the blocks of blocks under the ids unindexed, which
 // takes no copy lock: its caller has taken the one owner needs, or owner is an issue, whose
-// documents need none (lockProjectCopies).
+// documents need none (lockProjectCopies), or its caller opens no ask from what it reads (a write's
+// refusal of a reading, refuseReadingsWithoutAnswers).
 func readCopiedAskSources(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -145,7 +147,7 @@ func readCopiedAskSources(
 }
 
 // copiedSource is the ask a copied block was copied from and the address of the document it is
-// on (refs.ArtifactRef), which settlement writes into the copy as copied_from and
+// part of (refs.ArtifactRef), which settlement writes into the copy as copied_from and
 // copied_from_document, so a reader names the source and where it is answered without asking.
 type copiedSource struct {
 	ask      model.Ask
@@ -227,18 +229,31 @@ func ownerDocuments(owner artifactOwner) (string, string) {
 }
 
 // copiedAskSourcesQuery reads the asks of owner's other documents under the block ids $1, the
-// document settled being $2, oldest first, each followed by its document's issue key, project,
-// slug, kind and whether it is the issue's spec, and returns the value it binds as $3: the owner's
+// document settled being $2, oldest first, and returns the value it binds as $3: the owner's
 // documents through their index, then each one's asks through asks_block_id_unique, whose second
 // column is block_id_key(block_id) (migration 0127), so the ids' keys are matched beside the ids.
+// Each ask is followed by the issue key, project, slug and kind of the document it is part of, and
+// whether that is the issue's spec: the far end of the current part_of of the ask's node
+// (graphstore.TuplePartOf, the record of where the ask is), read through graph_tuples_current and
+// the document's ref_key, or, for a row that names no node yet, which the boot step's backfill
+// marks, the document its block_artifact_id names. A node holding no part_of names no document,
+// and its columns are empty.
 func copiedAskSourcesQuery(owner artifactOwner) (string, string) {
 	documents, ownerKey := ownerDocuments(owner)
 	return `
-		select ` + AskColumns + `, d.issue_key, coalesce(d.project_key, ''), d.slug, d.kind, d.is_primary
+		select ` + AskColumns + `, place.issue_key, coalesce(place.project_key, ''), coalesce(place.slug, ''),
+		       coalesce(place.kind, ''), coalesce(place.is_primary, false)
 		from artifacts d
 		join asks a on a.block_artifact_id = d.id
 			and block_id_key(a.block_id) = any(array(select block_id_key(id) from unnest($1::text[]) id))
 			and a.block_id = any($1)
+		left join artifacts place on place.id = case when a.node_kind is null then d.id else (
+			select part_of.id from artifacts part_of
+			where part_of.ref_key = (
+				select part.to_id from (` + graphstore.CurrentTupleRead(`t.to_id`, `t.to_id, t.asserted, t.seq`,
+		`t.from_kind = '`+graphstore.KindAsk+`' and t.from_id = a.id::text and t.kind = '`+graphstore.TuplePartOf+`'
+				 and t.to_kind = '`+graphstore.KindArtifact+`'`) + `) part
+				where part.asserted order by part.seq desc limit 1)) end
 		where ` + documents + ` and d.id <> $2
 		order by a.created_at, a.id
 	`, ownerKey

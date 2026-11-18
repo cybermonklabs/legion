@@ -70,6 +70,9 @@ export interface DocumentConnection {
 }
 
 export interface ConnectionCallbacks {
+  /** The editor's tree: the fragment of the room that holds this document (`fragmentOf`). The
+   *  socket names the document, and the server decides the room. */
+  fragment: string;
   /** V, the schema version of the editor this connection serves: its manifest's `version`. */
   schemaVersion: number;
   /** R, the highest `since` among the elements that editor may create (`schemaCreatable`). */
@@ -245,6 +248,7 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     }
     sync = startPendingSync({
       doc,
+      fragment: callbacks.fragment,
       onChange: callbacks.onPending,
       remoteOrigin: provider,
       store: openPendingEdits(artifactId, doc.clientID),

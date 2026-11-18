@@ -16,7 +16,8 @@
 //
 // Each row also records what the decisions over the fleet read (migration 20261101030537): the
 // document schema numbers the process reads and creates, which the document socket's admission
-// takes (docs.Service.authorize), its embedder's identity, and whether it stores files in a bucket.
+// takes (docs.Service.authorize), its embedder's identity, whether it stores files in a bucket,
+// and what its build serves (Capabilities, migration 20261117045607).
 package processes
 
 import (
@@ -26,6 +27,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -79,6 +81,16 @@ const pruneLease = "server-processes"
 // names the other process.
 var ErrKeySetMismatch = errors.New("this process's signing key set does not match a live server process's")
 
+// CapabilityIssueRoom is the capability of a build that serves the issue room (dispatch://INFRA-1253
+// R5): it admits a converted document's socket to its issue's room and settles that room, so an
+// issue is born converted only while every live process lists it (decision 7 of that plan).
+const CapabilityIssueRoom = "issue_room"
+
+// Capabilities is what this build serves, as Register writes it into
+// server_processes.capabilities and the build's announcement lists it (refs.TupleKinds). A process
+// of a build before the column holds null there, which lists nothing.
+var Capabilities = []string{CapabilityIssueRoom}
+
 // Instance is what a process registers: the build it serves, the keys it signs and verifies with,
 // and what the decisions over the fleet read (migration 20261101030537).
 type Instance struct {
@@ -119,7 +131,13 @@ type Process struct {
 	SchemaCreatable  int
 	EmbedderIdentity string
 	FileStore        bool
+	// Capabilities is what the process's build serves (Capabilities), as it registered it; none
+	// for a process of a build before the column.
+	Capabilities []string
 }
+
+// Lists reports whether p's build serves capability (Capabilities).
+func (p Process) Lists(capability string) bool { return slices.Contains(p.Capabilities, capability) }
 
 // PredatesFleetColumns reports whether p is a process of a build that predates the columns migration
 // 20261101030537_server_processes_schema added, whose row holds their defaults: no build that
@@ -142,7 +160,8 @@ type Querier interface {
 // the oldest process first.
 const selectLive = `
 	select instance::text, commit, dashboard_build, signing_keys, started_at, heartbeat_at,
-		schema_version, schema_creatable, embedder_identity, coalesce(file_store, false)
+		schema_version, schema_creatable, embedder_identity, coalesce(file_store, false),
+		coalesce(capabilities, '{}')
 	from server_processes
 	where heartbeat_at > now() - make_interval(secs => $1)
 	order by started_at, instance`
@@ -159,7 +178,7 @@ func Live(ctx context.Context, db Querier) ([]Process, error) {
 	for rows.Next() {
 		var p Process
 		if err := rows.Scan(&p.ID, &p.Commit, &p.DashboardBuild, &p.SigningKeys, &p.StartedAt, &p.HeartbeatAt,
-			&p.SchemaVersion, &p.SchemaCreatable, &p.EmbedderIdentity, &p.FileStore); err != nil {
+			&p.SchemaVersion, &p.SchemaCreatable, &p.EmbedderIdentity, &p.FileStore, &p.Capabilities); err != nil {
 			return nil, fmt.Errorf("read the live server processes: %w", err)
 		}
 		live = append(live, p)
@@ -191,8 +210,11 @@ func Bucketless(ctx context.Context, db Querier) ([]Process, error) {
 type Registration struct {
 	// ID is the row's instance id.
 	ID string
-	// instance is what the row was registered with, kept so a heartbeat that finds the row gone
-	// can write it again.
+	// instance is what the row holds, kept so a heartbeat that finds the row gone can write it
+	// again: what it was registered with, and the schema numbers RefreshSchema last wrote. mu
+	// guards it, since RefreshSchema runs on the schema installer's goroutine and the heartbeat
+	// on its own.
+	mu       sync.Mutex
 	instance Instance
 	// pool is the registry's own one-connection pool, which Register opens and Deregister closes
 	// (Register says why it is not the shared pool).
@@ -313,8 +335,9 @@ func tryRegister(ctx context.Context, pool *pgxpool.Pool, id string, instance In
 // admit is the registry's admission check, made in tx under registryLock, which its caller holds:
 // against every live process but id itself, it returns the refusal of the first whose key set does
 // not share instance's (keySetsShared) and writes nothing; when each shares, it writes id's row as
-// instance, or, where the row is there already (a lapsed heartbeat, Registration.renew), stamps its
-// heartbeat. The second result is a failure to reach a decision. The caller commits.
+// instance, with this build's Capabilities, or, where the row is there already (a lapsed
+// heartbeat, Registration.renew), stamps its heartbeat. The second result is a failure to reach a
+// decision. The caller commits.
 func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusal error, err error) {
 	live, err := Live(ctx, tx)
 	if err != nil {
@@ -331,11 +354,11 @@ func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusa
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into server_processes (instance, commit, dashboard_build, signing_keys,
-			schema_version, schema_creatable, embedder_identity, file_store)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
+			schema_version, schema_creatable, embedder_identity, file_store, capabilities)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		on conflict (instance) do update set heartbeat_at = now()`,
 		id, instance.Commit, instance.DashboardBuild, instance.SigningKeys,
-		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore); err != nil {
+		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore, Capabilities); err != nil {
 		return nil, err
 	}
 	return nil, nil
@@ -424,6 +447,10 @@ func (r *Registration) beat(ctx context.Context) error {
 // never later than the moment this transaction acquires the lock the registrant held, so a row the
 // registrant counted as gone is one this transaction counts as lapsed too: a process never stamps
 // itself live again past a registrant that did not check its keys against it.
+//
+// It takes the registry pool's one connection, for its transaction, and then r.mu, to read the
+// instance it rejoins with. That is the one order the two are taken in, and RefreshSchema takes
+// them in it as well.
 func (r *Registration) renew(ctx context.Context) (refusal error, err error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -448,7 +475,10 @@ func (r *Registration) renew(ctx context.Context) (refusal error, err error) {
 		}
 		return nil, tx.Commit(ctx)
 	}
-	refusal, err = admit(ctx, tx, r.ID, r.instance)
+	r.mu.Lock()
+	instance := r.instance
+	r.mu.Unlock()
+	refusal, err = admit(ctx, tx, r.ID, instance)
 	if err != nil {
 		return nil, err
 	}
@@ -465,6 +495,45 @@ func (r *Registration) renew(ctx context.Context) (refusal error, err error) {
 	slog.Warn("dispatch: this server process's heartbeat had lapsed; it shares its signing keys with every live server process and rejoined the registry",
 		"instance", r.ID, "row", row)
 	return nil, nil
+}
+
+// RefreshSchema writes the document schema numbers current answers - the version this process
+// reads and the highest since among the elements it may create (pmdoc.SchemaVersion,
+// pmdoc.SchemaCreatable) - into this process's row, where they differ from what the row holds.
+// The row is written once at Register, and a reinstall of the store's schema can move either
+// number while the process runs: a type migration the store takes, at or below this build's
+// version, moves the version it installs, and a type the store adds or retires moves what it may
+// create. Every process's document socket admission reads the rows (docs.readSchemaFleet), this
+// process's own among them, so the server refreshes the row on each reinstall that moved the
+// schema, before it closes its document sockets, and the reconnects are admitted against the
+// numbers it serves now. current is called under the registration's lock, so of two refreshes
+// that race the one that read last writes last.
+//
+// The registry's pool holds one connection, and this takes it before r.mu, which is the order
+// renew takes the two: renew begins its transaction on that connection and only then reads
+// r.instance under r.mu, so a refresh holding r.mu while it waited for the connection would
+// wait on a heartbeat that waits on it. Both waits would then run out - the heartbeat at
+// heartbeatTimeout, holding the registry's advisory lock all the while, so every other process
+// misses a beat - and the numbers this writes would stay stale until the next switch.
+func (r *Registration) RefreshSchema(ctx context.Context, current func() (version, creatable int)) error {
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("refresh this server process's schema numbers: %w", err)
+	}
+	defer conn.Release()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	version, creatable := current()
+	if version == r.instance.SchemaVersion && creatable == r.instance.SchemaCreatable {
+		return nil
+	}
+	if _, err := conn.Exec(ctx, `
+		update server_processes set schema_version = $2, schema_creatable = $3 where instance = $1`,
+		r.ID, version, creatable); err != nil {
+		return fmt.Errorf("refresh this server process's schema numbers: %w", err)
+	}
+	r.instance.SchemaVersion, r.instance.SchemaCreatable = version, creatable
+	return nil
 }
 
 // Deregister stops the heartbeat, deletes the row and closes the registry's pool. It is called

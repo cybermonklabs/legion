@@ -76,13 +76,18 @@ harness as `127.0.0.1:<port>`, never `localhost`: under that flag the router
 refuses any other `Host`. The server process has no caller Home or XDG
 directory and receives no inherited `DISPATCH_*`, `ENVOY_*` or `NATS_*`
 variable, so neither a shell setting nor `~/.config/legion/envoy.json` /
-`~/.local/share/dispatch` can redirect it. The one way in from outside is the
-broker switch below: a URL in `DISPATCH_E2E_AGENT_SECRETS_URL`, with the token
+`~/.local/share/dispatch` can redirect it. There are two ways in from outside.
+One is the broker switch below: a URL in `DISPATCH_E2E_AGENT_SECRETS_URL`, with the token
 of a ServiceAccount that broker lists in
 `DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE`, points the server's credential
 requests at a broker the caller runs, as the secrets broker's docs rig
 (`docs/site/media/broker/rig.sh`) does with the token its local issuer
-(`packages/envoy/cmd/dev-oidc-issuer`) keeps.
+(`packages/envoy/cmd/dev-oidc-issuer`) keeps. The other is
+`DISPATCH_E2E_NATS_URLS`: a NATS address there reaches the server as its
+`NATS_URLS` in place of `DISPATCH_NATS_DISABLED=1`, which turns the events
+publisher on for a driver that proves what a delivery writes. It is the rig's
+own variable because a shell's `NATS_URLS` is the Envoy listener's, and a server
+that took it would publish test notifications where real sessions receive them.
 
 `DATABASE_URL` is a one-stack run's input unless it names a Postgres of its own
 (stacks, below), and must name an isolated
@@ -363,8 +368,8 @@ agent sees it, through the HTTP API and the real `dispatch` CLI
 shell's Dispatch URL, token file and Envoy configuration never reach it). It covers a comment
 citing a block and the block's backlinks, a deleted and restored block, a pinned block reference
 that changes and is removed, `GET /api/v1/block-links` between the blocks of two documents, each
-block's changed version, every block `part_of` its document, a link in a list item, the six facts
-every node carries (`made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`)
+block's changed version, every block `part_of` its document, a link in a list item, six facts
+of every node (`made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`)
 for an issue, a document, a file, a picture, a block, a removed pinned block, an ask, a comment, a
 message, a session and a component, read by its own reference, as an edge's other end and on the
 `Node:` line of `dispatch read`, and the older `GET /api/v1/artifacts/{id}/references` route. It
@@ -381,7 +386,7 @@ carries: a comment and a message of 48,000 characters taken and read back whole,
 32,001 characters refused by name, and `dispatch limits` (A8); a passage only at the end of a block
 longer than 32,000 characters found by meaning and a one-line ask option found by its text, each
 hit naming the block (A9, skipped with one `SKIP:` line on a server with no embedder); and a
-question of 2,001 characters taken by `dispatch ask` and by a document's decision block (A14).
+question of 2,001 characters taken by `dispatch ask` and by a document's ask block (A14).
 Each passing check prints `PASS: <section> <what>`; the first
 failure prints `FAIL: <section> <what>: <observed>` and exits 1. Its inputs:
 
@@ -411,7 +416,7 @@ failure prints `FAIL: <section> <what>: <observed>` and exits 1. Its inputs:
   line, and every other section runs.
 
 It writes two issues in `PROJECT`: the first holds the spec, comments, messages and the documents
-`cites.md`, `decisions.md`, `changes.md` and `list.md`; the second is its child, retitled, holding an
+`cites.md`, `rollout.md`, `changes.md` and `list.md`; the second is its child, retitled, holding an
 ask the script rewords, a comment on a quote of its spec and a reply, a message and a reply, and the
 uploads `notes.txt` and `pixel.png`. It resolves the ask and closes both issues, also when a check
 fails.
@@ -545,6 +550,59 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
+`e2e/acceptance/graph-store.sh` drives the people and the agents of the node and tuple store: what
+each person authored, what reached each session, a comment that reached nobody, a failed attempt,
+an attempt the listener queued for a session that is not running, and the role, the session and
+the page a delivery writes. It takes the first three inputs,
+`DATABASE_URL` (the database that server serves, on this machine, which it reads the tuples no
+route answers through) and `FAKE_ENVOY_PORT` (the harness's fake Envoy, whose session fixture it
+adds role-less sessions, one of them stopped, and a role's holder to and puts back on exit), with `DEV_SIGNIN_LOGIN`
+optional. Its delivery checks need the server to have a bus: `bun run dispatch:local` leaves NATS
+off, and without `DISPATCH_E2E_NATS_URLS` (which `e2e/run-server.sh` hands the server as its
+`NATS_URLS`) the publisher writes no `delivered_to` tuple and those checks wait out their 30 s
+poll. Start a JetStream NATS of your own (`nats-server -js`) and name it when you start the
+instance, `DISPATCH_E2E_NATS_URLS=nats://127.0.0.1:<port> bun run dispatch:local`; then, against
+it:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e FAKE_ENVOY_PORT=9023 \
+  DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
+  DEV_SIGNIN_LOGIN=alice bash packages/dispatch/e2e/acceptance/graph-store.sh
+```
+
+`e2e/acceptance/graph-erase.sh` drives `envoy-dispatch erase`, the one statement in Dispatch that
+removes bytes: the refusal until it has listed what it would remove, the erase itself, the
+version and the review it ends, the `graph_erasures` row that holds no erased text, and the 404
+the route that does not exist answers. It takes the first three inputs, `DATABASE_URL`, the built
+`envoy-dispatch` on `PATH` (the command takes a database credential and no bearer), and
+`DEV_SIGNIN_LOGIN` optional, the person who approves the version it then erases. It refuses a
+`DATABASE_URL` whose host is not loopback, and erases only the comment it wrote itself:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http://127.0.0.1:8777 \
+  DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \
+  bash packages/dispatch/e2e/acceptance/graph-erase.sh
+```
+
+`e2e/acceptance/graph-sizing.sh` drives `envoy-dispatch census --store --sizing`: the write rate
+by kind, every table this branch's migrations touch, where the two store tables reach in a year,
+two runs printing one report, and the block-index backlog, with the reconciliation's own drain
+timed beside a request that indexes the same document itself, a reading that gates nothing. It
+takes the first three inputs, `DATABASE_URL`, the built `envoy-dispatch` on `PATH`, and two
+required inputs of the production reading: `PRODUCTION_PROJECT`, the Google Cloud project whose
+Cloud Monitoring holds production's disk use, and `PRODUCTION_DATABASE_ID`, the Cloud SQL instance
+whose disk use it reads, through this pod's own Google identity. This repository is public and
+names neither, so the driver refuses to start without them (exit 2). `PRODUCTION_WINDOW_DAYS` is
+optional (21 unset, refused below 14). It writes a corpus under an issue of its own and removes
+it on exit, since a corpus left behind is read by the next run as growth:
+
+```bash
+DATABASE_URL=postgres://dispatch@127.0.0.1:5433/dispatch_e2e DISPATCH_URL=http://127.0.0.1:8777 \
+  DISPATCH_TOKEN=e2e-token PROJECT=CORE PRODUCTION_PROJECT=<gcp-project> \
+  PRODUCTION_DATABASE_ID=<gcp-project>:<cloud-sql-instance> \
+  bash packages/dispatch/e2e/acceptance/graph-sizing.sh
+```
+
 `e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
 names blocks: a list written over a paragraph's whole text, a list written over the text of a
 nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
@@ -575,6 +633,7 @@ createdb -h 127.0.0.1 -p 5433 -U legion_test dispatch_local_replace
 DATABASE_URL=postgres://legion_test@127.0.0.1:5433/dispatch_local_replace?sslmode=disable \
   bash packages/dispatch/e2e/acceptance/replace-blocks.sh
 ```
+
 `e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
 document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
 the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
@@ -592,6 +651,44 @@ rule, which sends nothing; and `--path` and `--content` each still make a docume
 assertion prints `PASS: <n> <what>` on stderr, the first failure prints `FAIL:` and exits 1, and
 a run that reaches the end writes `all <n> assertions passed` as the one line on stdout, so a run
 cut short fails a reader that reads that line.
+
+`e2e/acceptance/seed-corpus.sh` writes the corpus the upgrade checks of dispatch://INFRA-1253
+read, through the API of the release before this branch: the server `e2e/acceptance/lib-baseline.sh`
+builds from `BASELINE_SHA` and boots, so every row of it is one that release's own writers left.
+It writes a project of eight issues. The first holds a spec, a `verification.md`, a `plan.md` and
+a `notes.md`, each of three versions and each holding the shapes the tree census reads (headings
+followed by paragraphs, a nested list, a list whose last item is empty, a callout holding a code
+block and a table, and a quote holding a list), beside requirements, checks, plan tasks, one image
+upload, comments that cite blocks, messages, asks and recorded results; the second is its child.
+Five more serve the render boundary's two counts and the conversion's dry run: one approved at its
+newest versions, one whose approval a later version supersedes, one approved and then asked for
+changes, one closed, and one holding a spec alone. The last has the size of the largest issue
+measured, INFRA-1308: 10,842 blocks over 243 documents, 34 comments, 34 messages and no ask. It
+prints each issue it writes and each count with the time it was taken, the boundary's two counts
+(`pre_cutover_versions` and `standing_approvals`) among them, stops the server, keeps the database,
+and ends with `PASS: seed-corpus.sh complete 5 sections`. Its inputs:
+
+- `DATABASE_URL`, an empty database on this machine, which the run refuses when it holds a table;
+- `PROJECT`, the project it creates (`CORE`, as the checks name it);
+- `DEV_SIGNIN_LOGIN`, the person who writes every approval and every person's comment and
+  message, signed in before the project's create names them as its default assignee;
+- `DISPATCH_TOKEN`, optional, the bearer the server accepts; unset, the run makes one of its own;
+- `BASELINE_SHA`, `BASELINE_BINARY`, `BASELINE_EXTRA_ENV` and `LEGION_WORKSPACE`, as the head
+  comment of `lib-baseline.sh` states them;
+- `CORPUS_LARGE_BLOCKS`, `CORPUS_LARGE_DOCUMENTS`, `CORPUS_LARGE_COMMENTS`,
+  `CORPUS_LARGE_MESSAGES` and `CORPUS_LARGE_ASKS`, optional, the size of the last issue, each
+  defaulting to the measured one, so a quick run can ask for less.
+
+At the measured size a run took under three minutes in a Legion pod, the baseline's build
+included. Sourced after `lib.sh` and `lib-tree.sh` instead, it gives a driver its writers,
+`corpus_large_issue` among them, and boots nothing:
+
+```bash
+createdb -h 127.0.0.1 -p 5433 -U legion_test infra_1253_corpus
+DATABASE_URL=postgres://legion_test@127.0.0.1:5433/infra_1253_corpus?sslmode=disable \
+  PROJECT=CORE DEV_SIGNIN_LOGIN=alice DISPATCH_TOKEN=e2e-token BASELINE_SHA=<commit> \
+  bash packages/dispatch/e2e/acceptance/seed-corpus.sh
+```
 
 `e2e/acceptance/with-harness.sh` runs one command against a stack of its own, for a driver that
 has no server to speak to: it starts `e2e/harness-up.ts`, waits for the stack's exports, applies
@@ -612,9 +709,30 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
-missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
-without printing it, unsetting both so no process the script starts inherits it.
+Twenty-one of the twenty-four drivers in `e2e/acceptance/` source `e2e/acceptance/lib.sh`, the
+preamble and the check vocabulary they share: it refuses an unset input or a missing command with
+exit 2, reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it,
+unsetting both so no process the script starts inherits it, and holds the `pass`, `fail`, `skip`,
+`want_status`, `expect` and `query` each of them checks with. Nineteen source it themselves;
+`lens-schema.sh` and `node-visibility-census.sh` source `lib-processes.sh`, which sources
+`lib-baseline.sh`, which sources `lib.sh`. The other three source none of it:
+`document-roundtrip.sh` and `omp-roundtrip.sh` check with functions of their own, and
+`outside-path-reach.sh` is handed to a person as one file (below). `with-harness.sh` is no driver
+and sources none of it, and `lib-baseline.sh`, `lib-processes.sh`, `lib-tree.sh` and
+`seed-decisions.sh` are files the drivers source, not drivers.
+
+The drivers of dispatch://INFRA-1253 and `seed-corpus.sh` also source `e2e/acceptance/lib-tree.sh`,
+after `lib.sh` and, for a driver over rows an earlier release wrote, after `lib-baseline.sh`. It
+holds what they share, so no driver copies it: the request as the agent or as the person
+(`tree_send`, `tree_person_send`, and `tree_want`, whose failure names the request), the dev
+sign-in and the project create that names that person as its default assignee, the tree read
+(`GET /api/v1/issues/{key}/tree` with `view`, `v` and `cursor`), the `dispatch` client and the
+stamped `envoy-dispatch`, the boot of this head's server over the baseline's database with the
+test settings that hold the conversion step (`tree_boot_head`), the store backfill
+(`tree_run_backfill`, which runs `envoy-dispatch backfill-graph-store` until a boot step runs it
+at every boot), the waits for the backfill and for this head's build announcement, each polled
+every 2 s for at most 300 s, and the conversion (`envoy-dispatch convert-issues`). Its head comment
+names the variables each function reads.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
 (dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they

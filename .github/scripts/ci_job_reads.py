@@ -695,6 +695,11 @@ RULES = {
     f"{ENVOY}/cmd/broker/outage_test.go": [
         run(ENVOY, ["./cmd/agent-secrets"], "cmd/broker/outage_test.go:323-325 cmdtest.BuildCommand . in ../agent-secrets", mode="build")],
     f"{ENVOY}/cmd/broker/multiprocess_test.go": reads((f"{ENVOY}/internal/broker/store/migrations/*", "cmd/broker/multiprocess_test.go:501-502 countMigrations globs ../../internal/broker/store/migrations/*.up.sql")),
+    # c-document-gone's test reads this tree's href table through `..`; it is a basebuild test,
+    # which no job of ci.yaml compiles today, so the rule binds the run that first does.
+    f"{ENVOY}/cmd/dispatch/document_gone_test.go": reads(
+        (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json",
+         "cmd/dispatch/document_gone_test.go:301 os.ReadFile of ../../internal/dispatch/text/testdata/dispatch-href-references.json")),
     f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:822")),
     # The two-build suite's CLI half runs this tree's dispatch command with bun (currentCLI,
     # :42-46), which loads bin/dispatch.ts and its imports: envoy-client's sources and
@@ -709,20 +714,20 @@ RULES = {
     ) + envoy_client_dep("packages/envoy-client/bin/dispatch.ts, which cmd/dispatch/twobuild_cli_test.go:42-46 runs, "
                          "imports src/dispatch-cli.ts"),
     # The two-build suite's stored-document half reads this tree's side of what each build holds
-    # (documentSides, tree ../../internal/dispatch at :55); the previous build's side is the copy
+    # (documentSides, tree ../../internal/dispatch at :56); the previous build's side is the copy
     # packages/envoy/scripts/build-dispatch-build.sh writes outside the checkout.
     f"{ENVOY}/cmd/dispatch/twobuild_documents_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json",
-         "cmd/dispatch/twobuild_documents_test.go:57 readManifest (os.ReadFile :112) of the current build's block manifest"),
+         "cmd/dispatch/twobuild_documents_test.go:58 readManifest (os.ReadFile :113) of the current build's block manifest"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/corpus/*.md",
-         "cmd/dispatch/twobuild_documents_test.go:70 the current build's corpus: corpusFiles :407 os.ReadDir, and "
-         ":485 os.ReadFile of each .md file it lists"),
+         "cmd/dispatch/twobuild_documents_test.go:71 the current build's corpus: corpusFiles :408 os.ReadDir, and "
+         ":497 os.ReadFile of each .md file it lists"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json",
-         "cmd/dispatch/twobuild_documents_test.go:71 the current build's reference fixtures, read by "
-         "referencesMarkdown :661 os.ReadFile"),
+         "cmd/dispatch/twobuild_documents_test.go:72 the current build's reference fixtures, read by "
+         "referencesMarkdown through readFixture :716 os.ReadFile"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json",
-         "cmd/dispatch/twobuild_documents_test.go:71 the current build's reference fixtures, read by "
-         "referencesMarkdown :661 os.ReadFile")),
+         "cmd/dispatch/twobuild_documents_test.go:72 the current build's reference fixtures, read by "
+         "referencesMarkdown and hrefsReadApart through hrefTable and readFixture :716 os.ReadFile")),
     # cmd/dispatch/memory_profile_test.go:147-148 reads four guides only when
     # DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
     f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:53")),
@@ -2078,6 +2083,10 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
+    ]),
+    harness("check_kept_for_one_release_test", "Test the kept-for-one-release list check",
+            f"{SCRIPTS}/check-kept-for-one-release.test.sh", [
+        (f"{SCRIPTS}/check-kept-for-one-release.sh", "the script under test"),
     ]),
     harness("check_fireevent_reasons_test", "Test the fireEvent reason check",
             f"{SCRIPTS}/check-fireevent-reasons.test.sh", [

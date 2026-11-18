@@ -9,26 +9,19 @@ export function primarySpec(
   return issue?.artifacts?.find((artifact) => artifact.id === issue.primary_artifact_id);
 }
 
-/** The issue's document in `role` - `verification.md`, `plan.md` or `decisions.md`, which the
- *  issue names in `verification_artifact_id`, `plan_artifact_id` and `decisions_artifact_id` -
- *  or undefined while the details are unread, when the issue holds none (`""`), and on a
- *  Dispatch older than that role (absent). The id the issue names is the one answer, so a
- *  document whose name was changed by hand cannot put a second document on the tab. */
+/** The issue's document in `role` - `verification.md` or `plan.md`, which the issue names in
+ *  `verification_artifact_id` and `plan_artifact_id` - or undefined while the details are
+ *  unread, when the issue holds none (`""`), and on a Dispatch older than that role (absent). The
+ *  id the issue names is the one answer, so a document whose name was changed by hand cannot put
+ *  a second document on the tab. A decisions document is no part this build reads: decisions are
+ *  nodes of the spec. */
 export function roleDocument(
   issue:
-    | Pick<
-        IssueDetails,
-        "artifacts" | "plan_artifact_id" | "verification_artifact_id" | "decisions_artifact_id"
-      >
+    | Pick<IssueDetails, "artifacts" | "plan_artifact_id" | "verification_artifact_id">
     | undefined,
-  role: DocumentRole
+  role: Extract<DocumentRole, "plan" | "verification">
 ): Artifact | undefined {
-  const ids: Record<DocumentRole, string | undefined> = {
-    plan: issue?.plan_artifact_id,
-    verification: issue?.verification_artifact_id,
-    decisions: issue?.decisions_artifact_id,
-  };
-  const id = ids[role];
+  const id = role === "plan" ? issue?.plan_artifact_id : issue?.verification_artifact_id;
   return id === undefined || id === ""
     ? undefined
     : issue?.artifacts?.find((artifact) => artifact.id === id);
@@ -52,4 +45,23 @@ export function mergeIssue(queryClient: QueryClient, next: Issue): void {
         : { route_status: null, route_holder: null, route_status_reason: null };
     return { ...current, ...next, ...reach };
   });
+}
+
+/**
+ * What every write of one issue's fields does once Dispatch has taken it: the answer merged
+ * over the cached details, or - where the write landed with no answer to give - the issue read
+ * again rather than guessed at, and the issue lists refreshed either way.
+ *
+ * One landing for them all (each write of the issue's fields in
+ * `features/issue-page/useIssueHeaderWrites.ts`, and any later write of them from the new issue
+ * page), so a field edited in Details and a field edited in the header leave the cache in the
+ * same state.
+ */
+export function landIssueWrite(queryClient: QueryClient, key: string, next: Issue | null): void {
+  if (next === null) {
+    void queryClient.invalidateQueries({ queryKey: ["issue", key] });
+  } else {
+    mergeIssue(queryClient, next);
+  }
+  void queryClient.invalidateQueries({ queryKey: ["issues"] });
 }

@@ -93,9 +93,14 @@ type issueResults struct {
 	Checks                 []model.CheckBlock `json:"checks"`
 }
 
-// resultBody is a well-formed record body with the given check and verdict.
+// resultBody is a well-formed record body with the given check and verdict. It states a negative
+// control, since a pass of a before_merge check that states none is refused (recordCheckResult); a
+// test of a body without one deletes the field or sets it in fields.
 func resultBody(check, verdict, commit string, fields map[string]any) map[string]any {
-	body := map[string]any{"check": check, "role": "implementer", "verdict": verdict, "commit": commit}
+	body := map[string]any{
+		"check": check, "role": "implementer", "verdict": verdict, "commit": commit,
+		"negative_control": "Broke what the check proves and the run failed.",
+	}
 	for name, value := range fields {
 		body[name] = value
 	}

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -19,12 +18,13 @@ import (
 
 // A close withdraws the spec's approval request and a reopen restores it with the turn it had, so
 // a person who was asked to approve the spec is asked again after the reopen, as before the close
-// (restoreIssueAsksTx). The settlements the closed period and the reopen leave owed save the
-// blocks the close and the reopen wrote, and nothing else: neither is a change the request's agent
-// made to the text it handed the person. So after both have run, the request still waits on the
-// person, the spec still reads awaiting approval from the person, and the request is still in the
-// person's Inbox. The browser suite drives the same path (e2e/close-withdraws-asks.e2e.ts, whose
-// "Waiting on you (3)" counts this request).
+// (restoreIssueAsksTx). The settlements the closed period and the reopen leave owed write no
+// version: the close's withdrawal and the reopen's restoration change no byte of a document
+// (dispatch://INFRA-1150 R3), and neither is a change the request's agent made to the text it
+// handed the person. So after both have run, the request still waits on the person, the spec
+// still reads awaiting approval from the person, and the request is still in the person's Inbox.
+// The browser suite drives the same path (e2e/close-withdraws-asks.e2e.ts, whose "Waiting on you
+// (3)" counts this request).
 func TestAReopenedIssuesApprovalRequestStillWaitsOnThePersonOnceItsDocumentsSettle(t *testing.T) {
 	f := newCloseAsksFixtureSettlingAfter(t, time.Hour)
 	ctx := context.Background()
@@ -368,7 +368,9 @@ func TestAReopenKeepsTheRequestWithThePersonWhenAClosedSettlementWroteBackItsTex
 // decision the close withdraws and writes resolved, the settlement on the closed issue saves that,
 // the reopen restores the decision and writes it open, and the settlement it leaves owed writes the
 // named version's text again, which leaves the request waiting on the person, now naming and
-// requesting that version. The settle delay is an hour, so the test runs each settlement itself.
+// requesting that version. The close and the reopen write a block's state only while another
+// build serves (docs.WriteIssueAskStates), so that case registers a process of each of two builds.
+// The settle delay is an hour, so the test runs each settlement itself.
 func TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -376,6 +378,8 @@ func TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson(t *testing.T
 		// write writes the case's version of the text the request names.
 		write     func(t *testing.T, c reopenCarryCase)
 		keepsTurn bool
+		// twoBuilds registers a process of each of two builds before the spec is written.
+		twoBuilds bool
 	}{
 		{
 			name: "a person's named version",
@@ -405,6 +409,7 @@ func TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson(t *testing.T
 			name:      "a settlement's version after a reopen",
 			spec:      reopenDecisionSpec,
 			keepsTurn: true,
+			twoBuilds: true,
 			write: func(t *testing.T, c reopenCarryCase) {
 				closeArtifactIssue(t, c.handler, c.issue)
 				c.settle(t, "the closed issue's spec")
@@ -417,6 +422,9 @@ func TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson(t *testing.T
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			handler, database, documents := settlingCarryDocuments(t, time.Hour)
+			if test.twoBuilds {
+				registerTwoBuilds(t, database)
+			}
 			issue := createInteractionIssue(t, handler, "TEST", "A version of the requested text: "+test.name, test.spec)
 			c := reopenCarryCase{handler: handler, database: database, documents: documents, issue: issue.Key, spec: issue.PrimaryArtifactID}
 			c.settle(t, "the spec")
@@ -570,18 +578,20 @@ const reopenDecisionSpec = "Context\n\n" +
 	":::ask{#reopen-decision urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
 
 // A person's approval of a document given after its issue reopens, before the settlement the
-// reopen leaves owed has run, still stands once that settlement has written its version, as it
-// stood before a closed issue's document settled. The spec holds a decision; the close withdraws
-// it and writes its block resolved, and the settlement on the closed issue saves that as version
-// L. The reopen through PATCH restores the decision and writes its block open, which leaves the
-// spec owed, and alice approves the spec from its header before that settlement runs: there is no
-// approval request, and her review pins L, the latest version. The settlement then writes L+1,
-// which differs from L only in the block the reopen wrote open again, and the spec reads approved
-// by alice at L+1, carried from her approval of L (docs.reopenedApproval). Before a closed issue's
-// document settled, no version came of the close, alice's review pinned the version from before
-// it, and the settlement after the reopen, which rendered that version's text again, wrote none,
-// so her approval stood. The settle delay is an hour, so the test runs each settlement itself
-// (SettleIssueDocuments), and nothing settles between the reopen and alice's review.
+// reopen leaves owed has run, still stands once that settlement has run. The spec holds a
+// decision; the close withdraws it and the reopen restores it, on the ask's node and its row, and
+// neither changes a byte of the spec (dispatch://INFRA-1150 R3: "a close's withdrawal and a
+// reopen's restoration change no byte of any document"), so the settlement on the closed issue
+// writes no version. The reopen through PATCH leaves the spec owed the settlement that reconciles
+// the restored ask's block (docs.MarkReopenOwedAskDocuments), and alice approves the spec from its
+// header before that settlement runs: there is no approval request, and her review pins the
+// version from before the close, still the latest. That settlement writes no version either, so
+// the spec reads approved by alice at that version. While two builds serve, the close and the
+// reopen write the block's state for the release before's pages, and R10's attribute case carries
+// her approval across the version the reopen's settlement writes
+// (TestWhileTwoBuildsServeAReopenThatRestoresAnAskKeepsTheApprovalCurrent). The settle delay is an
+// hour, so the test runs each settlement itself (SettleIssueDocuments), and nothing settles between
+// the reopen and alice's review.
 func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing.T) {
 	handler, database, documentService := settlingCarryDocuments(t, time.Hour)
 	ctx := context.Background()
@@ -600,10 +610,10 @@ func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing
 
 	closeArtifactIssue(t, handler, issue.Key)
 	settle("the closed issue's spec")
-	closed := latestVersion(t, database, spec).Number
-	if _, written := documentTexts(t, handler, spec); closed <= before || !strings.Contains(written, `#reopen-decision urgency="med" multiple="false" state="resolved"`) {
-		t.Fatalf("the closed issue's settlement left the spec at version %d reading:\n%s\nwant a version above %d showing the withdrawn decision resolved", closed, written, before)
+	if closed := latestVersion(t, database, spec).Number; closed != before {
+		t.Fatalf("the closed issue's settlement left the spec at version %d, want %d: the close's withdrawal changes no byte of it", closed, before)
 	}
+	requireLiveText(t, handler, spec, `#reopen-decision urgency="med" multiple="false" state="resolved"`)
 
 	if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
@@ -611,22 +621,22 @@ func TestAnApprovalGivenBetweenTheReopenAndItsSettlementStaysApproved(t *testing
 	if !documentOwesSettlement(t, database, spec) {
 		t.Fatal("the reopen left the spec owing no settlement: this test is for the window before that settlement")
 	}
-	if review := reviewDocument(t, handler, spec, "alice", "approved", ""); review.Version != closed {
-		t.Fatalf("alice's approval from the spec's header reviews version %d, want %d, the latest version while the reopen's settlement is owed", review.Version, closed)
+	if review := reviewDocument(t, handler, spec, "alice", "approved", ""); review.Version != before {
+		t.Fatalf("alice's approval from the spec's header reviews version %d, want %d, the latest version while the reopen's settlement is owed", review.Version, before)
 	}
 
 	settle("the reopened issue's spec")
-	reopened := latestVersion(t, database, spec).Number
-	if _, written := documentTexts(t, handler, spec); reopened != closed+1 || !strings.Contains(written, `#reopen-decision urgency="med" multiple="false" state="open"`) {
-		t.Fatalf("the reopened issue's settlement left the spec at version %d reading:\n%s\nwant version %d showing the restored decision open", reopened, written, closed+1)
+	if reopened := latestVersion(t, database, spec).Number; reopened != before {
+		t.Fatalf("the reopened issue's settlement left the spec at version %d, want %d: the reopen's restoration changes no byte of it", reopened, before)
 	}
-	if read := readApproval(t, handler, spec); read.Approval == nil || read.Approval.State != "approved" || read.Approval.LatestVersion != reopened ||
-		read.Approval.Version == nil || *read.Approval.Version != reopened || read.Approval.By == nil || read.Approval.By.ID != "alice" {
-		t.Fatalf("the spec's approval after the reopen's settlement = %s, want approved by alice at version %d", describeApproval(read), reopened)
+	requireLiveText(t, handler, spec, `#reopen-decision urgency="med" multiple="false" state="open"`)
+	if read := readApproval(t, handler, spec); read.Approval == nil || read.Approval.State != "approved" || read.Approval.LatestVersion != before ||
+		read.Approval.Version == nil || *read.Approval.Version != before || read.Approval.By == nil || read.Approval.By.ID != "alice" {
+		t.Fatalf("the spec's approval after the reopen's settlement = %s, want approved by alice at version %d", describeApproval(read), before)
 	}
 }
 
-// reopenCarryCase is one issue of TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew,
+// reopenCarryCase is one issue of TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson,
 // served with a settle delay of an hour, so the test runs each settlement itself.
 type reopenCarryCase struct {
 	handler   http.Handler
@@ -644,165 +654,4 @@ func (c reopenCarryCase) settle(t *testing.T, what string) {
 		t.Fatalf("settle %s: %v", what, err)
 	}
 	awaitSettled(t, c.database, c.spec)
-}
-
-// edit has peer make change in the case's spec and waits until the store holds it.
-func (c reopenCarryCase) edit(t *testing.T, peer *syncedPeer, change func(*pmdoc.Node) error) {
-	t.Helper()
-	stored := storedUpdateCount(t, c.database, c.spec)
-	peer.edit(t, change)
-	peer.barrier(t)
-	awaitStoredUpdates(t, c.database, c.spec, stored+1)
-}
-
-// requireRetracted fails t unless the ask of the case's spec block blockID is one a settlement
-// retracted.
-func (c reopenCarryCase) requireRetracted(t *testing.T, blockID, when string) {
-	t.Helper()
-	ask := readBlockAsk(t, c.handler, requireBlockAsk(t, c.handler, c.issue, c.spec, blockID))
-	if ask.State != "resolved" || ask.Resolution == nil || ask.Resolution.Kind != "retracted" {
-		t.Fatalf("%s the ask of block %s reads %s %+v, want retracted", when, blockID, ask.State, ask.Resolution)
-	}
-}
-
-// A reopen carries an approval of a closed issue's version over the asks the close withdrew and
-// the reopen restored, and over no other question (docs.reopenedApproval). In each case alice
-// approves the spec from its header between the reopen through PATCH and the settlement the reopen
-// leaves owed, so her review pins A, the version a settlement wrote while the issue was closed, in
-// which the case's block reads resolved; that settlement then writes A+1, which differs from A
-// only in the block, open again. Her approval carries to A+1 when the block's ask is one the close
-// withdrew. It stands at A, stale, when the block's ask was opened or restored after A: the block
-// alice's browser types inside the close margin has no ask until the settlement after the reopen
-// opens one, and the block of an ask a settlement retracted before the close, which her browser
-// brings back inside the margin, stays retracted until that settlement restores it. Neither
-// question was open when the issue closed, so A+1 asks something no approval of alice's covered.
-// The settle delay is an hour, so the test runs each settlement itself (SettleIssueDocuments), and
-// nothing settles between the reopen and alice's review.
-func TestAReopenCarriesAnApprovalOnlyOverTheAsksTheCloseWithdrew(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		spec    string
-		block   string
-		carries bool
-		// closed is the case's closed period, from its spec settled on the open issue to the
-		// settlement on the closed issue that writes A, the spec's latest version once it returns.
-		closed func(t *testing.T, c reopenCarryCase)
-	}{
-		{
-			name:    "an ask the close withdrew",
-			spec:    reopenDecisionSpec,
-			block:   "reopen-decision",
-			carries: true,
-			closed: func(t *testing.T, c reopenCarryCase) {
-				awaitIndexedAskBlock(t, c.handler, c.spec, "reopen-decision", "Ship it?")
-				closeArtifactIssue(t, c.handler, c.issue)
-				if ask := readBlockAsk(t, c.handler, requireBlockAsk(t, c.handler, c.issue, c.spec, "reopen-decision")); ask.Resolution == nil || ask.Resolution.Kind != model.AskResolutionWithdrawn {
-					t.Fatalf("the close left the decision's ask %s %+v, want it withdrawn", ask.State, ask.Resolution)
-				}
-				c.settle(t, "the closed issue's spec")
-			},
-		},
-		{
-			name:  "a block with no ask at the close",
-			spec:  "Context\n",
-			block: "margin-decision",
-			closed: func(t *testing.T, c reopenCarryCase) {
-				peer := connectBrowserPeer(t, c.documents, c.spec)
-				closeIssueThroughPatch(t, c.handler, c.database, c.issue)
-				c.settle(t, "what the close left owed")
-				c.edit(t, peer, func(tree *pmdoc.Node) error {
-					typed, err := pmdoc.Parse(":::ask{#margin-decision urgency=\"med\" multiple=\"false\"}\nShip without the rollback path?\n:::\n")
-					if err != nil {
-						return err
-					}
-					tree.Children = append(tree.Children, typed.Children...)
-					return nil
-				})
-				c.settle(t, "the closed issue's spec")
-				if id := findBlockAsk(t, c.handler, c.issue, c.spec, "margin-decision"); id != "" {
-					t.Fatalf("the block typed inside the close margin is ask %s on the closed issue, want no ask", id)
-				}
-			},
-		},
-		{
-			name: "an ask a settlement retracted before the close",
-			spec: "Context\n\n" +
-				":::ask{#retracted-decision urgency=\"med\" multiple=\"false\"}\nShip it on Friday?\n\n- Yes: Now.\n- No: Later.\n:::\n",
-			block: "retracted-decision",
-			closed: func(t *testing.T, c reopenCarryCase) {
-				awaitIndexedAskBlock(t, c.handler, c.spec, "retracted-decision", "Ship it on Friday?")
-				peer := connectBrowserPeer(t, c.documents, c.spec)
-				var taken *pmdoc.Node
-				c.edit(t, peer, func(tree *pmdoc.Node) error {
-					kept := tree.Children[:0]
-					for _, child := range tree.Children {
-						if child.Type == "ask" {
-							taken = child
-							continue
-						}
-						kept = append(kept, child)
-					}
-					tree.Children = kept
-					if taken == nil {
-						return errors.New("the spec holds no decision block to delete")
-					}
-					return nil
-				})
-				c.settle(t, "the deletion of the decision's block")
-				c.requireRetracted(t, "retracted-decision", "once its block was deleted")
-				closeIssueThroughPatch(t, c.handler, c.database, c.issue)
-				c.settle(t, "what the close left owed")
-				c.edit(t, peer, func(tree *pmdoc.Node) error {
-					tree.Children = append(tree.Children, taken)
-					return nil
-				})
-				c.settle(t, "the closed issue's spec")
-				c.requireRetracted(t, "retracted-decision", "on the closed issue")
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			handler, database, documents := closedSettlementHandlerSettlingAfter(t, time.Hour)
-			issue := createInteractionIssue(t, handler, "TEST", "A reopen carry: "+test.name, test.spec)
-			c := reopenCarryCase{handler: handler, database: database, documents: documents, issue: issue.Key, spec: issue.PrimaryArtifactID}
-			c.settle(t, "the spec")
-			test.closed(t, c)
-			closed := latestVersion(t, database, c.spec).Number
-			if _, written := documentTexts(t, handler, c.spec); !strings.Contains(written, `#`+test.block+` urgency="med" multiple="false" state="resolved"`) {
-				t.Fatalf("the closed issue's settlement left the spec at version %d reading:\n%s\nwant block %s resolved", closed, written, test.block)
-			}
-
-			if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+c.issue, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
-				t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
-			}
-			if !documentOwesSettlement(t, database, c.spec) {
-				t.Fatal("the reopen left the spec owing no settlement: this test is for the window before that settlement")
-			}
-			if review := reviewDocument(t, handler, c.spec, "alice", "approved", ""); review.Version != closed {
-				t.Fatalf("alice's approval from the spec's header reviews version %d, want %d, the latest version while the reopen's settlement is owed", review.Version, closed)
-			}
-
-			c.settle(t, "the reopened issue's spec")
-			reopened := latestVersion(t, database, c.spec).Number
-			if _, written := documentTexts(t, handler, c.spec); reopened != closed+1 || !strings.Contains(written, `#`+test.block+` urgency="med" multiple="false" state="open"`) {
-				t.Fatalf("the reopened issue's settlement left the spec at version %d reading:\n%s\nwant version %d showing block %s open", reopened, written, closed+1, test.block)
-			}
-			if ask := readBlockAsk(t, handler, requireBlockAsk(t, handler, c.issue, c.spec, test.block)); ask.State != "open" {
-				t.Fatalf("after the reopened issue's settlement the ask of block %s reads %s, want open", test.block, ask.State)
-			}
-			read := readApproval(t, handler, c.spec)
-			if read.Approval == nil || read.Approval.LatestVersion != reopened || read.Approval.Version == nil || read.Approval.By == nil || read.Approval.By.ID != "alice" {
-				t.Fatalf("the spec's approval after the reopened issue's settlement = %s, want alice's review read against latest version %d", describeApproval(read), reopened)
-			}
-			if test.carries {
-				if read.Approval.State != "approved" || *read.Approval.Version != reopened || read.Approval.Reason == nil ||
-					!strings.HasPrefix(*read.Approval.Reason, fmt.Sprintf("Carried forward from the approval of version %d:", closed)) {
-					t.Fatalf("the spec's approval = %s, want approved at version %d, carried from alice's approval of version %d", describeApproval(read), reopened, closed)
-				}
-			} else if read.Approval.State != "stale" || *read.Approval.Version != closed {
-				t.Fatalf("the spec's approval = %s, want alice's approval of version %d standing stale: version %d asks a question her approval never covered",
-					describeApproval(read), closed, reopened)
-			}
-		})
-	}
 }

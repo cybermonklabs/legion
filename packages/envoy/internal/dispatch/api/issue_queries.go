@@ -760,6 +760,8 @@ func (r *issueSummaryRow) resolve() (model.IssueSummary, error) {
 	}
 	issue.Claim = claim
 	issue.Advances = r.advances.resolve()
+	// One read of the issue_links rows answers both spellings of the issue's waits (Issue.Needs).
+	issue.Needs = issue.BlockedBy
 	issue.AdvancesRevision = r.advances.revision
 	issue.Progress = r.progress.resolve()
 	issue.Components = r.components.resolve(issue.Key)
@@ -850,10 +852,11 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // a statement of its own for the listener's stored answer (storedRouteRoster), and a shared listener
 // fetch only when that answer is stale, so a routed issue's read is one round trip more.
 func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
-	read, err := s.readIssue(r.Context(), r.PathValue("key"), wantsDisplayTrees(r))
+	read, err := s.readIssue(r.Context(), who, r.PathValue("key"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -900,7 +903,7 @@ type issueDetail struct {
 // issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
 // the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
 // the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
-func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDetail, error) {
+func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
 	var artifacts []model.Artifact
@@ -944,7 +947,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 		read.DesignGates = scanned
 		return err
 	})
-	if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
+	if err := refs.QueueBacklinkCounts(first, who, "issue", []string{key}, nil, issueCounts); err != nil {
 		return issueDetail{}, err
 	}
 	if err := s.deps.Store.Pool.SendBatch(ctx, first).Close(); err != nil {
@@ -956,7 +959,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	read.Issue.ExternalLinks = links
 	read.ReferencedByCount = issueCounts[read.Issue.Key]
 
-	if err := s.readIssueDetails(ctx, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
+	if err := s.readIssueDetails(ctx, who, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
 	}
 	// The approvals are read by the second batch, so their reasons are registered after it,
@@ -974,10 +977,10 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 // into the artifacts and asks it read, by the one queue-and-apply each of them has
 // (queueArtifactDetails, queueAskDetails). An issue with no artifact and no open ask names
 // nothing, so it queues nothing and sends no batch.
-func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifact, asks []*model.Ask) error {
+func (s *server) readIssueDetails(ctx context.Context, who model.Actor, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
 	applyArtifacts := queueArtifactDetails(batch, artifacts)
-	applyAsks := queueAskDetails(batch, asks)
+	applyAsks := queueAskDetails(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -1029,12 +1032,14 @@ var issueRowStatement = `
 		` + refs.IssueRepoTerms + `
 		select i.key, i.project_key, i.number, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 		       coalesce((select array_agg(l.target_key order by l.target_key) from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'), '{}'),
+		       ` + issueDuplicateOfColumn + `,
+		       ` + issueFiledFromColumn + `,
 		       ` + issueAdvancesColumns + `,
 		       i.assignee, i.route, i.created_by, i.created_at, i.updated_at, i.closed_at,
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedPlanRole + `), ''),
-		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedDecisionsRole + `), ''),
+		       coalesce((select min(d.id::text) from decisions_documents() d where d.issue_key = i.key), ''), -- kept for one release: compat-objects
 		       i.last_seq, ` + issueClaimColumns + `,
 		       ` + issueProgressColumns + `,
 		       ` + issueComponentsColumns + `,
@@ -1064,7 +1069,7 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 	var advances advancesScan
 	targets := []any{
 		&issue.Key, &issue.Project, &issue.Number, &issue.Title, &issue.Status, &issue.Priority, &issue.Rank, &issue.Labels,
-		&issue.Parent, &issue.BlockedBy,
+		&issue.Parent, &issue.BlockedBy, &issue.DuplicateOf, &issue.FiledFrom,
 	}
 	targets = append(targets, advances.targets()...)
 	targets = append(targets,
@@ -1082,6 +1087,9 @@ func scanIssueRow(row pgx.Row) (model.Issue, model.IssueProgress, error) {
 		return model.Issue{}, model.IssueProgress{}, err
 	}
 	issue.Repo, issue.ResolvedRepo = own, resolvedRepo
+	// The issue_links rows project the issue's needs tuples, written in the transaction that
+	// appends them, so one read of them answers both spellings of its waits.
+	issue.Needs = issue.BlockedBy
 	issue.Advances = advances.resolve()
 	issue.AdvancesRevision = advances.revision
 	issue.Components = components.resolve(issue.Key)
@@ -1214,11 +1222,14 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 // issue's key and $2 the steps in the order a gate runs them, which is the order the read
 // answers them in and the order PUT /api/v1/issues/{key}/design-gates answers its own write in
 // (issue_design_gates.go). The order is a parameter rather than a case expression built into
-// the text, so model.GatedStepsKnown stays the one place that order is written. A key no issue
-// carries returns no row, which is what the issue read's first batch requires of every
-// statement beside the issue row's.
+// the text, so model.GatedStepsKnown stays the one place that order is written. A row of a step
+// outside it, the retired `decisions` step a daemon of the release before wrote, is left out
+// (dispatch://INFRA-1150 R11). A key no issue carries returns no row, which is what the issue
+// read's first batch requires of every statement beside the issue row's.
+//
+// kept for one release: design-gate-rows
 const issueDesignGatesStatement = `
-		select step, artifact_id from design_gates where issue = $1
+		select step, artifact_id from design_gates where issue = $1 and step = any($2::text[])
 		order by array_position($2::text[], step)
 	`
 

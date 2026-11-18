@@ -34,20 +34,45 @@ type projectGatedSteps struct {
 // unchanged list touches no row and appends no event, which is what keeps a restarting daemon
 // out of the project's event log. A body that names no list is refused (400 INVALID_PROJECT)
 // rather than read as the empty list, so a malformed publish cannot clear a gate, and a list
-// naming anything but the three steps is refused there too, before the database's own check
+// naming anything but the known steps is refused there too, before the database's own check
 // would raise. A step named twice is refused as well, as the deployment's own loader refuses it:
 // the deployment keeps one gate record per step, so a second naming is either a mistake or an
 // order it cannot keep, and the database's check admits it (it holds the shape, not the route's
 // input rules).
+//
+// The `decisions` step is gone (dispatch://INFRA-1150 R11, ruling F2), and a page of the release
+// before still sends it, so the write admits it and stores the list without it; a list of that
+// step alone is stored as [spec], so the publish gates the design still (gatedStepsWithout).
 
 // projectGatedStepsInput is the body PUT /api/v1/projects/{key}/gated-steps takes. Steps is
 // required: a body without it is refused (400 INVALID_PROJECT, putProjectGatedSteps below)
 // rather than read as the empty list, so a malformed publish cannot clear a gate. It is a
-// pointer so that an absent list and an explicit `[]` are told apart, and the enum is the three
-// steps model.GatedStepsKnown names, which the handler refuses anything outside.
+// pointer so that an absent list and an explicit `[]` are told apart, and the enum is the steps
+// model.GatedStepsKnown names with the retired `decisions`, which the write admits and drops.
 type projectGatedStepsInput struct {
 	Steps *[]string    `json:"steps" required:"true" enum:"decisions,criteria,spec"`
 	Actor *model.Actor `json:"actor"`
+}
+
+// retiredDecisionsStep is the design-gate step the release before gated, a root issue's
+// decisions document. This build stores it nowhere (dispatch://INFRA-1150 R11).
+const retiredDecisionsStep = "decisions"
+
+// gatedStepsWithout is a list of gated steps without retiredDecisionsStep: the list the write
+// stores, and the list a read answers for a stored one, since a daemon of the release before
+// may publish that step until the decisions step rewrites the stored lists. A list of that step
+// alone is [spec], never the empty list, which would gate nothing.
+//
+// kept for one release: steps-write-admits
+func gatedStepsWithout(steps []string) []string {
+	if !slices.Contains(steps, retiredDecisionsStep) {
+		return steps
+	}
+	kept := slices.DeleteFunc(slices.Clone(steps), func(step string) bool { return step == retiredDecisionsStep })
+	if len(kept) == 0 {
+		return []string{model.GatedStepSpec}
+	}
+	return kept
 }
 
 func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
@@ -73,7 +98,7 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 		steps = []string{}
 	}
 	for index, step := range steps {
-		if !slices.Contains(model.GatedStepsKnown, step) {
+		if step != retiredDecisionsStep && !slices.Contains(model.GatedStepsKnown, step) {
 			writeError(w, "INVALID_PROJECT", http.StatusBadRequest, fmt.Sprintf(
 				"%q is not a design-gate step: steps names %s", step, strings.Join(model.GatedStepsKnown, ", ")))
 			return
@@ -84,6 +109,7 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	steps = gatedStepsWithout(steps)
 
 	project, err := s.loadProject(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
 	if err != nil {

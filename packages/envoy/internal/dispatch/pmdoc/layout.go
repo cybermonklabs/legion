@@ -24,9 +24,9 @@ type Layout struct {
 type blockFlags uint8
 
 const (
-	// blockHoldsAsk: the block holds an ask block anywhere in it, itself included, as the tree is
-	// read (the walk of WalkAskBlocks).
-	blockHoldsAsk blockFlags = 1 << iota
+	// blockHoldsCredited: the block holds a credited block anywhere in it, itself included, as the
+	// tree is read (the walk of WalkCreditedBlocks).
+	blockHoldsCredited blockFlags = 1 << iota
 	// blockHoldsFootnoteDefinition: the block holds a footnote definition anywhere in it, whose
 	// label every block's rendering reads (footnoteLabelSet).
 	blockHoldsFootnoteDefinition
@@ -76,17 +76,17 @@ func (l *Layout) Blocks() int {
 	return len(l.ends)
 }
 
-// AskBlocks lists, in order, the index of each top-level block holding an ask block anywhere in it.
-// The ask blocks of the document are the ask blocks of these blocks, since the document node itself
-// is never an ask.
-func (l *Layout) AskBlocks() []int {
-	var asks []int
+// CreditedBlocks lists, in order, the index of each top-level block holding a credited block - an
+// ask, a decision or a reading (WalkCreditedBlocks) - anywhere in it. The credited blocks of the
+// document are the credited blocks of these blocks, since the document node itself is never one.
+func (l *Layout) CreditedBlocks() []int {
+	var credited []int
 	for index, flags := range l.flags {
-		if flags&blockHoldsAsk != 0 {
-			asks = append(asks, index)
+		if flags&blockHoldsCredited != 0 {
+			credited = append(credited, index)
 		}
 	}
-	return asks
+	return credited
 }
 
 // newLayout is a layout about to record blocks top-level blocks, incremental until a check fails.
@@ -156,16 +156,46 @@ func markerClass(block *Node) blockFlags {
 	return 0
 }
 
-// askBlockType is the node type of an ask block, the one type WalkAskBlocks visits and
-// blockHoldsAsk flags a block for.
+// askBlockType is the node type of an ask block, the one type WalkAskBlocks visits.
 const askBlockType = "ask"
 
+// creditedBlock reports whether a node of type typeName is a credited block: a block whose author
+// the document service keeps from the write that introduced it until a settlement reads it - an
+// ask, whose row a settlement opens, and a decision and a reading, whose node a version's index
+// writes with that author (dispatch://INFRA-1150 R1 and R2). WalkCreditedBlocks visits these and
+// blockHoldsCredited flags a block for them.
+func creditedBlock(typeName string) bool {
+	switch typeName {
+	case askBlockType, "decision", "reading":
+		return true
+	}
+	return false
+}
+
 // holdsBlocks reports whether a node's child can hold a block under it, and so whether a walk over
-// the blocks of a document descends into it: text holds none. WalkAskBlocks and holdsFlags walk by
-// this one rule, so the blocks a layout flags as holding an ask are exactly the blocks in which
-// WalkAskBlocks finds one.
+// the blocks of a document descends into it: text holds none. WalkAskBlocks, WalkCreditedBlocks and
+// holdsFlags walk by this one rule, so the blocks a layout flags as holding a credited block are
+// exactly the blocks in which WalkCreditedBlocks finds one.
 func holdsBlocks(child *Node) bool {
 	return child.Type != "text"
+}
+
+// WalkCreditedBlocks calls visit with the id of each credited block node holds (creditedBlock), in
+// document order, wherever it stands, node itself included, as WalkAskBlocks walks: the id is the
+// block's BlockIDAttr attribute, "" for a block carrying none.
+func WalkCreditedBlocks(node *Node, visit func(id string)) {
+	if node == nil {
+		return
+	}
+	if creditedBlock(node.Type) {
+		id, _ := node.Attrs[BlockIDAttr].(string)
+		visit(id)
+	}
+	for _, child := range node.Children {
+		if holdsBlocks(child) {
+			WalkCreditedBlocks(child, visit)
+		}
+	}
 }
 
 // WalkAskBlocks calls visit with the id of each ask block node holds, in document order, wherever
@@ -189,7 +219,7 @@ func WalkAskBlocks(node *Node, visit func(id string)) {
 
 // HoldsAskBlock reports whether node is an ask block or holds one wherever it stands, stopping at
 // the first it finds. It walks as WalkAskBlocks walks (holdsBlocks), so it answers true for a node
-// that walk visits at least once. A caller that only asks whether a block holds a decision block
+// that walk visits at least once. A caller that only asks whether a block holds an ask block
 // reads it rather than walking the whole subtree and setting a flag, since it runs on every body
 // write (itemblocks.Check).
 func HoldsAskBlock(node *Node) bool {
@@ -207,16 +237,16 @@ func HoldsAskBlock(node *Node) bool {
 	return false
 }
 
-// holdsFlags reports whether block holds an ask block or a footnote definition, itself included.
-// It walks as WalkAskBlocks walks (holdsBlocks), so the ask blocks of a block this flags are the
-// ones that walk finds. asWritten keeps every node that is not inline, so the tree as read and as
-// written answer alike.
+// holdsFlags reports whether block holds a credited block or a footnote definition, itself
+// included. It walks as WalkCreditedBlocks walks (holdsBlocks), so the credited blocks of a block
+// this flags are the ones that walk finds. asWritten keeps every node that is not inline, so the
+// tree as read and as written answer alike.
 func holdsFlags(block *Node) blockFlags {
 	var flags blockFlags
-	switch block.Type {
-	case askBlockType:
-		flags |= blockHoldsAsk
-	case "footnote_definition":
+	switch {
+	case creditedBlock(block.Type):
+		flags |= blockHoldsCredited
+	case block.Type == "footnote_definition":
 		flags |= blockHoldsFootnoteDefinition
 	}
 	for _, child := range block.Children {

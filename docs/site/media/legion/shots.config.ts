@@ -168,7 +168,7 @@ const legion: ShotSet<LegionJourney> = {
     },
     {
       id: "decision-block",
-      alt: "The spec's design with an open decision block: the architect's question, its recommendation, and two options to answer.",
+      alt: "The spec's design with an open ask block: the architect's question, its recommendation, and two options to answer.",
       route: (journey) => `/issues/${journey.key}/spec`,
       viewport: "desktop",
       theme: "light",

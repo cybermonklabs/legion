@@ -144,6 +144,10 @@ type testServerOptions struct {
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
+	// browserPeers admits a browser peer to the document service's rooms (connectBrowserPeer),
+	// which dials with the X-Dispatch-User header its Identity reads: a test that writes as a
+	// person's own editor does. Without it the service holds no identity and admits no peer.
+	browserPeers bool
 	// duplicateBound is the near-copy gate's bound (server.duplicateBound); zero keeps
 	// production's duplicateGateTimeout. A case that reads the gate's verdict passes
 	// nearCopyVerdictBound, so whether the machine met duplicateGateTimeout is not what it measures.
@@ -239,7 +243,11 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	var peers identity.Identity
+	if options.browserPeers {
+		peers = headerIdentity(database)
+	}
+	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle, Identity: peers})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -796,8 +804,8 @@ func (failingLoadStore) Load(context.Context, string) (persistence.LoadResult, e
 	return persistence.LoadResult{}, errors.New("persistence unavailable")
 }
 
-func (failingLoadStore) DocumentStamp(context.Context, string) (docs.DocumentStamp, error) {
-	return docs.DocumentStamp{}, errors.New("persistence unavailable")
+func (failingLoadStore) DocumentStamp(context.Context, string) (string, docs.DocumentStamp, error) {
+	return "", docs.DocumentStamp{}, errors.New("persistence unavailable")
 }
 
 func (failingLoadStore) LoadDocument(context.Context, string) (docs.LoadedDocument, error) {

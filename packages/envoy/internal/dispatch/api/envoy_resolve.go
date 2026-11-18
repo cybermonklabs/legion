@@ -432,6 +432,11 @@ func receiptError(failure *string) string {
 // the row whose claim it still holds carries a reply_id, and answeredReceipt builds that
 // receipt from the row, stating what the reply recorded rather than what this send reported -
 // so every attempt carries exactly one receipt and that receipt agrees with its row.
+//
+// caused runs once the receipt is appended, in the same transaction and with its id, for what
+// settle wrote before the receipt existed: the node of the session a sent attempt reached
+// (graphstore.Reached), which learns the receipt as its cause there, as a comment's node learns
+// the event that stored it. A settle that writes nothing of the kind passes nil.
 func settleDeliveryAttempt[T any](
 	ctx context.Context,
 	s *server,
@@ -439,6 +444,7 @@ func settleDeliveryAttempt[T any](
 	settle func(context.Context, pgx.Tx) (T, error),
 	answered func(context.Context, pgx.Tx) (row T, mine bool, replyID *string, err error),
 	answeredReceipt func(T) model.Event,
+	caused func(ctx context.Context, tx pgx.Tx, receipt int64) error,
 ) (T, error) {
 	var zero T
 	tx, err := s.begin(ctx)
@@ -471,6 +477,11 @@ func settleDeliveryAttempt[T any](
 	event, err := s.appendEvent(ctx, tx, receipt)
 	if err != nil {
 		return zero, err
+	}
+	if caused != nil {
+		if err := caused(ctx, tx, event.ID); err != nil {
+			return zero, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return zero, err

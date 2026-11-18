@@ -8,8 +8,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -108,7 +110,10 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 	withdrawn := make([]model.Ask, 0, len(open))
 	appended := make([]model.Event, 0, len(open))
 	for _, ask := range open {
-		ask, err := docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionWithdrawn, reason, actor)
+		// The withdrawal goes through the one writer of an ask's answer state; what it states on
+		// the ask's node waits for the ask.resolved appended below.
+		var held graphstore.Uncaused
+		ask, err := docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionWithdrawn, reason, actor, &held)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -119,6 +124,9 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 		}
 		event, err := s.appendEvent(ctx, tx, issueOwner(issueKey).event("ask.resolved", actor, payload))
 		if err != nil {
+			return nil, nil, err
+		}
+		if err := graphstore.Caused(ctx, tx, held, event.ID); err != nil {
 			return nil, nil, err
 		}
 		withdrawn = append(withdrawn, ask)
@@ -172,20 +180,20 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 	if err != nil {
 		return nil, nil, err
 	}
-	ids := make([]string, len(withdrawn))
+	// Each ask is opened again through the one writer of an ask's answer state, which takes its
+	// answer and its resolution off its node and its row; what it states on the node waits for
+	// that ask's ask.opened, appended below.
+	restoredAt := time.Now().UTC()
+	restored := make([]model.Ask, 0, len(withdrawn))
+	held := make([]graphstore.Uncaused, len(withdrawn))
 	for index, ask := range withdrawn {
-		ids[index] = ask.ID
-	}
-	if len(ids) > 0 {
-		if _, err := tx.Exec(ctx, `update asks set state = 'open', answer = null, resolution = null where id = any($1::uuid[])`, ids); err != nil {
+		change := asks.Reopened()
+		change.Who, change.At, change.Held = actor, restoredAt, &held[index]
+		settled, err := asks.Settle(ctx, tx, ask.ID, change)
+		if err != nil {
 			return nil, nil, fmt.Errorf("restore withdrawn ask: %w", err)
 		}
-	}
-	restored := make([]model.Ask, 0, len(withdrawn))
-	for _, ask := range withdrawn {
-		ask.State = "open"
-		ask.Answer = nil
-		ask.Resolution = nil
+		ask.State, ask.Answer, ask.Resolution = settled.State, settled.Answer, settled.Resolution
 		restored = append(restored, ask)
 	}
 	if _, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, restored, actor, false); err != nil {
@@ -195,8 +203,7 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 		return nil, nil, err
 	}
 	appended := make([]model.Event, 0, len(restored))
-	restoredAt := time.Now().UTC()
-	for _, ask := range restored {
+	for index, ask := range restored {
 		// The restore took each ask's answer off, which removes its answer part: index the
 		// parts in the transaction that wrote the row, and let the ask.opened name what that
 		// moved.
@@ -215,6 +222,9 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 		// The part rows the restore moved are new rows of this transaction, so they take the
 		// event's id and a ?since= read lists them.
 		if err := refs.Stamp(ctx, tx, "ask", ask.ID, event.ID); err != nil {
+			return nil, nil, err
+		}
+		if err := graphstore.Caused(ctx, tx, held[index], event.ID); err != nil {
 			return nil, nil, err
 		}
 		appended = append(appended, event)

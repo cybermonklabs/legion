@@ -66,16 +66,16 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
 
 /**
  * A plain name for every kind of node the page draws, which is every kind the model holds: the
- * issue, the documents and images it carries, the five typed blocks of those documents, the
+ * issue, the documents and images it carries, the seven typed blocks of those documents, the
  * decisions and asks, the conversation, the results recorded against a check, and the child
  * issues.
  *
  * A key is the model's own token for the kind, so the page needs no second table to read a
- * node: `callout`, `ask`, `requirement`, `plan_task` and `check` are the block type names in
- * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`, `comment` and
- * `message` are the item kinds of a `dispatch://` reference. A name is lowercase because the
- * page draws it inside its own sentences and rows, where a capital would read as a proper noun;
- * `sentenceCase` supplies the capital where a name opens a sentence or a heading.
+ * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision` and `reading` are the
+ * block type names in `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`,
+ * `comment` and `message` are the item kinds of a `dispatch://` reference. A name is lowercase
+ * because the page draws it inside its own sentences and rows, where a capital would read as a
+ * proper noun; `sentenceCase` supplies the capital where a name opens a sentence or a heading.
  */
 export const NODE_TYPE_NAMES = freeze({
   /** An `ask`: the word the approved pictures draw on its tag, "question" (R34). */
@@ -86,6 +86,10 @@ export const NODE_TYPE_NAMES = freeze({
   check: "check",
   child_issue: "child issue",
   comment: "comment",
+  /** A `criterion` block, and a `reading` below: block types the model's block schema
+   *  (version 6) declares, named here so every type the schema declares has a name. A later part
+   *  of the page draws them. */
+  criterion: "criterion",
   decision: "decision",
   document: "document",
   handoff: "handoff",
@@ -93,6 +97,9 @@ export const NODE_TYPE_NAMES = freeze({
   issue: "issue",
   message: "message",
   plan_task: "plan task",
+  /** A `reading` block: an agent's reading of a decision, or of a question a person answered,
+   *  written at the end of the block it reads. */
+  reading: "reading",
   /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
    *  sentence that must be true of the software. */
   requirement: "statement",
@@ -101,6 +108,17 @@ export const NODE_TYPE_NAMES = freeze({
 
 /** One kind of node the page draws, by the model's own token for it. */
 export type NodeType = keyof typeof NODE_TYPE_NAMES;
+
+/**
+ * The name a typed block draws in a document that does not play its type's part, in place of
+ * its type's name, lowercase as every name above: a `requirement` block of any document but the
+ * issue's spec is no statement (`isStatement`), so its row's tag says its type's own word and
+ * never "statement" (decision 246), as a `check` block outside the Verification document draws
+ * no state word (decision 152).
+ */
+export const BLOCK_TYPE_NAMES = freeze({
+  requirement: "requirement",
+} as const);
 
 /**
  * The state words of each type whose state the model holds, and no entry at all for a type it
@@ -114,8 +132,8 @@ export type NodeType = keyof typeof NODE_TYPE_NAMES;
  * A decision's states are spec R2's, "wherever a decision is drawn": `waiting_review` is an
  * agent's decision that waits for a person's review, `kept` one a person kept as it reads now -
  * the row draws the name of who kept it after the word - and `replaced` one a later decision
- * replaced (`decisions.go`'s `replaced`, `waiting_review` and `kept`, read by `tree-drafts.ts`'s
- * `decisionState`). `change_requested` is a decision the reader sent a Change on since it last
+ * replaced (`decisions.go`'s `replaced`, `waiting_review` and `kept`, read by `tree-nodes.ts`'s
+ * `reviewState`). `change_requested` is a decision the reader sent a Change on since it last
  * changed, which waits on its agent and no longer on the reader (`decision-review.ts`). A
  * decision in none of them - an agent's that nobody has reviewed and nothing replaced, or a
  * person's own section - draws no state.
@@ -136,12 +154,13 @@ export const NODE_STATE_WORDS = freeze({
   check: {
     failed: "Failed",
     "no-result": "No result",
-    /** The newest result that stands was recorded against work the check no longer compares
-     *  its results with, or against an older wording of the check, so it no longer speaks for
-     *  the work as it stands, whatever it found. A result says the same of itself in the same
-     *  words (`RESULT_STANDS_WORDS`), and nothing else on the page draws them: a decision's
-     *  chip for a block it changed after naming says so in words of its own
-     *  (`CONTROL_LABELS.target_stale`). */
+    /** The newest result that stands does not stand at the commit the server names for the
+     *  check: it was recorded against another commit, or against an older wording of the
+     *  check, so it no longer speaks for the work as it stands, whatever it found. The check's
+     *  row and its result's fact read that one standing, the server's for the check, so the
+     *  result says the same of itself in the same words (`RESULT_STANDS_WORDS`); nothing else
+     *  on the page draws them: a decision's chip for a block it changed after naming says so
+     *  in words of its own (`CONTROL_LABELS.target_stale`). */
     older: "Out of date",
     passed: "Passed",
     /** Every result recorded against the check has been withdrawn (`CheckResultRetracted`),
@@ -267,7 +286,8 @@ export const PRESET_NAMES = freeze({
  * steps", R26's "ordered steps"). The count itself is a number and no word.
  */
 export const FILTER_SIGNAL_WORDS = freeze({
-  /** After the number of checks whose newest result failed. */
+  /** After the number of checks whose state is failed at the commit the server names for each
+   *  (`checkStanding`), the state their rows draw. */
   failing: "failing",
   /** After the number of plan tasks. */
   steps: "steps",
@@ -346,7 +366,7 @@ export const DECISIONS_WORDS = freeze({
   declined: "declined to answer",
   /** The link from an entry to the node that holds it, in the conversation. */
   in_conversation: "in the conversation",
-  /** Before the statements a decision's `shaped` ties name (the picture's "informs R4 R21"). */
+  /** Before the spec's statements that an entry's links tie it to, as the picture draws it. */
   informs: "informs",
   /** The headings of the headed parts, in the order the filter draws them (R2): the reader's
    *  own decisions are "his own decisions", and what another person answered, declined, kept or
@@ -378,6 +398,10 @@ export const VERIFICATION_WORDS = freeze({
   /** After the count of a check's other results, which the line opens in place (ruling 6). */
   earlier_many: "earlier results",
   earlier_one: "earlier result",
+  /** After the count of the checks the coverage read counts for a statement beyond those the
+   *  view draws with it, which serve it from an issue under this one. */
+  elsewhere_many: "more checks elsewhere",
+  elsewhere_one: "more check elsewhere",
   /** The heading over each check's latest result. */
   latest_result: "Latest result",
   /** Between the two numbers of the covered count. */
@@ -479,9 +503,8 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, and a spec with no summary or none the head can draw whole. Each is
- * one sentence, in the simple present, saying what is absent rather than what the reader should
- * do about it.
+ * query matches nothing, and a spec with no summary. Each is one sentence, in the simple
+ * present, saying what is absent rather than what the reader should do about it.
  */
 export const EMPTY_STATE_LINES = freeze({
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
@@ -499,12 +522,6 @@ export const EMPTY_STATE_LINES = freeze({
   spec_no_decision_many: "No decision shaped these statements.",
   spec_no_decision_one: "No decision shaped this statement.",
   spec_summary: "This spec has no summary.",
-  /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
-   *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
-  spec_summary_cut: "The summary is too long to show here.",
-  /** A summary whose whole text ends in no sentence end, so it holds no sentence the head
-   *  draws. */
-  spec_summary_unended: "The summary has no complete sentence.",
   verification: "This issue has no checks yet.",
   /** What the Verification filter's table says where the state its chip narrows to holds no
    *  statement. */
@@ -593,6 +610,18 @@ export const PROGRESS_NOUNS = freeze({
 export const STATE_LINES = freeze({
   advances_at_cap: `An issue advances at most ${MAX_ISSUE_ADVANCES} priorities.`,
   closed: "This issue is closed.",
+  /** What Details says of a GitHub link whose issue or pull request Dispatch cannot read, since
+   *  it holds no GitHub token for the link's repository, which today's pages say in the link's
+   *  tooltip (`features/issue/GitHubLink.tsx`). It is that tooltip's sentence without
+   *  "GitHub", whose capital inside the word reads as a code name to this list's rule on
+   *  internal words (`INTERNAL_WORD` in `page-words.test.ts`); the link's own address, drawn
+   *  before it, already says where the link points. */
+  github_unreadable: "Details are unavailable for this repository.",
+  /** How a subscribed agent stands whose subscription is wider than this issue, which Details
+   *  draws where today's pages draw "via" and its topic with the reason as a tooltip
+   *  (`features/issue/SubscribedAgents.tsx`). */
+  subscription_wider:
+    "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
 } as const);
 
 /**
@@ -620,16 +649,41 @@ export const ANSWER_LINES = freeze({
    *  read, and when they could not be (`HistoryHandoff.tsx`). */
   loading_handoff: "Loading handoff…",
   handoff_unreadable: "Could not load the handoff.",
-  /** What the Spec filter says over its columns when the decisions could not be read, so the
-   *  column beside each statement cannot say what shaped it. */
+  /** What the Verification view says when its Verification document's blocks could not be
+   *  read, so it cannot say which statement each check serves. */
+  checks_unreadable: "Could not load the checks.",
+  /** What the Decisions view and the Spec column say when the reads their decisions come from
+   *  could not be read (the tree read and the decisions view, or the Spec view read), so neither
+   *  can say which decisions the issue holds or what shaped a statement. */
   decisions_unreadable: "Could not load the decisions.",
+  /** What the Spec view says when the spec's blocks or their coverage could not be read. */
+  statements_unreadable: "Could not load the statements.",
+  /** What the Spec view says when the results could not be read, so it marks no statement. */
+  results_unreadable: "Could not load the results.",
+  /** What the outline says when the issue's tree could not be read before it first answered,
+   *  so it holds no row to draw. */
+  outline_unreadable: "Could not load the outline.",
+  /** What the Decisions view says over its list when the issue's asks could not be read, so it
+   *  cannot say which questions there are, nor draw a person's decision, which is an answered
+   *  one; of the reads its decisions come from it says `decisions_unreadable`. */
+  questions_unreadable: "Could not load the questions.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
+  /** What the Plan view says when the plan's blocks could not be read, so it holds no task to
+   *  draw. */
+  plan_unreadable: "Could not load the plan.",
+  /** What the Spec view says over its columns when the issue's questions and their answers could
+   *  not be read, so it draws no decision a person made. */
+  answers_unreadable: "Could not load the answers.",
+  /** What a decision's Change form says when Dispatch refused its send, whatever the server
+   *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
+  change_not_sent: "Could not send the change.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
+  saving_components: "Saving components…",
   saving_field: "Saving…",
   saving_labels: "Saving labels…",
   saving_release: "Releasing…",
@@ -656,10 +710,9 @@ export const CHECK_WHEN_WORDS = freeze({
  *  added there is a compile error here rather than a result that silently draws no word.
  *
  *  A result whose check's words moved since it was recorded is older work too, whatever its
- *  commit (`check-facts.ts`). That word is the one its check's `older` state reads, which is the
- *  state of a check whose newest result that stands is such a result and whose pass stands
- *  nowhere (`tree-drafts.ts`'s `checkState`): one fact, one word, on the result and on its
- *  check. */
+ *  commit (`check-facts.ts`). That word is the one its check's `older` state reads: a check's
+ *  row and its result's fact read one standing, the server's for that check, so one fact has
+ *  one word, on the result and on its check. */
 export const RESULT_STANDS_WORDS = freeze({
   at_basis: "Up to date",
   other_commit: NODE_STATE_WORDS.check.older,
@@ -750,6 +803,9 @@ export const CONTROL_LABELS = freeze({
   accept: "Accept",
   /** The one control that reaches a property with no value yet (R11, which bans "more"). */
   add: "Add",
+  /** The labels control's word where the issue has no label yet, as `add_priority` is the
+   *  priority's: the property's own name would draw "Labels" twice in its row of Details. */
+  add_label: "Add a label",
   /** The control that places an issue under a priority, where the issue advances none: the
    *  words its name begins with, which `IssuePriorityLine.tsx` ends with the issue's key. */
   add_priority: "Add a priority",
@@ -770,6 +826,22 @@ export const CONTROL_LABELS = freeze({
   answer_chose: "you chose",
   /** What the line says while it is empty and answers a question. */
   answer_placeholder: "Answer in your own words…  (Enter sends · Shift+Enter new line)",
+  /** The document a design-gate step reviews, by the step (`StepEntry.step`; `criteria` reviews
+   *  the verification), as the names of that document's Approve and Request changes end with
+   *  it where the gate's list carries the actions of more than one document (`ApprovalSteps`'
+   *  `actionsOn`): each name begins with its control's own words and says its document,
+   *  "Approve the spec", "Approve v5 of the spec", "Request changes to the verification"
+   *  (WCAG 2.5.3). */
+  approval_document_criteria: "the verification",
+  approval_document_decisions: "the decisions",
+  approval_document_spec: "the spec",
+  /** What a stale approval chip says of the document's latest version inside `NoTooltips`,
+   *  where no `title` carries it: "Approved v3 · latest v5" (`features/doc/ApprovalChip.tsx`). */
+  approval_latest: "latest",
+  /** The words between Request changes, or a stale approval's Approve, and the document it
+   *  reviews, in those names: "Request changes to the spec", "Approve v5 of the spec". */
+  approval_request_changes_to: "to",
+  approval_version_of: "of",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
   /** Changes the reader's own answer to a question, on its focused row: the line at the foot of
@@ -781,6 +853,14 @@ export const CONTROL_LABELS = freeze({
   /** The direct children's count in the header's properties line, before the issue's own
    *  numbers: "Children 2 of 7 done" (R13). */
   children: "Children",
+  /** The word between the words a shared control draws and the issue's key, in the name the
+   *  control answers to inside `NoTooltips`: "Set components of CORE-1", "Saving components of
+   *  CORE-1" (`componentsControlName`) and "Saving labels of CORE-1" (`labelsControlName`). */
+  control_name_of: "of",
+  /** The word between the labels control's `add_label` and the issue's key, in the name it
+   *  answers to inside `NoTooltips` while the issue has no label: "Add a label to CORE-1"
+   *  (`labelsControlName`). */
+  control_name_to: "to",
   /** The two words that make a progress count read as a sentence in the header's properties
    *  line, around the issue's own numbers: "Children 2 of 7 done", "All issues under it 5 of 30
    *  done" (R13, the 1440 px picture). */
@@ -820,6 +900,9 @@ export const CONTROL_LABELS = freeze({
   copy_command: "Copy the command",
   /** Copies the address of the block the caret is in, in the open document's toolbar (R16). */
   copy_link: "Copy link",
+  /** Copies the focused node's `dispatch://` address, among the focused row's acts, as today's
+   *  page offers it on the same node (part G's R6, root R19). */
+  copy_reference: "Copy reference",
   /** Draws a pinned version of the open document against the document as it stands (R16). */
   diff_vs_current: "Diff vs current",
   /** The one panel of the issue's properties, which opens over the right of the page, and the
@@ -1089,20 +1172,36 @@ export const BLOCK_ATTRIBUTE_LABELS = freeze({
   ci_check: "CI check",
   copied_from: "copied from",
   copied_from_document: "copied from document",
+  decided_by: "decided by",
+  /** The question the decision came from, by the page's word for an ask (R34). */
+  from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
   invalid: "problem",
+  kept_by: "kept by",
+  /** The sum of the decision's words as the person who kept it read them: a decision whose
+   *  words no longer match it waits for review again. */
+  kept_text_sum: "sum of the words kept",
   kind: "kind",
   /** Whether the reader may choose more than one option. */
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  parent: "parent",
+  replaced: "replaced",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
   serves: "serves",
+  /** The blocks a decision or a question shaped, by the spec's own verb for the edge, as
+   *  `serves` is. */
+  shaped: "shaped",
+  size: "size",
   state: "state",
   surface: "surface",
   title: "title",
+  uncertainty: "uncertainty",
+  /** Why the agent who made the decision is unsure of it. */
+  uncertainty_reason: "reason for the uncertainty",
   urgency: "urgency",
   when: "when",
 } as const);
@@ -1256,6 +1355,7 @@ export const GLYPH_TOKENS = freeze({
     check: "check",
     child_issue: "child-issue",
     comment: "comment",
+    criterion: "criterion",
     decision: "decision",
     document: "document",
     handoff: "handoff",
@@ -1263,6 +1363,7 @@ export const GLYPH_TOKENS = freeze({
     issue: "issue",
     message: "message",
     plan_task: "plan-task",
+    reading: "reading",
     requirement: "requirement",
     result: "result",
   },
@@ -1359,6 +1460,7 @@ function phrasesIn(value: unknown): readonly string[] {
  */
 export const UNASKED_SOURCES: readonly unknown[] = freeze([
   NODE_TYPE_NAMES,
+  BLOCK_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,

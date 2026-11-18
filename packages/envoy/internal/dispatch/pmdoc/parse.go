@@ -184,9 +184,14 @@ func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*N
 // for repeated ids (RepeatedBlockID) with only the ids it names, then takes the ids of the blocks
 // of live it leaves unchanged (carryBlockIDs), and only then is an id minted for each block still
 // without one (EnsureBlockIDs), so the refusal and the carry see only the ids the markdown named.
+// The tree is held to the content rule of each block a live document keeps in any order
+// (writtenContentError), since a caller wrote it in one piece.
 func parseForWrite(markdown string, live *Node, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
 	doc, err := parseUnstamped(LineFeeds(markdown), fromStart, readFrontmatter, budget)
 	if err != nil {
+		return nil, err
+	}
+	if err := writtenContentError(doc); err != nil {
 		return nil, err
 	}
 	if err := RepeatedBlockID(live, doc, doc); err != nil {
@@ -894,12 +899,15 @@ func parseTypedDirective(directive *typedDirective, source []byte, footnotes map
 	}
 	// A typed block whose schema content opens with a paragraph is read holding one ahead of what
 	// the markdown wrote (opensWithAParagraph), and the display read marks the blocks it keeps
-	// whose content rule wants one for the same reason (displayFillAttr, displayContentFit).
+	// whose content rule wants one for the same reason (displayFillAttr, displayContentFit). So is
+	// one whose markdown opens with a block it admits after its content (a decision holding its
+	// readings alone): ProseMirror fills the content its rule wants ahead of them with a paragraph.
 	_, fill := directive.Attribute(displayFillAttr)
+	opensAdmitted := len(children) > 0 && AdmitsAfterContent(directive.Name, children[0].Type)
 	return &Node{
 		Type:     directive.Name,
 		Attrs:    directive.values,
-		Children: emptyParagraphFirst(children, fill || opensWithAParagraph(directive.Name)),
+		Children: emptyParagraphFirst(children, fill || opensAdmitted || opensWithAParagraph(directive.Name)),
 	}, nil
 }
 

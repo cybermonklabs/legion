@@ -733,9 +733,9 @@ func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArt
 // boot catch-up's fact, a version event, a session's or Dispatch's own review — queues nothing,
 // since the daemon reads the issue only when a person's own act could queue it. A carried approval
 // (CarriedApproval) queues nothing either: it is the review Dispatch writes in the person's name
-// when their answer to a decision block was the whole change since the version they approved, or
-// when a later version's text is that version's, Dispatch's bookkeeping of an earlier approval and
-// not a new act of theirs.
+// at a later version that holds nothing they have not agreed to, such as one whose text is the
+// approved version's, Dispatch's bookkeeping of an earlier approval and not a new act of theirs.
+// A person's answer to an ask block writes no version, so it carries no approval at all.
 //
 // The controller's parked-root walk (skill://legion-controller/references/parked-decisions.md,
 // "The walk", step 3) repeats this decision in prose to skip the approvals it queues: a change to

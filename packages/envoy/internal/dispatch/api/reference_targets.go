@@ -64,11 +64,12 @@ const referenceTargetsMax = contracts.ReferenceTargetsMax
 // (blockTrees). The trees are resolved before the ETag is made, because the ETag hashes them: a
 // block's name stops at its stored excerpt, so a change past it moves the tree and not the name.
 func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	targets, err := s.referenceTargets(r, trees)
+	targets, err := s.referenceTargets(r, who, trees)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -95,9 +96,10 @@ func (s *server) getReferenceTargets(w http.ResponseWriter, r *http.Request) {
 // a caller matching the members against the strings it sent finds none of them under a
 // reference this read had rewritten.
 //
-// trees is the request's own reader, nil for a caller that asked for no tree, which then reads
-// no block's text at all.
-func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]model.ReferenceTarget, error) {
+// who is the reader the references are resolved for (actingReader): a target reserved for an
+// author who is not who is answered gone, as one nothing addresses is. trees is the request's own
+// reader, nil for a caller that asked for no tree, which then reads no block's text at all.
+func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displayTreeReader) ([]model.ReferenceTarget, error) {
 	raw := r.URL.Query()["ref"]
 	if len(raw) == 0 {
 		return nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "ref is required, once per reference to resolve")
@@ -113,7 +115,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 		}
 		parsed[index] = ref
 	}
-	ambiguous, err := s.wholeReferences(r.Context(), parsed)
+	ambiguous, err := s.wholeReferences(r.Context(), who, parsed)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +132,7 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 		target, _ := refs.TargetOf(ref)
 		named[index] = target
 	}
-	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, named)
+	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, who, named)
 	if err != nil {
 		return nil, err
 	}
@@ -157,8 +159,9 @@ func (s *server) referenceTargets(r *http.Request, trees *displayTreeReader) ([]
 //
 // Every short id of the set is resolved in one batch (refs.ResolvePrefixes), which reads each
 // distinct id once, in one statement per kind of item and two for the blocks of a document, so
-// a set with no short id costs no statement.
-func (s *server) wholeReferences(ctx context.Context, references []text.Ref) (ambiguous []bool, err error) {
+// a set with no short id costs no statement. It resolves among the items who may see, as
+// wholeReference resolves one ?to= for its reader.
+func (s *server) wholeReferences(ctx context.Context, who model.Actor, references []text.Ref) (ambiguous []bool, err error) {
 	short := make([]refs.ShortID, len(references))
 	var asked []refs.ShortID
 	for index, ref := range references {
@@ -172,7 +175,7 @@ func (s *server) wholeReferences(ctx context.Context, references []text.Ref) (am
 	if len(asked) == 0 {
 		return nil, nil
 	}
-	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, asked)
+	whole, many, err := refs.ResolvePrefixes(ctx, s.deps.Store.Pool, who, asked)
 	if err != nil {
 		return nil, err
 	}

@@ -40,14 +40,15 @@ func (e *CountExceeded) Error() string {
 		e.Field, e.Blocks-e.Limit, e.Limit, e.Blocks, e.Limit)
 }
 
-// DecisionBlock is a body holding a decision block: an `ask` node, which the reader draws a
+// DecisionBlock is a body holding an ask block: an `ask` node, which the reader draws a
 // decision card for and which nobody can answer where it stands, since only a document's own
-// decision block and an ask carry an answer. Field is the field the body arrived in, Position the
-// place, counted from 1, of the top-level block holding the decision block, and Type that block's
-// type, which is the decision block's own type only where it stands at the top: the Proof node
+// ask block and an ask carry an answer. Field is the field the body arrived in, Position the
+// place, counted from 1, of the top-level block holding the ask block, and Type that block's
+// type, which is the ask block's own type only where it stands at the top: the Proof node
 // type of the block the parser read, or, in a body the parser refused, what the reader's own block
 // of that kind is called (pmdoc.FindDecisionCard). The refusal's wording lives in Error() and
-// nowhere else, as CapExceeded's does.
+// nowhere else, as CapExceeded's does. Since dispatch://INFRA-1150 a `decision` block is an
+// agent's decision, so the wording says ask block for an `ask` one.
 type DecisionBlock struct {
 	Field    string
 	Position int
@@ -55,24 +56,24 @@ type DecisionBlock struct {
 }
 
 func (e *DecisionBlock) Error() string {
-	return fmt.Sprintf("%s block %d (%s) holds a decision block, which nobody can answer where it stands: "+
-		"ask the question in the issue's own document, as a decision block there, or open an ask with "+
-		"`dispatch ask`; to show a decision block as an example, put it in a fenced code block",
+	return fmt.Sprintf("%s block %d (%s) holds an ask block, which nobody can answer where it stands: "+
+		"ask the question in the issue's own document, as an ask block there, or open an ask with "+
+		"`dispatch ask`; to show an ask block as an example, put it in a fenced code block",
 		e.Field, e.Position, e.Type)
 }
 
 // Check answers the first rule body breaks, or nil when it breaks none: a *CountExceeded when the
 // body holds more than contracts.DispatchItemBlocks blocks, else a *CapExceeded naming the first
 // block over contracts.DispatchBlockUnits, else a *DecisionBlock naming the first top-level block
-// that holds a decision block. The count is checked first, so a body built to break the indexer is
+// that holds an ask block. The count is checked first, so a body built to break the indexer is
 // refused for how many blocks it holds rather than for one long block, and both bounds are checked
-// before the decision block, so a body that also breaks a bound keeps the bound's refusal, its
+// before the ask block, so a body that also breaks a bound keeps the bound's refusal, its
 // wording and its code.
 //
 // The blocks are Split's, the body as its author wrote it, never the canonical rendering: a table
 // the renderer pads and a list it escapes are measured as written, which is what is stored.
 //
-// The decision block is read from the reader's tree, not from the blocks and not from the parser's
+// The ask block is read from the reader's tree, not from the blocks and not from the parser's
 // verdict: what nobody can answer is the card the browser reader draws, and it draws one for each
 // `ask` its own parser makes, at any depth and whether or not the server's parse went on to refuse
 // the body for something else it holds. So a body the parser read is answered from its tree, where
@@ -83,12 +84,12 @@ func (e *DecisionBlock) Error() string {
 // position named here is the tree's own top-level index, which the fallback's count can differ
 // from.
 //
-// A body the browser's own reader reads differently from this parser is read for a decision block
+// A body the browser's own reader reads differently from this parser is read for an ask block
 // a second time, over the copy that reader reads: one leading byte-order mark dropped and every
 // lone carriage return written as a line feed. That reader drops one U+FEFF before it reads a
 // line, where this parser reads the mark as the first character of a paragraph, and it ends a
 // line at a lone carriage return, where this parser ends none; so a body written either way
-// reaches the parse here as text holding no block while the reader reads the decision block
+// reaches the parse here as text holding no block while the reader reads the ask block
 // standing in it and draws its card. The copy is this rule's own reading and reaches nothing
 // else: the bounds above are measured on the body as written, Split's blocks are the body as
 // written, and the body a caller goes on to store is the one it passed in, byte for byte. The

@@ -11,7 +11,7 @@ own status are visible from the issue tree and the handoffs; do not narrate them
 `dispatch message`.
 
 Extend the primary document in place: a new version adds only the evidence each decision needs and
-what the human decides, each as a [decision block](skill://dispatch/SKILL.md#asks-and-ask-blocks).
+what the human decides, each as an [ask block](skill://dispatch/SKILL.md#asks-and-ask-blocks).
 Never post a second "spec" artifact beside it: `dispatch artifact` with the primary document's name
 replaces the human's document. The command refuses an upload under the name of a document the
 issue already holds and names `--force`, so that flag is what writes over such a document: pass it
@@ -36,7 +36,7 @@ left out is broken.
 Where a real recorded input exists for the work (a stored record, a captured log, an answer the
 real service gave), the Verification document holds at least one read-only check against it,
 because a fixture written for the test proves only what its author expected; where no such check
-can be written, a decision block says why. A requirement of the form "try X and see" is an
+can be written, an ask block says why. A requirement of the form "try X and see" is an
 experiment, and its acceptance is a real run that someone observed.
 
 On your first pass over the spec, cut each requirement carried over from an earlier issue's spec or
@@ -159,14 +159,13 @@ The ordering, which this rule needs and does not change:
 
 The `Design gate steps` sentence of your `Legion addressing` line names the steps this deployment
 gates, in the order it gates them, each in backticks: ``Design gate steps: `spec`.``,
-``Design gate steps: `decisions`, `criteria`.``, or `Design gate steps: none.` A sub-architect on
+``Design gate steps: `criteria`.``, or `Design gate steps: none.` A sub-architect on
 a child issue has no such sentence and never runs the gate.
 
 Each step is one document of the root issue, and the daemon keeps one gate record for each step:
 
 | Step | The document it records |
 | --- | --- |
-| `decisions` | the issue's decisions document (`decisions.md`) |
 | `criteria` | its Verification document (`verification.md`) |
 | `spec` | its primary document |
 
@@ -185,7 +184,7 @@ your decomposition filed before step 4, since the gate's opening starts the root
 phase unless the root waits on another issue, an open child under it or a `blocked_by` link to an
 issue that is not `done`. One approval request covers the `criteria`
 and the `spec` step together (step 4), and each of them is registered on its own document
-(step 5); the `decisions` step is a request of its own.
+(step 5).
 
 1. Extend the primary document in place:
 
@@ -195,7 +194,7 @@ and the `spec` step together (step 4), and each of them is registered on its own
    EOF
    ```
 
-2. Settle every decision block as
+2. Settle every ask block as
    [Approval](skill://dispatch-writing-specs/SKILL.md#approval) says;
    `dispatch request-approval` refuses while one is open. Each answer reaches you, since you follow
    every ask you open.
@@ -207,8 +206,8 @@ and the `spec` step together (step 4), and each of them is registered on its own
    root spec. Check with a command each claim either reviewer marks unverified: fix it when it is
    false, or take it out.
 4. Request approval only once the human has agreed to every point in the spec, because the human
-   approves what they already agreed to and a point new in the request has no decision block for
-   them to answer: give such a point its own decision block first, or take it out of the spec.
+   approves what they already agreed to and a point new in the request has no ask block for
+   them to answer: give such a point its own ask block first, or take it out of the spec.
 
    ```bash
    dispatch request-approval --issue <root issue> --include-verification --summary '<what the human is approving> Reviews: <gap result>, <claim result>; <what they do not show>.'
@@ -219,13 +218,6 @@ and the `spec` step together (step 4), and each of them is registered on its own
    request covers the `criteria` and the `spec` step together. An issue with no `verification.md`
    is refused `NO_VERIFICATION_DOCUMENT`, and one whose Verification document has no settled
    version `NO_VERSION`.
-
-   The `decisions` step is a request of its own, since `--include-verification` is for the issue's
-   spec alone and any other document is refused `NOT_SPEC_DOCUMENT`:
-
-   ```bash
-   dispatch request-approval --issue <root issue> --artifact decisions.md --summary '<what the human is approving> Reviews: <gap result>, <claim result>; <what they do not show>.'
-   ```
 
    `--summary` says in one to three sentences what the human is approving and nothing else (no
    commentary and no open question), then one sentence with both reviews' results and what they do
@@ -238,7 +230,7 @@ and the `spec` step together (step 4), and each of them is registered on its own
    legion({
      op: "register_gate",
      issue: "<root issue>",
-     step: "<decisions|criteria|spec>", // the step this document is for
+     step: "<criteria|spec>", // the step this document is for
      artifactId: "<UUID>", // that step's document id, which the request printed
      version: <N>, // the version the human is asked to approve
    })
@@ -336,36 +328,38 @@ reason, and answer it in the spec if the latest version does not already.
 Each step's approval is pinned to the version of the document that step records: a new version of
 that document closes that step again, with no wake to say so; you know from your own edit, or
 from the `artifact.version` event on your issue. One step closing holds the tree's work whatever
-the other steps stand at. The exceptions are the version a human's own answer to a decision block
-writes when that answer is the whole change since the version they approved, and a version whose
-text is exactly that of the version they approved, with no decision block in it decided
-since, such as an accidental edit undone exactly: for either, Dispatch records an `approved`
-review in their name at the new version and emits `artifact.approved`, and the daemon reopens the
-gate and sends `design-approved`. Undo an accidental edit of an approved root spec exactly. When
-the spec then reads Approved at the new version, request nothing; when it does not (a block in
-it was decided since), request approval again with steps 3 to 5.
+the other steps stand at. Dispatch carries the approval to a new version in two cases:
+
+- The version's text is exactly that of the version they approved, with no ask block in it
+  decided since, such as an accidental edit undone exactly.
+- Every change in the version is one Dispatch carries an approval over: a reading added, changed
+  or removed inside a decision or an answered ask, a server-owned attribute of an ask block, or
+  the write of Dispatch's decisions step, which moves answered asks and decisions into the spec's
+  `## Decisions` part.
+
+In both cases Dispatch records an `approved` review in their name at the new version and emits
+`artifact.approved`, and the daemon reopens the gate and sends `design-approved`. Undo an
+accidental edit of an approved root spec exactly. When the spec then reads Approved at the new
+version, request nothing; when it does not (a block in it was decided since), request approval
+again with steps 3 to 5.
 
 So edit an approved root spec only when its Summary, a requirement it marks, a check of its
 Verification document, the tree's scope or a settled decision changes. Such a change is a point
-the human has not agreed to: put the problem behind it to them as its own decision block, with
-its evidence, at the end of the section it changes, and add nothing else. If you edit the block before
-the human answers, the gate closes like any new version, but their answer still carries the approval
-to the version it writes. Once they have answered:
+the human has not agreed to: put the problem behind it to them as its own ask block, with its
+evidence, at the end of the section it changes, and add nothing else. That version closes the
+gate. The human's answer writes no version and carries no approval. Once they have answered:
 
-- When the answer is the whole change, request nothing: the document's chip reads Approved at the
-  new version and the `design-approved` the daemon sent opens nothing new. Carry on; release no
-  child because of it.
 - When the answer changes the Summary, a requirement, a check or the tree's scope, rewrite that
-  text and repeat steps 3 to 5 on the new version, with a one-sentence `--summary` naming what
+  text.
+- Then repeat steps 3 to 5 on the newest version, with a one-sentence `--summary` naming what
   changed since the earlier approval, then the reviews' sentence (the card shows `Approved at
-  version N on <date> by <who>.`, and its `Show diff` control carries the detail). The rewrite
-  closes the gate until they approve. Release no further child until the `design-approved` after
-  it; work already in flight, including what the daemon started at the answer, continues through
-  its merge.
+  version N on <date> by <who>.`, and its `Show diff` control carries the detail). The gate stays
+  closed until they approve. Release no further child until the `design-approved` after it; work
+  already in flight continues through its merge.
 
 A settled decision is the human's. A plan that would overturn one goes back to the planner with the
 decision kept, unless the planner brings evidence the human did not weigh that would change it
-(such as a measurement showing the settled choice cannot pass a check); then a decision
+(such as a measurement showing the settled choice cannot pass a check); then an ask
 block names the decision and that evidence. A plan never overturns a settled decision on its own.
 A person's request after the approval becomes a requirement only when you write it into the spec
 and they approve that version; it is never another issue's, and no comment or answer of theirs
@@ -384,7 +378,7 @@ Later children and re-scoping open children toward the same requirements need no
 new approval. A child issue's spec is never gated, and its parent's review stands in its place
 (`skill://legion-architect/references/decomposition.md`, "Reviewing a child's spec").
 
-## A decision block for a read no pod can make
+## An ask block for a read no pod can make
 
 A check sometimes needs evidence from a production or external system before a
 human can approve it: a measurement, a current count, a stored record. First check whether a
@@ -395,7 +389,7 @@ operator's deployment grants pods. Read the pod's own environment (for example `
 
 When the evidence is not reachable, do not have another running session read it for this tree and
 fold the result into the spec, because that hides the gap from the next tree that hits it. Write
-the missing capability as its own decision block to the human (which external system, which read or
+the missing capability as its own ask block to the human (which external system, which read or
 write, why the spec needs it), and leave it open until the human resolves it. A child's own
-architect writes no decision block: it sends the missing capability to the architect above it with
+architect writes no ask block: it sends the missing capability to the architect above it with
 `envoy_publish`, and the root architect writes the block in the root spec.

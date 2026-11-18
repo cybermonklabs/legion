@@ -226,15 +226,15 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 				"Waiting on you: ask ask-yours", "Still with the person: ask ask-still", "Continue."},
 		},
 		{
-			// A deployment that gates the decisions step first stands on that step, not on the
-			// spec: the task names the decisions document, whose version it prints.
-			name:    "an approval of the decisions document, the step the work stands on",
+			// A deployment that gates the criteria step first stands on that step, not on the
+			// spec: the task names the Verification document, whose version it prints.
+			name:    "an approval of the Verification document, the step the work stands on",
 			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByApproval, AnsweredDetail: "version 3"},
-			step:    record.DesignStepDecisions,
-			gate: &record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepDecisions, ArtifactID: "artifact-decisions",
+			step:    record.DesignStepCriteria,
+			gate: &record.DesignGate{Issue: "LEGION-208", Step: record.DesignStepCriteria, ArtifactID: "artifact-criteria",
 				LatestVersion: 3, ApprovedVersion: &version},
-			want: []string{"Your decisions document version 3 on LEGION-208 was approved.",
-				"Your decisions document is approved at version 3", DesignApprovedWake},
+			want: []string{"Your Verification document version 3 on LEGION-208 was approved.",
+				"Your Verification document is approved at version 3", DesignApprovedWake},
 			not: []string{"spec"},
 		},
 		{

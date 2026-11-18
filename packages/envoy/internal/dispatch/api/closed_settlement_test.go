@@ -137,8 +137,9 @@ func awaitSettledVersionHolding(t *testing.T, handler http.Handler, database *st
 // and alice's browser, connected before the close, writes a third decision into the room once the
 // close has swept the documents. The closed issue's documents then settle (SettleIssueDocuments).
 // Each ask row is the row the close left, the issue has no ask.* event and no ask row more than
-// after the close, the third block has no ask, and the newest version shows the withdrawn decision
-// and the third block resolved, and the answered decision answered.
+// after the close, the third block has no ask, the newest version holds the third block and none
+// of the server-owned ask attributes, and the text an agent reads shows the withdrawn decision and
+// the third block resolved, and the answered decision answered.
 func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 	handler, database, documentService := newClosedSettlementHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A settlement after the close", closedSettlementSpec)
@@ -190,26 +191,35 @@ func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 		t.Fatalf("the issue has %d asks after the settlement, want the %d the close left", got, asks)
 	}
 	requireWithdrawn(t, handler, issue.Key, withdrawn, alice)
-	for _, part := range []string{
+	// An ask's state is held on its node, not in the document (dispatch://INFRA-1150 R3): the
+	// newest version holds none of the seven attributes, and the text an agent reads renders the
+	// withdrawn decision resolved and the answered one answered from their rows, and the block
+	// with no row resolved from the issue's close, since it opens no ask while the issue is closed
+	// (docs.TextWithAnswers).
+	requireNoAnswerAttributes(t, "the newest version", version)
+	text := awaitTextShows(t, handler, spec, "the decisions as the close left them", contains(
 		`#withdrawn-decision urgency="med" multiple="false" state="resolved"`,
 		`#answered-decision urgency="med" multiple="false" state="answered"`,
-		`#late-decision urgency="low" multiple="false" state="resolved"`,
-	} {
-		if !strings.Contains(version, part) {
-			t.Fatalf("the newest version reads:\n%s\nwant it to hold %s", version, part)
-		}
+		`#late-decision urgency="low" multiple="false" state="resolved"}`,
+	), nil)
+	if !strings.Contains(text, "Written after the close's sweep?") {
+		t.Fatalf("the document's text reads:\n%s\nwant it to hold the block written after the close", text)
 	}
 }
 
 // An ask block that lands in a closed issue's document after the close's sweep, and has no ask
-// row, is saved resolved and gets no row, and the issue's reopen through PATCH makes it an open
-// ask credited to its author (R2). alice's browser, connected before the close, writes the block.
-// The resumption settles the document on the closed issue: the version shows the block resolved,
-// no ask row names it, and doc_ask_block_authors records its author. The document holds no block
-// of an ask the close withdrew, so the reopen's ask-state write leaves its text and its stored
-// updates as they were, and the reopen marks it owing a settlement instead
-// (docs.MarkReopenOwedAskDocuments). The resumption after the reopen opens the block's ask,
-// credited to the recorded author.
+// row, is resolved while the issue is closed - it opens no ask and gets no row - and the issue's
+// reopen through PATCH makes it an open ask credited to its author (R2). alice's browser,
+// connected before the close, writes the block. The resumption settles the document on the closed
+// issue: the version holds the block with no state, since on a fleet of one build no stored
+// version holds an ask's state (dispatch://INFRA-1150 R3), the text an agent reads renders it
+// resolved from the issue's close (docs.TextWithAnswers), no ask row names it, and
+// doc_ask_block_authors records its author. The document holds no block of an ask the close
+// withdrew, so the reopen's ask-state write leaves the document's own markdown, as the writes to
+// its live tree left it (liveTree), and its stored updates as they were, and the reopen marks it
+// owing a settlement instead (docs.MarkReopenOwedAskDocuments). The resumption after the reopen
+// opens the block's ask, credited to the recorded author, and the text an agent reads shows it
+// open.
 func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.T) {
 	handler, database, documentService := newClosedSettlementHandler(t)
 	ctx := context.Background()
@@ -232,20 +242,21 @@ func TestAnAskBlockWithNoRowIsResolvedWhileClosedAndOpensAtTheReopen(t *testing.
 	if id := findBlockAsk(t, handler, issue.Key, spec, "closed-decision"); id != "" {
 		t.Fatalf("the block written on the closed issue is ask %s, want no ask while the issue is closed", id)
 	}
-	const resolved = `#closed-decision urgency="med" multiple="false" state="resolved"`
-	if !strings.Contains(version, resolved) {
-		t.Fatalf("the saved version reads:\n%s\nwant the block saved resolved: %s", version, resolved)
+	requireNoAnswerAttributes(t, "the saved version", version)
+	if !strings.Contains(version, `#closed-decision urgency="med" multiple="false"}`) {
+		t.Fatalf("the saved version reads:\n%s\nwant the block saved with no state: an ask's state is held on its node alone", version)
 	}
 	if recorded, ok := recordedAskAuthor(t, database, spec, "closed-decision"); !ok || !recorded.SameAs(author) {
 		t.Fatalf("the block's recorded author is %+v (recorded %t), want %+v, whose browser wrote it", recorded, ok, author)
 	}
-	live, _ := documentTexts(t, handler, spec)
+	requireLiveText(t, handler, spec, `#closed-decision urgency="med" multiple="false" state="resolved"}`)
+	live := liveTree(t, documentService, spec)
 
 	updates := storedUpdateCount(t, database, spec)
 	if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
 	}
-	if after, _ := documentTexts(t, handler, spec); after == "" || after != live {
+	if after := liveTree(t, documentService, spec); after == "" || after != live {
 		t.Fatalf("the reopen's ask-state write changed the document:\n%s\nwant it as it was:\n%s", after, live)
 	}
 	if after := storedUpdateCount(t, database, spec); after != updates {

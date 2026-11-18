@@ -182,7 +182,7 @@ func TestWriteRouteIndexCarriesEveryRouteTheTableHas(t *testing.T) {
 // What catches a route added or removed by accident is the committed index
 // TestRouteIndexListsEveryRouteSortedByPathThenMethod compares the table against
 // (testdata/routes.txt), which two branches that each add a route merge into the union of their
-// two lines.
+// two lines. The test hooks are named in testHookRoutes rather than counted, for the same reason.
 func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 	routes := (&server{}).routes()
 	seen := make(map[string]struct{}, len(routes))
@@ -204,8 +204,55 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+15 {
-		t.Fatalf("test hooks add fifteen routes: got %d, want %d", got, len(routes)+15)
+	hooked := (&server{deps: Deps{TestHooksEnabled: true}}).routes()
+	hooks := make(map[string]bool, len(testHookRoutes))
+	for _, route := range hooked {
+		key := route.Method + " " + route.Pattern
+		if _, plain := seen[key]; !plain {
+			hooks[key] = true
+		}
+	}
+	requireTestHooks(t, hooks)
+	if want := len(routes) + len(testHookRoutes); len(hooked) != want {
+		t.Fatalf("the table with test hooks has %d rows, want %d: the %d without them and the %d testHookRoutes names", len(hooked), want, len(routes), len(testHookRoutes))
+	}
+}
+
+// testHookRoutes is every row routes() mounts only with Deps.TestHooksEnabled, by method and
+// path, in the table's order. Each is named rather than counted, so two branches that each add a
+// hook merge into the union of their lines, and a hook added, dropped or renamed fails by its name.
+var testHookRoutes = []string{
+	"POST /api/v1/live/_test/disconnect",
+	"POST /api/v1/live/_test/rotate",
+	"POST /api/v1/artifacts/_test/quiesce",
+	"POST /api/v1/artifacts/{id}/_test/outside-schema",
+	"POST /api/v1/artifacts/{id}/_test/newer-content",
+	"POST /api/v1/agents/{session_id}/stream/_test/publish",
+	"GET /api/v1/artifacts/_test/rooms",
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes",
+	"GET /api/v1/artifacts/{id}/_test/room-counters",
+	"POST /api/v1/artifacts/{id}/_test/hold-persistence",
+	"PUT /api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
+	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
+	"DELETE /api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
+	"POST /api/v1/writes/_test/slow",
+	"POST /api/v1/settings/new-issue/_test",
+	"GET /api/v1/messages/_test/queued",
+}
+
+// requireTestHooks fails t unless hooks, the rows a table mounts only with Deps.TestHooksEnabled,
+// are exactly the rows testHookRoutes names, naming each one missing and each one extra.
+func requireTestHooks(t *testing.T, hooks map[string]bool) {
+	t.Helper()
+	for _, name := range testHookRoutes {
+		if !hooks[name] {
+			t.Errorf("test hook %s is not mounted with Deps.TestHooksEnabled", name)
+		}
+	}
+	for name := range hooks {
+		if !slices.Contains(testHookRoutes, name) {
+			t.Errorf("%s is mounted only with Deps.TestHooksEnabled and testHookRoutes does not name it", name)
+		}
 	}
 }
 
@@ -380,6 +427,7 @@ func routeProbePath(pattern string) string {
 		{"{id}", "00000000-0000-0000-0000-000000000001"},
 		{"{session_id}", "s1"},
 		{"{block_id}", "b1"},
+		{"{login}", "alice"},
 		{"{owner}", "owner"},
 		{"{repo}", "repo"},
 		{"{slug}", "spec"},
@@ -555,6 +603,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"POST /api/v1/me/agent-tokens",
 		"DELETE /api/v1/me/agent-tokens/{id}",
 		"GET /api/v1/users",
+		// A person's own page is no older row either: it reads what one person wrote and what
+		// reached them, so a credential that proves no person has no business on it.
+		"GET /api/v1/people/{login}/nodes",
 		"GET /api/v1/issues/{key}/subscribers",
 		"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 		"GET /api/v1/inbox",

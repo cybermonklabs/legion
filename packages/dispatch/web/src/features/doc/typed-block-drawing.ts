@@ -1,7 +1,7 @@
-import { parseBlockPointerValue } from "@legion/contracts";
+import { parseBlockPointerValue, typedBlockIdAttribute } from "@legion/contracts";
 import type { DOMOutputSpec, Node as ProseMirrorNode } from "prosemirror-model";
 
-import type { AskOption, AskUrgency, BlockTypeSchema } from "../../api/types";
+import type { Ask, AskOption, AskUrgency, BlockTypeSchema } from "../../api/types";
 import {
   askBlockTint,
   askUrgencyAccent,
@@ -71,17 +71,21 @@ function drawnAttributes(
     ) {
       return [];
     }
-    if (type?.attributes[name]?.kind !== "block[]") {
+    const declared = type?.attributes[name];
+    if (declared?.kind !== "block[]") {
       return [{ children: [attributeValue(value)], name }];
     }
     // The node's value is the array the editor's own parser made of the attribute as markdown
     // wrote it (`parseAttribute`, `@legion/proof-editor`), and markdown and HTML carry those
     // same references joined by exactly one space, so reading the joined value serves either
-    // shape through the parser the editor, the document service and the Plan tab share, and
-    // accepts exactly the values a writer is allowed to store. One it refuses, which no stored
-    // block holds, points at nothing.
+    // shape through the parser the editor, the document service and the Plan tab share, under
+    // the item kinds the attribute declares, and accepts exactly the values a writer is allowed
+    // to store. One it refuses, which no stored block holds, points at nothing.
     const pointers =
-      parseBlockPointerValue(Array.isArray(value) ? value.join(" ") : String(value)) ?? [];
+      parseBlockPointerValue(
+        Array.isArray(value) ? value.join(" ") : String(value),
+        declared.items
+      ) ?? [];
     return pointers.length === 0
       ? []
       : [
@@ -192,11 +196,37 @@ export interface AskBlockFacts {
   readonly urgency: AskUrgency;
 }
 
-export function askBlockFacts(node: ProseMirrorNode): AskBlockFacts {
+/**
+ * The ask the server reads for a block, keyed by the block's id. Mostly its row (`ask`): the
+ * block's own ask on its document, or, for a copy of an ask on another document of the same owner
+ * (the same block id, asking the same), that source ask and the `dispatch://` address of the
+ * document it is on (`copiedFrom`), from `GET /api/v1/issues/{key}/asks` or a project document's
+ * asks (`servedAskOf`). Otherwise what the document's live text renders on the block's opening
+ * line from the store (`rendered`, `renderedAskOf`): a copy on a project document reads its source
+ * there, since no route lists the asks of a project's other documents. A person's answer is held
+ * on the ask alone, so a block reads its state and answer from here.
+ */
+export type ServedAsk =
+  | { readonly ask: Ask; readonly copiedFrom?: string }
+  | { readonly rendered: AnswerFacts };
+
+/**
+ * What `node`, an ask, says about itself: the question its first child holds and the options the
+ * list its own content ends with holds, passing over the blocks it closes with (a reading, whose
+ * schema `parents` name `ask`), which are no part of what it asks. Its state, its answer, who gave
+ * it and when, and a copy's source are `served`'s, the server's read of the ask; without one - a
+ * block in a text body no server reads, or a version that holds them - they are what the block's
+ * attributes record.
+ */
+export function askBlockFacts(node: ProseMirrorNode, served?: ServedAsk): AskBlockFacts {
   const options: AskOption[] = [];
   let blankOption: number | undefined;
-  if (node.lastChild?.type.name === "bullet_list") {
-    node.lastChild.forEach((item, _offset, index) => {
+  const own = node.children.filter(
+    (child) => (child.type.spec.parents as readonly string[] | undefined)?.includes("ask") !== true
+  );
+  const list = own.at(-1);
+  if (list?.type.name === "bullet_list") {
+    list.forEach((item, _offset, index) => {
       const text = item.textContent;
       const separator = text.indexOf(": ");
       const label = (separator < 0 ? text : text.slice(0, separator)).trim();
@@ -214,18 +244,15 @@ export function askBlockFacts(node: ProseMirrorNode): AskBlockFacts {
       : undefined;
   const question =
     node.firstChild?.type.name === "bullet_list" ? "" : (node.firstChild?.textContent.trim() ?? "");
+  const recorded =
+    served === undefined
+      ? recordedAnswer(node.attrs)
+      : "rendered" in served
+        ? served.rendered
+        : servedAnswer(served);
   return {
-    answerText: typeof node.attrs.answer === "string" ? node.attrs.answer.trim() : "",
-    answeredAt: typeof node.attrs.answered_at === "string" ? node.attrs.answered_at : undefined,
-    answeredBy: String(node.attrs.answered_by ?? ""),
+    ...recorded,
     blockId: String(node.attrs.blockId),
-    copiedFrom:
-      typeof node.attrs.copied_from === "string" &&
-      node.attrs.copied_from !== "" &&
-      typeof node.attrs.copied_from_document === "string" &&
-      node.attrs.copied_from_document !== ""
-        ? { ask: node.attrs.copied_from, document: node.attrs.copied_from_document }
-        : undefined,
     malformedReason:
       invalid ??
       (question === ""
@@ -236,12 +263,152 @@ export function askBlockFacts(node: ProseMirrorNode): AskBlockFacts {
     multiple: node.attrs.multiple === true,
     options,
     question,
-    selected: Array.isArray(node.attrs.selected)
-      ? node.attrs.selected.filter((value): value is string => typeof value === "string")
-      : [],
-    state: String(node.attrs.state),
     urgency: node.attrs.urgency in URGENCY_LABELS ? (node.attrs.urgency as AskUrgency) : "med",
   };
+}
+
+/** The part of a block's facts that records its answer. */
+export type AnswerFacts = Pick<
+  AskBlockFacts,
+  "answerText" | "answeredAt" | "answeredBy" | "copiedFrom" | "selected" | "state"
+>;
+
+/** The answer `served`, the ask's row, reads off the ask. */
+function servedAnswer({ ask, copiedFrom }: Extract<ServedAsk, { ask: Ask }>): AnswerFacts {
+  const answer = ask.state === "answered" ? ask.answer : null;
+  return {
+    answerText: answer?.text?.trim() ?? "",
+    answeredAt: answer?.at,
+    answeredBy: answer?.user ?? "",
+    copiedFrom: copiedFrom === undefined ? undefined : { ask: ask.id, document: copiedFrom },
+    selected: answer?.selected ?? [],
+    state: ask.state,
+  };
+}
+
+/** The answer a block's attributes record, as a version written before the answer left the
+ *  document holds it, or as the live text renders it (`renderedAskOf`). A block that records no
+ *  state is open: the server writes an ask's state into a block or nobody does, and the editor's
+ *  schema gives the attribute no default, so a block it was never written into, or that settlement
+ *  took it off, holds none. */
+function recordedAnswer(attrs: Readonly<Record<string, unknown>>): AnswerFacts {
+  return {
+    answerText: typeof attrs.answer === "string" ? attrs.answer.trim() : "",
+    answeredAt: typeof attrs.answered_at === "string" ? attrs.answered_at : undefined,
+    answeredBy: String(attrs.answered_by ?? ""),
+    copiedFrom:
+      typeof attrs.copied_from === "string" &&
+      attrs.copied_from !== "" &&
+      typeof attrs.copied_from_document === "string" &&
+      attrs.copied_from_document !== ""
+        ? { ask: attrs.copied_from, document: attrs.copied_from_document }
+        : undefined,
+    selected: Array.isArray(attrs.selected)
+      ? attrs.selected.filter((value): value is string => typeof value === "string")
+      : [],
+    state: typeof attrs.state === "string" ? attrs.state : "open",
+  };
+}
+
+/**
+ * The ask the server reads for the block `blockId` of the document `artifactId`, among `asks`, the
+ * asks of its owner: the block's own ask, or the ask on another document of the owner it is a copy
+ * of, which carries the same block id, with that document's `dispatch://` address. `project` is
+ * the owner's project where it is a project, whose documents' asks name no issue.
+ */
+export function servedAskOf(
+  asks: readonly Ask[],
+  artifactId: string,
+  blockId: string,
+  project?: string
+): ServedAsk | undefined {
+  const own = asks.find(
+    (candidate) => candidate.block_id === blockId && candidate.block_artifact?.id === artifactId
+  );
+  if (own !== undefined) {
+    return { ask: own };
+  }
+  const source = asks.find(
+    (candidate) =>
+      candidate.block_id === blockId &&
+      candidate.block_artifact !== undefined &&
+      candidate.block_artifact.id !== artifactId
+  );
+  const document = source?.block_artifact;
+  if (source === undefined || document === undefined) {
+    return undefined;
+  }
+  const place = document.primary ? "spec" : `artifact/${encodeURIComponent(document.slug)}`;
+  const owner = source.issue_key ?? project;
+  return owner === undefined || owner === null
+    ? { ask: source }
+    : { ask: source, copiedFrom: `dispatch://${owner}/${place}` };
+}
+
+/** The character references the renderer writes in a directive attribute's value
+ *  (pmdoc's escapeDirectiveAttribute), each with the character it stands for. */
+const ATTRIBUTE_REFERENCES: Readonly<Record<string, string>> = {
+  "&#x22;": '"',
+  "&#xA;": "\n",
+  "&#xD;": "\r",
+  "&amp;": "&",
+  "&gt;": ">",
+  "&lt;": "<",
+};
+
+/** The start of a markdown line that opens the ask block `blockId`, as a regular expression's
+ *  source: any quote and list markers, the directive's colons, and the block's id as the renderer
+ *  writes it (`typedBlockIdAttribute`: `#<id>`, or `id="…"` for an id the shortcut cannot hold),
+ *  ended by a space or the closing brace. */
+function askOpenerSource(blockId: string): string {
+  const id = typedBlockIdAttribute(blockId).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return `^[> \\t-]*:{3,}ask\\{${id}[ }]`;
+}
+
+/**
+ * The ask the block `blockId` shows, as `markdown`, a document's live text (`GET
+ * /api/v1/artifacts/{id}/text`), renders it on the block's opening line: the server writes there,
+ * from the store, the state, answer, answerer and time of the block's own ask, or of the ask on
+ * another document of the owner the block is a copy of, with that ask's id and document
+ * (`copied_from`, `copied_from_document`). It is where a copy on a project document reads its
+ * source, which no read the page makes lists. Undefined where the text renders the block no state,
+ * or holds no line opening it, or more than one: a line quoting the opener (in code, say) cannot be
+ * told from the block's own.
+ */
+export function renderedAskOf(
+  markdown: string | undefined,
+  blockId: string
+): ServedAsk | undefined {
+  const openers = markdown?.match(new RegExp(`${askOpenerSource(blockId)}.*$`, "gm")) ?? [];
+  if (openers.length !== 1) {
+    return undefined;
+  }
+  const attributes: Record<string, unknown> = {};
+  for (const [, name, value] of openers[0].matchAll(/([\w-]+)="([^"]*)"/g)) {
+    attributes[name] = value.replace(
+      /&(?:#x22|#xA|#xD|amp|gt|lt);/g,
+      (reference) => ATTRIBUTE_REFERENCES[reference] ?? reference
+    );
+  }
+  // A list of strings is written as its JSON (pmdoc's encodeTypedAttribute).
+  if (typeof attributes.selected === "string") {
+    try {
+      attributes.selected = JSON.parse(attributes.selected);
+    } catch {
+      attributes.selected = undefined;
+    }
+  }
+  return attributes.state === undefined ? undefined : { rendered: recordedAnswer(attributes) };
+}
+
+/**
+ * Whether `markdown`, a stored version, records the answer state of its ask block `blockId` on
+ * the block's opening line, as a version written before the answer left the document does (its
+ * `state` attribute). Such a version is read as it was written; a later one records none, and its
+ * block is read from the server's read of the ask.
+ */
+export function recordsAnswerState(markdown: string, blockId: string): boolean {
+  return new RegExp(`${askOpenerSource(blockId)}[^\\n]*\\bstate="`, "m").test(markdown);
 }
 
 /** A mounted decision block: the React card portals into its two slots. A new object is issued
@@ -259,7 +426,9 @@ export interface AskBlockHost {
  * its state, and `data-dispatch-ask-malformed`, `"true"` while the block is malformed and
  * `undefined` otherwise. The key is always present so one loop writes every stamp: a static spec
  * skips an undefined attribute (prosemirror-model's `renderSpec`), and `applyAskBlockShell`
- * removes it. */
+ * removes it. The state stamped here is the block's own attribute; the card mounted into the
+ * shell stamps the state it shows over it, the server's read of the ask where it holds one
+ * (`AskBlockCard`), since the block no longer records an answer. */
 type AskBlockStamps = {
   readonly "data-dispatch-ask-urgency": AskUrgency;
   readonly "data-dispatch-ask-state": string;

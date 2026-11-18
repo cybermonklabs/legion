@@ -62,7 +62,7 @@ the right column is showing. Below that width, and in the Inbox drawer, they act
 | `j` / `k` | Next / previous row |
 | `↓` / `↑` | Next / previous row, while the focus is in the list (below 1280 px, while a row is focused) |
 | `l` | Move the focus into the reading pane, which the arrow keys, Page Up, Page Down, Space, Home and End then scroll (nothing below 1280 px, in the drawer, or with no row selected) |
-| `Enter` | Answer the selected ask (moves into its answer box, opening the note field of a decision block first) |
+| `Enter` | Answer the selected ask (moves into its answer box, opening the note field of an ask block first) |
 | `1` – `9` | Pick option 1–9 of the selected ask |
 | `o` | Open the row's issue, document or thread |
 | `y` | Copy the selected row's reference |

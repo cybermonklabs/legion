@@ -184,18 +184,19 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 }
 
 // A pointer names a block of the writing document's own issue or of an issue above it; one in a
-// sibling tree is refused, as is a needs naming a plan task of another document, and a document
-// its project holds points only inside itself. Every refusal names the reference and writes
-// nothing.
+// sibling tree is refused, a needs naming a plan task of a sibling tree among them, and a document
+// its project holds points only inside itself. A needs names a plan task of another document of
+// its own issue or of an issue above it (dispatch://INFRA-1253/spec R10). Every refusal names the
+// reference and writes nothing.
 func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	requirement := ":::requirement{#r1}\nA requirement.\n:::\n"
 	root := createSpecIssue(t, handler, "CORE", requirement)
-	middle := createChildIssue(t, handler, "CORE", root.Key, requirement)
+	middle := createChildIssue(t, handler, "CORE", root.Key, requirement+"\n:::plan_task{#m9}\nAbove.\n:::\n")
 	issue := createChildIssue(t, handler, "CORE", middle.Key, requirement+"\n:::plan_task{#t9}\nTheirs.\n:::\n")
-	sibling := createChildIssue(t, handler, "CORE", middle.Key, requirement)
+	sibling := createChildIssue(t, handler, "CORE", middle.Key, requirement+"\n:::plan_task{#s9}\nA sibling's.\n:::\n")
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"
 
 	// A requirement of the issue's own spec, of its parent's and of its root's is named.
@@ -209,18 +210,21 @@ func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 	siblingR1 := "dispatch://" + sibling.Key + "/spec#b-r1"
 	expectRefusal(t, "a pointer into a sibling tree", uploadChecks(t, handler, issue.Key, claimMarkdown("c1", siblingR1)), http.StatusBadRequest,
 		"INVALID_MARKDOWN", `"serves"`, siblingR1, sibling.Key, issue.Key)
-	theirTask := "dispatch://" + issue.Key + "/spec#b-t9"
 	ourTask := ":::plan_task{#t1}\nOurs.\n:::\n"
-	expectRefusal(t, "a needs naming a plan task of another document",
-		uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+theirTask+"\"}\nAfter theirs.\n:::\n"),
-		http.StatusBadRequest, "INVALID_MARKDOWN", `"needs"`, theirTask, "its own document")
+	siblingTask := "dispatch://" + sibling.Key + "/spec#b-s9"
+	expectRefusal(t, "a needs naming a plan task of a sibling tree",
+		uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+siblingTask+"\"}\nAfter theirs.\n:::\n"),
+		http.StatusBadRequest, "INVALID_MARKDOWN", `"needs"`, siblingTask, sibling.Key, issue.Key)
 	if after := readChecks(t, database, issue.Key); !reflect.DeepEqual(after, saved) {
 		t.Fatalf("checks.md after refused writes = %+v, want %+v unchanged", after, saved)
 	}
 
-	// The control: a needs naming a plan task of the same document is written.
-	if response := uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+checks+"#b-t1\"}\nAfter ours.\n:::\n"); response.Code != http.StatusCreated {
-		t.Fatalf("a needs naming a plan task of the same document: status=%d body=%s, want 201", response.Code, response.Body.String())
+	// The controls: a needs naming a plan task of the same document, of another document of its
+	// issue and of the issue above is written.
+	for _, task := range []string{checks + "#b-t1", "dispatch://" + issue.Key + "/spec#b-t9", "dispatch://" + middle.Key + "/spec#b-m9"} {
+		if response := uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+task+"\"}\nAfter it.\n:::\n"); response.Code != http.StatusCreated {
+			t.Fatalf("a needs naming %s: status=%d body=%s, want 201", task, response.Code, response.Body.String())
+		}
 	}
 
 	// A document its project holds, and no issue does, points only at a block of itself.
@@ -280,12 +284,11 @@ func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) 
 	requireReferenceNotFound(t, handler, url.Values{"to": {missing}}, `no block "nowhere" in dispatch://`+issue.Key+"/spec")
 }
 
-// setBlockAttributes writes typed-block state through the live room's own service call, as the
-// answer route does (answerAsk's WriteBlock): inside a transaction joined with Docs.Join, the
-// only way a document write runs, committed when the write succeeds. It returns
-// SetBlockAttributes' own error, which a caller testing a refusal asserts on;
-// setLiveBlockAttributes is the same write for a caller that wants it to succeed.
-func setBlockAttributes(database *store.Store, documentService docs.API, artifactID, blockID string, attributes map[string]any, actor model.Actor) error {
+// insertLiveBlocks inserts markdown at the end of the document through the live room's own
+// service call, as the edits route does (ApplyOps): inside a transaction joined with Docs.Join, the
+// only way a document write runs, committed when the write succeeds. It returns ApplyOps' own
+// error, which a caller testing a refusal asserts on.
+func insertLiveBlocks(database *store.Store, documentService docs.API, artifactID, markdown string, actor model.Actor) error {
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -294,20 +297,21 @@ func setBlockAttributes(database *store.Store, documentService docs.API, artifac
 	defer tx.Rollback(ctx)
 	joined, ledger := documentService.Join(ctx, tx)
 	defer ledger.Discard()
-	if err := documentService.SetBlockAttributes(joined, artifactID, blockID, attributes, actor); err != nil {
+	if _, err := documentService.ApplyOps(joined, artifactID, []model.EditOp{{Op: "insert", After: "end", Markdown: markdown}}, actor, nil); err != nil {
 		return err
 	}
 	return ledger.Commit(ctx)
 }
 
-// The server's own write of a typed block's state (Docs.SetBlockAttributes) meets both refusals a
-// `block[]` value is held to in the live room: one naming a block of a type the attribute's
-// targets do not allow, refused against the block index (refuseBlockPointers), and one naming a
-// part of an ask, which is no block of a document, refused as the write validates the tree it
-// writes (validateBlockPointerValues, which pmdoc.SetBlockAttributes and pmdoc.Update both
-// reach). The room keeps nothing of a refused write, and the block carries an allowed pointer
-// afterwards.
-func TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom(t *testing.T) {
+// A server write of a typed block's `block[]` value into the live room - an edit's insert, the
+// write that remains now that no route writes a block's attributes on their own - meets both
+// refusals such a value is held to there: one naming a block of a type the attribute's targets do
+// not allow, refused against the block index (refuseBlockPointers), and one naming a part of an
+// ask, which is no block of a document, refused as the write reads the value
+// (validateBlockPointerValues). The room keeps nothing of a refused write, and a pointer at an
+// allowed block is taken. A browser's write is never refused
+// (TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved).
+func TestALiveRoomWriteRefusesABlockPointerItMayNotHold(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	// newTestServer, not blockIndexHandler: the document service this test calls is the
 	// dependencies', the very one the handlers write through. Its documents never settle during
@@ -338,7 +342,7 @@ func TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom(t *testing.T) {
 		{name: "a pointer at a pinned part of an ask", serves: ask + "@v1", wants: []string{`"serves"`, ask + "@v1"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := setBlockAttributes(database, deps.Docs, saved.ID, "c1", map[string]any{"serves": []string{test.serves}}, actor)
+			err := insertLiveBlocks(database, deps.Docs, saved.ID, claimMarkdown("c2", test.serves), actor)
 			if err == nil {
 				t.Fatal("the write was accepted, want it refused")
 			}
@@ -347,10 +351,13 @@ func TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom(t *testing.T) {
 					t.Fatalf("error = %v, want a block pointer refusal", err)
 				}
 			} else {
-				// The value is refused where the write sets it, so the room never records it
-				// and then answers for its own document as one outside the schema.
-				if !errors.Is(err, pmdoc.ErrSchema) || errors.Is(err, docs.ErrDocSchema) {
-					t.Fatalf("error = %v, want the value refused (%v), not the document (%v)", err, pmdoc.ErrSchema, docs.ErrDocSchema)
+				// The value is refused where the write reads it: the caller's markdown
+				// (docs.ErrInvalidMarkdown), which the edit reports as an invalid operation on its
+				// markdown, so the room never records it and then answers for its own document as
+				// one outside the schema.
+				var invalid *docs.ErrInvalidOp
+				if !errors.As(err, &invalid) || invalid.Field != "markdown" || !errors.Is(err, docs.ErrInvalidMarkdown) || errors.Is(err, docs.ErrDocSchema) {
+					t.Fatalf("error = %v, want the markdown refused (%v), not the document (%v)", err, docs.ErrInvalidMarkdown, docs.ErrDocSchema)
 				}
 				const sentence = "is a block of an ask: a block[] attribute points only at a block of a document"
 				if !strings.HasSuffix(err.Error(), sentence) {
@@ -371,10 +378,10 @@ func TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom(t *testing.T) {
 		})
 	}
 
-	if err := setBlockAttributes(database, deps.Docs, saved.ID, "c1", map[string]any{"serves": []string{checks + "#b-r2"}}, actor); err != nil {
+	if err := insertLiveBlocks(database, deps.Docs, saved.ID, claimMarkdown("c2", checks+"#b-r2"), actor); err != nil {
 		t.Fatalf("a pointer at a requirement: %v, want the write accepted", err)
 	}
-	want := ":::requirement{#r2}\nOurs.\n:::\n\n" + claimMarkdown("c1", checks+"#b-r2")
+	want := before + "\n" + claimMarkdown("c2", checks+"#b-r2")
 	if after := documentMarkdown(t, handler, saved.ID); after != want {
 		t.Fatalf("the room after the accepted write = %q, want %q", after, want)
 	}

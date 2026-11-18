@@ -26,7 +26,7 @@ Part | Content
 `Requirements` | a `:::requirement` block each, `**R1.**` on, its source (`From:`)
 `Verification` | the issue's `verification.md`, a `:::check` block each: `serves`, `surface`, `run` (where it names tests, specific ones), `when`, `negative_control`. For a whole test suite, name its CI job in `ci_check`: a check carrying `ci_check` is CI's and takes no `run`
 `Design` | How it meets them; a value and its reason for each limit, size and time
-`Decisions` | One line: `The decisions are in dispatch://KEY/artifact/decisions-md.`
+`Decisions` | `:::decision` blocks (Decisions below)
 
 `serves` and `needs` name a block of this issue or an ancestor. Another agent can build and check the work from these alone. A small change gets a few sentences per part, no matrix; split a large design into children.
 
@@ -61,12 +61,11 @@ For each spec, ask, comment and message:
 
 ## Decisions
 
-Choices—answered asks included—earn `decisions.md` `##` sections only if a disagreeing reader would act differently; keep others to one spec line each.
+A choice earns a `:::decision` block only if a disagreeing reader would act differently; keep others to one spec line each.
 
-- The heading names the choice; the text gives the reason and options weighed.
-- Link each spec block it shaped, `dispatch://KEY/spec#b-<id>`, and a person's decision its ask, `dispatch://KEY/ask/<id>`.
-- An unsure section adds an `Unsure:` paragraph: what would change your mind.
-- A replaced section moves under a final `## Replaced` as a `###`.
+- Put it in the spec's `## Decisions` part: the choice first, then the reason and options weighed.
+- Attributes: `shaped` (spec blocks it shaped), `from_ask` (the answered ask it carries out), `uncertainty`, `uncertainty_reason`, `replaced`.
+- A person's answered ask is their decision: it stays in the spec; write your reading inside it as a `:::reading`.
 
 ## Old specs
 

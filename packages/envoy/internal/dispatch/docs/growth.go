@@ -36,23 +36,21 @@ import (
 // A write that leaves the document no bigger and no heavier than it was passes, so a document
 // already past the bound - stored before it, or grown by browser edits, which no server write
 // carries - can still be trimmed or split. Each refusal is ErrDocumentTooLarge, served as 413
-// CAP_EXCEEDED. An answer is caller text the server writes twice: the answer route writes it into
-// its ask's block, and settlement writes it back into a block that returns to the document. Where
-// the document has no room for it, each records who answered and when and leaves the answer out of
-// the block (SetBlockAttributes, withholdAnswers), and the ask keeps it. Of the other writes that
-// run through neither, a rebuild weighs the markdown a caller supplies as SeedText weighs
-// a new document's, and restores a latest version whatever it weighs, since that is the server's
-// own text (RebuildDocument); the block-id backfill (stampBlockIDs) and the sweep of unrecorded
-// marks (unmarkExpired) add no caller text, and settlement's own repair of a returning answer
-// (withholdAnswers, returnAnswersWithRoom) is weighed for size the same way a caller's answer is.
-// None of these three calls refuseGrowth, so none reaches refuseUndecodable either: a document
-// already past the decode cap still accepts them, unrefused (LEGION-545). Settlement's own
-// repair is the one of the three with a plausible route there - two rounds of a 50,000-byte
-// answer added 24 clocks, so reaching the cap this way takes on the order of tens of thousands
-// of repair cycles on one document. The other two are narrower triggers, not cheaper ones: the
-// block-id backfill runs only for a duplicate or missing id a browser edit left (LEGION-487's
-// gap), and the mark sweep only for a mark a browser race left with no comment, ask or
-// suggestion row to match; neither fires on every settlement the way an answer's return can.
+// CAP_EXCEEDED. An answer is no text of the document's: it is held on its ask's node alone
+// (dispatch://INFRA-1150 R3), and while another build serves the server keeps a copy of it in the
+// block for that build's pages (rollWindowAskAttributes), whose words the answer route and
+// settlement each leave out of a block the document has no room for, as the release before does
+// (KeepAskBlockInStep, withholdAnswersWithoutRoom). The text routes render each answer into its
+// block on read, and hold what they answer to this bound, so an agent's read still uploads back:
+// an answer the document has no room for is left out of its block there (TextWithAnswers). Of the
+// other writes that run through none of these, a rebuild weighs the
+// markdown a caller supplies as SeedText weighs a new document's, and restores a latest version
+// whatever it weighs, since that is the server's own text (RebuildDocument); the block-id backfill
+// (stampBlockIDs) and the sweep of unrecorded marks (unmarkExpired) add no caller text. None of
+// these calls refuseGrowth, so none reaches refuseUndecodable either: a document already past the
+// decode cap still accepts them, unrefused (LEGION-545). Each is a narrow trigger: the block-id
+// backfill runs only for a duplicate or missing id a browser edit left (LEGION-487's gap), and the
+// mark sweep only for a mark a browser race left with no comment, ask or suggestion row to match.
 // What the bound weighs is the document a write leaves, not the history its store keeps - that
 // is now compaction's (LEGION-496), which folds the document's rows older than compactTail into
 // its state once they are due (the compaction queue, checkCompaction) and at the hourly sweep
@@ -71,10 +69,10 @@ type growth struct {
 	margin  *marginWatch
 	anchors anchorWatch
 	// serverState reports whether the write changed the document's tree only in the state the
-	// server keeps on its typed blocks, an answer apart (pmdoc.EqualOutsideServerState). Such a
-	// write is weighed as one that left the rendering as it was, so an ask on a document already
-	// past the bound can still be answered, resolved or retracted, while an answer's own words and
-	// the options it selects are measured as any caller text is.
+	// server keeps on its typed blocks (pmdoc.EqualOutsideServerState). Such a write is weighed as
+	// one that left the rendering as it was, so an ask on a document already past the bound can
+	// still be answered, resolved or retracted while another build serves and its block is kept in
+	// step with the answer.
 	serverState func() bool
 }
 
@@ -121,12 +119,6 @@ func (r rendering) size() pmdoc.DocumentSize {
 	size := r.measured()
 	size.Bytes = r.bytes
 	return size
-}
-
-// longer is r with n bytes more that make no element: text an ask block's attributes carry, which
-// its directive writes quoted on its one opening line (pmdoc.IsAnswerAttribute).
-func (r rendering) longer(n int) rendering {
-	return rendering{bytes: r.bytes + n, measured: r.measured}
 }
 
 // weigh is the refusal of after against before: after is refused past either of an upload's

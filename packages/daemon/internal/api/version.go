@@ -2213,4 +2213,24 @@ package api
 // entry's own 152 were both outside it.
 // Read main's own number and every open pull request's again at the next forward merge rather
 // than from this line.)
-const DaemonAPIVersion = 152
+//
+// 158: dispatch://INFRA-1150 -- the `decisions` design-gate step is gone, since a person's
+// decisions are nodes of the spec, which the `spec` step's approval covers. `gates.design` refuses
+// that step by name (config's readDesignSteps), so the step of `POST /legion/v1/gates/register` is
+// `criteria` or `spec`, and a call naming `decisions` is refused as a step the deployment does not
+// gate (`GATE_STEP_NOT_CONFIGURED`); each `gatedSteps[].step` of `GET /legion/v1/state` and each
+// entry of `designGateSteps` on `POST /legion/v1/controller/secret` is one of the same two. The
+// plugin narrows with it: `legionDesignStep` (`packages/contracts/src/legion-api.ts`) takes the two
+// names of `DESIGN_GATE_STEPS`, and `register_gate` offers no other step. The `design_gates` rows
+// and the kept approvals an earlier release wrote of the step stay in the store, which no reader
+// of this release is handed (record.Postgres.GatesOf), so no state of this daemon names the step.
+// A plugin of 151 reads that state as before, since it parses the three names, and the boot gate
+// and `legion probe-image` pair a daemon with a plugin of its own number. A loader of this release
+// refuses a file whose `gates.design` names `decisions`, so a deployment takes the step out of the
+// file before it pins an image of this release.
+// (This change took 158, the lowest number above main's 151 that no open pull request declared, in
+// a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request, made
+// between 2026-11-17T12:50:15Z and 12:57:18Z: 152 #3730, 153 #4115, 154 #3659, 155 #4273, 156
+// #4065, and 157 #2230, #3519, #3993 and #4049. That is a reading and never the rule: read main's
+// own number and every open head again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 158

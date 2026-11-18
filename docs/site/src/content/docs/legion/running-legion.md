@@ -598,13 +598,14 @@ What each part is for:
 - **`github_apps`**: each App takes exactly one of `private_key` (the PEM itself),
   `private_key_command` (a command whose output is the PEM) or `private_key_secret`. The daemon
   finds each App's installations itself; `installations` (owner to installation id) is optional.
-- **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
-  document), `criteria` (its Verification document) and `spec` (its primary document), in the
-  order a person approves them. No phase of the tree starts, no released child starts and no
-  merger merges until a person has approved the document of every step listed. The
-  default is `[spec]`, which the word `root-issues` also means; the empty list `[]` skips the
-  approval, which the word `off` also means. A list naming one step twice, and any other word,
-  is refused at load. There is no other way past the gate. `legion state --json` answers the
+- **`gates.design`**: the design gate steps, a list naming `criteria` (the root issue's
+  Verification document) and `spec` (its primary document), in the order a person approves them.
+  No phase of the tree starts, no released child starts and no merger merges until a person has
+  approved the document of every step listed. The default is `[spec]`, which the word
+  `root-issues` also means; the empty list `[]` skips the approval, which the word `off` also
+  means. A list naming one step twice, and any other word, is refused at load. A list naming
+  `decisions` is refused too: that step is gone, decisions are nodes of the spec, and the spec
+  step holds them. There is no other way past the gate. `legion state --json` answers the
   resolved list at `settings.gates.design`, and the daemon publishes it onto the project's row in
   Dispatch, which `GET /api/v1/projects` answers as
   `gated_steps`.

@@ -40,18 +40,18 @@ function blockCapRefusal(block: number, units: number): string {
 const printedBlockCapRefusal = (block: number, units: number) =>
   `CAP_EXCEEDED: ${blockCapRefusal(block, units)}`;
 
-/** How the Dispatch server refuses a body whose block `block` is a decision block, worded as
+/** How the Dispatch server refuses a body whose block `block` is an ask block, worded as
  *  `itemblocks.DecisionBlock` words it: the card such a block draws is one nobody can answer
  *  where it stands, so the body is refused however short it is (INFRA-1201). */
 function decisionBlockRefusal(block: number): string {
   return (
-    `body block ${block} (ask) holds a decision block, which nobody can answer where it stands: ` +
-    "ask the question in the issue's own document, as a decision block there, or open an ask " +
-    "with `dispatch ask`; to show a decision block as an example, put it in a fenced code block"
+    `body block ${block} (ask) holds an ask block, which nobody can answer where it stands: ` +
+    "ask the question in the issue's own document, as an ask block there, or open an ask " +
+    "with `dispatch ask`; to show an ask block as an example, put it in a fenced code block"
   );
 }
 
-/** The server's refusal of `body`: a decision block in it (400 DECISION_BLOCK_IN_BODY), else a
+/** The server's refusal of `body`: an ask block in it (400 DECISION_BLOCK_IN_BODY), else a
  *  paragraph over the bound Dispatch holds each block to (400 CAP_EXCEEDED), else undefined.
  *  Dispatch bounds a body block by block and never as a whole, so a body of any length in
  *  paragraphs posts and one long paragraph does not. */
@@ -779,7 +779,7 @@ describe("the dispatch CLI", () => {
       '- --run - sends the one character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.',
       '- --observed - sends the one character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.',
       '- --negative-control - sends the one character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.',
-      "- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111",
+      "- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111 --negative-control 'Removed the guard and the test failed.'",
       "",
     ].join("\n");
     for (const call of [argv, [...argv, "--dry-run"]]) {
@@ -1704,7 +1704,7 @@ describe("the dispatch entry as its own process", () => {
     }
   }, 30_000);
 
-  // A body holding a decision block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
+  // A body holding an ask block is refused whatever its length (400 DECISION_BLOCK_IN_BODY,
   // INFRA-1201), and what the writer reads is the whole of the server's message, which says
   // where the question belongs. The refusal now opens with the server's code, because
   // `skill://dispatch` has every agent branch on the code and the command printed none

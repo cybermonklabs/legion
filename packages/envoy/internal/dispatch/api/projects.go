@@ -48,6 +48,10 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// A stored list may hold the retired `decisions` step until the decisions step rewrites
+		// it, and the database's check still admits it: the read answers the list without it.
+		// kept for one release: check-narrowings
+		project.GatedSteps = gatedStepsWithout(project.GatedSteps)
 		projects = append(projects, project)
 	}
 	if err := rows.Err(); err != nil {

@@ -1299,6 +1299,8 @@ describe("DispatchClient", () => {
         changed_at: null,
         parent: null,
         parent_version: null,
+        state: "live",
+        visibility: "project",
       },
       revision: 1,
       indexed: true,

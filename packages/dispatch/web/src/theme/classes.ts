@@ -932,8 +932,8 @@ export const pageStateText = {
  * kind's colour, filled while pressed (`.ck`), and on a phone they are drawn only while the
  * caret is in the box. Every word in it says what it is, so the colours repeat what is written
  * (R6). A phone here is a window 760 px wide or narrower, the prototype's breakpoint; Tailwind
- * builds `max-[761px]:` as a width under 761 px, so it holds 760 px (decision 72 of
- * dispatch://INFRA-1196/artifact/part-decisions-md).
+ * builds `max-[761px]:` as a width under 761 px, so it holds 760 px (decision 72 of the part
+ * decisions document of dispatch://INFRA-1196).
  */
 export const pageComposer = {
   answering:
@@ -998,6 +998,8 @@ for (const ground of ["page-paper", "page-pane"] as const) {
 }
 registerText("page-paper text on page-ink", pageColor("page-paper"), pageColor("page-ink"));
 registerText("page-ink text on page-mark", pageColor("page-ink"), pageColor("page-mark"));
+// A check's command in a node's body: the muted grey on the mark grey (`NodeFacts.tsx`).
+registerText("page-muted text on page-mark", pageColor("page-muted"), pageColor("page-mark"));
 // A row's twisty is a control's shape on the marked row's ground (WCAG 1.4.11).
 registerText("page-quiet twisty on page-mark", pageColor("page-quiet"), pageColor("page-mark"), 3);
 // Each kind's colour as the words of its tag on the paper, and on the tint drawn behind it.
@@ -1102,6 +1104,15 @@ for (const ground of ["page-paper", "page-pane"] as const) {
     registerText(`${bullet} bullet on ${ground}`, pageColor(bullet), pageColor(ground), 3);
   }
 }
+
+// The page colour pairs of the `ON_PAGE` tables of `MultiSelect.tsx`, `ApprovalChip.tsx` and
+// `AskCard.tsx` that no registration above holds, so `palette.test.ts` measures each
+// (`shared-controls.tooltips.test.tsx` holds every pair of those tables registered): a picker
+// option's detail, muted words on the mark grey of its active row and of the row under the
+// pointer; and a refused filled action's words, Approve's or Answer's, muted on the hairline
+// grey it turns.
+registerText("page-muted text on page-mark", pageColor("page-muted"), pageColor("page-mark"));
+registerText("page-muted text on page-hair", pageColor("page-muted"), pageColor("page-hair"));
 
 /** The icon rail the issue page draws in place of the navigation column (R14): the prototype's
  *  `#rail`, dark in both schemes, its current entry white on a lighter ground with an accent

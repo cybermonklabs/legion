@@ -109,8 +109,13 @@ type renderedReplica struct {
 	waiting atomic.Int32
 	log     *crdt.UpdateLog
 	doc     *crdt.Doc
-	// fragment is doc's document fragment, the one shared type the rendering reads; nil with doc.
+	// fragment is doc's document fragment, the one shared type the rendering of a room that is
+	// its own document reads; nil with doc, and nil for an issue room, whose rendering reads every
+	// fragment layout names (renderRoomForUpdate).
 	fragment *crdt.YXmlFragment
+	// layout is the room's layout (roomLayout), which its load read: empty for a room that is its
+	// own document, whose rendering reads fragment alone. Set once, before the replica's first run.
+	layout roomLayout
 	// rendering is the room's rendering as the replica's latest update left it, or as the log's
 	// base rendered before any (replicaRendering): the markdown and the pmdoc.Layout recorded
 	// with it. It is nil while the document is outside the schema, and replaced whole, never
@@ -280,10 +285,14 @@ const maxTouchedBlocks = 64
 // the fragment itself, touched more blocks than blocks holds (maxTouchedBlocks), or changed
 // something no walk could place in a block, so the update is rendered whole and blocks no
 // longer matters. noteChangedTypes records into it; updateChangesMarkdown and
-// spliceTouched read it, under the replica's mu.
+// spliceTouched read it, under the replica's mu. For an issue room, fragments lists, each once,
+// the fragment of the room's layout (by its index in roomLayout.fragments) under which the update
+// changed something, which noteChangedFragments records and touchedDocuments reads: the documents
+// whose versions the update's credit counts toward.
 type touchedBlocks struct {
-	blocks []crdt.SharedType
-	whole  bool
+	blocks    []crdt.SharedType
+	whole     bool
+	fragments []int
 }
 
 // touch records block, a top-level block of the fragment, as changed by the update, unless the
@@ -299,11 +308,19 @@ func (t *touchedBlocks) touch(block crdt.SharedType) {
 	t.blocks = append(t.blocks, block)
 }
 
+// touchFragment records the fragment at index of an issue room's layout as one the update
+// changed something under, once.
+func (t *touchedBlocks) touchFragment(index int) {
+	if !slices.Contains(t.fragments, index) {
+		t.fragments = append(t.fragments, index)
+	}
+}
+
 // reset forgets what the last update touched, dropping its references to the blocks and keeping
-// the list's array for the next update.
+// the lists' arrays for the next update.
 func (t *touchedBlocks) reset() {
 	clear(t.blocks)
-	t.blocks, t.whole = t.blocks[:0], false
+	t.blocks, t.whole, t.fragments = t.blocks[:0], false, t.fragments[:0]
 }
 
 // drainClassifier records update, which the room's log handed over at commit position seq, given
@@ -321,7 +338,12 @@ func (t *touchedBlocks) reset() {
 // nil says the same of an update it was called for: it could not read the document it had to
 // walk, and logged that, so its caller records nothing of the update's ask blocks rather than
 // take an empty set for the room's own (observeAskBlocksForUpdate).
-type drainClassifier func(update crdt.LoggedUpdate, seq uint64, changed bool, asks func() map[string]struct{}) (settles, contentChanged, local bool)
+//
+// documents is, for an issue room, each document whose fragment the update changed something
+// under (renderedReplica.touchedDocuments), the tree artifact for the room's own fragment, every
+// document of the room for an update no walk placed; nil for a room that is its own document. The
+// classifier's credit of the update counts toward those documents' versions alone.
+type drainClassifier func(update crdt.LoggedUpdate, seq uint64, changed bool, asks func() map[string]struct{}, documents []string) (settles, contentChanged, local bool)
 
 // lockForUpdate takes mu for the update observer. A read only tries mu, and takes it only while
 // no observer waits for it, so the observer waits at most for the one read already walking the
@@ -368,12 +390,12 @@ func (r *renderedReplica) drainLocked(room string) (settles, changed, local bool
 // goes to recover with the rest of the drain. The two are one commit: it is consumed, classified
 // and recorded once, and renderedReplica says why the second apply changes no rendering.
 func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.LoggedUpdate) (settles, changed, local bool) {
-	note := func(update crdt.LoggedUpdate, contentChanged bool, asks func() map[string]struct{}) {
+	note := func(update crdt.LoggedUpdate, contentChanged bool, asks func() map[string]struct{}, documents []string) {
 		r.seq++
 		if r.classify == nil {
 			return
 		}
-		settled, credited, made := r.classify(update, r.seq, contentChanged, asks)
+		settled, credited, made := r.classify(update, r.seq, contentChanged, asks, documents)
 		settles = settles || settled
 		changed = changed || credited
 		local = local || made
@@ -401,10 +423,29 @@ func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.Lo
 		}
 		published, rendering := r.consumed(update)
 		contentChanged, asks := r.changedBy(room, published, rendering)
-		note(update, contentChanged, asks)
+		note(update, contentChanged, asks, r.touchedDocuments(room))
 		r.touched.reset()
 	}
 	return settles, changed, local
+}
+
+// touchedDocuments is, for an issue room, each document whose fragment the update the replica has
+// just applied changed something under (touchedBlocks.fragments), in the order the update touched
+// them: the tree artifact, room, for the room's own fragment. It is nil for a room that is its own
+// document, whose one document is the room, and for an update that changed nothing under any
+// fragment of the room. The caller holds mu.
+func (r *renderedReplica) touchedDocuments(room string) []string {
+	if len(r.layout) == 0 || len(r.touched.fragments) == 0 {
+		return nil
+	}
+	touched := make([]string, len(r.touched.fragments))
+	for position, index := range r.touched.fragments {
+		touched[position] = room
+		if index > 0 {
+			touched[position] = r.layout[index-1]
+		}
+	}
+	return touched
 }
 
 // noteChangedTypes records into what txn, a transaction of fragment's document, changed under
@@ -606,13 +647,24 @@ func (r *renderedReplica) startFromRead(doc *crdt.Doc, epoch uint64) *crdt.Doc {
 // startAt makes doc the replica's document and takes its rendering as the one the replica's next
 // update is measured against: the load's rendering (loaded) where the replica still holds it, as
 // start says, and a render of doc otherwise. It subscribes noteChangedTypes to doc's transactions,
-// with doc's own fragment, so what it records is each later update's. The caller holds mu.
+// with doc's own fragment, so what it records is each later update's; an issue room's update is
+// rendered whole whenever it changed anything under one of the room's fragments
+// (noteChangedFragments), since Layout.Splice reads one fragment's blocks. The caller holds mu.
 func (r *renderedReplica) startAt(doc *crdt.Doc) {
 	loaded := r.loaded.Value()
 	r.loaded = weak.Pointer[replicaRendering]{}
-	fragment := doc.GetXmlFragment(fragmentName)
-	r.doc, r.fragment = doc, fragment
-	doc.OnAfterTransaction(func(txn *crdt.Transaction) { noteChangedTypes(txn, fragment, &r.touched) })
+	r.doc = doc
+	if len(r.layout) == 0 {
+		fragment := doc.GetXmlFragment(fragmentName)
+		r.fragment = fragment
+		doc.OnAfterTransaction(func(txn *crdt.Transaction) { noteChangedTypes(txn, fragment, &r.touched) })
+	} else {
+		roots := make([]crdt.SharedType, 0, len(r.layout)+1)
+		for _, name := range r.layout.fragments() {
+			roots = append(roots, doc.GetXmlFragment(name))
+		}
+		doc.OnAfterTransaction(func(txn *crdt.Transaction) { noteChangedFragments(txn, roots, &r.touched) })
+	}
 	if loaded != nil {
 		r.rendering = loaded
 		r.recordVerdict(nil)
@@ -621,11 +673,56 @@ func (r *renderedReplica) startAt(doc *crdt.Doc) {
 	}
 	r.paths.catchUpRendered.Add(1)
 	r.rendering = nil
-	markdown, _, layout, err := renderDocumentForUpdate(r.fragment)
+	markdown, _, layout, err := r.render()
 	if err == nil {
 		r.rendering = &replicaRendering{markdown: markdown, layout: layout}
 	}
 	r.recordVerdict(err)
+}
+
+// render renders the replica whole: its fragment, for a room that is its own document
+// (renderDocumentForUpdate), and every fragment of its layout for an issue room
+// (renderRoomForUpdate). The caller holds mu.
+func (r *renderedReplica) render() (string, *pmdoc.Node, *pmdoc.Layout, error) {
+	if len(r.layout) == 0 {
+		return renderDocumentForUpdate(r.fragment)
+	}
+	return renderRoomForUpdate(r.doc, r.layout)
+}
+
+// noteChangedFragments is noteChangedTypes for an issue room, whose rendering reads every fragment
+// of roots, the room's layout's fragments in order: an update that changed any type under one of
+// them is rendered whole, and each fragment it changed something under is recorded
+// (touchedBlocks.touchFragment), for its credit to count toward that fragment's document; one
+// that changed only types under another root type (the margin's marks) touches nothing. A type
+// more than pmdoc.MaxTreeDepth levels down renders the update whole too, and, placed under no one
+// fragment, is recorded under every fragment of the room, so each walk costs at most the schema's
+// depth and an update no walk places is credited toward no fewer documents than it changed.
+func noteChangedFragments(txn *crdt.Transaction, roots []crdt.SharedType, into *touchedBlocks) {
+	for _, changed := range txn.ChangedTypes() {
+		if len(into.fragments) == len(roots) {
+			return
+		}
+		root := changed
+		for level := 0; root != nil && root.Parent() != nil; level++ {
+			if level == pmdoc.MaxTreeDepth {
+				root = nil
+			} else {
+				root = root.Parent()
+			}
+		}
+		if root == nil {
+			into.whole = true
+			for index := range roots {
+				into.touchFragment(index)
+			}
+			return
+		}
+		if index := slices.Index(roots, root); index >= 0 {
+			into.whole = true
+			into.touchFragment(index)
+		}
+	}
 }
 
 // recover answers a replica that could not take an update, which leaves it holding no state the
@@ -634,10 +731,11 @@ func (r *renderedReplica) startAt(doc *crdt.Doc) {
 // update it could not place - the rest of this drain and what the reset handed over - is consumed
 // all the same (consumed), and noted as a content change with no ask blocks, since nothing
 // tells what it changed: crediting a connected browser with an edit that changed nothing loses
-// less than an edit credited to nobody. The replica drops the load's rendering (loaded), if its
+// less than an edit credited to nobody. For the same reason an issue room's update is noted as
+// changing every fragment of the room. The replica drops the load's rendering (loaded), if its
 // first run has not taken it: nothing ties the base the reset records to the state the load
 // rendered (start).
-func (r *renderedReplica) recover(room string, unplaced []crdt.LoggedUpdate, note func(update crdt.LoggedUpdate, changed bool, asks func() map[string]struct{})) {
+func (r *renderedReplica) recover(room string, unplaced []crdt.LoggedUpdate, note func(update crdt.LoggedUpdate, changed bool, asks func() map[string]struct{}, documents []string)) {
 	unplaced = append(unplaced, r.log.Reset()...)
 	r.doc, r.fragment, r.rendering = nil, nil, nil
 	r.loaded = weak.Pointer[replicaRendering]{}
@@ -649,8 +747,12 @@ func (r *renderedReplica) recover(room string, unplaced []crdt.LoggedUpdate, not
 	}
 	slog.Error("dispatch: the document's rendered copy starts again at the room's next commit; updates it could not place count as content changes",
 		"room", room, "updates", len(unplaced))
+	var documents []string
+	if len(r.layout) > 0 {
+		documents = r.layout.documents(room)
+	}
 	for _, update := range unplaced {
-		note(update, true, nil)
+		note(update, true, nil, documents)
 	}
 }
 
@@ -764,8 +866,9 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 // durable head still stands at the version the admission read (takePreload). The replica holds it
 // only weakly, for its first run to take in place of rendering its base (start): once the caller
 // drops it, nothing holds it, so it adds no resident memory and the next collection takes it.
-func (s *Service) keepReplica(live *crdt.Doc, log *crdt.UpdateLog, loaded *replicaRendering) *renderedReplica {
-	replica := &renderedReplica{log: log, paths: &s.renderPaths, loaded: weak.Make(loaded)}
+// layout is the room's layout, which the load read (roomLayout).
+func (s *Service) keepReplica(live *crdt.Doc, log *crdt.UpdateLog, loaded *replicaRendering, layout roomLayout) *renderedReplica {
+	replica := &renderedReplica{log: log, paths: &s.renderPaths, loaded: weak.Make(loaded), layout: layout}
 	replica.epoch.Store(replicaEpochs.Add(1))
 	listResident(&s.replicas, live, weak.Make(replica))
 	return replica
@@ -855,6 +958,19 @@ func (s *Service) liveTree(room string, live *crdt.Doc) (*pmdoc.Node, error) {
 	return tree, treeErr
 }
 
+// liveFragmentsTree is liveTree over the fragments fragments names, joined as a room's rendering
+// reads them, with how many top-level blocks each holds (treeOfFragments): one document's
+// fragment, or an issue room's layout.
+func (s *Service) liveFragmentsTree(room string, live *crdt.Doc, fragments []string) (*pmdoc.Node, []int, error) {
+	var tree *pmdoc.Node
+	var counts []int
+	var treeErr error
+	if err := s.readLive(room, live, func(doc *crdt.Doc) { tree, counts, treeErr = treeOfFragments(doc, fragments) }); err != nil {
+		return nil, nil, err
+	}
+	return tree, counts, treeErr
+}
+
 // hold returns the replica holding mu, which the caller releases, when it holds every update the
 // room has committed - its log holds none the observer has yet to classify - so it is the room as
 // of the last commit. It returns nil, holding nothing, for a replica another holds mu on (the
@@ -913,7 +1029,7 @@ func (r *renderedReplica) updateChangesMarkdown(room string) (bool, func() map[s
 		}
 	}
 	r.paths.observerRendered.Add(1)
-	markdown, tree, layout, err := renderDocumentForUpdate(r.fragment)
+	markdown, tree, layout, err := r.render()
 	r.recordVerdict(err)
 	if err != nil {
 		r.rendering = nil
@@ -974,7 +1090,7 @@ func (r *renderedReplica) spliceTouched(room string) (changed bool, asks func() 
 	}
 	return true, func() map[string]struct{} {
 		ids := map[string]struct{}{}
-		for _, index := range layout.AskBlocks() {
+		for _, index := range layout.CreditedBlocks() {
 			block, err := read(index)
 			if err != nil {
 				slog.Error("dispatch: read a block of the updated document to list its ask blocks", "room", room, "error", err)
