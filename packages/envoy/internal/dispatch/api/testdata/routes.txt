@@ -169,6 +169,10 @@ POST /api/v1/projects/{key}/artifacts/{slug}/versions any
 GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number} any
 PUT /api/v1/projects/{key}/default-assignee any
 PUT /api/v1/projects/{key}/gated-steps any
+GET /api/v1/projects/{key}/legion/board any
+DELETE /api/v1/projects/{key}/legion/daemon any
+GET /api/v1/projects/{key}/legion/daemon any
+PUT /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
 GET /api/v1/references any

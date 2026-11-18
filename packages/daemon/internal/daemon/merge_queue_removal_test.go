@@ -228,7 +228,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.readsWere(t, issue, reads, 1)
 		rig.nothingOwed(t, issue)
 		rig.nothingPublished(t, issue)
-		if resumed := rig.podResumes(t, issue.key); resumed != 0 {
+		if resumed := podResumes(t, rig.pool, issue.key); resumed != 0 {
 			t.Fatalf("%d resumes are recorded for %s, want none: a merged pull request wakes no role", resumed, issue.key)
 		}
 	})
@@ -307,7 +307,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 				t.Fatalf("the row ended on a merger whose claim is %v, want %s", ended["state"], tc.state)
 			}
 			rig.nothingPublished(t, issue)
-			if resumed := rig.podResumes(t, issue.key); resumed != 0 {
+			if resumed := podResumes(t, rig.pool, issue.key); resumed != 0 {
 				t.Fatalf("%d resumes are recorded for %s, want none: a %s claim is not woken", resumed, issue.key, tc.state)
 			}
 			rig.readsWere(t, issue, reads, 1)
@@ -323,7 +323,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		if held := rig.lastError(t, issue.key, record.OutboxKindMergeQueueRemoval); !strings.Contains(held, "design gate") {
 			t.Fatalf("the message's row waits on %q, want the design gate", held)
 		}
-		if resumed, resumes := rig.podResumes(t, issue.key), len(resumesOf(rig.rt, issue.merger)); resumed != 0 || resumes != 0 {
+		if resumed, resumes := podResumes(t, rig.pool, issue.key), len(resumesOf(rig.rt, issue.merger)); resumed != 0 || resumes != 0 {
 			t.Fatalf("while the gate is closed %d resumes are recorded and the runtime resumed the merger %d times, want neither", resumed, resumes)
 		}
 		rig.nothingPublished(t, issue)
@@ -722,7 +722,7 @@ func (r *dequeueRig) queuedBeforeItLeft(t *testing.T, issue dequeueIssue, leave 
 // resume its merger.
 func (r *dequeueRig) nobodyWoken(t *testing.T, issue dequeueIssue) {
 	t.Helper()
-	if resumed, resumes := r.podResumes(t, issue.key), len(resumesOf(r.rt, issue.merger)); resumed != 0 || resumes != 0 {
+	if resumed, resumes := podResumes(t, r.pool, issue.key), len(resumesOf(r.rt, issue.merger)); resumed != 0 || resumes != 0 {
 		t.Fatalf("%d resumes are recorded for %s and the runtime resumed its merger %d times, want neither", resumed, issue.key, resumes)
 	}
 }
@@ -799,7 +799,7 @@ func (r *dequeueRig) told(t *testing.T, issue dequeueIssue) string {
 // the merger recorded, no other resume of the issue, and one resume the runtime was asked for.
 func (r *dequeueRig) wokenOnce(t *testing.T, issue dequeueIssue) {
 	t.Helper()
-	wakes, resumed, resumes := r.wakes(t, issue.key), r.podResumes(t, issue.key), len(resumesOf(r.rt, issue.merger))
+	wakes, resumed, resumes := r.wakes(t, issue.key), podResumes(t, r.pool, issue.key), len(resumesOf(r.rt, issue.merger))
 	if wakes != 1 || resumed != 1 || resumes != 1 {
 		t.Fatalf("%s holds %d delivery wakes of its merger among %d resumes, and the runtime resumed the merger %d times; want one of each",
 			issue.key, wakes, resumed, resumes)
@@ -861,11 +861,11 @@ func (r *dequeueRig) wakes(t *testing.T, issue string) int {
 	return wakes
 }
 
-// podResumes is how many resumes of any role, of any kind, the record keeps for issue.
-func (r *dequeueRig) podResumes(t *testing.T, issue string) int {
+// podResumes is how many resumes of any role, of any kind, the record in pool keeps for issue.
+func podResumes(t *testing.T, pool *store.Pool, issue string) int {
 	t.Helper()
 	var resumes int
-	if err := r.pool.QueryRow(context.Background(), `select count(*) from pod_resumes where issue = $1`, issue).Scan(&resumes); err != nil {
+	if err := pool.QueryRow(context.Background(), `select count(*) from pod_resumes where issue = $1`, issue).Scan(&resumes); err != nil {
 		t.Fatalf("read the resumes of %s: %v", issue, err)
 	}
 	return resumes

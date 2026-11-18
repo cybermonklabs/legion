@@ -82,7 +82,7 @@ App waits for its grant.
 A run is not cut off by the boot's 15-second attempt: the boot waits for it, logging that it waits,
 and the next attempt joins the same run, so a grant that waits on a person's approval is one
 request; `agent-secrets`' exit 75 (still waiting when its own wait ended) is retried.
-`legion start --check-config` never runs it, and `installations` cannot be set beside it, since
+`legion config check` never runs it, and `installations` cannot be set beside it, since
 the release names every installation.
 
 Both Apps are public GitHub Apps, so any GitHub account can install them.
@@ -168,6 +168,13 @@ Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing.
+`legion gh` starts the real gh for a command's help only the first time:
+it keeps each help in `$XDG_STATE_HOME/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables, which nothing removes.
+It writes each copy as a file of mode 0600 in a directory of mode 0700, and reads a copy only where neither it nor its directory is a link and the role's user owns both, with no permission for their group or for others.
+In a pod every role runs as one user, so this keeps out another user and not another role.
+It reads the help from gh again when one of these changes: the gh binary, the file the `LEGION_GH_PATH` path's links end at (its path, device, inode, size, modification time, change time or mode); `config.yml` or `hosts.yml` in `GH_CONFIG_DIR` (gh lists its aliases in its help, and prints no help when either file does not parse); gh's extensions directory; or one of those variables.
+Where the links end at a file not named `gh`, such as the `mise` binary a mise shim links to, which picks the gh it runs on each run, it keeps nothing and reads every help from gh.
+The leak guard's own visibility reads and `gh api rate_limit` read no help at all.
 Under a set `GH_TOKEN` or `GITHUB_TOKEN`, `legion gh` runs these calls and refuses every other one:
 the leak guard's own two visibility reads, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names, with that token;
 the shared check's own visibility read, which `legion gh` answers itself with the guard's read;
@@ -354,7 +361,7 @@ session header is missing or malformed. The file was not modified.`, and leaves 
 were, so the launch fails loudly rather than starting a fresh agent
 (`packages/daemon/internal/runtime/tmux/resume_omp_test.go` holds the real binary to this).
 
-tmux's boot resolves three things from the daemon's environment, and `legion start --check-config`
+tmux's boot resolves three things from the daemon's environment, and `legion config check`
 makes the same refusals:
 
 - `LEGION_CLAUDE_PATH`, the `claude` executable, else the first `claude` on `PATH`;
@@ -407,7 +414,7 @@ not know which harness a process runs. A harness is four pieces in the daemon:
   the variables its start command tells the role, and the rule for the session a replacement pod
   resumes.
 
-Boot resolves a launch for each harness `worker_backends` uses (`legion start --check-config` makes
+Boot resolves a launch for each harness `worker_backends` uses (`legion config check` makes
 the same refusals), and the tmux runtime refuses a launch on a harness it has no launcher for. A
 pane is its recorded process only while its root process's command line, `sh -c` on the whole pane
 command, holds a configured harness's marker: `omp` for Oh My Pi, ` claude-bridge -- ` for Claude
@@ -477,7 +484,7 @@ provider_keys:
   other role's get (`role_config_files: {implementer: [/etc/legion-operator/fallback.yml]}`, the
   controller's pane under `controller: daemon` too): such a pane's `PI_CONFIG_FILES` is
   `pi_config_files`, then the role's own in order, and nothing after them. Each
-  path must be absolute; boot and `legion start --check-config` refuse one the host does not hold
+  path must be absolute; boot and `legion config check` refuse one the host does not hold
   as a file the daemon's user can read, naming the role and the path, and a pane of a role the key
   leaves out is told what it was told without it. After the plugin gate passes, the boot gate runs
   `omp config get retry.modelFallback --json` under each named role's list and on each of its files
@@ -536,7 +543,7 @@ provider_keys:
   Boot refuses an overlay no pane could read, naming the key and the file, as it does one of
   `role_config_files`, and an `instructions` file it cannot read or that holds nothing; neither
   reads the mode either.
-  `legion start --check-config` makes every one of these refusals and starts nothing.
+  `legion config check` makes every one of these refusals and starts nothing.
   `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
   kubernetes`.
 - **`projects.<KEY>.experiments`**, the project's own mapping, declares the experiments it draws
@@ -582,8 +589,8 @@ provider_keys:
   Claude Code, which reads no `PI_CONFIG_FILES`.
   Boot refuses an arm's overlay no pane could read and an arm's `instructions` file it cannot read
   or that holds nothing.
-  `legion start --check-config` makes every one of these refusals and starts nothing.
-  `legion config-reference --json` prints every key of the block with its default and what it
+  `legion config check` makes every one of these refusals and starts nothing.
+  `legion config reference --json` prints every key of the block with its default and what it
   does.
   `docs/kubernetes.md` ("Operator configuration") has what the block does under `runtime:
   kubernetes`, where an arm's newly declared overlay file replaces every live issue pod.
@@ -759,4 +766,4 @@ port in between. A shared-box deployment leaves the variable unset.
   panes and tmux server among them, holds the socket or inherits the variable.
 - The boot line `legion daemon started` names the address the daemon serves on, as it does when it
   binds.
-- `legion start --check-config` binds nothing and never reads the variable.
+- `legion config check` binds nothing and never reads the variable.

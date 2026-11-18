@@ -28,9 +28,10 @@
 //
 // What a handler knows and the answer does not, it notes on the request's Recorder, which
 // FromContext and FromWriter reach: the caller it authenticated (NoteCaller), the secrets the
-// request named (NoteSecrets), and the code of a refusal whose body names none, such as the
-// approval page's HTML (NoteCode). A request with no Recorder notes nothing, so a handler notes
-// whether or not it runs behind Middleware.
+// request named (NoteSecrets), the code of a refusal whose body names none, such as the
+// approval page's HTML (NoteCode), and a caller that went away before its answer
+// (NoteCallerEnded). A request with no Recorder notes nothing, so a handler notes whether or not
+// it runs behind Middleware.
 //
 // It is a leaf: the standard library and internal/metrics, so the packages that note on it
 // (api, approval, oauth, requests) take nothing else through it.
@@ -52,6 +53,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -129,6 +131,10 @@ const (
 	outcomeRateLimited = "rate_limited"
 	outcomePending     = "pending"
 	outcomeFailed      = "failed"
+	// outcomeCancelled is an answer to a caller that had already gone (NoteCallerEnded). It is the
+	// word broker_mint_attempts_total uses for the same event, a call whose caller's request
+	// ended.
+	outcomeCancelled = "cancelled"
 )
 
 // The two RFC 8628 poll answers a client is told once an interval while nothing changes: the
@@ -147,7 +153,7 @@ var codePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 // airlock's proxy port, which count their answers on the one counter (Count, CountCarried).
 func NewAnswers(r *metrics.Registry) *metrics.Counter {
 	return r.NewCounter("broker_answers_total",
-		"Answers of the broker's API and airlock ports, by outcome (served, refused, rate_limited, pending, failed), the code the answer named and the caller's class.")
+		"Answers of the broker's API and airlock ports, by outcome (served, refused, rate_limited, pending, failed, cancelled), the code the answer named and the caller's class.")
 }
 
 // recorderKey carries the request's Recorder on its context.
@@ -165,6 +171,9 @@ type Recorder struct {
 	// correlation is the caller's X-Correlation-Id, clipped (CorrelationID); empty when it sent
 	// none.
 	correlation string
+	// arrived is when Middleware first saw the request, before the mux routed it or any route
+	// authenticated its caller (Arrived).
+	arrived time.Time
 
 	// mu guards the notes: a handler may note from a goroutine of its own while the answer is
 	// being written.
@@ -173,6 +182,8 @@ type Recorder struct {
 	caller  string
 	secrets SecretNames
 	code    string
+	// callerEnded is whether the caller went away before the answer (NoteCallerEnded).
+	callerEnded bool
 
 	// status is the answer's status, 0 until the handler has set one.
 	status int
@@ -189,7 +200,7 @@ type Recorder struct {
 // that hands the mux a request of its own (r.WithContext) leaves every line's route empty.
 func Middleware(next http.Handler, answers *metrics.Counter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec := &Recorder{ResponseWriter: w, id: NewID(), correlation: CorrelationID(r), class: CallerPublic}
+		rec := &Recorder{ResponseWriter: w, id: NewID(), correlation: CorrelationID(r), arrived: time.Now(), class: CallerPublic}
 		// The request the mux is handed, whose Pattern names the route once next has returned.
 		r = r.WithContext(context.WithValue(r.Context(), recorderKey{}, rec))
 		completed := false
@@ -239,6 +250,17 @@ func (rec *Recorder) ID() string {
 		return ""
 	}
 	return rec.id
+}
+
+// Arrived is when the request reached the broker's code, before its route authenticated its
+// caller: the moment a handler that promises an answer by a time counts that time from. On a nil
+// Recorder, a request served outside Middleware, it is the moment it is asked, so such a request
+// counts from there.
+func (rec *Recorder) Arrived() time.Time {
+	if rec == nil {
+		return time.Now()
+	}
+	return rec.arrived
 }
 
 // NoteCaller names who the broker established sent the request: class, one of the Caller
@@ -410,6 +432,24 @@ func (rec *Recorder) NoteCode(code string) {
 	rec.mu.Unlock()
 }
 
+// NoteCallerEnded notes that the caller ended the request before the handler owed its answer,
+// while the handler waited on its behalf: it closed the connection, by a Ctrl-C, a timeout of its
+// own or a front door that cut the call, so nobody reads the answer. The answer is counted
+// outcome="cancelled", under the code its status gives, and writes no line, whatever its status.
+// A handler notes it only where its request's context ended by cancellation, which on the API
+// port is the caller's connection closing alone (cmd/broker gives the server no base context to
+// cancel, and net/http clears the read deadline before the handler runs), and only before the
+// time it promised its answer: a caller that gives up after it, a store that stalled say, is a
+// failure the handler logs and counts as one.
+func (rec *Recorder) NoteCallerEnded() {
+	if rec == nil {
+		return
+	}
+	rec.mu.Lock()
+	rec.callerEnded = true
+	rec.mu.Unlock()
+}
+
 // WriteHeader records the answer's status and sets its id header. A refusal's status is held back
 // with its body until the handler returns; any other goes on at once. A 1xx informational answer
 // goes on as it is, and the final status still follows it.
@@ -508,7 +548,8 @@ func (rec *Recorder) release() {
 // finish records the answer to r, the request the mux was handed, once the handler has returned:
 // its line when it is a refusal, its count, and then a held refusal's status and body, answer_id
 // added to a JSON object that names none. The line is written before the body, so whoever reads
-// the answer can find its line.
+// the answer can find its line. An answer whose caller had gone (NoteCallerEnded) writes no line
+// and is counted cancelled.
 func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 	if rec.status == 0 {
 		// A handler that wrote nothing answers 200 with no body, which net/http sends once it
@@ -517,7 +558,7 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 		rec.Header().Set(Header, rec.id)
 	}
 	rec.mu.Lock()
-	class, caller, secrets, noted := rec.class, rec.caller, rec.secrets, rec.code
+	class, caller, secrets, noted, ended := rec.class, rec.caller, rec.secrets, rec.code, rec.callerEnded
 	rec.mu.Unlock()
 
 	body := rec.body.Bytes()
@@ -527,12 +568,16 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 		fields = jsonObject(rec.Header(), body)
 		answerCode = refusalCode(rec.status, fields, noted)
 	}
-	if Refused(rec.status, answerCode) {
-		line := RefusalLine{ID: rec.id, Status: rec.status, Code: answerCode, Method: r.Method, Route: r.Pattern,
-			CallerClass: class, Caller: caller, Secrets: secrets, Correlation: rec.correlation}
-		slog.Warn(RefusalMessage, line.Fields(nil)...)
+	if ended {
+		answers.Inc(outcome(outcomeCancelled), code(answerCode), callerClass(class))
+	} else {
+		if Refused(rec.status, answerCode) {
+			line := RefusalLine{ID: rec.id, Status: rec.status, Code: answerCode, Method: r.Method, Route: r.Pattern,
+				CallerClass: class, Caller: caller, Secrets: secrets, Correlation: rec.correlation}
+			slog.Warn(RefusalMessage, line.Fields(nil)...)
+		}
+		Count(answers, rec.status, answerCode, class)
 	}
-	Count(answers, rec.status, answerCode, class)
 
 	if !rec.holding {
 		return
@@ -553,8 +598,8 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 // naming answerCode, which is HTTP_<status> when it names none codePattern accepts, for a caller
 // of class. Its outcome is read from the two (outcomeOf). It is the one rule of
 // broker_answers_total's labels: Middleware counts by it each answer a handler of the API port
-// writes, and the airlock's proxy port each answer it writes itself. An answer net/http writes
-// before any handler runs is counted by neither.
+// writes but one whose caller had gone (NoteCallerEnded), and the airlock's proxy port each answer
+// it writes itself. An answer net/http writes before any handler runs is counted by neither.
 func Count(answers *metrics.Counter, status int, answerCode, class string) {
 	if !codePattern.MatchString(answerCode) {
 		answerCode = httpCode(status)
