@@ -60,6 +60,22 @@ jobs:
         run: go vet -tags e2e ./...
         working-directory: packages/daemon
 
+      # The same vet as macOS builds the module: `legion` ships for darwin
+      # (.github/go-release-targets.json), and a file with no build constraint that uses a symbol
+      # only a `//go:build linux` file defines compiles on this runner and nowhere else. The vet
+      # runs once per tag set .github/scripts/go_build_tags.py reads off the module's own build
+      # constraints, so a file under a tag that lands later, or under a negated one, is vetted too.
+      # One darwin architecture is enough: no file of the module, or of the envoy packages it
+      # imports, tells amd64 from arm64 on darwin.
+      - name: Vet the Go daemon for darwin, its e2e-tagged live proofs included
+        run: |
+          flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
+          while IFS= read -r flag; do
+            echo "Vetting for darwin with $flag"
+            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+          done <<< "$flags"
+        working-directory: packages/daemon
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

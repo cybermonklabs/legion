@@ -1,0 +1,5 @@
+kind: Fixed
+body: A repository cache stream's low-speed watch counts its first window from the stream's start, so a watch that starts after the first bytes arrive no longer ends a stream that is still delivering.
+time: 2026-11-17T19:49:35.074757563Z
+custom:
+    Issue: pr4344

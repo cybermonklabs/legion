@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -79,7 +80,7 @@ func signedInBox(t *testing.T, tokenURL string) *brokerclient.SignInAuthority {
 		t.Fatalf("keep the sign-in: %v", err)
 	}
 	return &brokerclient.SignInAuthority{
-		Store: store, Machine: boxMachine{}, Flow: flow, BrokerURL: tokenURL, HTTP: &http.Client{Timeout: 30 * time.Second},
+		Store: store, Machine: boxMachine{}, Flow: flow, BrokerURL: brokeraddr.New(tokenURL), HTTP: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 

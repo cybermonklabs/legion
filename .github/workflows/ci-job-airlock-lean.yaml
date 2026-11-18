@@ -35,8 +35,9 @@ jobs:
     timeout-minutes: 20
     env:
       # The built model the two runs below compare the Go code against. Naming no file makes
-      # FuzzAirlock skip (internal/broker/airlock/airlock_fuzz_test.go:32-46), and a skip is a
-      # pass, so the build step checks the binary is there before those runs read this.
+      # FuzzAirlock and TestModelAgreesOnHostShapes skip
+      # (internal/broker/airlock/airlock_fuzz_test.go:32-46), and a skip is a pass, so the build
+      # step checks the binary is there before those runs read this.
       AIRLOCK_MODEL: ${{ github.workspace }}/packages/envoy/internal/broker/airlock/lean/.lake/build/bin/airlock-model
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -73,9 +74,10 @@ jobs:
       # same one, so the rule and the count it holds are written once.
       - name: Print the theorems' axioms
         run: bash packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/broker/airlock/lean
-      # The committed seed corpus (testdata/fuzz/FuzzAirlock): every seed through both sides.
+      # The committed seed corpus (testdata/fuzz/FuzzAirlock): every seed through both sides; and
+      # the host shapes a rules file may hold, which no seed decodes to, through both validations.
       - name: Compare the Go airlock with the model over the seed corpus
-        run: go test -run FuzzAirlock ./internal/broker/airlock/
+        run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes)$' ./internal/broker/airlock/
         working-directory: packages/envoy
       - name: Fuzz the Go airlock against the model
         run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/broker/airlock/

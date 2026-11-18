@@ -230,6 +230,17 @@ jobs:
         run: go test -count=1 -race -timeout 30m -skip '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
 
+      # What the race step's packages hold that the race build cannot run, run plain by name, one
+      # go test per package (ci_job_reads.py's DAEMON_RACE_IMPOSSIBLE_*, built from the race step's
+      # package list and the source, so the two cannot drift). The first is internal/launcher's
+      # call-graph walk, under `//go:build !race`: it loads the launcher's whole program from source
+      # and builds its call graph twice, which without the detector took about a minute at a 2.3 GB
+      # peak, and the detector multiplies both.
+      - name: Test what the race build cannot run
+        run: |
+          go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
+        working-directory: packages/daemon
+
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it
       # belongs with the Go steps rather than with the script harnesses: it is the daemon's own
       # code under test, and leaving it behind would keep the service and the Go build in the job

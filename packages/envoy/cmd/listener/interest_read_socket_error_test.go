@@ -59,11 +59,11 @@ func breakInterestReads(t *testing.T, registry *store.Registry) {
 // An interest read is answered only by its named answers: no key, a record this build cannot
 // decode, or a key the bucket refuses. Any other error is a read that did not answer, whatever it
 // names, so a raw socket error from a broken connection is the bus-unavailable 503 with
-// Retry-After: 1 on GET /v1/registry/<session_id>, never a session answered with no topics.
+// Retry-After: 1 on GET /v1/registry/<session_id>, never a row answered with topics as [].
 //
 // GET /v1/sessions reads no record at all: it joins the interest copy (store.Registry.Cached), so
 // the same broken reads leave it answering its 200 list. A session the copy holds nothing for is
-// listed with no topics, and that is not the answer this test forbids on the read-through route:
+// listed with topics as [], and that is not the answer this test forbids on the read-through route:
 // the copy can be served (kvwatch.Watcher.Servable), which means a read of the whole bucket
 // completed and found that session no interest record, rather than a read that failed saying
 // nothing.

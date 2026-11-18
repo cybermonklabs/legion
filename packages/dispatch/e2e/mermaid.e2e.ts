@@ -477,7 +477,8 @@ test("a document's mermaid diagram draws, styles nothing outside it, and fetches
 
     // The diagram's own sheet survives, inside its shadow root, without its `@import`. Reading it
     // is also the positive signal the absence below is taken after: the sheet whose `@import`
-    // would fetch the font is installed and has been resolved.
+    // would fetch the font is installed and has been resolved. The diagram was waited for above
+    // with its text drawn, so its shadow root and its sheet are in place when this reads them.
     const ownStyles = await documentEditor(page)
       .locator(".proof-mermaid-preview")
       .evaluate((preview) =>
@@ -651,7 +652,8 @@ test("a reader who scrolls after a block link lands is not pulled back once the 
     await expect(diagram).toHaveCount(0);
     await withoutScrollAnchoring(page);
     await settledScrollTop(page);
-    // The reader moves on: a wheel over the document, up past the target.
+    // The reader moves on: a wheel over the document, up past the target. The paragraph was
+    // waited for in the viewport above, so its box is there.
     const box = await paragraph.boundingBox();
     if (box === null) throw new Error("the target paragraph has no box");
     await page.mouse.move(box.x + 10, box.y + box.height / 2);
