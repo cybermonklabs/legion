@@ -16,9 +16,10 @@ import (
 // role's holder now: the outbox records the route as its role topic (owedKeys), and the stand-in
 // listener resolves role:reviewer to s1, so a mention's send to s1 waits behind that event,
 // whichever session held the role when the event was recorded. A route the event owes to a role
-// the listener says nobody holds (role:unheld) holds nothing. A lookup that fails says nothing
-// about the holder, so it holds the send: a 503 (role:broken), an answer that does not decode
-// (role:garbled), a status the listener does not explain (role:other's bare 404), and the
+// the listener says nobody holds holds nothing: no claim names it (role:unheld, reason
+// unclaimed), or its holder is gone (role:lapsed, reason holder_lapsed). A lookup that fails says
+// nothing about the holder, so it holds the send: a 503 (role:broken), an answer that does not
+// decode (role:garbled), a status the listener does not explain (role:other's bare 404), and the
 // listener's 500 for a claim record it cannot read (role:unreadable).
 //
 // The control row is the record as it would read keyed on the holder at the time,
@@ -47,6 +48,7 @@ func TestTheAPIsMentionWaitsForARoleRouteItsSessionHoldsNow(t *testing.T) {
 	}{
 		{name: "the role topic of a role s1 holds now", owed: []string{contracts.RoleTopicPrefix + "reviewer"}, holds: true},
 		{name: "the role topic of a role the listener says nobody holds", owed: []string{contracts.RoleTopicPrefix + "unheld"}},
+		{name: "the role topic of a role whose holder the listener says is gone", owed: []string{contracts.RoleTopicPrefix + "lapsed"}},
 		{name: "a lookup the listener answers 503", owed: []string{contracts.RoleTopicPrefix + "broken"}, holds: true},
 		{name: "a lookup whose answer does not decode", owed: []string{contracts.RoleTopicPrefix + "garbled"}, holds: true},
 		{name: "a lookup answered by a bare 404", owed: []string{contracts.RoleTopicPrefix + "other"}, holds: true},

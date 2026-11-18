@@ -107,6 +107,11 @@ func newMentionListener(t *testing.T) (*httptest.Server, *mentionListener) {
 			// The listener's own refusal for a role no session claims (writeRoleHolderError).
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":"no holder for role unheld","reason":"unclaimed"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/lapsed":
+			// The listener's own refusal for a role whose holder the registry calls gone
+			// (writeRoleHolderError, reason holder_lapsed).
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"holder ses_gone of role lapsed is gone","reason":"holder_lapsed","holder":"ses_gone","holder_state":"gone"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/roles/unreadable":
 			// The listener's 500 for a claim record it cannot decode (writeRoleClaimUnreadable).
 			w.WriteHeader(http.StatusInternalServerError)

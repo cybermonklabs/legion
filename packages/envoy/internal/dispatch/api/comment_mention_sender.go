@@ -247,7 +247,8 @@ type mentionSender struct {
 	inflight int
 	// claims is the claim this sender holds on each send that has not started, as it last wrote
 	// it, so one statement writes them all again and no statement of its own ever touches the
-	// claim a send has taken over. Its size is how many sends are queued, which capacity bounds.
+	// claim a send has taken over. Its size is how many sends are queued, which capacity bounds
+	// together with inflight.
 	claims map[mentionKey]time.Time
 	// held is every attempt this sender queued whose send has not finished, so that one attempt is
 	// never queued twice: a keyed repeat of a comment answers while its first send is still queued.
