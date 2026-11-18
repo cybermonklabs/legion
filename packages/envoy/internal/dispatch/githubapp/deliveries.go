@@ -165,8 +165,8 @@ func limitAnswered(status int, wait time.Duration) string {
 }
 
 // Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
-// body that is not JSON or names none, as a held error's and a 2xx limit's empty Body do
-// (responseMessage).
+// body that is not JSON or names none, as a held error's empty Body does, and so does the empty
+// Body of a 2xx limit that answeredLimit built (responseMessage).
 func (e *RateLimitError) Message() string {
 	return responseMessage([]byte(e.Body))
 }
