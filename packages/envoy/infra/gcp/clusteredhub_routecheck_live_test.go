@@ -5,6 +5,7 @@ package gcp_test
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -29,7 +31,8 @@ import (
 // stagedServer is one server of a stagedHub: a nats-server named as a hub pod, on 127.0.0.1 and
 // ports of its own, on the nats.conf of the stage it has reached, with the route variables a pod
 // has from the env stage on. restarts and startedAt are what the API server would report for its
-// container: the number of times it was started again, and when the running one started.
+// container: the number of times it was started again, and when the running one started. stamps
+// is when each line of its output was first seen, as the container runtime stamps each line.
 type stagedServer struct {
 	name                   string
 	dir                    string
@@ -38,6 +41,65 @@ type stagedServer struct {
 	restarts               int32
 	startedAt              time.Time
 	proc                   *cmdtest.Process
+	stamps                 *stamper
+}
+
+// stamper records the time it first saw each line of a process's output, polling it every few
+// milliseconds, as a container runtime stamps each line it reads from a container's output: a
+// time no process in the pod sets.
+type stamper struct {
+	p      *cmdtest.Process
+	mu     sync.Mutex
+	seen   int
+	stamps []time.Time
+}
+
+// stampOutput starts stamping p's output, until p exits.
+func stampOutput(p *cmdtest.Process) *stamper {
+	st := &stamper{p: p}
+	go func() {
+		tick := time.NewTicker(2 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-p.Exited:
+				st.read()
+				return
+			case <-tick.C:
+				st.read()
+			}
+		}
+	}()
+	return st
+}
+
+// read stamps, with now, every line the output has completed since the last read.
+func (st *stamper) read() {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.p.Output.Len() == st.seen {
+		return
+	}
+	out := st.p.Output.String()
+	now := time.Now().UTC()
+	for i := strings.IndexByte(out[st.seen:], '\n'); i >= 0; i = strings.IndexByte(out[st.seen:], '\n') {
+		st.stamps = append(st.stamps, now)
+		st.seen += i + 1
+	}
+}
+
+// log is the output's complete lines, each after the time it was first seen and a space, as
+// `kubectl logs --timestamps` prints a container's log.
+func (st *stamper) log() []byte {
+	st.read()
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	var out strings.Builder
+	lines := strings.SplitAfter(st.p.Output.String()[:st.seen], "\n")
+	for i, line := range lines[:len(st.stamps)] {
+		out.WriteString(st.stamps[i].Format(time.RFC3339Nano) + " " + line)
+	}
+	return []byte(out.String())
 }
 
 // stagedHub is three servers that move through routeAuthorization's stages as the hub's pods do:
@@ -106,14 +168,19 @@ func (h *stagedHub) writeConf(t *testing.T, s *stagedServer, stage string) {
 }
 
 // start runs s on its arguments and route variables, in UTC, the zone of the hub's nats image,
-// which sets none and in which the check reads the log's times; and records its start as the API
-// server reports a container's, to the second, cut down.
+// which sets none and in which the check reads the log's times; records its start as the API
+// server reports a container's, to the second, cut down; and stamps its output from its start.
 func (h *stagedHub) start(t *testing.T, s *stagedServer) {
 	t.Helper()
 	cmd := exec.Command(h.natsServer, s.args...)
 	cmd.Env = append(withoutRouteVars(os.Environ()), append(s.vars, "TZ=UTC")...)
 	s.startedAt = time.Now().UTC().Truncate(time.Second)
-	s.proc = startReady(t, s.name, cmd, listeningForRoutes(s.route))
+	p := startLogged(t, s.name, cmd)
+	s.stamps = stampOutput(p)
+	if err := awaitReady(p, listeningForRoutes(s.route)); err != nil {
+		t.Fatalf("%s did not start: %v\n%s", s.name, err, p.Output.String())
+	}
+	s.proc = p
 }
 
 // reload moves every server, one at a time, onto the stage's nats.conf by the reload the chart's
@@ -255,14 +322,14 @@ func (h *stagedHub) Monitor(_ context.Context, pod, path string) ([]byte, error)
 	return monitorGet(fmt.Sprintf("http://127.0.0.1:%d%s", s.monitor, path))
 }
 
-// Log is the server's whole output since its start, as `kubectl logs` gives the running
-// container's.
+// Log is the server's whole output since its start, as `kubectl logs --timestamps` gives the
+// running container's: each line after the time it was first seen.
 func (h *stagedHub) Log(_ context.Context, pod string) ([]byte, error) {
 	s := h.server(pod)
 	if s == nil {
 		return nil, fmt.Errorf("no pod %s", pod)
 	}
-	return []byte(s.proc.Output.String()), nil
+	return s.stamps.log(), nil
 }
 
 // RouteExchange is routes.Exchange with the server's route port, as a port-forward to 6222 gives it.
@@ -768,7 +835,269 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 			"findings: %v", report.Findings)
 		require.Equal(t, int32(1), last.restarts, "control: the server restarted between the check's read of the pods and of its log")
 	})
+
+	// pastStartWindow waits until every server of h started more than the start line's window ago,
+	// as a reader must have: the record is taken at env, and two applies follow it.
+	pastStartWindow := func(h *stagedHub) {
+		for _, s := range h.servers {
+			if wait := time.Until(s.startedAt.Add(11 * time.Second)); wait > 0 {
+				time.Sleep(wait)
+			}
+		}
+	}
+	// awaitLine waits until s's output holds line as a line of its own.
+	awaitLine := func(t *testing.T, s *stagedServer, line string) {
+		t.Helper()
+		within(t, 10*time.Second, s.name+" logging a forged line", func() error {
+			if !strings.Contains(s.proc.Output.String(), "\n"+line+"\n") {
+				return fmt.Errorf("%s has not logged %.60q yet", s.name, line)
+			}
+			return nil
+		})
+	}
+
+	t.Run("lines a route peer writes through its server name before authorization", func(t *testing.T) {
+		h := newStagedHub(t, renders, natsServer, password)
+		rec := record(t, h)
+		s := h.servers[0]
+		now := time.Now().UTC()
+		otherPID := serverLine("4141", now, "INF", removedRouteLine("notThePassword"))
+		stale := serverLine(strconv.Itoa(s.proc.Cmd.Process.Pid), now.Add(-time.Hour), "INF", removedRouteLine("notThePassword"))
+		f := dialFakeRoute(t, "127.0.0.5", s.route, "", "", "x\n"+otherPID+"\n"+stale)
+		f.awaitPong(t)
+		f.close()
+		awaitLine(t, s, otherPID)
+		awaitLine(t, s, stale)
+		h.reload(t, "routes")
+		h.reload(t, "authorization")
+		report := routes.Check(ctx, h, rec)
+		require.Equal(t, routes.Unknown, report.Verdict(), "control: each forged line is in the log in the logger's form; findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.Unknown, s.name, "2 line(s) in nats-server's form that its server did not write when they say"),
+			"findings: %v", report.Findings)
+	})
+
+	t.Run("a start line a reader writes through its server name, first in a rotated log", func(t *testing.T) {
+		h, rec := staged(t, password)
+		pastStartWindow(h)
+		forged := map[string]string{
+			// timed at the container's start, as a reader that asked the hub's VARZ can
+			h.servers[0].name: serverLine(strconv.Itoa(h.servers[0].proc.Cmd.Process.Pid), h.servers[0].startedAt.Add(400*time.Millisecond), "INF", "Starting nats-server"),
+			// timed now, so its logger time agrees with the runtime's
+			h.servers[1].name: serverLine(strconv.Itoa(h.servers[1].proc.Cmd.Process.Pid), time.Now().UTC(), "INF", "Starting nats-server"),
+		}
+		for _, s := range h.servers[:2] {
+			f := dialFakeRoute(t, "127.0.0.3", s.route, "route", password, "x\n"+forged[s.name])
+			f.awaitPong(t)
+			f.close()
+			awaitLine(t, s, forged[s.name])
+		}
+		for name, detail := range map[string]string{
+			h.servers[0].name: "does not begin with the server's start line",
+			h.servers[1].name: "its log's first line, the server's start line, was read by the container runtime at",
+		} {
+			report := routes.Check(ctx, rotatedAt{h, forged[name]}, rec)
+			require.Equal(t, routes.PasswordRead, report.Verdict(), "%s: findings: %v", name, report.Findings)
+			require.True(t, findingNames(report, routes.PasswordRead, name, detail), "%s: findings: %v", name, report.Findings)
+			for _, f := range report.Findings {
+				if f.Pod == name {
+					require.NotContains(t, f.Detail, "127.0.0.3", "control: the cut took the reader's route connection lines with it: %v", f)
+				}
+			}
+		}
+	})
+
+	t.Run("route connections from other addresses that formed no route", func(t *testing.T) {
+		h, rec := staged(t, password)
+		report := routes.Check(ctx, h, rec)
+		require.Equal(t, routes.Clean, report.Verdict(), "control: before them; findings: %v", report.Findings)
+		require.NoError(t, dialFrom(t, "127.0.0.6", h.servers[1].route).Close())
+		dialFrom(t, "127.0.0.7", h.servers[2].route)
+		_, err := dialFrom(t, "127.0.0.8", h.servers[0].route).Write([]byte(`CONNECT {"user":"route"`))
+		require.NoError(t, err)
+		closes := map[*stagedServer]string{h.servers[1]: "127.0.0.6", h.servers[2]: "127.0.0.7", h.servers[0]: "127.0.0.8"}
+		within(t, 15*time.Second, "each connection's close", func() error {
+			for s, host := range closes {
+				closed := slices.ContainsFunc(strings.Split(s.proc.Output.String(), "\n"), func(l string) bool {
+					return strings.Contains(l, "] "+host+":") && strings.Contains(l, "Router connection closed: ")
+				})
+				if !closed {
+					return fmt.Errorf("%s has not closed the connection from %s yet", s.name, host)
+				}
+			}
+			return nil
+		})
+		for s, host := range closes {
+			for _, l := range strings.Split(s.proc.Output.String(), "\n") {
+				if strings.Contains(l, "] "+host+":") && strings.Contains(l, "Router connection closed: ") {
+					require.NotContains(t, l, " - Remote: ", "control: the connection from %s named no server", host)
+				}
+			}
+		}
+		report = routes.Check(ctx, h, rec)
+		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
+		for s, host := range closes {
+			require.True(t, findingNames(report, routes.Unknown, s.name, "1 route connection(s) with "+host+" since it loaded authorization that formed no route",
+				"1 that closed before its peer named a server"), "%s: findings: %v", host, report.Findings)
+		}
+	})
+
+	t.Run("a client's line that names a route connection's refused login", func(t *testing.T) {
+		h, rec := staged(t, password)
+		s := h.servers[0]
+		f := dialFakeRoute(t, "127.0.0.5", s.route, "route", password, "rogue")
+		f.awaitPong(t)
+		defer f.close()
+		var rid string
+		within(t, 10*time.Second, "the route connection in the log", func() error {
+			for _, l := range strings.Split(s.proc.Output.String(), "\n") {
+				if _, after, ok := strings.Cut(l, "] 127.0.0.5:"+f.localPort()+" - rid:"); ok && strings.HasSuffix(after, " - Route connection created") {
+					rid = strings.TrimSuffix(after, " - Route connection created")
+					return nil
+				}
+			}
+			return fmt.Errorf("%s has not logged the fake route's connection yet", s.name)
+		})
+		forged := "127.0.0.5:" + f.localPort() + " - rid:" + rid + " - authentication error"
+		require.Equal(t, "PONG", clientLine(t, s.client, forged), "a client with no credential is the hub's session user")
+		within(t, 10*time.Second, "the client's line in the log", func() error {
+			if !strings.Contains(s.proc.Output.String(), " - Client Error "+forged+"\n") {
+				return fmt.Errorf("%s has not logged the client's line yet", s.name)
+			}
+			return nil
+		})
+		report := routes.Check(ctx, h, rec)
+		require.True(t, findingNames(report, routes.PasswordRead, s.name, "1 route connection(s) with 127.0.0.5 since it loaded authorization, and"),
+			"findings: %v", report.Findings)
+		for _, finding := range report.Findings {
+			require.NotContains(t, finding.Detail, "formed no route", "the client's line is no refusal of the route's login: %v", finding)
+		}
+	})
+
+	t.Run("a route peer's name that ends as a route connection's", func(t *testing.T) {
+		h := newStagedHub(t, renders, natsServer, password)
+		rec := record(t, h)
+		s := h.servers[0]
+		name := "x [INF] 10.66.6.6:6222 - rid:1 - Route connection created"
+		f := dialFakeRoute(t, "127.0.0.9", s.route, "", "", name)
+		f.awaitPong(t)
+		defer f.close()
+		h.reload(t, "routes")
+		h.reload(t, "authorization")
+		within(t, 10*time.Second, "the authorization reload closing the fake route", func() error {
+			if !strings.Contains(s.proc.Output.String(), " - Remote: "+name+"\n") {
+				return fmt.Errorf("%s has not closed the fake route yet", s.name)
+			}
+			return nil
+		})
+		report := routes.Check(ctx, h, rec)
+		require.Equal(t, routes.Clean, report.Verdict(), "control: the close line, since authorization, ends as a route connection's; findings: %v", report.Findings)
+	})
 }
+
+// serverLine is a line in nats-server's logger form, as a process of id pid writes it at at.
+func serverLine(pid string, at time.Time, level, message string) string {
+	return "[" + pid + "] " + at.UTC().Format("2006/01/02 15:04:05.000000") + " [" + level + "] " + message
+}
+
+// removedRouteLine is the message a server logs for a route URL a rollback removes, with password
+// in the URL. It builds the URL from its parts, and over two lines, so that no line of this source
+// holds a URL carrying a user and a password, which the repository's own scan of what it pushes
+// reads as a credential.
+func removedRouteLine(password string) string {
+	url := "nats://" + "route" + ":" + password
+	return "Removed route " + url + "@10.0.0.1:6222"
+}
+
+// dialFrom opens a TCP connection to port on 127.0.0.1 from local, any 127/8 address, closed when
+// the test ends.
+func dialFrom(t *testing.T, local string, port int) net.Conn {
+	t.Helper()
+	dialer := net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(local)}, Timeout: 5 * time.Second}
+	conn, err := dialer.Dial("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// fakeRoute is a route connection the test speaks itself, as a route peer could: it logs in, and
+// its INFO names a server, which nats-server keeps as the route's remote name (route.go:824) and
+// prints unquoted when the route closes (client.go:2125), with gossip off. It answers the server's
+// PINGs until it is closed or the server closes it.
+type fakeRoute struct {
+	conn net.Conn
+	pong chan struct{}
+	done chan struct{}
+}
+
+// dialFakeRoute opens a fakeRoute to port from local, logging in with user and pass, and naming
+// the server name.
+func dialFakeRoute(t *testing.T, local string, port int, user, pass, name string) *fakeRoute {
+	t.Helper()
+	conn := dialFrom(t, local, port)
+	reader := bufio.NewReader(conn)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	first, err := reader.ReadString('\n')
+	require.NoError(t, err)
+	var info map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimPrefix(strings.TrimSpace(first), "INFO ")), &info))
+	for _, key := range []string{"nonce", "compression", "route_pool_size", "route_pool_idx", "connect_urls", "auth_required"} {
+		delete(info, key)
+	}
+	id := "NFAKE" + strings.ToUpper(strconv.FormatInt(time.Now().UnixNano(), 36))
+	info["server_id"], info["server_name"], info["gossip_mode"] = id, name, 1
+	info["ip"] = "nats-route://" + net.JoinHostPort(local, "1") + "/"
+	connect, err := json.Marshal(map[string]any{"echo": true, "verbose": false, "pedantic": false, "user": user, "pass": pass,
+		"tls_required": false, "headers": true, "name": id, "cluster": "envoy-nats", "dynamic": false, "lnoc": true})
+	require.NoError(t, err)
+	infoOut, err := json.Marshal(info)
+	require.NoError(t, err)
+	require.NoError(t, conn.SetReadDeadline(time.Time{}))
+	_, err = conn.Write([]byte("CONNECT " + string(connect) + "\r\nINFO " + string(infoOut) + "\r\nPING\r\n"))
+	require.NoError(t, err)
+	f := &fakeRoute{conn: conn, pong: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(f.done)
+		ponged := false
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				return
+			}
+			switch strings.TrimSpace(line) {
+			case "PING":
+				_, _ = conn.Write([]byte("PONG\r\n"))
+			case "PONG":
+				if !ponged {
+					ponged = true
+					close(f.pong)
+				}
+			}
+		}
+	}()
+	return f
+}
+
+// awaitPong waits for the server's answer to the route's first PING, which it sends once it has
+// taken the route's CONNECT and INFO.
+func (f *fakeRoute) awaitPong(t *testing.T) {
+	t.Helper()
+	select {
+	case <-f.pong:
+	case <-f.done:
+		t.Fatal("the server closed the fake route before it answered its PING")
+	case <-time.After(10 * time.Second):
+		t.Fatal("the server did not answer the fake route's PING within 10 s")
+	}
+}
+
+// close closes the fake route and waits for its reader to end.
+func (f *fakeRoute) close() {
+	_ = f.conn.Close()
+	<-f.done
+}
+
+// localPort is the port the fake route connects from.
+func (f *fakeRoute) localPort() string { return strconv.Itoa(f.conn.LocalAddr().(*net.TCPAddr).Port) }
 
 // refusedRouteLogin opens one route connection to port from local (any 127/8 address), reads the
 // INFO, sends a route CONNECT with no credential, and returns the server's answer: the login the

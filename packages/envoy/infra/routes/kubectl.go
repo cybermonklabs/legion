@@ -263,10 +263,10 @@ func (k *Kubectl) Monitor(ctx context.Context, pod, path string) ([]byte, error)
 	return body, nil
 }
 
-// Log is the pod's nats container log, as `kubectl logs` returns it: the running container's
-// newest file.
+// Log is the pod's nats container log, as `kubectl logs --timestamps` returns it: the running
+// container's newest file, each line after the time the container runtime read it at.
 func (k *Kubectl) Log(ctx context.Context, pod string) ([]byte, error) {
-	return k.kubectl(ctx, "logs", "pod/"+pod, "--container", natsContainer)
+	return k.kubectl(ctx, "logs", "pod/"+pod, "--container", natsContainer, "--timestamps")
 }
 
 // exchangeTimeout is how long a route port may take to send its INFO and to answer.

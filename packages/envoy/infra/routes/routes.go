@@ -74,10 +74,12 @@ type Pod struct {
 
 // Source reads the hub's pods. Pods lists every pod the StatefulSet has, by its ordinal names;
 // Monitor answers a GET of path on a pod's monitoring port; Log is the whole log of a pod's nats
-// container as the API server returns it, the current container's newest file; RouteExchange
-// opens a connection to a pod's route port and returns the first line it sends, its INFO, and,
-// when send is not empty, writes send and returns the first line after the INFO that answers it
-// (Exchange). Close ends whatever the source holds open.
+// container as the API server returns it with the container runtime's times (`kubectl logs
+// --timestamps`), the current container's newest file, each line after the RFC 3339 time the
+// runtime read it at and a space; RouteExchange opens a connection to a pod's route port and
+// returns the first line it sends, its INFO, and, when send is not empty, writes send and returns
+// the first line after the INFO that answers it (Exchange). Close ends whatever the source holds
+// open.
 type Source interface {
 	Pods(ctx context.Context) ([]Pod, error)
 	Monitor(ctx context.Context, pod, path string) ([]byte, error)
@@ -267,22 +269,33 @@ const (
 	failedReloadMessage = "Failed to reload server configuration: "
 )
 
-// logLine is one line of a nats-server log, as its logger writes every line (logger/log.go,
-// NewStdLogger: the process id, then Go's log date and time to the microsecond, then the level's
-// label): its time, read as UTC, the zone of the hub's nats image, which sets none; its level; and
-// its message. ok is false for a line that has no such prefix, the continuation of a message that
-// held a newline, which no rule reads.
+// logLine is one line of a nats-server log as `kubectl logs --timestamps` gives it: the time the
+// container runtime read it at, which no process in the pod sets, then the line as the server's
+// logger writes every line (logger/log.go, NewStdLogger: the process id, then Go's log date and
+// time to the microsecond, then the level's label), its time read as UTC, the zone of the hub's
+// nats image, which sets none. stamped is false for a line without the runtime's time. ok is
+// false for a line that has no logger prefix, the continuation of a message that held a newline,
+// and for one the server's process did not write when it says (forged), and no rule reads either.
 type logLine struct {
+	stamped bool
+	runtime time.Time
 	ok      bool
+	forged  bool
+	pid     string
 	at      time.Time
 	level   string
 	message string
 }
 
-var logPrefix = regexp.MustCompile(`^\[\d+\] (\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\.\d{6}) \[([A-Z]{3})\] (.*)$`)
+var logPrefix = regexp.MustCompile(`^\[(\d+)\] (\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\.\d{6}) \[([A-Z]{3})\] (.*)$`)
 
 // logTime is the layout of logPrefix's time (Go's log.LstdFlags with log.Lmicroseconds).
 const logTime = "2006/01/02 15:04:05.000000"
+
+// stampSkew is how far a line's logger time may be from the time the runtime read it: the runtime
+// reads each line from the container's output as the server writes it, and the rest allows for a
+// node under load.
+const stampSkew = 2 * time.Second
 
 // parseLog splits a log into its lines, without the empty ones and each without the carriage
 // return and spaces it ends with.
@@ -293,19 +306,25 @@ func parseLog(body []byte) []logLine {
 		if raw == "" {
 			continue
 		}
-		match := logPrefix.FindStringSubmatch(raw)
-		if match == nil {
-			lines = append(lines, logLine{})
-			continue
+		var l logLine
+		stamp, rest, _ := strings.Cut(raw, " ")
+		if runtime, err := time.Parse(time.RFC3339Nano, stamp); err == nil {
+			l.stamped, l.runtime = true, runtime.UTC()
+			if match := logPrefix.FindStringSubmatch(rest); match != nil {
+				if at, err := time.ParseInLocation(logTime, match[2], time.UTC); err == nil {
+					l.ok, l.pid, l.at, l.level, l.message = true, match[1], at, match[3], strings.TrimRight(match[4], " ")
+				}
+			}
 		}
-		at, err := time.ParseInLocation(logTime, match[1], time.UTC)
-		if err != nil {
-			lines = append(lines, logLine{})
-			continue
-		}
-		lines = append(lines, logLine{ok: true, at: at, level: match[2], message: strings.TrimRight(match[3], " ")})
+		lines = append(lines, l)
 	}
 	return lines
+}
+
+// agrees reports whether l's logger time is within stampSkew of the time the runtime read it.
+func (l logLine) agrees() bool {
+	skew := l.runtime.Sub(l.at)
+	return l.ok && skew < stampSkew && skew > -stampSkew
 }
 
 // is reports whether l is the server's line of level and exactly message.
@@ -332,8 +351,18 @@ var routeCreated = regexp.MustCompile(`^(\S+) - rid:(\d+) - Route connection cre
 // the credential check (client.go:2448, 2586-2588), with the peer's address and the connection's id.
 var routeAuthError = regexp.MustCompile(`^(\S+) - rid:(\d+) - authentication error(?: - .*)?$`)
 
+// routeClosed finds the message a server logs, at INF, when a route connection closes, with the
+// connection's id and its reason (client.go:2128-2130). The reason ends with "- Remote: <name>"
+// once the peer's INFO named a server, which a connection that formed no route never did: a login
+// the credential refused, a peer that waited out the auth timeout, or one that closed at once.
+var routeClosed = regexp.MustCompile(`^\S+ - rid:(\d+) - Router connection closed: (.+)$`)
+
+// remoteTag is in a route's close line once its peer named a server.
+const remoteTag = " - Remote: "
+
 // credentialedURL finds a URL that carries a user and a password: a route URL the server printed
-// whole, as "Removed route %v" does on a rollback (reload.go:543).
+// whole, as "Removed route %v" does on a rollback (reload.go:543). It is read in INF lines alone:
+// the auth callout's WRN lines carry its service's error text (auth_callout.go:460).
 var credentialedURL = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s/@:]*:[^\s/@]*@`)
 
 // The first line's time against its container's start: the API server gives a container's start
@@ -548,15 +577,18 @@ func checkRoutes(ctx context.Context, r *Report, src Source, s server, ips map[s
 	return false
 }
 
-// checkLog judges the pod's nats container log, by the lines the server's logger wrote: it begins
-// with the server's start line, written at the container's start; no reload failed and no line the
-// server wrote of itself holds a URL with a user and password; from the reload that loaded
-// authorization on, every route connection it names has a pod IP, or else the credential refused
-// its login; and, when split, it names the failed route logins from pod IPs that split the mesh.
-// With no reload that changed the cluster block in the log, the whole log is judged when
-// sinceStart says authorization was in force from the server's start (or that is not known), and
-// no route connection when it was never in force, since none then carried the password beyond the
-// pods. It returns whether the log shows authorization loaded by a reload.
+// checkLog judges the pod's nats container log, by the lines the server's logger wrote, read with
+// the container runtime's times: it begins with the server's start line, read by the runtime at
+// the container's start; every other line in the logger's form carries the start line's process
+// id and a time that agrees with the runtime's, or it was forged; no reload failed and no INF line
+// the server wrote of itself holds a URL with a user and password; from the reload that loaded
+// authorization on, every route connection it names has a pod IP, or else formed no route (the
+// credential refused its login, or it closed before its peer named a server); and, when split, it
+// names the failed route logins from pod IPs that split the mesh. With no reload that changed the
+// cluster block in the log, the whole log is judged when sinceStart says authorization was in
+// force from the server's start (or that is not known), and no route connection when it was never
+// in force, since none then carried the password beyond the pods. It returns whether the log shows
+// authorization loaded by a reload.
 func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[string]bool, split, sinceStart bool) bool {
 	pod := s.pod.Name
 	body, err := src.Log(ctx, pod)
@@ -565,15 +597,46 @@ func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[stri
 		return false
 	}
 	lines := parseLog(body)
-	switch {
-	case len(lines) == 0 || !lines[0].is("INF", startMessage):
-		r.add(pod, PasswordRead, "its log does not begin with the server's start line, %q as nats-server's logger writes it, so the lines since "+
-			"the env roll may be gone (the API server returns only the newest log file, which the kubelet rotates)", "[INF] "+startMessage)
-	case lines[0].at.Before(s.pod.StartedAt.Add(-startSlack)) || lines[0].at.After(s.pod.StartedAt.Add(startDelay)):
-		r.add(pod, PasswordRead, "its log's first line, the server's start line, was written at %s, and its container started at %s, so it is no "+
-			"start line of that container and the lines since the env roll may be gone (the log's times are read as UTC)",
-			lines[0].at.Format(time.RFC3339Nano), s.pod.StartedAt.UTC().Format(time.RFC3339))
+	unstamped := 0
+	for _, l := range lines {
+		if !l.stamped {
+			unstamped++
+		}
 	}
+	if unstamped > 0 {
+		r.add(pod, Unknown, "%d of its log's %d line(s) carry no time of the container runtime's, so which lines its server wrote cannot be told; "+
+			"read the log as kubectl logs --timestamps gives it", unstamped, len(lines))
+	}
+
+	// The start line is the server's when the runtime read it at the container's start: a line a
+	// peer forges carries the time the runtime read the line it was written in.
+	startPID := ""
+	switch {
+	case len(lines) == 0 || !lines[0].is("INF", startMessage) || !lines[0].agrees():
+		r.add(pod, PasswordRead, "its log does not begin with the server's start line, %q as nats-server's logger writes it at the time the "+
+			"container runtime read it, so the lines since the env roll may be gone (the API server returns only the newest log file, which the "+
+			"kubelet rotates)", "[INF] "+startMessage)
+	case lines[0].runtime.Before(s.pod.StartedAt.Add(-startSlack)) || lines[0].runtime.After(s.pod.StartedAt.Add(startDelay)):
+		r.add(pod, PasswordRead, "its log's first line, the server's start line, was read by the container runtime at %s, and its container "+
+			"started at %s, so it is no start line of that container and the lines since the env roll may be gone",
+			lines[0].runtime.Format(time.RFC3339Nano), s.pod.StartedAt.UTC().Format(time.RFC3339))
+	default:
+		startPID = lines[0].pid
+	}
+	forged := 0
+	for i := 1; i < len(lines); i++ {
+		if l := &lines[i]; l.ok && ((startPID != "" && l.pid != startPID) || !l.agrees()) {
+			l.ok, l.forged = false, true
+			forged++
+		}
+	}
+	if forged > 0 {
+		r.add(pod, Unknown, "its log holds %d line(s) in nats-server's form that its server did not write when they say: their process id is "+
+			"not the start line's, or their time is %s or more from the time the container runtime read them. A route peer writes such lines "+
+			"through its server name, which nats-server prints unquoted when the route closes (client.go:2125), and the auth service through "+
+			"its error text (auth_callout.go:460); the check reads none of them, and cannot clear the log", forged, stampSkew)
+	}
+
 	failed, credentialed := 0, 0
 	for _, l := range lines {
 		if !l.serversOwn() {
@@ -582,7 +645,7 @@ func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[stri
 		if l.level == "ERR" && strings.HasPrefix(l.message, failedReloadMessage) {
 			failed++
 		}
-		if credentialedURL.MatchString(l.message) {
+		if l.level == "INF" && credentialedURL.MatchString(l.message) {
 			credentialed++
 		}
 	}
@@ -621,25 +684,34 @@ func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[stri
 	}
 	window := lines[start:]
 
-	// A connection whose login the credential refused, by its id.
-	refused := map[string]bool{}
+	// Each connection that formed no route, by its id: the credential refused its login, or it
+	// closed before its peer named a server. A close line that names one means a route formed.
+	refused, named, unnamed := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	logins := map[string]int{}
 	var loginOrder []string
 	for _, l := range window {
-		match := routeAuthError.FindStringSubmatch(l.message)
-		if !l.ok || l.level != "ERR" || match == nil {
+		if !l.ok {
 			continue
 		}
-		refused[match[2]] = true
-		if host, _, err := net.SplitHostPort(match[1]); err == nil && ips[host] {
-			if logins[host] == 0 {
-				loginOrder = append(loginOrder, host)
+		if match := routeAuthError.FindStringSubmatch(l.message); l.level == "ERR" && match != nil {
+			refused[match[2]] = true
+			if host, _, err := net.SplitHostPort(match[1]); err == nil && ips[host] {
+				if logins[host] == 0 {
+					loginOrder = append(loginOrder, host)
+				}
+				logins[host]++
 			}
-			logins[host]++
+		}
+		if match := routeClosed.FindStringSubmatch(l.message); l.level == "INF" && match != nil {
+			if strings.Contains(match[2], remoteTag) {
+				named[match[1]] = true
+			} else {
+				unnamed[match[1]] = true
+			}
 		}
 	}
-	accepted, refusedFrom := map[string]int{}, map[string]int{}
-	var order, refusedOrder []string
+	accepted, refusedFrom, unnamedFrom := map[string]int{}, map[string]int{}, map[string]int{}
+	var order, noRouteOrder []string
 	for _, l := range window {
 		match := routeCreated.FindStringSubmatch(l.message)
 		if !l.ok || l.level != "INF" || match == nil {
@@ -653,27 +725,33 @@ func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[stri
 		if ips[host] || podLoopback[host] {
 			continue
 		}
-		if refused[match[2]] {
-			if refusedFrom[host] == 0 {
-				refusedOrder = append(refusedOrder, host)
+		rid := match[2]
+		if named[rid] || !(refused[rid] || unnamed[rid]) {
+			if accepted[host] == 0 {
+				order = append(order, host)
 			}
-			refusedFrom[host]++
+			accepted[host]++
 			continue
 		}
-		if accepted[host] == 0 {
-			order = append(order, host)
+		if refusedFrom[host]+unnamedFrom[host] == 0 {
+			noRouteOrder = append(noRouteOrder, host)
 		}
-		accepted[host]++
+		if refused[rid] {
+			refusedFrom[host]++
+		} else {
+			unnamedFrom[host]++
+		}
 	}
 	for _, host := range order {
 		r.add(pod, PasswordRead, "its log names %d route connection(s) with %s since it loaded authorization, and %s is no pod of the hub",
 			accepted[host], host, host)
 	}
-	for _, host := range refusedOrder {
-		r.add(pod, Unknown, "its log names %d route connection(s) with %s since it loaded authorization whose login the route credential refused, "+
-			"and %s is no pod of the hub: a refused login carries no password, but the log does not say which side opened a connection, and a "+
-			"process the hub dialed with the password can send a refused login of its own, so the check cannot clear %s; find what ran there, "+
-			"and treat the password as read unless it is accounted for", refusedFrom[host], host, host, host)
+	for _, host := range noRouteOrder {
+		r.add(pod, Unknown, "its log names %d route connection(s) with %s since it loaded authorization that formed no route (%d whose login the "+
+			"route credential refused, %d that closed before its peer named a server), and %s is no pod of the hub: one a peer opened carried no "+
+			"password, but the log does not say which side opened a connection, and on one the hub opened it sent the password before the peer "+
+			"named itself (route.go:2087-2094), so the check cannot clear %s; find what ran there, and treat the password as read unless it is "+
+			"accounted for", refusedFrom[host]+unnamedFrom[host], host, refusedFrom[host], unnamedFrom[host], host, host)
 	}
 	if split && len(loginOrder) > 0 {
 		var counts []string

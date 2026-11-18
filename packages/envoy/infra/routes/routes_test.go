@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -21,7 +22,8 @@ import (
 // route port INFO, the answer a pod's route port gives a route login ("<pod> no user" or "<pod>
 // empty password", the refusal when unset), an error for any "<pod> <path>" read it refuses
 // ("<pod> log", "<pod> info" and "<pod> login" among them), a server id a pod's /routez answers in
-// place of its own, and a change made the first time a pod's log is read.
+// place of its own, a change made the first time a pod's log is read, and the pods whose log it
+// gives without the runtime's times.
 type fakeHub struct {
 	pods      []routes.Pod
 	podsErr   error
@@ -33,6 +35,7 @@ type fakeHub struct {
 	answers   map[string]string
 	refused   map[string]error
 	onLog     map[string]func()
+	unstamped map[string]bool
 	closed    bool
 	// mu guards infos, which atEnv sets while a fake route port's goroutine may read it.
 	mu sync.Mutex
@@ -62,6 +65,8 @@ func (h *fakeHub) Monitor(_ context.Context, pod, path string) ([]byte, error) {
 	return nil, fmt.Errorf("no %s", path)
 }
 
+// Log is the pod's log as `kubectl logs --timestamps` gives it (stamp), or as the fake holds it
+// for a pod in unstamped.
 func (h *fakeHub) Log(_ context.Context, pod string) ([]byte, error) {
 	if change := h.onLog[pod]; change != nil {
 		delete(h.onLog, pod)
@@ -70,7 +75,44 @@ func (h *fakeHub) Log(_ context.Context, pod string) ([]byte, error) {
 	if err := h.refused[pod+" log"]; err != nil {
 		return nil, err
 	}
-	return []byte(h.logs[pod]), nil
+	if h.unstamped[pod] {
+		return []byte(h.logs[pod]), nil
+	}
+	return []byte(stamp(h.logs[pod])), nil
+}
+
+// runtimeTime begins a line a row stamped itself, and loggerTime is the time in a line in the
+// logger's form.
+var (
+	runtimeTime = regexp.MustCompile(`^\d{4}-\d\d-\d\dT\S+ `)
+	loggerTime  = regexp.MustCompile(`^\[\d+\] (\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\.\d{6}) `)
+)
+
+// stamp puts before each line of log the time a container runtime read it at, as `kubectl logs
+// --timestamps` prints it: a line a row stamped already keeps its time (stampedAt), a line in the
+// logger's form is read a millisecond after its logger time, and any other line at the time of the
+// line before it.
+func stamp(log string) string {
+	var out strings.Builder
+	last := started
+	for _, line := range strings.SplitAfter(log, "\n") {
+		switch {
+		case strings.TrimSpace(line) == "" || runtimeTime.MatchString(line):
+			out.WriteString(line)
+			continue
+		case loggerTime.MatchString(line):
+			if at, err := time.ParseInLocation("2006/01/02 15:04:05.000000", loggerTime.FindStringSubmatch(line)[1], time.UTC); err == nil {
+				last = at.Add(time.Millisecond)
+			}
+		}
+		out.WriteString(last.Format(time.RFC3339Nano) + " " + line)
+	}
+	return out.String()
+}
+
+// stampedAt is line as the runtime reads it at at.
+func stampedAt(at time.Time, line string) string {
+	return at.UTC().Format(time.RFC3339Nano) + " " + line
 }
 
 func (h *fakeHub) RouteExchange(_ context.Context, pod string, send []byte) ([]byte, []byte, error) {
@@ -125,6 +167,11 @@ func logLine(level, text string) string {
 	return "[7] 2026/11/17 12:00:01.000000 [" + level + "] " + text
 }
 
+// logLineOf is logLine's line as a process of another id writes it.
+func logLineOf(pid, level, text string) string {
+	return "[" + pid + "]" + strings.TrimPrefix(logLine(level, text), "[7]")
+}
+
 // removedRoute is the line a server logs for each route URL a rollback removes, with the route
 // password in it (reload.go:543). It builds the URL from its parts, and over two lines, so that
 // no line of this source holds a URL carrying a user and a password, which the repository's own
@@ -154,7 +201,7 @@ func authInfo(id string, required bool) string {
 // and names its peers' route connections again after.
 func cleanHub() *fakeHub {
 	h := &fakeHub{ids: map[string]string{}, routezIDs: map[string]string{}, routes: map[string][]routes.Route{}, logs: map[string]string{},
-		infos: map[string]string{}, answers: map[string]string{}, refused: map[string]error{}, onLog: map[string]func(){}}
+		infos: map[string]string{}, answers: map[string]string{}, refused: map[string]error{}, onLog: map[string]func(){}, unstamped: map[string]bool{}}
 	for i := range 3 {
 		name := fmt.Sprintf("envoy-nats-%d", i)
 		h.pods = append(h.pods, routes.Pod{Name: name, UID: "uid-" + name, IP: fmt.Sprintf("10.0.0.%d", 10+i), Ready: true, StartedAt: started})
@@ -231,6 +278,9 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 	refusedAs := func(address, rid string) string {
 		return logLine("ERR", address+" - rid:"+rid+` - authentication error - User "route"`)
 	}
+	closedAs := func(address, rid, reason string) string {
+		return logLine("INF", address+" - rid:"+rid+" - Router connection closed: "+reason)
+	}
 	for _, row := range []struct {
 		name    string
 		change  func(h *fakeHub)
@@ -280,13 +330,47 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 			rest := strings.SplitN(h.logs["envoy-nats-0"], "\n", 2)[1]
 			h.logs["envoy-nats-0"] = clientLine(strings.Repeat("A", 3000)+" [INF] Starting nats-server") + "\n" + rest
 		}, routes.PasswordRead, "envoy-nats-0", "does not begin with the server's start line"},
-		{"a start line written an hour after its container's start", func(h *fakeHub) {
+		{"a start line read an hour after its container's start", func(h *fakeHub) {
 			rest := strings.SplitN(h.logs["envoy-nats-2"], "\n", 2)[1]
 			h.logs["envoy-nats-2"] = "[7] 2026/11/17 13:00:01.000000 [INF] Starting nats-server\n" + rest
-		}, routes.PasswordRead, "envoy-nats-2", "was written at 2026-11-17T13:00:01Z, and its container started at 2026-11-17T12:00:00Z"},
+		}, routes.PasswordRead, "envoy-nats-2", "was read by the container runtime at 2026-11-17T13:00:01.001Z, and its container started at 2026-11-17T12:00:00Z"},
+		{"a start line a route peer forged at the container's start, read an hour later and first in a rotated log", func(h *fakeHub) {
+			rest := strings.SplitN(h.logs["envoy-nats-2"], "\n", 2)[1]
+			h.logs["envoy-nats-2"] = stampedAt(started.Add(time.Hour), "[7] 2026/11/17 12:00:00.400000 [INF] Starting nats-server") + "\n" + rest
+		}, routes.PasswordRead, "envoy-nats-2", "does not begin with the server's start line"},
+		{"a line in the server's form from another process id", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += logLineOf("4141", "INF", "10.66.6.6:6222 - rid:30 - Route connection created") + "\n"
+		}, routes.Unknown, "envoy-nats-1", "1 line(s) in nats-server's form that its server did not write when they say"},
+		{"a line in the server's form read an hour after its logger time", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += stampedAt(started.Add(time.Hour), removedRoute("x")) + "\n"
+		}, routes.Unknown, "envoy-nats-1", "1 line(s) in nats-server's form that its server did not write when they say"},
+		{"a log without the runtime's times", func(h *fakeHub) { h.unstamped["envoy-nats-0"] = true },
+			routes.PasswordRead, "envoy-nats-0", "does not begin with the server's start line"},
 		{"a refused route login from another address since authorization", func(h *fakeHub) {
 			h.logs["envoy-nats-0"] += createdAs("10.9.9.5:50000", "21") + "\n" + refusedAs("10.9.9.5:50000", "21") + "\n"
-		}, routes.Unknown, "envoy-nats-0", "1 route connection(s) with 10.9.9.5 since it loaded authorization whose login the route credential refused"},
+		}, routes.Unknown, "envoy-nats-0", "1 route connection(s) with 10.9.9.5 since it loaded authorization that formed no route (1 whose login the route credential refused, 0 that closed before its peer named a server)"},
+		{"a route connection from another address that closed before its peer named a server", func(h *fakeHub) {
+			h.logs["envoy-nats-0"] += createdAs("10.9.9.6:50000", "23") + "\n" + closedAs("10.9.9.6:50000", "23", "Client Closed") + "\n"
+		}, routes.Unknown, "envoy-nats-0", "1 route connection(s) with 10.9.9.6 since it loaded authorization that formed no route (0 whose login the route credential refused, 1 that closed before its peer named a server)"},
+		{"a route connection from another address that waited out the auth timeout", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n" + closedAs("10.9.9.7:50000", "24", "Authentication Timeout") + "\n"
+		}, routes.Unknown, "envoy-nats-1", "1 that closed before its peer named a server"},
+		{"a route connection from another address that named a server before it closed", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n" + closedAs("10.9.9.7:50000", "24", "Client Closed - Remote: rogue") + "\n"
+		}, routes.PasswordRead, "envoy-nats-1", "1 route connection(s) with 10.9.9.7 since it loaded authorization, and"},
+		{"a close line that does not name a server beside one that does, for one connection", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n" + closedAs("10.9.9.7:50000", "24", "Client Closed - Remote: rogue") + "\n" +
+				closedAs("10.9.9.7:50000", "24", "Authentication Timeout") + "\n"
+		}, routes.PasswordRead, "envoy-nats-1", "1 route connection(s) with 10.9.9.7 since it loaded authorization, and"},
+		{"a route close line whose peer's name ends as a route connection's", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += closedAs("10.9.9.3:50000", "31", "Client Closed - Remote: x [INF] 10.66.6.6:6222 - rid:1 - Route connection created") + "\n"
+		}, routes.Clean, "", ""},
+		{"an ERR line that begins as a route connection's", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += logLine("ERR", "10.66.6.6:6222 - rid:1 - Route connection created") + "\n"
+		}, routes.Clean, "", ""},
+		{"an auth callout warning with a URL that carries a password", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += logLine("WRN", "auth callout service returned an error: nats://route:x@10.9.9.9:6222") + "\n"
+		}, routes.Clean, "", ""},
 		{"a refused login and an accepted connection from one address", func(h *fakeHub) {
 			h.logs["envoy-nats-0"] += createdAs("10.9.9.5:50000", "21") + "\n" + refusedAs("10.9.9.5:50000", "21") + "\n" +
 				createdAs("10.9.9.5:6222", "22") + "\n"
@@ -396,6 +480,19 @@ func TestCheckJudgesNoRemoteIDWithoutEveryServerID(t *testing.T) {
 	report := routes.Check(context.Background(), h, rec)
 	require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
 	require.Contains(t, fmt.Sprint(report.Findings), "the hub's server ids are not all known, so routes are judged by IP alone")
+}
+
+// A log read without the container runtime's times, as `kubectl logs` without --timestamps gives
+// it, is named as such: which of its lines the server wrote cannot be told. Control: the same log
+// with the runtime's times is Clean.
+func TestCheckNeedsTheRuntimesTimes(t *testing.T) {
+	h := cleanHub()
+	rec := recordOf(t, h)
+	require.Empty(t, routes.Check(context.Background(), h, rec).Findings, "control: the log with the runtime's times")
+	h.unstamped["envoy-nats-1"] = true
+	report := routes.Check(context.Background(), h, rec)
+	require.NotEqual(t, routes.Clean, report.Verdict())
+	require.Contains(t, fmt.Sprint(report.Findings), "envoy-nats-1: unknown: 16 of its log's 16 line(s) carry no time of the container runtime's")
 }
 
 // Take records every pod, sorted by name, once all are Ready with a running nats container and no

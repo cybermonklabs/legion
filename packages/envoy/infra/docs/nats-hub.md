@@ -1155,11 +1155,13 @@ to `env`, and one taken later can follow a restart whose log holds none of the r
 `env` or `routes`. `routes check` reads, in one pass over the pods, each pod's IP from the API
 server, each server's `server_id` from its `/varz` and its routes from its `/routez` through a
 port-forward to 8222, its route port through a port-forward to 6222, and its nats container's
-log, then reads the pods again. It exits 0 when every rule below holds; 1 when one shows the
-password may be read; and 2 when it could not read all it needs, when authorization is not yet
-in force, when the mesh is not whole or the servers do not hold one password, when a route login
-from another address was refused, or when a pod changed during the check. It prints no password,
-since it never has one.
+log as `kubectl logs --timestamps` gives it, then reads the pods again. It exits 0 when every
+rule below holds; 1 when one shows the password may be read; and 2 when it could not read all it
+needs, when authorization is not yet in force, when the mesh is not whole or the servers do not
+hold one password, when a route connection from another address formed no route, when the log
+holds a line the server did not write, or when a pod changed during the check. It prints no
+password, since it never has one. So anything that can reach a pod's port 6222 can keep the
+check from reaching 0, though not make it pass.
 
 Every log rule reads only lines in the form nats-server's logger writes (`logger/log.go`: the
 process id, the date and time to the microsecond, the level), and matches a line's level and its
@@ -1168,6 +1170,20 @@ whole message, never a part of a line: a connection's lines carry text its peer 
 matched the end of a line could be met or tripped by any client. Measured in this change's
 review: a client's line ending in `[INF] Starting nats-server` passed a rotated log as whole, and
 one ending in a `Route connection created` line forced exit 1.
+
+A whole line in that form can still be another process's: nats-server prints a route peer's
+server name unquoted when the route closes (`Router connection closed: <reason> - Remote: %s`,
+`server/client.go:2125`), so a name that holds a newline writes the lines after it, and the auth
+callout prints its service's error text the same way (`server/auth_callout.go:460`). Measured in
+this change's review: before `authorization`, a route peer with no credential forged a `Removed
+route` line with a password in it, which forced exit 1; after it, a reader forged a start line
+timed at the container's start, and with the log cut at it the check said clean. So the check
+reads the time the container runtime read each line at, which no process in the pod sets, and a
+line in the logger's form is the server's only when it carries the start line's process id and
+its logger time is within 2 s of the runtime's. Any other is exit 2, and no rule reads it. A peer
+that guesses the process id and writes the current time passes that test; such a line can make
+the check stricter, and can turn exit 1 for that peer's own connections into exit 2, but cannot
+make it pass.
 
 - **Every route is the hub's own.** Every route's `ip` is one of the pod IPs and every `remote_id`
   another pod's `server_id`, and each pod has a route to each of its peers. A route's
@@ -1187,17 +1203,19 @@ one ending in a `Route connection created` line forced exit 1.
   and the `env` roll gives each new pod a new IP, so the logs of the pods it rolled first name
   the old IPs of the ones it rolled after. A log in which no reload loaded authorization is
   judged whole when the route port requires authorization, since the server then had it from its
-  start. A connection from another address whose login the credential refused (`authentication
-  error` on the same `rid`) is exit 2, not 1: a refused login carries no password, but the log
-  does not say which side opened a connection, and a process the hub dialed with the password can
-  send a refused login of its own on it (`server/client.go:2433` checks every CONNECT). Find what
-  ran at that address, and treat the password as read unless it is accounted for. Exit 1 there
-  would let the process authorization refuses force a rotation, whose `env` and `routes` applies
-  open the routes to it again.
+  start. A connection from another address that formed no route is exit 2, not 1: one whose
+  login the credential refused (`authentication error` on its `rid`), or one that closed before
+  its peer named a server, whose close line has no `- Remote:` (it closed at once, waited out the
+  auth timeout, or sent only part of a CONNECT). A connection a peer opens and that forms no route
+  carries no password, but the log does not say which side opened a connection, and on one the
+  hub opens it sends the password before the peer names itself (`server/route.go:2087-2094`), so
+  the check cannot clear it. Find what ran at that address, and treat the password as read unless
+  it is accounted for. Exit 1 there would let any process that reaches 6222 force a rotation,
+  whose `env` and `routes` applies open the routes to it again.
 - **The log reaches back to the `env` roll.** Each pod's `uid`, `restartCount` and `startedAt`
   are the ones `routes record` saved, its log begins with `Starting nats-server`
-  (`server/server.go:2295`), and that line's time, read as UTC, the zone of the hub's nats image,
-  is from 1 s before to 10 s after the container's `startedAt`. `kubectl logs` returns only the
+  (`server/server.go:2295`) in the logger's form, and the container runtime read that line from
+  1 s before to 10 s after the container's `startedAt`. `kubectl logs` returns only the
   latest log file, which the kubelet rotates at 10 MiB by default
   ([Logging architecture](https://kubernetes.io/docs/concepts/cluster-administration/logging/)),
   and the process this check looks for can rotate the earlier lines away, for example with failed
@@ -1219,9 +1237,10 @@ one ending in a `Route connection created` line forced exit 1.
   configuration` line can hold the route password whole: a password outside the minter's rule
   below is printed in it (`integer … is out of the range` with the value, or `error parsing route
   url` with the URL), and so is a start on that file, which exits 1. The check cannot tell which
-  failure printed it, so any failed reload counts. So does any line the server wrote of itself,
-  not of a connection, that holds a URL with a user and a password, anywhere in the log: a
-  rollback's `Removed route` lines (below) are such lines.
+  failure printed it, so any failed reload counts. So does any INF line the server wrote of
+  itself, not of a connection, that holds a URL with a user and a password, anywhere in the log:
+  a rollback's `Removed route` lines (below) are such lines. The auth callout's WRN lines, which
+  carry its service's error text, are not read for it.
 - **The hub holds one password.** A pod that started with a password its peers do not hold has
   routes to none of them, and their logs name its failed route logins (`authentication error -
   User "route"`). When a pod's routes do not reach all its peers and its log names such logins
@@ -1289,7 +1308,14 @@ refused route login from another address is exit 2; a client's lines meet no rul
 and a log rotated to begin at one fails; a rollback's `Removed route` lines fail; a record taken
 after `authorization` is refused; an empty password fails, and a stranger with the user `route`
 and no password joins that hub; a restart during the check fails; and a refused `/varz`, a
-rotated log and a restart since the record each fail.
+rotated log and a restart since the record each fail. A route peer's lines written through its
+server name before `authorization` are exit 2, not 1; a reader's start line written through its
+name and first in a cut log fails, whether it is timed at the container's start or now; three
+connections from other addresses that formed no route (closed at once, silent until the auth
+timeout, a partial CONNECT) are exit 2; a client's line naming a refusal of a held route with the
+password leaves exit 1; and a route peer whose name ends as a route connection's line passes. The
+staged servers' log lines are stamped with the time the test first saw each, as a container
+runtime stamps them.
 
 ### The tailnet hosts
 

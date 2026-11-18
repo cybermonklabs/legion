@@ -26,9 +26,9 @@ import (
 // fakeKubectl is a kubectl that answers from the files in $FAKE_KUBECTL_DIR, as the commands
 // Kubectl runs: `get statefulset`, `get pod <name>`, `port-forward pod/<name> ... :<port>`, which
 // prints the local port in port-<name>-<port> and then runs until killed, writing its PID to
-// pid-<name>-<port>, and `logs pod/<name> --container nats`. It appends every command line it is
-// given to calls, and refuses any other. It cuts its arguments joined into one string first, since
-// bash, unlike dash, cuts ${*#...} from each argument apart.
+// pid-<name>-<port>, and `logs pod/<name> --container nats --timestamps`. It appends every
+// command line it is given to calls, and refuses any other. It cuts its arguments joined into one
+// string first, since bash, unlike dash, cuts ${*#...} from each argument apart.
 const fakeKubectl = `#!/bin/sh
 dir="$FAKE_KUBECTL_DIR"
 args="$*"
@@ -42,7 +42,7 @@ case "$args" in
   echo "Forwarding from [::1]:$port -> $remote"
   echo $$ > "$dir/pid-$pod-$remote"
   exec sleep 300 ;;
-*" logs pod/"*" --container nats") pod=${args#* logs pod/}; pod=${pod%% *}; exec cat "$dir/log-$pod" ;;
+*" logs pod/"*" --container nats --timestamps") pod=${args#* logs pod/}; pod=${pod%% *}; exec cat "$dir/log-$pod" ;;
 esac
 echo "unexpected: $args" >&2
 exit 3
@@ -90,7 +90,7 @@ func fakeKubeHub(t *testing.T, h *fakeHub) (routes.Source, string) {
 		pod, err := json.Marshal(kubePod(p.Name, p.UID, p.IP, p.Ready, int(p.RestartCount), p.StartedAt))
 		require.NoError(t, err)
 		write("pod-"+p.Name+".json", pod)
-		write("log-"+p.Name, []byte(h.logs[p.Name]))
+		write("log-"+p.Name, []byte(stamp(h.logs[p.Name])))
 		name := p.Name
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, err := h.Monitor(r.Context(), name, r.URL.Path)
@@ -185,7 +185,7 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 		require.Contains(t, string(calls), "--context example-context --namespace envoy get pod "+p.Name+" --output json\n")
 		require.Contains(t, string(calls), "--context example-context --namespace envoy port-forward pod/"+p.Name+" --address 127.0.0.1 :8222\n")
 		require.Contains(t, string(calls), "--context example-context --namespace envoy port-forward pod/"+p.Name+" --address 127.0.0.1 :6222\n")
-		require.Contains(t, string(calls), "--context example-context --namespace envoy logs pod/"+p.Name+" --container nats\n")
+		require.Contains(t, string(calls), "--context example-context --namespace envoy logs pod/"+p.Name+" --container nats --timestamps\n")
 	}
 
 	var pids []int
@@ -252,7 +252,7 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 		src, dir := fakeKubeHub(t, h)
 		defer src.Close()
 		rec := recordOf(t, h)
-		require.NoError(t, os.WriteFile(filepath.Join(dir, "log-envoy-nats-0"), []byte(strings.SplitN(h.logs["envoy-nats-0"], "\n", 2)[1]), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "log-envoy-nats-0"), []byte(stamp(strings.SplitN(h.logs["envoy-nats-0"], "\n", 2)[1])), 0o600))
 		report := routes.Check(context.Background(), src, rec)
 		require.Equal(t, routes.PasswordRead, report.Verdict(), "findings: %v", report.Findings)
 		require.Contains(t, fmt.Sprint(report.Findings), "envoy-nats-0: password read: its log does not begin with the server's start line")
