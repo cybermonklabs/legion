@@ -163,10 +163,10 @@ func (block *namedBlock) nodeID() *string {
 
 // queueReplyParentMessageLock queues the lock of message id, the parent a reply names a block of,
 // `for no key update` as the first write of the reply's write phase, after its issue's owner
-// lock, the order the accept route takes them in, so the index of that parent the transaction
-// may queue (planReplyBlock) and the reply's own writes run under it. It is not FOR UPDATE: the
-// reply's insert then takes the row FOR KEY SHARE through its foreign key, which this lock does
-// not block.
+// lock, the order recordPendingMessageDelivery takes them in, so the index of that parent the
+// transaction may queue (planReplyBlock) and the reply's own writes run under it. It is not FOR
+// UPDATE: the reply's insert then takes the row FOR KEY SHARE through its foreign key, which this
+// lock does not block.
 func queueReplyParentMessageLock(b *store.WriteBatch, id string) {
 	b.Queue("", `select 1 from messages where id = $1 for no key update`, id)
 }

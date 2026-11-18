@@ -776,7 +776,7 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // When trees is true, visit is handed as content the markdown the block's text_tree is read
 // from, and "" otherwise. That markdown is blockTextContent of the block's text as the block
 // index stores it: the block's slice of the document's markdown, between the byte range the
-// document read itself gives for the block (docs.Service.TextWithBlocks), as refs.IndexBlocks
+// document read itself gives for the block (docs.Service.TextWithBlocks), as refs.PlanBlocks
 // cuts it. GET /api/v1/reference-targets has only that stored text to read a block's tree from,
 // so the coverage and the results reads take the same text through the same rule, and one block
 // answers one tree in all three reads, the whole stored text of a typed block in a quote included.

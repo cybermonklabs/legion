@@ -1411,15 +1411,15 @@ func modelBlockPath(path pmdoc.BlockPath) model.BlockPath {
 // The join comes after VerifyMark, not before it: VerifyMark waits for a mark whose append is
 // still in flight and re-reads the document on each of the room's updates (marks.go), and a
 // write joined before it would have the first of those reads take the fork under the document's
-// advisory lock (readFork, lockedHead) and freeze it, so the wait would read the same frozen
-// tree while holding the lock the awaited append waits on.
+// advisory lock (readFork, headUnderDocumentLock) and freeze it, so the wait would read the same
+// frozen tree while holding the lock the awaited append waits on.
 //
 // It comes before SnapshotVersion because that is the first call that takes the lock. Without
 // the join the version's capture takes it with no write joined (captureLiveTextAndAuthors,
-// lockedHead), and the transaction's first join - a comment's margin write (applyMargin), or
-// nothing at all on an ask, which pins its version over rooms that were never asked to store -
-// then asks for the flush while the transaction holds the lock every other process's append
-// waits on, so the flush is skipped and the other process's room is never stored
+// headUnderDocumentLock), and the transaction's first join - a comment's margin write
+// (applyMargin), or nothing at all on an ask, which pins its version over rooms that were never
+// asked to store - then asks for the flush while the transaction holds the lock every other
+// process's append waits on, so the flush is skipped and the other process's room is never stored
 // (roomQueries.ask). The quote branch needs no call: MarkQuote joins the write before anything
 // takes the lock.
 //
@@ -2097,10 +2097,11 @@ func (s *Service) registerStampedAskBlocks(ctx context.Context, room string, sta
 // answers ErrIssueClosed and records nothing, so a version that learned of the close there would
 // roll its transaction back and take the comment with it (Service.flushThrough). Decided first,
 // the transaction appends nothing of the room at all, and the read of the pool that owns loads is
-// exact: this transaction holds the document's advisory lock from the head it read (lockedHead),
-// so the store stands at that head and no append can move it (storedWithUpdates). The mark such
-// a version pins is the store's too: VerifyMark reads the same stored tree for it, so a mark
-// only the room holds is no anchor at all (closedIssueCommentAnchor).
+// exact: this transaction holds the document's advisory lock from the head it read
+// (headUnderDocumentLock), so the store stands at that head and no append can move it
+// (storedWithUpdates). The mark such a version pins is the store's too: VerifyMark reads the
+// same stored tree for it, so a mark only the room holds is no anchor at all
+// (closedIssueCommentAnchor).
 func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, actor *model.Actor) (renderedTree, authorCapture, error) {
 	tx, _ := txFromContext(ctx)
 	if write := joinedLiveWrite(ctx, room); write != nil {
