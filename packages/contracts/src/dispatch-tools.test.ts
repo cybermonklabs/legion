@@ -13,6 +13,7 @@ import {
   pathKeepsBytesOf,
   SEARCH_QUERY_MAX,
 } from "./dispatch-tools";
+import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-api";
 import { type SchemaApi, type SchemaNode, zodSchemaApi } from "./tool-schema";
 
 const schemaApi = zodSchemaApi(z);
@@ -394,6 +395,21 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ project: "INFRA", since: 1 }).success).toBe(false);
     // An empty key would send `GET /api/v1/projects//plans`, so it is refused like any other.
     expectNotAProjectKey(schema, [{ project: "infra" }, { project: "" }]);
+  });
+
+  // The description spells out the line `dispatch plans` prints, and so states the rating's scale
+  // twice: each rating out of the most, and the scale's two ends. `dispatch-tools.ts` types the
+  // numbers, since the dispatch command and the dashboard load it without the daemon's API
+  // module, and each statement is held here to the contract's scale, so a new scale fails here
+  // until the description states it.
+  test("dispatch_plans states the contract's rating scale", () => {
+    const description = specFor("dispatch_plans").description;
+    const outOf = [...description.matchAll(/<rating>\/(\d+)/g)].map((match) => Number(match[1]));
+
+    expect(outOf).toEqual([LEGION_PLAN_RATING_MOST, LEGION_PLAN_RATING_MOST]);
+    expect(description).toContain(
+      `A rating is ${LEGION_PLAN_RATING_LEAST} (the plan cost the work) to ${LEGION_PLAN_RATING_MOST} (the plan fit the work)`
+    );
   });
 
   test("dispatch_search rejects a one-character query and a limit above 50", () => {
