@@ -31,8 +31,9 @@ func (b *heldBackBody) send(part []byte) {
 // second transaction was refused SERVICE_BUSY once the request had been alive fifteen seconds,
 // though all 48 slots stood free and nothing would have waited for anything.
 //
-// The fifteen seconds are spent for real: the mark the bound is measured from is docs-internal
-// (callerRequestKey), so no hook backdates it from here.
+// The request is taken past the bound by its mark rather than by the clock: its second
+// transaction runs under the request's context marked as begun that long ago
+// (docs.CallerRequestSinceForTest), which is what the bound is measured from.
 func TestASecondTransactionTakesAFreeSlotPastTheRequestsWaitBound(t *testing.T) {
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	// A live caller's request has a Done channel; a context with none reads as the server's own
@@ -48,12 +49,12 @@ func TestASecondTransactionTakesAFreeSlotPastTheRequestsWaitBound(t *testing.T) 
 		t.Fatalf("roll the first transaction back: %v", err)
 	}
 	spent := docs.WriteWaitBound + 500*time.Millisecond
-	time.Sleep(spent)
+	later := docs.CallerRequestSinceForTest(request, spent)
 	free := served.writes.semaphore().TryAcquire(apiWriteLimit)
 	if free {
 		served.writes.semaphore().Release(apiWriteLimit)
 	}
-	second, err := served.begin(ctx)
+	second, err := served.begin(later)
 	t.Logf("%s into the request, with all %d slots free=%t: the second transaction answered %v", spent, apiWriteLimit, free, err)
 	if !free {
 		t.Fatalf("the test wanted every one of the %d slots free before the second transaction", apiWriteLimit)
@@ -61,7 +62,7 @@ func TestASecondTransactionTakesAFreeSlotPastTheRequestsWaitBound(t *testing.T) 
 	if err != nil {
 		t.Fatalf("a second transaction %s into the request was refused with every slot free: %v", spent, err)
 	}
-	if err := second.Rollback(ctx); err != nil {
+	if err := second.Rollback(later); err != nil {
 		t.Fatalf("roll the second transaction back: %v", err)
 	}
 }
@@ -101,72 +102,134 @@ func TestABodyThatArrivesSlowlyButSteadilyIsReadToItsEnd(t *testing.T) {
 	}
 }
 
+// deadlineRecorder is an answer's writer whose connection records every read deadline set on it
+// (http.ResponseController.SetReadDeadline), in the order they were set.
+type deadlineRecorder struct {
+	*httptest.ResponseRecorder
+	set []time.Time
+}
+
+func (d *deadlineRecorder) SetReadDeadline(at time.Time) error {
+	d.set = append(d.set, at)
+	return nil
+}
+
+// stoppingBody is a body whose parts arrive one a read, each a pause after the read asked for it,
+// and which then fails as a connection past its read deadline does (stoppedBody). It records when
+// each read began, and when each read that brought bytes returned them. The pause keeps every
+// deadline a read sets apart from the one before it, however coarse the clock.
+type stoppingBody struct {
+	parts    [][]byte
+	pause    time.Duration
+	began    []time.Time
+	returned []time.Time
+}
+
+func (b *stoppingBody) Read(p []byte) (int, error) {
+	b.began = append(b.began, time.Now())
+	if len(b.parts) == 0 {
+		return stoppedBody{}.Read(p)
+	}
+	time.Sleep(b.pause)
+	n := copy(p, b.parts[0])
+	if b.parts[0] = b.parts[0][n:]; len(b.parts[0]) == 0 {
+		b.parts = b.parts[1:]
+	}
+	b.returned = append(b.returned, time.Now())
+	return n, nil
+}
+
+func (b *stoppingBody) Close() error { return nil }
+
 // dispatch://INFRA-179, review 7. At the bounds the deployment runs with - no drainReadLimit - a
-// body that stops arriving is cut at its idle deadline and refused BODY_STALLED, and a body that
-// keeps arriving is read to its end though it runs past the 45 s the ceiling used to stand at
-// (docs.WriteRequestBound). With the idle deadline a minute ahead under that 45 s ceiling, every
-// rearm set the ceiling's instant, so the stalled body and the steady one were both cut 45 s in
-// and refused BODY_TOO_SLOW, and BODY_STALLED was unreachable at the deployed bounds.
+// write's body is read under an idle deadline bodyIdleLimit after its last bytes, which every read
+// that brings more moves on, beneath a ceiling bodyDrainLimit after its first read: a body that
+// stops arriving is refused BODY_STALLED, and one never silent for bodyIdleLimit is read on to
+// the ceiling, past the 45 s the ceiling used to stand at (docs.WriteRequestBound). With the idle
+// deadline a minute ahead under that 45 s ceiling, every rearm set the ceiling's instant, so a
+// stalled body and a steady one were both cut 45 s in and refused BODY_TOO_SLOW, and BODY_STALLED
+// was unreachable at the deployed bounds.
 //
-// Both bodies are messages over connections of their own, sent side by side so the run waits out
-// the longer alone: the stalled one sends its first four bytes and nothing more, the steady one
-// four bytes every 6 s, far inside the idle deadline, for 48 s in all.
-func TestAtTheDeployedBoundsAStalledBodyIsNamedAStallAndASteadyOneIsReadWhole(t *testing.T) {
+// The deadlines are read where the route sets them rather than waited out: a message is served in
+// process through its whole route, over a writer whose connection records every read deadline set
+// on it, which each writer the route wraps it in hands on to http.ResponseController (the access
+// log's, the compression layer's and the drain's Unwrap). Its body sends three parts a moment apart
+// and then fails as a connection past its deadline does. The ceiling is read the same way under an
+// idle deadline set past it: drainReadLimit moves the idle deadline alone, so every deadline the
+// route sets is then the ceiling's. TestABodyThatArrivesSlowlyButSteadilyIsReadToItsEnd and
+// TestARefusalOfACutBodyKeepsTheHeadersEveryAnswerCarries read and cut bodies over a socket.
+func TestAtTheDeployedBoundsABodysIdleDeadlineFollowsItsBytesUnderAMinutesCeiling(t *testing.T) {
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	if served.drainReadLimit != 0 {
 		t.Fatalf("drainReadLimit = %s, want the deployment's zero", served.drainReadLimit)
 	}
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
 	issue := createArtifactIssue(t, handler)
-	target := "/api/v1/issues/" + issue.Key + "/messages"
-	header := http.Header{}
-	header.Set("Content-Type", "application/json")
-	header.Set("X-Dispatch-User", "alice")
-	const part, pause = 4, 6 * time.Second
-	body := []byte(`{"body":"` + strings.Repeat("a", 25) + `"}`) // 36 bytes: nine parts, eight pauses
-	address := server.Listener.Addr().String()
-	started := time.Now()
-	stalled := sendPartOfBody(t, address, target, header, len(body), body[:part])
-	steady := sendPartOfBody(t, address, target, header, len(body), body[:part])
-	for _, held := range []*heldBackBody{stalled, steady} {
-		// Past the 45 s the ceiling stood at, so a run under those bounds reads their refusal.
-		if err := held.connection.SetDeadline(time.Now().Add(90 * time.Second)); err != nil {
-			t.Fatal(err)
+	// serve posts a message whose body stops after three parts, and answers the writer the route
+	// answered it through, the body's record of its reads, and when the request was sent.
+	serve := func(t *testing.T) (*deadlineRecorder, *stoppingBody, time.Time) {
+		t.Helper()
+		body := &stoppingBody{parts: [][]byte{[]byte(`{"body":"`), []byte("a"), []byte("a")}, pause: 20 * time.Millisecond}
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", body)
+		request.ContentLength = 100
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Dispatch-User", "alice")
+		writer := &deadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+		sent := time.Now()
+		handler.ServeHTTP(writer, request)
+		t.Logf("answered %d %s, under read deadlines set %v after the request was sent", writer.Code, strings.TrimSpace(writer.Body.String()), sinceEach(sent, writer.set))
+		if len(writer.set) == 0 {
+			t.Fatal("the route set no read deadline on the connection: a writer it wraps the connection's in does not hand on http.ResponseController's SetReadDeadline")
 		}
+		return writer, body, sent
 	}
-	sent := make(chan error, 1)
-	go func() {
-		for at := part; at < len(body); at += part {
-			time.Sleep(pause)
-			if _, err := steady.connection.Write(body[at : at+part]); err != nil {
-				sent <- err
-				return
+	t.Run("the idle deadline, moved on by every read that brings bytes", func(t *testing.T) {
+		writer, body, sent := serve(t)
+		if writer.Code != http.StatusServiceUnavailable || refusalCode(writer.Body.Bytes()) != "BODY_STALLED" || !strings.Contains(writer.Body.String(), bodyIdleLimit.String()) {
+			t.Errorf("a message whose body stopped arriving was answered %d %s, want 503 BODY_STALLED naming its %s idle deadline", writer.Code, writer.Body.String(), bodyIdleLimit)
+		}
+		if first, earliest, latest := writer.set[0], sent.Add(bodyIdleLimit), body.began[0].Add(bodyIdleLimit); first.Before(earliest) || first.After(latest) {
+			t.Errorf("the first read's deadline is %s after the request was sent, want the %s idle deadline from that read: between %s and %s",
+				first.Sub(sent), bodyIdleLimit, earliest.Sub(sent), latest.Sub(sent))
+		}
+		// One deadline as the first read begins, and one after each read that brought bytes.
+		if len(writer.set) != len(body.returned)+1 {
+			t.Fatalf("the route set %d read deadlines over %d reads that brought bytes, want one at the first read and one after each of those", len(writer.set), len(body.returned))
+		}
+		for read, at := range writer.set[1:] {
+			earliest, latest := body.returned[read].Add(bodyIdleLimit), body.began[read+1].Add(bodyIdleLimit)
+			if at.Before(earliest) || at.After(latest) || !at.After(writer.set[read]) {
+				t.Errorf("the deadline after read %d is %s after the request was sent, want it moved on to %s after that read's bytes: between %s and %s",
+					read+1, at.Sub(sent), bodyIdleLimit, earliest.Sub(sent), latest.Sub(sent))
 			}
 		}
-		sent <- nil
-	}()
-	refused, refusal := stalled.answer()
-	stalledFor := time.Since(started)
-	answered, answer := steady.answer()
-	steadyFor := time.Since(started)
-	if err := <-sent; err != nil {
-		t.Logf("the steady body's sender stopped: %v", err)
+	})
+	t.Run("the ceiling, read under an idle deadline past it", func(t *testing.T) {
+		served.drainReadLimit = 2 * bodyDrainLimit
+		t.Cleanup(func() { served.drainReadLimit = 0 })
+		writer, body, sent := serve(t)
+		if writer.Code != http.StatusServiceUnavailable || refusalCode(writer.Body.Bytes()) != "BODY_TOO_SLOW" || !strings.Contains(writer.Body.String(), bodyDrainLimit.String()) {
+			t.Errorf("a message whose body stopped arriving under an idle deadline past the ceiling was answered %d %s, want 503 BODY_TOO_SLOW naming the %s ceiling", writer.Code, writer.Body.String(), bodyDrainLimit)
+		}
+		ceiling := writer.set[0]
+		if earliest, latest := sent.Add(bodyDrainLimit), body.began[0].Add(bodyDrainLimit); ceiling.Before(earliest) || ceiling.After(latest) {
+			t.Errorf("the ceiling is %s after the request was sent, want %s from the first read: between %s and %s",
+				ceiling.Sub(sent), bodyDrainLimit, earliest.Sub(sent), latest.Sub(sent))
+		}
+		for read, at := range writer.set[1:] {
+			if !at.Equal(ceiling) {
+				t.Errorf("the deadline after read %d is %s after the request was sent, want it held at the ceiling, %s", read+1, at.Sub(sent), ceiling.Sub(sent))
+			}
+		}
+	})
+}
+
+// sinceEach is how long after since each of instants stands.
+func sinceEach(since time.Time, instants []time.Time) []time.Duration {
+	after := make([]time.Duration, len(instants))
+	for i, at := range instants {
+		after[i] = at.Sub(since)
 	}
-	t.Logf("drainTime %s: a body that stopped after %d bytes was answered %d %s after %s; a body sent %d bytes every %s was answered %d %s after %s",
-		served.drainTime(), part, refused.StatusCode, refusal, stalledFor.Round(time.Millisecond),
-		part, pause, answered.StatusCode, answer, steadyFor.Round(time.Millisecond))
-	if refused.StatusCode != http.StatusServiceUnavailable || refusalCode(refusal) != "BODY_STALLED" {
-		t.Errorf("a body that stopped arriving was answered %d %s after %s, want 503 BODY_STALLED at its idle deadline", refused.StatusCode, refusal, stalledFor)
-	} else if stalledFor < served.drainTime() {
-		t.Errorf("a body that stopped arriving was refused BODY_STALLED after %s, before its %s idle deadline", stalledFor, served.drainTime())
-	}
-	if steadyFor < docs.WriteRequestBound {
-		t.Fatalf("the steady body was answered %s in, inside the %s the ceiling stood at, so this run says nothing about a body that outlasts it", steadyFor, docs.WriteRequestBound)
-	}
-	if answered.StatusCode != http.StatusCreated {
-		t.Errorf("a body never silent past %s was answered %d %s after %s, want 201", pause, answered.StatusCode, answer, steadyFor)
-	}
+	return after
 }
 
 // dispatch://INFRA-179, review 6's finding 7. A request holds a slot of the write limit while it

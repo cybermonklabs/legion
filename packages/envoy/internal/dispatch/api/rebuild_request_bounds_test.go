@@ -112,13 +112,15 @@ func TestTheRebuildRouteRunsItsRebuildUnderTheWholeWriteBound(t *testing.T) {
 }
 
 // The rebuild route is a POST under routeHandler, so its body is read under the same idle
-// deadline as every other write's (holdWriteLimit, deadlinedBody): at the bounds the deployment
-// runs with - no drainReadLimit - a rebuild whose body stops arriving is answered 503
-// BODY_STALLED once bodyIdleLimit has passed since its last bytes, and the rebuild is never asked
+// deadline as every other write's (holdWriteLimit, deadlinedBody), which is bodyIdleLimit where
+// the deployment runs, with no drainReadLimit: a rebuild whose body stops arriving is answered 503
+// BODY_STALLED once that deadline has passed since its last bytes, and the rebuild is never asked
 // for. Mounted outside the drain, the route's read of the body has no deadline and waits for as
 // long as the client keeps the connection open: here, the 30 s after which the client gives up
-// (sendPartOfBody) with no answer at all.
-func TestARebuildWhoseBodyStallsIsAnsweredBodyStalledAtTheDeployedIdleBound(t *testing.T) {
+// (sendPartOfBody) with no answer at all. That holds at any idle deadline, so the stall is waited
+// out under one of a second, as the other stalled bodies' tests wait it out
+// (TestARefusalOfACutBodyKeepsTheHeadersEveryAnswerCarries).
+func TestARebuildWhoseBodyStallsIsAnsweredBodyStalledAtItsIdleDeadline(t *testing.T) {
 	handler, served, watch, artifact := newRebuildWatchServer(t)
 	if served.drainReadLimit != 0 {
 		t.Fatalf("drainReadLimit = %s, want the deployment's zero", served.drainReadLimit)
@@ -126,6 +128,7 @@ func TestARebuildWhoseBodyStallsIsAnsweredBodyStalledAtTheDeployedIdleBound(t *t
 	if served.drainTime() != bodyIdleLimit {
 		t.Fatalf("the server reads a body under an idle deadline of %s, want the deployed %s", served.drainTime(), bodyIdleLimit)
 	}
+	served.drainReadLimit = time.Second
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	header := http.Header{}
@@ -142,8 +145,8 @@ func TestARebuildWhoseBodyStallsIsAnsweredBodyStalledAtTheDeployedIdleBound(t *t
 	if refused.StatusCode != http.StatusServiceUnavailable || refusalCode(refusal) != "BODY_STALLED" {
 		t.Fatalf("a rebuild whose body stopped arriving was answered %d %s after %s, want 503 BODY_STALLED at its idle deadline", refused.StatusCode, refusal, elapsed)
 	}
-	if elapsed < bodyIdleLimit {
-		t.Fatalf("a rebuild whose body stopped arriving was refused BODY_STALLED after %s, before its %s idle deadline", elapsed, bodyIdleLimit)
+	if elapsed < served.drainTime() {
+		t.Fatalf("a rebuild whose body stopped arriving was refused BODY_STALLED after %s, before its %s idle deadline", elapsed, served.drainTime())
 	}
 	if asked := watch.rebuilds(); len(asked) != 0 {
 		t.Fatalf("the route asked for %d rebuilds of a request whose body never arrived, want none", len(asked))

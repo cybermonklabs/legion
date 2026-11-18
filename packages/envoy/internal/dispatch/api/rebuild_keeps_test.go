@@ -70,14 +70,19 @@ func readKept(t *testing.T, database *store.Store, artifactID string, marks map[
 }
 
 // Every rebuild keeps the document's block ids, its open anchors and its margin records: the
-// dashboard's (a history near the decode cap, rebuilt from its own text), one from supplied
-// markdown over that history, and one of a history that does not load, rebuilt from its latest
-// version. The document holds two anchored comments, each with a reply, an anchored ask and a
-// decision block (an ask block), and after each rebuild it reads the same block ids - but for the
-// paragraph the supplied markdown rewrote, and, of a history that does not load, the list items no
-// row records - the same marks in the same blocks, and the same margin records. Before, the
-// dashboard's rebuild left the marks map empty, and the two from markdown gave every untyped block
-// a fresh id and dropped every anchor mark and the margin with it.
+// dashboard's (a history near a cap, rebuilt from its own text), one from supplied markdown over
+// that history, and one of a history that does not load, rebuilt from its latest version. The
+// document holds two anchored comments, each with a reply, an anchored ask and a decision block
+// (an ask block), and after each rebuild it reads the same block ids - but for the paragraph the
+// supplied markdown rewrote, and, of a history that does not load, the list items no row records -
+// the same marks in the same blocks, and the same margin records. Before, the dashboard's rebuild
+// left the marks map empty, and the two from markdown gave every untyped block a fresh id and
+// dropped every anchor mark and the margin with it.
+//
+// The history near a cap is one whose scan total the used-up hook spent, with its chain of
+// characters at the end of the last paragraph. The rebuild builds a history that loads the same
+// way whichever cap it stands near (docs' RebuildDocument), and the scan total is reached in a few
+// thousand items where the decode cap takes a million.
 func TestEveryRebuildPathKeepsTheDocumentsBlockIDsAnchorsAndMarginRecords(t *testing.T) {
 	var broken *invalidLoadOnceStore
 	handler, database, _ := newTestServer(t, testServerOptions{
@@ -136,8 +141,8 @@ func TestEveryRebuildPathKeepsTheDocumentsBlockIDsAnchorsAndMarginRecords(t *tes
 			var recorded map[string]bool
 			switch index {
 			case 0, 1:
-				if near := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact+"/_test/near-decode-cap", nil, "alice"); near.Code != http.StatusNoContent {
-					t.Fatalf("near-decode-cap hook: status=%d body=%.300s", near.Code, near.Body.String())
+				if used := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifact+"/_test/used-up", nil, "alice"); used.Code != http.StatusNoContent {
+					t.Fatalf("used-up hook: status=%d body=%.300s", used.Code, used.Body.String())
 				}
 				if index == 1 {
 					text := decodeBody[artifactText](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifact+"/text", nil, "alice"))

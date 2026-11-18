@@ -819,3 +819,12 @@ func (s *Service) RoomCapsForTest() (rooms, connections int) {
 func PeerWriteTimeoutForTest() time.Duration {
 	return peerWriteTimeout
 }
+
+// CallerRequestSinceForTest marks ctx as the context of an HTTP caller's request that began ago,
+// as WithCallerRequest marks one that begins now, so a test - this package's or api's - can run a
+// request's transaction past the server's bound on its waits (WriteWaitBound, BoundWriteWait),
+// which is measured from that mark, without waiting the bound out in real time: the rule under
+// test is the arithmetic, and a request that began the bound ago has none of it left.
+func CallerRequestSinceForTest(ctx context.Context, ago time.Duration) context.Context {
+	return context.WithValue(ctx, callerRequestKey{}, time.Now().Add(-ago))
+}

@@ -8,15 +8,6 @@ import (
 	"time"
 )
 
-// callerRequestSince is a caller's request context that began at some point in the past, which is
-// what the bound is measured from (WithCallerRequest, BoundWriteWait). A test uses it rather than
-// waiting out WriteWaitBound in real time: the rule under test is the arithmetic - a request is
-// refused once it has spent the bound waiting, wherever it spent it - and a request that began
-// the bound ago has none of it left.
-func callerRequestSince(parent context.Context, ago time.Duration) context.Context {
-	return context.WithValue(parent, callerRequestKey{}, time.Now().Add(-ago))
-}
-
 // A caller's write that has spent the server's whole-write bound is refused with nothing of it
 // applied, wherever it spent it: the pool has room here and the write waits for nothing, so what
 // refuses it is the bound on the work. It is the other half of the wait bound's promise - the
@@ -34,7 +25,7 @@ func TestACallersWriteIsRefusedOnceItHasSpentTheServersWholeWriteBound(t *testin
 
 	request, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	err := cancelWrite(callerRequestSince(request, WriteRequestBound), service, artifactID, grantWriteHeading, "Written", nil)
+	err := cancelWrite(CallerRequestSinceForTest(request, WriteRequestBound), service, artifactID, grantWriteHeading, "Written", nil)
 	if err == nil {
 		t.Fatal("the write committed after it had spent the server's whole-write bound")
 	}
@@ -66,7 +57,7 @@ func TestACallersWriteIsRefusedOnceItHasSpentTheServersWaitBound(t *testing.T) {
 	// The request's own context is alive throughout: nothing of the caller's ends this wait.
 	request, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	err := cancelWrite(callerRequestSince(request, WriteWaitBound), service, artifactID, grantWriteHeading, "Written", nil)
+	err := cancelWrite(CallerRequestSinceForTest(request, WriteWaitBound), service, artifactID, grantWriteHeading, "Written", nil)
 	if err == nil {
 		t.Fatal("the write committed while the pod's only load slot was held")
 	}
@@ -143,7 +134,7 @@ func TestAWriteOfTheServersOwnIsNotRefusedByTheWaitBound(t *testing.T) {
 		waitsThroughAHeldSlot(t, context.Background(), grantWriteHeading, "Written")
 	})
 	t.Run("a continuation detached from its request", func(t *testing.T) {
-		detached := context.WithoutCancel(callerRequestSince(context.Background(), WriteWaitBound))
+		detached := context.WithoutCancel(CallerRequestSinceForTest(context.Background(), WriteWaitBound))
 		waitsThroughAHeldSlot(t, detached, "Written", "Rewritten")
 	})
 }
