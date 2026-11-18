@@ -132,7 +132,10 @@ jobs:
       # reads its own stack's database", and the rows of replace-blocks-guard.test.ts that need a
       # server. Each reads LEGION_TEST_PG_DSN and skips without it. They need a login role that
       # may create databases: psql-session.test.ts and replace-blocks-guard.test.ts each make a
-      # database of their own and drop it `with (force)`. They need a database the DSN names:
+      # database of their own and drop it with e2e/psql.ts's dropDatabase, which needs no
+      # superuser: it ends the login's own sessions on that database and drops it without FORCE,
+      # since FORCE refuses a login that is not a superuser while an autovacuum worker is attached
+      # (dropDatabase's doc comment says why). They need a database the DSN names:
       # harness-stacks.test.ts runs `select 1` on it, and replace-blocks-guard.test.ts takes it
       # for the shared one its guard refuses. They need no extension, as psql-session.test.ts's
       # head says. psql is on the runner already.
