@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach } from "bun:test";
+import { afterEach, beforeEach } from "bun:test";
 import path from "node:path";
 
 /**
@@ -15,7 +15,7 @@ import path from "node:path";
  * test that never ends in CI therefore holds the step until the job's own limit cancels the job:
  * nothing in the log fails, and a job cancelled at its limit can lose its log altogether.
  *
- * The watch is told when each file begins and when each test begins and ends, and judges by its
+ * The watch is told, at each test, which file it is in and when it begins and ends, and judges by its
  * own clock: a test still running {@link PER_TEST_BOUND_MS} after it began, or no test beginning
  * that long after the last one ended, is reported with the file, the test's place in it and the
  * processes under `bun test`, and every one of them is killed. The time between `beforeEach` and
@@ -63,14 +63,19 @@ function tell(event: string): void {
   watch.stdin.flush();
 }
 
-/** Each test's place in its file, counting from 1 the tests that run there. */
+/** The test file the last test ran in, and that test's place in it, counting from 1 the tests
+ * that ran there. A hook of a preload is the whole run's, not a file's: its `beforeAll` runs once,
+ * before the first file. So the file is read at each test, from `Bun.main`, which names the file
+ * whose test is running. */
+let file = "";
 let place = 0;
 
-beforeAll(() => {
-  place = 0;
-  tell(`file\t${path.relative(process.cwd(), Bun.main)}`);
-});
 beforeEach(() => {
+  if (Bun.main !== file) {
+    file = Bun.main;
+    place = 0;
+    tell(`file\t${path.relative(process.cwd(), file)}`);
+  }
   place += 1;
   tell(`start\t${place}`);
 });

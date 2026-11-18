@@ -6,8 +6,8 @@ import { createInterface } from "node:readline";
  * blocks the thread Bun's own timers run on cannot hold it too.
  *
  * Arguments: the pid of `bun test` and the bound in ms. On its standard input, one event a line:
- * `file\t<path>` when a test file begins, `start\t<place>` and `end\t<place>` when that file's test
- * at that place begins and ends. Each event restarts one timer of the bound. When the timer fires
+ * `file\t<path>` before the first test of a file begins, `start\t<place>` and `end\t<place>` when
+ * that file's test at that place begins and ends. Each event restarts one timer of the bound. When the timer fires
  * and `bun test` is still the process it was, the watch writes what was running, kills every
  * process under `bun test` and then `bun test` itself, and exits 1. When its input closes, the run
  * is over: it writes the slowest test it saw and exits.
@@ -88,9 +88,7 @@ function fire(): void {
     ? `${file}: test ${place} of the file (counting from 1 the tests that ran in it) is still running ${seconds(waited)} after it began`
     : place > 0
       ? `${file}: no test began ${seconds(waited)} after test ${place} of the file ended (its hooks, or the next file's module body and beforeAll)`
-      : file !== ""
-        ? `${file}: no test began ${seconds(waited)} after the file began (its beforeAll)`
-        : `no test file began ${seconds(waited)} after bun test started (the first file's module body)`;
+      : `no test began ${seconds(waited)} after bun test started (the first file's module body and beforeAll)`;
   const under = descendants(bunPid);
   const lines = [
     `${process.env.GITHUB_ACTIONS === "true" ? "::error title=per-test bound::" : "error: "}${what}; the per-test bound is ${seconds(boundMs)} (test/per-test-bound.ts), and bun test is killed.`,

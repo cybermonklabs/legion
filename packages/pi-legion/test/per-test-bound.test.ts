@@ -54,6 +54,14 @@ async function run(files: Record<string, string>, env: Record<string, string> = 
   return { code: child.exitCode, signal: child.signalCode, dir, output: stdout + stderr };
 }
 
+/** A file of two tests that end at once, run before the file a row is about: the watch has to
+ * name that row's file, and count its tests from 1 again. */
+const QUICK = [
+  'import { test } from "bun:test";',
+  'test("ends at once", () => {});',
+  'test("ends at once too", () => {});',
+].join("\n");
+
 test(
   "a test that blocks the thread Bun's timers run on is named, its file and place, once it runs past the bound",
   async () => {
@@ -62,7 +70,8 @@ test(
     expect(Bun.spawnSync(["mkfifo", fifo]).exitCode).toBe(0);
     const { code, signal, output } = await run(
       {
-        "blocked.test.ts": [
+        "a-quick.test.ts": QUICK,
+        "b-blocked.test.ts": [
           'import { readFileSync } from "node:fs";',
           'import { test } from "bun:test";',
           'test("ends at once", () => {});',
@@ -74,7 +83,7 @@ test(
     );
     expect({ code, signal }).toEqual({ code: null, signal: "SIGKILL" });
     expect(output).toContain(
-      "error: blocked.test.ts: test 2 of the file (counting from 1 the tests that ran in it) is still running 5 s after it began; the per-test bound is 5 s (test/per-test-bound.ts), and bun test is killed."
+      "error: b-blocked.test.ts: test 2 of the file (counting from 1 the tests that ran in it) is still running 5 s after it began; the per-test bound is 5 s (test/per-test-bound.ts), and bun test is killed."
     );
   },
   ROW_MS
@@ -84,9 +93,7 @@ test(
   "a test file whose module body never settles is named by the end of the file before it",
   async () => {
     const { code, signal, output } = await run({
-      "first.test.ts": ['import { test } from "bun:test";', 'test("ends at once", () => {});'].join(
-        "\n"
-      ),
+      "a-quick.test.ts": QUICK,
       // A module body is no test: Bun's per-test timeout never starts for it.
       "stuck.test.ts": [
         'import { test } from "bun:test";',
@@ -96,7 +103,7 @@ test(
     });
     expect({ code, signal }).toEqual({ code: null, signal: "SIGKILL" });
     expect(output).toContain(
-      "error: first.test.ts: no test began 5 s after test 1 of the file ended (its hooks, or the next file's module body and beforeAll)"
+      "error: a-quick.test.ts: no test began 5 s after test 2 of the file ended (its hooks, or the next file's module body and beforeAll)"
     );
   },
   ROW_MS
@@ -106,7 +113,8 @@ test(
   "a test Bun's own timeout ends inside the bound is Bun's to report, and the watch names the slowest test",
   async () => {
     const { code, signal, output } = await run({
-      "settles.test.ts": [
+      "a-quick.test.ts": QUICK,
+      "b-settles.test.ts": [
         'import { test } from "bun:test";',
         'test("ends at once", () => {});',
         'test("waits on a promise that never settles", () => Promise.withResolvers<void>().promise, 1_000);',
@@ -116,7 +124,7 @@ test(
     expect(output).toContain("this test timed out after 1000ms");
     expect(output).not.toContain("the per-test bound is");
     expect(output).toMatch(
-      /per-test bound: the slowest test was test 2 of settles\.test\.ts, 1 s of the 5 s bound/
+      /per-test bound: the slowest test was test 2 of b-settles\.test\.ts, 1 s of the 5 s bound/
     );
   },
   ROW_MS
