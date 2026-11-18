@@ -360,11 +360,11 @@ Each item below names a task and where its code is, then notes on it.
   `delivery/reconcile_backfill.go`'s `backfillRuns` fills older runs' `head_branch` and `event` once, and deploy runs' `created_at` once more under its own step;
   a pull request ships with the earliest-finishing successful production deploy whose run GitHub created after its merge (`delivery/containment.go`, `DeliveryRun.Created`)
 
-- **Where Legion's time goes**: `internal/dispatch/legion/`, `api/settings_legion.go`, `api/legion_board.go`
+- **Where Legion's time goes**: `internal/dispatch/legion/`, `api/settings_legion.go`, `api/legion_board.go`, `api/v2_infra979.go`
 
-  A project's Legion daemon is the one whose `GET /legion/v1/state` Dispatch reads (`store.go`, `GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon`, with no route listing every project's).
+  A project's Legion daemon is the one whose `GET /legion/v1/state` Dispatch reads (`store.go`, `GET`, `PUT` and `DELETE /api/v2/projects/{key}/legion/daemon`, and the deprecated `/api/v1/projects/{key}/legion/daemon`, with no route listing every project's): rows of the INFRA-979 tree (`v2Infra979Rows`), which keep their v1 shape and answer at `/api/v2` as at `/api/v1`.
   `sampler.go` reads each configured daemon's state every minute, one replica at a time under the `legion-state` lease, and records what moved (`state.go`, migration `20261103170923_legion_state`), with the newest row of each field kept in `legion_current` by a trigger in the same transaction (migration `20261117022936_legion_current`), which the sampler's write, the board and the metrics read rather than the whole history;
-  `api/legion_board.go` serves `GET /api/v1/projects/{key}/legion/board` and the `/ws/live` `legion` view from those records, and `metrics/` computes from them the four Legion delivery metrics, which no route serves: that package is here for the evals of dispatch://INFRA-2916 to call, and only tests call it today; no dashboard page draws either
+  `api/legion_board.go` serves `GET /api/v2/projects/{key}/legion/board` (and the deprecated `GET /api/v1/projects/{key}/legion/board`, one row of the INFRA-979 tree in v1's shape) and the `/ws/live` `legion` view from those records, and `metrics/` computes from them the four Legion delivery metrics, which no route serves: that package is here for the evals of dispatch://INFRA-2916 to call, and only tests call it today; no dashboard page draws either
 
 - **`issue.deployed`: a merged pull request reached production**: `internal/dispatch/delivery/deployed.go`
 
@@ -853,7 +853,10 @@ A quote that spans top-level siblings stays unpinned.
 each row's id and index and each cell's id, row, column, the opening words of the header drawn above it and its own, every one placed by the walk that places blocks for the block route (`pmdoc.BlockPathsAndTableRows`;
 `pmdoc.TableRows` for a document a room holds, which builds no path), so the two routes cannot disagree and the list stays one entry per table.
 The walk lays each table out once, in document order, on the one budget of span cells a render of the document spends (`maxSpanCells`, `tableGrid`), so a cell is listed under the header `GET .../text` draws above it, a table past the budget with its spans adding nothing, and tables a browser pasted with spans filling that budget cost one request one budget, not one each.
-`GET .../text` returns the full-document Proof-state token and the document's latest version number, or `null` when it has none (the live markdown beside it and that version are two unsynchronised reads, in both directions; `token` is the concurrency primitive).
+`GET .../text` returns the full-document Proof-state token and a `version`: the newest version whose stored markdown is the markdown it answers, with `unsettled: false`, so a review naming that version approves the text the reader got.
+Where no version stores that markdown (edits a room holds that no version holds yet), `version` is the newest version, or `null` for a document with none, and `unsettled` is `true`.
+The version is read once the text is rendered, by that markdown (`api.versionOfText`), so a version another session writes between the two stores other text and is never named over it; the match is the markdown alone, since the token also covers inline marks the markdown leaves out, and a comment anchored after a version changes the token and writes no version.
+`GET /api/v2/artifacts/{id}?include=text` answers the same `version` and `unsettled`, the latter `null` on a row read without `include=text`, and `token` stays the concurrency primitive.
 The server resolves the block when it creates a quote or browser-mark anchor;
 `envoy-dispatch backfill-anchor-blocks` fills legacy anchors only when their cached quote has one current match.
 `GET /api/v1/artifacts/{id}/blocks/{block_id}` places any one block (the document read's tree, or a rendering cached under the stored head when no fork or room holds it):
@@ -3101,14 +3104,23 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept up to 20 labels.
   Dispatch trims labels, preserves case, removes case-insensitive duplicates, and returns `400 LABELS_INPUT` for blank or over-40-character labels;
   every label update emits `issue.updated` with its labels.
+  An import through the default project adds `repo:<owner>/<repo>` (`repoLabelPrefix`) once the caller's labels have met those limits:
+  it is Dispatch's record of the issue's source repository, not the caller's label, so neither the 40 characters nor the 20 bind it, and a repository name of any length imports (R14 of dispatch://INFRA-4071/spec).
+  The issue's own `repo:` label is the one equal, case-insensitively, to `repo:` and the `<owner>/<repo>` of one of its `https://github.com/<owner>/<repo>/issues/<n>` links (`ownRepoLabel`; the web label editor's `ownRepoLabelKey` reads the same rule);
+  any other `repo:` label, one a caller set among them, is an ordinary label.
+  A `labels` replacement keeps the issue's own `repo:` label when it sends it back, past both limits, and holds every other label to them;
+  every label is still judged before the issue is answered missing or closed, so a bad one answers `400` first (`/api/v2` answers a missing issue `404 ISSUE_NOT_FOUND` before it reads the body):
+  a replacement naming a `repo:` label first reads which one is the issue's own (`heldOwnRepoLabel`; a missing issue owns none), and judges the set again against the issue its row lock reads.
   `PATCH` also takes `labels_add` instead of `labels` (both together are `400 LABELS_INPUT`):
-  the labels it names are merged, under the issue's row lock, into the labels the issue holds when the write commits, normalized as above and held to the same 20, so a label another writer added after the caller read the issue survives.
+  the labels it names are normalized as above and merged, under the issue's row lock, into the labels the issue holds when the write commits, which stay as they are, so a label another writer added after the caller read the issue survives;
+  the merged labels other than the issue's own `repo:` label are held to the same 20.
   `PATCH` takes `expected_sequence` too, the issue's `last_seq` the caller read:
   the write is refused `409 ISSUE_CHANGED` when the issue's last event is no longer that one.
   The Legion daemon's hand-over writes `status: todo` with both, so a person's change after its read is never overwritten;
   a Dispatch that predates them also predates lenient bodies and refuses each by name (`400 INVALID_JSON`), which the daemon rides out until Dispatch is deployed.
   Dispatch now ignores a member a route does not declare (`decodeJSON`), so a later member whose loss would change what a write does ships as a new route, never as a member.
-  `GET /api/v1/issues?label=<label>` is repeatable, normalizes filter labels identically, and case-insensitively matches every supplied label.
+  `GET /api/v1/issues?label=<label>` and the `/api/v2` issue lists' `label=` are repeatable, normalize filter labels identically, and case-insensitively match every supplied label;
+  a value that starts with `repo:` may run to 145 characters (`repo:`, an owner of 39, `/`, a name of 100: GitHub's limits), so a long-named repository's issues stay filterable.
 
 - A reply to an open ask (`ask_id` set on `POST /api/v1/issues/{key}/comments` or `POST /api/v1/artifacts/{id}/comments`) records `turn` (`comments.turn`, migration 0028): who holds the turn after it.
   A human author's reply always stores `agent` whatever the request says;
@@ -3133,7 +3145,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   One whose newest thread reply is the reply its last hand-back answered (`handed_back_reply_id`) is waiting on the human, and so is one nobody has replied to;
   otherwise the newest comment's `turn` decides.
   The newest reply is the one that committed last:
-  `comments.created_at` defaults to `clock_timestamp()` (migration 0065), the moment its insert runs, and both comment inserts (`createCommentFor`, `replyComment`) leave it to the default and run once their transaction holds the owner row.
+  `comments.created_at` defaults to `clock_timestamp()` (migration 0065), the moment its insert runs, and both comment inserts (`writeComment`, `replyComment`) leave it to the default and run once their transaction holds the owner row.
   The old default, `now()`, was the transaction's start, which sorted a reply that began first but waited for the row before one that committed while it waited;
   an older binary still serving during a rollout names no `created_at` either, so the default orders its replies too.
   The hand-back reads that reply under the same owner row, so a reply that inserts after the hand-back sorts after the reply it recorded and decides the turn, however early its own transaction began.
@@ -3689,15 +3701,19 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the reason is null with every other status.
 
 - The Dispatch API describes itself.
-  `internal/dispatch/api/routes_table.go` is the one list of the API's routes, the `/api/v1` routes and `GET /metrics` (`apiRoute{routeRow, Scope}`:
-  the five columns a row declares — `Method`, `Pattern`, `Auth` one of `any`, `bearer`, `Description` and `Handler` — embedded, and beside them `Scope`, the write class the row takes from `writeClasses`, empty on a `GET` row.
-  The class stands outside the row because Go leaves no field out of a positional composite literal and a `GET` row declares no class);
-  `Register` mounts that table and `GET /api/v1` serves it to any authenticated caller as `{routes: [{method, path, auth, description}], docs: "skills/dispatch/SKILL.md"}` sorted by path then method.
-  No route Dispatch serves answers a caller with no credential but `GET /auth/start`, `GET /auth/callback`, `/healthz`, `/livez` and the dashboard's files: every other route refuses such a caller, with one refusal at either origin (`DISPATCH_SERVER_URL`'s and `DISPATCH_OUTSIDE_ORIGIN`'s), and sent as `HEAD` or `OPTIONS` refuses it too or answers `404` or `405`.
-  None grants access by the caller's network address, or takes the origin a request came to from `X-Forwarded-Host` rather than its `Host` (`routes`' `TestEveryRouteNeedsACredentialButTheNamedOnes` and `TestNoRouteGrantsAccessByNetworkAddress`, over `routes.Process(routes.New(...), health)` with no outside origin and with one, walked at each origin it answers at).
-  A new route is a new row (and its line in `testdata/routes.txt`, written with `-update`), and a mutating one is a new line in `writeClasses` or it is not served at all (Security, the project check).
-  An unknown path under `/api`, `/v1`, `/auth`, `/ws`, `/healthz`, `/livez` or `/metrics`, in any case (`/API/V1`, `/metrics/`), is `404 {"code":"NOT_FOUND","error":"no route for GET /v1/issues","hint":"GET /api/v1, with a credential, lists every route"}` from `routes/router.go`, decided before any dashboard lookup, so an API caller never receives the SPA shell (`routes`' `TestNoVariantOfAServerRouteIsTheDashboard`).
-  `GET /api/v1/agents` is readable by any authenticated caller (a session picks a message target by the `capabilities` it advertises);
+  `internal/dispatch/api/routes_table.go` is the one table of both versions of the API and of `GET /metrics` (`routes()`, its row types in `routes_versions.go`), and `register` mounts one `apiRoute` for each version a row serves:
+  the `routeRow` whole, the `Version` it is mounted under, `ReadScope`, and on a `/api/v1` mount its `Successor`, the `/api/v2` route its `Link` header names:
+  a `v1Row`'s own, the `/api/v2` mount of a row served in both versions, or a test hook's `/api/v2/_test` path.
+  `/api/v2` is the version to call, from the first `legion-envoy` release that carries pull request #4274, and `/api/v1` is deprecated and ends at `DISPATCH_API_V1_END` (`cmd/dispatch/README.md`, "Required configuration").
+  A `routeRow` (each group's `v2<Group>Rows`, in `api/v2_<group>.go`) names every fact a wrapper reads as a column — `Method`, a version-free `Pattern`, `Auth` one of `public`, `any`, `bearer`, `Description`, `Handler`, `Versions`, the shape columns (`Resource`, `Kind`, `Key`, `TimeFields`, `Position`, `CrossProject`), `Query`, `Body`, `Shape`, `Refusals`, `List`, `OAuthScopes`, `Authorities`, `Scope` (its write class), `ProjectOf`, `SessionPath`, `IDs` and the keyed facts — and is served at `/api/v2` and, unless its `Versions` is `onlyV2`, at `/api/v1` too, so a row a later change adds is served in both versions by one declaration.
+  A `v1Row` (`v1Rows`) is a route of `/api/v1` as it stood when `/api/v2` began, a positional literal of its five columns and its `Successor`, the `/api/v2` route that answers for it;
+  its write class, scopes, ids, shape and keyed facts stand beside the table in the side maps (`writeClasses`, `routeScopes`, `idRoutes`, `routeShapes`, `keyedReplays`, `answerHoldsSecret`, `keyedUploads`), which `v1Route` copies into the same columns, so a wrapper reads one field whichever kind of row declared the route.
+  Public `GET /api/v1` serves the `/api/v1` routes as `{routes: [{method, path, auth, scopes, description}], docs: "skills/dispatch/SKILL.md"}`, and public `GET /api/v2` serves the `/api/v2` routes as `{docs, items, total, limit, offset}`, each item with the shape columns a client reads beside those five, both sorted by path then method.
+  A new route is a new `routeRow` of its group and a new line in `testdata/routes.txt`, and a mutating one names its write class or it is not served at all (Security, the project check);
+  a new `v1Row` fails `TestAV1OnlyRowOutsideTheFrozenListFails`, since `/api/v1` alone serves one.
+  An unknown path under `/api/v2` is `404 {"code":"NO_ROUTE","error":"no route for GET /api/v2/issue","hint":"GET /api/v2 lists every route"}`, and one under `/api`, `/v1`, `/auth`, `/ws`, `/healthz`, `/livez` or `/metrics` outside it, in any case (`/API/V1`, `/metrics/`), is `404 {"code":"NOT_FOUND","error":"no route for GET /v1/issues","hint":"GET /api/v1, with a credential, lists every route"}`, both from `routes/router.go`, decided before any dashboard lookup, so an API caller never receives the SPA shell (`routes`' `TestNoVariantOfAServerRouteIsTheDashboard`).
+
+- `GET /api/v1/agents` is readable by any authenticated caller (a session picks a message target by the `capabilities` it advertises);
   the issue-less `POST /api/v1/agents/{session_id}/messages` and `GET /api/v1/agents/{session_id}/messages` need the `person` scope, since a person writing to a session is writing to someone else's conversation.
   `GET /api/v1/agents/known?id=<id>&id=<id>...` (`api/agents_known.go`) answers which of 1 to `contracts.KnownSessionsMax` (100) session ids Dispatch holds any record of, `{sessions: [{session_id, title}]}` in the order asked, so a `dispatch://agent/<session id>` reference links where that conversation exists, an ended session's included, and not where no agent ever held the id.
   Each id is at most `knownSessionIDMax` bytes, which is `text.MaxTargetBytes` (2048): a session reference's target id is the session id itself (`text.TargetID`), so text names no longer one, and a longer id is `400 INVALID_QUERY`.
@@ -3705,6 +3721,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   `GET /api/v1/agents/{session_id}/artifacts` (`listAgentArtifacts` in `api/agent_artifacts.go`) lists the newest `agentArtifactsListMax` (100) files and images of the session's conversation, newest first (`created_at`, then `id`), each as the read by slug answers it with its versions, which are read for those rows alone; an older file is not listed and is still read by its slug.
   It is what the dashboard's reference picker opens under a session's row to address one as `dispatch://agent/<session id>/artifact/<slug>`.
   A conversation's files are part of the conversation, so it too needs the `person` scope and opens with `actingPerson`, admitting exactly the callers `GET /api/v1/agents/{session_id}/messages` admits (`agent_artifacts_list_test.go` compares the two caller by caller).
+
+- No route Dispatch serves answers a caller with no credential but `GET /auth/start`, `GET /auth/callback`, `/healthz`, `/livez` and the dashboard's files: every other route refuses such a caller, with one refusal at either origin (`DISPATCH_SERVER_URL`'s and `DISPATCH_OUTSIDE_ORIGIN`'s), and sent as `HEAD` or `OPTIONS` refuses it too or answers `404` or `405`.
+  None grants access by the caller's network address, or takes the origin a request came to from `X-Forwarded-Host` rather than its `Host` (`routes`' `TestEveryRouteNeedsACredentialButTheNamedOnes` and `TestNoRouteGrantsAccessByNetworkAddress`, over `routes.Process(routes.New(...), health)` with no outside origin and with one, walked at each origin it answers at).
 
 - `GET /api/v1/dashboard/builds` (any authenticated caller, `api/dashboard_builds.go`) answers `{serving, live}`:
   `serving` is the entry chunk (`/assets/index-*.js`) of the dashboard build this process serves (`api.Deps.DashboardEntry`, which `cmd/dispatch` takes from its boot's `dashboard.Publish`;
@@ -4346,18 +4365,20 @@ A read-only broker token holds neither, and its one scope, `read`, is no scope a
 The shared agent token and a Kubernetes service-account token hold neither.
 `GET /api/v1/whoami` answers `scopes` for every caller, `[]` for one that holds none.
 
-Each route's scopes stand beside the table in `api/routes_table.go`'s `routeScopes`, keyed by `"<method> <pattern>"` and stamped onto `apiRoute.OAuthScopes`, which `GET /api/v1` and `envoy-dispatch routes` both carry;
-a name in that map that is no row of the table refuses to mount (`scopedRoutesNotMounted`), as an unclassed mutating row does.
-`api.gateRouteScopes` is the gate: `register` wraps every row `routeScopes` names in it, ahead of the keyed, project and session layers, and the first scope the credential lacks, in the order the row names them, is `403 OAUTH_SCOPE_REQUIRED` naming that scope, under `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` (RFC 6750 section 3.1).
+A `/api/v1` row's scopes stand beside the table in `api/routes_table.go`'s `routeScopes`, keyed by `"<method> <pattern>"`, and a `/api/v2` row names its own in its `OAuthScopes` column;
+either is stamped onto `apiRoute.OAuthScopes`, which `GET /api/v1`, `GET /api/v2` and `envoy-dispatch routes` carry.
+A name in that map that is no row of the table refuses to mount (`scopedRoutesNotMounted`), as an unclassed mutating row does.
+`api.gateRouteScopes` is the gate: `register` wraps every route that names a scope in it, ahead of the keyed, project and session layers, and the first scope the credential lacks, in the order the row names them, is `403 OAUTH_SCOPE_REQUIRED` naming that scope, under `WWW-Authenticate: Bearer error="insufficient_scope", scope="<scope>"` (RFC 6750 section 3.1).
+A `/api/v2` row also names the scope one value of a request needs, a state, a body member or a query value (`Authorities`), which `api.gateV2Authorities` enforces with the same refusal once the decoder has read the request and before the handler runs.
 A handler restates no scope; `api.actingPerson` builds the person it acts for, with the agent beside them.
 Three checks cannot sit at that gate and answer the same refusal from where they can:
 answering an ask of kind `approval` needs `approve`, read inside the transaction under the ask's row lock, since an ask's kind is known only once its row is read (`missingScopeError`);
 the claim's `{"force": true}` needs `person` of a caller the route itself admits whatever its scopes (`requireCallerScope`, `api/issue_claim.go`);
 and the live socket's `agent` view needs `person`, read at the upgrade, answering `OAUTH_SCOPE_REQUIRED` on the subscription id with no challenge header, since a frame carries no HTTP header.
 
-A read-only token reaches the routes that `api/routes_table.go`'s `readScopeRoutes` lists, today `GET /api/v1/projects/{key}/architecture` alone, and no other.
+A read-only token reaches the routes that `api/routes_table.go`'s `readScopeRoutes` lists, today `GET /api/v1/projects/{key}/architecture` and `GET /api/v2/projects/{key}/architecture`, and no other.
 The list stands beside `routeScopes` and is not a value of it, because a scope there is one the caller must hold and no person holds `read`.
-`routes()` stamps it onto `apiRoute.ReadScope`, and `GET /api/v1`, the OpenAPI document and the reference generated from it do not carry it.
+`routes()` stamps it onto `apiRoute.ReadScope`, and neither index, neither OpenAPI document nor the reference generated from them carries it.
 `register` refuses to mount a table whose list names anything but a GET row it mounts (`readRoutesNotMountedAsGET`), so a route added later stays closed to such a token until someone lists it.
 `api.refuseReadOnlyToken` is the gate, and it is the outermost check of every row:
 `register` wraps every row in it outside `gateRouteScopes` and every layer inside that, and inside the drain and `varyOnDisplayTrees` (`routeHandler`), and puts it on `GET /ws/live` just inside `decideBrokerToken`, before the upgrade (`liveSocketHandler`).
@@ -4382,7 +4403,7 @@ without that test an agent its person narrowed to `person` alone could carry an 
 `POST /api/v1/messages/{id}/deliveries/{attempt}/accept` refuses a message whose author carries an act, `409 ACCEPT_WRITTEN_BY_AGENT`, so such a message reaches the session as a card naming the agent and never as words the person typed.
 
 A credential that names one project writes that project and nothing else, and every write is decided in one place.
-Each mutating row of the route table declares what its write belongs to (`api/routes_table.go`'s `writeClasses`, stamped onto `apiRoute.Scope`;
+Each mutating row of the route table declares what its write belongs to (a `/api/v2` row in its `Scope` column, a `/api/v1` row in `api/routes_table.go`'s `writeClasses`, each stamped onto `apiRoute.Scope`;
 a `GET` row declares nothing, and a mutating row that declares nothing fails `TestEveryMutatingRouteIsClassed` and panics `Register` rather than being served unjudged).
 The four classes are *a project's* (the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue), *a project the body names* (the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled), *the calling session's* (an agent conversation's own artifact and messages, the two routes a session answers its own delivery on, and the caller-private `me` rows) and *the deployment's* (the project create, the repository-to-project map, the delivery settings and session groups, the Legion setting, the broadcast, and the credential and machine-login decisions).
 `Register` wraps every mutating route in `api.withinProjectScope`, `api.withinSessionScope` and `api.writeNeedsASignedInPerson` (`api/project_scope.go`), which run after the caller is resolved and before the handler, outside the keyed-write layer and the upload's spool, so a refused write claims no idempotency key and costs no body.
@@ -5861,12 +5882,17 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 ## Keyed Dispatch writes
 
 Every Dispatch write has one keyed path (INFRA-258, after the IETF `Idempotency-Key` draft and Google AIP-155).
-A caller names the intent behind a `POST` or `PATCH` with the request header `Idempotency-Key` (`contracts.IdempotencyKeyHeader`), the same on every retry of that intent and new for every new one:
+A caller names the intent behind a `POST` or `PATCH`, and on `/api/v2` behind a `PUT` or `DELETE` too, with the request header `Idempotency-Key` (`contracts.IdempotencyKeyHeader`), the same on every retry of that intent and new for every new one:
 the dashboard mints one per press and the agents' client one per command, and both retry under it by one rule (`retriesUnderKey` in `packages/contracts`):
 a failed fetch, an attempt silent too long, a 5xx, a 408, a 429 and a `409 KEY_IN_FLIGHT`, none of which says whether the first attempt ran.
 The key is optional on every route, and no route requires it;
 a write without one runs as it always did, unkeyed, logged at DEBUG only, since the Legion daemon's outbox and scripts send such writes.
-`PUT` and `DELETE` are idempotent already and take no key.
+On `/api/v1` a `PUT` and a `DELETE` are idempotent already and take no key, so no `/api/v1` answer changes.
+On `/api/v2` `keyedMethod` keys every write method of a route the rules of `/api/v2` bind, so a repeated `PUT` or `DELETE` answers as its first did;
+the INFRA-979 tree's rows and the test hooks keep `/api/v1`'s rule at either version (`apiRoute.v2Bound`).
+The fingerprint holds the route's whole pattern (`writeRequestFields`), so one key sent to a `/api/v1` route and then to its `/api/v2` route is two requests under one key, `422 KEY_REUSED`.
+A `/api/v2` `PUT` whose whole body equals the object's present state and fields, sent by the caller the object records as having set them (any caller, for a follower, a repository mapping or an architecture source, which record no setter), answers `200` with the object and writes nothing, no row, event or delivery (`putChangesNothing`, `api/put_unchanged_v2.go`);
+every `/api/v2` `PUT` answers `200` with the object, the follower `PUT` included, which `/api/v1` answers `204`.
 A key is 1 to 128 (`IDEMPOTENCY_KEY_MAX`) letters, digits, `.`, `_`, `:` and `-`, bare or as a structured-field string in double quotes;
 any other value, or the header sent twice, is `400 KEY_INVALID` (`IDEMPOTENCY_KEY_INVALID`).
 
@@ -5876,7 +5902,7 @@ Another tab can sign someone else in in place, and a retry can go out on the new
 the page drops the presser's writes on that answer.
 A caller that resolves to nobody (a lapsed cookie) is passed on to the `401` written further in, the keyed layer's for a keyed write and the handler's for any other, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
 
-`keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every `POST` and `PATCH` route, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
+`keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every route `keyedMethod` keys, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
 `login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.
 The row holds a SHA-256 of the method, the route pattern, its path values, the query, the media type and the body (a multipart body with its boundary masked, since a client mints a boundary per attempt), so a repeat is told from a reuse:
 
@@ -5891,7 +5917,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
   So a repeat of a large upload whose first attempt still runs is never written to disk.
   A repeat whose body runs past the route's limit gets the route's `413` from the layer, with no handler run;
   an `Expect: 100-continue` repeat gets `409 KEY_IN_FLIGHT` at once with nothing read.
-  A fresh upload to a closed or missing issue (`POST /api/v1/issues/{key}/artifacts`) is refused as its handler would refuse it (`409 ISSUE_CLOSED` for a closed one) before its body is spooled, keyed or not, and claims no key (`refuseUploadToAClosedIssue`, mounted ahead of the layer).
+  A fresh upload to a closed or missing issue (`POST /api/v1/issues/{key}/artifacts`, `POST /api/v2/issues/{key}/artifacts`) is refused as its handler would refuse it (`409 ISSUE_CLOSED` for a closed one) before its body is spooled, keyed or not, and claims no key (`refuseUploadToAClosedIssue`, mounted ahead of the layer).
   That refusal stands in for the handler, so it answers only a request whose handler would run - a fresh key, one past its window, an abandoned one:
   a repeat under a key the layer answers itself (`requestKeyAnswersItself`:
   a stored answer, a first still running, a write that committed and lost its answer) goes on to the layer whatever the issue's state now, so an upload that landed before the issue closed is replayed its `201`.
@@ -5943,7 +5969,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
 - The handler answers on a writer that holds its answer (`keyedAnswer`) until the row has it.
   A 2xx or a 4xx is stored and the row finished in one statement;
   a 5xx, a 401 (a session that lapsed mid-write), a 408, a 429 and a panic release the key, so the next attempt runs the handler again - unless the request had already committed something (below).
-  One route keeps no answer at all: `POST /api/v1/me/agent-tokens`, whose answer carries the plaintext token, which `request_keys` would otherwise hold for 24 hours beside `agent_tokens`' hash.
+  One route keeps no answer at all, at either version: the mint of a personal agent token, `POST /api/v1/me/agent-tokens` and `POST /api/v2/me/agent-tokens`, whose answer carries the plaintext token, which `request_keys` would otherwise hold for 24 hours beside `agent_tokens`' hash.
   A repeat of a keyed mint that minted is `409 KEY_COMMITTED` once the first has finished (`409 KEY_IN_FLIGHT` while it still runs), never a replay of the token, and no second token is minted;
   a mint refused with a 4xx commits nothing, so its key is released and a repeat runs it again.
   A route whose answer holds a credential is the one exception to "a 2xx or a 4xx is stored and replayed", and the mint is the one such route.
@@ -5952,7 +5978,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
 
 - Every transaction a keyed request commits that wrote - one holding the `ROW EXCLUSIVE` lock an `INSERT`, `UPDATE`, `DELETE` or `MERGE` takes on a table other than `request_keys` - sets the row's `committed_at` in that same transaction (`markRequestKeyCommitted`, through `store.WithBeforeCommit`, the pool's hook), so the key knows the write landed even when its answer never made it into the row;
   a lock-only `SELECT … FOR UPDATE` marks nothing, and a COMMIT refused after the mark leaves none.
-  `TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks` (`keyed_write_guard_test.go`) walks the copy-lock graph from every `POST` and `PATCH` route and fails the build on a write outside the shared pool's transactions, the one way a write could miss the mark.
+  `TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks` (`keyed_write_guard_test.go`) walks the copy-lock graph from every route `register` keys (`keyedMethod`) and fails the build on a write outside the shared pool's transactions, the one way a write could miss the mark.
   It follows `go` statements, Go callbacks (an `errgroup` or `WaitGroup` function, `time.AfterFunc`) and `select` arms into what they call, treats only `goDetached` as detached, and reads a `select` of a SQL function a migration defines to write (`embeddings_enqueue`, `user_threads_record`, `delivery_change_log` and the triggers that call them) as a write.
   A repeat that finds a marked row in flight past its lease, or released after a 5xx or a panic, is `409 KEY_COMMITTED` (`IDEMPOTENCY_KEY_COMMITTED`) at once, with the echo and no `Retry-After`:
   `the write under Idempotency-Key "k" (POST /path) landed, but Dispatch lost its
@@ -5966,7 +5992,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
 - A write that also mutates foreign state keeps its own recovery point ("Implementing Stripe-like Idempotency Keys in Postgres"):
   it commits what it made into the row in its own transaction (`bindRequestKeyRecovery`), and a repeat that finds the point is answered by its route's `keyedReplay` rather than from the stored bytes or a `KEY_COMMITTED`, however its first request ended (finished, lapsed, or released after a 5xx):
   whatever delivery is still owed is resumed first, then what it made is read again, under `201` and `Idempotency-Replayed: ?1`.
-  Four routes do: the single-session send and the broadcast (below), the issue message (`POST /api/v1/issues/{key}/messages`), and a comment (`POST /api/v1/issues/{key}/comments` and `POST /api/v1/artifacts/{id}/comments`), whose replay resumes every mention whose latest attempt is pending under a lapsed claim, under that attempt's own number (so its dedupe key is the same and the stream drops a frame that landed), then answers the comment with its mentions and deliveries in the first answer's shape, read fresh, keeping from the stored answer only its `advice` and `ask_waiting_on`, and only when that answer was a 2xx; the issue message does the same.
+  Four routes do, at each version they are served at: the single-session send and the broadcast (below), the issue message (`POST /api/v1/issues/{key}/messages`), and a comment (`POST /api/v1/issues/{key}/comments` and `POST /api/v1/artifacts/{id}/comments`), whose replay resumes every mention whose latest attempt is pending under a lapsed claim, under that attempt's own number (so its dedupe key is the same and the stream drops a frame that landed), then answers the comment with its mentions and deliveries in the first answer's shape, read fresh, keeping from the stored answer only its `advice` and `ask_waiting_on`, and only when that answer was a 2xx; the issue message does the same.
   The layer replays the answer; the delivery code decides what is still owed.
   A repeat only resumes owed deliveries sooner: the delivery sweep ("The delivery sweep", below) makes each of them whether anyone asks again or not.
 

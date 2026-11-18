@@ -893,40 +893,88 @@ recorded by any process in `github_rate_limits` (then GitHub is not asked), is
 
 ## Routes
 
-The routes of the API are one table, `api/routes_table.go` (`routes()`): the `/api/v1` routes and
-`GET /metrics`. `Register` mounts it and `GET /api/v1` serves it to any authenticated caller as
-`{routes: [{method, path, auth, scopes, description}], docs}`
-sorted by path then method, `scopes` left out of a route that needs none. Add a route by adding a
-row — never a `mux.HandleFunc` line — and write `api/testdata/routes.txt` again (`go test ./internal/dispatch/api
--run TestRouteIndexListsEveryRouteSortedByPathThenMethod -args -update`). `auth` is
-`any` (user or bearer) or
+Both versions of the API, and `GET /metrics`, are one table, `api/routes_table.go` (`routes()`, its row types in
+`api/routes_versions.go`): `Register` mounts one `apiRoute` for each version a row serves.
+`/api/v2` is the version to call, from the first `legion-envoy` release that carries pull request
+#4274; `/api/v1` is deprecated and ends at `DISPATCH_API_V1_END` (README, "Required
+configuration"). A `routeRow` (the `v2<Group>Rows` of each `api/v2_<group>.go`) is written once,
+with a version-free pattern and every fact as a named column — resource, kind, key, time fields,
+position field, cross-project, query and body types, answer shape, refusals, list bounds,
+`OAuthScopes`, `Authorities`, write class, ids, and the keyed facts — and is served at `/api/v2`
+and, unless its `Versions` is `onlyV2`, at `/api/v1` too, so a row a later change adds is served
+in both versions by one declaration. A `v1Row` (`v1Rows`) is a route of `/api/v1` as it stood when
+`/api/v2` began, at its literal pattern, its facts in the side maps beside the table
+(`routeScopes`, `writeClasses`, `idRoutes`, `routeShapes`, `keyedReplays`, `answerHoldsSecret`,
+`keyedUploads`), and names the `/api/v2` route that answers for it (`Successor`, written with
+`successorIs` or `deletedFor`); `/api/v1` alone serves it, and
+`TestAV1OnlyRowOutsideTheFrozenListFails` refuses one `testdata/v1-only-routes.txt` does not hold.
+Add a route as a `routeRow` of its group — never a `v1Row` and never a `mux.HandleFunc` line — and
+rewrite `testdata/routes.txt` (`go test ./internal/dispatch/api -run
+'^TestRouteIndexListsEveryRouteSortedByPathThenMethod$' -update`). The shape test
+(`TestTheV2TableKeepsTheOneShape`) refuses a `/api/v2` row that breaks the parent issue's shape
+rules or puts an action word in its path, and leaves out the rows `infra979Rows` lists, the
+INFRA-979 tree's, which keep their `/api/v1` handler and shape at the same path under `/api/v2`.
+`GET /api/v1` (public) serves the `/api/v1` routes as
+`{routes: [{method, path, auth, scopes, description}], docs}`, `scopes` left out of a route that
+needs none, and `GET /api/v2` (public) serves the `/api/v2` routes as
+`{docs, items, total, limit, offset}`, each item with every member present (`scopes` `[]` for
+none) and the columns a client reads to call it: `resource`, `kind`, `key`, `time_fields`,
+`position`, `list` and `cross_project`. Both sort by path then method, and
+`envoy-dispatch routes` prints the first, `envoy-dispatch routes --version 2` the second.
+`auth` is `public`, `any` (user or bearer) or
 `bearer`; it describes the check the handler makes, the handler still enforces it. Every route
 needs a credential but sign-in, `/healthz`, `/livez` and the dashboard's files, at either origin
 and as `HEAD` or `OPTIONS` too, and none trusts the caller's network address or takes its origin
 from `X-Forwarded-Host` (`routes`' `TestEveryRouteNeedsACredentialButTheNamedOnes` and
 `TestNoRouteGrantsAccessByNetworkAddress`, over the process `routes.Process` builds, with no
 outside origin and with one, at each origin). The OAuth
-scopes a route needs stand beside the table in `routeScopes`, keyed by `"<method> <pattern>"`,
-which `routes()` stamps onto `apiRoute.OAuthScopes`: a positional row literal would make every
-one of the 151 rows carry a sixth value, and most rows need no scope. A name in that map which is
+scopes a `v1Row` needs stand beside the table in `routeScopes`, keyed by `"<method> <pattern>"`,
+which `routes()` stamps onto `apiRoute.OAuthScopes`, and a `routeRow` names its own in
+`OAuthScopes`, and the scope one value of a request needs in `Authorities`, which
+`gateV2Authorities` enforces after the decoder and before the handler. A name in that map which is
 no row of the table refuses to mount (`scopedRoutesNotMounted`), as an unclassed mutating row
-does. `register` gates every row that map names (`gateRouteScopes`) ahead of the keyed, project
-and session layers, so no handler restates a scope, and `envoy-dispatch routes` prints
-each route's `scopes` as `GET /api/v1` does. Beside that map, `readScopeRoutes` lists the routes
-a read-only broker token may call, today `GET /api/v1/projects/{key}/architecture` alone.
+does. `register` gates every route that names a scope (`gateRouteScopes`) ahead of the keyed,
+project and session layers, so no handler restates a scope, and `envoy-dispatch routes` prints
+each route's `scopes` as its index does. Beside that map, `readScopeRoutes` lists the routes
+a read-only broker token may call, today `GET /api/v1/projects/{key}/architecture` and
+`GET /api/v2/projects/{key}/architecture`.
 `routes()` stamps it onto `apiRoute.ReadScope`, a listed name that is not a mounted GET row
-refuses to mount (`readRoutesNotMountedAsGET`), and neither `GET /api/v1` nor the OpenAPI document
+refuses to mount (`readRoutesNotMountedAsGET`), and neither index nor either OpenAPI document
 carries it. `register` wraps every row in `refuseReadOnlyToken`, outside `gateRouteScopes`, so a
-route added later stays closed to such a token until it is listed. An unknown path
-under a server root (`/api`, `/v1`, `/auth`, `/ws`, `/healthz`, `/livez`, `/metrics`, in any case), and a known path asked with a
-method its route does not serve, is answered by `routes/router.go` with
+route added later stays closed to such a token until it is listed.
+
+Every `/api/v2` route but the INFRA-979 tree's reads its query and body through one decoder
+(`api/decode_v2.go`) from the types its row declares: a query key it does not declare is
+`400 QUERY_KEY_UNKNOWN` (`{code, error, key, declared}`) before any lookup or write, a body
+member it does not declare is ignored, and no `/api/v2` handler reads the raw query
+(`TestNoV2HandlerReadsTheRawQuery`). Every list answers `{items, total, limit, offset}` within its
+row's `List` bounds (`INVALID_LIMIT`, `INVALID_OFFSET`), the global event log with
+`total: null`; a log reads `after` and `before` in its one position field (`POSITION_INVALID`).
+Every refusal is `{code, error}` with a code of `api/apicode`, a struct type no string converts
+to, so a code outside the list does not build; one condition takes one code across the table
+(`TestOneConditionOneCode`), and `/api/v1` answers each code under the name and status it had. A
+path naming an object Dispatch stores, which does not exist, answers that object's `404` code
+(`ISSUE_NOT_FOUND`, `ASK_NOT_FOUND`, …), but a `{session_id}` and the app-installation read keep
+`/api/v1`'s answer. Every `/api/v1` answer carries `Deprecation: @<apiV1DeprecatedAt>` and
+`Link: </api/v2/…>; rel="successor-version"` filled from its `Successor` (a slug row's handler
+records the id it resolved with `successorValue`), and `Sunset` while `DISPATCH_API_V1_END` is
+ahead; once that instant has passed every `/api/v1` path is `410 API_V1_ENDED`. The test hooks
+answer at their `/api/v1` path and at `/api/v2/_test/…` (`testHookV2Pattern`).
+
+An unknown path under a server root (`/api`, `/v1`, `/auth`, `/ws`, `/healthz`, `/livez`, `/metrics`, in any case), and a known path
+asked with a method its route does not serve, is answered by `routes/router.go` before any
+dashboard lookup: under `/api/v2` with
+`404 {"code":"NO_ROUTE","error":"no route for <METHOD> <path>","hint":"GET /api/v2 lists every
+route"}`, and under every other root with
 `404 {"code":"NOT_FOUND","error":"no route for <METHOD> <path>","hint":"GET /api/v1, with a
-credential, lists every route"}` before any dashboard lookup; only paths outside those roots
+credential, lists every route"}`; only paths outside those roots
 fall back to the SPA shell.
 While a release rolls out, a process of the build before a route answers that route this way, so
 the page and the `dispatch` command send such a request again after 1, 2 and 4 seconds before
-they fail it (README, "Two builds at once"): a route is added freely, and removed only in the
-release after the one that stops calling it. Every page the static handler serves (`index.html`
+they fail it (README, "Two builds at once"), the page reading either code as "no route", since a
+build before `/api/v2` answers a `/api/v2` path `NOT_FOUND`: a route is added freely, and removed
+only in the release after the one that stops calling it. Every page the static handler serves
+(`index.html`
 and that fallback) carries `Cache-Control: no-cache` and an `ETag` of its bytes, never a
 `Last-Modified` (`servePage` in
 `routes/router.go`): a browser revalidates it before running it, gets a 304 only for the page this
@@ -971,7 +1019,7 @@ nothing above a debug line and writes no response at all. It never asks the stor
 another path. A router with no `AssetStore` leaves every local asset miss a 404. Any other file
 (the favicon) carries no cache header.
 
-Every `/api/v1` route accepts an authenticated user or an agent bearer; what a caller may do
+Every route of either version accepts an authenticated user or an agent bearer; what a caller may do
 there is its credential's OAuth scopes' to decide, and the Access column names the scopes a route
 needs beside who it accepts. `person` is "this credential acts as its person", which every route
 the dashboard reaches needs; `approve` adds, beside `person`, the acts that approve work or
@@ -984,7 +1032,8 @@ short of a scope its route needs is `403 OAUTH_SCOPE_REQUIRED` naming that scope
 A read-only broker token holds neither scope, and every route the read list does not name answers
 it `403 READ_ONLY_TOKEN` with no challenge, since no scope makes that route its to call.
 
-Every `POST` and `PATCH` route takes an optional `Idempotency-Key` request header (1 to 128
+Every `POST` and `PATCH` route, and on `/api/v2` every `PUT` and `DELETE` route too (`keyedMethod`),
+takes an optional `Idempotency-Key` request header (1 to 128
 letters, digits, `.`, `_`, `:` and `-`, bare or double-quoted; anything else is
 `400 KEY_INVALID`), and none requires it: `register` wraps each such route in
 `keyedWrites` (`api/request_keys.go`; `packages/envoy/AGENTS.md`, "Keyed Dispatch writes"), so a
@@ -1005,15 +1054,25 @@ comment routes, the single-session send and the broadcast commit a recovery poin
 made, so their repeat answers `201` from a fresh read instead and resumes what delivery it owes,
 which the delivery sweep also finishes on its own. Keys belong to the caller's login and are kept
 24 hours (`request_keys`, migration `0137`, swept by the maintenance sweep's pass once a minute).
-A write without the header runs unkeyed, as before. `PUT` and `DELETE` take no key. Every write
+A write without the header runs unkeyed, as before. On `/api/v1` a `PUT` and a `DELETE` take no
+key, and neither do the INFRA-979 tree's rows under `/api/v2`. The fingerprint holds the route's
+pattern, so one key sent to a `/api/v1` route and then to its `/api/v2` route is `KEY_REUSED`. A
+`/api/v2` `PUT` whose whole body equals the object's present state and fields, from the caller it
+records as their setter (any caller where it records none), answers `200` with the object and
+writes nothing (`putChangesNothing`, `api/put_unchanged_v2.go`). Every write
 route, `PUT` and `DELETE` included, that names its presser in `Dispatch-Login` runs only as that
 person: another person, or any bearer, is `409 LOGIN_CHANGED` before anything runs, its key
 untouched; a caller that resolves to nobody is passed on to the `401` written further in, the
 keyed layer's for a keyed write and the handler's for any other (`refuseChangedLogin`,
 `api/server.go`).
 
+The table below lists the routes under `/api` as `/api/v1` serves them, which every client but the
+web app still calls; `GET /api/v2` lists each `/api/v2` route, and each `v1Row`'s `Successor`
+names the one that answers for it.
+
 | Path | Method | Access | Purpose |
 | --- | --- | --- | --- |
+| `/api/v2` | GET | public | List every `/api/v2` route with method, auth, scopes, purpose and what a client reads to call it, in the list envelope. |
 | `/api/v1` | GET | user or bearer | List every route of the API's table with method, auth, and purpose. |
 | `/auth/start` | GET | public | Start Google sign-in at the sign-in issuer (the Cognito pool, or Google for `DISPATCH_SIGNIN_DOMAIN`, with offline access, `prompt=consent` and, as `SignInRule.DomainHint` says, `hd` unless `DISPATCH_SIGNIN_OUTSIDE=1`; with `?prompt=select_account`, the link a refused outside sign-in offers, `prompt=select_account consent`, Google's account chooser), back to the callback of the origin the request came to (`publicOrigin`: `DISPATCH_OUTSIDE_ORIGIN` for its host, else `DISPATCH_SERVER_URL`), the sign-in's state in the signed `dispatch_oauth_state` cookie; `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`, `503 SIGNIN_UNAVAILABLE` and no cookie while the issuer is not discovered. |
 | `/auth/callback` | GET | sign-in state | Verify the `dispatch_oauth_state` cookie under the key set (any process completes a sign-in another started; `400` "invalid or expired state" for one missing, tampered, lapsed or naming another state), exchange the issuer's code and sign in the person `SignInRule.Person` admits (`GroupRule`, `DomainRule` or `OutsideRule`): a member of `DISPATCH_SIGNIN_GROUP` named by the email in their pool username (a 403 page naming anyone else), a verified Google account of `DISPATCH_SIGNIN_DOMAIN` named by its `email` (a 403 page with the reason for anyone else), or, with `DISPATCH_SIGNIN_OUTSIDE=1`, a verified Google account outside the domain that a project names directly (`access.Listed`), as a restricted member (a 403 page saying no access list names anyone else outside the domain, and one saying the address signs in only as a Workspace account for an address on a domain the Workspace owns, `identity.ErrWorkspaceAddress`); record them in `people` with their member kind and the refresh token sealed (and, under a domain, its `sub`, ending the address's sessions when another account, or none, held it, and revoking its personal tokens when another account did), and issue the session cookie. An account outside the domain at the address of a full member under another `sub`, or none, is recorded nowhere: a 403 page saying the address is a Workspace member's and no cookie (`auth.ErrAddressHeldByMember`). `500 IDENTITY_ERROR` and no cookie when the access lists cannot be read (`identity.ErrMembershipUnreadable`); `503 SIGNIN_UNAVAILABLE` while this process has not discovered the issuer; `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie (`issueSession`). |

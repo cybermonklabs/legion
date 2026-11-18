@@ -795,10 +795,10 @@ Each item below names a task and where its code is, then notes on it.
 
   React SPA and native Dispatch server; `bun run dispatch:local` runs it here, seeded and signed in
 
-- Where Legion's time goes, in Dispatch — `packages/envoy/internal/dispatch/legion/`, `packages/envoy/internal/dispatch/api/settings_legion.go`, `legion_board.go`
+- Where Legion's time goes, in Dispatch — `packages/envoy/internal/dispatch/legion/`, `packages/envoy/internal/dispatch/api/settings_legion.go`, `legion_board.go`, `v2_infra979.go`
 
   A project's Legion daemon is the one whose `GET /legion/v1/state` Dispatch reads once a minute, one replica at a time under a lease (`sampler.go`), recording what changed.
-  `GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon` are that daemon, and `GET /api/v1/projects/{key}/legion/board` and the `/ws/live` `legion` view serve the project's board from what the sampler recorded.
+  `GET`, `PUT` and `DELETE /api/v2/projects/{key}/legion/daemon` are that daemon, and `GET /api/v2/projects/{key}/legion/board` and the `/ws/live` `legion` view serve the project's board from what the sampler recorded; they are rows of the INFRA-979 tree, so they keep their v1 shape and answer at `/api/v2` as the deprecated `/api/v1/projects/{key}/legion/daemon` and `/api/v1/projects/{key}/legion/board` do.
   `legion/metrics/` computes the four Legion delivery metrics from the same records (`Read`, then `Compute`), and no route serves them: that package is here for the evals of dispatch://INFRA-2916 to call, and only tests call it today.
   The web side is the Settings page's Legion section, where a person names a project's daemon (`packages/dispatch/web/src/features/settings/LegionDaemonsSection.tsx`, `useLegionDaemons.ts` beside it); no page draws the board
 
