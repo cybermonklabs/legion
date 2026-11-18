@@ -41,8 +41,9 @@ const casePerson = " This is a case for a person."
 // for the daemon's store after the stop is one that ran: the machine answers it as made, and the
 // daemon makes the launch itself (supervise's launchOrWait).
 //
-// The project's controller is refused: nobody else can relaunch it, so the daemon relaunches it
-// itself, once in 6 hours (internal/daemon's reach keeper).
+// The project's controller is refused: nobody else can relaunch it. The daemon relaunches it
+// itself, once in 6 hours, and only where it runs the controller itself (`controller: daemon` in
+// legion.yaml; internal/daemon's reach keeper, reachWatched).
 func (s *server) claimRelaunch(w http.ResponseWriter, r *http.Request) {
 	var req RelaunchRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w,
@@ -60,7 +61,8 @@ func (s *server) claimRelaunch(w http.ResponseWriter, r *http.Request) {
 	}
 	if token == claim.ControllerToken(s.project) {
 		writeFailure(w, http.StatusConflict, "CLAIM_IS_CONTROLLER",
-			"the project's controller is relaunched by the daemon itself, once in "+timewords.Words(supervise.RelaunchAgainAfter)+"; nobody else can relaunch it")
+			"the project's controller is relaunched by the daemon alone, once in "+timewords.Words(supervise.RelaunchAgainAfter)+
+				", and only where the daemon runs the controller itself (controller: daemon in legion.yaml); nobody else can relaunch it")
 		return
 	}
 	m, supervised := s.supervisor.Machine(token)

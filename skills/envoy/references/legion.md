@@ -40,7 +40,8 @@ Read this in a Legion pane before you touch a role claim, or when a Legion role 
   The daemon marks it, `read_state` and `read_record` show it with the time of that last
   registration, and the claim keeps the state it had.
   Your project's controller starts its process again on that same session with the `legion` tool's
-  `relaunch`, and the daemon relaunches its own controller's claim that way.
+  `relaunch`, and the daemon relaunches the controller's own claim that way, but only where the
+  daemon runs the controller itself (`controller: daemon` in `legion.yaml`).
   Nothing replaces a session whose last registration is 20 minutes old or less, and a relaunch
   replaces no session either: your session, your workspace and the task you owe stay, and the
   resumed session is told that its turn was cut.
