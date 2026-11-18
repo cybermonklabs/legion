@@ -1181,13 +1181,19 @@ timed at the container's start, and with the log cut at it the check said clean.
 reads the time the container runtime read each line at, which no process in the pod sets, and a
 line in the logger's form is the server's only when it carries the start line's process id and
 its logger time is within 2 s of the runtime's. Any other is exit 2, and no rule reads it. A peer
-that guesses the process id and writes the current time passes that test. Such a line can make
-the check stricter, and can turn exit 1 for that peer's own connections into exit 2, but cannot
-make it pass, on one condition: authorization loads more than 10 s after each pod's container
-started, which the `env` roll and the two applies after it give, each one after the one before
-has finished. Within those 10 s a reader with the password could forge a start line the start
-rule takes. Measured in this change's review: env, the record, routes, authorization and the
-reader within 4 s of the start let a forged start line pass; the same line written more than
+that writes the server's process id and the current time passes that test, and the process id is
+no secret: the chart runs each pod with `shareProcessNamespace: true` beside its config reloader
+(the chart's `files/stateful-set/pod-template.yaml`), so nats-server's process id is a small
+number, and one route name can hold a forged line for each likely id. The auth service's error
+text is the same path, for any client that reaches the client port, at any stage: so the auth
+service must put no newline a client chose into its error text, and one that does lets a client
+force exit 1 as a route peer can during `env` and `routes` (below). A forged line of either kind
+can make the check stricter, and can turn exit 1 for that peer's own connections into exit 2, but
+cannot make it pass, on one condition: authorization loads more than 10 s after each pod's
+container started, which the `env` roll and the two applies after it give, each one after the one
+before has finished. Within those 10 s a reader with the password could forge a start line the
+start rule takes. Measured in this change's review: env, the record, routes, authorization and
+the reader within 4 s of the start let a forged start line pass; the same line written more than
 11 s after the start gave exit 1.
 
 - **Every route is the hub's own.** Every route's `ip` is one of the pod IPs and every `remote_id`
@@ -1219,10 +1225,10 @@ reader within 4 s of the start let a forged start line pass; the same line writt
   which side opened a connection, so the check neither condemns nor clears it. Find what ran at
   that address, and treat the password as read unless it is accounted for. Exit 1 there would let
   any process that reaches 6222 force a rotation, whose `env` and `routes` applies open the routes
-  to it again. One exception: during `env` and `routes`, a process that reaches 6222 and guesses a
-  server's process id can still force exit 1, by a forged `Removed route` line with a password in
-  it, which the server's process id and the current time let the check read as the server's
-  (above).
+  to it again. One exception: during `env` and `routes`, a process that reaches 6222 can still
+  force exit 1, by a forged `Removed route` line with a password in it, which it times now and
+  writes once for each likely process id of the server's, within one route name, so that one of
+  them carries the id the check reads as the server's (above).
 - **The log reaches back to the `env` roll.** Each pod's `uid`, `restartCount` and `startedAt`
   are the ones `routes record` saved, its log begins with `Starting nats-server`
   (`server/server.go:2295`) in the logger's form, and the container runtime read that line from
