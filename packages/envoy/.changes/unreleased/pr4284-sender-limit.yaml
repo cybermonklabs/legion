@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The listener takes `ENVOY_SENDER_MESSAGES_PER_MINUTE` (0 to 60000, unset or 0 for no limit) and `ENVOY_SENDER_MESSAGE_BURST` (1 or more, the rate when unset), and logs one start line with the limit or `listener sender limit: none`.
+  A message of an agent session past its count on `/v1/messages/send` or `/v1/messages/publish` gets HTTP 429 with `Retry-After` and a body with `reason: "sender_rate_limited"`, `retry_after_seconds`, `messages_per_minute`, `burst` and an `error` sentence that says the message was not sent and when to send it again.
+  The listener refuses such a message before it reads a session, finds a role's holder, reports a wake or stores anything, and a message costs one only when the listener stores it, may have stored it, reports a wake for it, or answers it `504`.
+  The request's log line names the counted session in the field `sender`.
+  With no limit set, one answer changes: the `503` that `/v1/messages/send` and `/v1/messages/publish` give for a stored publish that went out and got no answer now has an `error` that starts `envoy: the message bus did not answer: the stream did not acknowledge the publish, so it may hold the message: ` and then names the NATS error, where it held `envoy: the message bus did not answer: ` and the NATS error alone before.
+  Its status, its `Retry-After` and the request's outcome do not change.

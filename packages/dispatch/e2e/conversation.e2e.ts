@@ -495,6 +495,7 @@ test("Conversation answers an ask in place, draws no event row, and keeps its ca
 
     const firstTurn = turn(page, "First turn");
     await expect(firstTurn).toBeVisible();
+    // The wait above drew the first turn, so the handle taken here is of that drawn turn.
     const handle = await firstTurn.elementHandle();
     if (handle === null) {
       throw new Error("the first conversation turn did not produce an element handle");
@@ -680,9 +681,18 @@ test("the iPhone Conversation fits controls and keeps the composer above the rev
     const controls = page.locator(
       '[aria-label="Conversation"] button, [aria-label="Conversation"] textarea, [aria-label="Conversation"] input'
     );
-    // One round trip for every control: its opacity and the box a finger taps. A control wrapped
-    // in its own label is tapped through the label, so that is the target to measure; demanding
-    // 44 px of the box itself drew a checkbox three times the size of every other control.
+    // Every part the controls stand in: the ten seeded turns and the composer.
+    await expect(
+      page
+        .getByRole("list", { name: "Conversation turns" })
+        .locator(":scope > li")
+        .filter({ hasText: /Phone turn \d/ })
+    ).toHaveCount(10);
+    await expect(page.getByRole("form", { name: "Comment composer" })).toBeVisible();
+    // The waits above drew every turn and the composer, so this one round trip measures every
+    // control: its opacity and the box a finger taps. A control wrapped in its own label is
+    // tapped through the label, so that is the target to measure; demanding 44 px of the box
+    // itself drew a checkbox three times the size of every other control.
     const measured = await controls.evaluateAll((elements) =>
       elements.map((element, index) => ({
         height: (element.closest("label") ?? element).getBoundingClientRect().height,

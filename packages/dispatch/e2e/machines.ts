@@ -149,16 +149,20 @@ export async function assertPaneProportions(
   cells: readonly Cell[],
   size: WindowSize
 ): Promise<void> {
-  const whole = await drawing.locator('[data-testid="window-layout"]').boundingBox();
+  const layout = drawing.locator('[data-testid="window-layout"]');
+  await expect(layout).toBeVisible();
+  // The wait above drew the layout, and a drawn element has a box, so the box is there.
+  const whole = await layout.boundingBox();
   if (whole === null) throw new Error("the drawing has no box");
   const boxes = drawing.locator('[data-testid="window-pane"]');
   expect(await boxes.evaluateAll((panes) => panes.map((pane) => pane.dataset.pane))).toEqual(
     cells.map((cell) => cell.paneId)
   );
   for (const cell of cells) {
-    const box = await drawing
-      .locator(`[data-testid="window-pane"][data-pane="${cell.paneId}"]`)
-      .boundingBox();
+    const pane = drawing.locator(`[data-testid="window-pane"][data-pane="${cell.paneId}"]`);
+    await expect(pane).toBeVisible();
+    // The wait above drew the pane, and a drawn element has a box, so the box is there.
+    const box = await pane.boundingBox();
     if (box === null) throw new Error(`pane ${cell.paneId} has no box`);
     const widthShare = cell.width / size.columns;
     const heightShare = cell.height / size.rows;
