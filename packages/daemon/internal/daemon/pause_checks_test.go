@@ -493,7 +493,21 @@ func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
 		t.Fatal("no wake was warned stuck in twenty minutes, want the launches let out in the first ten warned ten minutes after each: the stuck pass read nothing")
 	}
 
-	// Each held notice is delivered after its role's one launch.
+	// Each held notice is delivered after its role's one launch. A hook's prompt whose role's
+	// launch the pacing held waits for that launch (outbox.parkedWait): it is due at the launch's
+	// turn, or parkedWakeBound on, whichever comes first. The machines read the test clock and the
+	// outbox the wall clock, so here the turn is a moment of the test clock and the bound is five
+	// minutes of wall time, either of which can be minutes of wall time away although the test
+	// clock has passed every launch. Every launch is made by now, so the test makes each such row
+	// due now, as the bound would, and the outbox's sweep runs it.
+	keys := []string{}
+	for _, n := range noticed {
+		keys = append(keys, r.issue(n))
+	}
+	if _, err := r.pool.Exec(r.ctx, `update outbox set next_at = now() where kind = 'hook_prompt' and issue = any($1) and next_at > now()`,
+		keys); err != nil {
+		t.Fatalf("make the parked hook prompts due: %v", err)
+	}
 	delivered := 0
 	for _, n := range noticed {
 		token := worker(n)

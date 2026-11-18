@@ -604,7 +604,7 @@ func TestTheWakeTaskOfASessionAPauseStoppedSaysThePauseStoppedIt(t *testing.T) {
 	}{
 		{kind: pods.WakeChecks, detail: "head1 failed build", want: "head1 failed build"},
 		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", want: "role topic (legion-LEGION-208-implementer) while your session was stopped. Envoy keeps a role message for one hour"},
-		{kind: pods.WakeAgentMessage, detail: "session-1", want: "sent to your session (session-1) while your session was stopped, which nothing kept"},
+		{kind: pods.WakeAgentMessage, detail: "session-1", want: "sent to your session (session-1) while your session was stopped. A message that Envoy or Dispatch stored for your session reaches you in this session."},
 		{kind: pods.WakeBackstop, detail: "the backstop came due", want: "your backstop running out"},
 	} {
 		t.Run(tc.kind, func(t *testing.T) {

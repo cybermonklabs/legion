@@ -452,8 +452,10 @@ func TestAReviewOfTheEntryTheBootsResumeNamesRecordsItsHead(t *testing.T) {
 }
 
 // aKindStillToCome is a wake no fact reports today: WakeTask's default, which the one act of every
-// wake (wakeReleased) gives any kind it is handed.
-const aKindStillToCome = "a wake of a kind still to come"
+// wake (wakeReleased) gives any kind it is handed. A start names only a kind of the pods wake kinds
+// (record.SuperviseRequest's WakeKind), so the delivery kind, which no workflow wake takes and
+// WakeTask names no sentence of its own for, stands in for a kind still to come.
+const aKindStillToCome = pods.WakeDelivery
 
 // wakeKinds is each kind of wake that brings a released role back (wake.go): the CI settlement,
 // the role message, the agent message, the backstop, and any other.
