@@ -1321,6 +1321,8 @@ func (c *stepClaimant) grant() string {
 // merges, the person of the reviews with write access, and a GraphQL root that knows no pull
 // request. Every other route is a 404, so nothing reaches github.com.
 type stepRecordsGitHub struct {
+	// t is the walk's test, which a merge of a pull request the walk never opened fails (merged).
+	t   *testing.T
 	url string
 	mu  sync.Mutex
 	// pulls is each pull request opened, in the order they were opened.
@@ -1337,7 +1339,7 @@ type stepRecordsPull struct {
 
 func newStepRecordsGitHub(t *testing.T) *stepRecordsGitHub {
 	t.Helper()
-	g := &stepRecordsGitHub{}
+	g := &stepRecordsGitHub{t: t}
 	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/"+liveRepo)
 		pull, reviews := strings.CutSuffix(strings.TrimPrefix(rest, "/pulls/"), "/reviews")
@@ -1379,12 +1381,22 @@ func (g *stepRecordsGitHub) open(branch string, number int) {
 	g.pulls = append(g.pulls, stepRecordsPull{number: number, branch: branch})
 }
 
-// merged is GitHub's merge of pull request number, which the walk opened: every read from now on
-// answers it merged.
+// merged is GitHub's merge of pull request number: every read from now on answers it merged. A
+// number the walk never opened fails the walk's test, naming the numbers it opened, and the
+// package's other tests still run.
 func (g *stepRecordsGitHub) merged(number int) {
+	g.t.Helper()
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.find(number).merged = true
+	pull := g.find(number)
+	if pull == nil {
+		opened := make([]int, len(g.pulls))
+		for place, open := range g.pulls {
+			opened[place] = open.number
+		}
+		g.t.Fatalf("GitHub merged pull request #%d, which the walk never opened; it opened %v", number, opened)
+	}
+	pull.merged = true
 }
 
 // find is the pull request number, nil where none was opened. Its caller holds g.mu.
