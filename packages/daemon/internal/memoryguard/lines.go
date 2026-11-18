@@ -77,10 +77,13 @@ const (
 // The ended line's rule, the tier of the order of ends (rank) that put the ended process first:
 // ruleGrew, it grew over growthWindow by growthNoise or more, the most of those that did; ruleNew,
 // none grew so, and it is the largest of the processes new to this stay in the band, read at most
-// once at the readings of the stay before the one decided on (candidate.newToStay);
-// ruleGrewSinceKill, none grew or is new, and it grew the most since the previous kill of the rise;
-// ruleLargest, none of these applies and it is the largest. ruleKernel is a process the guest
-// kernel killed (Guest), which the kernel chose by rules of its own.
+// once at the readings of the stay before the one decided on (candidate.newToStay), that hold
+// memory of their own: a fork whose parent's size covers its own ranks at nothing and is in the
+// tiers below, and its line names the one that put it first (candidate.inNewTier, INFRA-3531 R1 of
+// spec version 34); ruleGrewSinceKill, none grew or is new, and it grew the most since the rise's
+// first kill (spec version 34; candidate.sinceFirstKill); ruleLargest, none of these applies and it
+// is the largest. ruleKernel is a process the guest kernel killed (Guest), which the kernel chose
+// by rules of its own.
 const (
 	ruleGrew          = "grew"
 	ruleNew           = "new"

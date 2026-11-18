@@ -20,33 +20,39 @@
 // a reading at each interval. The order (rank, INFRA-3531 R1 of spec version 31) is the most grown
 // first: a process's growth is its size at this read less its size at its oldest read within the
 // last growthWindow (300 ms), and growth under growthNoise (1 MiB) is none. Of those that did not
-// grow over the window, those new to this stay in the band follow, the largest first: a process
-// the guard has read at most once since the band's second-to-last reading, at the readings before
-// the one it decides on, has no earlier read to grow from, or one alone, and can be a runaway that
-// began between two readings or just before the band's last one (newToStay). The most grown since
-// the previous kill of the rise follow, by growth since that kill as grownSinceKill measures it,
-// also from growthNoise; before a rise's first kill no process has any. Those that grew by none of
-// these follow, largest first, so where none grew and none is new the largest ends first. The tier
-// of the new is there because this issue's tester measured, at e3a1923c, the latepool probe at 4
-// GiB (six growers starting together while a parent and three sleeping forks of a shared block
-// held the pod at 84%) end a process that shares the block, a sleeping fork or the parent, first
-// in 7 of 7 runs, the closest run's highest reading 2.4 MiB below the kernel's kill point; at
-// 778c42de, where the tier held only the processes the reading before had not read, the run
-// `4g-latepool-zrr4d` lost a sleeping fork first, its growers started 5 ms before the band's last
-// reading. The tier of growth since the kill is there because a throttled pod reads 170 to over 300
-// ms apart, so the window can hold one read of each process: in the latepool and sharedpool probes
-// under gVisor (INFRA-3531 T17) the guard went on after a kill by ending the largest, a sleeping
-// fork, while the growers lived. Under gVisor each forked process reports the pages it shares with
-// its parent as its own, and no smaps field tells them apart, so the largest can be a sleeping fork
-// whose end frees nothing while another process fills the pod; for the same reason a process with
-// no earlier read in the window, a fresh fork among them, counts as not grown. Where the tier of
-// the new or the largest ranks by size, a process that runs its parent's executable with its
-// parent's arguments, its parent read in this stay, is a fork that has not run a new program, and
-// ranks by its size less its parent's at the guard's latest read of the parent (INFRA-3531 R1 of
-// spec version 33, discountForks): at 23fdd92f the new tier ended first a sleeping fork of a 2.4
-// GB parent in 2 of 7 latepool runs at 4 GiB. The parent itself ranks whole. Each kill's line
-// names the tier that chose it, where the sizes it was chosen by came from and how much of its size
-// its rank did not count (INFRA-3531 R3 of spec version 31; lines.go).
+// grow over the window, those new to this stay in the band that hold memory of their own follow,
+// the largest first: a process the guard has read at most once since the band's second-to-last
+// reading, at the readings before the one it decides on, has no earlier read to grow from, or one
+// alone, and can be a runaway that began between two readings or just before the band's last one
+// (newToStay); a fork whose parent's size covers its own ranks at nothing, is not a process the
+// guard has learned anything from, and ranks in the tiers below (inNewTier, INFRA-3531 R1 of spec
+// version 34). The most grown since the rise's first kill follow, by growth since that kill as
+// grownSinceKill measures it, also from growthNoise; before a rise's first kill no process has any.
+// Those that grew by none of these follow, largest first, so where none grew and none is in the new
+// tier the largest ends first. The tier of the new is there because this issue's tester measured,
+// at e3a1923c, the latepool probe at 4 GiB (six growers starting together while a parent and three
+// sleeping forks of a shared block held the pod at 84%) end a process that shares the block, a
+// sleeping fork or the parent, first in 7 of 7 runs, the closest run's highest reading 2.4 MiB
+// below the kernel's kill point; at 778c42de, where the tier held only the processes the reading
+// before had not read, the run `4g-latepool-zrr4d` lost a sleeping fork first, its growers started
+// 5 ms before the band's last reading. The tier of growth since the kill is there because a
+// throttled pod reads 170 to over 300 ms apart, so the window can hold one read of each process: in
+// the latepool and sharedpool probes under gVisor (INFRA-3531 T17) the guard went on after a kill
+// by ending the largest, a sleeping fork, while the growers lived. It measures from the rise's
+// first kill, not the previous one, since growers that step every 250 ms show no step in the 100
+// ms after the previous kill: at d22d8da3, `4g-latepool-kxv5k` and `4g-latepool-zxhnw` lost the
+// probe's parent and a sleeping fork after a fall while the growers lived. Under gVisor each forked
+// process reports the pages it shares with its parent as its own, and no smaps field tells them
+// apart, so the largest can be a sleeping fork whose end frees nothing while another process fills
+// the pod; for the same reason a process with no earlier read in the window, a fresh fork among
+// them, counts as not grown. Where the tier of the new or the largest ranks by size, a process
+// that runs its parent's executable with its parent's arguments, its parent read in this stay, is
+// a fork that has not run a new program, and ranks by its size less its parent's at the guard's
+// latest read of the parent (INFRA-3531 R1 of spec version 33, discountForks): at 23fdd92f the new
+// tier ended first a sleeping fork of a 2.4 GB parent in 2 of 7 latepool runs at 4 GiB. The parent
+// itself ranks whole. Each kill's line names the tier that chose it, where the sizes it was chosen
+// by came from and how much of its size its rank did not count (INFRA-3531 R3 of spec version 31;
+// lines.go).
 //
 // So that it knows what grew when the reading reaches the mark, an armed guard reads those sizes
 // at each interval already in the band, the bandPercent (10%) of the limit below the mark, keeps
@@ -92,26 +98,29 @@
 // place. At f949e5ad two of seven latepool runs at 4 GiB put the first kill 196.3 and 128.2 ms
 // after the reading at the mark while it read a stat of every held process and the identity of
 // every new one before the kill. Whatever the budget, the guard reads at the mark at least one
-// process new to the stay that it may end where one exists, those with one band read before those
-// with none (INFRA-3531 R1 of spec version 32): where the reads of the band's growers spent the
-// half interval and the reads again reached no held process new to the stay, it reads the newest
-// of those past the budget; only where it holds none does the search read past the budget, the
-// newest process started since first, until it has read one the guard may end; and once it has
-// read one, it reads nothing more past the budget. So the first kill comes within one interval of
-// the reading reaching the mark, also where the pod's CPU is throttled (INFRA-3531 R1 of spec
-// version 25, T16): under gVisor, with six growers faulting their pages in, the host throttles the
-// whole pod by its CFS quota, so a band reading that costs about 2 ms of work took 80 to 270 ms of
-// wall time, and a read of a growing process's /proc files at times waits on its memory locks.
-// This issue's tester measured 194 ms from the reading at the mark to the first kill, where R1
-// asks for one interval (100 ms), with a mark reading that read every size again; deciding on the
-// band's reads brought 9 of 9 runs in 19 builds Jobs to 1.3 to 71.8 ms. The guard assesses the
-// reading at the mark and acts on it as on any later reading where nothing is held (the reading
-// crossed the whole band within one interval, or the reading before was not an armed guard's in
-// the band), where the held first has exited or its pid names another process (its start time
-// changed), or where the held sizes, or the sizes once read again, are under the floor or name no
-// process: it never gives a rise up on held sizes alone. Below the band, while it is off and once
-// it has given a rise up, it reads no size and keeps none: a pod that sits below its band pays for
-// nothing but its readings.
+// process new to the stay that it may end where one exists, and one that holds memory of its own,
+// those with one band read before those with none (INFRA-3531 R1 of spec versions 32 and 34):
+// where the reads of the band's growers, or of forks that rank at nothing, spent the half interval
+// and the reads again reached no held process new to the stay with memory of its own, it reads the
+// newest of those past the budget; only where it holds none does the search read past the budget,
+// the newest process started since first, until it has read one the guard may end that holds
+// memory of its own, or has read one at all and one interval from the reading at the mark has
+// passed; and once it has, it reads nothing more past the budget. Where that interval passes with
+// only forks that rank at nothing read, the tiers below the new decide. So the first kill comes
+// within one interval of the reading reaching the mark, also where the pod's CPU is throttled
+// (INFRA-3531 R1 of spec version 25, T16): under gVisor, with six growers faulting their pages in,
+// the host throttles the whole pod by its CFS quota, so a band reading that costs about 2 ms of
+// work took 80 to 270 ms of wall time, and a read of a growing process's /proc files at times
+// waits on its memory locks. This issue's tester measured 194 ms from the reading at the mark to
+// the first kill, where R1 asks for one interval (100 ms), with a mark reading that read every size
+// again; deciding on the band's reads brought 9 of 9 runs in 19 builds Jobs to 1.3 to 71.8 ms. The
+// guard assesses the reading at the mark and acts on it as on any later reading where nothing is
+// held (the reading crossed the whole band within one interval, or the reading before was not an
+// armed guard's in the band), where the held first has exited or its pid names another process
+// (its start time changed), or where the held sizes, or the sizes once read again, are under the
+// floor or name no process: it never gives a rise up on held sizes alone. Below the band, while it
+// is off and once it has given a rise up, it reads no size and keeps none: a pod that sits below
+// its band pays for nothing but its readings.
 //
 // After a kill the guard reads the sizes at each interval too, and waits only while the killed
 // process has not exited (its Handle's Exited), and no longer than the wait (INFRA-3531 R1 of spec
@@ -135,6 +144,14 @@
 // grows, costs at most one kill. A rise given up, for that reason or because no process may be
 // ended, has the guard log the sizes it saw and end nothing more for that rise, until the reading
 // has gone below the mark; a stop that repeats is logged at most once a minute (stopRise).
+//
+// The order's third tier is growth since the rise's first kill, measured the same way from the
+// sizes as of that kill (atFirstKill), and not since the previous kill, which decides only whether
+// the guard goes on (INFRA-3531 R1 of spec version 34): growers that step every 250 ms in step
+// with each other show no step in 100 ms since the previous kill nor in the window over reads
+// 100 ms apart, and at d22d8da3, in `4g-latepool-kxv5k` and `4g-latepool-zxhnw`, the two kills
+// after a fall went to the largest, the probe's parent and a sleeping fork, while the growers rose
+// from 90.6% to 95.9% of the limit, 7.3 and 40.9 MiB from the kill point.
 //
 // A process's size, by which the guard measures its growth and ranks it, is the sum of the
 // `Anonymous:` lines of its smaps, the `Rss:` of its shared mappings of memory-backed files (a
@@ -547,11 +564,18 @@ type Guard struct {
 	// keep their storage from one reading to the next.
 	stays map[procKey]bandStay
 	// atKill are the sizes, by process, as of the previous kill of the rise, from which growth
-	// since that kill is measured (grownSinceKill): the sizes of the assessment of the reading the
-	// kill was sent at (act; for a kill on held sizes, the assessment that follows it, endHeld),
-	// and for a process first read after the kill, its first read after it. They are emptied when
-	// the wait after the kill ends (endWait), and their storage is kept from one kill to the next.
+	// since that kill is measured (grownSinceKill), which says whether the guard goes on after it:
+	// the sizes of the assessment of the reading the kill was sent at (act; for a kill on held
+	// sizes, the assessment that follows it, endHeld), and for a process first read after the
+	// kill, its first read after it. They are emptied when the wait after the kill ends (endWait),
+	// and their storage is kept from one kill to the next.
 	atKill map[procKey]killSize
+	// atFirstKill are the sizes, by process, as of the first kill of the rise, kept the same way,
+	// from which the order's third tier measures growth (sinceFirstKill); firstKillKept is whether
+	// the rise has had that kill. Both are let go of at each reading below the mark and while the
+	// guard is off (endRise), so they are of one rise alone.
+	atFirstKill   map[procKey]killSize
+	firstKillKept bool
 
 	scans    sync.WaitGroup
 	scanMu   sync.Mutex
@@ -586,6 +610,7 @@ func New(cfg Config) *Guard {
 		memfds:       map[memfdID]bool{},
 		sizes:        map[procKey]procReads{},
 		atKill:       map[procKey]killSize{},
+		atFirstKill:  map[procKey]killSize{},
 		stays:        map[procKey]bandStay{},
 		scanMemfds:   map[memfdID]bool{},
 	}
@@ -801,6 +826,9 @@ func (g *Guard) sample() (reading, limit uint64, reason string) {
 // reads no size and keeps none (forgetSizes).
 func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64) {
 	mark := share(limit, s.ActPercent)
+	if !on || reading < mark {
+		g.endRise()
+	}
 	if !on {
 		g.endWait()
 		g.forgetSizes()
@@ -893,17 +921,25 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 // the ones with one band read, the newest first, and the search then takes the processes started
 // since, the ones with no earlier read, the newest first. Whatever the budget, it reads at least
 // one process new to the stay that it may end where one exists (INFRA-3531 R1 of spec version 32:
-// "and at least one of them"), in that order: where the reads of the band's growers spent the half
-// interval and the reads again reached no held process new to the stay, it reads the newest of
-// those past the budget, before any process started since (settleNew); only where it holds none
-// does the search read past the budget, the newest process started since first, until it has read
-// one the guard may end (startedSince). Once it has read one it may end, it reads nothing more past
-// the budget. The floor is read on the held sizes, and again on the sizes once read again. It
-// sends no kill where they are under the floor or name no process, or where the first has exited,
-// its pid names another process or its kill fails, and decide then assesses the reading and acts
-// on it: what the band held never gives a rise up. The kill's line says which sizes it was chosen
-// by: the held reads alone (sizesBand), with smaps it read again (sizesReread), or with processes
-// it found started since (sizesSearch).
+// "and at least one of them"), and one that holds memory of its own: a fork whose parent's size
+// covers its own, which ranks at nothing (candidate.rankSize), does not count, and where it has
+// read none that does, it reads on past the half interval up to one interval from now, stopping
+// after the read in hand once that has passed (INFRA-3531 R1 of spec version 34; readOnNew). It
+// reads past the budget in that order: the held processes new to the stay that the reads again
+// did not reach, the newest first (settleNew), and then, as the search, the processes started
+// since, the newest first (startedSince). At d22d8da3, in `4g-latepool-54nzl` and
+// `4g-latepool-zxhnw`, the reads again reached one sleeping fork of the probe's 2.4 GB parent,
+// which spent the half interval and ranked at nothing, the search read nothing, and the fork
+// ended first while six growers that started after the band's last reading lived. Once it has read
+// what it must, it reads nothing more past the budget. Where one interval passes with only forks
+// that rank at nothing read, those are not in the new tier (inNewTier), and the tiers below it
+// decide: growth since the rise's first kill, none before that kill, and then the largest by rank
+// size. The floor is read on the held sizes, and again on the sizes once read again. It sends no
+// kill where they are under the floor or name no process, or where the first has exited, its pid
+// names another process or its kill fails, and decide then assesses the reading and acts on it:
+// what the band held never gives a rise up. The kill's line says which sizes it was chosen by: the
+// held reads alone (sizesBand), with smaps it read again (sizesReread), or with processes it found
+// started since (sizesSearch).
 func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 	floor := share(limit, s.FloorPercent)
 	grew, heldBytes := g.orderHeld(now)
@@ -912,10 +948,15 @@ func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 	}
 	sizes := sizesBand
 	var found []candidate
+	// The held processes' parents are the band's, at their latest reads, the ones read again at
+	// now among them; the found ones are discounted by the table that placed them, each as it is
+	// read, and one decision reads a parent's whole arguments once (argsCache).
+	var cache argsCache
 	if !grew {
-		deadline := now.Add(s.Interval / 2)
-		grewSince := g.rereadHeld(now, deadline)
-		readBytes, reread, readNew := g.settleNew(now, !grewSince)
+		half, whole := now.Add(s.Interval/2), now.Add(s.Interval)
+		grewSince := g.rereadHeld(now, half)
+		g.discountForks(g.held, g.heldTable, &cache)
+		readBytes, reread, read := g.settleNew(now, !grewSince, whole, &cache)
 		if readBytes < floor || len(g.held) == 0 {
 			return false
 		}
@@ -923,12 +964,11 @@ func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 			sizes = sizesReread
 		}
 		if !grewSince {
-			found = g.startedSince(deadline, !readNew)
+			found = g.startedSince(half, whole, read, &cache)
 		}
+	} else {
+		g.discountForks(g.held, g.heldTable, &cache)
 	}
-	// The held processes' parents are the band's, at their latest reads, the ones read again
-	// at now among them; the found ones were discounted by the table that placed them.
-	g.discountForks(g.held, g.heldTable)
 	if len(found) > 0 {
 		g.held = append(g.held, found...)
 		sizes = sizesSearch
@@ -937,42 +977,65 @@ func (g *Guard) endHeld(now time.Time, s Settings, reading, limit uint64) bool {
 	return g.sendKill(now, s, reading, limit, g.held[0], sizes)
 }
 
+// newRead is what the reads at the mark have read of the processes new to the stay that the guard
+// may end: one at all (any), and one that ranks above nothing, with memory of its own (own).
+type newRead struct{ any, own bool }
+
+// add counts c, a process new to the stay the reads at the mark read, its discount set.
+func (r *newRead) add(c *candidate) {
+	r.any = true
+	r.own = r.own || c.rankSize() > 0
+}
+
+// readOnNew is whether the reads at the mark read one more process new to the stay past half the
+// interval, having read r of them: where they have read none the guard may end, whatever the
+// clock; where they have read none that ranks above nothing, while the guard's clock is before
+// whole, one interval from the reading at the mark (INFRA-3531 R1 of spec version 34).
+func (g *Guard) readOnNew(r newRead, whole time.Time) bool {
+	return !r.any || !r.own && g.clock.Now().Before(whole)
+}
+
 // settleNew makes the held processes new to the stay the ones the order's second tier takes at the
 // mark, once the reads again at the reading taken at now are made (INFRA-3531 R1 of spec version
 // 31): those a read at now reached, at the size it read. One that no read reached is not new
-// there, and ranks by its held size with the other held processes. Where readOne is set and the
-// reads again reached no held process new to the stay, the reads of the band's growers having
-// spent the budget, it reads the newest of them first, past the budget, so that a process new to
-// the stay that the guard may end is read where one is held, before any started since (R1 of spec
-// version 32); one whose smaps it cannot read it leaves out, as rereadHeld does, and reads the
-// next. It answers the held processes' sum, whether a read at now read one of them, and whether
-// one read at now is new to the stay. The held processes are in rereadHeld's order, those new to
-// the stay the newest first, so the first of them is the one the reads again reach first.
-func (g *Guard) settleNew(now time.Time, readOne bool) (total uint64, reread, readNew bool) {
+// there, and ranks by its held size with the other held processes. Where readOn is set and the
+// reads again reached no held process new to the stay that ranks above nothing, the reads of the
+// band's growers or of forks that rank at nothing having spent the budget, it reads the next of
+// them, the newest first, past the budget, while the guard reads on (readOnNew), before any
+// process started since (R1 of spec versions 32 and 34). Each it reads it discounts (discountFork)
+// with cache; one whose smaps it cannot read it leaves out, as rereadHeld does, and reads the next.
+// It answers the held processes' sum, whether a read at now read one of them, and what the reads
+// at now read of those new to the stay. The held processes are in rereadHeld's order, those new
+// to the stay the newest first and their discounts set, so the ones the reads again reached come
+// first and are counted before any further read.
+func (g *Guard) settleNew(now time.Time, readOn bool, whole time.Time, cache *argsCache) (total uint64, reread bool, read newRead) {
 	defer g.releaseSmaps()
 	kept := g.held[:0]
 	for _, c := range g.held {
 		w := g.sizes[procKey{pid: c.PID, start: c.StartTime}].window
-		read := len(w) > 0 && w[len(w)-1].at.Equal(now)
-		if c.newToStay && !read && readOne && !readNew {
+		at := len(w) > 0 && w[len(w)-1].at.Equal(now)
+		if c.newToStay && !at && readOn && g.readOnNew(read, whole) {
 			size, err := g.size(c.PID, nil)
 			if err != nil {
 				continue
 			}
 			c.size = size + c.descriptorBytes
 			g.keepSize(now, &c)
-			read = true
+			g.discountFork(&c, g.heldTable, cache)
+			at = true
 		}
 		if c.newToStay {
-			readNew = readNew || read
-			c.newToStay = read
+			if at {
+				read.add(&c)
+			}
+			c.newToStay = at
 		}
-		reread = reread || read
+		reread = reread || at
 		total += c.size
 		kept = append(kept, c)
 	}
 	g.held = kept
-	return total, reread, readNew
+	return total, reread, read
 }
 
 // orderHeld sets each held process's growth at the reading taken at now, the first at or above
@@ -1032,12 +1095,15 @@ func (g *Guard) orderHeld(now time.Time) (grew bool, heldBytes uint64) {
 // of every held pid and the four identity files of every new one before the kill, each a read that
 // can wait out a stall of the pod's CPU throttle.
 //
-// must is whether the guard has read no process new to the stay that it may end, so that it must
-// read one here where one started (INFRA-3531 R1 of spec version 32: "and at least one of them").
-// Where it must, the search reads past the budget, one process at a time, the newest first, until
-// it has read the smaps of one the guard may end, and nothing more past the budget from then on.
-// Where it need not, a held process new to the stay having been read, it reads within the budget
-// alone, and nothing at all, the listing included, once deadline has passed.
+// It reads within half, half an interval from the reading at the mark, and past it only while the
+// guard reads on (readOnNew) with read, what the reads at the mark have read of the processes new
+// to the stay, and what it reads itself: where no process new to the stay that the guard may end
+// has been read, whatever the clock (INFRA-3531 R1 of spec version 32: "and at least one of
+// them"), and where none read ranks above nothing, until whole, one interval from the reading at
+// the mark (spec version 34). Past half it reads one process at a time, the newest first, its
+// identity and, where the guard may end it, its smaps, and stops after the read in hand once it
+// need not read on; it reads nothing at all, the listing included, where half has passed and it
+// need not. Each process it reads it discounts as a fork (discountFork) with t and cache.
 //
 // It lists the processes once, and takes the band's table as it is: a listed pid that table holds
 // is that process, and it reads nothing of it. A pid that another process took within one interval
@@ -1057,9 +1123,11 @@ func (g *Guard) orderHeld(now time.Time) (grew bool, heldBytes uint64) {
 // those it may end alone, the newest by start time first; it reads no descriptor, and one whose
 // smaps it cannot read is left out. It answers none where none started, and asks the classifier
 // nothing then.
-func (g *Guard) startedSince(deadline time.Time, must bool) []candidate {
+func (g *Guard) startedSince(half, whole time.Time, read newRead, cache *argsCache) []candidate {
 	band := g.heldTable
-	if band == nil || !must && !g.clock.Now().Before(deadline) {
+	// pastBudget is whether half has passed and the reads at the mark need not read on.
+	pastBudget := func() bool { return !g.clock.Now().Before(half) && !g.readOnNew(read, whole) }
+	if band == nil || pastBudget() {
 		return nil
 	}
 	entries, err := os.ReadDir(g.proc)
@@ -1095,12 +1163,12 @@ func (g *Guard) startedSince(deadline time.Time, must bool) []candidate {
 	// started are the new processes it has read the identity of and not yet the smaps.
 	started := map[int]*Process{}
 	var found []candidate
-	// One round reads the identities the budget allows, or the next one alone where the budget has
-	// passed and the guard must read on, and then the smaps of those of them it may end.
+	// One round reads the identities the budget allows, or the next one alone where it has passed
+	// and the guard reads on, and then the smaps of those of them it may end.
 	for next := 0; next < len(newPIDs); {
 		from := next
 		for ; next < len(newPIDs); next++ {
-			if (next > from || !must || len(found) > 0) && !g.clock.Now().Before(deadline) {
+			if !g.clock.Now().Before(half) && (next > from || !g.readOnNew(read, whole)) {
 				break
 			}
 			pid := newPIDs[next]
@@ -1136,7 +1204,7 @@ func (g *Guard) startedSince(deadline time.Time, must bool) []candidate {
 			if _, unread := t.unread[p.PID]; unread || p.PID == g.self || classes[p.PID].Protected {
 				continue
 			}
-			if (!must || len(found) > 0) && !g.clock.Now().Before(deadline) {
+			if pastBudget() {
 				break
 			}
 			delete(started, p.PID)
@@ -1144,13 +1212,15 @@ func (g *Guard) startedSince(deadline time.Time, must bool) []candidate {
 			if err != nil {
 				continue
 			}
-			found = append(found, candidate{Process: p, role: classes[p.PID].Role, size: size, newToStay: true})
+			c := candidate{Process: p, role: classes[p.PID].Role, size: size, newToStay: true}
+			g.discountFork(&c, t, cache)
+			read.add(&c)
+			found = append(found, c)
 		}
-		if !must || len(found) > 0 {
+		if pastBudget() {
 			break
 		}
 	}
-	g.discountForks(found, t)
 	return found
 }
 
@@ -1288,9 +1358,10 @@ func (g *Guard) watch(now time.Time, s Settings, reading, limit, mark uint64) {
 	if !w.exited {
 		a.leaveOut(w.killed)
 	}
-	// At every reading of the wait, so that a process first read after the kill has its first
-	// read kept. It sets each one's growth since the kill, the order's middle tier (rank), so the
-	// processes are ranked again by it.
+	// At every reading of the wait, so that a process first read after a kill has its first read
+	// kept. It answers whether one grew since the previous kill, the go-on, and sets each one's
+	// growth since the rise's first kill, the order's third tier (rank), so the processes are
+	// ranked again by it.
 	grown := g.grownSinceKill(now, a.endable)
 	rank(a.endable)
 	switch {
@@ -1464,7 +1535,7 @@ func (g *Guard) applyKillFailures(t *Table) {
 // band's last reading is (startedSince); and every process is where no reading of the stay came
 // before the one decided on. Of the held processes at the reading at the mark, which decides
 // before it reads every size, the order takes as new those alone that a read at that reading
-// reached (settleNew). sinceKill is how much it grew since the previous kill of the rise
+// reached (settleNew). sinceFirstKill is how much it grew since the first kill of the rise
 // (grownSinceKill), 0 under growthNoise and wherever no kill of the rise has been made.
 // descriptorBytes is the part of size that the memfds it holds by a descriptor alone make up
 // (addHeldMemfds), which a read of its smaps again at the mark adds as it was counted (rereadHeld).
@@ -1476,7 +1547,7 @@ type candidate struct {
 	size            uint64
 	growth          uint64
 	newToStay       bool
-	sinceKill       uint64
+	sinceFirstKill  uint64
 	descriptorBytes uint64
 	lessParent      uint64
 }
@@ -1484,6 +1555,12 @@ type candidate struct {
 // rankSize is the size c ranks by where its tier ranks by size: its size less its parent's where
 // it is a fork that has not run a new program (lessParent).
 func (c *candidate) rankSize() uint64 { return c.size - c.lessParent }
+
+// inNewTier is whether c is in the order's tier of the processes new to the stay: new to it, and
+// holding memory of its own, its rank size above nothing (INFRA-3531 R1 of spec version 34). A
+// fork whose parent's size covers its own is not a process the guard has learned anything from,
+// and the tiers below rank it, by its growth since the rise's first kill or its rank size.
+func (c *candidate) inNewTier() bool { return c.newToStay && c.rankSize() > 0 }
 
 // discountForks sets the lessParent of each of cs, the processes the guard may end at a decision
 // whose table is t (INFRA-3531 R1 of spec version 33). A process that runs its parent's executable
@@ -1501,23 +1578,29 @@ func (c *candidate) rankSize() uint64 { return c.size - c.lessParent }
 // growers that started after them (`4g-latepool-v5s8l`, `4g-latepool-6gd5t`). Growth over the
 // window and since a kill are measured on each process's own sizes, and the floor and the reading
 // count every size whole: the discount orders, and changes nothing else.
-func (g *Guard) discountForks(cs []candidate, t *Table) {
-	// wholeArgs are the cmdline files this decision has read whole, by process, nil for one it
-	// could not read: a parent's is read once however many of its forks are compared with it.
-	var wholeArgs map[procKey][]byte
+func (g *Guard) discountForks(cs []candidate, t *Table, cache *argsCache) {
 	for i := range cs {
-		c := &cs[i]
-		c.lessParent = 0
-		parent, listed := t.byPID[c.PPID]
-		if !listed || !g.sameProgram(c.Process, parent, &wholeArgs) {
-			continue
-		}
-		r := g.sizes[procKey{pid: parent.PID, start: parent.StartTime}]
-		if len(r.window) > 0 {
-			c.lessParent = min(r.window[len(r.window)-1].size, c.size)
-		}
+		g.discountFork(&cs[i], t, cache)
 	}
 }
+
+// discountFork sets c's lessParent, as discountForks does.
+func (g *Guard) discountFork(c *candidate, t *Table, cache *argsCache) {
+	c.lessParent = 0
+	parent, listed := t.byPID[c.PPID]
+	if !listed || !g.sameProgram(c.Process, parent, cache) {
+		return
+	}
+	r := g.sizes[procKey{pid: parent.PID, start: parent.StartTime}]
+	if len(r.window) > 0 {
+		c.lessParent = min(r.window[len(r.window)-1].size, c.size)
+	}
+}
+
+// argsCache is the cmdline files one decision has read whole, by process, nil for one it could
+// not read (sameProgram): a pool's parent is read once however many of its forks are compared with
+// it. It is made at the decision's first such read.
+type argsCache map[procKey][]byte
 
 // sameProgram is whether p runs parent's executable with parent's arguments: both executables read
 // and equal, and both argument lists read and equal whole. An exe link the scan could not read, or
@@ -1526,22 +1609,21 @@ func (g *Guard) discountForks(cs []candidate, t *Table) {
 // heads are equal and either filled them, it reads both cmdline files whole now and compares them,
 // gVisor and Linux answering the whole list, and a list it cannot read whole is no match. Only that
 // case reads more, so the discount sets no bound on the arguments' length (INFRA-3531 R1 of spec
-// version 33). wholeArgs keeps each file it read whole for the rest of the decision, so a pool's
-// parent is read once for all its forks; it is made at the first such read.
-func (g *Guard) sameProgram(p, parent *Process, wholeArgs *map[procKey][]byte) bool {
+// version 33). cache keeps each file it read whole for the rest of the decision.
+func (g *Guard) sameProgram(p, parent *Process, cache *argsCache) bool {
 	if p.Exe == "" || p.Exe != parent.Exe || len(p.Args) == 0 || !slices.Equal(p.Args, parent.Args) {
 		return false
 	}
 	if p.argsWhole && parent.argsWhole {
 		return true
 	}
-	own := g.wholeArgs(p, wholeArgs)
-	return own != nil && bytes.Equal(own, g.wholeArgs(parent, wholeArgs))
+	own := g.wholeArgs(p, cache)
+	return own != nil && bytes.Equal(own, g.wholeArgs(parent, cache))
 }
 
 // wholeArgs is p's cmdline read whole, or nil where it cannot be read, from cache where this
 // decision has read it before (sameProgram).
-func (g *Guard) wholeArgs(p *Process, cache *map[procKey][]byte) []byte {
+func (g *Guard) wholeArgs(p *Process, cache *argsCache) []byte {
 	key := procKey{pid: p.PID, start: p.StartTime}
 	if data, read := (*cache)[key]; read {
 		return data
@@ -1554,22 +1636,23 @@ func (g *Guard) wholeArgs(p *Process, cache *map[procKey][]byte) []byte {
 		data = nil
 	}
 	if *cache == nil {
-		*cache = map[procKey][]byte{}
+		*cache = argsCache{}
 	}
 	(*cache)[key] = data
 	return data
 }
 
 // rule is the tier of the order of ends (rank) that puts c first where it is first, which the
-// ended line names: ruleGrew where it grew over the window, else ruleNew where it is new to the
-// stay, else ruleGrewSinceKill where it grew since the previous kill, else ruleLargest.
+// ended line names: ruleGrew where it grew over the window, else ruleNew where it is in the tier of
+// the processes new to the stay (inNewTier), else ruleGrewSinceKill where it grew since the rise's
+// first kill, else ruleLargest.
 func (c *candidate) rule() string {
 	switch {
 	case c.growth > 0:
 		return ruleGrew
-	case c.newToStay:
+	case c.inNewTier():
 		return ruleNew
-	case c.sinceKill > 0:
+	case c.sinceFirstKill > 0:
 		return ruleGrewSinceKill
 	}
 	return ruleLargest
@@ -1640,7 +1723,8 @@ func (g *Guard) assess(now time.Time) (assessment, error) {
 	// addHeldMemfds ranked them by size alone; keepSizes sets the growth and whether each is new
 	// to the stay, which rank orders by first.
 	g.keepSizes(now, a.endable)
-	g.discountForks(a.endable, t)
+	var cache argsCache
+	g.discountForks(a.endable, t, &cache)
 	rank(a.endable)
 	for _, c := range a.endable {
 		a.endableBytes += c.size
@@ -1752,45 +1836,78 @@ func (g *Guard) forgetSizes() {
 // keepKillSizes keeps the size of each of cs, the processes of the assessment of the reading a
 // kill was sent at (act's, or for a kill on held sizes the one that follows it, decide), read at
 // now, as its size as of that kill (atKill), from which grownSinceKill measures its growth until
-// the next kill. The sizes of the kill before were emptied when its wait ended (endWait), so
-// those of one kill alone are kept, in the storage of the kills before.
+// the next kill, and at the rise's first kill as its size as of that one too (atFirstKill), from
+// which it measures the order's third tier for the rest of the rise. The sizes of the kill before
+// were emptied when its wait ended (endWait), so those of one kill alone are kept, in the storage
+// of the kills before.
 func (g *Guard) keepKillSizes(now time.Time, cs []candidate) {
+	first := !g.firstKillKept
+	g.firstKillKept = true
 	for _, c := range cs {
-		g.atKill[procKey{pid: c.PID, start: c.StartTime}] = killSize{size: c.size, seen: now}
+		key := procKey{pid: c.PID, start: c.StartTime}
+		g.atKill[key] = killSize{size: c.size, seen: now}
+		if first {
+			g.atFirstKill[key] = killSize{size: c.size, seen: now}
+		}
 	}
 }
 
 // grownSinceKill answers whether a process of cs, the processes the guard may end at the reading
 // taken at now, has grown since the previous kill of the rise: its size is its size as of the kill
-// (atKill) plus growthNoise or more. It sets each one's sinceKill to that growth, 0 under
-// growthNoise, which orders those that did not grow over the window (rank). Growth since the kill,
-// not over the window that orders the processes, is what it measures, so a process that grows in
-// steps wider than the window counts as grown. A process with no size as of the kill, one first
-// read after it, has that first read kept as its size as of the kill, and has not grown at it: a
-// fork reads its parent's shared pages as its own. The sizes of each process cs does not hold, one
-// that has ended or that the guard may no longer end, are dropped, so those kept are bounded by the
+// (atKill) plus growthNoise or more, the go-on of watch. It sets each one's sinceFirstKill to its
+// growth since the rise's first kill, measured the same way from atFirstKill, 0 under growthNoise,
+// the order's third tier (rank, INFRA-3531 R1 of spec version 34). Growth since a kill, not over
+// the window that orders the processes, is what it measures, so a process that grows in steps
+// wider than the window counts as grown. A process with no size as of a kill, one first read after
+// it, has that first read kept as its size as of the kill, and has not grown at it: a fork reads
+// its parent's shared pages as its own. The sizes of each process cs does not hold, one that has
+// ended or that the guard may no longer end, are dropped, so those kept are bounded by the
 // processes it may end, and a process read before allocates nothing.
 func (g *Guard) grownSinceKill(now time.Time, cs []candidate) bool {
 	grew := false
 	for i := range cs {
 		c := &cs[i]
 		key := procKey{pid: c.PID, start: c.StartTime}
-		k, known := g.atKill[key]
-		switch {
-		case !known:
-			k.size = c.size
-		case c.size >= k.size+growthNoise:
-			c.sinceKill, grew = c.size-k.size, true
+		if g.firstKillKept {
+			c.sinceFirstKill = keepGrowth(g.atFirstKill, key, c.size, now)
 		}
-		k.seen = now
-		g.atKill[key] = k
+		grew = keepGrowth(g.atKill, key, c.size, now) > 0 || grew
 	}
-	for key, k := range g.atKill {
-		if !k.seen.Equal(now) {
-			delete(g.atKill, key)
+	for _, kept := range []map[procKey]killSize{g.atKill, g.atFirstKill} {
+		for key, k := range kept {
+			if !k.seen.Equal(now) {
+				delete(kept, key)
+			}
 		}
 	}
 	return grew
+}
+
+// keepGrowth is how much size, the size of the process key read at now, grew since the kill whose
+// sizes kept holds, growthNoise or more, and 0 otherwise; a process kept holds no size of keeps
+// size as its size as of the kill, its first read after it, and has not grown at it. It marks the
+// process as read at now.
+func keepGrowth(kept map[procKey]killSize, key procKey, size uint64, now time.Time) uint64 {
+	k, known := kept[key]
+	growth := uint64(0)
+	switch {
+	case !known:
+		k.size = size
+	case size >= k.size+growthNoise:
+		growth = size - k.size
+	}
+	k.seen = now
+	kept[key] = k
+	return growth
+}
+
+// endRise lets go of the sizes as of the rise's first kill (atFirstKill), at a reading below the
+// mark, which ends a rise, and while the guard is off: the next rise's first kill keeps its own.
+func (g *Guard) endRise() {
+	if g.firstKillKept {
+		clear(g.atFirstKill)
+		g.firstKillKept = false
+	}
 }
 
 // addHeldMemfds adds to the size of each process of cs, read under proc, the memfds it holds open
@@ -1813,15 +1930,17 @@ func addHeldMemfds(cs []candidate, proc, link string, counted map[memfdID]bool, 
 
 // rank sorts cs in the guard's order of ends (INFRA-3531 R1 of spec version 31): the most grown
 // over the window first (growth); then, of those that did not grow over the window, those new to
-// this stay in the band (newToStay), the largest first; then the most grown since the previous kill
-// of the rise (sinceKill, set at each reading after a kill by grownSinceKill, and none before a
-// rise's first kill); then, of those that grew by none of these, the largest first; and the newest
-// first among equal sizes: of a parent and the child it forked that has run a program of its own,
-// which read the same, the child is the one that was started for the work. Where none of cs grew or
-// is new, the largest is first, and where all of them are new, as where no reading of the stay came
-// before the one decided on, the order is by size. Each size it orders by is the rank size, the
-// size less what discountForks takes off a fork that runs its parent's program (INFRA-3531 R1 of
-// spec version 33). The ended line names the tier that put the first one first (candidate.rule).
+// this stay in the band that hold memory of their own (inNewTier), the largest first, a process
+// new to the stay that ranks at nothing ranking in the tiers below (spec version 34); then the most
+// grown since the first kill of the rise (sinceFirstKill, set at each reading after a kill by
+// grownSinceKill, and none before a rise's first kill; spec version 34); then, of those that grew by
+// none of these, the largest first; and the newest first among equal sizes: of a parent and the
+// child it forked that has run a program of its own, which read the same, the child is the one
+// that was started for the work. Where none of cs grew or is in the new tier, the largest is first,
+// and where all of them are in it, as where no reading of the stay came before the one decided on,
+// the order is by size. Each size it orders by is the rank size, the size less what discountForks
+// takes off a fork that runs its parent's program (INFRA-3531 R1 of spec version 33). The ended
+// line names the tier that put the first one first (candidate.rule).
 //
 // The tier of the processes new to the stay is there because a runaway can begin between two
 // readings, or just before the band's last one, and then has no earlier read to grow from, or one
@@ -1831,20 +1950,24 @@ func addHeldMemfds(cs []candidate, proc, link string, counted map[memfdID]bool, 
 // closest run's highest reading 2.4 MiB below the kernel's kill point; and at 778c42de the run
 // `4g-latepool-zrr4d` ended a sleeping fork first where its growers had started 5 ms before the
 // band's last reading, which read them once, to a guard whose tier held only the processes the
-// reading before had not read. The tier of growth since the kill is there because a throttled pod's
+// reading before had not read. The tier of growth since a kill is there because a throttled pod's
 // readings come 170 to over 300 ms apart, so the window can hold one read of each process and show
 // no growth at all: in the latepool and sharedpool probes under gVisor (INFRA-3531 T17), the guard
 // then went on after a kill by ending the largest, a sleeping fork whose end frees nothing, while
-// the growers lived. Growth since the kill still shows who grew.
+// the growers lived. It measures from the rise's first kill and not the previous one, since
+// growers that step every 250 ms in step with each other show no step in the 100 ms since the
+// previous kill: at d22d8da3, in `4g-latepool-kxv5k` and `4g-latepool-zxhnw`, the guard then ended
+// the probe's parent and a sleeping fork after a fall while the growers lived.
 func rank(cs []candidate) {
 	slices.SortFunc(cs, func(x, y candidate) int {
-		// Growth since the kill orders those that are not new; the new ones go by size alone.
-		sinceKill := 0
-		if !x.newToStay && !y.newToStay {
-			sinceKill = cmp.Compare(y.sinceKill, x.sinceKill)
+		// Growth since the rise's first kill orders those that are not in the new tier; the ones
+		// in it go by size alone.
+		sinceFirstKill := 0
+		if !x.inNewTier() && !y.inNewTier() {
+			sinceFirstKill = cmp.Compare(y.sinceFirstKill, x.sinceFirstKill)
 		}
-		return cmp.Or(cmp.Compare(y.growth, x.growth), cmp.Compare(ordinal(y.newToStay), ordinal(x.newToStay)),
-			sinceKill, cmp.Compare(y.rankSize(), x.rankSize()), cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
+		return cmp.Or(cmp.Compare(y.growth, x.growth), cmp.Compare(ordinal(y.inNewTier()), ordinal(x.inNewTier())),
+			sinceFirstKill, cmp.Compare(y.rankSize(), x.rankSize()), cmp.Compare(y.StartTime, x.StartTime), cmp.Compare(y.PID, x.PID))
 	})
 }
 

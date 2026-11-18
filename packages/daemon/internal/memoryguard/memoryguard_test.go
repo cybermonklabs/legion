@@ -2935,36 +2935,45 @@ func endedChoices(h *harness) []endedChoice {
 	return out
 }
 
-// The tester's latepool runs `4g-latepool-6gd5t` and `4g-latepool-v5s8l` of 2026-11-18 under
-// gVisor at 4 GiB, at 23fdd92f, replayed with the readings their traces recorded and their times
-// (infra-3531-live-4g-latepool-6gd5t.log and ...-v5s8l.log, among the tester's logs of that head).
-// The agent holds a quarter of the limit; the probe's parent, a python3 command, fills a block of
-// 2.4 GB over the band's first readings and holds it, read at each. It then forks three sleepers,
-// each running its executable with its arguments and reporting its block as its own; in 6gd5t
-// after the band's last reading, so the reading at the mark finds them started since, and in v5s8l
-// between the band's last two readings, so the band reads each once. Six growers then start, each
-// a python3 child of the parent that runs a program of its own, and the reading at the mark reads
-// each at a few MiB. At 23fdd92f the new tier ended a sleeping fork first in both, at its full 2.4
+// The tester's latepool runs under gVisor at 4 GiB, replayed with the readings their traces
+// recorded and their times: `4g-latepool-6gd5t` and `4g-latepool-v5s8l` at 23fdd92f, and
+// `4g-latepool-54nzl`, `4g-latepool-kxv5k` and `4g-latepool-zxhnw` at d22d8da3, all of 2026-11-18
+// (infra-3531-live-4g-latepool-<run>.log, among the tester's logs of those heads). The agent holds
+// a quarter of the limit; the probe's parent, a python3 command, fills a block of 2.4 GB over the
+// band's first readings and holds it, read at each. It then forks three sleepers, each running its
+// executable with its arguments and reporting its block as its own: after the band's last reading
+// in 6gd5t, so the reading at the mark finds them started since; between the band's last two
+// readings in v5s8l, 54nzl and zxhnw, so the band reads each once; and before them in kxv5k, so
+// the band reads each twice. Six growers then start after the band's last reading, each a python3
+// child of the parent that runs a program of its own, and the reading at the mark finds them
+// started since. At 23fdd92f the new tier ended a sleeping fork first in both runs, at its full 2.4
 // GB, and after the kills of two growers, at a reading that fell but stayed above the mark with no
 // grower's step inside the window, the largest, the second fork (6gd5t at +1621 ms, v5s8l at +2372
-// ms).
+// ms). At d22d8da3, where each fork reported its parent's whole size and so ranked at nothing, the
+// reads at the mark of 54nzl and zxhnw had reached one fork when the half interval had passed, and
+// that fork ended first, 58.9 and 84.8 ms after the reading at the mark; and after a fall, with
+// growers that step every 250 ms in step, so that no read 100 ms after a kill shows a step, kxv5k
+// and zxhnw ended the parent and then a sleeping fork while the growers lived.
 //
 // A fork that runs its parent's program, its parent read in this stay, ranks by its size less its
-// parent's (INFRA-3531 R1 of spec version 33), so each sleeper ranks at 1 MiB: at the mark the
-// guard ends the largest grower, new to the stay, its line taking no parent's size off. The growers
-// are modelled on the grow program and the traces' ended sizes: each 1 MiB apart, about 50 MiB into
-// its first 64 MiB step at the next reading, the step whole at the one after, and a step every
-// 250 ms from then on. The guard then ends a grower at each reading where one grew, over the window
-// or since the kill; at the reading that falls with no grower's step inside the window it ends the
-// largest, which is the parent: the parent's own program differs from its parent's, the agent's, so
-// it ranks at its whole 2.4 GB, and its end frees nothing, its forks keeping its pages. With the
-// parent gone no read parent discounts the forks. The guard ends the three growers left at the
-// three readings after, as each steps or shows its step inside the window, and at the trace's last
-// reading, which falls with no grower left, the largest, the newest fork, at its whole size: the
-// sequence is a grower, two growers, the parent, three growers, a fork.
+// parent's (INFRA-3531 R1 of spec version 33): at 1 MiB in the runs of 23fdd92f, and at nothing in
+// those of d22d8da3, where it is not in the tier of the processes new to the stay (spec version
+// 34). In 54nzl and zxhnw the time from the reading at the mark to the kill at d22d8da3 passes at
+// that reading, before the guard reads anything, as a stall of the pod's CPU throttle: the reads
+// again take the parent, the first of them always, and, having read no process new to the stay
+// with memory of its own, the guard reads on past the half interval, the forks and then the
+// processes started since, up to one interval from the reading at the mark (spec version 34). At
+// the mark it ends the largest grower, found by the search, new to the stay, its line taking no
+// parent's size off. The growers are modelled on the grow program and the traces' ended sizes,
+// each 1 MiB apart. The guard then ends a grower at each reading: where one grew over the window,
+// as new to the stay, or, at a reading with no grower's step inside the window, by its growth since
+// the rise's first kill, which the parent and its forks show none of (spec version 34). With the
+// six growers ended, at the readings left, which fall, it ends the largest: the parent, whose own
+// program is not its parent's, the agent's, at its whole 2.4 GB, and then, no read parent
+// discounting the forks any longer, the newest fork at its whole size. No fork, and not the parent,
+// ends while a grower lives.
 func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(t *testing.T) {
-	// forkSize is the size each sleeping fork reported in both runs; the parent holds 1 MiB less,
-	// the pages each fork wrote after the fork its own.
+	// forkSize is the size each sleeping fork reports.
 	const forkSize = 2412785664
 	for _, run := range []struct {
 		name string
@@ -2975,9 +2984,15 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 		forksAt int
 		mark    replayReading
 		after   []replayReading
+		// own is what each fork holds that its parent does not: the parent holds forkSize less
+		// it once full.
+		own uint64
+		// stall is how long the reading at the mark takes before the guard reads anything.
+		stall time.Duration
 		// grown is each grower's size, less its 1 MiB offset, in MiB, at the reading at the mark
 		// and at each reading after it.
 		grown []uint64
+		want  []endedChoice
 	}{
 		{
 			name: "6gd5t, the forks started after the band's last reading",
@@ -2990,9 +3005,19 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			after: []replayReading{{9024, 242 * time.Millisecond}, {9232, 202 * time.Millisecond}, {9073, 106 * time.Millisecond},
 				{9370, 105 * time.Millisecond}, {9365, 105 * time.Millisecond}, {9201, 104 * time.Millisecond},
 				{8882, 105 * time.Millisecond}},
+			own:   mib,
 			grown: []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			want: []endedChoice{
+				{805, "new", "search", 0}, {804, "grew", "reading", 0}, {803, "grew", "reading", 0},
+				{802, "grew-since-kill", "reading", 0}, {801, "grew", "reading", 0}, {800, "grew", "reading", 0},
+				{700, "largest", "reading", 0}, {703, "largest", "reading", 0},
+			},
 		},
 		{
+			// v5s8l's next reading comes 315 ms after the mark, so its window holds no read
+			// before: the growers, read once, are new; and the one after 317 ms later, by when the
+			// growers have two reads and their window none, goes by growth since the rise's first
+			// kill.
 			name: "v5s8l, the forks started between the band's last two readings",
 			band: []replayReading{{7601, 0}, {7727, 105 * time.Millisecond}, {7855, 105 * time.Millisecond},
 				{7979, 104 * time.Millisecond}, {8114, 103 * time.Millisecond}, {8260, 104 * time.Millisecond},
@@ -3004,7 +3029,77 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			after: []replayReading{{9024, 315 * time.Millisecond}, {9227, 317 * time.Millisecond}, {9063, 110 * time.Millisecond},
 				{9476, 107 * time.Millisecond}, {9360, 117 * time.Millisecond}, {9197, 108 * time.Millisecond},
 				{8765, 110 * time.Millisecond}},
+			own:   mib,
 			grown: []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			want: []endedChoice{
+				{805, "new", "search", 0}, {804, "new", "reading", 0}, {803, "grew-since-kill", "reading", 0},
+				{802, "grew-since-kill", "reading", 0}, {801, "grew", "reading", 0}, {800, "grew", "reading", 0},
+				{700, "largest", "reading", 0}, {703, "largest", "reading", 0},
+			},
+		},
+		{
+			// 54nzl's reading rose 94 MiB from +2174 to +2280 ms, so the growers are partway
+			// through their second step at +2174 ms and finish it by +2280 ms.
+			name: "54nzl, the forks ranking at nothing and the reading at the mark stalled 58.9 ms",
+			band: []replayReading{{7590, 0}, {7751, 103 * time.Millisecond}, {7929, 104 * time.Millisecond},
+				{8100, 106 * time.Millisecond}, {8260, 104 * time.Millisecond}, {8366, 104 * time.Millisecond},
+				{8366, 111 * time.Millisecond}, {8366, 103 * time.Millisecond}, {8366, 102 * time.Millisecond},
+				{8366, 101 * time.Millisecond}, {8366, 101 * time.Millisecond}, {8366, 102 * time.Millisecond},
+				{8366, 102 * time.Millisecond}, {8366, 101 * time.Millisecond}, {8407, 154 * time.Millisecond}},
+			forksAt: 14,
+			mark:    replayReading{8590, 108 * time.Millisecond},
+			after: []replayReading{{8904, 193 * time.Millisecond}, {9211, 267 * time.Millisecond}, {9048, 108 * time.Millisecond},
+				{9282, 106 * time.Millisecond}, {9039, 111 * time.Millisecond}, {8719, 105 * time.Millisecond}},
+			stall: 58900 * time.Microsecond,
+			grown: []uint64{4, 56, 70, 128, 133, 134, 134},
+			want: []endedChoice{
+				{805, "new", "search", 0}, {804, "grew", "reading", 0}, {803, "grew", "reading", 0},
+				{802, "grew", "reading", 0}, {801, "grew", "reading", 0}, {800, "grew", "reading", 0},
+				{700, "largest", "reading", 0},
+			},
+		},
+		{
+			// At +1501 and +1605 ms, each 105 ms after a kill and with the reading fallen, no
+			// grower shows a step inside the window; at +1923 ms, 214 ms after the reading before,
+			// neither.
+			name: "kxv5k, the forks read twice by the band and the growers stepping in step after a fall",
+			band: []replayReading{{7693, 0}, {7932, 102 * time.Millisecond}, {8138, 104 * time.Millisecond},
+				{8364, 103 * time.Millisecond}, {8371, 103 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8371, 101 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8401, 102 * time.Millisecond}, {8412, 105 * time.Millisecond}},
+			forksAt: 9,
+			mark:    replayReading{8707, 141 * time.Millisecond},
+			after: []replayReading{{9222, 231 * time.Millisecond}, {9070, 105 * time.Millisecond}, {9057, 104 * time.Millisecond},
+				{9594, 104 * time.Millisecond}, {9349, 214 * time.Millisecond}, {9249, 106 * time.Millisecond},
+				{8866, 106 * time.Millisecond}},
+			grown: []uint64{45, 70, 70, 70, 134, 134, 197, 197},
+			want: []endedChoice{
+				{805, "new", "search", 0}, {804, "grew", "reading", 0}, {803, "grew-since-kill", "reading", 0},
+				{802, "grew-since-kill", "reading", 0}, {801, "grew", "reading", 0}, {800, "grew-since-kill", "reading", 0},
+				{700, "largest", "reading", 0}, {703, "largest", "reading", 0},
+			},
+		},
+		{
+			// zxhnw stalled 84.8 ms at the mark, like 54nzl, and after the kills at +2018 and
+			// +2124 ms, which fell, no grower shows a step inside the window, like kxv5k.
+			name: "zxhnw, the reading at the mark stalled 84.8 ms and the growers stepping in step after a fall",
+			band: []replayReading{{7606, 0}, {7799, 102 * time.Millisecond}, {7990, 102 * time.Millisecond},
+				{8185, 103 * time.Millisecond}, {8342, 102 * time.Millisecond}, {8371, 106 * time.Millisecond},
+				{8371, 101 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8371, 102 * time.Millisecond},
+				{8371, 101 * time.Millisecond}, {8371, 101 * time.Millisecond}, {8371, 103 * time.Millisecond},
+				{8371, 102 * time.Millisecond}, {8414, 173 * time.Millisecond}},
+			forksAt: 13,
+			mark:    replayReading{8563, 103 * time.Millisecond},
+			after: []replayReading{{8974, 206 * time.Millisecond}, {9209, 201 * time.Millisecond}, {9053, 108 * time.Millisecond},
+				{9040, 106 * time.Millisecond}, {9548, 104 * time.Millisecond}, {9331, 182 * time.Millisecond},
+				{9168, 103 * time.Millisecond}, {8848, 103 * time.Millisecond}},
+			stall: 84800 * time.Microsecond,
+			grown: []uint64{4, 53, 68, 68, 68, 133, 133, 197, 197},
+			want: []endedChoice{
+				{805, "new", "search", 0}, {804, "grew", "reading", 0}, {803, "grew", "reading", 0},
+				{802, "grew-since-kill", "reading", 0}, {801, "grew-since-kill", "reading", 0}, {800, "grew", "reading", 0},
+				{700, "largest", "reading", 0}, {703, "largest", "reading", 0}, {702, "largest", "reading", 0},
+			},
 		},
 	} {
 		t.Run(run.name, func(t *testing.T) {
@@ -3017,7 +3112,7 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			// The parent fills its block as the band's readings rise, and holds it from the
 			// plateau on.
 			parentAt := func(hundredths uint64) uint64 {
-				return forkSize - mib - (at(plateau) - min(at(hundredths), at(plateau)))
+				return forkSize - run.own - (at(plateau) - min(at(hundredths), at(plateau)))
 			}
 			pod := newFakePod(t)
 			parent := fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: latepoolArgs, anon: parentAt(run.band[0].hundredths)}
@@ -3025,6 +3120,7 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			pod.setAnon(at(run.band[0].hundredths))
 			h := newHarness(t, pod, protect("tester", 100))
 			h.signal.onKill = exitFreeing(pod, 0)
+			stall, _ := slowMark(h)
 			h.run()
 			fork := func() {
 				for i := range 3 {
@@ -3057,37 +3153,84 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			}
 			grow(0)
 			pod.setAnon(at(run.mark.hundredths))
+			stall.Store(int64(run.stall))
 			h.tickAfter(run.mark.after - Defaults().Interval)
+			stall.Store(0)
 			if got, want := endedChoices(h), []endedChoice{{805, "new", "search", 0}}; !slices.Equal(got, want) {
 				t.Fatalf("at the first reading at the mark the guard ended %+v, want the largest grower %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
 			}
 			for i, r := range run.after {
 				grow(i + 1)
 				pod.setAnon(at(r.hundredths))
-				h.tickAfter(r.after - Defaults().Interval)
+				// The guard waits its interval from the end of its tick, so the stall at the
+				// mark comes off the time to the reading after it.
+				extra := r.after - Defaults().Interval
+				if i == 0 {
+					extra -= run.stall
+				}
+				h.tickAfter(extra)
 			}
-			second := endedChoice{804, "grew", "reading", 0}
-			if run.forksAt < len(run.band) {
-				// v5s8l's next reading comes 315 ms after the mark, so its window holds no read
-				// before: the growers, read once, are new; and the one after 317 ms later, by when
-				// the growers have two reads and their window none, goes by growth since the kill.
-				second = endedChoice{804, "new", "reading", 0}
-			}
-			third := endedChoice{803, "grew", "reading", 0}
-			if run.forksAt < len(run.band) {
-				third = endedChoice{803, "grew-since-kill", "reading", 0}
-			}
-			want := []endedChoice{
-				{805, "new", "search", 0}, second, third,
-				{700, "largest", "reading", 0},
-				{802, "grew", "reading", 0}, {801, "grew", "reading", 0}, {800, "grew", "reading", 0},
-				{703, "largest", "reading", 0},
-			}
-			if got := endedChoices(h); !slices.Equal(got, want) {
-				t.Fatalf("the guard ended %+v, want %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
+			if got := endedChoices(h); !slices.Equal(got, run.want) {
+				t.Fatalf("the guard ended %+v, want %+v; the log:\n%s", got, run.want, strings.Join(h.log.all(), "\n"))
 			}
 			if stopped := h.log.with("stopped"); len(stopped) != 0 {
 				t.Fatalf("the guard gave the rise up: %q", stopped)
+			}
+		})
+	}
+}
+
+// A fork whose parent's size covers its own ranks at nothing and is not in the tier of the
+// processes new to the stay (INFRA-3531 R1 of spec version 34): the reads at the mark read on past
+// half the interval while they have read no process new to the stay with memory of its own, up to
+// one interval from the reading at the mark, and where that interval passes with only such a fork
+// read, the tiers below the new decide. Pid 700 runs python3 pool.py at 1 GiB through the band,
+// and pid 720, python3 idle.py of 300 MiB, sleeps beside it. Before the band's last reading pid
+// 700 forks pid 701, which runs its program and reports its 1 GiB as its own, so the band reads it
+// once; after that reading pid 730, python3 grow.py of 200 MiB, starts under the agent. At the mark
+// nothing has grown, and the reading takes as long as each case gives before the guard reads
+// anything, as under the pod's CPU throttle; the reads again take pid 701, the first of them
+// always. Where that is 60 ms, past half the interval, the guard reads on to pid 730, started
+// since, and ends it, new to the stay. Where it is one interval, the guard reads nothing more and
+// ends the largest by its rank size: pid 700, whose program is not its parent's, at its whole 1
+// GiB, before pid 720; pid 701 ranks at nothing.
+func TestMemoryGuardReadsOnPastAForkThatRanksAtNothingForOneIntervalAndThenEndsByTheTiersBelowTheNew(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		stall       time.Duration
+		read        []int
+		want        int
+		size        uint64
+		rule, sizes string
+	}{
+		{"a reading at the mark of 60 ms", 60 * time.Millisecond, []int{701, 730}, 730, 200 * mib, "new", "search"},
+		{"a reading at the mark of one interval", Defaults().Interval, []int{701}, 700, gib, "largest", "reread"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(agent(2*gib),
+				fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: gib},
+				fakeProcess{pid: 720, ppid: 100, start: 5020, args: []string{"python3", "idle.py"}, anon: 300 * mib})
+			pod.setAnon(3200 * mib)
+			h := newHarness(t, pod, protect("tester", 100))
+			reads := recordReads(h)
+			stall, _ := slowMark(h)
+			h.run()
+			pod.setAnon(3300 * mib)
+			h.tick()
+			pod.add(fakeProcess{pid: 701, ppid: 700, start: 7000, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: gib})
+			pod.setAnon(3400 * mib)
+			h.tick()
+			inTheBand := len(reads())
+
+			pod.add(fakeProcess{pid: 730, ppid: 100, start: 7030, args: []string{"python3", "grow.py"}, anon: 200 * mib})
+			pod.setAnon(3500 * mib)
+			stall.Store(int64(tc.stall))
+			h.tick()
+			requireMarkKill(h, tc.want, tc.size)
+			requireRankedBy(h, tc.want, tc.rule, tc.sizes, 0)
+			if got := readOrderBeforeTheKill(reads()[inTheBand:]); !slices.Equal(got, tc.read) {
+				t.Fatalf("before the kill the guard read the smaps of %v in that order, want %v", got, tc.read)
 			}
 		})
 	}
