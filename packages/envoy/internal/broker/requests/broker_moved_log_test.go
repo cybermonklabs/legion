@@ -332,3 +332,93 @@ func TestARequestEndedWithNoAuditDetailLogsAnEmptyObject(t *testing.T) {
 		}
 	}
 }
+
+// TestTheEndAfterARequestThatVerifiesNamesThatRequest: R5 v9's fourth case with the stale request
+// newer than the request that verifies. The line for the ended request names the request that
+// verifies as new_request, whether the ask coalesced onto it or was refused for it.
+func TestTheEndAfterARequestThatVerifiesNamesThatRequest(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		refused bool
+	}{
+		{"coalesced", false},
+		{"refused", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			capture, m, enr, key, _ := newGrantLogFixture(t, "sess-moved-after-"+c.name)
+			since := time.Now().Add(-time.Hour)
+			verifies, stale := staleAfterOneThatVerifies(t, m, enr, key)
+
+			ask := signRequest(t, m, key, "asked again", "DEEL_API_KEY")
+			if c.refused {
+				ask = signRequestFor(t, m, key, 600, "DEEL_API_KEY")
+			}
+			got, err := m.Create(context.Background(), enr, ask, "", nil)
+			if c.refused {
+				if !errors.Is(err, ErrRequestPending) || !strings.Contains(err.Error(), verifies.ID) {
+					t.Fatalf("Create for another lifetime = %+v, %v; want ErrRequestPending naming %s", got, err, verifies.ID)
+				}
+			} else if err != nil || !got.Coalesced || got.ID != verifies.ID {
+				t.Fatalf("Create = %+v, %v; want it coalesced onto %s", got, err, verifies.ID)
+			}
+			requireBrokerMovedLines(t, capture, brokerMovedLine(stale, verifies.ID, enr))
+			requireCancelledLine(t, capture, m, stale, since)
+			requireNothingSecretLogged(t, capture, m)
+		})
+	}
+}
+
+// TestTheEndOnAnAskDecidedAtOnceNamesTheRequestWrittenAtOnce: R5 v9's fifth case. The line for
+// the stale request an ask decided at once ends names the request that ask wrote, granted or
+// denied, as new_request.
+func TestTheEndOnAnAskDecidedAtOnceNamesTheRequestWrittenAtOnce(t *testing.T) {
+	for _, c := range askDecidedAtOnce {
+		t.Run(c.name, func(t *testing.T) {
+			capture, m, enr, key, _ := newGrantLogFixture(t, "sess-moved-at-once-"+c.name)
+			since := time.Now().Add(-time.Hour)
+			stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
+			c.prepare(t, m)
+
+			got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", c.names...), "", nil)
+			if err != nil || got.State != c.state {
+				t.Fatalf("Create(%v) again = %+v, %v; want a new request %s at once", c.names, got, err, c.state)
+			}
+			requireBrokerMovedLines(t, capture, brokerMovedLine(stale, got.ID, enr))
+			requireCancelledLine(t, capture, m, stale, since)
+			requireNothingSecretLogged(t, capture, m)
+		})
+	}
+}
+
+// TestTheEndOnAReusedGrantNamesItsRequest: R5 v9's sixth case. The line for the stale request an
+// ask a live grant answers ends names the reused grant's request as new_request.
+func TestTheEndOnAReusedGrantNamesItsRequest(t *testing.T) {
+	capture, m, enr, key, approver := newGrantLogFixture(t, "sess-moved-reused")
+	since := time.Now().Add(-time.Hour)
+	granted, _, stale := liveGrantBesideAStaleRequest(t, m, enr, key, approver)
+
+	got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "", nil)
+	if err != nil || got.ID != granted.ID {
+		t.Fatalf("Create(DEEL_API_KEY) again = %+v, %v; want the live grant of request %s handed back", got, err, granted.ID)
+	}
+	requireBrokerMovedLines(t, capture, brokerMovedLine(stale, granted.ID, enr))
+	requireCancelledLine(t, capture, m, stale, since)
+	requireNothingSecretLogged(t, capture, m)
+}
+
+// TestAnAskRefusedBeforeAnythingIsWrittenLogsNoEnd: R5 v9's seventh case. An ask refused before
+// Create writes anything ends nothing, so it writes no end line and no request.cancelled line.
+func TestAnAskRefusedBeforeAnythingIsWrittenLogsNoEnd(t *testing.T) {
+	for _, c := range askRefusedBeforeAnyWrite {
+		t.Run(c.name, func(t *testing.T) {
+			capture, m, enr, key, _ := newGrantLogFixture(t, "sess-moved-refused-early")
+			askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
+
+			if got, err := m.Create(context.Background(), enr, c.ask(t, m, key), "", nil); err == nil {
+				t.Fatalf("Create = %+v; want it refused", got)
+			}
+			requireBrokerMovedLines(t, capture)
+			requireNoCancelledLine(t, capture)
+		})
+	}
+}

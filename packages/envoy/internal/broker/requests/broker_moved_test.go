@@ -345,3 +345,197 @@ func TestAStaleRequestDecidedOnTheOtherBrokerMeanwhile(t *testing.T) {
 	}
 	requireJudgedAlone(t, watched, got.req.ID)
 }
+
+// staleAfterOneThatVerifies plants in enrollment enr, whose signing key is key, a pending request
+// of this broker for DEEL_API_KEY and, after it, a pending request of another broker for the same
+// name, as an adoption of two earlier boxes' requests can leave them: the one that verifies is
+// asked first, on an earlier box, the stale one second, on enr, and the earlier box's rows then
+// move to enr. So the request that verifies is the older of the two, which is the order R5 v9's
+// fourth case asks for with the stale request newer.
+func staleAfterOneThatVerifies(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey) (verifies, stale Request) {
+	t.Helper()
+	earlier, earlierKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
+	verifies, err := m.Create(context.Background(), earlier, signRequest(t, m, earlierKey, "asked of this broker", "DEEL_API_KEY"), "", nil)
+	if err != nil || verifies.State != "pending" || verifies.RecordID == nil {
+		t.Fatalf("Create(DEEL_API_KEY) on the earlier box = %+v, %v; want a pending request with a record", verifies, err)
+	}
+	stale = askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
+	moveSession(t, m, earlier, enr)
+	if pending := pendingOf(t, m, enr); len(pending) != 2 || pending[0] != verifies.ID || pending[1] != stale.ID {
+		t.Fatalf("the enrollment holds %v pending; want %s, the request that verifies, and after it %s, the stale one", pending, verifies.ID, stale.ID)
+	}
+	return verifies, stale
+}
+
+// TestAStaleRequestAfterOneThatVerifies: R5 v9's fourth case with the stale request newer. One
+// enrollment holds a request of this broker and, after it, an overlapping request of another
+// broker. The ask ends the stale one whatever its age, and the rule applies to the oldest request
+// that verifies: the same names and lifetime coalesce onto it, with no judge run, and another
+// lifetime is refused REQUEST_PENDING naming it, the stale request's end committed all the same.
+// A Create that stops at the oldest request because it verifies leaves the stale one pending,
+// which the parent's check A7 fails.
+func TestAStaleRequestAfterOneThatVerifies(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		coalesces bool
+		ask       func(t *testing.T, m *Machine, key *ecdsa.PrivateKey) string
+	}{
+		{"the same names and lifetime as the request that verifies", true, func(t *testing.T, m *Machine, key *ecdsa.PrivateKey) string {
+			return signRequest(t, m, key, "asked again", "DEEL_API_KEY")
+		}},
+		{"another lifetime", false, func(t *testing.T, m *Machine, key *ecdsa.PrivateKey) string {
+			return signRequestFor(t, m, key, 600, "DEEL_API_KEY")
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, enr, key, _ := newFixture(t)
+			verifies, stale := staleAfterOneThatVerifies(t, m, enr, key)
+			watched := watchJudge(m)
+
+			got, err := m.Create(context.Background(), enr, c.ask(t, m, key), "", nil)
+			if c.coalesces {
+				if err != nil || !got.Coalesced || got.ID != verifies.ID {
+					t.Fatalf("Create = %+v, %v; want it coalesced onto %s, the request that verifies, and not onto %s", got, err, verifies.ID, stale.ID)
+				}
+			} else if !errors.Is(err, ErrRequestPending) || !strings.Contains(err.Error(), verifies.ID) {
+				t.Fatalf("Create = %+v, %v; want ErrRequestPending naming %s, the request that verifies, and not %s", got, err, verifies.ID, stale.ID)
+			}
+			requireEndedAsBrokerMoved(t, m, stale)
+			requireStillPending(t, m, verifies)
+			if len(watched.handed) != 0 {
+				t.Fatalf("the judge was handed %+v; want nothing, no request having been written", watched.handed)
+			}
+		})
+	}
+}
+
+// askDecidedAtOnce is R5 v9's fifth case's two asks, each overlapping a stale request for
+// DEEL_API_KEY and each one the policy decides at once: granted, once the operator has lowered
+// DEEL_API_KEY to the agent tier, and denied, beside SERVICE_KEY, which the fixture's session may
+// not hold (TestDenyOpensNoRecord).
+var askDecidedAtOnce = []struct {
+	name    string
+	state   string
+	prepare func(t *testing.T, m *Machine)
+	names   []string
+}{
+	{"granted", "granted", func(t *testing.T, m *Machine) {
+		retag(t, m, policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierAgent, "deel-v2"))
+	}, []string{"DEEL_API_KEY"}},
+	{"denied", "denied", func(*testing.T, *Machine) {}, []string{"DEEL_API_KEY", "SERVICE_KEY"}},
+}
+
+// TestAStaleRequestEndsWhenTheAskIsDecidedAtOnce: R5 v9's fifth case. The session asks this
+// broker again for a name of the request it left waiting on another broker, and the policy
+// decides the new ask at once. The stale request is ended all the same, and the new request is
+// written as today, granted or denied, and handed to no judge. A Create that ends stale requests
+// only for an ask that waits for a person leaves it pending, which the parent's check A7 fails.
+func TestAStaleRequestEndsWhenTheAskIsDecidedAtOnce(t *testing.T) {
+	for _, c := range askDecidedAtOnce {
+		t.Run(c.name, func(t *testing.T) {
+			m, enr, key, _ := newFixture(t)
+			stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
+			c.prepare(t, m)
+			watched := watchJudge(m)
+
+			got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", c.names...), "", nil)
+			if err != nil || got.ID == stale.ID || got.Coalesced || got.State != c.state {
+				t.Fatalf("Create(%v) again = %+v, %v; want a new request %s at once", c.names, got, err, c.state)
+			}
+			requireEndedAsBrokerMoved(t, m, stale)
+			if pending := pendingOf(t, m, enr); len(pending) != 0 {
+				t.Fatalf("the enrollment holds %v pending; want nothing, the stale request %s ended and the new ask decided at once", pending, stale.ID)
+			}
+			if len(watched.handed) != 0 {
+				t.Fatalf("the judge was handed %+v; want nothing, the new request decided at once", watched.handed)
+			}
+		})
+	}
+}
+
+// liveGrantBesideAStaleRequest is R5 v9's sixth case's enrollment: enr holds a live grant of
+// DEEL_API_KEY that this broker's approver gave, and after it a stale request of another broker
+// for DEEL_API_KEY and stripeKey, which overlaps the grant's name. It answers the grant's request
+// and the grant's id.
+func liveGrantBesideAStaleRequest(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey, approver string) (granted Request, grantID string, stale Request) {
+	t.Helper()
+	ctx := context.Background()
+	granted, err := m.Create(ctx, enr, signRequest(t, m, key, "asked of this broker", "DEEL_API_KEY"), "", nil)
+	if err != nil || granted.State != "pending" || granted.RecordID == nil {
+		t.Fatalf("Create(DEEL_API_KEY) = %+v, %v; want a pending request with a record", granted, err)
+	}
+	dec, err := m.ApplyDecision(ctx, *granted.RecordID, true, approver)
+	if err != nil || dec.GrantID == "" {
+		t.Fatalf("ApplyDecision(%s) = %+v, %v; want a grant", *granted.RecordID, dec, err)
+	}
+	retagStripeKey(t, m)
+	stale = askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY", stripeKey)
+	return granted, dec.GrantID, stale
+}
+
+// TestAStaleRequestEndsWhenALiveGrantAnswersTheAsk: R5 v9's sixth case. The session holds a live
+// grant of DEEL_API_KEY from this broker and a stale request of another broker that overlaps it,
+// and asks for DEEL_API_KEY again. The live grant answers the ask, as today, and the stale request
+// is ended all the same. A Create that returns the reused grant before it looks at the pending
+// requests leaves the stale one pending, which the parent's check A7 fails.
+func TestAStaleRequestEndsWhenALiveGrantAnswersTheAsk(t *testing.T) {
+	m, enr, key, approver := newFixture(t)
+	granted, grantID, stale := liveGrantBesideAStaleRequest(t, m, enr, key, approver)
+	watched := watchJudge(m)
+
+	got, err := m.Create(context.Background(), enr, signRequest(t, m, key, "asked again on this broker", "DEEL_API_KEY"), "", nil)
+	if err != nil || got.ID != granted.ID || got.GrantID == nil || *got.GrantID != grantID {
+		t.Fatalf("Create(DEEL_API_KEY) again = %+v, %v; want the live grant %s of request %s handed back", got, err, grantID, granted.ID)
+	}
+	requireEndedAsBrokerMoved(t, m, stale)
+	if pending := pendingOf(t, m, enr); len(pending) != 0 {
+		t.Fatalf("the enrollment holds %v pending; want nothing, the stale request %s ended", pending, stale.ID)
+	}
+	if len(watched.handed) != 0 {
+		t.Fatalf("the judge was handed %+v; want nothing, a live grant having answered the ask", watched.handed)
+	}
+}
+
+// askRefusedBeforeAnyWrite is R5 v9's seventh case's asks, each overlapping a stale request for
+// DEEL_API_KEY and each refused before Create writes anything: a name the policy does not serve,
+// two approvers in one request (ErrMixedApprovers), and a request object signed for another broker
+// address, which this broker does not verify.
+var askRefusedBeforeAnyWrite = []struct {
+	name string
+	ask  func(t *testing.T, m *Machine, key *ecdsa.PrivateKey) string
+	want error
+}{
+	{"an unknown name", func(t *testing.T, m *Machine, key *ecdsa.PrivateKey) string {
+		return signRequest(t, m, key, "asked again", "DEEL_API_KEY", "NO_SUCH_SECRET")
+	}, nil},
+	{"two approvers", func(t *testing.T, m *Machine, key *ecdsa.PrivateKey) string {
+		return signRequest(t, m, key, "asked again", "DEEL_API_KEY", "SHARED_KEY")
+	}, ErrMixedApprovers},
+	{"a request object signed for another broker address", func(t *testing.T, m *Machine, key *ecdsa.PrivateKey) string {
+		m.Audience = anotherBroker
+		defer func() { m.Audience = testAudience }()
+		return signRequest(t, m, key, "asked again", "DEEL_API_KEY")
+	}, nil},
+}
+
+// TestAnAskRefusedBeforeAnythingIsWrittenEndsNothing: R5 v9's seventh case. An ask that Create
+// refuses before it writes anything ends no stale request: no request of that ask exists for the
+// end to name, and the session's next valid ask ends it.
+func TestAnAskRefusedBeforeAnythingIsWrittenEndsNothing(t *testing.T) {
+	for _, c := range askRefusedBeforeAnyWrite {
+		t.Run(c.name, func(t *testing.T) {
+			m, enr, key, _ := newFixture(t)
+			stale := askOfAnotherBroker(t, m, enr, key, "DEEL_API_KEY")
+
+			got, err := m.Create(context.Background(), enr, c.ask(t, m, key), "", nil)
+			if err == nil || (c.want != nil && !errors.Is(err, c.want)) {
+				t.Fatalf("Create = %+v, %v; want it refused (%v)", got, err, c.want)
+			}
+			requireStillPending(t, m, stale)
+			var written int
+			if err := m.Store.Pool.QueryRow(context.Background(), `select count(*) from requests where enrollment_id=$1`, enr).Scan(&written); err != nil || written != 1 {
+				t.Fatalf("the enrollment holds %d requests, %v; want the stale request alone", written, err)
+			}
+		})
+	}
+}
