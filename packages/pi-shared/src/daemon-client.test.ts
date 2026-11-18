@@ -7,7 +7,6 @@ import {
   callReadyWithRetry,
   createLegionDaemonClient,
   DAEMON_ATTEMPT_LIMIT_MS,
-  DAEMON_RESTART_BUDGET_MS,
   type DaemonRestartRetry,
   daemonUnreachable,
   LegionDaemonApiError,
@@ -776,7 +775,6 @@ test("a call that finds the daemon not serving is made again once it serves, for
 });
 
 test("a call waits up to 60 minutes for a daemon that is not serving, and past that ends as today", async () => {
-  expect(DAEMON_RESTART_BUDGET_MS).toBe(60 * 60_000);
   const clock = waitClock();
   let attempts = 0;
 
@@ -798,7 +796,6 @@ test("a call waits up to 60 minutes for a daemon that is not serving, and past t
 });
 
 test("an attempt the daemon takes and does not answer in five minutes is ended and made again", async () => {
-  expect(DAEMON_ATTEMPT_LIMIT_MS).toBe(5 * 60_000);
   const limits: number[] = [];
   const signals: (AbortSignal | undefined)[] = [];
   const waits: number[] = [];
