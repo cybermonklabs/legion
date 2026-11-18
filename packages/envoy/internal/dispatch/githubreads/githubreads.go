@@ -72,7 +72,8 @@ type Attempt struct {
 
 // Held is a held scope of an attempt (Hold): the failures noted on its context wait in it until
 // its caller keeps them (Keep) or drops them (Drop). A caller that asks again, or asks another
-// way, within its pass runs each try in one, because only the outcome it ends with counts.
+// way, within its pass runs each try in one, because only the outcome it ends with counts, and
+// Reached tells it whether a try has an outcome at all.
 //
 // Only the first failure a scope holds can become a cause, since the attempt keeps the first
 // failure that reaches it and a scope passes its notes on in the order they arrived; so a scope
@@ -84,6 +85,10 @@ type Held struct {
 	attempt *Attempt
 	// parent is the enclosing held scope, nil when the attempt itself encloses this one.
 	parent *Held
+	// reached is whether a request was sent in the scope or in one it encloses (NoteSent), or a
+	// failure reached it (Reached). It is apart from mu because NoteSent marks every scope a
+	// request is sent in on each request a pass sends, and takes no scope's lock for it.
+	reached atomic.Bool
 
 	mu sync.Mutex
 	// settled is whether Keep or Drop has run, and kept which of the two. A note that arrives
@@ -109,9 +114,10 @@ func Begin(ctx context.Context) (context.Context, *Attempt) {
 	return context.WithValue(ctx, frameKey{}, frame{attempt: attempt}), attempt
 }
 
-// NoteSent marks the attempt ctx carries as having sent a request to GitHub. Inside a held scope
-// it still marks the attempt at once, since a request sent is sent whatever its caller then makes
-// of the answer. It does nothing on a ctx carrying no attempt.
+// NoteSent marks the attempt ctx carries as having sent a request to GitHub, and every held scope
+// ctx carries, the innermost and each that encloses it, as having reached GitHub (Held.Reached).
+// Inside a held scope it still marks the attempt at once, since a request sent is sent whatever
+// its caller then makes of the answer. It does nothing on a ctx carrying no attempt.
 func NoteSent(ctx context.Context) {
 	current, ok := ctx.Value(frameKey{}).(frame)
 	if !ok {
@@ -120,6 +126,9 @@ func NoteSent(ctx context.Context) {
 	current.attempt.mu.Lock()
 	current.attempt.sent = true
 	current.attempt.mu.Unlock()
+	for held := current.held; held != nil; held = held.parent {
+		held.reached.Store(true)
+	}
 }
 
 // NoteFailure notes err, by its Error() text made a Cause, as a failure on the attempt ctx
@@ -198,6 +207,7 @@ func Hold(ctx context.Context) (context.Context, *Held) {
 // note holds err's cause while the scope is unsettled and holds none yet, passes it on once the
 // scope was kept, and forgets it otherwise, making the cause's text only in the first two cases.
 func (h *Held) note(err error) {
+	h.reached.Store(true)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch {
@@ -214,6 +224,7 @@ func (h *Held) note(err error) {
 // fail holds cause, a note an inner scope kept, while the scope is unsettled, passes it on once
 // the scope was kept, and forgets it once the scope was dropped.
 func (h *Held) fail(cause string) {
+	h.reached.Store(true)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	switch {
@@ -272,6 +283,20 @@ func (h *Held) Drop() {
 	h.settled = true
 	h.failed = false
 	h.cause = ""
+}
+
+// Reached reports whether the try the scope holds reached GitHub: a request was sent in it or in
+// a scope it encloses (NoteSent), or a failure reached it, noted in it or kept by a scope it
+// encloses. A failure counts with no request sent because the client notes a limit
+// github_rate_limits holds without sending anything, and that limit is GitHub's own answer,
+// recorded: a try it held has an outcome of its own as much as a try GitHub answered. A try that
+// reached nothing holds nothing and says nothing of GitHub, so a caller that asks again settles
+// an earlier try's scope by the next try that reached GitHub, dropping its notes then, and keeps
+// them when no later try did (the architecture import's flight). A note made once the attempt
+// holds its first failure reaches no scope (NoteFailure), so Reached does not count it, and by
+// then the cause is settled whatever the caller keeps. A nil scope reached nothing.
+func (h *Held) Reached() bool {
+	return h != nil && h.reached.Load()
 }
 
 // Outcome reports whether any request was sent, whether a failure reached the attempt, and the

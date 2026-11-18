@@ -685,12 +685,13 @@ func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag st
 // here and not by send, which notes no limit GitHub answers: GitHub answers a spent GraphQL
 // budget with 200, which no reading of the status alone can see. The limit GraphQLRateLimit reads
 // is noted once recordGraphQLLimit has recorded it, so the cause carries the wait every process
-// now holds. A limit read in a 200 is noted without its body, which is the query's answer: the
-// request that spends the last point is answered with its data, which can be a private
-// repository's, and GET /healthz serves the cause to whoever reaches it, with no credential. The
-// caller is given the limit whole. A client without Limits reads the answer as request reads a
-// REST call's, and notes the limit RateLimit reads, which is only ever a 403 or a 429: GitHub's
-// refusal, which carries no data.
+// now holds. A limit read in a 200 is noted with GitHub's own wording of it in place of its body,
+// which is the query's answer (graphQLLimitWording): the envelope's errors entries, or, for the
+// answer that spends the last point, which carries its data and no error, the headers that name
+// the limit. That data can be a private repository's, and GET /healthz serves the cause to
+// whoever reaches it, with no credential. The caller is given the limit whole. A client without
+// Limits reads the answer as request reads a REST call's, and notes the limit RateLimit reads,
+// which is only ever a 403 or a 429: GitHub's refusal, which carries no data.
 func (c *Client) GraphQL(ctx context.Context, token string, query string, variables map[string]any) ([]byte, int, http.Header, error) {
 	if c == nil {
 		return nil, 0, nil, ErrNoAppKey
@@ -729,13 +730,11 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	c.recordGraphQLLimit(ctx, installation, limited, secondary)
 	// Noted once recorded, so the cause carries the wait every process now holds, which a strike
 	// can make longer than GitHub's own.
-	noted := limited
+	noted := &failedAnswer{method: http.MethodPost, target: target, limited: limited}
 	if status == http.StatusOK {
-		withoutData := *limited
-		withoutData.Body = ""
-		noted = &withoutData
+		noted.data, noted.body, noted.header = true, body, header
 	}
-	noteFailure(ctx, &failedAnswer{method: http.MethodPost, target: target, limited: noted})
+	noteFailure(ctx, noted)
 	return body, status, header, limited
 }
 
@@ -991,22 +990,41 @@ func noteFailure(ctx context.Context, err error) {
 
 // failedAnswer is an answer send, request or GraphQL notes as a failure, worded as the client's
 // own errors are: "<METHOD> <target>: status <n>: <body>", or the limit's own text after the
-// method and target, with an empty body for a limit GraphQL read in a 200, whose body is data.
-// Its text is made only where the note can still become a cause (githubreads.NoteFailure), so a
-// request outside the leased passes formats nothing. The target carries no token: every token
-// travels in the Authorization header.
+// method and target, which for a limit GraphQL read in a 200 carries GitHub's wording of the
+// limit in place of the body, which is data. A body that is empty, and the separator before it,
+// are left out. Its text is made only where the note can still become a cause
+// (githubreads.NoteFailure), so a request outside the leased passes formats nothing. The target
+// carries no token: every token travels in the Authorization header.
 type failedAnswer struct {
 	method, target string
 	status         int
 	body           []byte
-	limited        *RateLimitError
+	// limited is a limit GitHub answered, never a held one, which is noted as it is.
+	limited *RateLimitError
+	// data is whether body is the answer to a query at 200 that limited was read in: the query's
+	// data, which the text never carries. It carries GitHub's wording of the limit instead, read
+	// from the envelope around the data or from header (graphQLLimitWording).
+	data   bool
+	header http.Header
 }
 
 func (f *failedAnswer) Error() string {
-	if f.limited != nil {
-		return f.method + " " + f.target + ": " + f.limited.Error()
+	head := f.method + " " + f.target + ": "
+	switch {
+	case f.limited == nil && len(f.body) == 0:
+		return head + "status " + strconv.Itoa(f.status)
+	case f.limited == nil:
+		return head + "status " + strconv.Itoa(f.status) + ": " + string(f.body)
 	}
-	return fmt.Sprintf("%s %s: status %d: %s", f.method, f.target, f.status, f.body)
+	head += f.limited.answered()
+	body := f.limited.Body
+	if f.data {
+		body = graphQLLimitWording(f.header, f.body)
+	}
+	if body == "" {
+		return head
+	}
+	return head + ": " + body
 }
 
 // Ref resolves branch to its commit SHA under an installation token

@@ -424,7 +424,10 @@ These answers are not failures. The loop takes each one as data and goes on, so 
   reads;
 - a CI reconcile query that fails when the reconcile then reads the same repository over REST;
 - a sync of an architecture source that fails and finds that another sync or a settings save
-  changed the source first, when the import then syncs the source again and reads it.
+  changed the source first, once the import syncs the source again and that sync reaches GitHub:
+  it sends a request, or meets a failure such as a rate limit already recorded. When the import
+  stops before a later sync reaches GitHub, because the time for the sync ran out or the database
+  failed, the first sync's failure counts.
 
 The GitHub client counts no other 403, and no 404, 409 or 422, because the same answer is data at
 one point and a failure at another. It does not count a request that was cut off because its

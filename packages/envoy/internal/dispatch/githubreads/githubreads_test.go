@@ -200,6 +200,71 @@ func TestAHeldScopesNotesReachTheAttemptOnlyWhenKept(t *testing.T) {
 	})
 }
 
+// A held scope reached GitHub once a request was sent in it or in a scope it encloses, or once a
+// failure reached it, with no request too (a limit already recorded is noted though nothing was
+// sent): a request sent in a nested scope marks every scope around it, a failure an inner scope
+// holds reaches the outer one only when the inner keeps it, and neither a request sent outside
+// the scope nor a note made after the attempt's first failure marks it. A nil scope reached
+// nothing.
+func TestAHeldScopeReachedGitHubBySendingOrByAFailure(t *testing.T) {
+	failure := errors.New("GitHub rate limit on installation:7 recorded at 2026-11-18T08:00:00Z is in force; the request was not sent")
+	t.Run("a request sent in a nested scope", func(t *testing.T) {
+		ctx, _ := Begin(context.Background())
+		outer, outerScope := Hold(ctx)
+		inner, innerScope := Hold(outer)
+		_, sibling := Hold(outer)
+		NoteSent(ctx)
+		if outerScope.Reached() || innerScope.Reached() {
+			t.Fatalf("a request sent outside both scopes: outer reached %v, inner %v; want neither", outerScope.Reached(), innerScope.Reached())
+		}
+		NoteSent(inner)
+		if !innerScope.Reached() || !outerScope.Reached() || sibling.Reached() {
+			t.Fatalf("a request sent in the inner scope: inner reached %v, outer %v, the inner's sibling %v; want the inner and the outer alone",
+				innerScope.Reached(), outerScope.Reached(), sibling.Reached())
+		}
+	})
+	t.Run("a failure with no request", func(t *testing.T) {
+		ctx, _ := Begin(context.Background())
+		outer, outerScope := Hold(ctx)
+		inner, innerScope := Hold(outer)
+		NoteFailure(inner, failure)
+		if !innerScope.Reached() || outerScope.Reached() {
+			t.Fatalf("a failure held in the inner scope: inner reached %v, outer %v; want the inner alone", innerScope.Reached(), outerScope.Reached())
+		}
+		innerScope.Keep()
+		if !outerScope.Reached() {
+			t.Fatal("the inner scope kept its failure: the outer scope did not reach GitHub")
+		}
+
+		ctx, _ = Begin(context.Background())
+		outer, outerScope = Hold(ctx)
+		inner, innerScope = Hold(outer)
+		NoteFailure(inner, failure)
+		innerScope.Drop()
+		if outerScope.Reached() {
+			t.Fatal("the inner scope dropped its failure: the outer scope reached GitHub")
+		}
+	})
+	t.Run("a note after the attempt's first failure", func(t *testing.T) {
+		ctx, _ := Begin(context.Background())
+		NoteFailure(ctx, failure)
+		held, scope := Hold(ctx)
+		NoteFailure(held, errors.New("a later failure"))
+		if scope.Reached() {
+			t.Fatal("a note made after the attempt's first failure reached the scope")
+		}
+	})
+	t.Run("nothing", func(t *testing.T) {
+		ctx, _ := Begin(context.Background())
+		if _, scope := Hold(ctx); scope.Reached() {
+			t.Fatal("a scope nothing was sent or noted in reached GitHub")
+		}
+		if _, scope := Hold(context.Background()); scope != nil || scope.Reached() {
+			t.Fatalf("Hold on a context with no attempt answered %v, reached %v; want a nil scope that reached nothing", scope, scope.Reached())
+		}
+	})
+}
+
 // countedError is an error that counts the calls of its Error(), so a test sees whether a note
 // made its text.
 type countedError struct{ calls int }

@@ -205,3 +205,53 @@ func TestALeasedImportPassRecordsTheRetryOfASupersededTryNotItsFailure(t *testin
 		}
 	}
 }
+
+// A leased import pass whose sync meets GitHub not answering its head lookup until the flight's
+// own bound ends, and finds as it records that failure that a settings save wrote the source's row
+// since its load (errSuperseded), retries on the spent bound, so the retry fails at its load of
+// the row and asks GitHub nothing. The pass records failed with the superseded try's cause: no
+// later try reached GitHub, so nothing replaced that try's failure, and dropping it would record
+// a read GitHub never answered as succeeded.
+func TestALeasedImportPassKeepsASupersededTrysFailureWhenItsRetryAsksGitHubNothing(t *testing.T) {
+	previous := syncTimeout
+	syncTimeout = time.Second
+	t.Cleanup(func() { syncTimeout = previous })
+	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles()})
+	branch.holdNextHeadLookup()
+	importer, other, database := twoProcesses(t, branch)
+	pass, reads := leasedImports(t, importer, database)
+
+	passed := make(chan struct{})
+	go func() {
+		defer close(passed)
+		pass()
+	}()
+	// The first try loaded the row before its head lookup, so a save while the lookup is held
+	// makes that try's record of its failure stale. The lookup is released only once the pass has
+	// ended, so GitHub answers it nothing within the flight's bound.
+	branch.waitHeld(t)
+	reSaveSource(t, other)
+	select {
+	case <-passed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the leased import pass did not end within 30s")
+	}
+	branch.releaseHeld()
+
+	if got := reads.take(); len(got) != 1 || got[0].read != githubreads.ArchitectureImport || got[0].succeeded ||
+		!strings.Contains(got[0].cause, "/repos/"+archRepo+"/commits/main") ||
+		!strings.HasSuffix(got[0].cause, context.DeadlineExceeded.Error()) {
+		t.Fatalf("the pass whose superseded try's head lookup GitHub never answered, and whose retry asked GitHub nothing, recorded %+v; "+
+			"want one failed %s attempt whose cause is that lookup's deadline", got, githubreads.ArchitectureImport)
+	}
+	// The save superseded the first try, which so recorded nothing on the row, and the retry
+	// ended before it had anything to record.
+	var lastCommit, lastError string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select coalesce(last_commit, ''), coalesce(last_error, '') from architecture_sources where project_key = 'CORE'`).Scan(&lastCommit, &lastError); err != nil {
+		t.Fatalf("read the source row: %v", err)
+	}
+	if lastCommit != "" || lastError != "" {
+		t.Fatalf("the source row holds commit %q and error %q, want neither: the save superseded the try that failed", lastCommit, lastError)
+	}
+}

@@ -142,7 +142,14 @@ func (e *RateLimitError) Error() string {
 		return fmt.Sprintf("GitHub rate limit on %s recorded at %s is in force; the request was not sent",
 			e.Scope, e.Recorded.UTC().Format(time.RFC3339Nano))
 	}
-	return fmt.Sprintf("rate-limited by GitHub (status %d), next request in %s: %s", e.Status, e.Wait, e.Body)
+	return e.answered() + ": " + e.Body
+}
+
+// answered is the text of a limit GitHub answered, up to its body: Error's head, and the whole of
+// the cause the client notes for such a limit with no body (failedAnswer), which ends with no
+// separator.
+func (e *RateLimitError) answered() string {
+	return fmt.Sprintf("rate-limited by GitHub (status %d), next request in %s", e.Status, e.Wait)
 }
 
 // Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
@@ -259,24 +266,13 @@ func GraphQLRateLimit(status int, header http.Header, body []byte) (limited *Rat
 // body one of them is in is parsed, since only GitHub's own envelope says whether GitHub wrote
 // the words or a repository did.
 func graphQLLimitErrors(body []byte) (spent, secondary bool) {
-	if !bytes.Contains(body, graphQLRateLimitedType) && !containsFold(body, secondaryRateLimitPhrase) {
-		return false, false
-	}
-	var answer struct {
-		// Message is the top-level message of the body GitHub refuses a request with, which no
-		// answer to a query carries: a repository's own data is under `data` and is read here
-		// for nothing.
-		Message string `json:"message"`
-		Errors  []struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-	if err := json.Unmarshal(body, &answer); err != nil {
+	answer, ok := readLimitEnvelope(body)
+	if !ok {
 		return false, false
 	}
 	// The message and the entries of one answer are a handful of short strings, which this
-	// copies to search; the megabyte of data beside them is what the check above spares.
+	// copies to search; the megabyte of data beside them is what the check before the parse
+	// spares.
 	secondary = containsFold([]byte(answer.Message), secondaryRateLimitPhrase)
 	for _, entry := range answer.Errors {
 		spent = spent || entry.Type == "RATE_LIMITED"
@@ -284,6 +280,71 @@ func graphQLLimitErrors(body []byte) (spent, secondary bool) {
 	}
 	return spent, secondary
 }
+
+// limitEnvelope is GitHub's own envelope of an answer, the whole of what is read from a body a
+// GraphQL limit may be spelled in: the top-level message of the body GitHub refuses a request
+// with, which no answer to a query carries, and the entries of `errors`. A repository's own data
+// is under `data` and is read for nothing.
+type limitEnvelope struct {
+	Message string `json:"message"`
+	Errors  []struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+// readLimitEnvelope parses body's envelope when GitHub's RATE_LIMITED type or its secondary-limit
+// phrase is anywhere in it (graphQLLimitErrors), and answers false for a body that holds neither
+// or is no JSON.
+func readLimitEnvelope(body []byte) (limitEnvelope, bool) {
+	if !bytes.Contains(body, graphQLRateLimitedType) && !containsFold(body, secondaryRateLimitPhrase) {
+		return limitEnvelope{}, false
+	}
+	var answer limitEnvelope
+	if err := json.Unmarshal(body, &answer); err != nil {
+		return limitEnvelope{}, false
+	}
+	return answer, true
+}
+
+// graphQLLimitWording is GitHub's own wording of a limit it answered a query with at 200, for the
+// cause the client notes in place of the answer's body, which is the query's data (Client.GraphQL).
+// It is the envelope's top-level message and each `errors` entry, as "<type>: <message>", joined
+// by "; ", read where GitHub's type or phrase for a limit is anywhere in the body
+// (readLimitEnvelope). Where that finds none -- the answer that spends the last point carries its
+// data and no error -- it names the limit by the headers GitHub read it from instead,
+// X-RateLimit-Remaining, X-RateLimit-Reset and Retry-After, each "<name>: <value>" as GitHub sent
+// it, joined the same way. Nothing of `data` is read.
+func graphQLLimitWording(header http.Header, body []byte) string {
+	var parts []string
+	if answer, ok := readLimitEnvelope(body); ok {
+		if answer.Message != "" {
+			parts = append(parts, answer.Message)
+		}
+		for _, entry := range answer.Errors {
+			switch {
+			case entry.Type != "" && entry.Message != "":
+				parts = append(parts, entry.Type+": "+entry.Message)
+			case entry.Type != "":
+				parts = append(parts, entry.Type)
+			case entry.Message != "":
+				parts = append(parts, entry.Message)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		for _, name := range limitHeaders {
+			if value := header.Get(name); value != "" {
+				parts = append(parts, name+": "+value)
+			}
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// limitHeaders are the headers GitHub names a GraphQL limit with, as its documentation spells
+// them.
+var limitHeaders = []string{"X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"}
 
 // What the readers above look for: the two phrases GitHub writes in a sentence of its own
 // wording, each lower case and each matched in whatever case it is spelled, and the enum an

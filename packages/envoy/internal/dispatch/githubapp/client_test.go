@@ -456,8 +456,9 @@ func TestReadAcceptsAResponseAtTheLimit(t *testing.T) {
 }
 
 // answeringGitHub is a GitHub that answers GET /answer/{status} with that status and the body
-// GitHub gives with it, a 429 and a 403 with the headers of an exhausted rate limit when the
-// query asks for them (?limited=1), and /large with a body of 64 bytes.
+// GitHub gives with it, or no body at all when the query asks for none (?empty=1), a 429 and a
+// 403 with the headers of an exhausted rate limit when the query asks for them (?limited=1), and
+// /large with a body of 64 bytes.
 func answeringGitHub(t *testing.T) (*Client, string) {
 	t.Helper()
 	base := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
@@ -475,7 +476,7 @@ func answeringGitHub(t *testing.T) (*Client, string) {
 			w.Header().Set("Retry-After", "60")
 		}
 		w.WriteHeader(status)
-		if status != http.StatusNotModified {
+		if status != http.StatusNotModified && r.URL.Query().Get("empty") != "1" {
 			fmt.Fprintf(w, `{"message":"answered %d"}`, status)
 		}
 	}})
@@ -489,10 +490,11 @@ func answeringGitHub(t *testing.T) (*Client, string) {
 
 // The client notes on the attempt a request's context carries (githubreads) the answers no
 // caller takes as data: a 5xx, a 401, a limit RateLimit reads (a 429, and a 403 that carries
-// one) and a body past the caller's limit, each in the words of the client's own errors. Every
-// other answer is the caller's to judge, so a 200, a 304, a 403 that carries no limit, a 404, a
-// 409 and a 422 are not noted. Each request is marked sent either way, and the same request on
-// a context with no attempt is answered exactly as on one with an attempt.
+// one) and a body past the caller's limit, each in the words of the client's own errors, with no
+// separator left at the end of an answer that has no body. Every other answer is the caller's to
+// judge, so a 200, a 304, a 403 that carries no limit, a 404, a 409 and a 422 are not noted. Each
+// request is marked sent either way, and the same request on a context with no attempt is
+// answered exactly as on one with an attempt.
 func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
 	client, base := answeringGitHub(t)
 	cases := []struct {
@@ -511,8 +513,10 @@ func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
 		{name: "422", path: "/answer/422"},
 		{name: "503", path: "/answer/503", cause: "GET " + base + `/answer/503: status 503: {"message":"answered 503"}`},
 		{name: "500", path: "/answer/500", cause: "GET " + base + `/answer/500: status 500: {"message":"answered 500"}`},
+		{name: "a 503 with no body", path: "/answer/503?empty=1", cause: "GET " + base + "/answer/503?empty=1: status 503"},
 		{name: "401", path: "/answer/401", cause: "GET " + base + `/answer/401: status 401: {"message":"answered 401"}`},
 		{name: "429", path: "/answer/429?limited=1", cause: "GET " + base + `/answer/429?limited=1: rate-limited by GitHub (status 429), next request in 1m0s: {"message":"answered 429"}`},
+		{name: "a 429 with no body", path: "/answer/429?limited=1&empty=1", cause: "GET " + base + "/answer/429?limited=1&empty=1: rate-limited by GitHub (status 429), next request in 1m0s"},
 		{name: "a 403 that RateLimit reads as a limit", path: "/answer/403?limited=1", cause: "GET " + base + `/answer/403?limited=1: rate-limited by GitHub (status 403), next request in 1m0s: {"message":"answered 403"}`},
 		{name: "a body past the caller's limit", path: "/large", limit: 16, cause: "GET " + base + "/large: GitHub response body exceeds the 16-byte limit"},
 	}
