@@ -1031,6 +1031,11 @@ func validateRulesFile(rules airlock.Rules) error {
 // zone is any text. netip.ParseAddr only says whether what is left is an address; the form named
 // is netaddr.Host's, the proxy's own.
 //
+// A host name with a trailing dot (api.github.com.) is the name a client writes without one, and
+// matches only a request that writes the dot, so for the requests clients make it binds nothing:
+// it is refused naming the name without the dot, when that is plain host-name text, and naming
+// no form otherwise. An empty host names nothing a request can reach.
+//
 // The rest are hosts no request names that hold no address to name, each refused naming no form,
 // since all they hold is the file's own text: a host with a port; a bracket or a % around no
 // address; a colon in no address, which no host name holds; a last label that is a number, which
@@ -1053,6 +1058,7 @@ func ruleHostRefusal(h string) string {
 	if _, err := netip.ParseAddr(bare); err == nil {
 		return notCanonicalHost(netaddr.Host(bare))
 	}
+	numeric := numericLabel(bare[strings.LastIndexByte(bare, '.')+1:])
 	switch {
 	case port:
 		return "holds a port, and the proxy compares a CONNECT's host without its port, so the host binds nothing; write the host alone"
@@ -1060,12 +1066,35 @@ func ruleHostRefusal(h string) string {
 		return "holds a bracket or a % and is no IP address without its brackets, so it matches no host the proxy compares and binds nothing; write a host name, or an IP address with no bracket and no zone"
 	case strings.Contains(bare, ":"):
 		return "holds a colon and is no IP address, and no host name holds one, so it matches no host the proxy compares and binds nothing; write a host name, or an IPv6 address netip reads"
-	case !numericLabel(bare[strings.LastIndexByte(bare, '.')+1:]):
-		return ""
-	case strings.HasPrefix(bare, "*."):
+	case numeric && strings.HasPrefix(bare, "*."):
 		return "is a wildcard whose last label is a number, which no host name has, so it would match addresses by their text; name each address on its own, written as four decimal numbers"
+	case numeric:
+		return "ends in a number but is no IP address of four decimal parts with no leading zero, the only IPv4 form netip reads and the proxy compares: clients read a leading zero, fewer parts or a hex part as different addresses, so the host binds nothing; write the address as four decimal numbers with no leading zero"
+	case h == "":
+		return "is empty, so it names no host a request can reach and binds nothing; write a host name or an IP address"
+	case strings.HasSuffix(h, ".") && hostNameText(bare):
+		return "is a host name with a trailing dot, and a client writes a name without one, so the host binds nothing it asks for; write it as " + bare
+	case strings.HasSuffix(h, "."):
+		return "is a host name with a trailing dot, and a client writes a name without one, so the host binds nothing it asks for; write the name without the dot"
 	}
-	return "ends in a number but is no IP address of four decimal parts with no leading zero, the only IPv4 form netip reads and the proxy compares: clients read a leading zero, fewer parts or a hex part as different addresses, so the host binds nothing; write the address as four decimal numbers with no leading zero"
+	return ""
+}
+
+// hostNameText reports whether name is plain host-name text that a refusal may repeat: labels of
+// lower-case letters, digits, hyphens and underscores between single dots, or a "*." wildcard
+// before them. Anything else is the file's own free text, which no refusal repeats.
+func hostNameText(name string) bool {
+	name = strings.TrimPrefix(name, "*.")
+	if name == "" || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".") || strings.Contains(name, "..") {
+		return false
+	}
+	for i := range len(name) {
+		c := name[i]
+		if !('a' <= c && c <= 'z' || '0' <= c && c <= '9' || c == '-' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // notCanonicalHost is ruleHostRefusal's refusal of an IP address written in a form the proxy

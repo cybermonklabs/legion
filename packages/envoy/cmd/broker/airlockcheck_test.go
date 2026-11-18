@@ -185,6 +185,13 @@ func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 		{"an IPv4 address written as one number", "1572395042", bindsNothing("ends in a number", "four decimal"), "1572395042"},
 		{"an IPv4 address written in hex", "0x5db8d822", bindsNothing("ends in a number", "four decimal"), "0x5db8"},
 		{"a wildcard over the last labels of an address", "*.216.34", []string{"wildcard", "last label is a number", "match addresses by their text"}, "*.216"},
+		// A host name with a trailing dot matches only a request that writes the dot, which no
+		// client does for a name it was given without one; the form named is the folded name.
+		{"a host name with a trailing dot", "api.github.com.", bindsNothing("trailing dot", "write it as api.github.com"), "github.com."},
+		{"a host name in mixed case with a trailing dot", "API.GitHub.com.", bindsNothing("trailing dot", "write it as api.github.com"), "GitHub"},
+		{"a wildcard with a trailing dot", "*.googleapis.com.", bindsNothing("trailing dot", "write it as *.googleapis.com"), "googleapis.com."},
+		{"a trailing dot after text that is no host name", "api github.com.", bindsNothing("trailing dot", "write the name without the dot"), "api github"},
+		{"an empty host", "", bindsNothing("is empty"), `""`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			path := airlockFile(t, "airlock.json", `{"secrets": [{"name": "GITHUB", "hosts": ["api.github.com", "`+c.host+`"]}]}`)
