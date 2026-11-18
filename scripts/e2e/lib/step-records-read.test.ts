@@ -59,7 +59,13 @@ if (bash === null) throw new Error("no bash in /usr/bin or /bin");
 let runs = 0;
 // read runs the script with args against the fake dispatch, which prints err on stderr and out on
 // stdout and exits exit, on path, which by default finds the fake first.
-function read(out: string, args: string[] = [key], exit = 0, path = `${dir}:/usr/bin:/bin`, err = "") {
+function read(
+  out: string,
+  args: string[] = [key],
+  exit = 0,
+  path = `${dir}:/usr/bin:/bin`,
+  err = ""
+) {
   const log = join(dir, `calls-${++runs}`);
   writeFileSync(log, "");
   const result = Bun.spawnSync([bash, script, ...args], {
