@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { StepRecord } from "../../api/types";
-import { stepRecord as record } from "./step-record-fixture";
+import { defaultRuns, stepRecord as record } from "./step-record-fixture";
 import { stepTasks } from "./steps-model";
 
 // What the tab draws, without a DOM: the server's tasks in the server's order, each task's runs
@@ -13,40 +13,11 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
     tasks: [
       {
         steps: [
-          record({ id: "implement-1" }),
-          record({
-            agent: "legion-leg-leg-1-reviewer",
-            ended_at: "2026-11-16T10:30:00Z",
-            id: "review-1",
-            model: "openai/gpt-6.1-sol",
-            result: "failed",
-            returned_to: 2,
-            role: "reviewer",
-            started_at: "2026-11-16T10:00:00Z",
-            step: 4,
-            type: "review",
-          }),
-          record({
-            attempt: 2,
-            ended_at: null,
-            id: "implement-2",
-            model: "",
-            result: "",
-            started_at: "2026-11-16T10:31:00Z",
-          }),
+          defaultRuns.implement1,
+          defaultRuns.review1,
+          defaultRuns.implement2,
           record({ id: "retro-1", kind: "retro", step: 0, type: "" }),
-          // A merge GitHub had already made, which started under the release before this one: that
-          // release counted no start, so the end names no agent, no model and no start.
-          record({
-            agent: "",
-            id: "merge-1",
-            kind: "merge",
-            model: "",
-            role: "merger",
-            started_at: null,
-            step: 0,
-            type: "",
-          }),
+          defaultRuns.merge1,
         ],
         task: "default",
       },
@@ -68,7 +39,7 @@ test("stepTasks keeps the server's order and names each run's step, state and ti
     "passed",
   ]);
   expect(first?.rows[1]).toEqual({
-    agent: "legion-leg-leg-1-reviewer",
+    agent: "legion-core-core-1-reviewer",
     attempt: 1,
     ended: "2026-11-16T10:30:00Z",
     id: "review-1",

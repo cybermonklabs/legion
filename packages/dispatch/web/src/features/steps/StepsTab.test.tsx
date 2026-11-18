@@ -10,7 +10,7 @@ import { ApiError, api } from "../../api/client";
 import type { IssueSteps } from "../../api/types";
 import { scrollFadeTrailing } from "../../theme/classes";
 import { StepsTab } from "./StepsTab";
-import { stepRecord as record } from "./step-record-fixture";
+import { defaultRuns, stepRecord as record } from "./step-record-fixture";
 
 function renderTab(read: () => Promise<IssueSteps>) {
   const listSteps = spyOn(api, "listSteps").mockImplementation(read);
@@ -46,39 +46,10 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
     tasks: [
       {
         steps: [
-          record({ id: "implement-1" }),
-          record({
-            agent: "legion-leg-leg-1-reviewer",
-            ended_at: "2026-11-16T10:30:00Z",
-            id: "review-1",
-            model: "openai/gpt-6.1-sol",
-            result: "failed",
-            returned_to: 2,
-            role: "reviewer",
-            started_at: "2026-11-16T10:00:00Z",
-            step: 4,
-            type: "review",
-          }),
-          record({
-            attempt: 2,
-            ended_at: null,
-            id: "implement-2",
-            model: "",
-            result: "",
-            started_at: "2026-11-16T10:31:00Z",
-          }),
-          // A merge GitHub had already made, which started under the release before this one: that
-          // release counted no start, so the end names no agent, no model and no start.
-          record({
-            agent: "",
-            id: "merge-1",
-            kind: "merge",
-            model: "",
-            role: "merger",
-            started_at: null,
-            step: 0,
-            type: "",
-          }),
+          defaultRuns.implement1,
+          defaultRuns.review1,
+          defaultRuns.implement2,
+          defaultRuns.merge1,
         ],
         task: "default",
       },
@@ -117,8 +88,8 @@ test("the Steps tab draws each task's runs as a table, a running run as running"
   }
 });
 
-// Two tasks are two tables under two headings, in the server's order (which here is not the
-// order of their names), and each table holds its own task's runs and none of the other's.
+// Two tasks are two tables under two headings, in the server's order, and each table holds its own
+// task's runs and none of the other's.
 test("the Steps tab draws each of two tasks as its own table, with its own runs", async () => {
   const tab = renderTab(async () => ({
     issue: "CORE-1",
