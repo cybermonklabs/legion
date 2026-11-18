@@ -987,9 +987,19 @@ func (c *ghCommand) parse(args []string) (ghArgs, error) {
 	return parsed, nil
 }
 
+// ghUnreadUploads are the options, by long name, whose value names a file gh uploads to GitHub
+// that the leak guard does not read: gh 2.104.0's --attach, of `gh issue` and `gh pr` comment,
+// create and edit and of `gh issue artifact create`, which uploads an image or a video, an SVG's
+// text among them, as an asset GitHub then serves. A call giving one is refused, naming the
+// option, before anything runs, rather than let a file through that no check has read.
+var ghUnreadUploads = map[string]bool{"attach": true}
+
 // set records value given the option name: --help's as a boolean, any other's taking a value in
-// the order given.
+// the order given, and refuses an option of ghUnreadUploads.
 func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) error {
+	if ghUnreadUploads[name] {
+		return fmt.Errorf("%q uploads the file it names to GitHub, which the leak guard does not read, so it sends nothing; write the text in --body or --body-file, which the guard reads", arg)
+	}
 	switch {
 	case name == "help":
 		help, err := strconv.ParseBool(value)

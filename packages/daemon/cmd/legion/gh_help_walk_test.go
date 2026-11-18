@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,6 +102,33 @@ func ghHelpWalkFile(path []string) string {
 		return "gh.txt"
 	}
 	return strings.Join(path, "_") + ".txt"
+}
+
+// savedGhHelpOf answers gh's help of path from the saved walk of the release version, as
+// savedGhHelp answers from ghHelpDir: a path it has no file for prints the help of the nearest
+// parent it has, and one with no such parent at all is an error. The directory is made absolute
+// first, so a test that changes its working directory still reads it.
+func savedGhHelpOf(t *testing.T, version string) func([]string) (string, error) {
+	t.Helper()
+	dir, err := filepath.Abs(filepath.Join(ghHelpWalkDir, version))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "VERSION")); err != nil {
+		t.Fatalf("no saved help of gh %s: %v", version, err)
+	}
+	return func(path []string) (string, error) {
+		if len(path) == 0 {
+			data, err := os.ReadFile(filepath.Join(dir, "gh.txt"))
+			return string(data), err
+		}
+		for p := path; len(p) > 0; p = p[:len(p)-1] {
+			if data, err := os.ReadFile(filepath.Join(dir, ghHelpWalkFile(p))); err == nil {
+				return string(data), nil
+			}
+		}
+		return "", fmt.Errorf("unknown command %q for \"gh\"", path[0])
+	}
 }
 
 // ghHelpSection is every line of text's section named name (`FLAGS`, `HELP TOPICS`), its heading

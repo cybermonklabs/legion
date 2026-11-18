@@ -500,6 +500,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"api", "graphql", "-f", "query={viewer{login}}"}, "acme", ""},
 		{nil, []string{"api", "repos/other/thing"}, "", `the role's GitHub App is not installed on "other"`},
 		{nil, []string{"pr", "view", "1", "-R", "sjawhar/legion", "--bogus"}, "", `"--bogus" is no option`},
+		// gh 2.104.0's --attach uploads a file the leak guard does not read, so it is refused by
+		// name; a gh with no --attach refuses it as an option its help does not list.
+		{nil, []string{"issue", "comment", "1", "-R", "sjawhar/legion", "--body", "capture", "--attach", "notes.svg"}, "", `"--attach"`},
 	} {
 		check(home, tc.env, tc.args, tc.owner, tc.refuse)
 	}
