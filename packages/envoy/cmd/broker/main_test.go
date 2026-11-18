@@ -1106,6 +1106,17 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "ends in a number", "binds nothing", "leading zero"},
 			absent: []string{"093.184"},
 		},
+		// A host name with a trailing dot matches only a request that writes the dot, and an
+		// empty host names nothing a request can reach.
+		"a host name with a trailing dot": {
+			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com."]}]}`),
+			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[0]", "trailing dot", "binds nothing", "write it as api.deel.com"},
+			absent: []string{"deel.com."},
+		},
+		"an empty host": {
+			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", ""]}]}`),
+			want: []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "is empty", "binds nothing"},
+		},
 		"a file that is not JSON": {
 			path: airlockRulesFile(t, "these are not the rules you are looking for\n"),
 			want: []string{"not JSON", "byte offset 2, line 1, column 2"},
@@ -1157,10 +1168,10 @@ func TestMainStartsWithAnAirlockRulesFile(t *testing.T) {
 	requireHealthy(t, broker.Addr)
 }
 
-// TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt is the control of the two address rows
-// above: hosts written in netaddr.Host's form, an IPv6 address, an IPv4 address and an IPv6
-// address in upper case, which fold.ASCII alone changes and airlock.HostBound folds, are no
-// obstacle to the boot, and the broker goes on to serve.
+// TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt is the control of the host rows above:
+// hosts written in the form the proxy compares — an IPv6 address, an IPv4 address, a name and a
+// wildcard — and an IPv6 address and a name in upper or mixed case, which fold.ASCII alone changes
+// and airlock.HostBound folds, are no obstacle to the boot, and the broker goes on to serve.
 func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
@@ -1172,7 +1183,7 @@ func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
 		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, `{"secrets": [
-			{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "2001:db8:7::1", "93.184.216.34", "2001:DB8:8::1"]}
+			{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "API.Deel.com", "*.deel.com", "2001:db8:7::1", "93.184.216.34", "2001:DB8:8::1"]}
 		]}`),
 	)})
 	requireHealthy(t, broker.Addr)
