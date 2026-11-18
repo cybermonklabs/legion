@@ -283,8 +283,8 @@ describe("dispatch steps", () => {
     );
   });
 
-  // Dispatch lists the tasks in the order each first ran, which is neither the order of their
-  // names nor the order of all runs' starts: docs first ran before default, and ran again after.
+  // Dispatch lists the tasks in the order each first ran, which is not the order of all runs'
+  // starts: docs first ran before default, and ran again after.
   test("each task's runs print together, in the order the read lists the tasks", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
@@ -323,8 +323,9 @@ describe("dispatch steps", () => {
     expect(result.details).toEqual({ issue: "LEG-1", tasks: answer.tasks });
   });
 
-  // Dispatch answers an issue it does not hold, and one no step ran on, with no task; the
-  // generated type also lets the list be null, which reads as the empty list.
+  // Dispatch answers an issue no step ran on with no task (a key no issue carries is its 404
+  // NOT_FOUND, as the issue read answers it); the generated type also lets the list be null, which
+  // reads as the empty list.
   test("an issue with no step prints 0 steps in 0 tasks", async () => {
     for (const answer of [
       { issue: "LEG-1", tasks: [] },
@@ -467,8 +468,7 @@ describe("dispatch steps on the command line", () => {
     }
   });
 
-  // Only Dispatch's 200 reads as an issue with no step. Its own refusal of the read, and a page
-  // something in its place answered, are the read's failure: each exits 1 with the refusal.
+  // Only Dispatch's 200 reads as an issue with no step.
   test("an issue with no step exits 0 and prints 0 steps in 0 tasks", async () => {
     const server = dispatchServing({ routes: { [STEPS_PATH]: { issue: "LEG-1", tasks: [] } } });
 
@@ -478,9 +478,11 @@ describe("dispatch steps on the command line", () => {
     expect(stdout).toContain("LEG-1: 0 steps in 0 tasks");
   });
 
-  // The answers the steps GET refuses with: a credential Dispatch does not take (401), a fault of
-  // its own (500), and a page something in its place answered (502). No GET is project-scoped, so
-  // it answers no project's 403; a key Dispatch does not hold is the issue read's 404, the next row.
+  // Dispatch's own refusal of the read, and a page something in its place answered, are the read's
+  // failure: each exits 1 with the refusal. They are a credential Dispatch does not take (401), a
+  // fault of its own (500), and a page something in its place answered (502). No GET is
+  // project-scoped, so it answers no project's 403; a key Dispatch does not hold is the issue
+  // read's 404, the next row.
   test("a refusal of the read exits 1 with the refusal, and prints no steps", async () => {
     /** The run against `server` exits 1, reads the steps route once, and prints `refusal` and no
      *  steps; `label` names the case in each assertion's message. */
