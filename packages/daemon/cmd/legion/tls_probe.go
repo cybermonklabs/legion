@@ -116,11 +116,25 @@ func verifyTLSPositiveControls(sites []tlsSite, probe func(tlsSite) tlsOutcome) 
 	return nil
 }
 
+// tlsPositiveControlSpec is the positive controls' curl. It is built through tlsClientSpec.build
+// so that it runs as every client does, with a HOME of its own in a state directory and only the
+// tlsKeptVariables of env, and its -q comes first for the reason the curl client's does
+// (workerTLSClients).
+var tlsPositiveControlSpec = tlsClientSpec{
+	name: "positive-control", program: "curl", timeout: tlsDefaultProbeTimeout,
+	command: func(site tlsSite, _, _ string) ([]string, []string) {
+		return []string{"-q", "--cacert", site.root, "--capath", "/nonexistent", "--fail", "--silent", "--show-error", site.url}, nil
+	},
+}
+
 func probeTLSPositiveControls(ctx context.Context, env []string, workDir string) error {
+	stateDir, remove, err := newTLSStateDir()
+	if err != nil {
+		return err
+	}
+	defer remove()
+	client := tlsPositiveControlSpec.build("", env, workDir, stateDir)
 	return verifyTLSPositiveControls(compromisedTLSSites(), func(site tlsSite) tlsOutcome {
-		client := tlsCommandClient{clientName: "positive-control", env: env, workDir: workDir, timeout: tlsDefaultProbeTimeout, command: func(site tlsSite) (string, []string, []string) {
-			return "curl", []string{"--cacert", site.root, "--capath", "/nonexistent", "--fail", "--silent", "--show-error", site.url}, nil
-		}}
 		return client.probe(ctx, site)
 	})
 }
@@ -304,8 +318,11 @@ func chromiumNavigationFailure(stderr string) string {
 //
 // On top of the kept variables, each client runs with the probe's own values: a HOME of its own
 // in the state directory, which replaces the image's (tlsClientSpec.build), the settings its
-// command gives, and LEGION_TLS_URL naming the site. So no credential variable of the pod's
-// reaches a client, and no credential file one names or the pod's home holds.
+// command gives, and LEGION_TLS_URL naming the site. A client that reads its configuration from
+// its user's passwd home whatever HOME says also takes the flag that stops it reading any:
+// curl, the one such client measured, takes -q as its first argument (workerTLSClients). So no
+// credential variable of the pod's reaches a client, and no credential file one names or the
+// pod's home holds.
 //
 // A proxy variable of the pod's reaches no client either. That changes no verdict: Chromium already
 // fails every load behind a proxy, so the probe cannot pass behind one (chromiumTLSArgs says why).
@@ -614,9 +631,12 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 //
 // No client carries a credential of the pod's to a site: of the pod's variables, each keeps only
 // those the image declares and every trust setting named beside the pairs above (tlsKeptVariables,
-// which says why it is a list of what to keep and why a trust setting carries no credential), and
-// it runs with a HOME of its own in the state directory, so neither a credential variable of the
-// pod's nor a credential file of the pod's home reaches it.
+// which says why it is a list of what to keep and why a trust setting carries no credential); it
+// runs with a HOME of its own in the state directory; and curl, which reads the curlrc of its
+// user's passwd home where CURL_HOME, XDG_CONFIG_HOME and HOME hold none, runs with -q first,
+// which stops it reading any curlrc. So neither a credential variable of the pod's nor a
+// credential file of the pod's home reaches a client. The positive controls' curl is built the
+// same way (tlsPositiveControlSpec).
 //
 // Deliberately not here, each with what was measured:
 //
@@ -686,10 +706,19 @@ var workerTLSClients = []tlsClientSpec{
 			return []string{"sts", "get-caller-identity", "--no-sign-request", "--region", "us-east-1", "--endpoint-url", site.url}, nil
 		},
 	},
+	// curl reads a curlrc, and sends its headers to every host it reaches, from CURL_HOME,
+	// XDG_CONFIG_HOME or HOME, and where none of them holds one, from the home the passwd database
+	// names for its user (curl 8.14.1, findfile in tool_findfile.c), so the HOME of its own that
+	// build gives it does not keep it from the runtime user's curlrc. -q (--disable) keeps curl
+	// from every curlrc, but only as its first argument. Measured on 2026-11-18 on the image of
+	// d56fa735 against a local listener: with /home/legion/.curlrc holding an Authorization header,
+	// this client without -q sent that header, and with a curlrc in CURL_HOME, `curl -q -s` sent
+	// none while `curl -s -q` sent it. The positive controls' curl (tlsPositiveControlSpec) takes
+	// -q first for the same reason.
 	{
 		name: "curl", program: "curl", timeout: tlsDefaultProbeTimeout,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"--fail", "--silent", "--show-error", site.url}, nil
+			return []string{"-q", "--fail", "--silent", "--show-error", site.url}, nil
 		},
 	},
 	{

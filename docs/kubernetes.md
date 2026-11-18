@@ -479,6 +479,7 @@ Each TLS client has a bound of its own: 20 s for most, 60 s for `bq`, whose refu
 The probe holds `gcloud`, `bq`, `az`, `mise` and `socat` to the compromised chains only where each is on `PATH`.
 Where one is not, the probe reports it `absent` and fails nothing for it, because those five are outside the floor every deployment's image is held to.
 Of the probe pod's variables, each TLS client keeps only those the image declares and the trust and verification settings the image's clients read, such as `SSL_CERT_FILE`, `NODE_TLS_REJECT_UNAUTHORIZED` and `GIT_SSL_CAINFO`, so a `runtime.kubernetes.pod.env` that sets one of those settings to make the roles accept a compromised chain fails the probe, while no credential variable or file of the pod's reaches a test site (`tlsKeptVariables` and `tlsTrustVariables`, `packages/daemon/cmd/legion/tls_probe.go`).
+Each client runs with a home of its own in the probe's state directory, and `curl`, which reads the curlrc of its user's passwd home whatever `HOME` says, runs with `-q` first, as the positive controls' `curl` does.
 A command stopped by the aggregate budget is unavailable with `probe deadline`, so the image probe fails closed naming its client and site.
 The boot log names a derived bound when it applies, and so does `legion config check`.
 Oh My Pi's boot after it fits the registration deadline, `worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals` (360 s by default).
