@@ -118,9 +118,11 @@ func (a AWS) List(ctx context.Context, prefix string) ([]Listing, error) {
 		}
 		for _, e := range page.SecretList {
 			version := currentVersion(e.SecretVersionsToStages)
+			tags := TagMap(e.Tags)
 			listings = append(listings, Listing{
-				ID: aws.ToString(e.Name), Source: aws.ToString(e.ARN), Tags: TagMap(e.Tags),
+				ID: aws.ToString(e.Name), Source: aws.ToString(e.ARN), Tags: tags,
 				OnKey: a.onKey(aws.ToString(e.KmsKeyId), keys), HasCurrentValue: version != "", Version: version,
+				Created: aws.ToTime(e.CreatedDate), Unfilled: unfilled(tags, e.SecretVersionsToStages),
 			})
 		}
 	}
@@ -143,10 +145,19 @@ func (a AWS) Describe(ctx context.Context, id string) (Listing, error) {
 		return Listing{}, ErrNotFound
 	}
 	version := currentVersion(out.VersionIdsToStages)
+	tags := TagMap(out.Tags)
 	return Listing{
-		ID: aws.ToString(out.Name), Source: aws.ToString(out.ARN), Tags: TagMap(out.Tags),
+		ID: aws.ToString(out.Name), Source: aws.ToString(out.ARN), Tags: tags,
 		OnKey: a.onKey(aws.ToString(out.KmsKeyId), a.keys()), HasCurrentValue: version != "", Version: version,
+		Created: aws.ToTime(out.CreatedDate), Unfilled: unfilled(tags, out.VersionIdsToStages),
 	}, nil
+}
+
+// unfilled reports whether a Secrets Manager secret with tags and versions is Listing.Unfilled:
+// it carries the CreateLabel tag and holds no version at all.
+func unfilled(tags map[string]string, versions map[string][]string) bool {
+	_, labelled := tags[CreateLabel]
+	return labelled && len(versions) == 0
 }
 
 // TagMap is a Secrets Manager secret's tags as a map, the last value of a repeated key winning.

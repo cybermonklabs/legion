@@ -229,15 +229,17 @@ func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	key := newProofKey(t)
 	keyDir := key.keyDir
-	var publicURL string
 	var reached, verified atomic.Int32
-	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// The handler reads broker.URL, so broker is assigned before the server serves: Start, which
+	// sets the URL, runs after the assignment and before the goroutine that serves.
+	var broker *httptest.Server
+	broker = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/v1/requests/") {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
 		reached.Add(1)
-		if err := key.verify(r, publicURL); err != nil {
+		if err := key.verify(r, broker.URL); err != nil {
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte(`{"code":"PROOF_INVALID","error":"the proof does not verify"}`))
 			return
@@ -246,8 +248,8 @@ func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(approvedStatusJSON))
 	}))
+	broker.Start()
 	defer broker.Close()
-	publicURL = broker.URL
 	for _, id := range []string{"req%zz", "a b", "a/b", "req%25zz"} {
 		_, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, "status", id)
 		want := "agent-secrets status: " + strconv.Quote(id) + " is not a request id\n"
@@ -651,19 +653,23 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 }
 
 // TestAHelperFailureNamesTheHelperNotTheBroker: requesting a secret first asks the local helper
-// to sign, so an unavailable helper or a helper's own refusal must name its socket. A broker was
-// never asked, and adding its source trailer lies about the request path.
+// whether this process is in a session it registered, so a helper that refuses the probe or a
+// socket that does not answer must name its socket. A broker was never asked, and adding its
+// source trailer lies about the request path. (A helper answering NOT_A_SESSION, and a socket file
+// that is not there, are no failure: the chain skips the helper for them, chain_test.go.)
 func TestAHelperFailureNamesTheHelperNotTheBroker(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	socket, _ := fakeHelper(t, helper.Response{
-		Code:  helper.CodeNotASession,
-		Error: "this process is not a registered session",
+		Code:  helper.CodeSign,
+		Error: "the session key could not sign",
 	})
+	dead := filepath.Join(shortTempDir(t), "dead.sock")
+	staleSocketAt(t, dead)
 	for _, row := range []struct {
 		name, socket, want string
 	}{
-		{"helper refusal", socket, "refused: NOT_A_SESSION: this process is not a registered session"},
-		{"dead helper", filepath.Join(t.TempDir(), "missing.sock"), "did not answer"},
+		{"helper refusal", socket, "refused: SIGN: the session key could not sign"},
+		{"dead helper", dead, "did not answer"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			_, stderr, exit := runAgentSecrets(

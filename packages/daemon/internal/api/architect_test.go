@@ -228,14 +228,16 @@ func (r *statusRecorder) PutDesignGates(context.Context, string, []dispatch.Desi
 }
 
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
-// artifacts answers none, and an upload answers the slug Dispatch files the name under. No route
-// of this package reads or writes a document of an issue's.
+// artifacts answers none, and an upload answers the slug Dispatch files the name under. It also
+// takes every role-holder publication and keeps none. No route of this package reads or writes a
+// document of an issue's, and none publishes a role holder.
 type noArtifacts struct{}
 
 func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
 func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
 	return name, nil
 }
+func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
 
 var _ dispatch.Client = (*statusRecorder)(nil)
 
@@ -614,8 +616,8 @@ func TestTheArchitectsBackwardMoveNamesItsIssue(t *testing.T) {
 
 // A child whose parent chain leaves the tree before reaching an architect's issue - no parent, or a
 // parent not recorded, as one human re-parent in Dispatch leaves it - is the tree root's, as the
-// notice router decides (owningArchitect): the root architect the reviewer's phase-finished notice
-// reaches may accept it and retry it, and a sub-architect still may not.
+// notice router decides (record.OwningArchitect): the root architect the reviewer's phase-finished
+// notice reaches may accept it and retry it, and a sub-architect still may not.
 func TestABrokenParentChainIsTheTreeRootArchitects(t *testing.T) {
 	h, facts, _ := newArchitectHarness(t, nil, nil)
 	seedTree(t, h, "LEGION-208", "LEGION-209")

@@ -268,12 +268,12 @@ type scoredDuplicate struct {
 
 // duplicateGateResult is what the near-copy gate answered for one create.
 type duplicateGateResult struct {
-	// Unanswered is why the gate's read did not answer, in the words the create tells the filer
-	// (model.Suggestions.NearCopyCheck); empty exactly when it answered. The create goes in
-	// either way and is told this, forced or not, a forced one also recording that it was forced
-	// with no issues named, because refusing a create whose check was slow or broken would turn
-	// one bad read into a project that cannot be written to.
-	Unanswered string
+	// NotMade is why the gate's read did not answer, as near_copy_checks.reason records it:
+	// nearCopyNotMadeBound or nearCopyNotMadeFailed; empty exactly when it answered. The create
+	// goes in either way and is told why (nearCopyNotMadeNote), forced or not, a forced one also
+	// recording that it was forced with no issues named, because refusing a create whose check
+	// was slow or broken would turn one bad read into a project that cannot be written to.
+	NotMade string
 	// Candidates are the project's open non-ancestor issues whose score reaches
 	// duplicateNudgeScore, best score first, at most duplicateCandidateLimit.
 	Candidates []scoredDuplicate
@@ -281,7 +281,7 @@ type duplicateGateResult struct {
 
 // answered reports whether the gate's read answered at all. Candidates is empty both when it
 // answered and found nothing and when it did not answer, and the two are recorded apart.
-func (result duplicateGateResult) answered() bool { return result.Unanswered == "" }
+func (result duplicateGateResult) answered() bool { return result.NotMade == "" }
 
 // refusals are the candidates at or above duplicateRefuseScore: what a 409 names, and what a
 // forced create records that it forced past. Never nil, so it marshals as [].
@@ -337,9 +337,9 @@ func duplicateGateText(title, spec string) string {
 // that the check did not answer.
 //
 // A read that does not answer refuses nothing: the create goes in and the filer is told, in the
-// words Unanswered carries, that no near-copy check was made. The bound and a failure of the
-// read itself are told apart there and in the log, because the second is the server's own fault
-// - before this gate it was a visible 500 - and happens whatever the bound is.
+// words nearCopyNotMadeNote gives its reason, that no near-copy check was made. The bound and a
+// failure of the read itself are told apart there and in the log, because the second is the
+// server's own fault - before this gate it was a visible 500 - and happens whatever the bound is.
 func (s *server) duplicateGate(
 	ctx context.Context, project, title, spec string, ancestors []string,
 ) duplicateGateResult {
@@ -355,10 +355,10 @@ func (s *server) duplicateGate(
 		// answers nobody anything.
 		slog.Warn("dispatch: the near-copy check did not answer within its bound",
 			"project", project, "bound", bound, "error", err)
-		return duplicateGateResult{Unanswered: nearCopyCheckNotMade(bound)}
+		return duplicateGateResult{NotMade: nearCopyNotMadeBound}
 	}
 	slog.Error("dispatch: the near-copy check failed", "project", project, "error", err)
-	return duplicateGateResult{Unanswered: nearCopyCheckFailed}
+	return duplicateGateResult{NotMade: nearCopyNotMadeFailed}
 }
 
 // readDuplicateCandidates picks the new text's rarest words and scores the project's open issues
@@ -368,6 +368,13 @@ func (s *server) duplicateGate(
 func (s *server) readDuplicateCandidates(
 	ctx context.Context, project, title, spec string, ancestors []string, bound time.Duration, floor float64,
 ) ([]scoredDuplicate, error) {
+	// The test seam: a case holds the read here until its bound ends it (server
+	// beforeDuplicateRead). Nothing but a test sets it.
+	if s.beforeDuplicateRead != nil {
+		if err := s.beforeDuplicateRead(ctx); err != nil {
+			return nil, err
+		}
+	}
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return nil, err
@@ -473,6 +480,16 @@ func nearCopyBoundHit(err error) bool {
 	return errors.As(err, &pgError) && pgError.Code == "57014" // query_canceled
 }
 
+// nearCopyNotMadeNote is model.Suggestions.NearCopyCheck for a gate read that did not answer, from
+// the reason near_copy_checks records (duplicateGateResult.NotMade), so the note and the row cannot
+// name two causes.
+func (s *server) nearCopyNotMadeNote(reason string) string {
+	if reason == nearCopyNotMadeBound {
+		return nearCopyCheckNotMade(s.duplicateGateBound())
+	}
+	return nearCopyCheckFailed
+}
+
 // nearCopyCheckNotMade is model.Suggestions.NearCopyCheck when the gate's read ran out of its
 // bound: the create went in without the near-copy check an unforced create otherwise meets. The
 // time is the bound the read was given (duplicateGateBound), never a literal, so the note cannot
@@ -489,3 +506,14 @@ func nearCopyCheckNotMade(bound time.Duration) string {
 // the cause.
 const nearCopyCheckFailed = "the near-copy check before this create failed, so the create was " +
 	"not checked against the project's open issues"
+
+// nearCopyCheckUnrecorded is model.Suggestions.NearCopyCheck when the gate found a near copy but
+// the record of its refusal could not be written (nearCopyOutcome.unrecorded): the create went in
+// as a check not made, which its row records, and the note names the open issue the refusal would
+// have named, so the filer can still read it. Every released client prints the note after "No
+// near-copy check was made: ", so it reads true after those words.
+func nearCopyCheckUnrecorded(candidate model.DuplicateCandidate) string {
+	return fmt.Sprintf("this create's refusal could not be recorded, so it went in unchecked; the "+
+		"refusal named %s (%q) as a near copy of it: read %s, and if it is the same work, fold this "+
+		"issue into it", candidate.Key, candidate.Title, candidate.Key)
+}

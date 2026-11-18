@@ -11,7 +11,7 @@ under and you hand it back to the person.
 
 **Does the document ask for the act, or does it only mention it?**
 
-A request of this corpus is a technical document, and a technical document is full of deletions,
+A request is often a technical document, and a technical document is full of deletions,
 credentials, vendors and organization settings that it only describes. Describing is not asking.
 Ask yourself what follows from a person writing "approved" under this document as it stands:
 

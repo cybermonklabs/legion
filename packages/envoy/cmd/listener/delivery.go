@@ -459,7 +459,7 @@ func listenerDeliveryHandler(cfg listenerDeliveryHandlerConfig) func(deliveryMes
 		// own, delivered by the relay of its session consumer, and not a message for this
 		// listener to deliver again.
 		if message.mode == durableDelivery && strings.HasPrefix(message.msg.Subject, contracts.AgentTopicPrefix) && item.Topic != message.msg.Subject {
-			cfg.logger.DeliveryLog(slog.LevelDebug, "listener acknowledged a stored forward copy", strings.TrimPrefix(message.msg.Subject, contracts.AgentTopicPrefix), item.Topic, item.EventID, "forward_copy", slog.String("subject", message.msg.Subject))
+			cfg.logger.DeliveryLog(slog.LevelDebug, "listener acknowledged a stored forward copy", agentSubjectSession(message.msg.Subject), item.Topic, item.EventID, "forward_copy", slog.String("subject", message.msg.Subject))
 			message.finalize(false)
 			return
 		}
@@ -618,7 +618,9 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 		message.finalize(false)
 		return
 	}
-	role := strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)
+	// The lane names its role in either form (contracts.CanonicalRole); the claim it resolves is
+	// keyed by the bare role name either way (store.Registry.ClaimedRole).
+	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
 	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
 	if !ok {
 		message.finalize(false)
@@ -726,14 +728,15 @@ func finishRoleForward(cfg listenerDeliveryHandlerConfig, forward roleForward, e
 // and the alternative - taking the cache's miss for an answer - ACKs the message away.
 const deliverySessionReadTimeout = 2 * time.Second
 
-// agentSubjectDelivery delivers to the session named by the topic
-// (notifications.agent.<session>), which takes the message from its own consumer, relayed by the
+// agentSubjectDelivery delivers to the session named by the topic, in either form
+// (notifications.agent.<session> or notifications.agent.<PROJECT or _>.<session>,
+// agentSubjectSession), which takes the message from its own consumer, relayed by the
 // listener that owns the session, as session.HandleAgentMessage decides. A session another
 // listener owns is that listener's to deliver, so this one acknowledges the message silently; a
 // session that records no way of receiving at all is held and retried, then given up
 // (unplaceableAgentDelivery).
 func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope) {
-	sessionID := strings.TrimPrefix(item.Topic, contracts.AgentTopicPrefix)
+	sessionID := agentSubjectSession(item.Topic)
 	// The JetStream metadata the durable's handler read carries everything unplaceableAgentDelivery
 	// bounds this message by - its delivery count, against the deferrals the window buys and
 	// against unplaceableMaxDeliveries - and its stream sequence, the key of the slot a deferral

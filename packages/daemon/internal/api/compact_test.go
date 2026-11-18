@@ -473,7 +473,7 @@ func TestAStartDropsTheDaemonsHoldAndTheIdleClaimItLeavesIsCompacted(t *testing.
 
 	wantFreshSessionRefusal(t, refused, http.StatusConflict, claimInATurn,
 		heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
-	if err := m.StartedBy(h.ctx, 42); err != nil {
+	if err := m.StartedBy(h.ctx, 42, nil); err != nil {
 		t.Fatalf("the start run against the held claim: %v", err)
 	}
 	if err := m.Handle(h.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {

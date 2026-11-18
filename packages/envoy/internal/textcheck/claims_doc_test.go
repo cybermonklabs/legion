@@ -20,9 +20,10 @@ import (
 //
 // A claim is the backticked name a bullet opens with, followed by the em dash the list's shape
 // puts after it, and a backticked word later in a bullet's prose is not a claim. The
-// `project_scope` bullet is why: it reads "`named` or `person`, which says what `project` means",
-// so a check that asked whether the section mentions a name anywhere between its bounds would
-// find `project` there and pass with the `project` bullet deleted — the miss wearing a pass.
+// `project_scope` bullet is why: it names the words that claim takes and says what `projects`
+// means, so a check that asked whether the section mentions a name anywhere between its bounds
+// would find `projects` there and pass with the `projects` bullet deleted — the miss wearing a
+// pass.
 const (
 	// claimsDocHeading is the section's heading, matched as a whole line: a heading is a line of
 	// its own, so the list is reached without parsing the hard-wrapped prose above it.

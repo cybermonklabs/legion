@@ -156,8 +156,10 @@ type Options struct {
 	Decisions *RouteDecisions
 	// Log receives what the routes decide; nil is slog.Default().
 	Log *slog.Logger
-	// Tokens mints the GitHub App leases credential routes return after redeeming a grant.
-	Tokens appauth.Tokens
+	// Tokens mints the GitHub App leases credential routes return after redeeming a grant, and
+	// answers the owners each App is installed on, which the controller's gh bundle holds one
+	// directory per owner of (appauth.Source, appauth.ControllerCredential).
+	Tokens appauth.Source
 	// GitHubRepositories are the project's repositories as the daemon serves them
 	// (daemon's repositories.Accepted): the controller's gh bundle holds a read-only token per
 	// owner of them, each narrowed to that owner's repositories (appauth.ControllerCredential).
@@ -214,9 +216,15 @@ type Options struct {
 	// architect at once when the recovery will not record it (enterTodoChild). Nil leaves none out.
 	RepositoryUnread func(resolved string) bool
 	// AwaitRecovery leaves a child release_children left unrecorded on an unread repository to that
-	// repository's recovery (the daemon's awaitRecovery), which tells the tree's architect of each
-	// such child it did not record. Nil leaves none.
-	AwaitRecovery func(repo, tree, child, parent string)
+	// repository's recovery (the daemon's awaitRecovery), which tells the architect of each such
+	// child it did not record — the one that owns the child's parent when the record holds that
+	// parent in tree, else the tree's — and answers whether it did. False means the daemon no longer
+	// holds that repository unread — its recovery stopped waiting on GitHub for it between the
+	// route's RepositoryUnread read and this call — so no recovery will come for the child and none
+	// will tell its architect: the route must then schedule the child-release retry
+	// (scheduleChildReleaseRetry), exactly as for a child on no unread repository, rather than
+	// answer it released and wait. Nil leaves none, and holds every child released as before.
+	AwaitRecovery func(repo, tree, child, parent string) bool
 	// RoleFor is the role that works a phase (phase.RoleFor). The operator's retry of a failed
 	// phase worker applies its issue's held phase only when that phase's role is the claim's
 	// (retryClaim); nil retries no held phase, leaving every one to its architect.
@@ -251,6 +259,14 @@ type Options struct {
 	// store — on a context that outlives the agent's connection, and the route answers the agent
 	// once it has returned.
 	CapabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
+	// RoleHoldersChanged is told, before the claim takes a ready that carries no capability report
+	// — a boot's ready, or a role-regain's — of the claim as it stands, when it has an issue and is
+	// not the controller: the daemon queues the publication of that issue's role sessions to
+	// Dispatch, which reads the live set from the store when it runs. The ready is what sends the
+	// claim its first task, so the publication is queued before any task goes. An error refuses
+	// the ready with 503: the machine has not taken it, no task goes, and the plugin tries the
+	// ready again. Nil queues nothing.
+	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route
 	// 500 and changes nothing else.
@@ -317,7 +333,7 @@ type server struct {
 	// controllerMu orders a capability mint against a registration and a controller grant, so a
 	// grant the replaced registration authorised is never recorded after the mint revoked them.
 	controllerMu       sync.Mutex
-	tokens             appauth.Tokens
+	tokens             appauth.Source
 	githubRepositories func() []ghrepo.Repository
 	// renames is the deployment's repository equivalence (Options.RepositoryRenames): the rule
 	// that says which owner's installation holds a repository recorded under the name a transfer
@@ -342,7 +358,7 @@ type server struct {
 	handlers    []intake.Handler
 	prepare     func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
 	unread      func(resolved string) bool
-	await       func(repo, tree, child, parent string)
+	await       func(repo, tree, child, parent string) bool
 	roleFor     func(phase.Phase) claim.Role
 	records     record.Store
 	dispatch    dispatch.Client
@@ -353,6 +369,8 @@ type server struct {
 	// releaseRecordStore Options.ReleaseRecords and claimActivity Options.ClaimActivity.
 	promptAgents       []string
 	capabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
+	// roleHoldersChanged is Options.RoleHoldersChanged.
+	roleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
@@ -420,6 +438,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		handoffCompleted:   opts.HandoffCompleted,
 		promptAgents:       opts.PromptAgents,
 		capabilityReported: opts.CapabilityReported,
+		roleHoldersChanged: opts.RoleHoldersChanged,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
 		readiness:          opts.Ready,
@@ -801,9 +820,12 @@ func statementBound(bound time.Duration) int64 {
 // contract that added `waiting_on_issue` to the line's `kind`, is served every member of that
 // kind without its `kind` (withoutWaitingOnIssue), a word and not a key; a caller below
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
-// GitHub, is served it without `mergeWait` (withoutMergeWait); and a caller below
+// GitHub, is served it without `mergeWait` (withoutMergeWait); a caller below
 // assignmentsContract, the contract that added the experiment answers each issue runs under, is
-// served every issue without `assignments` (withoutAssignments).
+// served every issue without `assignments` (withoutAssignments); and a caller below
+// entryTimesContract, the contract that added the two times of the task that entry was queued
+// as and the arms of the architect-stalled reading that hold for a root, is served it without
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -931,6 +953,7 @@ var stateNarrowings = []stateNarrowing{
 		"of every member waiting on another issue"},
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
+	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1066,9 +1089,10 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. Every later row of stateNarrowings
 // stands above it — waitingOnIssueContract's, whose strip takes a word of the line's `kind` and
-// no key, then mergeWaitContract's and assignmentsContract's, the last this daemon's own
-// contract — so a caller from it up is served the measure, and none of what a later row adds
-// until it reaches that row's contract.
+// no key, then mergeWaitContract's, assignmentsContract's and entryTimesContract's, the last
+// this daemon's own contract — so a caller from it up is served the measure, and none of what a
+// later row adds until it reaches that row's contract (123, INFRA-3146's contract, moves no
+// shape of the state).
 const quietTimeContract = 111
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1100,6 +1124,18 @@ const mergeWaitContract = 133
 // to below this one is served the one experiment's answer in the three keys it has read since 49
 // and no assignments, whatever else its own band gives it, and a caller below 49 neither.
 const assignmentsContract = 141
+
+// entryTimesContract is the daemon contract that added each issue's `entryQueuedAt` and
+// `entryConfirmedAt`, the time the task of its phase entry was first queued to its role's claim
+// and the time that claim's worker confirmed it, and each root's `architectStalls`, the arms of
+// the architect-stalled reading that hold for its architect (version.go's 146). A plugin before
+// it is served the state without the three keys: one built before sjawhar/legion#2788 reads it
+// with a strict schema and would refuse the whole body for a key it does not name, and one built
+// after strips the keys instead, so the strip is what keeps them from a caller that did not ask
+// for them rather than what keeps such a caller reading at all. assignmentsContract stands below
+// it with no row of stateNarrowings between the two, so a caller in a pod at or above
+// assignmentsContract and below this contract is served `assignments` and not these three keys.
+const entryTimesContract = 146
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1398,6 +1434,34 @@ func withoutQuietTime(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.TreeMovedAt, issue.QuietHours = nil, nil
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// carriesEntryTimes is whether any issue of state carries a key entryTimesContract added:
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls`. Like the two entry numbers they are
+// written only where the daemon has one to write — an issue whose role holds no task of its
+// entry carries neither time, and a root no arm holds for carries no arm — so this is asked of
+// the state rather than answered true.
+func carriesEntryTimes(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil || len(issue.ArchitectStalls) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutEntryTimes is state with no issue carrying `entryQueuedAt`, `entryConfirmedAt` or
+// `architectStalls`, the three fields entryTimesContract added to the state; nothing else of that
+// contract is on the route. The issue map is copied, as every sibling strip copies it, so the
+// state the source answered is left as it was.
+func withoutEntryTimes(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
 		issues[key] = issue
 	}
 	state.Issues = issues

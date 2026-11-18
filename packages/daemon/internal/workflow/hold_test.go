@@ -23,11 +23,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// A tree's architect is who every notice of its tree reaches, so its own claim failing — its
-// launches or prompts ran out — would reach nobody unless the daemon says so: the failure is a
-// worker-died notice naming the architect and the phase the root is in, written for the architect
-// that owns the issue and for the controller. Nothing is held: a phase is its worker's, and the root's planner here
-// keeps its phase.
+// A tree's architect is who every notice of its tree reaches that no child's own architect takes,
+// so its own claim failing — its launches or prompts ran out — would reach nobody unless the daemon
+// says so: the failure is a worker-died notice naming the architect and the phase the root is in,
+// written for the architect that owns the issue and for the controller. Nothing is held: a phase
+// is its worker's, and the root's planner here keeps its phase.
 func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
@@ -55,9 +55,11 @@ func TestATreeArchitectsFailedClaimIsNoticedAndHoldsNoPhase(t *testing.T) {
 // architect is told in a worker-died naming the role and saying the phase is not its, and the
 // issue's phase stands: nothing is held for a role that holds no phase, and the controller is not
 // told of a phase that is not stalled. A lingering tree and a child that left the workflow tell
-// nobody, since their claims were suspended. A child's sub-architect works no phase and nothing in
-// the workflow starts it, so its failure holds nothing and tells nobody: the child's notices go to
-// the architect above it, and the operator who started it relaunches it.
+// nobody, since their claims were suspended or closed. A child's own architect's failure holds
+// nothing either, even at accepting, its own phase, since claimFailed answers an architect before
+// it reads the phase: it is told in a worker-died of the architect on the child, which reaches the
+// architect above it, and that architect takes the child's notices until the daemon starts the
+// child's architect again (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt).
 func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 	root := "LEGION-208"
 	until := time.Date(2026, 9, 26, 13, 0, 0, 0, time.UTC)
@@ -111,6 +113,8 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 			root:  record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"},
 			child: record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root, Parent: &root, Project: "LEGION", Title: "child", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "V"},
 			role:  claim.RoleArchitect, wantPhase: phase.Implementing,
+			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Implementing,
+				Reason: "LEGION-209's own architect failed; its notices come to you until it runs again, and the daemon starts it again at LEGION-209's next phase start"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,8 +152,9 @@ func TestAFinishedRolesFailedClaimIsNoticedAndHoldsNothing(t *testing.T) {
 // (R6); `reason` keeps its one value, `escalated`, which both agents' texts read as the
 // architect having already escalated this hold.
 //
-// The other three shapes of worker-died are here beside it, because the evidence each carries is
-// a decision of its own: the worker-died of a role that does not work the issue's phase names the
+// Three other shapes of worker-died are here beside it (a fourth, a child's own architect's, is
+// TestASubArchitectsFailedClaimTellsTheArchitectAboveIt), because the evidence each carries is a
+// decision of its own: the worker-died of a role that does not work the issue's phase names the
 // failure too, since that role's architect decides whether to start it again on the same
 // evidence; the tree architect's own names none, as R5 has it, and neither does the one that ends
 // a closed issue's production-check look, whose reason already names the cause.
@@ -682,4 +687,68 @@ func slotCount(t *testing.T, pool *pgxpool.Pool, issue string) int {
 		t.Fatalf("count the slots of %s: %v", issue, err)
 	}
 	return got
+}
+
+// R2: an architect's claim failing holds nothing and writes no held notice, at admitted as at
+// accepting. Both phases are the architect's own (phase.RoleFor), and claimFailed answers an
+// architect before it asks which role works the phase: a tree's own architect is told in a
+// worker-died, and a child's own architect's failure, at accepting as anywhere, is told only in a
+// worker-died of the architect on the child, which reaches the architect above it, with no
+// controller copy (TestASubArchitectsFailedClaimTellsTheArchitectAboveIt). Nothing here reaches
+// HeldNotice, which is why no hold is ever recorded from either phase.
+func TestAnArchitectsClaimFailedHoldsNoIssueAndWritesNoHeldNotice(t *testing.T) {
+	const root = "LEGION-208"
+	for _, tc := range []struct {
+		name  string
+		key   string
+		at    phase.Phase
+		child bool
+		want  []record.OutboxPayload
+	}{
+		{
+			name: "the tree's architect while its root stands at admitted", key: root, at: phase.Admitted,
+			want: []record.OutboxPayload{
+				record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Admitted},
+				record.ControllerNotice(record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Admitted}),
+			},
+		},
+		{
+			name: "a child's sub-architect while the child is in accepting", key: "LEGION-209", at: phase.Accepting, child: true,
+			want: []record.OutboxPayload{record.Notice{Kind: "worker-died", Role: claim.RoleArchitect, Phase: phase.Accepting,
+				Reason: "LEGION-209's own architect failed; its notices come to you until it runs again, and the daemon starts it again at LEGION-209's next phase start"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			ctx := context.Background()
+			rootPhase := tc.at
+			if tc.child {
+				rootPhase = phase.Implementing
+			}
+			seedIssue(t, pool, record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
+				Project: "LEGION", Title: "root", Phase: rootPhase, Generation: 1, Status: "in_progress", Rank: "U"})
+			if tc.child {
+				parent := root
+				seedIssue(t, pool, record.Issue{Key: tc.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: root,
+					Parent: &parent, Project: "LEGION", Title: "child", Phase: tc.at, Generation: 1, Status: "needs_review", Rank: "V"})
+			}
+
+			if _, err := intake.ApplyFact(ctx, pool, "supervise", "architect-failed", intake.ClaimFailed{Issue: tc.key, Role: claim.RoleArchitect},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("ApplyFact the architect's failed claim: %v", err)
+			}
+
+			var gotPhase phase.Phase
+			var heldFrom *string
+			if err := pool.QueryRow(ctx, "select phase, held_from from issues where key = $1", tc.key).Scan(&gotPhase, &heldFrom); err != nil {
+				t.Fatalf("read %s: %v", tc.key, err)
+			}
+			if gotPhase != tc.at || heldFrom != nil {
+				t.Fatalf("after the architect's failure %s is in %s held from %v, want %s and no hold", tc.key, gotPhase, heldFrom, tc.at)
+			}
+			if got := noticeRows(t, pool); !sameNotices(got, tc.want) {
+				t.Fatalf("notice rows = %+v, want %+v: no held notice is written for an architect", got, tc.want)
+			}
+		})
+	}
 }

@@ -257,6 +257,9 @@ func (g GCP) listing(ctx context.Context, secret *secretmanagerpb.Secret) (Listi
 	if ls.Tags == nil {
 		ls.Tags = map[string]string{}
 	}
+	if created := secret.GetCreateTime(); created != nil {
+		ls.Created = created.AsTime()
+	}
 	latest := name + "/versions/" + gcpLatest
 	version, err := g.Client.GetSecretVersion(ctx, &secretmanagerpb.GetSecretVersionRequest{Name: latest})
 	var onKey bool
@@ -272,8 +275,10 @@ func (g GCP) listing(ctx context.Context, secret *secretmanagerpb.Secret) (Listi
 		onKey = g.onKey(version.GetReplicationStatus().GetAutomatic().GetCustomerManagedEncryption().GetKmsKeyVersionName())
 	case codes.NotFound:
 		// A secret with no version: the policy refuses it for its missing value, unless its
-		// replication policy names another key, which a value alone would not fix.
+		// replication policy names another key, which a value alone would not fix, or it is a
+		// create still waiting for its value (Unfilled).
 		onKey = secret.GetReplication().GetAutomatic().GetCustomerManagedEncryption().GetKmsKeyName() == g.KeyName
+		_, ls.Unfilled = secret.GetLabels()[CreateLabel]
 	default:
 		return Listing{}, fmt.Errorf("describe %s: %w", latest, gcpErr(err))
 	}

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -69,16 +70,27 @@ func narrowedAsAsked(asked, applied *GitHubNarrowing) error {
 	return fmt.Errorf("the broker did not narrow the GitHub App token to %s: it answered %s", encoded, answered)
 }
 
+// githubTokenPattern matches the GitHub token forms (installation, OAuth, user-to-server,
+// refresh, personal, fine-grained personal) by their prefix and 16 or more characters after it,
+// which no refusal of this file may carry. It is spelled as the daemon's tokenPattern
+// (packages/daemon/internal/appauth/tokencommand.go), which parseRelease refuses a release's key
+// by, because that reader and this one read the same release and must refuse the same keys. The
+// broker's own table (internal/broker/requests, credentialTokens) is not reused: it is the
+// broker's, unexported, and it names a gh*_ token only at a real one's 40 characters, which a
+// login's 39 refuse already, so the shorter text this pattern closes would pass it.
+var githubTokenPattern = regexp.MustCompile(`(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})`)
+
 // githubTokensOf reads value as a github-app secret's released value: the JSON object the broker
 // mints, {"installations":{"<account>":{"installation_id":…,"token":…,"expires_at":…}}}, one entry
 // per installation the release covers (internal/broker/secrets, githubMintedInstallations). It
 // answers each account's own token, keyed by that account, and ok only for that object: the
 // document carries an installations field that is a map, every key of it is a GitHub login by
-// the broker's own parser (policy.ParseGitHubLogin), and every entry carries all three fields of
-// a minted installation, each of its own type. The broker keys each installation by the account
-// GitHub answered with, so a document whose key is no login is no release of the broker's. Every
-// other value — a password, a JSON document of another shape — answers ok false and keeps its
-// own value, so --github-token reads a release and never guesses at one.
+// the broker's own parser (policy.ParseGitHubLogin) and holds no token form (githubTokenPattern),
+// and every entry carries all three fields of a minted installation, each of its own type. The
+// broker keys each installation by the account GitHub answered with, so a document whose key is
+// no login is no release of the broker's. Every other value — a password, a JSON document of
+// another shape — answers ok false and keeps its own value, so --github-token reads a release and
+// never guesses at one.
 //
 // A field beside installations is read over, as every unknown field of an entry is. The daemon's
 // token_command reads the same release that way (packages/daemon/internal/appauth/tokencommand.go,
@@ -107,7 +119,13 @@ func githubTokensOf(value string) (tokens map[string]string, ok bool) {
 	}
 	tokens = make(map[string]string, len(release.Installations))
 	for account, installation := range release.Installations {
-		if _, err := policy.ParseGitHubLogin(account); err != nil || installation.InstallationID == nil {
+		// githubTokensAlone's refusal of a release of two names each account, and no refusal
+		// may carry a token's text, so a key holding a token form is no login here, as it is
+		// to parseRelease, and the value is no release and is never named. A real token is 40
+		// characters or more and already fails ParseGitHubLogin's 39; this closes the shorter
+		// text spelled as one, which the underscore a login holds would otherwise let through.
+		// A login that merely opens like a token (`ghs_acme`) holds no token form and is read.
+		if _, err := policy.ParseGitHubLogin(account); err != nil || githubTokenPattern.MatchString(account) || installation.InstallationID == nil {
 			return nil, false
 		}
 		if installation.Token == "" || installation.ExpiresAt == "" {

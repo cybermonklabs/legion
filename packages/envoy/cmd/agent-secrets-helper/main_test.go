@@ -115,6 +115,35 @@ func TestConfigDerivesDefaultsAndServeRequiresURL(t *testing.T) {
 	}
 }
 
+// TestHelperConfigWithNoMachineSettingAsksNoMetadataServer: the helper's machine identity is the
+// one AGENT_SECRETS_MACHINE_IDENTITY names and nothing else. `agent-secrets` finds a machine's
+// identity with no setting (brokerclient.DetectMachineIdentity), but the helper does not: with no
+// setting it proves no identity, and a metadata server standing by is never asked.
+func TestHelperConfigWithNoMachineSettingAsksNoMetadataServer(t *testing.T) {
+	var requests atomic.Int64
+	metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Metadata-Flavor", "Google")
+		_, _ = w.Write([]byte("machine@example.iam.gserviceaccount.com"))
+	}))
+	defer metadata.Close()
+	host := strings.TrimPrefix(metadata.URL, "http://")
+	t.Setenv("GCE_METADATA_HOST", host)
+	cfg, err := loadConfig(env(map[string]string{
+		"HOME": t.TempDir(), "XDG_RUNTIME_DIR": t.TempDir(), "AGENT_SECRETS_URL": "https://secrets.internal.example",
+		"GCE_METADATA_HOST": host,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Identity != nil {
+		t.Fatalf("the helper's config proves %s with no AGENT_SECRETS_MACHINE_IDENTITY; want none", cfg.Identity.Describe())
+	}
+	if n := requests.Load(); n != 0 {
+		t.Fatalf("the metadata server saw %d requests; the helper's config asks it nothing", n)
+	}
+}
+
 // TestServeRefusesAMachineFileThatDoesNotParse: a machine file that is there but is not a machine
 // login stops serve before it listens, naming the file, rather than serving with no login.
 func TestServeRefusesAMachineFileThatDoesNotParse(t *testing.T) {

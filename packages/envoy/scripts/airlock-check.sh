@@ -455,7 +455,7 @@ k1_case() { # <name> <label> <value> <bound true|false>
 	echo >>"$dir/needles"
 	chmod 600 "$dir/needles"
 	cat >"$dir/command.sh" <<EOF
-curl -fsS -H "Authorization: Bearer \$$name" $AIRLOCK_S_URL/ok >curl.out
+printf 'Authorization: Bearer %s' "\$$name" | curl -fsS -H @- $AIRLOCK_S_URL/ok >curl.out
 env > env.txt
 : > ready
 sleep 5
@@ -560,7 +560,7 @@ check_k1() {
 		'{"owner":"legion-daemon","tier":"agent"}' "$plain_value"
 	github_app="$(stored_value "${STACK_SECRETS_PREFIX}airlock-github-app")"
 	add_fake_secret "${STACK_SECRETS_PREFIX}airlock-plain-github" \
-		'{"owner":"legion-daemon","tier":"agent","kind":"github-app","github-owners":"acme-org"}' "$github_app"
+		'{"owner":"legion-daemon","tier":"agent","type":"github-app","github-owners":"acme-org"}' "$github_app"
 	reread_all AIRLOCK_PLAIN_TOKEN
 	reread_all AIRLOCK_PLAIN_GITHUB
 
@@ -717,20 +717,20 @@ P="\$AIRLOCK_SCOPED_TOKEN"
 out="$WORK_DIR/k3-out"
 : >"\$out"
 say() { printf '%s\n' "\$1" >>"\$out"; }
-say "authorization=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/read)"
+say "authorization=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/read)"
 say "xkey=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Key: \$P" $AIRLOCK_S_URL/read)"
 say "xother=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Other: \$P" $AIRLOCK_S_URL/read)"
 say "query=\$(curl -sS -o /dev/null -w %{http_code} "$AIRLOCK_S_URL/read?k=\$P")"
 say "getbody=\$(curl -sS -o /dev/null -w %{http_code} -X GET --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody=\$(curl -sS -o /dev/null -w %{http_code} -X POST --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody_error=\$(curl -sS -X POST --data "k=\$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
-say "post=\$(curl -sS -o /dev/null -w %{http_code} -X POST -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/read)"
-say "post_error=\$(curl -sS -X POST -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
-say "other=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/other)"
-say "other_error=\$(curl -sS -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/other 2>&1 | tr '\n' ' ')"
-say "t=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$P" $AIRLOCK_T_URL/read)"
-say "mismatch_sni=\$(curl -sS --connect-to t.airlock.test:443:s.airlock.test:443 -H "Authorization: Bearer \$P" $AIRLOCK_T_URL/read 2>&1 | tr '\n' ' ')"
-say "mismatch_host=\$(curl -sS -H "Host: t.airlock.test" -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
+say "post=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -X POST -H @- $AIRLOCK_S_URL/read)"
+say "post_error=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -X POST -H @- $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
+say "other=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/other)"
+say "other_error=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H @- $AIRLOCK_S_URL/other 2>&1 | tr '\n' ' ')"
+say "t=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_T_URL/read)"
+say "mismatch_sni=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --connect-to t.airlock.test:443:s.airlock.test:443 -H @- $AIRLOCK_T_URL/read 2>&1 | tr '\n' ' ')"
+say "mismatch_host=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H "Host: t.airlock.test" -H @- $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "carries=\$(curl -sS -H "X-Key: \$(cat $WORK_DIR/k3-real)" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 EOF
 	printf '%s' "$scoped_value" >"$WORK_DIR/k3-real"
@@ -813,8 +813,8 @@ EOF
 set -u
 out="$WORK_DIR/k3-control-out"
 : >"\$out"
-printf 'post=%s\n' "\$(curl -sS -o /dev/null -w %{http_code} -X POST -H "Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/read)" >>"\$out"
-printf 'other=%s\n' "\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/other)" >>"\$out"
+printf 'post=%s\n' "\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -X POST -H @- $AIRLOCK_S_URL/read)" >>"\$out"
+printf 'other=%s\n' "\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/other)" >>"\$out"
 EOF
 	agent-secrets AIRLOCK_DEMO_TOKEN -- bash "$WORK_DIR/k3-control.sh" >>"$WORK_DIR/k3-cli.log" 2>&1 || true
 	local crecs cpost cother
@@ -866,8 +866,8 @@ out="$WORK_DIR/k4-out"
 : >"\$out"
 say() { printf '%s\n' "\$1" >>"\$out"; }
 say "no_proxy=\$NO_PROXY"
-curl -sS -o /dev/null -w "%{certs}" -H "Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/ok >"$WORK_DIR/s-leaf.pem"
-say "s_status=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/ok)"
+printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w "%{certs}" -H @- $AIRLOCK_S_URL/ok >"$WORK_DIR/s-leaf.pem"
+say "s_status=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/ok)"
 curl -sS -o /dev/null -w "%{certs}" $AIRLOCK_T_URL/read >"$WORK_DIR/t-leaf.pem"
 say "t_body=\$(curl -sS -X POST --data 'the-bytes-the-command-sent' $AIRLOCK_T_URL/echo | tr '\n' ' ')"
 say "svc=\$(curl -sS --resolve stand.default.svc:$svc_port:127.0.0.1 --max-time 10 http://stand.default.svc:$svc_port/ 2>&1 | tr '\n' ' ')"
@@ -935,16 +935,16 @@ EOF
 	local s_mark short_now short_later withheld_before withheld_after
 	s_mark="$(records_count s)"
 	release AIRLOCK_DEMO_TOKEN 1m
-	short_now="$(curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H "Authorization: Bearer $PLACEHOLDER" "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	short_now="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	sleep 70
-	short_later="$(curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H "Authorization: Bearer $PLACEHOLDER" "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	short_later="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 
 	release AIRLOCK_DEMO_TOKEN 30m
-	withheld_before="$(curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H "Authorization: Bearer $PLACEHOLDER" "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	withheld_before="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	# Withholding a name from a session is an operator's act, and a pod session has no
 	# operator, so the row the broker reads is written here directly.
 	psql_stack -c "insert into withheld_secrets (enrollment_id, name) values ('$AIRLOCK_ENROLLMENT', 'AIRLOCK_DEMO_TOKEN')" >/dev/null
-	withheld_after="$(curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H "Authorization: Bearer $PLACEHOLDER" "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	withheld_after="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	psql_stack -c "delete from withheld_secrets where enrollment_id = '$AIRLOCK_ENROLLMENT'" >/dev/null
 	local tunnelled
 	tunnelled="$(($(records_count s) - s_mark))"
@@ -976,8 +976,8 @@ EOF
 ###############################################################################################
 
 k5_call() { # <placeholder> -> prints the status
-	curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
-		--proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H "Authorization: Bearer $1" "$AIRLOCK_S_URL/ok"
+	printf 'Authorization: Bearer %s' "$1" | curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
+		--proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok"
 }
 
 # k5_stored drives the stored half of k5 against the stack this run started and answers through
@@ -1118,9 +1118,11 @@ approve_record() { # <record id>
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
 	local field
 	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
-	curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
+	# The page's form token reaches curl on standard input (`--data-urlencode token@-`), in no
+	# command line.
+	printf '%s' "$(field token)" | curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
 		--data-urlencode "decision=approve" --data-urlencode "record=$(field record)" \
-		--data-urlencode "printed=$(field printed)" --data-urlencode "token=$(field token)" \
+		--data-urlencode "printed=$(field printed)" --data-urlencode token@- \
 		--data-urlencode "expires=$(field expires)" "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
 	echo >>"$d/decisions"
 }
@@ -1374,6 +1376,8 @@ check_k6() {
 # at main and nothing of them is rewritten; what this check adds around them is a DOTFILES_DIR
 # of its own holding the files they read of each other (scripts/secret-run-reason and
 # agent-secrets/broker-url.sh), because secret-run resolves both relative to its own directory.
+# One consumer speaks gRPC, which offers h2 alone in its TLS handshake: Pulumi's gcpkms secrets
+# manager, whose Cloud KMS call the proxy carries in HTTP/2.
 #
 # The names are the consumers' own - GITHUB_ADMIN_PAT, GCLOUD_SAMI, GWS_THEOREM_READ_OAUTH and
 # the rest - and the hosts are the real ones, so this check needs a rules file the stack's does
@@ -1440,7 +1444,7 @@ k7_names() {
 	     {"name": "SLACK_BOT_TOKEN", "hosts": ["slack.com"]},
 	     {"name": "GITHUB_ADMIN_PAT", "hosts": ["api.github.com", "github.com"]},
 	     {"name": "TAILSCALE_API_KEY", "hosts": ["api.tailscale.com"]},
-	     {"name": "GCLOUD_SAMI", "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com"]},
+	     {"name": "GCLOUD_SAMI", "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"]},
 	     {"name": "GWS_THEOREM_READ_OAUTH", "hosts": ["www.googleapis.com", "oauth2.googleapis.com"]},
 	     {"name": "GWS_THEOREM_ADMIN_OAUTH", "hosts": ["admin.googleapis.com"]}
 	   ]' "$AIRLOCK_RULES_FILE" >"$d/rules.json"
@@ -1450,10 +1454,10 @@ k7_names() {
 	add_fake_secret "${STACK_SECRETS_PREFIX}slack-bot-token" '{"owner":"legion-daemon","tier":"agent"}' "$K7_SLACK"
 	add_fake_secret "${STACK_SECRETS_PREFIX}github-admin-pat" '{"owner":"legion-daemon","tier":"agent"}' "$K7_GITHUB"
 	add_fake_secret "${STACK_SECRETS_PREFIX}tailscale-api-key" '{"owner":"legion-daemon","tier":"agent"}' "$K7_TAILSCALE"
-	# The three Google logins are minted kinds: the broker mints each at the stack's stand-in
+	# The three Google logins are minted types: the broker mints each at the stack's stand-in
 	# Google token endpoint, so what the consumer holds a placeholder for is a minted value.
 	local google login
-	google='{"owner":"legion-daemon","tier":"agent","kind":"google-login"}'
+	google='{"owner":"legion-daemon","tier":"agent","type":"google-login"}'
 	login='{"type":"authorized_user","client_id":"the-stand-in-client","client_secret":"the-stand-in-client-secret","refresh_token":"the-stand-in-refresh-token"}'
 	add_fake_secret "${STACK_SECRETS_PREFIX}gcloud-sami" "$google" "$login"
 	add_fake_secret "${STACK_SECRETS_PREFIX}gws-theorem-read-oauth" "$google" "$login"
@@ -1511,16 +1515,23 @@ say "gh=\$(secret-run --reason 'k7: one gh api call with a fake admin token' GIT
 # pulumi preview of a program whose Tailscale provider calls tailscale:getDevices.
 say "pulumi=\$(cd $d/pulumi && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_URL=file://$d/pulumi/state TAILSCALE_API_KEY="\$TAILSCALE_API_KEY" TAILSCALE_TAILNET=example.com && pulumi stack init k7 >/dev/null 2>&1; pulumi preview --stack k7 --non-interactive 2>&1 | grep -iE 'error|refus|unauthor|401|403' | head -n 1 | tr -d '\r')"
 
+# A gRPC client: Pulumi's gcpkms secrets manager, which calls Cloud KMS over gRPC alone and offers
+# h2 and nothing else in its TLS handshake, makes a stack's data key at stack init with the
+# placeholder as its access token. The airlock carries it in HTTP/2 and Cloud KMS refuses the fake
+# value with gRPC's own UNAUTHENTICATED; a proxy that does not speak HTTP/2 fails the handshake
+# ("tls: no application protocol") and Pulumi says only "context deadline exceeded".
+say "kms=\$(cd $d/pulumi && export PULUMI_BACKEND_URL=file://$d/pulumi/state GOOGLE_OAUTH_ACCESS_TOKEN="\$GCLOUD_SAMI" && timeout 120 pulumi stack init k7kms --non-interactive --secrets-provider gcpkms://projects/airlock-k7/locations/global/keyRings/airlock-k7/cryptoKeys/airlock-k7 2>&1 | grep -iE 'error|unauthenticated|deadline|application protocol' | head -n 1 | tr -d '\r')"
+
 # gcloud-broker with gcloud projects list.
 say "gcloud=\$(GCLOUD_BROKER_INNER=1 GCLOUD_SAMI="\$GCLOUD_SAMI" bash $K7_DOTFILES/scripts/gcloud-broker -- gcloud projects list --format=json 2>&1 | grep -iE 'ERROR|reason:' | head -n 1 | tr -d '\r')"
 
 # One gws call under the theorem read tier: that tier's own command out of gws/accounts.json,
 # running the Drive call gws makes, since gws itself is no file of that repository.
 say "gws_tier=\$(jq -r '.theorem.tiers.read.command | @tsv' $K7_DOTFILES/gws/accounts.json 2>&1 | tr '\t' ' ')"
-say "gws=\$(secret-run --reason 'gws theorem read' GWS_THEOREM_READ_OAUTH -- sh -c 'curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$GWS_THEOREM_READ_OAUTH" "https://www.googleapis.com/drive/v3/about?fields=user"' 2>&1 | tail -n 1 | tr -d '\r')"
+say "gws=\$(secret-run --reason 'gws theorem read' GWS_THEOREM_READ_OAUTH -- sh -c 'printf "Authorization: Bearer %s" "\$GWS_THEOREM_READ_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://www.googleapis.com/drive/v3/about?fields=user"' 2>&1 | tail -n 1 | tr -d '\r')"
 
 # The google-workspace skill's Bearer call to admin.googleapis.com.
-say "admin=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$GWS_THEOREM_ADMIN_OAUTH" "https://admin.googleapis.com/admin/directory/v1/users?domain=theorem.dev" 2>&1 | tail -n 1)"
+say "admin=\$(printf 'Authorization: Bearer %s' "\$GWS_THEOREM_ADMIN_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://admin.googleapis.com/admin/directory/v1/users?domain=theorem.dev" 2>&1 | tail -n 1)"
 
 # git push --dry-run through scripts/airlock/credential-helper, which answers the placeholder,
 # with the proxy in git's own configuration. The pod's own GIT_CONFIG_* settings are cleared for
@@ -1530,13 +1541,37 @@ git init -q $d/repo
 (cd $d/repo && git -c user.email=k7@airlock.test -c user.name=k7 commit -q --allow-empty -m k7)
 say "git=\$(cd $d/repo && env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 -u GIT_CONFIG_KEY_2 -u GIT_CONFIG_VALUE_2 -u GIT_CONFIG_KEY_3 -u GIT_CONFIG_VALUE_3 -u GIT_CONFIG_KEY_4 -u GIT_CONFIG_VALUE_4 git -c http.proxy="\$HTTPS_PROXY" -c credential.helper=$SCRIPT_DIR/airlock/credential-helper -c http.sslCAInfo="\$GIT_SSL_CAINFO" push --dry-run https://github.com/cybermonklabs/legion HEAD:refs/heads/k7-airlock-never-pushed 2>&1 | tail -n 2 | tr '\n' ' ')"
 
-# The plain clients to S, each with the fake value in the header it uses.
-say "curl=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/curl)"
-say "wget=\$(wget -q -O /dev/null --header="Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/wget && echo 200 || echo failed)"
+# The plain clients to S, each with the fake value in the header it uses, and none with it in its
+# command line: curl reads the header on standard input. wget reads a header from no pipe, so it
+# gets a startup file of its own, removed when this script exits: the airlock's WGETRC first,
+# whose ca_certificate is the one way the proxy's certificate reaches wget
+# (cmd/agent-secrets/airlock.go, wgetrcFor), then the header. --config would read that file in
+# place of WGETRC and lose the certificate, so the file is named as WGETRC for this one call.
+# wget follows a redirect by default and sends a startup file's header on every request, to the
+# origin a Location names too (wget 1.21.4, measured 2026-11-17), so --max-redirect=0 holds it to
+# the one request to S. -S prints that answer's status, which is what this records, and a 3xx is
+# recorded as refused. wget still reads a refused redirect's body to its end, and a chunked body
+# that never ends held it past 50 s (measured 2026-11-17), so timeout 30 bounds the call and the
+# line says when it ran out. curl follows no redirect here, and -q first keeps a .curlrc from
+# making it follow one. Python's urllib opener follows a redirect and keeps the Authorization
+# header on it (Python 3.12, measured 2026-11-17), so its line builds an opener whose redirect
+# handler refuses, and records a 3xx as refused, as the wget line does.
+say "curl=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -q -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/curl)"
+wgetrc=\$(mktemp)
+trap 'rm -f "\$wgetrc"' EXIT
+{ if [ -n "\${WGETRC:-}" ]; then cat "\$WGETRC"; echo; fi; printf 'header = Authorization: Bearer %s\n' "\$AIRLOCK_DEMO_TOKEN"; } >"\$wgetrc"
+say "wget=\$({ WGETRC="\$wgetrc" timeout 30 wget -q -S --max-redirect=0 -O /dev/null $AIRLOCK_S_URL/wget 2>&1; echo "wget-exit=\$?"; } | awk '/^  HTTP\\//{s=\$2} /^wget-exit=/{e=substr(\$0, 11)} END{if (s ~ /^3/) s = s " refused: a redirect, which a request that carries a credential does not follow"; if (s == "") s = "failed"; if (e == 124) s = s " (wget stopped after 30 s)"; print s}')"
 say "node=\$(node -e 'fetch("$AIRLOCK_S_URL/node", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}).then(r => console.log(r.status)).catch(e => console.log("error", e.message))')"
 say "bun=\$(bun -e 'const r = await fetch("$AIRLOCK_S_URL/bun", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}); console.log(r.status)' 2>&1 | tail -n 1)"
-say "urllib=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, urllib.request
-print(urllib.request.urlopen(urllib.request.Request("$AIRLOCK_S_URL/urllib", headers={"Authorization": "Bearer " + os.environ["AIRLOCK_DEMO_TOKEN"]})).status)' 2>&1 | tail -n 1)"
+say "urllib=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, urllib.error, urllib.request
+class Refuse(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None
+request = urllib.request.Request("$AIRLOCK_S_URL/urllib", headers={"Authorization": "Bearer " + os.environ["AIRLOCK_DEMO_TOKEN"]})
+try:
+    print(urllib.request.build_opener(Refuse).open(request).status)
+except urllib.error.HTTPError as error:
+    print(f"{error.code} refused: a redirect, which a request that carries a credential does not follow" if 300 <= error.code < 400 else error.code)' 2>&1 | tail -n 1)"
 say "requests=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, requests
 print(requests.get("$AIRLOCK_S_URL/requests", headers={"Authorization": "Bearer " + os.environ["AIRLOCK_DEMO_TOKEN"]}).status_code)' 2>&1 | tail -n 1)"
 say "go=\$($STANDS_BIN probe-bound)"
@@ -1546,6 +1581,7 @@ EOF
 check_k7() {
 	expect "each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses"
 	expect "each real service refused the fake value"
+	expect "a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value"
 	expect "the gh consumer's own call is refused the fake value by GitHub"
 	expect "S got the fake value in each client's call"
 	expect "the command's exit status is 3, and the CLI's stderr has the line agent-secrets: NAME from …"
@@ -1598,6 +1634,7 @@ check_k7() {
 	observe "slack.com/api/auth.test under bun: ${K7[slack]-}"
 	observe "gh api user under secret-run for GITHUB_ADMIN_PAT: ${K7[gh]-}"
 	observe "pulumi preview with the Tailscale provider calling tailscale:getDevices: ${K7[pulumi]-}"
+	observe "pulumi stack init with a gcpkms secrets provider, Cloud KMS over gRPC: ${K7[kms]-}"
 	observe "gcloud projects list under gcloud-broker: ${K7[gcloud]-}"
 	observe "the gws theorem read tier (${K7[gws_tier]-}) answered: ${K7[gws]-}"
 	observe "the google-workspace skill's Bearer call to admin.googleapis.com answered: ${K7[admin]-}"
@@ -1622,6 +1659,7 @@ check_k7() {
 	k7_refused gws "${K7[gws]-}"
 	k7_refused admin "${K7[admin]-}"
 	k7_refused git "${K7[git]-}"
+	k7_refused kms "${K7[kms]-}"
 	observe "what each real service answered the fake value${refusals}"
 	observe "the gh consumer: $(printf '%s' "${K7[gh]-}" | head -c 300)"
 
@@ -1638,8 +1676,15 @@ check_k7() {
 	judge "$([ "$logged" -ge 10 ] && [ "$swapped" -ge 10 ] && echo 0 || echo 1)" \
 		"each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses" \
 		"$logged calls to a bound host were logged by the proxy, $swapped of them allowed and so swapped"
-	judge "$([ "$refused" = 6 ] && echo 0 || echo 1)" \
-		"each real service refused the fake value" "$refused of the 6 consumers that can run in this pod refused it${refusals}"
+	judge "$([ "$refused" = 7 ] && echo 0 || echo 1)" \
+		"each real service refused the fake value" "$refused of the 7 consumers that can run in this pod refused it${refusals}"
+	# The gRPC consumer on its own: Google's own UNAUTHENTICATED is what says the call crossed the
+	# proxy in HTTP/2 and reached Cloud KMS, and a call line naming its host is the proxy's side.
+	local kms_calls
+	kms_calls="$(jq -s '[.[] | select(.host == "cloudkms.googleapis.com")] | length' <<<"$calls")"
+	judge "$(printf '%s' "${K7[kms]-}" | grep -qi 'unauthenticated' && ! printf '%s' "${K7[kms]-}" | grep -qi 'application protocol' && [ "$kms_calls" -ge 1 ] && echo 0 || echo 1)" \
+		"a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value" \
+		"Pulumi's gcpkms secrets manager said '$(printf '%s' "${K7[kms]-}" | head -c 300)', and the proxy logged $kms_calls calls to cloudkms.googleapis.com"
 	if [ -z "$K7_GH_DIR" ]; then
 		fail "the gh consumer's own call is refused the fake value by GitHub — this step did not run: LEGION_GH_PATH is unset or names no runnable file in this pod, and it names the only real GitHub CLI here. shims/gh's own admin line is \`secret-run … GITHUB_ADMIN_PAT -- sh -c 'GH_TOKEN=\$GITHUB_ADMIN_PAT exec gh …'\`, and the other gh on PATH is Legion's wrapper, which refuses a call whose GH_TOKEN is set and refuses to run at all when another gh is ahead of it, so running the step against the wrapper would prove nothing about the airlock. Set LEGION_GH_PATH to the real CLI and run this check again."
 	else
@@ -1973,8 +2018,8 @@ check_k9() {
 	# that a call through the front reaches the broker that is still up.
 	local after_stop="" status ok=0 i
 	for i in 1 2 3 4; do
-		status="$(curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
-			--proxy "$proxy" -H "Authorization: Bearer $PLACEHOLDER" "$AIRLOCK_S_URL/ok" 2>&1 | tr -d '\n')"
+		status="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
+			--proxy "$proxy" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr -d '\n')"
 		after_stop="$after_stop $status"
 		[ "$status" = 200 ] && ok=$((ok + 1))
 	done

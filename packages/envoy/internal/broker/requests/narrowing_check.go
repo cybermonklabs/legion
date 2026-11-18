@@ -101,7 +101,7 @@ func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names [
 		skippedNarrowingCheck(enr.ID, "", "the requester could not be read", err)
 		return nil
 	}
-	e, err := evaluate(set, names, requester, reason)
+	e, err := m.evaluate(set, names, requester, reason)
 	if err != nil || e.state != "pending" {
 		return nil
 	}
@@ -116,7 +116,7 @@ func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names [
 		refusedBeforeApproval(enr.ID, name, err)
 		return err
 	}
-	mint := m.Minters[policy.KindGitHubApp]
+	mint := m.Minters[policy.TypeGitHubApp]
 	if mint == nil {
 		skippedNarrowingCheck(enr.ID, "", "this broker has no github-app minter", nil)
 		return nil
@@ -131,8 +131,8 @@ func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names [
 	// one refusal refuses the release. The first refusal ends the check: the caller has its
 	// answer, and the names after it would be asked about for nothing.
 	for _, g := range requested {
-		kind, source, minted, err := policy.ParseKindSource(g.source)
-		if err != nil || !minted || kind != policy.KindGitHubApp {
+		secretType, source, minted, err := policy.ParseTypeSource(g.source)
+		if err != nil || !minted || secretType != policy.TypeGitHubApp {
 			continue
 		}
 		checked, refusal := m.checkNarrowingFor(budget, mint, enr.ID, g.name, source, set.Secrets[g.name], narrowing)
@@ -171,10 +171,10 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 		skippedNarrowingCheck(enrollmentID, name, "the stored value could not be read", err)
 		return false, nil
 	}
-	// The shape rule is spent here as the release spends it (Machine.release), and writes no
+	// The line-ending rule is spent here as the release spends it (Machine.release), and writes no
 	// line: the release logs TrailingLineEndingRemovedMessage once for each value the rule
 	// changed, and a check that logged it too would write that line twice for one release.
-	value, _ := policy.TrimForShape(stored, served.Shape)
+	value, _ := policy.TrimLineEnding(stored)
 	switch err := m.checkNarrowingMint(ctx, mint, name, served, value, narrowing); {
 	case err == nil:
 		return true, nil
@@ -238,9 +238,9 @@ func (m *Machine) checkNarrowingMint(ctx context.Context, mint Minter, name stri
 	}
 	bounded, cancel := context.WithTimeout(ctx, m.narrowingCheckMintBound())
 	defer cancel()
-	// The check runs for github-app names alone (checkNarrowing), so that is the kind its
+	// The check runs for github-app names alone (checkNarrowing), so that is the type its
 	// minter counts this attempt under, as the release it stands for would.
-	request := mintRequest(name, policy.KindGitHubApp, served, value, narrowing)
+	request := mintRequest(name, policy.TypeGitHubApp, served, value, narrowing)
 	request.Check = true
 	_, err := mint(bounded, request)
 	if err != nil && bounded.Err() != nil {

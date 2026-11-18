@@ -1,6 +1,7 @@
 package kvwatch_test
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -50,7 +51,7 @@ func TestASubscriptionEndingMidScanNeverPanics(t *testing.T) {
 		// bounds the legacy STREAM.INFO it makes too, which a loaded machine can miss: try again.
 		var handle bus.KeyValue
 		for attempt := 0; ; attempt++ {
-			if handle, err = bus.OpenKeyValue(conn, js, testBucketName); err == nil {
+			if handle, err = bus.OpenKeyValue(context.Background(), conn, js, testBucketName); err == nil {
 				break
 			}
 			if attempt == 50 {

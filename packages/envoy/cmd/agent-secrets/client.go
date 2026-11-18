@@ -403,6 +403,18 @@ func (c *client) doProof(ctx context.Context, signer proofSigner, method, path s
 // second box key and a second sign-in on the person's list. One retry, because a second refusal
 // is the broker saying no to the enrollment this call just made, which no further retry changes.
 func (c *client) doProofStatus(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, []byte, error) {
+	return c.doProofBuilt(ctx, signer, method, path, func(bool) ([]byte, error) { return body, nil })
+}
+
+// doProofBuilt is doProofStatus for a body the session's own key signs part of, which build
+// makes: build(false) for the first call, and build(true) again for the retry after the session
+// registered again, since a machine registers again under a key of its own (machineReregister)
+// and the broker takes only what the enrollment's own key signed.
+func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, path string, build func(reregistered bool) ([]byte, error)) (int, []byte, error) {
+	body, err := build(false)
+	if err != nil {
+		return 0, nil, err
+	}
 	status, data, err := c.proofCall(ctx, signer, method, path, body)
 	again, ok := signer.(reenroller)
 	if !ok || !enrollmentNotLive(err) {
@@ -410,6 +422,9 @@ func (c *client) doProofStatus(ctx context.Context, signer proofSigner, method, 
 	}
 	if reErr := again.Reenroll(ctx); reErr != nil {
 		return status, data, fmt.Errorf("%w; registering this session again: %v", err, reErr)
+	}
+	if body, err = build(true); err != nil {
+		return 0, nil, err
 	}
 	return c.proofCall(ctx, signer, method, path, body)
 }
@@ -494,31 +509,47 @@ func brokerTookNoNarrowing(err error) bool {
 // field. A broker from before that field refuses the whole body (brokerTookNoNarrowing) without
 // reading the request object, so the same signed object is sent once more without the field and
 // that second call's own result and raw bytes are what this answers. Once only: a second refusal
-// is about something else, which sending it again cannot mend.
+// is about something else, which sending it again cannot mend. When the session registers again
+// on the way (doProofBuilt), the object is signed again, by the key the session now holds.
 func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string, narrowing *GitHubNarrowing) (RequestResult, []byte, error) {
-	requestObject, err := signer.SignRequestObject(c.baseURL, names, reason, lifetimeSeconds)
+	sign := func() (string, error) {
+		requestObject, err := signer.SignRequestObject(c.baseURL, names, reason, lifetimeSeconds)
+		if err != nil {
+			return "", fmt.Errorf("sign request object: %w", err)
+		}
+		return requestObject, nil
+	}
+	requestObject, err := sign()
 	if err != nil {
-		return RequestResult{}, nil, fmt.Errorf("sign request object: %w", err)
+		return RequestResult{}, nil, err
 	}
 	var sessionIDPtr *string
 	if sessionID != "" {
 		sessionIDPtr = &sessionID
 	}
-	result, raw, err := c.postRequest(ctx, signer, createRequestBody{Request: requestObject, SessionID: sessionIDPtr, GitHubApp: narrowing})
+	body := func(narrowing *GitHubNarrowing) func(bool) ([]byte, error) {
+		return func(reregistered bool) ([]byte, error) {
+			if reregistered {
+				signed, err := sign()
+				if err != nil {
+					return nil, err
+				}
+				requestObject = signed
+			}
+			return json.Marshal(createRequestBody{Request: requestObject, SessionID: sessionIDPtr, GitHubApp: narrowing})
+		}
+	}
+	result, raw, err := c.postRequest(ctx, signer, body(narrowing))
 	if narrowing == nil || !brokerTookNoNarrowing(err) {
 		return result, raw, err
 	}
-	return c.postRequest(ctx, signer, createRequestBody{Request: requestObject, SessionID: sessionIDPtr})
+	return c.postRequest(ctx, signer, body(nil))
 }
 
-// postRequest is one POST /v1/requests with body as it stands, answering the decoded result and
-// the exact bytes the broker sent.
-func (c *client) postRequest(ctx context.Context, signer Signer, body createRequestBody) (RequestResult, []byte, error) {
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		return RequestResult{}, nil, err
-	}
-	raw, err := c.doProof(ctx, signer, http.MethodPost, "/v1/requests", encoded)
+// postRequest is one POST /v1/requests with the body build makes (doProofBuilt), answering the
+// decoded result and the exact bytes the broker sent.
+func (c *client) postRequest(ctx context.Context, signer Signer, build func(reregistered bool) ([]byte, error)) (RequestResult, []byte, error) {
+	_, raw, err := c.doProofBuilt(ctx, signer, http.MethodPost, "/v1/requests", build)
 	if err != nil {
 		return RequestResult{}, nil, err
 	}
@@ -787,16 +818,23 @@ func (c *client) RenewEnrollment(ctx context.Context, signer Signer, enrollmentI
 // --- GET /v1/settings, POST /v1/secrets/{name}/reread (public: no proof) ---
 
 // Settings is GET /v1/settings's exact response shape: the store and namespace every agent secret
-// lives under and, per store, the key they are encrypted with and where they are. A broker from
-// before the store field answers none, and holds them in AWS Secrets Manager.
+// lives under and, per store, the key they are encrypted with and where they are; on either store,
+// the Google exchange audience a machine's own identity token must carry, from which the use
+// command finds that identity with no setting (machineSource); and whether the broker reads a
+// secret's type from the type tag (SecretTypeTag), without which the secret forms write no typed
+// secret (requireTypeTag). A broker from before the store field answers none, and holds them in
+// AWS Secrets Manager; one from before the audience, or one that accepts no machine identity,
+// names none; and one from before the type tag answers no secret_type_tag.
 type Settings struct {
-	Store         string `json:"store,omitempty"`
-	SecretsPrefix string `json:"secrets_prefix"`
-	KMSKeyARN     string `json:"kms_key_arn,omitempty"`
-	AWSAccountID  string `json:"aws_account_id,omitempty"`
-	AWSRegion     string `json:"aws_region,omitempty"`
-	KMSKeyName    string `json:"kms_key_name,omitempty"`
-	GCPProject    string `json:"gcp_project,omitempty"`
+	Store                  string `json:"store,omitempty"`
+	SecretsPrefix          string `json:"secrets_prefix"`
+	KMSKeyARN              string `json:"kms_key_arn,omitempty"`
+	AWSAccountID           string `json:"aws_account_id,omitempty"`
+	AWSRegion              string `json:"aws_region,omitempty"`
+	KMSKeyName             string `json:"kms_key_name,omitempty"`
+	GCPProject             string `json:"gcp_project,omitempty"`
+	GoogleExchangeAudience string `json:"google_exchange_audience,omitempty"`
+	SecretTypeTag          bool   `json:"secret_type_tag,omitempty"`
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {
@@ -812,13 +850,13 @@ func (c *client) Settings(ctx context.Context) (Settings, error) {
 }
 
 // Reread is POST /v1/secrets/{name}/reread's exact response shape: whether the broker serves the
-// secret now, as which kind ("" for a stored secret, and from a broker older than the field), and,
+// secret now, as which type ("" for a stored secret, and from a broker older than the field), and,
 // when it does not serve it, why.
 type Reread struct {
 	Name   string `json:"name"`
 	Served bool   `json:"served"`
 	Reason string `json:"reason"`
-	Kind   string `json:"kind"`
+	Type   string `json:"type"`
 }
 
 // RereadSecret asks the broker to read the secret name from Secrets Manager now, as whoever just

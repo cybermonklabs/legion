@@ -21,7 +21,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 	"github.com/sjawhar/envoy/migrationid"
 )
 
@@ -53,7 +53,7 @@ func openEmptyTestStore(t *testing.T) *Store {
 	}
 	adminURL := *baseURL
 	adminURL.Path = "/postgres"
-	store, err := Open(ctx, testpg.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	store, err := Open(ctx, testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -694,7 +694,7 @@ func openIsolatedStoreWithPool(t *testing.T, maxConns int32) *Store {
 	}
 	adminURL := *baseURL
 	adminURL.Path = "/postgres"
-	config, err := pgxpool.ParseConfig(testpg.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	config, err := pgxpool.ParseConfig(testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
 	if err != nil {
 		t.Fatalf("parse the isolated database's URL: %v", err)
 	}

@@ -784,7 +784,7 @@ func (lp *loopSessions) unsubscribe(ctx context.Context, s *loopSession) ([]stri
 // (bus.ConnectionProbeHeader) is answered done and taken for nothing else, as relay.go's handler
 // answers it.
 func (lp *loopSessions) frames(s *loopSession) func(busMsg) {
-	agentSubject := contracts.AgentSubject(s.id)
+	agentSubject := contracts.LegacyAgentSubject(s.id)
 	return func(m busMsg) {
 		if m.header(bus.ConnectionProbeHeader) == "1" {
 			_ = m.respond(relayReplyDone)

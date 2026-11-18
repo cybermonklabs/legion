@@ -7,18 +7,20 @@ import {
   answerOf,
   baselineOf,
   type ConsensusGroup,
+  type ConsensusRecord,
   consensusLine,
   consensusLines,
   groupsOf,
   QUESTION,
   RATE,
   readingsOf,
+  renderConsensus,
   shortModel,
   sliceCaseIds,
 } from "../consensus";
 import type { SliceName } from "../draw-io";
 import type { RecipeName } from "../recipes";
-import type { Endpoint, JudgementRow } from "../round-io";
+import { type Endpoint, type JudgementRow, rowOf } from "../round-io";
 import { MINIMUM_DECIDED } from "../stats";
 
 /**
@@ -472,6 +474,46 @@ describe("the question", () => {
         "bound, and at what coverage?"
     );
     expect(RATE).toBe(0.05);
+  });
+});
+
+describe("the rows line", () => {
+  test("counts the slice's judgements of the model fault, beside read and unreadable", () => {
+    // A round's rows as they were written before rows recorded their served model, read back
+    // the way the command reads them: each is the model fault, so none of them returned. The
+    // rows of a case outside the slice are read too, and the figures never take them.
+    const old = [
+      ...armRows("bare-opus-5-5", "one", same([APPROVE])),
+      ...armRows("bare-opus-5-5", "other", same([APPROVE])),
+    ]
+      .map((row) => rowOf(JSON.stringify(row)))
+      .filter((row): row is JudgementRow => row !== null);
+    expect(old.every((row) => row.fault === "model")).toBe(true);
+    const corpus = new Map([caseRow("one"), caseRow("other")].map((row) => [row.caseId, row]));
+    const { modelFaults } = readingsOf(old, corpus, ["one"]);
+    expect(modelFaults).toBe(JUDGEMENTS);
+    const record: ConsensusRecord = {
+      corpus: "/corpus",
+      round: "/round",
+      person: "person@example.com",
+      slice: { name: "report", kind: "approval", cases: 1 },
+      arms: [],
+      baseline: { approvals: 1, disagreements: 0, rate: 0, bound: null },
+      lines: [],
+      answer: "No.",
+      rowsRead: old.length,
+      rowsUnreadable: 0,
+      rowsModelFault: modelFaults,
+      ranAt: "2026-11-16T12:00:00.000Z",
+    };
+    expect(renderConsensus(record)).toContain(
+      `rows              ${2 * JUDGEMENTS} read, 0 unreadable, ${JUDGEMENTS} of the model ` +
+        "fault, none of them a returned judgement: to ask them again, resume a copy of the " +
+        "round directory with run-round.ts, since a resume rewrites the rows it holds"
+    );
+    expect(renderConsensus({ ...record, rowsModelFault: 0 })).toContain(
+      `rows              ${2 * JUDGEMENTS} read, 0 unreadable, 0 of the model fault`
+    );
   });
 });
 

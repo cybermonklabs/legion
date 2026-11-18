@@ -540,7 +540,7 @@ func startConnectionEventProcesses(t *testing.T, holderFake holderGitHubFake) *c
 	// return once the intake gives its registration up with its hold, which is exactly what a
 	// holder cut off does.
 	hooked := make(chan struct{}, 8)
-	holderClient.AddReconnectHook(func(*natsgo.Conn) error {
+	holderClient.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		hooked <- struct{}{}
 		return nil
 	})

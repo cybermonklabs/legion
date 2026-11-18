@@ -249,6 +249,7 @@ func TestEveryRouteRefusesABadProjectKeyInOneWording(t *testing.T) {
 		{"related-item check", http.MethodGet, "/api/v1/projects/bad/related?title=ok", "INVALID_PROJECT", nil},
 		{"related-item check by POST", http.MethodPost, "/api/v1/projects/bad/related", "INVALID_PROJECT", map[string]string{"title": "ok"}},
 		{"related-check records", http.MethodGet, "/api/v1/related-checks?project=bad", "INVALID_PROJECT", nil},
+		{"near-copy check records", http.MethodGet, "/api/v1/near-copy-checks?project=bad", "INVALID_PROJECT", nil},
 	} {
 		response := dispatchRequest(t, handler, probe.method, probe.target, probe.body, "alice")
 		body := response.Body.String()

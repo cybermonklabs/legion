@@ -1,0 +1,19 @@
+kind: Fixed
+body: |-
+  `agent-secrets secret create` on Google Cloud makes the secret, empty and with its tags, before
+  it asks for the value, so a store that refuses the create, such as a `PermissionDenied` on
+  `secretmanager.secrets.create`, ends the command before the prompt. From then until the value is
+  added, a create that stores no value deletes that empty secret before it exits and asks the
+  broker to reread the name: a value refused, a value the store refuses to add, and a hang-up,
+  Ctrl-C, Ctrl-\ or SIGTERM at any point in between, a signal during the add waiting for the
+  store's answer first. It deletes nothing that may hold the value: where the store's answer to
+  the add leaves that open (a lost answer, a deadline, an outage), it always keeps the secret,
+  even when a list of its versions shows none, since the add may still land; it says what that list
+  showed (a version there: the value may have been stored, and it rereads the name; none: a late add
+  may still land; the list failed: the state is unknown) and how to settle it. A cleanup that
+  deletes the empty secret says that it is deleted and nothing stays in the store. Where the store
+  refuses the delete of an empty secret, the command names it and gives the `gcloud secrets delete`
+  command that clears it; where the delete's answer leaves open whether the store acted, it reads
+  the secret back and says the delete is done, that the secret stays, or, where that read fails
+  too, that the store may still hold it, never that it stays. On AWS the create is still the one
+  call it was.

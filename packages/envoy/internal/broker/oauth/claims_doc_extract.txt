@@ -18,5 +18,7 @@ person
 service
 machine
 project_scope
+projects
 project
+scope
 credential_id

@@ -88,6 +88,32 @@ func TestAWSListingNamesTheVersionGetSecretValueReads(t *testing.T) {
 	}
 }
 
+// TestAWSListingIsUnfilledOnlyForATaggedSecretWithNoVersion: a Secrets Manager listing is Unfilled
+// only where the secret carries the create tag (CreateLabel, which `agent-secrets secret create`
+// never writes on AWS, whose create takes the value with the tags) and holds no version at all:
+// one without the tag, or with any version, is not.
+func TestAWSListingIsUnfilledOnlyForATaggedSecretWithNoVersion(t *testing.T) {
+	ctx := context.Background()
+	tagged := LocalSecret{Name: "dev/tagged-empty", Tags: map[string]string{CreateLabel: "0123456789abcdef0123456789abcdef"}}
+	untagged := LocalSecret{Name: "dev/untagged-empty", Tags: map[string]string{}}
+	filled := LocalSecret{Name: "dev/tagged-filled", Tags: map[string]string{CreateLabel: "0123456789abcdef0123456789abcdef"}, Value: "v1"}
+	store := AWS{Client: NewLocal(tagged, untagged, filled)}
+	listed, err := store.List(ctx, "dev/")
+	if err != nil || len(listed) != 3 {
+		t.Fatalf("List = %+v, %v; want three listings", listed, err)
+	}
+	for _, ls := range listed {
+		described, err := store.Describe(ctx, ls.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ls.ID == "dev/tagged-empty"
+		if ls.Unfilled != want || described.Unfilled != want {
+			t.Errorf("%s: listed Unfilled %t, described %t; want %t", ls.ID, ls.Unfilled, described.Unfilled, want)
+		}
+	}
+}
+
 func TestAWSReadReturnsErrNotFoundOnResourceNotFoundException(t *testing.T) {
 	r := AWS{Client: stubSMAPI{err: &types.ResourceNotFoundException{}}}
 	_, err := r.Read(context.Background(), "arn:aws:secretsmanager:us-east-1:1:secret:missing")

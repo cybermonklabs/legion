@@ -1,7 +1,7 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -179,7 +179,9 @@ test("a broadcast answered 201 with a recipient still delivering is made and del
       expect(screen.getByRole("status").textContent).toContain("delivering to 1 agent");
       expect(screen.queryByRole("button", { name: "Stop trying" })).toBeNull();
       // The recipient's delivery event refreshes every broadcast view.
-      await client.invalidateQueries({ queryKey: ["broadcast"] });
+      await act(async () => {
+        await client.invalidateQueries({ queryKey: ["broadcast"] });
+      });
       await waitFor(() => expect(screen.getByRole("status").textContent).toContain("delivered"));
       expect(screen.getByRole("status").textContent).not.toContain("delivering");
     } finally {

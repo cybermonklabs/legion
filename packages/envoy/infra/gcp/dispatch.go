@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/providers"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
 // dispatchType is the component's token. pulumi-go-provider derives the same one from the Dispatch
@@ -174,6 +175,21 @@ type DispatchArgs struct {
 	SignInClientId     string             `pulumi:"signInClientId,optional"`
 	SignInClientSecret pulumi.StringInput `pulumi:"signInClientSecret,optional" provider:"secret"`
 	SignInDomain       string             `pulumi:"signInDomain,optional"`
+	// OutsideOrigin is a second origin Dispatch is reached at, by people from outside the
+	// company: an https origin weborigin.Parse takes, whose host is not the front door's.
+	// It renders DISPATCH_OUTSIDE_ORIGIN and nothing else: whatever serves that origin
+	// and forwards it to the app is the deployment's, and the app's NetworkPolicy admits an
+	// in-cluster one only through allowedNamespaces. It needs the tailnet inputs: without them the
+	// component builds the sandbox, whose own origin is an in-cluster http:// address where browser
+	// sign-in is refused. With the sign-in inputs set its host must also be one
+	// weborigin.GoogleRedirectHost takes, since the Google client then lists its callback. Unset
+	// renders nothing.
+	OutsideOrigin string `pulumi:"outsideOrigin,optional"`
+	// SignInOutside renders DISPATCH_SIGNIN_OUTSIDE=1, which lets a verified Google account outside
+	// signInDomain sign in as a restricted member while some project's owner or access list names
+	// its email directly. It needs the sign-in inputs and is no member of their group, so a
+	// deployment that sets them leaves it unset and renders what it always rendered.
+	SignInOutside bool `pulumi:"signInOutside,optional"`
 
 	// AgentSecretsUrl and agentSecretsAudience turn on Dispatch's secrets-broker relay together:
 	// DISPATCH_AGENT_SECRETS_URL (an absolute http(s) URL with no path; a trailing slash is
@@ -271,6 +287,13 @@ type DispatchArgs struct {
 	// the largest. Unset renders nothing and both binaries set no limit, so a deployed stream keeps
 	// the one it has (bus.ParseStreamMaxBytes).
 	StreamMaxBytes *int `pulumi:"streamMaxBytes,optional"`
+	// SenderMessagesPerMinute and SenderMessageBurst limit the messages each agent session sends
+	// through the listener: ENVOY_SENDER_MESSAGES_PER_MINUTE, from 1 to 60000, and
+	// ENVOY_SENDER_MESSAGE_BURST, at least 1 and only with a rate, on the listener's container
+	// alone, since the app reads neither. Each of the listenerReplicas pods keeps its own count.
+	// Unset renders nothing: no limit, and a rate with no burst takes the rate as its burst.
+	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
+	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
 
 	// SigningKeyGenerations is the ordered key set the server holds, the shape
 	// auth.ParseSigningKeys reads DISPATCH_SIGNING_KEY into: the first entry signs every new
@@ -408,6 +431,7 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"frontDoorToolsImage", args.FrontDoorToolsImage},
 		{"signInClientId", args.SignInClientId},
 		{"signInDomain", args.SignInDomain},
+		{"outsideOrigin", args.OutsideOrigin},
 		{"agentSecretsUrl", args.AgentSecretsUrl},
 		{"agentSecretsAudience", args.AgentSecretsAudience},
 		{"oidcAudience", args.OidcAudience},
@@ -499,15 +523,18 @@ type Dispatch struct {
 // dispatchSettings are the plain inputs, validated, with the defaults applied, so they are known at
 // preview. images.tools is frontDoorToolsImage. With clusterOnly set only hostname, region and
 // deletionProtection are resolved: no other field is read by the cluster the mode builds.
-// natsReplicas and streamMaxBytes are 0 when their inputs are unset, where the component renders
-// neither setting, and signingKeyGenerations is the generations the component registers a signing
-// key for, in the order the server holds them, [0] when its input is unset. frontDoor and
-// signInOn are the two groups of inputs a consumer sets together or not at all: frontDoor is set
-// when any tailnet input is, where the component builds the front door and Dispatch is reached at
-// its tailnet name, and signInOn when any sign-in input is, where the app runs browser sign-in.
+// natsReplicas, streamMaxBytes, senderMessagesPerMinute and senderMessageBurst are 0 when their
+// inputs are unset, where the component renders none of those settings, and signingKeyGenerations
+// is the generations the component registers a signing key for, in the order the server holds
+// them, [0] when its input is unset. frontDoor and signInOn are the two groups of inputs a
+// consumer sets together or not at all: frontDoor is set when any tailnet input is, where the
+// component builds the front door and Dispatch is reached at its tailnet name, and signInOn when
+// any sign-in input is, where the app runs browser sign-in.
 // With neither the component is the sandbox: Dispatch is reached in the cluster alone, by readers
-// the app's NetworkPolicy admits, and tailnetDNSName, tags, the tailscale and tools images and
-// signIn are empty, since nothing reads them.
+// the app's NetworkPolicy admits, and tailnetDNSName, tags, the tailscale and tools images,
+// outsideOrigin, signIn and signInOutside are empty, since nothing reads them. signInOutside is
+// set only with signInOn, and outsideOrigin is "" when its input is unset, where the component
+// renders no second origin.
 // oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
 // the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
 // field here.
@@ -515,9 +542,11 @@ type dispatchSettings struct {
 	clusterOnly                                 bool
 	frontDoor, signInOn                         bool
 	hostname, tailnetDNSName, region, namespace string
+	outsideOrigin                               string
 	tags                                        []string
 	images                                      struct{ envoy, tailscale, proxy, tools string }
 	signIn                                      struct{ clientID, domain string }
+	signInOutside                               bool
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
@@ -529,6 +558,7 @@ type dispatchSettings struct {
 	frontDoorReplicas, listenerReplicas         int
 	natsInCluster                               bool
 	natsReplicas, streamMaxBytes                int
+	senderMessagesPerMinute, senderMessageBurst int
 	signingKeyGenerations                       []int
 	appResources                                dispatchAppResources
 	pprofPort                                   int
@@ -823,6 +853,8 @@ func dispatchSignInInputs(args *DispatchArgs) []dispatchInput {
 // here without being written down a second time.
 func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
+		{"outsideOrigin", args.OutsideOrigin != ""},
+		{"signInOutside", args.SignInOutside},
 		{"envoyImage", args.EnvoyImage != ""},
 		{"cloudSqlProxyImage", args.CloudSqlProxyImage != ""},
 		{"natsUrl", args.NatsUrl != nil},
@@ -847,6 +879,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"natsInCluster", args.NatsInCluster != nil},
 		{"natsReplicas", args.NatsReplicas != nil},
 		{"streamMaxBytes", args.StreamMaxBytes != nil},
+		{"senderMessagesPerMinute", args.SenderMessagesPerMinute != nil},
+		{"senderMessageBurst", args.SenderMessageBurst != nil},
 		{"signingKeyGenerations", len(args.SigningKeyGenerations) > 0},
 		{"appCpu", args.AppCpu != nil},
 		{"appMemory", args.AppMemory != nil},
@@ -952,11 +986,15 @@ func refuseDispatchTailnetGroup(args *DispatchArgs, clause string) error {
 	return nil
 }
 
+const dispatchSandboxSignInRefusal = "%s configures browser sign-in, which needs the tailnet inputs: without them Dispatch is reached at an in-cluster http:// address, which no OAuth provider takes as a redirect origin, so no browser could sign in; unset %s, or set the tailnet inputs"
+
 // refuseDispatchSandbox judges what the sandbox cannot make good, and requires the two inputs the
 // mode needs. It runs only while the tailnet group is wholly unset, which is what asks for the
-// mode: no front door is built, so a sign-in input would ask an OAuth provider to redirect to an
-// in-cluster http:// address, frontDoorReplicas and frontDoorPdbMinAvailable size and protect a
-// Deployment that does not exist, the pods reach a NATS hub only inside their own cluster, and
+// mode: no front door is built, so a sign-in input, signInOutside among them, would ask an OAuth
+// provider to redirect to an in-cluster http:// address, outsideOrigin would add an origin for
+// outside sign-in to a Dispatch where browser sign-in is refused, frontDoorReplicas and
+// frontDoorPdbMinAvailable size and protect a Deployment that does not exist, the pods reach a
+// NATS hub only inside their own cluster, and
 // the app's own policy is its only ingress. Each is refused by its own name rather than accepted
 // and quietly dropped. The sign-in inputs are refused here, before the sign-in group's own
 // checks, so one sent to a sandbox is refused for being sent at all and not for the rest of its
@@ -964,8 +1002,14 @@ func refuseDispatchTailnetGroup(args *DispatchArgs, clause string) error {
 func refuseDispatchSandbox(args *DispatchArgs, signInGroup []dispatchInput) error {
 	for _, in := range signInGroup {
 		if in.set {
-			return fmt.Errorf("%s configures browser sign-in, which needs the tailnet inputs: without them Dispatch is reached at an in-cluster http:// address, which no OAuth provider takes as a redirect origin, so no browser could sign in; unset the sign-in inputs, or set the tailnet inputs", in.input)
+			return fmt.Errorf(dispatchSandboxSignInRefusal, in.input, "the sign-in inputs")
 		}
+	}
+	if args.SignInOutside {
+		return fmt.Errorf(dispatchSandboxSignInRefusal, "signInOutside", "signInOutside")
+	}
+	if args.OutsideOrigin != "" {
+		return errors.New("outsideOrigin needs the tailnet inputs: without them the component builds the sandbox, whose own origin is an in-cluster http:// address where browser sign-in is refused, and outside sign-in is what a second origin is for; unset outsideOrigin, or set the tailnet inputs")
 	}
 	if args.NatsInCluster == nil || !*args.NatsInCluster {
 		return errors.New("natsInCluster is required without the tailnet inputs: the pods reach a tailnet NATS hub only through the front door's SOCKS5 proxy, and no front door is built, so the hub must run in the cluster")
@@ -1000,12 +1044,49 @@ func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 	return nil
 }
 
-// refuseDispatchHostname refuses a hostname that is not hostnameRule's shape. Both resolvers run
-// it, so a cluster-only component holds its hostname, which names every cloud resource, to the
-// rule the full resolver holds it to, with the same refusal.
+// refuseDispatchOutsideOrigin judges outsideOrigin where the tailnet group is set, the one place
+// it may be set, and returns it with a trailing slash trimmed, as Dispatch trims one: "" when it
+// is unset. It must be a web origin weborigin.Parse takes, whose refusals it prefixes with the
+// input's name; the component adds that the origin is https, as the front door's is, that its
+// host is not the front door's, whose origin Dispatch already is, and, with the sign-in inputs
+// set, that its host is one weborigin.GoogleRedirectHost takes, since the Google client must then
+// list <outsideOrigin>/auth/callback; that function's refusals it prefixes with "outsideOrigin's ".
+func refuseDispatchOutsideOrigin(args *DispatchArgs, signInOn bool) (string, error) {
+	if args.OutsideOrigin == "" {
+		return "", nil
+	}
+	origin, err := weborigin.Parse(args.OutsideOrigin)
+	if err != nil {
+		return "", fmt.Errorf("outsideOrigin: %w", err)
+	}
+	if origin.Scheme != "https" {
+		return "", errors.New("outsideOrigin must be an https origin: browser sign-in at it needs TLS, as the front door's does")
+	}
+	host := origin.Hostname()
+	if frontDoor := core.TailnetHostName(args.Hostname, args.TailnetDnsName); host == frontDoor {
+		return "", fmt.Errorf("outsideOrigin's host %s is the front door's: a second origin needs a host of its own", frontDoor)
+	}
+	if !signInOn {
+		return origin.String(), nil
+	}
+	if err := weborigin.GoogleRedirectHost(host); err != nil {
+		return "", fmt.Errorf("outsideOrigin's %w", err)
+	}
+	return origin.String(), nil
+}
+
+// refuseDispatchHostname refuses a hostname that is not hostnameRule's shape, and one
+// weborigin.ReservedLabel refuses, since the front door puts <hostname>.<tailnetDnsName> on its
+// certificate (dispatch_frontdoor.go, its certificate field). Both resolvers run it, in every mode:
+// a stack in the cluster-only mode or the sandbox, which builds no front door, keeps a hostname a
+// front door can later serve, and its hostname, which names every cloud resource, is held to the
+// rule the full resolver holds it to, with the same refusals.
 func refuseDispatchHostname(hostname string) error {
 	if !hostnameRule.MatchString(hostname) {
 		return fmt.Errorf("hostname %q must match %s", hostname, hostnameRule)
+	}
+	if err := weborigin.ReservedLabel(hostname); err != nil {
+		return fmt.Errorf("hostname: %w", err)
 	}
 	return nil
 }
@@ -1064,8 +1145,13 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	// good by a third while the tailnet group is unset.
 	tailnetGroup, signInGroup := dispatchTailnetInputs(args), dispatchSignInInputs(args)
 	frontDoor, signInOn := dispatchGroupSet(tailnetGroup), dispatchGroupSet(signInGroup)
+	var outsideOrigin string
 	if frontDoor {
 		if err := refuseDispatchTailnetGroup(args, dispatchGroupClause("tailnet", tailnetGroup)); err != nil {
+			return dispatchSettings{}, err
+		}
+		var err error
+		if outsideOrigin, err = refuseDispatchOutsideOrigin(args, signInOn); err != nil {
 			return dispatchSettings{}, err
 		}
 	} else if err := refuseDispatchSandbox(args, signInGroup); err != nil {
@@ -1075,6 +1161,9 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 		if err := refuseDispatchSignInGroup(args, dispatchGroupClause("sign-in", signInGroup)); err != nil {
 			return dispatchSettings{}, err
 		}
+	} else if args.SignInOutside {
+		return dispatchSettings{}, fmt.Errorf("signInOutside needs browser sign-in: it lets Google accounts outside signInDomain sign in beside the domain's own people%s",
+			dispatchGroupClause("sign-in", signInGroup))
 	}
 	// The app's two images, which the app's pod runs in either mode: they belong to no group, so
 	// every consumer sets both and neither refusal trails a clause. The front door's two are the
@@ -1180,6 +1269,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.images.tools = args.FrontDoorToolsImage
 	s.signIn.clientID = args.SignInClientId
 	s.signIn.domain = args.SignInDomain
+	s.signInOutside = args.SignInOutside
+	s.outsideOrigin = outsideOrigin
 	s.agentSecretsURL = agentSecretsURL
 	s.agentSecretsAudience = args.AgentSecretsAudience
 	s.oidcAudience = args.OidcAudience
@@ -1241,6 +1332,12 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, core.InputErrorf("streamMaxBytes", "streamMaxBytes %d is below 1; leave it unset for no limit", limit)
 		}
 		s.streamMaxBytes = *args.StreamMaxBytes
+	}
+	// The listener's sender limit, which the app does not read. It is checked here, before anything
+	// registers: dispatchListenerEnv runs only once natsUrl resolves, and reports every refusal of
+	// core's as natsUrl's.
+	if s.senderMessagesPerMinute, s.senderMessageBurst, err = core.CheckSenderLimit("", args.SenderMessagesPerMinute, args.SenderMessageBurst); err != nil {
+		return dispatchSettings{}, err
 	}
 	if s.signingKeyGenerations, err = newDispatchSigningKeyGenerations(args); err != nil {
 		return dispatchSettings{}, err

@@ -1,10 +1,12 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -21,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -250,6 +253,8 @@ func TestEveryRolesPrivateVolumesMountInItsContainerAlone(t *testing.T) {
 			want = append(want, corev1.KeyToPath{Key: GitHubHostsKey(owner), Path: owner + "/" + ghconfig.HostsFile},
 				corev1.KeyToPath{Key: GitHubConfigKey(owner), Path: owner + "/" + ghconfig.ConfigFile})
 		}
+		// The bundle's pairs file in the root, which every launch holding a directory projects.
+		want = append(want, corev1.KeyToPath{Key: GitHubPairsKey, Path: ghconfig.PairsFile})
 		if gh == nil || gh.SecretName != roleSecretName(l.name, role) || !slices.Equal(gh.Items, want) || gh.DefaultMode == nil || *gh.DefaultMode != 0o440 {
 			t.Errorf("%s's gh volume projects %+v, want %s's %+v, read-only", role, gh, roleSecretName(l.name, role), want)
 		}
@@ -293,11 +298,11 @@ func TestRejectedLauncherHellosDoNotSpendKubernetesRequests(t *testing.T) {
 	}
 }
 
-// A Claude Code launch's start command carries one file beside its credentials: the MCP document
-// its agent command reads, naming the image's bun and the claude-envoy server it runs, with the
-// plugin's data under the role's own Claude Code directory. It travels in Files and not in the
-// spec's secrets, which would point a `<NAME>_FILE` variable at it and be refused for its name
-// besides. An Oh My Pi launch carries no such file.
+// A Claude Code launch's start command carries one file beside its credentials and the system
+// prompt file every launch carries: the MCP document its agent command reads, naming the image's
+// bun and the claude-envoy server it runs, with the plugin's data under the role's own Claude Code
+// directory. It travels in Files and not in the spec's secrets, which would point a `<NAME>_FILE`
+// variable at it and be refused for its name besides. An Oh My Pi launch carries no such file.
 func TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -338,5 +343,52 @@ func TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile(t *testing.T) {
 	omp := launcherCommand(launchOf(t, r, workerSpec(t)), r)
 	if _, carried := omp.Files[claudeMCPFile]; carried {
 		t.Errorf("an Oh My Pi launch carries %s: %v", claudeMCPFile, slices.Sorted(maps.Keys(omp.Files)))
+	}
+}
+
+// The one bound a system prompt still meets in a pod is the start frame that carries it to the
+// role's launcher, which reads no line longer than shimwire.MaxFrameBytes and to which the
+// daemon's writer sends none. prepare measures that frame as the writer writes it and refuses
+// exactly the prompts whose frame the writer would refuse, as a runtime.PromptTooLarge naming the
+// role, the prompt's size and the frame's, before anything of the pod is touched: a prompt whose
+// frame is MaxFrameBytes to the byte launches, and one byte more is refused.
+func TestAPromptWhoseStartFrameNoLauncherReadsIsRefused(t *testing.T) {
+	r, err := configure(testOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := workerSpec(t)
+	small, err := r.prepare(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := shimwire.FrameLen(launcherCommand(small, r))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A byte of addressing JSON leaves unescaped is one byte of the prompt and one of the frame.
+	spec.Prompt.Addressing += strings.Repeat("x", shimwire.MaxFrameBytes-frame)
+	fits, err := r.prepare(spec)
+	if err != nil {
+		t.Fatalf("prepare of a launch whose start frame is %d bytes: %v, want it launched", shimwire.MaxFrameBytes, err)
+	}
+	var line bytes.Buffer
+	if err := shimwire.NewWriter(&line).WriteFrame(launcherCommand(fits, r)); err != nil || line.Len() != shimwire.MaxFrameBytes {
+		t.Fatalf("the writer sends that start frame as %d bytes, %v; want the %d prepare measured", line.Len(), err, shimwire.MaxFrameBytes)
+	}
+	over := fits
+	over.prompt += "x"
+	if err := shimwire.NewWriter(io.Discard).WriteFrame(launcherCommand(over, r)); !errors.Is(err, shimwire.ErrLineTooLong) {
+		t.Fatalf("the writer sends a start frame one byte past the bound: %v, want %v", err, shimwire.ErrLineTooLong)
+	}
+
+	spec.Prompt.Addressing += "x"
+	_, err = r.prepare(spec)
+	var refused *runtime.PromptTooLarge
+	if !errors.As(err, &refused) {
+		t.Fatalf("prepare of a launch whose start frame is one byte past the bound: %v, want a PromptTooLarge", err)
+	}
+	if want := (runtime.PromptTooLarge{Role: spec.Role, Bytes: len(over.prompt), Frame: shimwire.MaxFrameBytes + 1}); *refused != want {
+		t.Errorf("prepare refused the launch as %+v, want %+v", *refused, want)
 	}
 }

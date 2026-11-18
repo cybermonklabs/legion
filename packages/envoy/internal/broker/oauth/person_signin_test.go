@@ -60,6 +60,13 @@ type signInFixture struct {
 // on a machine of the one listed fleet.
 func newSignInFixture(t *testing.T) *signInFixture {
 	t.Helper()
+	return newSignInFixtureWith(t, func(*oauth.Config) {})
+}
+
+// newSignInFixtureWith is newSignInFixture with adjust applied to the configuration last, so a
+// test can give the exchange a project-access check or entries of its own.
+func newSignInFixtureWith(t *testing.T, adjust func(*oauth.Config)) *signInFixture {
+	t.Helper()
 	google := oidctest.New(t)
 	googleKey := google.PublishKey(t, "google-key")
 	googleKeys, err := oidc.NewKeys(context.Background(), google.URL())
@@ -75,6 +82,7 @@ func newSignInFixture(t *testing.T) *signInFixture {
 		// cmd/broker writes it, so the access token's row may name it.
 		c.Exchange.MachineCredentials = recordCredential
 		c.Exchange.PersonSignIns = f.record
+		adjust(c)
 	})
 	return f
 }
@@ -192,8 +200,8 @@ func TestAPersonSignedInOnAMachineExchangesForATokenNamingBoth(t *testing.T) {
 		{"person", answer.Person, person, "the person whose own token was the subject"},
 		{"machine", answer.Machine, signInMachine, "the machine whose token acted for them"},
 		{"service", answer.Service, "", "no service: a sign-in's token names a person"},
-		{"project_scope", answer.ProjectScope, oauthwire.ProjectScopePerson, "that the token is held to no one project"},
-		{"project", answer.Project, "", "no project, which the person scope names none of"},
+		{"project_scope", answer.ProjectScope, oauthwire.ProjectScopePerson, "that the token acts as its person"},
+		{"projects", len(answer.Projects), 0, "no project, which the trade asked for none of"},
 		{"jkt", answer.Thumbprint, thumbprint(t, key), "the box key the request's proof presented"},
 	} {
 		if field.got != field.want {

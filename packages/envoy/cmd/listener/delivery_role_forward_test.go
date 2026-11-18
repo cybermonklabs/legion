@@ -49,7 +49,7 @@ func TestARoleForwardIsStoredOncePerMessageAndTwoUnderOneChosenKeyTwice(t *testi
 			if _, err := harness.registry.SetRole(tc.holder, "test-machine", role, false); err != nil {
 				t.Fatalf("claim the role: %v", err)
 			}
-			subject := contracts.AgentSubject(tc.holder)
+			subject := contracts.LegacyAgentSubject(tc.holder)
 			forwardThrough := startRoleForward(harness.client)
 
 			for index, item := range tc.sends {

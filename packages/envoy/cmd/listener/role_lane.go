@@ -107,7 +107,7 @@ func (f *roleForwarder) enqueue(forward roleForward) {
 // publish is sessionID's worker: it publishes the holder's queued forwards in order, hands each
 // one's wait to a goroutine of its own, and ends once the queue is empty.
 func (f *roleForwarder) publish(sessionID string) {
-	subject := contracts.AgentSubject(sessionID)
+	subject := contracts.LegacyAgentSubject(sessionID)
 	for {
 		f.mu.Lock()
 		queue := f.queues[sessionID]

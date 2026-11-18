@@ -179,7 +179,8 @@ env:
     packages/envoy/internal/dispatch/text/ packages/envoy/internal/fold/
     packages/envoy/internal/googleidentity/ packages/envoy/internal/redact/
     packages/envoy/internal/redirects/ packages/envoy/listenfd/ packages/envoy/migrationid/
-    packages/envoy/roleholder/ packages/envoy/sessiontiming/
+    packages/envoy/natsversion/ packages/envoy/roleholder/ packages/envoy/sessiontiming/
+    packages/envoy/subjectforms/
     packages/envoy/go.mod packages/envoy/go.sum
     scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh .github/go-release-targets.json
 

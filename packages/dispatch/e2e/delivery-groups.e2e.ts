@@ -55,6 +55,7 @@ test("grouping two sessions makes them one Parent agent @pr", async ({ browser }
     .toEqual(["Release crew, 2 PRs", "Reviewer, 1 PR"]);
   const rows = page.getByRole("row", { name: /plan the (widgets|gadgets)/ });
   await expect(rows).toHaveCount(2);
+  // The count of two above waited for the widgets and gadgets rows, so one read lists them.
   for (const row of await rows.all()) await expect(row).toContainText("Release crew");
 
   await context.close();

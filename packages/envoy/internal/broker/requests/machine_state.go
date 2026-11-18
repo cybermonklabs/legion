@@ -75,7 +75,7 @@ var (
 	// ErrGrantRequiresLifetime: a request names a secret whose max-grant tag requires a signed
 	// lifetime no longer than that tag. Its returned error names the secret and the limit.
 	ErrGrantRequiresLifetime = errors.New("a requested secret requires a shorter grant lifetime")
-	// ErrMintFailed: a kind secret's minter could not make a token from the stored value, such as
+	// ErrMintFailed: a type secret's minter could not make a token from the stored value, such as
 	// a Google login that needs a new sign-in or a GitHub App GitHub refuses. Its returned error
 	// carries the minter's own message, which never holds the stored value or a token.
 	ErrMintFailed = errors.New("the broker could not mint a token from this secret")
@@ -206,7 +206,7 @@ type Decision struct {
 	Detail string
 }
 
-// Minter makes one release of a kind secret from its stored value and the policy's facts about it
+// Minter makes one release of a type secret from its stored value and the policy's facts about it
 // (secrets.GitHubApp.Mint, secrets.GoogleLogin.Mint): the token, and when it stops working. Its
 // error never holds the stored value or a token.
 type Minter func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, error)
@@ -276,8 +276,8 @@ type Machine struct {
 	// credential's service is that one (requester). It is read on every call, so an account
 	// dropped from the setting stops its machines' service secrets at their next one.
 	VMServicesByAccount map[string]string
-	// Minters maps each policy kind (policy.Kinds) to its Minter. A release never returns the
-	// stored value of a kind secret.
+	// Minters maps each policy type (policy.Types) to its Minter. A release never returns the
+	// stored value of a type secret.
 	Minters map[string]Minter
 	// Airlock is the airlock's rules as the broker read them at boot
 	// (BROKER_AIRLOCK_RULES_FILE), and the zero value for a deployment with no rules file. A
@@ -302,6 +302,13 @@ type Machine struct {
 	// judge does belongs on the requester's path, so the hook must return at once: Consider
 	// starts a goroutine of its own and does.
 	Judge func(PendingRequest)
+	// SignInOff is BROKER_SIGNIN=off: the broker signs nobody in and serves no approval page, so
+	// no person can ever decide a request. Create then denies at once every name whose answer
+	// would be an approval, policy.ReasonSignInOff, and writes no pending request, no record and
+	// nothing for Judge (config.Load refuses a judge beside it), and the sweep denies what a
+	// broker with sign-in on left or leaves pending (denyUndecidable); every name the policy
+	// grants at once is granted as ever.
+	SignInOff bool
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
@@ -309,6 +316,12 @@ type Machine struct {
 	// (narrowingCheckLimiter).
 	narrowingChecks     *ratelimit.Keyed
 	narrowingChecksOnce sync.Once
+	// leftOut is, by record id, each pending record PendingForApprover has logged as left out of
+	// a list because it does not verify for this broker, with when to forget it: the later of the
+	// record's expiry and leftOutRetention after the last list that left it out. It is logged once
+	// rather than on every poll (leaveOut).
+	leftOutMu sync.Mutex
+	leftOut   map[string]time.Time
 	// testAdoptionHook, when set, runs in applyDecisionAttempt between the read that locks the
 	// requesting enrollment and the read that locks the request. It exists only so a test can
 	// deterministically move the request to another enrollment in that window, which is where an
@@ -473,6 +486,13 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err != nil {
 		return Request{}, err
 	}
+	// A secret `agent-secrets secret create` made and has not yet filled is refused as such, never
+	// as unknown, which a caller takes as final: no request row, record or approver for it.
+	for _, name := range names {
+		if m.Policy.PendingValue(set, name) {
+			return Request{}, fmt.Errorf("%s %w", name, policy.ErrPendingValue)
+		}
+	}
 	lifetime := defaultLifetime(set, names, obj.LifetimeSeconds)
 	for _, name := range names {
 		if limit, over := overMaxGrant(set, name, lifetime); over {
@@ -508,7 +528,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err != nil {
 		return Request{}, err
 	}
-	e, err := evaluate(set, names, requester, obj.Reason)
+	e, err := m.evaluate(set, names, requester, obj.Reason)
 	if err != nil {
 		return Request{}, err
 	}
@@ -680,7 +700,8 @@ func formatGrantDuration(duration time.Duration) string {
 // a reason was named for, in the request's own name order: the request row records them
 // as its decision_detail (newRequest.decisionDetail), so a refused session is told which secret
 // refused it and why instead of only that something did. A name the policy would have put to an
-// approver is a denial here, policy.ReasonNoReason, when the request carries no reason.
+// approver is a denial here, policy.ReasonSignInOff, on a broker that signs nobody in, and
+// otherwise policy.ReasonNoReason when the request carries no reason.
 // unexplained is set when some name was denied with no reason to name, which decisionDetail has
 // its own fixed sentence for.
 type evaluation struct {
@@ -692,18 +713,28 @@ type evaluation struct {
 }
 
 // denial is one denied name of a request and the rule behind the deny (policy.Decision.Reason,
-// or policy.ReasonNoReason for a name this pass denied for want of a reason).
+// or policy.ReasonSignInOff or policy.ReasonNoReason for a name this pass denied in place of
+// putting it to a person).
 // A deny the policy cannot name a reason for makes no denial at all, since there is nothing to
 // tell the session beyond the refusal itself; it sets evaluation.unexplained instead.
 type denial struct{ name, reason string }
 
 // evaluate is the policy's answer for each of names to requester, read against the request's own
-// reason. A name whose outcome would be an approval is denied instead, policy.ReasonNoReason,
-// when reason is empty once trimmed: nobody is asked to approve work the record does not
-// describe.
-func evaluate(set *policy.Set, names []string, requester policy.Requester, reason string) (evaluation, error) {
+// reason. A name whose outcome would be an approval is denied instead when nobody could be asked:
+// policy.ReasonSignInOff when the broker signs nobody in (SignInOff), and otherwise
+// policy.ReasonNoReason when reason is empty once trimmed, since nobody is asked to approve work
+// the record does not describe.
+func (m *Machine) evaluate(set *policy.Set, names []string, requester policy.Requester, reason string) (evaluation, error) {
 	e := evaluation{decisions: make([]SecretDecision, 0, len(names)), state: "granted"}
-	reasonless := strings.TrimSpace(reason) == ""
+	// refusal is why a name whose outcome would be an approval is denied instead, "" when it is
+	// put to its approver. Sign-in off comes first: a reason would not change it.
+	var refusal string
+	switch {
+	case m.SignInOff:
+		refusal = policy.ReasonSignInOff
+	case strings.TrimSpace(reason) == "":
+		refusal = policy.ReasonNoReason
+	}
 	denied := false
 	for _, name := range names {
 		d, err := set.Evaluate(name, requester)
@@ -718,10 +749,10 @@ func evaluate(set *policy.Set, names []string, requester policy.Requester, reaso
 			} else {
 				e.unexplained = true
 			}
-		case d.Outcome == policy.Approval && reasonless:
+		case d.Outcome == policy.Approval && refusal != "":
 			denied = true
 			d.Outcome = policy.Deny
-			e.denials = append(e.denials, denial{name: name, reason: policy.ReasonNoReason})
+			e.denials = append(e.denials, denial{name: name, reason: refusal})
 		case d.Outcome == policy.Approval:
 			if e.approver != "" && e.approver != d.Approver {
 				return evaluation{}, ErrMixedApprovers
@@ -940,26 +971,90 @@ func (m *Machine) ExpirePending(ctx context.Context, now time.Time) (int, error)
 // 'expired' so Sweeper (this package's own Tick) can wake each one's owner once the transaction
 // has actually committed.
 func (m *Machine) expirePending(ctx context.Context, now time.Time) ([]store.EndedRequest, error) {
+	return m.endPending(ctx, store.RequestsPastDeadline, now, store.RequestEnd{
+		State: "expired", Actor: "broker", DecidedAt: &now, Detail: "no answer before the request expired",
+	})
+}
+
+// SignInOffActor is what a request the sweep denied on a broker with BROKER_SIGNIN=off records as
+// having decided it: its decided_by, its record's denied event's actor and its request.denied
+// audit row's actor, since no person decided it and nobody could have.
+const SignInOffActor = "broker:signin-off"
+
+// denyUndecidable is the sweep's half of SignInOff: Create writes no request pending on a broker
+// that signs nobody in, but the database can hold ones a broker with sign-in on wrote, before a
+// restart with sign-in off or from a pod with sign-in on that runs beside this one in a roll
+// between the two settings. Each one this broker would list for its approver
+// (PendingForApprover: its signed request verifies for this broker's own audience) is denied
+// here, policy.ReasonSignInOff, with its record's denied event and its request.denied audit row
+// in one statement, rather than left on the approver's list behind a page that is gone until its
+// deadline. The sweep runs expirePending first, so an overdue request is normally expired, not
+// denied; if that expiry fails, this still denies it. No time bounds the selection: while this
+// pod runs it denies what a pod with sign-in on queues too, so a roll between the two settings
+// denies each request of its overlap that such a pod, by a person or its model judge, did not
+// approve first, each one's session told why, and a session asks
+// again once the roll is done. A bound taken per process cannot do better, since a later or
+// restarted pod with sign-in off takes a later one.
+// A request signed for another BROKER_PUBLIC_URL is left alone: it belongs to another broker
+// sharing this database, whose page may still be served, and this broker lists it for nobody
+// anyway. It returns the requests it denied, so the sweep wakes each one's session once the
+// transaction has committed, and nothing on a broker with sign-in on. A grant made before stays
+// as it was: off decides nothing new, it takes nothing back.
+func (m *Machine) denyUndecidable(ctx context.Context, now time.Time) ([]store.EndedRequest, error) {
+	if !m.SignInOff {
+		return nil, nil
+	}
+	rows, err := m.Store.Pool.Query(ctx, pendingRecordsQuery)
+	if err != nil {
+		return nil, err
+	}
+	var undecidable []string
+	var id, canonical string
+	var createdAt time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&id, &canonical, &createdAt}, func() error {
+		if _, err := m.requestedIdentifiers(canonical, createdAt); err == nil {
+			undecidable = append(undecidable, id)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	if len(undecidable) == 0 {
+		return nil, nil
+	}
+	actor := SignInOffActor
+	return m.endPending(ctx, store.RequestsByIDs, undecidable, store.RequestEnd{
+		State: "denied", Actor: actor, DecidedBy: &actor, DecidedAt: &now, Detail: policy.ReasonSignInOff,
+	})
+}
+
+// pendingRecordsQuery is every pending agent_secret request with its record's canonical body and
+// the time the record was written, which is what requestedIdentifiers verifies a record against.
+const pendingRecordsQuery = `select r.id::text, cr.body, cr.created_at from requests r
+	join credential_requests cr on cr.id = r.record_id where r.state = 'pending'`
+
+// endPending ends, as end says, every request scope and arg select that is still pending, in a
+// transaction of its own, and logs one grant-log line per request once that transaction has
+// committed, since one audit row was written per request. It answers the requests it ended, so
+// the sweep wakes each one's owner after the commit too. expirePending and denyUndecidable are
+// its callers.
+func (m *Machine) endPending(ctx context.Context, scope store.PendingScope, arg any, end store.RequestEnd) ([]store.EndedRequest, error) {
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	end := store.RequestEnd{
-		State: "expired", Actor: "broker", DecidedAt: &now, Detail: "no answer before the request expired",
-	}
-	expired, err := store.EndPendingRequests(ctx, tx, store.RequestsPastDeadline, now, end)
+	ended, err := store.EndPendingRequests(ctx, tx, scope, arg, end)
 	if err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	// One audit row was written per request this expired, so one line goes out per request.
-	for _, r := range expired {
+	for _, r := range ended {
 		store.LogGrantEvent(endedRequestLogEvent(end, r.EnrollmentID, r.ID))
 	}
-	return expired, nil
+	return ended, nil
 }
 
 // ApplyDecision decides a pending agent_secret record by login, the login of the person deciding
@@ -1962,7 +2057,8 @@ func logGrantRow(kind, actor string, enr enrollmentRow, requestID, grantID strin
 // expiry the broker made) and the detail it gave the request, which is also what the route reads
 // back off the request row. It takes the very store.RequestEnd its caller handed that statement,
 // so the line and the row it stands for cannot drift. The audit row the statement wrote carries
-// the column's default detail, {}. Cancel and expirePending both end requests through it.
+// the column's default detail, {}. Cancel, expirePending and denyUndecidable all end requests
+// through it.
 func endedRequestLogEvent(end store.RequestEnd, enrollmentID, requestID string) store.GrantLogEvent {
 	ev := grantLogEvent("request."+end.State, end.Actor, enrollmentRow{ID: enrollmentID})
 	ev.RequestID, ev.State, ev.DecidedBy, ev.Detail = requestID, end.State, deref(end.DecidedBy), end.Detail

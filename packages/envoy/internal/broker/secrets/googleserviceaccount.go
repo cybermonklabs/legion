@@ -21,7 +21,7 @@ import (
 const googleIAMCredentialsURL = "https://iamcredentials.googleapis.com"
 
 // googleCloudPlatformScope is the scope the broker holds its own credential at (ownSource) and
-// the one a secret that names no scopes mints with: the kind exists so a person's own machine
+// the one a secret that names no scopes mints with: the type exists so a person's own machine
 // acts as a service account of their fleet, and that account's IAM roles, not a narrower scope,
 // are what bound it. A secret whose scopes tag names scopes asks Google for those instead
 // (MintRequest.GoogleScopes), which is a token narrower than the account's own roles, never a
@@ -33,7 +33,7 @@ const googleCloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform
 // (see GoogleServiceAccount).
 const googleServiceAccountLifetime = "3600s"
 
-// googleServiceAccountEmail is one service account of a project, the only value this kind mints
+// googleServiceAccountEmail is one service account of a project, the only value this type mints
 // from: 6 to 30 of lowercase letters, digits and hyphens, then the project and the fixed
 // .iam.gserviceaccount.com domain, the rule Google's own account ids follow. It is anchored and
 // admits no comma, space or slash, so a person's address (aditya@theorem.dev), a list of accounts
@@ -64,7 +64,7 @@ func ValidServiceAccountEmail(account string) bool {
 // The minted token lives one hour, whatever lifetime the grant that released it carries:
 // MintRequest holds no lifetime, and Google's generateAccessToken bounds the token itself, so a
 // shorter grant stops the broker releasing the token again rather than cutting short the token
-// already released. The policy makes that bearable by serving this kind only to the requesters
+// already released. The policy makes that bearable by serving this type only to the requesters
 // the secret's tag names — its owner, and beside them the registered services whose pods a
 // person approves one by one — for grants of an hour at most (policy.TagRules).
 type GoogleServiceAccount struct {
@@ -82,7 +82,7 @@ type GoogleServiceAccount struct {
 	// account it may mint for, keyed by the secret's policy name as a session asks for it and
 	// MintRequest.Name carries it (DEV_ADITYA, GCP_ADMIN), each value that secret's one account
 	// email. The broker fills it from BROKER_SERVICE_ACCOUNT_SECRETS. A nil or empty map binds
-	// nothing, so every mint of this kind is refused with ErrMintNotBound, which is what a
+	// nothing, so every mint of this type is refused with ErrMintNotBound, which is what a
 	// deployment that has not set the variable gets; that is deliberate, since the stored value
 	// alone may not choose the account a broker with Token Creator on it impersonates.
 	Accounts map[string]string
@@ -157,7 +157,7 @@ type googleServiceAccountRequest struct {
 // them on it (ownSource), which a copy would throw away.
 func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	const what = "mint Google service account token"
-	parsed, err := ParseValue(kindGoogleServiceAccount, req.Value)
+	parsed, err := ParseValue(typeGoogleServiceAccount, req.Value)
 	if err != nil {
 		return Minted{}, err
 	}
@@ -190,7 +190,7 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 	// already admits no slash, so the two agree.
 	endpoint := cmp.Or(m.BaseURL, googleIAMCredentialsURL) +
 		"/v1/projects/-/serviceAccounts/" + url.PathEscape(secret.ServiceAccount) + ":generateAccessToken"
-	// A secret that names no scopes mints at cloud-platform, as every token of this kind did
+	// A secret that names no scopes mints at cloud-platform, as every token of this type did
 	// before the scopes tag existed: an empty scope list is not a token with no scope, it is a
 	// request Google refuses. Marshalling a struct of a string slice and a string cannot fail,
 	// so its error is dropped.
@@ -205,7 +205,7 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 	}
 	own.SetAuthHeader(request)
 	request.Header.Set("Content-Type", "application/json")
-	payload, err := mintCall(m.Retry.start(req.Kind), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
+	payload, err := mintCall(m.Retry.start(req.Type), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
 	if err != nil {
 		return Minted{}, err
 	}

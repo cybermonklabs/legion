@@ -245,9 +245,13 @@ attempt was refused: the message may or may not have arrived. The error names it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the
 first copy arrived (`DELIVERY_DUPLICATE_WINDOW_MS` names the rare cases a recipient that restarted
 still sees it twice). A send
-refused with a 4xx on every attempt stays an `EnvoyApiError`. Listener error responses preserve their
-`error` and optional `expected` fields. The listener's bearer is the `token` the client is given
-(`envoySettings`); without one it sends no `Authorization` header.
+refused with a 4xx on every attempt stays an `EnvoyApiError`. An `EnvoyApiError` keeps the
+listener's `error` as its message, with ` (reason: <reason>)` after it where the body names one,
+and keeps the body's `code`, `reason` and `expected`, and the `retry_after_seconds` of a refusal
+for the sender's rate as `retryAfterSeconds`. A 429 is not sent again: the client throws it at
+once, and the caller decides whether to wait `retryAfterSeconds` and send the message again. The
+listener's bearer is the `token` the client is given (`envoySettings`); without one it sends no
+`Authorization` header.
 
 Every call whose body names the session it acts for — `subscribe`, `unsubscribe`,
 `unregisterSession`, `setRole`, and a `send` or `publish` with a `sourceSessionID` —
@@ -321,7 +325,9 @@ has nothing to retry either way.
 
 `subscribe`'s answer carries the registration's `delivery` field; a registration the listener can
 give no consumer is refused by name, and its reason is on `EnvoyApiError`, under the one canonical
-list of them (`ErrorWireSchema.reason` in `src/transport.ts`).
+list of them (`ErrorWireSchema.reason` in `src/transport.ts`). The same list holds
+`sender_rate_limited`, the reason of the 429 a send or a publish gets when its agent session has
+sent faster than the listener lets one session send: the message was not stored.
 
 ## envoy.json
 
@@ -360,7 +366,7 @@ Pi sets it in `process.env` at load, Claude Code's `SessionStart` hook appends i
 
 The `dispatch` command reads the file its session's plugin chose: with `DISPATCH_HOST` set, the
 file `ENVOY_CONFIG_FILE` names, else its host's own rule (`envoyConfigPath(host)`). A Bash that
-lacks what the hook wrote, as a Claude Code subagent's can (anthropics/claude-code#46696), has
+lacks what the hook wrote, as a Claude Code subagent's can (Claude Code issue 46696), has
 `DISPATCH_HOST` unset and `CLAUDE_CODE_CHILD_SESSION=1`, which Claude Code sets in every Bash it
 runs; `dispatch` then takes host `claude` and Claude Code's rule, so `CLAUDE_CONFIG_DIR`, the
 session's own directory, comes ahead of any `ENVOY_CONFIG_FILE` an outer session exported.
@@ -707,6 +713,18 @@ Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
 An identity with one of its variables missing is an error that names the variable.
 
+A pod writes under a session name only once its deployment has registered that name for the pod,
+and its trade can reach the broker first. The broker refuses that trade with a description
+beginning `pod_session_not_registered:`, and that refusal is never final (`podSessionUnregistered`
+in `@legion/broker-client/token-client`). With no live token in hand, the client trades again in
+the background, 15 s later, doubling to 5 minutes, until a trade lands, and a call that arrives
+meanwhile has it trade at once. Each Dispatch and Envoy call hands the credential its own
+deadline (`RequestCredential.headers`), so a call still waiting at that deadline fails with
+`RegistrationPendingError`, which names the session and says the trade is being retried; the
+next call takes the token once the registration lands. The client logs the wait through
+`console.warn` once, naming the session, and again every 30 minutes. A call made while a live
+token is in hand goes on with that token. Every other refusal fails the call as before.
+
 The identity the client trades depends on the sign-ins on the machine (`brokerTokenClient`). With
 no sign-in, the client trades the machine. The machine's identity is the subject, the DPoP key is
 one this process makes, and the session name is the caller's own session, else
@@ -724,6 +742,11 @@ trades that person, as the Go client does:
   `<thumbprint>` is the first 12 characters of the box key's thumbprint (Go's `SessionFor`). It
   is never `AGENT_SECRETS_SESSION`: the machine trades under that name, and the broker gives a
   name to one identity only.
+- The projects the token names are the ones `AGENT_SECRETS_PROJECTS` lists, project keys separated
+  by spaces (`tradeProjects`). The broker names them only when Dispatch says the person may see
+  each one, and refuses the trade naming the first they may not see. A person who signs in is of
+  the broker's sign-in domain, so the broker asks Dispatch no member kind for this trade. A value
+  that is no list fails the call naming the variable. The machine's own trade names no project.
 
 Dispatch gives the token that names a person the `person` and `approve` scopes, so the session
 writes as that person.

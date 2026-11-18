@@ -192,6 +192,8 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
     await askComposer.locator('button[type="submit"]').click();
     const askCard = alicePage.locator("[data-margin-item]", { hasText: "Should we publish this?" });
     await expect(askCard).toBeVisible();
+    // The card's locator requires `data-margin-item`, so the card the wait above saw holds it:
+    // this read is never null and the check below only narrows the type.
     const askId = await askCard.getAttribute("data-margin-item");
     if (askId === null) {
       throw new Error("Document ask did not receive a margin id.");
@@ -238,8 +240,15 @@ async function expectDotBeside(page: Page, neighbour: string): Promise<void> {
   const header = page.getByTestId("artifact-header");
   const dot = connectedDot(header);
   await expect(dot).toHaveText("connected");
-  const beside = await header.getByRole("button", { name: neighbour }).boundingBox();
+  const button = header.getByRole("button", { name: neighbour });
+  await expect(button).toBeVisible();
+  await expect(dot).toBeVisible();
+  await expect(header).toBeVisible();
+  // The waits above drew the button, the dot and the card, and a drawn element has a box.
+  const beside = await button.boundingBox();
+  // The dot was waited for above, so its box is there as the button's is.
   const dotBox = await dot.boundingBox();
+  // The card was waited for above, so its box is there as the button's is.
   const card = await header.boundingBox();
   if (beside === null || dotBox === null || card === null) {
     throw new Error("the version actions are not visible");

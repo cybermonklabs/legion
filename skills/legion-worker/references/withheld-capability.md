@@ -95,7 +95,7 @@ toolchain — is where the first condition does the work. `uv run --with pyyaml=
 passes both: the wheel lands in `UV_CACHE_DIR`, under `wheels-v6/pypi/pyyaml/6.0.2-…`, and
 `UV_PYTHON_INSTALL_DIR` is never created, because the image's own `python3` served the run. The
 interpreter is the other run: a project whose `.python-version` names an interpreter uv must fetch
-puts about 70 MB under `UV_PYTHON_INSTALL_DIR`, where every role of the issue's pod finds it, while
+puts that interpreter under `UV_PYTHON_INSTALL_DIR`, where every role of the issue's pod finds it, while
 the cache holds no wheel. A browser download passes too, and for Playwright — the browser driver this
 repository's own Dispatch suite installs (`playwright install`, `packages/dispatch`'s
 `e2e:install`) — it passes as it stands, with nothing pointed anywhere: playwright-core resolves
@@ -126,7 +126,7 @@ share): one copy per role, per pod, kept across the role's relaunches in that po
 the pod is replaced, and charged to the pod's ephemeral-storage limit, which every role of the pod
 shares and which is smaller than the volume. Moving exactly these writes off that
 filesystem is what `roleEnvironment` (`packages/daemon/internal/runtime/sandbox/manifest.go`)
-exists for, after GKE Autopilot evicted issue pods that charged their caches to it — so an install
+exists for, because a pod whose caches pass its ephemeral-storage limit is evicted — so an install
 under `$HOME` fails the first condition and is outside the sanctioned form, however little else it
 changes. The three artefacts above are the whole of that line's ground. Disk is not: every cache is
 already relocated onto the issue's volume, which has the room for them (`docs/kubernetes.md`, "The

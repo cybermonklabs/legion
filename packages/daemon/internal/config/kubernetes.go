@@ -44,6 +44,11 @@ type Kubernetes struct {
 	Kubeconfig string
 	Context    string
 	Scheduling Scheduling
+	// Sandbox is `runtime.kubernetes.sandbox`, settled: the sandbox each issue pod runs in (gVisor
+	// unless the file says otherwise), the issues whose pods run in the other one, and where a
+	// microVM pod runs. It places issue pods alone: the controller's pod, the repository cache pods
+	// and the image probe run in gVisor whatever it says.
+	Sandbox SandboxConfig
 	// Resources are the reservations of the two pods the daemon builds: every issue pod's, whose
 	// one container runs all six workflow roles (runtime.kubernetes.resources.issue), and the
 	// controller's, whose pod a daemon under `controller: daemon` launches
@@ -246,6 +251,59 @@ type Scheduling struct {
 // Toleration is one `scheduling.tolerations` entry. Value is "" under operator Exists.
 type Toleration struct{ Key, Operator, Value, Effect string }
 
+// SandboxType is the sandbox an issue pod runs in.
+type SandboxType string
+
+const (
+	// SandboxGVisor is gVisor, the sandbox of every issue pod a file names no other for.
+	SandboxGVisor SandboxType = "gvisor"
+	// SandboxMicroVM is a GKE Sandbox microVM, on a node of the ComputeClass MicroVMConfig names.
+	SandboxMicroVM SandboxType = "microvm"
+)
+
+// SandboxConfig is `runtime.kubernetes.sandbox`, settled. One daemon serves one project, so it is
+// that project's.
+type SandboxConfig struct {
+	// Type is the sandbox of the project's issue pods: SandboxGVisor when the file names none.
+	Type SandboxType
+	// CanaryIssues are the issue keys whose pods run in the sandbox Type does not name, each once
+	// and in the file's order; nil when the file names none.
+	CanaryIssues []string
+	// MicroVM is where a microVM pod runs, its disk and its metadata endpoint; nil when the file
+	// names no `microvm` block. The loader requires one, with its ComputeClass, while any issue
+	// pod runs in a microVM (AnyMicroVM). A block while none does is kept and does nothing, so a
+	// revert that empties the canary list may leave the block's lines in place.
+	MicroVM *MicroVMConfig
+}
+
+// MicroVMConfig is `runtime.kubernetes.sandbox.microvm`.
+type MicroVMConfig struct {
+	// ComputeClass is the GKE ComputeClass whose nodes run the microVM pods. It is "" only in a
+	// block no issue pod uses.
+	ComputeClass string
+	// StorageClass is the class of a microVM pod's workspace volume: the file's
+	// `microvm.storage_class`, else Kubernetes.StorageClass, which the loader fills in.
+	StorageClass string
+	// Metadata is the metadata endpoint a microVM pod's launcher serves on the pod itself; nil
+	// when the file names none.
+	Metadata *MetadataConfig
+}
+
+// MetadataConfig is `runtime.kubernetes.sandbox.microvm.metadata`: the cluster's Workload Identity
+// pool (`<PROJECT_ID>.svc.id.goog`) and its identity provider
+// (`https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>`),
+// which a microVM pod's launcher needs to exchange the pod's own token for a Google one.
+type MetadataConfig struct {
+	WorkloadPool     string
+	IdentityProvider string
+}
+
+// AnyMicroVM reports whether an issue pod may run in a microVM: Type is microvm, or CanaryIssues
+// names an issue, whose pod then runs in a microVM on a gVisor project.
+func (c SandboxConfig) AnyMicroVM() bool {
+	return c.Type == SandboxMicroVM || len(c.CanaryIssues) > 0
+}
+
 // PodResources are the reservations of the two pods the daemon builds, each a whole pod's: every
 // issue pod's one container and its two init containers carry Issue — its third too, where the
 // deployment names a SkillsRepository — and the controller's pod's one container Controller.
@@ -346,12 +404,15 @@ var imageDigestRef = regexp.MustCompile(`^[^@\s]+@sha256:[0-9a-f]{64}$`)
 // wins lives only in process memory); the audience of the projected token every pod carries for
 // the broker; and that pod token's lifetime. The audience defaults to the broker's own
 // (`agent-secrets`) and the lifetime to 3600 s, the most the cluster's admission policy admits for a
-// Legion worker token; the API server issues none under 600.
+// Legion worker token; the API server issues none under 600. ExchangeAudience is the audience of a
+// second projected token every enrolled pod carries, the identity the broker's exchange trades for
+// a broker token (`BROKER_EXCHANGE_K8S_AUDIENCE`); empty, no pod carries one.
 type AgentSecretsConfig struct {
 	URL                string
 	TokenFile          string
 	Audience           string
 	TokenExpirySeconds int
+	ExchangeAudience   string
 }
 
 const (
@@ -415,6 +476,16 @@ func readAgentSecrets(value *yaml.Node) (*AgentSecretsConfig, error) {
 		}
 		block.TokenExpirySeconds = *expiry
 	}
+	exchange, err := optionalString(fields["exchange_audience"], agentSecretsKey+".exchange_audience")
+	if err != nil {
+		return nil, err
+	}
+	if exchange == block.Audience {
+		// The cluster admits one projected volume per audience, and the broker verifies the
+		// enrollment's token and the exchange's at different routes, each against its own audience.
+		return nil, fmt.Errorf("%s.exchange_audience must differ from %s.audience (both %s)", agentSecretsKey, agentSecretsKey, exchange)
+	}
+	block.ExchangeAudience = exchange
 	return block, nil
 }
 
@@ -543,9 +614,11 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 // readKubernetes reads the `runtime.kubernetes` block, refusing any member it does not model and
 // any value a pod could not run with. A key an earlier shape of the block had (tree_volume, the
 // TypeScript daemon's role_profiles and gateway) is known so that its refusal names what replaced
-// it, which is what `legion start --check-config` shows the operator to edit. What depends on keys
-// outside the block is checked once the whole file is read (checkKubernetesKeys), and the
-// reservations the file leaves out are filled when the block is settled (resolveKubernetes).
+// it, which is what `legion start --check-config` shows the operator to edit. The sandbox's rules
+// that read the block's scheduling, pod and agent_secrets too are checked once all four are read
+// (checkSandboxAgainstTheBlock). What depends on keys outside the block is checked once the whole
+// file is read (checkKubernetesKeys), and the reservations the file leaves out are filled when the
+// block is settled (resolveKubernetes).
 func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, errors.New("runtime.kubernetes must be a mapping")
@@ -627,6 +700,12 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 		return nil, err
 	}
 	if block.MemoryGuard, err = readMemoryGuard(fields["memory_guard"]); err != nil {
+		return nil, err
+	}
+	if block.Sandbox, err = readSandbox(fields["sandbox"], block.StorageClass); err != nil {
+		return nil, err
+	}
+	if err := checkSandboxAgainstTheBlock(block); err != nil {
 		return nil, err
 	}
 	return block, nil
@@ -784,6 +863,192 @@ func readIdleRelease(value *yaml.Node) (IdleReleaseConfig, error) {
 			key, settled.BackstopMinutes, key, settled.IdleMinutes)
 	}
 	return settled, nil
+}
+
+const (
+	sandboxKey  = kubernetesKey + ".sandbox"
+	microVMKey  = sandboxKey + ".microvm"
+	metadataKey = microVMKey + ".metadata"
+	// sandboxRuntimeLabel is the node label a GKE Sandbox RuntimeClass selects its nodes by, and
+	// the key of the taint on them: the RuntimeClass adds the selector and the toleration to a pod
+	// at admission.
+	sandboxRuntimeLabel = "sandbox.gke.io/runtime"
+	// workloadPoolForm and identityProviderForm are the two metadata members' forms, as the
+	// refusals name them.
+	workloadPoolForm     = "<PROJECT_ID>.svc.id.goog"
+	identityProviderForm = "https://container.googleapis.com/v1/projects/<PROJECT_ID>/locations/<LOCATION>/clusters/<CLUSTER>"
+)
+
+var (
+	// workloadPool is a Workload Identity pool: a non-empty project id, then .svc.id.goog.
+	workloadPool = regexp.MustCompile(`^[^/\s?#]+\.svc\.id\.goog$`)
+	// identityProvider is a GKE cluster's identity provider, each of its three names non-empty
+	// and nothing after the cluster's.
+	identityProvider = regexp.MustCompile(`^https://container\.googleapis\.com/v1/projects/[^/\s?#]+/locations/[^/\s?#]+/clusters/[^/\s?#]+$`)
+	// metadataVariables are the variables Google's clients read the metadata server's address
+	// from, which a microVM pod's launcher sets to the endpoint it serves.
+	metadataVariables = []string{"GCE_METADATA_HOST", "GCE_METADATA_IP"}
+)
+
+// readSandbox reads `runtime.kubernetes.sandbox`, settled: gVisor, no canary and no microvm block
+// when absent. type is one of the two words; each canary_issues entry is an issue key, named once;
+// the microvm block is read whether or not an issue pod uses it, and is required with its
+// compute_class while one does. storageClass is `runtime.kubernetes.storage_class`, a microVM
+// pod's storage class when the block names none.
+func readSandbox(value *yaml.Node, storageClass string) (SandboxConfig, error) {
+	settled := SandboxConfig{Type: SandboxGVisor}
+	if value == nil {
+		return settled, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return SandboxConfig{}, fmt.Errorf("%s must be a mapping", sandboxKey)
+	}
+	fields, err := describedMembers(value, sandboxKey, sandboxKey)
+	if err != nil {
+		return SandboxConfig{}, err
+	}
+	kind, err := readString(fields["type"], sandboxKey+".type")
+	if err != nil {
+		return SandboxConfig{}, err
+	}
+	if kind != nil {
+		switch SandboxType(*kind) {
+		case SandboxGVisor, SandboxMicroVM:
+			settled.Type = SandboxType(*kind)
+		default:
+			return SandboxConfig{}, fmt.Errorf("%s.type must be '%s' or '%s'", sandboxKey, SandboxGVisor, SandboxMicroVM)
+		}
+	}
+	if issues := fields["canary_issues"]; issues != nil {
+		const key = sandboxKey + ".canary_issues"
+		named, err := readStrings(issues, key)
+		if err != nil {
+			return SandboxConfig{}, err
+		}
+		for _, issue := range named {
+			switch {
+			case !claim.IsIssueKey(issue):
+				return SandboxConfig{}, fmt.Errorf("%s entry %q is not an issue key, such as LEGION-208", key, issue)
+			case slices.Contains(settled.CanaryIssues, issue):
+				return SandboxConfig{}, fmt.Errorf("%s names %s twice", key, issue)
+			}
+			settled.CanaryIssues = append(settled.CanaryIssues, issue)
+		}
+	}
+	if block := fields["microvm"]; block != nil {
+		if settled.MicroVM, err = readMicroVM(block, storageClass); err != nil {
+			return SandboxConfig{}, err
+		}
+	}
+	if settled.AnyMicroVM() && (settled.MicroVM == nil || settled.MicroVM.ComputeClass == "") {
+		return SandboxConfig{}, fmt.Errorf("%s.compute_class is required while %s.type is microvm or %s.canary_issues names an issue: the ComputeClass whose nodes run the microVM pods",
+			microVMKey, sandboxKey, sandboxKey)
+	}
+	return settled, nil
+}
+
+// readMicroVM reads `runtime.kubernetes.sandbox.microvm`: its compute_class, which readSandbox
+// requires while an issue pod runs in a microVM; its storage_class, storageClass when the block
+// names none; and its metadata block, nil when absent.
+func readMicroVM(value *yaml.Node, storageClass string) (*MicroVMConfig, error) {
+	if value.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%s must be a mapping", microVMKey)
+	}
+	fields, err := describedMembers(value, microVMKey, microVMKey)
+	if err != nil {
+		return nil, err
+	}
+	block := &MicroVMConfig{}
+	if block.ComputeClass, err = optionalString(fields["compute_class"], microVMKey+".compute_class"); err != nil {
+		return nil, err
+	}
+	if block.StorageClass, err = optionalString(fields["storage_class"], microVMKey+".storage_class"); err != nil {
+		return nil, err
+	}
+	block.StorageClass = cmp.Or(block.StorageClass, storageClass)
+	if block.Metadata, err = readMetadata(fields["metadata"]); err != nil {
+		return nil, err
+	}
+	return block, nil
+}
+
+// readMetadata reads `runtime.kubernetes.sandbox.microvm.metadata`, nil when absent: both members
+// are required, each in the one form GKE gives it.
+func readMetadata(value *yaml.Node) (*MetadataConfig, error) {
+	if value == nil {
+		return nil, nil
+	}
+	if value.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("%s must be a mapping", metadataKey)
+	}
+	fields, err := describedMembers(value, metadataKey, metadataKey)
+	if err != nil {
+		return nil, err
+	}
+	block := &MetadataConfig{}
+	for _, member := range []struct {
+		name, what, form string
+		pattern          *regexp.Regexp
+		into             *string
+	}{
+		{"workload_pool", "the cluster's Workload Identity pool", workloadPoolForm, workloadPool, &block.WorkloadPool},
+		{"identity_provider", "the cluster's identity provider", identityProviderForm, identityProvider, &block.IdentityProvider},
+	} {
+		key := metadataKey + "." + member.name
+		if *member.into, err = requiredString(fields[member.name], key, ": "+member.what+", "+member.form); err != nil {
+			return nil, err
+		}
+		if !member.pattern.MatchString(*member.into) {
+			return nil, fmt.Errorf("%s %q must be %s, %s", key, *member.into, member.what, member.form)
+		}
+	}
+	return block, nil
+}
+
+// checkSandboxAgainstTheBlock refuses, while an issue pod runs in a microVM, what the operator's
+// scheduling, pod and broker blocks would set that the microVM pod's own placement and endpoint
+// own: a node selector or a toleration on sandbox.gke.io/runtime, since the pod's RuntimeClass
+// adds both at admission; and, while the metadata endpoint is on, a pod.env variable the pod's
+// launcher sets to that endpoint, and a broker audience (agent_secrets.audience or
+// exchange_audience) that is the Workload Identity pool, since the cluster projects one volume per
+// audience and the pool's token is the launcher's alone. Each refusal names the operator's key.
+// With no issue pod in a microVM it refuses nothing, so a microvm block kept for a revert changes
+// nothing.
+func checkSandboxAgainstTheBlock(block *Kubernetes) error {
+	sandbox := block.Sandbox
+	if !sandbox.AnyMicroVM() {
+		return nil
+	}
+	const why = "while an issue pod runs in a microVM (" + sandboxKey + "): the RuntimeClass places the pod"
+	if _, set := block.Scheduling.NodeSelector[sandboxRuntimeLabel]; set {
+		return fmt.Errorf("%s.scheduling.node_selector must not set %s %s", kubernetesKey, sandboxRuntimeLabel, why)
+	}
+	for index, toleration := range block.Scheduling.Tolerations {
+		if toleration.Key == sandboxRuntimeLabel {
+			return fmt.Errorf("%s.scheduling.tolerations[%d].key must not be %s %s", kubernetesKey, index, sandboxRuntimeLabel, why)
+		}
+	}
+	if sandbox.MicroVM == nil || sandbox.MicroVM.Metadata == nil {
+		return nil
+	}
+	for _, name := range metadataVariables {
+		if _, set := block.Pod.Env[name]; set {
+			return fmt.Errorf("%s.env must not set %s while %s is set and an issue pod runs in a microVM: that pod's launcher sets it to the metadata endpoint it serves",
+				podKey, name, metadataKey)
+		}
+	}
+	pool := sandbox.MicroVM.Metadata.WorkloadPool
+	if secrets := block.AgentSecrets; secrets != nil {
+		for _, member := range []struct{ name, audience string }{
+			{"audience", secrets.Audience}, {"exchange_audience", secrets.ExchangeAudience},
+		} {
+			if member.audience == pool {
+				return fmt.Errorf("%s.%s must differ from %s.workload_pool (both %s) while an issue pod runs in a microVM: the cluster projects one volume per audience, and the pool's token is the launcher's alone",
+					agentSecretsKey, member.name, metadataKey, pool)
+			}
+		}
+	}
+	return nil
 }
 
 // readMemoryGuard reads `runtime.kubernetes.memory_guard`, settled: a mapping by pod kind, of which

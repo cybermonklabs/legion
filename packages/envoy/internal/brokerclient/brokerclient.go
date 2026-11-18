@@ -62,6 +62,9 @@ const (
 	// broker answers again.
 	defaultRetryWait = 15 * time.Second
 	maxRetryWait     = 5 * time.Minute
+	// unregisteredLogEvery is how often the renewal loop says again that the broker has no
+	// registration for this pod's session yet, after saying so at the first such refusal.
+	unregisteredLogEvery = 30 * time.Minute
 	// tradeTimeout bounds one trade, the token endpoint being one request.
 	tradeTimeout = 30 * time.Second
 )
@@ -87,8 +90,8 @@ type Token struct {
 // RefusedError is a trade the broker refused: a plain error naming what it said. Almost every
 // one is a refusal no retry can cure — an identity no entry lists, a sign-in a person revoked,
 // a token of the wrong audience — and the renewal loop stops on those rather than asking again
-// every quarter minute. The exceptions are the broker's 429 and its two DPoP refusals
-// (Permanent).
+// every quarter minute. The exceptions are the broker's 429, its two DPoP refusals, and a pod
+// session it holds no registration for yet (Permanent).
 type RefusedError struct {
 	// Status is the HTTP status of the refusal.
 	Status int
@@ -130,7 +133,7 @@ func (e *RefusedError) Error() string {
 func (e *RefusedError) Unwrap() error { return &e.answer }
 
 // Permanent reports whether this refusal is one no retry can cure, which every refusal is but
-// three.
+// four.
 //
 // The broker's 429: its token endpoint spends a bucket per source address, and a bucket
 // refills. A client that stopped trading on a 429 would stop for good over a burst — its own,
@@ -145,12 +148,24 @@ func (e *RefusedError) Unwrap() error { return &e.answer }
 // `use_dpop_nonce`, which the transport already retries once with the nonce the answer carried
 // (dpop.go). One that reaches here is an answer that carried no nonce, or a nonce the broker
 // then refused in turn — a server state the next trade can find changed.
+//
+// A pod session the broker holds no registration for yet (PodSessionUnregistered): a pod's
+// trade can reach the broker before its daemon's or its session watch's registration does, and
+// a registrar can be down for minutes, so the trade that follows the registration succeeds.
 func (e *RefusedError) Permanent() bool {
 	switch {
-	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce":
+	case e.Status == http.StatusTooManyRequests, e.Code == "invalid_dpop_proof", e.Code == "use_dpop_nonce", e.PodSessionUnregistered():
 		return false
 	}
 	return true
+}
+
+// PodSessionUnregistered reports whether this is the broker's refusal of a pod whose session no
+// registration names yet: invalid_grant, its description beginning
+// oauthwire.PodSessionNotRegistered and a colon. The same words under another code, or anywhere
+// but at the start, are some other refusal.
+func (e *RefusedError) PodSessionUnregistered() bool {
+	return e.Code == "invalid_grant" && strings.HasPrefix(e.Description, oauthwire.PodSessionNotRegistered+":")
 }
 
 // Config is one client: the broker it trades at, the identity it trades, and the key it proves.
@@ -169,9 +184,15 @@ type Config struct {
 	// Actor is the machine a person signed in on, presented as the actor token beside their own
 	// Google identity token. Nil for every trade a machine makes for itself.
 	Actor Source
-	// Session is the session name the minted token writes under, which an entry that fixes one
+	// Session is the session name the minted token carries, which an entry that fixes one
 	// refuses to be told and an entry that fixes none requires.
 	Session string
+	// Projects is the projects the minted token names, sorted and each once (TradeProjects reads
+	// them from AGENT_SECRETS_PROJECTS), sent as oauthwire.FormProjects. Only a trade that acts as
+	// its person sets it, and the broker names only projects that person may see; a machine
+	// trading for itself sets none, since its entry decides its project. No Go trade of this
+	// release sets it yet. Nil sends no parameter at all.
+	Projects []string
 	// NoLauncherCredential declines the launcher credential this identity holds
 	// (oauthwire.FormLauncherCredential), for a caller that wants a Dispatch access token and
 	// nothing else: a trade that asks writes a launcher_credentials row and a token_login
@@ -205,6 +226,8 @@ type Client struct {
 	subject   Source
 	actor     Source
 	session   string
+	// projects is Config.Projects in its form spelling (oauthwire.JoinProjects), empty for none.
+	projects string
 	// noLauncherCredential is Config.NoLauncherCredential: this trade declines the credential.
 	noLauncherCredential bool
 	http                 *http.Client
@@ -242,6 +265,9 @@ func New(cfg Config) (*Client, error) {
 	case cfg.Subject == nil:
 		return nil, errors.New("brokerclient: no subject token source: nothing names the identity to trade")
 	}
+	if err := oauthwire.ValidProjects(cfg.Projects); err != nil {
+		return nil, fmt.Errorf("brokerclient: the projects to trade for: %w", err)
+	}
 	client := &Client{
 		wake:                 make(chan struct{}, 1),
 		brokerURL:            brokerURL,
@@ -249,6 +275,7 @@ func New(cfg Config) (*Client, error) {
 		subject:              cfg.Subject,
 		actor:                cfg.Actor,
 		session:              cfg.Session,
+		projects:             oauthwire.JoinProjects(cfg.Projects),
 		noLauncherCredential: cfg.NoLauncherCredential,
 		http:                 cfg.HTTP,
 		log:                  cfg.Log,
@@ -276,11 +303,13 @@ func New(cfg Config) (*Client, error) {
 func (c *Client) Key() *ecdsa.PrivateKey { return c.key }
 
 // Token is a live access token: the held one while it is good for longer than RenewBefore, and
-// otherwise a fresh trade. A trade the broker did not answer, or answered 429, while the held
-// token is still live answers that token, since a client that already holds an identity need
-// not stop for a broker that is merely down or busy; a refusal no retry can cure
+// otherwise a fresh trade. A trade the broker did not answer, or answered with a refusal a later
+// trade may cure (429, a DPoP refusal, a pod session it holds no registration for yet), while the
+// held token is still live answers that token, since a client that already holds an identity
+// need not stop for a broker that is merely down or busy; a refusal no retry can cure
 // (RefusedError.Permanent), and a failure with nothing live left, answer the error, so no
-// caller writes with no identity.
+// caller writes with no identity. Token trades once; a caller that waits for a registration to
+// land runs Run, which trades again.
 func (c *Client) Token(ctx context.Context) (*Token, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -308,13 +337,19 @@ func (c *Client) Token(ctx context.Context) (*Token, error) {
 //
 // It stops with a plain error when the broker refuses the identity in a way no retry can cure
 // (RefusedError.Permanent), and when onToken fails. A broker that does not answer, or answers
-// 429 or either of its DPoP refusals, is retried, from defaultRetryWait doubling to
-// maxRetryWait, for as long as ctx lives: an outage past the token's own life is the same event
-// as a short one, since this grant has no rotation window to miss, and a host whose clock NTP
-// corrects after boot trades again on the next pass rather than holding no credential until
-// somebody restarts it. A cancelled ctx is no error.
+// 429, either of its DPoP refusals, or that it holds no registration for this pod's session yet,
+// is retried, from defaultRetryWait doubling to maxRetryWait, for as long as ctx lives: an outage
+// past the token's own life is the same event as a short one, since this grant has no rotation
+// window to miss, a host whose clock NTP corrects after boot trades again on the next pass rather
+// than holding no credential until somebody restarts it, and a pod whose trade reached the broker
+// before its registration did trades once that registration lands, however long it takes. A
+// missing registration is logged once, naming the session, and again every unregisteredLogEvery
+// while it lasts, rather than at every trade. A cancelled ctx is no error.
 func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) error) error {
 	wait := defaultRetryWait
+	// since is when the broker first refused this pod's session as unregistered, and logged when
+	// the loop last said so; both are zero until such a refusal, and again once a trade lands.
+	var since, logged time.Time
 	for {
 		c.mu.Lock()
 		token, err := c.trade(ctx)
@@ -325,6 +360,7 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 		switch {
 		case err == nil:
 			wait = defaultRetryWait
+			since, logged = time.Time{}, time.Time{}
 			if err := onToken(ctx, token); err != nil {
 				return err
 			}
@@ -336,10 +372,23 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 			return nil
 		}
 		var refused *RefusedError
-		if errors.As(err, &refused) && refused.Permanent() {
+		isRefusal := errors.As(err, &refused)
+		switch {
+		case isRefusal && refused.Permanent():
 			return err
+		case isRefusal && refused.PodSessionUnregistered():
+			now := c.now()
+			if since.IsZero() {
+				since = now
+			}
+			if logged.IsZero() || now.Sub(logged) >= unregisteredLogEvery {
+				c.logf(ctx, "the secrets broker has no registration for this pod's session yet; trading again until it lands",
+					"session", c.session, "waited", now.Sub(since), "error", err.Error(), "in", wait.String())
+				logged = now
+			}
+		default:
+			c.logf(ctx, "the secrets broker did not answer a trade; asking again", "error", err.Error(), "in", wait.String())
 		}
-		c.logf(ctx, "the secrets broker did not answer a trade; asking again", "error", err.Error(), "in", wait.String())
 		if !c.sleep(ctx, wait) {
 			return nil
 		}
@@ -416,6 +465,11 @@ func (c *Client) trade(ctx context.Context) (*Token, error) {
 	}
 	if c.session != "" {
 		form.Set(oauthwire.FormSession, c.session)
+	}
+	if c.projects != "" {
+		// Sent only when there is a list: a trade naming none reads exactly as one written before
+		// the parameter existed.
+		form.Set(oauthwire.FormProjects, c.projects)
 	}
 	if c.noLauncherCredential {
 		// Sent only to decline: an absent parameter asks, so a broker that has never heard of

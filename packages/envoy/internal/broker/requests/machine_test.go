@@ -486,6 +486,54 @@ func TestCreateServesASecretCreatedAfterTheLastReload(t *testing.T) {
 	}
 }
 
+// TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands pins what a request meets while
+// `agent-secrets secret create` waits for the person to type the value of a secret it has made but
+// not filled (policy.ReasonPendingValue): the name is refused policy.ErrPendingValue (400
+// PENDING_VALUE), a refusal of its own that says the secret exists and waits for its first value,
+// never UNKNOWN_SECRET, which an agent takes as final; with no request, no record and no judge
+// call, so no approver is asked to approve a secret that holds nothing. Once the value lands, the
+// same name is served: the next request goes to its owner for approval, as any human-tier
+// secret's does, and the grant that approval mints releases the value.
+func TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands(t *testing.T) {
+	m, enr, key, approver := newFixture(t)
+	ctx := context.Background()
+	var judged []PendingRequest
+	m.Judge = func(p PendingRequest) { judged = append(judged, p) }
+	created := time.Now()
+	waiting := policytest.Secret("TYPED_KEY", fixtureOperator, policy.TierHuman, "")
+	waiting.Tags[secrets.CreateLabel] = "0123456789abcdef0123456789abcdef"
+	waiting.CreatedAt = &created
+	fixtureStore(m).Put(waiting)
+
+	_, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "TYPED_KEY"), "", nil)
+	if !errors.Is(err, policy.ErrPendingValue) || errors.Is(err, policy.ErrUnknownSecret) || !strings.Contains(err.Error(), "TYPED_KEY") {
+		t.Fatalf("Create(TYPED_KEY) while it waits for its value = %v; want policy.ErrPendingValue naming TYPED_KEY, not ErrUnknownSecret", err)
+	}
+	if pending, waits := m.Policy.Get().Pending[policytest.ID("TYPED_KEY")]; !waits {
+		t.Fatalf("the policy holds TYPED_KEY as %+v; want it waiting for its value (pending-value), the reason the request was refused", pending)
+	}
+	var requests, records int
+	if err := m.Store.Pool.QueryRow(ctx, `select (select count(*) from requests where enrollment_id=$1), (select count(*) from credential_requests)`, enr).Scan(&requests, &records); err != nil || requests != 0 || records != 0 || len(judged) != 0 {
+		t.Fatalf("after the refusal: %d requests, %d records, %d judge calls, %v; want none of each, no approver asked", requests, records, len(judged), err)
+	}
+
+	filled := policytest.Secret("TYPED_KEY", fixtureOperator, policy.TierHuman, "typed-v1")
+	filled.CreatedAt = &created
+	fixtureStore(m).Put(filled)
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "TYPED_KEY"), "", nil)
+	if err != nil || req.State != "pending" || req.RecordID == nil || req.Approver == nil || *req.Approver != approver || len(judged) != 1 {
+		t.Fatalf("Create(TYPED_KEY) once its value landed = %+v, %v, %d judge calls; want pending on %s's approval, judged once", req, err, len(judged), approver)
+	}
+	decision, err := m.ApplyDecision(ctx, *req.RecordID, true, approver)
+	if err != nil || decision.GrantID == "" {
+		t.Fatalf("approve: %+v, %v; want a grant", decision, err)
+	}
+	release, err := m.Values(ctx, decision.GrantID, enr, nil, ReleaseCall{})
+	if err != nil || release.Values["TYPED_KEY"] != "typed-v1" {
+		t.Fatalf("Values = %+v, %v; want TYPED_KEY released as typed-v1", release.Values, err)
+	}
+}
+
 // TestMissRereadsAreBoundedPerEnrollment pins the miss path's bound: a session inventing names
 // costs at most its enrollment's burst of DescribeSecret calls, and a miss past it is refused
 // without one.

@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -315,6 +316,55 @@ func sameTokenProjection(held, want *corev1.ServiceAccountTokenProjection) bool 
 		held.ExpirationSeconds != nil && *held.ExpirationSeconds == *want.ExpirationSeconds
 }
 
+// movedExchangeIdentity compares the exchange token a pod created now carries
+// (exchangeTokenProjection, for AgentSecrets.ExchangeAudience) with what pod carries; ok is whether
+// pod lacks it. A role started now in a pod that lacks it is told no identity (tradesIn), and so
+// trades nothing for as long as it runs there; a pod's volumes are fixed when it is created, so
+// turning the exchange on, or moving its audience, leaves every enrolled pod lacking it until the
+// pod is replaced, which is its update round's to do once its workers have pushed, as the
+// enrollment's is (movedEnrollment). It compares the three fields the token file depends on, as
+// movedEnrollment does. A runtime that names no exchange audience, or enrolls no pod, lacks
+// nothing: a pod that still carries a token is no pod to replace for a generation told of none.
+func (r *Runtime) movedExchangeIdentity(pod *corev1.Pod) (movedAddress, bool) {
+	broker := r.agentSecrets
+	if broker == nil || broker.ExchangeAudience == "" {
+		return movedAddress{}, false
+	}
+	want := exchangeTokenProjection(broker)
+	held := heldExchangeToken(pod.Spec, want)
+	if sameTokenProjection(held, want) {
+		return movedAddress{}, false
+	}
+	return movedAddress{agentSecretsExchangeVolume, enrollmentName(held), enrollmentName(want)}, true
+}
+
+// heldExchangeToken is the token pod's exchange volume projects, the one matching want where it
+// projects several, nil where it carries no such volume.
+func heldExchangeToken(pod corev1.PodSpec, want *corev1.ServiceAccountTokenProjection) *corev1.ServiceAccountTokenProjection {
+	var held *corev1.ServiceAccountTokenProjection
+	for _, volume := range pod.Volumes {
+		if volume.Name != agentSecretsExchangeVolume || volume.Projected == nil {
+			continue
+		}
+		for _, source := range volume.Projected.Sources {
+			if token := source.ServiceAccountToken; token != nil && (held == nil || sameTokenProjection(token, want)) {
+				held = token
+			}
+		}
+	}
+	return held
+}
+
+// carriesExchangeIdentity is whether the pod spec carries the exchange token a role is told of for
+// broker: the exchange volume projecting a token for broker's exchange audience at
+// AgentSecretsExchangeFile, the file AGENT_SECRETS_MACHINE_TOKEN_FILE names. Its lifetime does not
+// decide it: a token of another lifetime still trades. It is the pod's half of the exchange
+// decision and is read through that decision alone (Runtime.tradesIn).
+func carriesExchangeIdentity(pod corev1.PodSpec, broker *AgentSecrets) bool {
+	held := heldExchangeToken(pod, exchangeTokenProjection(broker))
+	return held != nil && held.Audience == broker.ExchangeAudience && held.Path == AgentSecretsExchangeFile
+}
+
 // movedInPod is what pod holds, for role, that a pod created now is not handed and that no worker
 // of the pod can be asked about first: the layout before one container (movedLayout), whose pod's
 // workers predate the update round's contract and have no op to signal with, and the stream its
@@ -328,14 +378,14 @@ func sameTokenProjection(held, want *corev1.ServiceAccountTokenProjection) bool 
 // carry is drift, not a moved address (driftedInPod, podShapeDrift): its worker can be asked to
 // push its work first, and an update round asks it before the pod is replaced.
 //
-// A pod no round covers holds every facet here, those four included. No round is ever opened
-// over such a pod — PodDrift answers nothing for it — so a facet that was neither a moved address
-// nor a round's would leave its role in the pod it was created in for ever, with nothing saying
-// so: today that is the project controller's pod, which has nobody in it to task and no issue disk
-// to protect, and so keeps the replacement it has always had, at the next launch into it. The rest
-// of such a pod's drift, the shape its template was built from, is its launch's too (relaunch,
-// shapeDrift), so a round covers every drift of a pod or a launch covers every drift of it, and no
-// drifted pod is left to neither.
+// A pod no round covers holds every facet here, driftedInPod's five included. No round is ever
+// opened over such a pod — PodDrift answers nothing for it — so a facet that was neither a moved
+// address nor a round's would leave its role in the pod it was created in for ever, with nothing
+// saying so: today that is the project controller's pod, which has nobody in it to task and no
+// issue disk to protect, and so keeps the replacement it has always had, at the next launch into
+// it. The rest of such a pod's drift, the shape its template was built from, is its launch's too
+// (relaunch, shapeDrift), so a round covers every drift of a pod or a launch covers every drift of
+// it, and no drifted pod is left to neither.
 func (r *Runtime) movedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 	var moved []movedAddress
 	if layout, ok := movedLayout(pod); ok {
@@ -355,14 +405,15 @@ func (r *Runtime) movedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 // mount holding every named role's overlays and the overlays of every arm the project declares
 // in role's container
 // (movedRoleOverlays), the secrets broker's enrollment its next generation is started against
-// (movedEnrollment), the whole session store it was created under (movedSessionStore), and the
-// gh directories its gh volume projects (movedGhDirs). Each is fixed for the
+// (movedEnrollment), the exchange identity it is told of (movedExchangeIdentity), the whole session
+// store it was created under (movedSessionStore), and the gh directories its gh volume projects
+// (movedGhDirs). Each is fixed for the
 // pod's life, so the pod must be replaced for the role to run as one launched now — but each
 // leaves the workers already in the pod running and able to reach this daemon, so each is a
 // reason to open a round (PodDrift) and ask them to push, where replacing the pod under them
 // would end every turn in it and take the issue's disk with it. The two facets whose worker
 // cannot be reached at all are movedInPod's and are never a round's — and for a pod no round
-// covers (roundCovers), the project controller's today, so are these four: no round is opened
+// covers (roundCovers), the project controller's today, so are these five: no round is opened
 // over such a pod, so movedInPod holds every facet there and its launch replaces it, as it always
 // did.
 func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
@@ -372,6 +423,9 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 	}
 	if enrollment, ok := r.movedEnrollment(pod, role); ok {
 		moved = append(moved, enrollment)
+	}
+	if exchange, ok := r.movedExchangeIdentity(pod); ok {
+		moved = append(moved, exchange)
 	}
 	if store, ok := r.movedSessionStore(pod); ok {
 		moved = append(moved, store)
@@ -406,18 +460,26 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // App's installation does not reach is one its own `gh` reaches all the same, so a controller
 // pod without that owner's directory has drifted and is replaced by its next launch.
 //
-// Owner directories alone are compared, on both sides (ghOwnerDirs). A bundle built now holds a
-// `<owner>/<repo>` directory for each other repository the pod's recorded owner and the owner
-// whose installation serves its repository serve, and a pod that
-// lacks one of those is not a pod to replace: a repository the mapping gains under another owner
-// is reached through that owner's directory, whose read lease the refresher re-mints over the
-// repositories the mapping serves now, and one it gains under the pod's own write owner is read
-// through that owner's directory too, whose lease names the pod's own repository alone and so
-// does not reach it, until the pod is replaced for a reason of its own and the issue's next pod
-// projects it. Were a repository directory read as an address, a repository added to the mapping
-// would replace every running pod of that owner at once.
-// An owner's own directory is the other case: a pod without it holds no token of that owner at
-// all.
+// Owner directories alone are compared, on both sides (ghOwnerDirs). A bundle this daemon
+// builds holds none but owner directories: a lease reaches every repository its installation
+// holds, so there is nothing narrower for a directory to stand for (appauth.GitHubCredential,
+// INFRA-2543). A pod holding a `<owner>/<repo>` directory was launched before that change and
+// has drifted on that alone — the names ghOwnerDirs drops are the second reason below, which
+// names the directory — since its gh holds a token that reaches one repository where the
+// bundle of a pod created now holds its owner's, which reaches every repository of that
+// installation.
+// An owner's own directory is the first reason: a pod without it holds no token of that owner
+// at all.
+//
+// The bundle's pairs file is the third reason, and the one read by its presence alone
+// (GitHubPairsKey, ghconfig.PairsFile): every bundle of this daemon holds it, empty where the
+// project has no configured rename that resolves, and `legion gh` and `legion git-credential`
+// route a moved repository by it. A pod created before it existed projects no item for it, and
+// a projection's items are fixed for the pod's life, so that pod's wrappers would route by
+// owner alone for as long as it runs and no Update could mend it. Its content is never
+// compared: the kubelet rewrites a projected file in place when the Secret changes, so a pair
+// configured since the launch reaches a kept pod (refreshGitHubCredential), and a pod is
+// replaced for what a refresh cannot reach and for nothing else.
 //
 // The pod's own repository is still read from its workspace fetch (fetchRepository), and a pod
 // that fetches none — the controller's — asked for with the zero Repository, since the owner
@@ -436,30 +498,73 @@ func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress 
 // sorted here, so each is searched and named in one order.
 func (r *Runtime) movedGhDirs(pod *corev1.Pod, role claim.Role) (movedAddress, bool) {
 	name := roleVolume(ghVolume, role)
-	at := slices.IndexFunc(pod.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == name })
-	if at < 0 {
+	projected, found := ghProjectionOf(pod, role)
+	if !found {
 		return movedAddress{}, false
 	}
-	var held []string
-	if secret := pod.Spec.Volumes[at].Secret; secret != nil {
-		for _, item := range secret.Items {
-			if dir, ok := GitHubHostsDir(item.Key); ok {
-				held = append(held, dir)
-			}
-		}
-	}
+	held := projected.dirs
 	slices.Sort(held)
-	held = ghOwnerDirs(held)
+	owned := ghOwnerDirs(held)
+	// A `<owner>/<repo>` directory is no bundle of this daemon's: the pod was launched by one
+	// that still cut a directory per repository, and its token reaches that repository where
+	// the owner's own directory of a bundle built now reaches every repository of the
+	// installation. The names ghOwnerDirs drops are exactly those.
+	if repositories := slices.DeleteFunc(slices.Clone(held), func(dir string) bool { return !strings.Contains(dir, "/") }); len(repositories) > 0 {
+		return movedAddress{where: name + " holds a repository directory", held: ghDirsName(repositories),
+			handed: "the owner directories alone"}, true
+	}
+	// A pod launched with no directory at all projects no Secret and so no pairs file either,
+	// and a launch now would hand it the same empty directory: it is compared for its owner
+	// directories alone, below.
+	if projected.secret && !projected.pairs {
+		return movedAddress{where: name + " holds no " + ghconfig.PairsFile, held: ghDirsName(owned),
+			handed: "the same directories beside the configured renames the wrappers route by"}, true
+	}
 	repo, _ := fetchRepository(pod)
 	served := ghOwnerDirs(r.gitHubDirs(repo, podAppRoles(podKindFor(role))))
 	lacking := slices.ContainsFunc(served, func(dir string) bool {
-		_, found := slices.BinarySearch(held, dir)
+		_, found := slices.BinarySearch(owned, dir)
 		return !found
 	})
 	if !lacking {
 		return movedAddress{}, false
 	}
-	return movedAddress{where: name, held: ghDirsName(held), handed: ghDirsName(served)}, true
+	return movedAddress{where: name, held: ghDirsName(owned), handed: ghDirsName(served)}, true
+}
+
+// ghProjection is what one role's gh volume of a pod projects, read off its items, which are
+// fixed for the pod's life: dirs, the bundle directories they name (GitHubHostsDir), in the order
+// they come, pairs, whether they hold the bundle's pairs file (GitHubPairsKey), and secret,
+// whether the volume is a Secret projection at all — not one of a pod launched with no directory,
+// whose gh volume is an empty directory projecting nothing. The drift check reads it (movedGhDirs)
+// and so does the refresher, which serves a pod the layout it names (servedLayout).
+type ghProjection struct {
+	dirs          []string
+	pairs, secret bool
+}
+
+// ghProjectionOf is what role's gh volume of pod projects, and whether pod has such a volume at
+// all: one with none is no pod of this runtime's making.
+func ghProjectionOf(pod *corev1.Pod, role claim.Role) (ghProjection, bool) {
+	name := roleVolume(ghVolume, role)
+	at := slices.IndexFunc(pod.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == name })
+	if at < 0 {
+		return ghProjection{}, false
+	}
+	source := pod.Spec.Volumes[at].Secret
+	if source == nil {
+		return ghProjection{}, true
+	}
+	projected := ghProjection{secret: true}
+	for _, item := range source.Items {
+		if item.Key == GitHubPairsKey {
+			projected.pairs = true
+		}
+		if dir, ok := GitHubHostsDir(item.Key); ok {
+			projected.dirs = append(projected.dirs, dir)
+		}
+	}
+	return projected, true
 }
 
 // podAppRoles are the GitHub Apps a pod of kind holds a bundle of, each named once
@@ -476,9 +581,18 @@ func podAppRoles(kind podKind) []appauth.AppRole {
 	return apps
 }
 
+// PodAppRoles is podAppRoles of the pod role runs in (podKindFor): both Apps for a workflow role,
+// whose issue pod projects the directories every role's bundle holds and no more (gitHubBundles,
+// volumes), and the review App alone for the project controller. A role's container holds only
+// the directories of that projection, so a caller that says which owners a role's token reaches
+// in a pod of this runtime reads them for these Apps together (internal/daemon's plan.appOwners),
+// as the drift check does (movedGhDirs).
+func PodAppRoles(role claim.Role) []appauth.AppRole { return podAppRoles(podKindFor(role)) }
+
 // ghOwnerDirs is the owner directories of a gh directory set, in the order they come: the names
-// holding no slash, where a repository's directory is `<owner>/<repo>` (ghconfig.IsDirName). It
-// is what movedGhDirs compares, a repository directory a pod lacks being no address of its own.
+// holding no slash, where a repository's directory a pod launched before INFRA-2543 projects is
+// `<owner>/<repo>`. It is what movedGhDirs compares, a repository directory a pod lacks being no
+// address of its own.
 func ghOwnerDirs(dirs []string) []string {
 	owners := make([]string, 0, len(dirs))
 	for _, dir := range dirs {

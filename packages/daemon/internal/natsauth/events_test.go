@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
 // signalled is the option, after natsauth.LogEvents, that sends on each channel once the handler
@@ -71,7 +72,7 @@ func wait(t *testing.T, ch <-chan struct{}, what string, out *lockedBuffer) {
 // the subject, from the server's asynchronous refusal: the connection itself stays up, and
 // otherwise nats.go's default handler would write them to stderr alone.
 func TestAPermissionTheServerRefusesIsLoggedAtError(t *testing.T) {
-	seed, public := testnats.User(t)
+	seed, public := testnkeys.User(t)
 	const denied, deniedPublish = "notifications.envoy.exceptions.notifications.role.>", "notifications.role.denied"
 	_, url := testnats.StartNkeyAuthorizedUsers(t, testnats.Image, testnats.NkeyUser{
 		Public:      public,

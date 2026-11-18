@@ -277,8 +277,10 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 	// part of the command because renew finds its identity through AGENT_SECRETS_KEY_DIR, or
 	// else the $XDG_RUNTIME_DIR default (identity.go, keyDir), and never through --out: a pod
 	// that enrolled into a directory named by --out alone would otherwise be handed a command
-	// that exits 2, finding no session identity. Both words are shell-quoted (shellWord), so
-	// the line pastes as it reads whatever the directory and the token file are named.
+	// that exits 1, finding no broker identity for this process (or, on a machine the broker
+	// accepts on its own identity, acting as that machine rather than as this pod). Both words
+	// are shell-quoted (shellWord), so the line pastes as it reads whatever the directory and
+	// the token file are named.
 	fmt.Fprintf(stderr, "%s --pod: enrolled; keep this lease alive with: AGENT_SECRETS_KEY_DIR=%s agent-secrets renew --pod-token-file %s\n",
 		prefix, shellWord(out), shellWord(tokenFile))
 	fmt.Fprintln(stdout, enrollmentID)

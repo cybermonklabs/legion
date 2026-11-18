@@ -72,6 +72,18 @@ func entryStartRows(t *testing.T, pool *store.Pool, issue string) []entryStartRo
 	return found
 }
 
+// roleStartRows is every start row of issue entryStartRows reads that starts role, oldest first.
+func roleStartRows(t *testing.T, pool *store.Pool, issue string, role claim.Role) []entryStartRow {
+	t.Helper()
+	var found []entryStartRow
+	for _, start := range entryStartRows(t, pool, issue) {
+		if start.request.Role == role {
+			found = append(found, start)
+		}
+	}
+	return found
+}
+
 // rolePhaseRow is role's phases row of issue: the record the entry a phase is on and that entry's
 // task are read from (record.PhaseRow.Entry and EntryTask), and the zero row for a role the
 // record holds none of.
@@ -553,13 +565,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	rig.sup.deps.Conns.(*fake.Conns).Register(tester, fake.NewConn())
 	testerStarts := func() []entryStartRow {
 		t.Helper()
-		var found []entryStartRow
-		for _, start := range entryStartRows(t, rig.pool, rig.issue.Key) {
-			if start.request.Role == claim.RoleTester {
-				found = append(found, start)
-			}
-		}
-		return found
+		return roleStartRows(t, rig.pool, rig.issue.Key, claim.RoleTester)
 	}
 	testerStart := func(entry int64) entryStartRow {
 		t.Helper()

@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The architect's and the workers' role prompts no longer give the issue keys, pull request
+  numbers, dates or counts of past incidents in one deployment: each rule keeps its reason and
+  states it for any operator.

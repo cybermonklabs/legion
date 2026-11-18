@@ -77,7 +77,7 @@ func (b *Buckets) bucket(name string) (bus.KeyValue, error) {
 	if *handle != nil {
 		return **handle, nil
 	}
-	kv, err := bus.OpenKeyValue(b.client.Connection(), js, name)
+	kv, err := bus.OpenKeyValue(context.Background(), b.client.Connection(), js, name)
 	if err != nil {
 		return bus.KeyValue{}, err
 	}

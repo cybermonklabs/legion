@@ -1,7 +1,7 @@
 // packages/envoy/internal/broker/requests/airlock.go
 // airlock.go is the placeholder side of the airlock: the strings a release hands a session in
 // place of a secret the rules file names, the table those strings live in
-// (airlock_placeholders, migration 0029), the shape each kind of secret is released in once its
+// (airlock_placeholders, migration 0029), the shape each type of secret is released in once its
 // values are taken out of it, and the two reads the broker's proxy port makes — one per
 // connection (AirlockConnection) and one per grant per pod (AirlockValues). The proxy itself,
 // which decides and rewrites each request, is internal/broker/airlock.
@@ -35,13 +35,13 @@ import (
 // is no connection.
 var ErrAirlockNoNames = errors.New("this grant holds no airlock name the session may still have")
 
-// ErrAirlockValueShape is airlockSplitOf's refusal of a value that does not hold what its kind
+// ErrAirlockValueShape is airlockSplitOf's refusal of a value that does not hold what its type
 // releases: no JSON object, a missing or non-string token, two installations of one owner, an
 // azure-login identity that names no tenant or no application. The release of that name is
 // refused rather than made, since the one other answer would be to hand over the real value the
 // rules hold back, and no retry changes a value's shape, so the proxy answers it 403 in these
 // words.
-var ErrAirlockValueShape = errors.New("a name of this grant does not hold what its kind releases")
+var ErrAirlockValueShape = errors.New("a name of this grant does not hold what its type releases")
 
 // The slots of a secret. A slot names which value of a secret a placeholder stands for, because
 // one secret can release several values at once and each needs a placeholder of its own:
@@ -263,20 +263,20 @@ func (s airlockSplit) slots() []string { return slices.Sorted(maps.Keys(s.values
 //   - a github-app's minted installations and an azure-login's minted identity are re-emitted
 //     with the token fields replaced and every other field as the minter wrote it.
 //
-// The policy kind decides first and the entry's kind only for a stored secret, because the kind
+// The policy type decides first and the entry's kind only for a stored secret, because the type
 // is what says how the broker built the value, where the entry says where that value may go. A
-// value that does not hold what its kind releases — no object, a missing or non-string token — is
+// value that does not hold what its type releases — no object, a missing or non-string token — is
 // an ErrAirlockValueShape rather than a release, since the one other answer would be to release
 // the real value the rules hold back.
-func airlockSplitOf(entryKind, kind, value string) (airlockSplit, error) {
+func airlockSplitOf(entryKind, secretType, value string) (airlockSplit, error) {
 	var split airlockSplit
 	var err error
 	switch {
-	case kind == policy.KindGitHubApp:
+	case secretType == policy.TypeGitHubApp:
 		split, err = githubAppSplit(value)
-	case kind == policy.KindAzureLogin:
+	case secretType == policy.TypeAzureLogin:
 		split, err = azureLoginSplit(value)
-	case kind == "" && entryKind == airlock.KindAWS:
+	case secretType == "" && entryKind == airlock.KindAWS:
 		split, err = objectSplit(value, map[string]string{"access_key_id": SlotAWSAccessKeyID, "secret_access_key": SlotAWSSecretAccessKey},
 			map[string]string{"session_token": SlotAWSSessionToken})
 	default:
@@ -515,10 +515,10 @@ type AirlockConnection struct {
 }
 
 // AirlockGrantName is one name a connection may carry: the placeholder of each of its slots, and
-// the kind that says what those slots are.
+// the type that says what those slots are.
 type AirlockGrantName struct {
 	Slots map[string]string // slot -> placeholder
-	Kind  string            // the policy kind: "", "github-app", "google-login", "azure-login"
+	Type  string            // the policy type: "", "github-app", "google-login", "azure-login"
 }
 
 // AirlockConnection answers what the placeholder a proxy connection authenticated with proves. It
@@ -529,7 +529,7 @@ type AirlockGrantName struct {
 //
 // This runs on every connection, so it is indexed reads alone and nothing else: the row by its
 // primary key with its grant and enrollment joined in, the grant's other placeholders by
-// grant_id, and the enrollment's withheld names by enrollment_id. Each name's kind comes from the
+// grant_id, and the enrollment's withheld names by enrollment_id. Each name's type comes from the
 // policy snapshot already in memory, which costs no query. The checks a release makes besides —
 // the approval chain, the policy re-evaluation, the max-grant and the airlock fingerprint — are
 // AirlockValues's, once per grant per pod.
@@ -573,7 +573,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		if slices.Contains(withheld, name) {
 			continue
 		}
-		conn.Names[name] = AirlockGrantName{Slots: slots, Kind: set.Secrets[name].Kind()}
+		conn.Names[name] = AirlockGrantName{Slots: slots, Type: set.Secrets[name].Type()}
 	}
 	if len(conn.Names) == 0 {
 		return AirlockConnection{}, ErrAirlockNoNames
@@ -582,14 +582,14 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 }
 
 // AirlockSecret is one airlock name as the proxy holds it: the real value behind each of its
-// slots, when the broker must read or mint it again, the policy kind that says what the slots
+// slots, when the broker must read or mint it again, the policy type that says what the slots
 // are, and for an azure-login name the application and tenant its document names.
 type AirlockSecret struct {
 	Slots   map[string]string // slot -> the real value that slot's placeholder stands for
 	Expires time.Time         // zero for a stored value, which no clock ends
-	Kind    string
+	Type    string
 	// Azure is the tenant and the application an azure-login name's own document names, which
-	// the proxy holds every exchange of its federated token to, and zero for every other kind.
+	// the proxy holds every exchange of its federated token to, and zero for every other type.
 	// The two travel as fields of their own rather than as slots or as the document whole. Not
 	// slots, because a slot is a value a placeholder stands for: the release would mint
 	// placeholders for them and put those in the session's document, where az needs the ids
@@ -629,7 +629,7 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	}
 	values := map[string]AirlockSecret{}
 	for _, released := range read {
-		values[released.name] = AirlockSecret{Slots: released.split.values, Expires: released.expires, Kind: released.kind, Azure: released.split.azure}
+		values[released.name] = AirlockSecret{Slots: released.split.values, Expires: released.expires, Type: released.secretType, Azure: released.split.azure}
 	}
 	// The same grant.used row and line a session's own release writes, marked as the proxy's: the
 	// values did leave the broker, and an operator reading the trail must see that they did.
@@ -644,8 +644,8 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 // fingerprint. The proxy holds the version AirlockValues answered beside the values it answered,
 // and reads this to tell whether that snapshot is still the live one.
 //
-// The shape tag is in it so that a retag of it - which changes what the broker hands over for
-// the same stored value, not who may have it - reaches a pod holding values the proxy read
+// The type tag is in it so that a retag of the type - which changes what the broker hands over
+// for the same stored value, not who may have it - reaches a pod holding values the proxy read
 // before the retag, since the proxy rereads them on no event but a name's own reread or this
 // version moving.
 func (m *Machine) PolicyVersion() string { return m.Policy.Get().Version }

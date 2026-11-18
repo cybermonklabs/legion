@@ -387,7 +387,7 @@ func startRawKeptStandIn(t *testing.T, uri, sessionID string) <-chan []byte {
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	frames := make(chan []byte, 16)
-	subscription, err := conn.Subscribe(contracts.AgentSubject(sessionID), func(message *natsgo.Msg) {
+	subscription, err := conn.Subscribe(contracts.LegacyAgentSubject(sessionID), func(message *natsgo.Msg) {
 		frames <- slices.Clone(message.Data)
 	})
 	if err != nil {

@@ -37,7 +37,7 @@ message from Dispatch's Agents page as that person's own turn.
   `.opencode/envoy.json`, which is not read, is one `envoy: <file> is not read: mkdir -p … && mv …`
   line while the checkout has no `.envoy/envoy.json`. The `dispatch` command reads the file
   `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set. A subagent's Bash can lack what the
-  hook writes there (anthropics/claude-code#46696); its `dispatch` command, finding no
+  hook writes there (Claude Code issue 46696); its `dispatch` command, finding no
   `DISPATCH_HOST`, then takes host `claude` from the `CLAUDE_CODE_CHILD_SESSION=1` Claude Code sets
   in every Bash, and reads `CLAUDE_CONFIG_DIR` itself. With Dispatch configured,
   `dist/session-hook.js dispatch-first` puts the `dispatch-first` skill into the context of every
@@ -170,11 +170,17 @@ message from Dispatch's Agents page as that person's own turn.
   summary (the same shape as OMP on fork). `ENVOY_SESSION_ID` (QA override) disables the handoff.
 - `envoy_inbox` is local recovery state: the most recent 50 event summaries, with no envelope
   body, ordered newest first.
-- `bin/envoy-send.ts` sends direct messages through the Envoy listener's HTTP API, to the listener
-  and with the bearer a command resolves: `envoySettings` over the envoy.json
-  `envoyConfigPath("command")` chooses (the `ENVOY_CONFIG_FILE` the `open-asks` hook hands the
-  session's Bash first), with `ENVOY_URL` and `ENVOY_TOKEN_FILE` or `ENVOY_TOKEN` over its `envoy`
-  section. With Envoy off it sends nothing and exits 1, saying why.
+- `bin/envoy-send.ts` sends direct messages through `@legion/envoy-client`'s `send`, the
+  transport every other client uses, to the listener and with the bearer a command resolves:
+  `envoySettings` over the envoy.json `envoyConfigPath("command")` chooses (the `ENVOY_CONFIG_FILE`
+  the `open-asks` hook hands the session's Bash first), with `ENVOY_URL` and `ENVOY_TOKEN_FILE` or
+  `ENVOY_TOKEN` over its `envoy` section. It sends the session its shell names
+  (`ENVOY_SESSION_ID`, else `CLAUDE_CODE_SESSION_ID`) as `source_session`, so the listener's limit
+  on each session's sending counts its messages. After no answer or a 5xx it sends the message
+  once more under the same idempotency key, and Envoy drops that copy as a repeat. A refusal, one
+  for the sender's rate among them, prints the listener's own sentence after
+  `Claude Envoy send failed: `, exits 1 and is not sent again. With Envoy off it sends nothing and
+  exits 1, saying why.
 
 ## What a delivered line carries
 
@@ -200,6 +206,9 @@ The server exposes the shared Envoy messaging contract, every tool of `envoyTool
 `envoy_*` tools, `envoy_inbox` and `envoy_role_get` among them, and `slack_post`, a reply in a Slack
 thread. It exposes no Dispatch tool: a `dispatch_*` call is an unknown
 tool.
+A tool that fails answers a tool result with `isError: true` whose text is the error, so the model
+reads the listener's own sentence for a refused send or publish, a refusal for the sender's rate
+among them. An unknown tool, and a call before the server has started, answer a JSON-RPC error.
 
 ## Dispatch
 
@@ -538,7 +547,8 @@ in the session's Dispatch state directory carries the same name. Its negative co
 first case again against the committed `dist/envoy-channel.js` of `BASE_REV` (default
 `0306bcbe16df-`, the last revision without the fallback), which registers the folder name instead.
 It needs `bun`, `curl`, `jq`, `go` and `nats-server`
-(`go install github.com/nats-io/nats-server/v2@v2.11.4`), and no Claude authentication: the two
+(`go install github.com/nats-io/nats-server/v2@v2.15.1`, the hub's version: the listener refuses a
+nats-server below v2.11.12, v2.12.4 or v2.14.0), and no Claude authentication: the two
 hook payloads are written by the script, and that the field arrives at all rests on Claude Code's
 documentation. Claude Code is not installed in an issue pod's image, though it runs there from
 `bunx --package @anthropic-ai/claude-code@<version> claude`, as

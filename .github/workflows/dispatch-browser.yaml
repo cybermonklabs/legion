@@ -1455,7 +1455,14 @@ jobs:
     # handed them anything. The verdict step below names it as it names the rest.
     needs: [binaries, shard, alone, multiprocess, embedder, visual]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    # arm64, for the reason the comment on ci.yaml's `changes` job gives (INFRA-4222). This job
+    # runs JavaScript actions, `bunx playwright merge-reports` and two scripts over gh and jq, with
+    # the runner image's own node, python3, gh and jq. The one toolchain it installs is Bun, from
+    # the aarch64 row of .github/actions/setup-bun that ci.yaml's tool-fallback-arm job proves.
+    # Playwright's report merge starts no browser. At busy
+    # hours the x64 pool held this 35-second job for about 35 minutes (run 44126172228 on
+    # 2026-11-17), and it holds every browser run's verdict, after the legs and before ci-ok.
+    runs-on: ubuntu-24.04-arm
     # The budget is measured. Over the 32 concluded `dispatch-browser / merge` jobs of the last
     # 43 completed ci.yaml runs, read from the jobs API on 2026-11-08, the job's maximum is
     # 34 s: job 128737694112 of run 42481906495, 12:57:25Z to 12:57:59Z. The 37 s this comment

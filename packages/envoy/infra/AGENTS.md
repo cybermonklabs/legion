@@ -113,7 +113,8 @@ versions. Never add the module to the root `go.work`.
   may hold no `"`, `$`, backtick, `\` or line break. A value that holds an nkey seed of any type, in
   any spelling (`bus.HoldsSeed`), is refused where it enters, before anything quotes or renders
   it, with `core.SeedRefusal`, which names its path and never the value: core refuses one in the
-  authorization's names, rule entries and `noAuthUser`, in `Render`'s and `StartScript`'s inputs,
+  authorization's names, rule entries, `noAuthUser` and callout fields (`callout.issuer`,
+  `callout.xkey`, `callout.serviceUser`), in `Render`'s and `StartScript`'s inputs,
   and in the listener's `machineId`, `listenHost` and NATS URLs; a component refuses
   one in its name and its own string inputs: host's listed in `host.stringInputs`, the AWS
   components' every plain string by reflection over their args (`aws.seededPlainInput`), and every
@@ -355,7 +356,7 @@ stamps it, for its `--version` (`cmd/envoy-infra/main_test.go`). The seed packag
 through `SSL_CERT_FILE`; setup any other seed test needs goes into it. The tests that start
 nats-server containers on this machine's Docker through `testnats` carry the `natslive` build
 tag, so a plain `go test ./...`, as that `build` job runs it, starts none. Each runs on
-`testnats.Image` and `testnats.HubImage`: `core/nats_auth_live_test.go` (the rendered authorization
+`testnats.Images`, which is `testnats.HubImage` alone (the listener refuses nats:2.10, `natsversion`): `core/nats_auth_live_test.go` (the rendered authorization
 on a real server: its users connect, a client with no credential is refused, the grants hold),
 `seed/seed_live_test.go` (a generated seed connects, and a client without it is refused) and
 `core/permissions_live_test.go` (the listener, built from `packages/envoy/cmd/listener` under the
@@ -385,6 +386,34 @@ publish, the agent stream relay, Dispatch creating the redelivery bucket, which 
 then reads and writes, and that Dispatch's own user is refused a publish to a session's frames; its
 negative control removes the delivery durable's filtered create permission and receives that server
 violation alone.
+`core/nats_callout_live_test.go` runs on `testnats.HubImage` alone, the server the hub runs, with
+an auth service in the test answering the server's requests through `github.com/nats-io/jwt/v2`:
+a stream written before the callout reads whole after the container restarts on the rendered
+callout block (the hub keeps its global account), a token client is placed in `$G` and its grant
+holds, a static user listed in `auth_users` reaches no callout and keeps its grant, a wrong token
+and no credential are refused, a session `noAuthUser` is reached with no callout request, and,
+as the control that `auth_users` must be derived, a static user edited out of it is sent to the
+callout and refused.
+`core/nats_ping_live_test.go`, on the same image, checks the rendered ping lines. In
+`TestAHungReplicaLeavesTheCalloutsQueueGroup`, two replicas of a test auth service answer in one
+queue group, replica A behind a proxy that stops reading: the server drops A from `/connz` within
+81 s of the hang, and the next 20 clients are all admitted. Its control,
+`TestWithoutThePingLinesAHungReplicaKeepsItsPlace`, runs under nats-server's defaults: A is still
+listed at 81 s, and clients are refused at 2 s. In
+`TestAClientThatStallsFifteenSecondsStaysConnected`, a keyed client behind a proxy that stops
+reading for 15 s keeps its server connection. Its control,
+`TestWithThreeSecondPingsAStalledClientIsClosed`, sets `ping_interval` to 3 s, and the server
+closes the same client as stale.
+`core/nats_callout_timeout_live_test.go`, on the same image, holds the rendered block to its
+answer budget: a nats.go client is admitted when the auth service answers 0.5 s before the
+rendered authorization timeout (nats-server's default 2 s, since the block sets none) and at
+1.5 s. A block that renders a timeout of 3 s or more fails it: the first answer then comes at
+2.5 s or later, after the server's first PING (2 s after the connect, plus up to 20%), which fails
+a nats.go client still waiting on the callout.
+`gcp/clusteredhub_callout_live_test.go` carries the tag too and starts no container: it reloads the
+clustered hub's rendered `auth.conf` on the nats-server v2.15.1 the test binary links in, which
+takes a grant change and refuses any change of the `auth_callout` block, one reason the hub's pods
+carry the `envoy-infra.sjawhar.dev/auth-callout` annotation.
 
 `gcp/clusteredhub_live_test.go` carries the `natslive` tag too, but starts no container and needs
 no Docker: it installs each tool it runs with `go install`, into a temporary `GOBIN` with
@@ -408,9 +437,19 @@ acknowledged message exactly once across a SIGKILL of its leader; the exporter, 
 chart's arguments, serves one `nats_stream_last_seq` series per server holding a copy; the real
 reloader, run with the chart's arguments, applies a users change with no server restart and no
 client reconnect; and every server's reload refuses a session-user change
-(`config reload not supported for NoAuthUser`), which takes effect only on a restart. Installing
-the tools takes minutes on a cold module cache, which is why CI runs the `natslive` packages with
-`-timeout 30m`. To run them alone, from `packages/envoy/infra`:
+(`config reload not supported for NoAuthUser`), which takes effect only on a restart.
+`TestClusteredNatsHubRoutesKeepTheirPingBesideACallout` (`gcp/clusteredhub_ping_live_test.go`)
+renders the hub with a callout through helm and checks that `nats.conf`'s cluster block holds
+`ping_interval` "30s" and `ping_max` 2. It runs two servers on the rendered configuration, with the
+route through a `testnats.Proxy` started with `testnats.ProxyRate` at 400,000 B/s, and publishes
+40 MB on A to a subscriber on B, which takes about 100 s to drain. Each bound has its own clock.
+The pinned row counts from the burst's start: the route is not closed as stale within 60 s of it,
+because routes keep their 30 s ping, and at least 12 MB of the burst has crossed the route by
+then, so the row fails when the route closed early for another reason or the burst never crossed
+it. Its control, the same `nats.conf` without the pin, counts from the moment A has queued all of
+the burst: the route is closed as stale within 60.5 s of that moment, by the top-level 20 s ping.
+Installing the tools takes minutes on a cold module cache, which is why CI runs the `natslive`
+packages with `-timeout 30m`. To run them alone, from `packages/envoy/infra`:
 
 ```sh
 go test -count=1 -tags natslive -run 'TestClusteredNatsHub(Chart|Cluster)' -v -timeout 20m ./gcp/
@@ -422,6 +461,8 @@ The `envoy-infra-go` job of `.github/workflows/ci.yaml` holds its steps in
 ```sh
 test -z "$(gofmt -l .)"
 go vet -tags pulumilive,natslive ./...
+flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
+while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./...; done <<< "$flags"
 go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
 go test -timeout 30m -tags natslive ./core/ ./seed/ ./gcp/
 ```

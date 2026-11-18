@@ -1,9 +1,22 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type CaseRow, countsOf, type Snapshot, writeCorpus } from "../build-corpus";
-import { type Corpus, CorpusError, readCorpus, type SnapshotReserve } from "../corpus-io";
+import {
+  type CaseRow,
+  countsOf,
+  type Snapshot,
+  takeReserveList,
+  writeCorpus,
+} from "../build-corpus";
+import {
+  CannotRunError,
+  type Corpus,
+  CorpusError,
+  readCorpus,
+  type SnapshotReserve,
+} from "../corpus-io";
 import type { CommentReply, DispatchEvent } from "../dispatch-read";
 import { FreshError, type FreshReport, refuseReportsOutside } from "../fresh-agent";
 import { PoolError, type RunOutcomes, refuseRunsOutside } from "../pool-runs";
@@ -16,6 +29,7 @@ import {
   noteAskRoot,
   noteIssueParent,
   pickedRoot,
+  RESERVE_LIST_CUT,
   RESERVE_TREE_CUT,
   RESERVE_VARIABLE,
   type Registration,
@@ -26,6 +40,7 @@ import {
   runDigestOf,
   treeRootOf,
 } from "../reserve";
+import { TreeLog } from "../trees";
 
 /**
  * The reserve of INFRA-2897's next final test, against the rule as it was registered
@@ -160,6 +175,81 @@ describe("the registered rule", () => {
     expect(reserveOf(treeCase("spent", LATER, spent))).toBe("kept");
     expect(reserveOf(treeCase("spent-at-opening", LATER, spent, PICKED))).toBe("kept");
     expect(reserveOf(treeCase("spent-at-build", LATER, PICKED, spent))).toBe("kept");
+  });
+});
+
+describe("version 3: the list of trees the final test cannot take", () => {
+  /** A case on a root version 2 does not pick, with each root's place in version 3's list. */
+  function listedCase(
+    caseId: string,
+    openedAt: string,
+    askRootListed: boolean | null | undefined,
+    issueRootListed: boolean | null | undefined = askRootListed,
+    root: string = NOT_PICKED
+  ): CaseRow {
+    const row: CaseRow = { ...treeCase(caseId, openedAt, root), askRootListed, issueRootListed };
+    if (askRootListed === undefined) delete row.askRootListed;
+    if (issueRootListed === undefined) delete row.issueRootListed;
+    return row;
+  }
+  const atCut = RESERVE_LIST_CUT;
+  const beforeCut = new Date(Date.parse(RESERVE_LIST_CUT) - 1).toISOString();
+
+  test("from its cut, holds an ask unless both its roots are in the list, whatever version 2 picks", () => {
+    expect(reserveOf(listedCase("both-out", atCut, false))).toBe("held");
+    expect(reserveOf(listedCase("both-in", atCut, true))).toBe("kept");
+    expect(reserveOf(listedCase("moved-out", atCut, true, false))).toBe("held");
+    expect(reserveOf(listedCase("moved-in", atCut, false, true))).toBe("held");
+    expect(reserveOf(listedCase("picked-in", atCut, true, true, PICKED))).toBe("kept");
+  });
+
+  test("from its cut, holds an ask whose root is unknown, or that a build never looked up", () => {
+    expect(reserveOf({ ...listedCase("lost", atCut, null), askTreeRoot: null })).toBe("held");
+    expect(reserveOf(listedCase("older-build", atCut, undefined))).toBe("held");
+  });
+
+  test("before its cut, version 2 holds as registered, less what opened on a tree in the list", () => {
+    expect(reserveOf(listedCase("picked", beforeCut, false, false, PICKED))).toBe("held");
+    expect(reserveOf(listedCase("not-picked", beforeCut, false))).toBe("kept");
+    expect(reserveOf(listedCase("released", beforeCut, true, false, PICKED))).toBe("kept");
+    // A move under a listed issue before a build releases nothing: it could move back after.
+    expect(reserveOf(listedCase("moved-under-list", beforeCut, false, true, PICKED))).toBe("held");
+  });
+
+  test("a build that never looked roots up in the list releases nothing", () => {
+    expect(reserveOf(listedCase("older-build", beforeCut, undefined, undefined, PICKED))).toBe(
+      "held"
+    );
+    expect(reserveOf(listedCase("before-list", beforeCut, null, null, PICKED))).toBe("held");
+  });
+
+  test("keeps an ask of a tree a read spent, from its cut too", () => {
+    expect(reserveOf(listedCase("spent", atCut, false, false, "INFRA-228"))).toBe("kept");
+  });
+
+  test("a build takes the list only at its registered sha256, and refuses any other", () => {
+    const log = new TreeLog();
+    const opened = (id: number, key: string, askId: string, at: string): DispatchEvent => ({
+      id,
+      issue_key: key,
+      project: "INFRA",
+      seq: id,
+      type: "ask.opened",
+      actor: null,
+      created_at: at,
+      payload: { id: askId, issue_key: key, created_at: at },
+    });
+    log.note(opened(1, "INFRA-1", "ask-old", "2026-11-15T23:00:00Z"));
+    log.note(opened(2, PICKED, "ask-new", LATER));
+    const roots = new Map([
+      ["ask-old", "INFRA-1"],
+      ["ask-new", PICKED],
+    ]);
+    const registered = createHash("sha256").update("INFRA-1\n", "utf8").digest("hex");
+    const taken = takeReserveList(log, roots, registered);
+    expect([...taken.listed]).toEqual(["INFRA-1"]);
+    expect(taken.record.sha256).toBe(registered);
+    expect(() => takeReserveList(log, roots, "0".repeat(64))).toThrow(CannotRunError);
   });
 });
 
@@ -695,6 +785,7 @@ describe("what a build writes of the reserve", () => {
     keptEvents: 1,
     readStartedAt: LATER,
     readFinishedAt: LATER,
+    reserveList: null,
   };
 
   /** A corpus `writeCorpus` wrote under `access`: its directory, the rows it wrote, both files. */

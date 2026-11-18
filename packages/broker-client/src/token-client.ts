@@ -13,12 +13,15 @@
 // trade rather than once.
 //
 // What it refuses to do: hand out a token it could not renew. `token()` answers the token in hand
-// while that token is live and the broker is merely unreachable, busy (its 429) or refusing this
-// moment's proof (`invalid_dpop_proof`, `use_dpop_nonce`), or the source of the identity could
-// not be read this once. It throws once the token in hand has run out, or once the identity has
-// been refused in a way no retry can cure (`isFinalRefusal`): by the broker, or by the issuer
-// that no longer honours a person's sign-in. So a caller that writes only with what `token()`
-// gave it never writes with no identity, nor with one that has been ended.
+// while that token is live and the broker is merely unreachable, busy (its 429), refusing this
+// moment's proof (`invalid_dpop_proof`, `use_dpop_nonce`) or holding no registration for this
+// pod's session yet (`pod_session_not_registered:`), or the source of the identity could not be
+// read this once. With nothing live in hand it waits out a missing registration, trading again
+// until the registration lands or its caller stops waiting. It throws once the token in hand has
+// run out, or once the identity has been refused in a way no retry can cure (`isFinalRefusal`): by
+// the broker, or by the issuer that no longer honours a person's sign-in. So a caller that writes
+// only with what `token()` gave it never writes with no identity, nor with one that has been
+// ended.
 
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import {
@@ -40,8 +43,10 @@ import {
   EXCHANGE_CLIENT_ID,
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
+  FORM_PROJECTS,
   FORM_SESSION,
   GRANT_TYPE_TOKEN_EXCHANGE,
+  POD_SESSION_NOT_REGISTERED,
   SUBJECT_TOKEN_TYPE_GOOGLE,
   TOKEN_PATH,
   TOKEN_TYPE_DPOP,
@@ -71,7 +76,7 @@ export interface BrokerToken {
   readonly credentialExpiresAt: Date | null;
 }
 
-/** The broker's rate limit: the first of the three refusals a later trade may be answered
+/** The broker's rate limit: the first of the four refusals a later trade may be answered
  *  differently. */
 const TOO_MANY_REQUESTS = 429;
 
@@ -82,11 +87,46 @@ const INVALID_DPOP_PROOF = "invalid_dpop_proof";
  *  already retries once with the nonce the answer carried. */
 const USE_DPOP_NONCE = "use_dpop_nonce";
 
+/** The code of the broker's refusal of a pod session it holds no registration for yet, whose
+ *  description begins {@link POD_SESSION_NOT_REGISTERED} and a colon. */
+const INVALID_GRANT = "invalid_grant";
+
+/** The first wait before trading again on a missing registration, doubling to
+ *  {@link UNREGISTERED_MAX_WAIT_MS}: the Go client's `defaultRetryWait` and `maxRetryWait`. */
+const UNREGISTERED_FIRST_WAIT_MS = 15_000;
+const UNREGISTERED_MAX_WAIT_MS = 5 * 60_000;
+
+/** How often a client says again that the broker holds no registration for its session, after
+ *  saying so at the first such refusal (the Go client's `unregisteredLogEvery`). */
+const UNREGISTERED_LOG_EVERY_MS = 30 * 60_000;
+
+/** Waits `ms`, or less when `signal` aborts first: the default of
+ *  {@link BrokerTokenClientOptions.sleep}. Its timer holds no process open: the wait runs behind
+ *  the calls that need it, and a `dispatch` command that is done exits rather than waiting out a
+ *  retry nobody awaits. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  if (signal?.aborted) {
+    resolve();
+    return promise;
+  }
+  const done = (): void => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", done);
+    resolve();
+  };
+  const timer = setTimeout(done, ms);
+  timer.unref();
+  signal?.addEventListener("abort", done, { once: true });
+  return promise;
+}
+
 /**
  * A trade the broker refused: a plain error naming what was traded and what the broker said.
  * Almost every refusal is one no retry can cure — an identity no entry lists, a sign-in a person
  * revoked, a token of the wrong audience — and a renewal stops on it rather than asking again.
- * The three exceptions are the broker's 429 and its two DPoP refusals (`permanent`).
+ * The four exceptions are the broker's 429, its two DPoP refusals, and a pod session it holds no
+ * registration for yet (`permanent`).
  */
 export class BrokerRefusedError extends Error {
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
@@ -106,8 +146,8 @@ export class BrokerRefusedError extends Error {
   }
 
   /**
-   * Whether this refusal is one no retry can cure, which every refusal is but three. The Go
-   * client reads it the same way, out of the same three cases (`RefusedError.Permanent`,
+   * Whether this refusal is one no retry can cure, which every refusal is but four. The Go
+   * client reads it the same way, out of the same four cases (`RefusedError.Permanent`,
    * packages/envoy/internal/brokerclient/brokerclient.go), and
    * `packages/envoy/internal/brokerclient/testdata/wire.json` holds the two to that one reading.
    *
@@ -124,14 +164,54 @@ export class BrokerRefusedError extends Error {
    * `use_dpop_nonce`, which `#send` already retries once with the nonce the answer carried. One
    * that reaches here is an answer that carried no nonce, or a nonce the broker then refused in
    * turn — a server state the next trade can find changed.
+   *
+   * A pod session the broker holds no registration for yet ({@link podSessionUnregistered}): a
+   * pod's trade can reach the broker before its daemon's or its session watch's registration
+   * does, and a registrar can be down for minutes, so the trade that follows the registration
+   * succeeds.
    */
   get permanent(): boolean {
     return (
       this.status !== TOO_MANY_REQUESTS &&
       this.code !== INVALID_DPOP_PROOF &&
-      this.code !== USE_DPOP_NONCE
+      this.code !== USE_DPOP_NONCE &&
+      !this.podSessionUnregistered
     );
   }
+
+  /** Whether this is the broker's refusal of a pod whose session no registration names yet:
+   *  `invalid_grant`, its description beginning {@link POD_SESSION_NOT_REGISTERED} and a colon.
+   *  The same words under another code, or anywhere but at the start, are some other refusal. */
+  get podSessionUnregistered(): boolean {
+    return (
+      this.code === INVALID_GRANT && this.description.startsWith(`${POD_SESSION_NOT_REGISTERED}:`)
+    );
+  }
+}
+
+/**
+ * A call that stopped waiting, its signal ended by its own deadline, while the broker held no
+ * registration for this pod's session yet ({@link BrokerRefusedError.podSessionUnregistered}).
+ * The client goes on trading for that session in the background, so it is not final
+ * ({@link isFinalRefusal}): a later call takes the token once the registration lands.
+ */
+export class RegistrationPendingError extends Error {
+  constructor(
+    readonly session: string,
+    refusal: BrokerRefusedError
+  ) {
+    super(
+      `the secrets broker has no registration for this pod's session ${session} yet, and the trade is being retried in the background until it lands (${refusal.description})`,
+      { cause: refusal }
+    );
+    this.name = "RegistrationPendingError";
+  }
+}
+
+/** One caller waiting on a client's shared trade: how to tell it the trade's answer. */
+interface Waiter {
+  readonly resolve: (token: BrokerToken) => void;
+  readonly reject: (error: unknown) => void;
 }
 
 /**
@@ -180,9 +260,17 @@ export interface BrokerTokenClientOptions {
   /** The machine a person signed in on, presented as the actor token beside their own Google
    *  identity token. Absent for every trade a machine makes for itself. */
   readonly actor?: TokenSource | undefined;
-  /** The session name the minted token writes under, which an entry that fixes one refuses to be
+  /** The session name the minted token carries, which an entry that fixes one refuses to be
    *  told and an entry that fixes none requires. */
   readonly session?: string | undefined;
+  /**
+   * The projects the minted token names ({@link FORM_PROJECTS}), sorted and each once, as
+   * `tradeProjects` reads them from `AGENT_SECRETS_PROJECTS` (./environment.ts). Only a trade
+   * that acts as its person passes them — a person's sign-in — and the broker names only projects
+   * that person may see. A machine trading for itself passes none: its entry decides its project,
+   * and the broker refuses one it is told. Empty or absent sends no parameter at all.
+   */
+  readonly projects?: readonly string[] | undefined;
   /**
    * Whether this trade wants the launcher credential its identity holds minted or moved onto
    * the key it proved ({@link FORM_LAUNCHER_CREDENTIAL}); true by default, as an absent
@@ -207,6 +295,12 @@ export interface BrokerTokenClientOptions {
   readonly renewBeforeMs?: number | undefined;
   /** `Date.now` unless a test replaces it. */
   readonly now?: (() => number) | undefined;
+  /** Waits `ms` before the next trade on a missing registration, returning early when `signal`
+   *  aborts; a timer unless a test replaces it. */
+  readonly sleep?: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
+  /** Where the client says the broker holds no registration for its session yet;
+   *  `console.warn` unless a caller replaces it. */
+  readonly log?: ((line: string) => void) | undefined;
   /** The fetch every call goes through; the global one by default. The DPoP proof is signed
    *  around it, so a caller passing its own keeps whatever that one does. */
   readonly fetch?: typeof fetch | undefined;
@@ -257,15 +351,29 @@ export class BrokerTokenClient {
   readonly #subject: TokenSource;
   readonly #actor: TokenSource | undefined;
   readonly #session: string;
+  readonly #projects: readonly string[];
   readonly #launcherCredential: boolean;
   readonly #renewBeforeMs: number;
   readonly #now: () => number;
+  readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
+  readonly #log: (line: string) => void;
   readonly #fetch: typeof fetch;
   /** The most recent `DPoP-Nonce` the broker sent, carried in every later proof. */
   #nonce = "";
   #held: BrokerToken | null = null;
-  /** The trade under way, so two callers that need a token at once make one trade. */
+  /** The trade under way, so two callers that need a token at once make one trade. It runs on
+   *  no caller's signal: each caller stops waiting for it on its own (`#joined`). */
   #trading: Promise<BrokerToken> | null = null;
+  /** The callers waiting on that trade, told its answer by its one completion subscription. A
+   *  caller whose signal ends leaves this set, so the trade, which can stay pending for the
+   *  session's life, holds nothing of a call that has its answer. */
+  readonly #waiters = new Set<Waiter>();
+  /** The missing-registration refusal the trade under way is waiting out, or null. */
+  #pending: BrokerRefusedError | null = null;
+  /** Cuts that wait short, so a call arriving during it trades at once; null outside it. */
+  #wake: (() => void) | null = null;
+  /** Ended by {@link close}, which stops a trade waiting out a missing registration. */
+  readonly #closed = new AbortController();
 
   constructor(options: BrokerTokenClientOptions) {
     const brokerUrl = withoutTrailingSlashes(options.brokerUrl.trim());
@@ -275,9 +383,12 @@ export class BrokerTokenClient {
     this.#subject = options.subject;
     this.#actor = options.actor;
     this.#session = options.session ?? "";
+    this.#projects = [...(options.projects ?? [])];
     this.#launcherCredential = options.launcherCredential ?? true;
     this.#renewBeforeMs = options.renewBeforeMs ?? DEFAULT_RENEW_BEFORE_MS;
     this.#now = options.now ?? Date.now;
+    this.#sleep = options.sleep ?? sleep;
+    this.#log = options.log ?? console.warn;
     this.#fetch = options.fetch ?? fetch;
   }
 
@@ -294,25 +405,79 @@ export class BrokerTokenClient {
   /**
    * A live access token: the one in hand while it is good for longer than the renewal window, and
    * otherwise a fresh trade. A trade that failed in a way a later trade may not repeat — the
-   * broker did not answer, answered with one of its three refusals a later trade may be answered
+   * broker did not answer, answered with one of its four refusals a later trade may be answered
    * differently (`BrokerRefusedError.permanent`), or the identity's source could not be read this
    * once — answers the token in hand while it is still live, since a client that already holds
-   * an identity need not stop for a broker or an issuer that is merely down, busy, or refusing
-   * this moment's proof. A final refusal ({@link isFinalRefusal}), and a failure with nothing
-   * live left, drop the token in hand and throw, so no caller writes with no identity or with one
-   * the broker or the issuer has ended.
+   * an identity need not stop for a broker or an issuer that is merely down, busy, refusing this
+   * moment's proof or waiting on a registration. With nothing live in hand, a pod session the
+   * broker holds no registration for yet is waited out in the background (`#renew`), and a call
+   * arriving during that wait has the client trade at once. A caller whose `signal` ends first
+   * stops waiting with {@link RegistrationPendingError}, naming the session, while the trade goes
+   * on. A final refusal ({@link isFinalRefusal}), and any other failure with nothing live left,
+   * drop the token in hand and throw, so no caller writes with no identity or with one the broker
+   * or the issuer has ended.
    */
   async token(signal?: AbortSignal): Promise<BrokerToken> {
     const held = this.#held;
     if (held !== null && this.#now() < held.expiresAt.getTime() - this.#renewBeforeMs) return held;
-    if (this.#trading !== null) return await this.#trading;
-    const trading = this.#renew(signal);
-    this.#trading = trading;
-    try {
-      return await trading;
-    } finally {
-      this.#trading = null;
+    if (this.#trading === null) {
+      const started = this.#renew();
+      this.#trading = started;
+      started.then(
+        (token) => this.#settled(started, (waiter) => waiter.resolve(token)),
+        (error: unknown) => this.#settled(started, (waiter) => waiter.reject(error))
+      );
+    } else {
+      this.#wake?.();
     }
+    return await this.#joined(signal);
+  }
+
+  /** Ends `started`, the trade that has just settled, and tells every caller waiting on it. */
+  #settled(started: Promise<BrokerToken>, tell: (waiter: Waiter) => void): void {
+    if (this.#trading === started) this.#trading = null;
+    const waiters = [...this.#waiters];
+    this.#waiters.clear();
+    for (const waiter of waiters) tell(waiter);
+  }
+
+  /**
+   * The answer of the trade under way, or what this caller is told when its `signal` ends first:
+   * that the session's registration is still pending, where the trade is waiting one out, and
+   * otherwise the signal's own reason. The trade itself goes on either way; the caller leaves
+   * the waiting set, so nothing of it stays behind.
+   */
+  #joined(signal: AbortSignal | undefined): Promise<BrokerToken> {
+    const { promise, resolve, reject } = Promise.withResolvers<BrokerToken>();
+    const stop = (): void => {
+      this.#waiters.delete(waiter);
+      const pending = this.#pending;
+      reject(
+        pending === null ? signal?.reason : new RegistrationPendingError(this.#session, pending)
+      );
+    };
+    const waiter: Waiter = {
+      resolve: (token) => {
+        signal?.removeEventListener("abort", stop);
+        resolve(token);
+      },
+      reject: (error) => {
+        signal?.removeEventListener("abort", stop);
+        reject(error);
+      },
+    };
+    if (signal?.aborted) {
+      stop();
+      return promise;
+    }
+    this.#waiters.add(waiter);
+    signal?.addEventListener("abort", stop, { once: true });
+    return promise;
+  }
+
+  /** Stops a trade waiting out a missing registration, for a caller done with this client. */
+  close(): void {
+    this.#closed.abort();
   }
 
   /**
@@ -325,19 +490,57 @@ export class BrokerTokenClient {
     this.#held = null;
   }
 
-  /** One trade, with what the client does about a failure of it. */
-  async #renew(signal: AbortSignal | undefined): Promise<BrokerToken> {
+  /**
+   * Trades until a token lands, with what the client does about each failure. A refusal of a pod
+   * session the broker holds no registration for yet, with nothing live in hand, is the one it
+   * trades again on: a pod's trade can reach the broker before its registration does. It waits
+   * {@link UNREGISTERED_FIRST_WAIT_MS}, doubling to {@link UNREGISTERED_MAX_WAIT_MS}, until a
+   * trade lands or the client is closed, and a call arriving during a wait cuts it short. It says
+   * so once, naming the session, and again every {@link UNREGISTERED_LOG_EVERY_MS} while the
+   * refusal lasts.
+   */
+  async #renew(): Promise<BrokerToken> {
+    const closed = this.#closed.signal;
+    let wait = UNREGISTERED_FIRST_WAIT_MS;
+    // When the first refusal came, and when the client last said so; null until one has.
+    let since: number | null = null;
+    let logged: number | null = null;
     try {
-      const token = await this.#trade(signal);
-      this.#held = token;
-      return token;
-    } catch (error) {
-      const held = this.#held;
-      if (!isFinalRefusal(error) && held !== null && this.#now() < held.expiresAt.getTime()) {
-        return held;
+      while (true) {
+        try {
+          const token = await this.#trade(closed);
+          this.#held = token;
+          return token;
+        } catch (error) {
+          const held = this.#held;
+          if (!isFinalRefusal(error) && held !== null && this.#now() < held.expiresAt.getTime()) {
+            return held;
+          }
+          this.#held = null;
+          const unregistered = error instanceof BrokerRefusedError && error.podSessionUnregistered;
+          if (!unregistered || closed.aborted) throw error;
+          this.#pending = error;
+          const now = this.#now();
+          since ??= now;
+          if (logged === null || now - logged >= UNREGISTERED_LOG_EVERY_MS) {
+            logged = now;
+            this.#log(
+              `the secrets broker has no registration for this pod's session ${this.#session} yet (${Math.round((now - since) / 1000)} s so far); trading ${this.describe()} again until it lands`
+            );
+          }
+          const woken = new AbortController();
+          this.#wake = () => woken.abort();
+          try {
+            await this.#sleep(wait, AbortSignal.any([closed, woken.signal]));
+          } finally {
+            this.#wake = null;
+          }
+          if (closed.aborted) throw error;
+          wait = Math.min(wait * 2, UNREGISTERED_MAX_WAIT_MS);
+        }
       }
-      this.#held = null;
-      throw error;
+    } finally {
+      this.#pending = null;
     }
   }
 
@@ -358,6 +561,9 @@ export class BrokerTokenClient {
       subject_token_type: subject.tokenType,
     };
     if (this.#session !== "") form[FORM_SESSION] = this.#session;
+    // Sent only when there is a list: a trade naming none reads exactly as one written before the
+    // parameter existed.
+    if (this.#projects.length > 0) form[FORM_PROJECTS] = this.#projects.join(" ");
     if (!this.#launcherCredential) {
       // Sent only to decline: an absent parameter asks, so a broker that has never heard of this
       // parameter answers a client that does ask exactly as it always has.

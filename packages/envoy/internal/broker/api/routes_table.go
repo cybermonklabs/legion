@@ -227,7 +227,8 @@ func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, machine.Ser
 // sign-in, a decision answers a page linking the record it names. Every route of the class spends
 // its source address's bucket first, the one the account class spends (authenticate), so no
 // caller drives a record read, a token request to the sign-in provider or a session write
-// unmetered. Mounted only when the broker builds its approval page, which every broker does.
+// unmetered. Mounted only when the broker builds its approval page, which every broker does but
+// one with BROKER_SIGNIN=off.
 func signInAuth(h func(*approval.Page, http.ResponseWriter, *http.Request, approval.Session)) routeHandler {
 	return routeHandler{auth: authSignIn, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
 		h(s.deps.Approval, w, r, who.signIn)
@@ -273,7 +274,7 @@ func routes() []apiRoute {
 		// machine login's launcher credential; mounted only when the broker runs its OAuth provider.
 		{http.MethodPost, "/v1/oauth/token", public((*server).oauthToken)},
 		// Read one of the broker's access tokens back (RFC 7662): whether it is live and, when it
-		// is, the session, the person and the project it carries, and the key it is bound to.
+		// is, the session, the person and the projects it carries, and the key it is bound to.
 		// Mounted only when the broker runs its OAuth provider.
 		{http.MethodPost, "/v1/oauth/introspect", accountAuth(readsTokensBack, (*server).introspect)},
 		// End one of the broker's own access tokens (RFC 7009), an exchanged pod's or workflow

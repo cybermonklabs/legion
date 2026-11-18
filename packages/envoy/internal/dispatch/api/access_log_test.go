@@ -144,7 +144,8 @@ func TestARefusedRequestIsLoggedWithNoCaller(t *testing.T) {
 func TestASocketsHeartbeatLeavesTheSessionItWasAdmittedAs(t *testing.T) {
 	_, _, deps := newTestServer(t, testServerOptions{streamHeartbeat: 10 * time.Millisecond})
 	logged := captureLog(t)
-	socket := accesslog.Handler("/ws/live", directServer(deps).whileCallerResolves(func(w http.ResponseWriter, r *http.Request) {
+	served := directServer(deps)
+	socket := accesslog.Handler("/ws/live", served.whileCallerResolves(served.callerStillResolves, func(w http.ResponseWriter, r *http.Request) {
 		accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
 		accesslog.Note(r.Context(), accesslog.KindSession, "session-0123456789abcdef")
 		time.Sleep(100 * time.Millisecond) // ten heartbeats

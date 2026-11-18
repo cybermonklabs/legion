@@ -6,10 +6,12 @@ import {
   censusReport,
   classify,
   type Group,
+  get,
   isSubsequence,
   MIN_STORED_PARAGRAPH,
   type PmNode,
   paragraphs,
+  Rate,
   readingMode,
   type StoredText,
   storedParagraphs,
@@ -18,6 +20,7 @@ import {
   versionOrder,
   visibleText,
 } from "../display-read-census.ts";
+import { holdDeadlines } from "./held-deadlines.ts";
 
 /** One fixture case: the two readings of one text and the class the census puts it in. */
 interface FixtureCase {
@@ -255,5 +258,18 @@ describe("--check-no-stored-text", () => {
     expect(storedTextIn("wrapped.md", wrapped, index).map((hit) => hit.id)).toEqual([
       "version/guard-2/1",
     ]);
+  });
+});
+
+describe("reading production", () => {
+  test("display-read-census's read hands its credential the request's deadline", async () => {
+    const held = holdDeadlines(() => Response.json([]));
+    try {
+      const config = { url: "http://dispatch.test", credential: held.credential };
+      await get(config, "/api/v1/projects", new Rate(1000), { requests: 0 });
+      held.expectEachRequestBoundByItsDeadline("display-read-census's read");
+    } finally {
+      held.restore();
+    }
   });
 });

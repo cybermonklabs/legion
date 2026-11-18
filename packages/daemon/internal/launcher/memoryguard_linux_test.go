@@ -173,8 +173,8 @@ func TestMemoryGuardOnRealRoleNamespaces(t *testing.T) {
 		t.Fatalf("the guard's scan read the holder as %+v, want the role-init %d's child running %s in a PID namespace", holderRead, roleInitPID, self)
 	case holderClass != (memoryguard.Class{Role: "tester"}):
 		t.Fatalf("the classifier says %+v of the holder, want the tester's by its role-init ancestor, not protected", holderClass)
-	case initClass != (memoryguard.Class{Role: "tester", Protected: true}):
-		t.Fatalf("the classifier says %+v of the role-init, want the tester's, protected", initClass)
+	case initClass != (memoryguard.Class{Role: "tester", Protected: true, Session: true}):
+		t.Fatalf("the classifier says %+v of the role-init, want the tester's, protected, a process of its session", initClass)
 	}
 
 	if err := statusRead.SetReadDeadline(time.Now().Add(bound)); err != nil {

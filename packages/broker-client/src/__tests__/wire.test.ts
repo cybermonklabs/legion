@@ -55,6 +55,8 @@ interface CorpusExchange {
   /** The machine a person signed in on; absent from every trade a machine makes for itself. */
   readonly actor?: CorpusToken;
   readonly session: string;
+  /** The projects the client is configured with; absent from every trade that names none. */
+  readonly projects?: readonly string[];
   readonly form: Record<string, string>;
   readonly proof: {
     readonly header: Record<string, unknown>;
@@ -202,6 +204,8 @@ function resolvePlaceholder(exchange: CorpusExchange, value: string): [string, b
       return [exchange.actor?.token ?? "", true];
     case "${session}":
       return [exchange.session, true];
+    case "${projects}":
+      return [(exchange.projects ?? []).join(" "), true];
     default:
       return [value, false];
   }
@@ -313,23 +317,37 @@ function tokenAsCorpus(token: BrokerToken): Record<string, unknown> {
 test("the wire corpus holds this client", async () => {
   for (const exchange of corpus.exchanges) {
     const broker = stubBroker(exchange.answer.status, exchange.answer.body);
+    // The caller stops waiting at the first wait the client asks for, and that wait passes only
+    // when the client is closed: a refusal the client trades again on (an unregistered pod
+    // session) is then answered after the one trade this entry describes.
+    const caller = new AbortController();
     const client = new BrokerTokenClient({
       brokerUrl: broker.url,
       key: await newDpopKey(),
       subject: await corpusSource(exchange.subject),
       ...(exchange.actor === undefined ? {} : { actor: await corpusSource(exchange.actor) }),
       session: exchange.session,
+      projects: exchange.projects,
       // The entry's own form says whether this trade declines the launcher credential, so the
       // one place the corpus states it is the form it asserts.
       launcherCredential:
         exchange.form[FORM_LAUNCHER_CREDENTIAL] !== FORM_LAUNCHER_CREDENTIAL_DECLINED,
+      sleep: (_ms: number, signal?: AbortSignal) => {
+        caller.abort();
+        const { promise, resolve } = Promise.withResolvers<void>();
+        signal?.addEventListener("abort", () => resolve(), { once: true });
+        return promise;
+      },
+      log: () => {},
     });
     let token: BrokerToken | undefined;
     let refusal: unknown;
     try {
-      token = await client.token();
+      token = await client.token(caller.signal);
     } catch (error) {
       refusal = error;
+    } finally {
+      client.close();
     }
     expect(broker.requests.length, `${exchange.name}: the client's trades`).toBe(1);
     checkRequest(exchange, broker.url, broker.requests[0] as StubRequest);

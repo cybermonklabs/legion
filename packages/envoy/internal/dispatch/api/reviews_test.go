@@ -621,7 +621,7 @@ func TestAReviewByACallerWhoMayNotReviewIsRefusedForItsCredentialBeforeItsNumber
 	caller := newBrokerCaller(t)
 	const personToken = "a-person-token-that-reviews"
 	person := liveNamedToken(caller.jkt)
-	person.ProjectScope, person.Project = brokertoken.ProjectScopePerson, ""
+	person.ProjectScope, person.Projects = brokertoken.ProjectScopePerson, nil
 	rig.broker.Says(personToken, person)
 	const machineToken = "a-machine-token-naming-no-person"
 	rig.broker.Says(machineToken, serviceOnlyToken(caller.jkt))

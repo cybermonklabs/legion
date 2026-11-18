@@ -1,6 +1,8 @@
 package gcp
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -12,6 +14,7 @@ import (
 	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/infra/nats"
 	"github.com/sjawhar/envoy/internal/bus"
 )
 
@@ -156,7 +159,8 @@ type ClusteredNatsHubArgs struct {
 	PriorityClassName *string `pulumi:"priorityClassName,optional"`
 	// The namespaces admitted to NATS's client port: at least one.
 	ClientNamespaces []string `pulumi:"clientNamespaces"`
-	// The namespaces admitted to NATS's monitoring port; none when unset.
+	// The namespaces admitted to NATS's monitoring port; none when unset. Refused beside
+	// privateProjects (monitorBesidePrivateProjects).
 	MonitorNamespaces []string `pulumi:"monitorNamespaces,optional"`
 	// The namespaces admitted to the exporter's metrics port: gmp-system and gke-gmp-system,
 	// Google Managed Prometheus's, when unset.
@@ -165,6 +169,11 @@ type ClusteredNatsHubArgs struct {
 	Users []NATSUserArgs `pulumi:"users,optional"`
 	// The user a client presenting no credential becomes, granted core.SessionPermissions.
 	SessionUser *SessionUserArgs `pulumi:"sessionUser,optional"`
+	// The auth service's callout, as gcp:NatsHub's: unset, the hub renders exactly what it rendered
+	// before callouts existed.
+	AuthCallout *nats.AuthCalloutArgs `pulumi:"authCallout,optional"`
+	// The deployment may make a Dispatch project private, as gcp:NatsHub's privateProjects.
+	PrivateProjects bool `pulumi:"privateProjects,optional"`
 	// The hub's tailnet entry: a Tailscale Service serving NATS and the session listener.
 	Tailnet *ClusteredHubTailnetArgs `pulumi:"tailnet,optional"`
 	// The tailnet auth key the tailnet hosts join with: required with tailnet, refused without.
@@ -204,6 +213,11 @@ type ClusteredHubListenerArgs struct {
 	// Any further address a client dials the listener by, beyond <serviceName>.<tailnetDnsName>,
 	// which it always serves.
 	AllowedHosts []string `pulumi:"allowedHosts,optional"`
+	// The limit on the messages each agent session sends through the listener: how many a minute,
+	// from 1 to 60000, and how many at once, at least 1 and only with a rate. Unset, there is no
+	// limit, and a rate with no burst takes the rate as its burst.
+	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
+	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
 	// The listener container's size, a Kubernetes quantity each, set as both its request and its
 	// limit: 500m and 1Gi by default.
 	Cpu    *string `pulumi:"cpu,optional"`
@@ -249,7 +263,11 @@ type clusteredHubSettings struct {
 	// sessionNKey is the session user's public key, "" without a session user: the hub pods'
 	// no-auth-user annotation, which rolls them when it changes (clusteredHubNoAuthUserAnnotation).
 	sessionNKey string
-	tailnet     *clusteredHubTailnet
+	// calloutDigest is the hex SHA-256 of auth.conf's callout lines, the auth_callout block and the
+	// ping lines (core.Authorization.CalloutLines), "" without authCallout: the hub pods'
+	// auth-callout annotation, which rolls them when it changes (clusteredHubAuthCalloutAnnotation).
+	calloutDigest string
+	tailnet       *clusteredHubTailnet
 }
 
 // clusteredHubSize is each hub pod's volume, JetStream's file store within it, nats-server's
@@ -282,9 +300,10 @@ type clusteredHubListener struct {
 // clusteredHubSeededInput names the first plain string input of args that holds an nkey seed
 // (bus.HoldsSeed), by its path and never its value. Every one of them reaches a Kubernetes object,
 // the chart's values or a refusal that quotes it, and each user's machine id becomes that user's
-// rules before core sees them, as seededInput says of gcp:NatsHub's. A user's name, nkey and rule
-// entries, the session user's, and the listener's nkey are core's to refuse, as they are for
-// gcp:NatsHub; kubeconfig and tailnetAuthKey are Inputs, checked once they resolve.
+// rules before core sees them, as seededInput says of gcp:NatsHub's; the authCallout's fields are
+// named by the hub's own path, as gcp:NatsHub names them (calloutSeedFields). A user's name, nkey
+// and rule entries, the session user's, and the listener's nkey are core's to refuse, as they are
+// for gcp:NatsHub; kubeconfig and tailnetAuthKey are Inputs, checked once they resolve.
 func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 	type field struct{ path, value string }
 	fields := []field{
@@ -327,6 +346,9 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 			opt("tailnet.listener.memory", l.Memory)
 			list("tailnet.listener.allowedHosts", l.AllowedHosts)
 		}
+	}
+	for _, f := range calloutSeedFields(args.AuthCallout) {
+		fields = append(fields, f)
 	}
 	for _, f := range fields {
 		if bus.HoldsSeed(f.value) {
@@ -413,11 +435,17 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 			return clusteredHubSettings{}, err
 		}
 	}
+	if args.PrivateProjects && len(s.monitorNamespaces) > 0 {
+		return clusteredHubSettings{}, monitorBesidePrivateProjects(s.monitorNamespaces)
+	}
+	if args.AuthCallout != nil && args.Tailnet != nil && args.Tailnet.Listener != nil {
+		return clusteredHubSettings{}, listenerBesideCallout("tailnet.listener")
+	}
 	var listener *listenerUser
 	if s.tailnet, listener, err = newClusteredHubTailnet(args, s); err != nil {
 		return clusteredHubSettings{}, err
 	}
-	auth, err := authorization(args.Users, listener, args.SessionUser)
+	auth, err := authorization(args.Users, listener, args.SessionUser, args.AuthCallout, args.PrivateProjects)
 	if err != nil {
 		return clusteredHubSettings{}, authorizationRefusal(err)
 	}
@@ -427,7 +455,25 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	if args.SessionUser != nil {
 		s.sessionNKey = args.SessionUser.NKey
 	}
+	if lines := auth.CalloutLines(); lines != "" {
+		sum := sha256.Sum256([]byte(lines))
+		s.calloutDigest = hex.EncodeToString(sum[:])
+	}
 	return s, nil
+}
+
+// monitorBesidePrivateProjects refuses monitorNamespaces beside privateProjects. nats-server's
+// monitoring port answers /connz, /subsz and /jsz with no authentication (v2.15.1
+// server/monitor.go), naming the subjects, connections and consumers of every client, a private
+// project's among them, to every pod of each namespace the NetworkPolicy admits to it. No reader
+// needs that reach: the kubelet probes from the pod's own node, which the NetworkPolicy does not
+// fence; the exporter in each pod reads localhost:8222; an operator's kubectl port-forward and exec
+// reach the pod through the API server; and Managed Prometheus scrapes the exporter's own port,
+// metricsNamespaces'.
+func monitorBesidePrivateProjects(namespaces []string) error {
+	return core.InputErrorf("monitorNamespaces", "monitorNamespaces and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no authentication, "+
+		"naming the subjects, connections and consumers of every client, a private project's among them, to every pod of %q; "+
+		"leave monitorNamespaces empty: the kubelet's probes, the exporter in each pod, kubectl port-forward and exec, and Managed Prometheus need none of it", namespaces)
 }
 
 // hubSizing resolves each hub pod's volume (diskSizeGb), JetStream's file store within it
@@ -620,7 +666,9 @@ func checkNamespaces(input string, namespaces []string) error {
 // entry's pods alone to and where each host forwards the Tailscale Service's port 9020; it
 // reaches NATS through the hub's client Service. It answers on the Service's tailnet name and on
 // every further address allowedHosts names; the operator's entries are checked as their own
-// list, so a refusal names tailnet.listener.allowedHosts and the index the operator wrote.
+// list, so a refusal names tailnet.listener.allowedHosts and the index the operator wrote. Its
+// sender limit is core's rule (core.CheckSenderLimit), naming
+// tailnet.listener.senderMessagesPerMinute or tailnet.listener.senderMessageBurst.
 func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) (*clusteredHubTailnet, *listenerUser, error) {
 	t := args.Tailnet
 	if t == nil {
@@ -691,6 +739,10 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	if err := core.CheckAllowedHosts("tailnet.listener.allowedHosts", l.AllowedHosts); err != nil {
 		return nil, nil, err
 	}
+	rate, burst, err := core.CheckSenderLimit("tailnet.listener.", l.SenderMessagesPerMinute, l.SenderMessageBurst)
+	if err != nil {
+		return nil, nil, err
+	}
 	listener := clusteredHubListener{
 		image:          l.Image,
 		machineID:      machineID,
@@ -699,7 +751,6 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	}
 	// The listener is the only container of its own pod, so its size is that pod's whole request,
 	// refused where Autopilot would raise or reject the pod, as the hub pod's size is.
-	var err error
 	if listener.cpu, listener.memory, err = autopilotPodSize(autopilotPod{
 		name:     "the listener pod",
 		cpuInput: "tailnet.listener.cpu", memoryInput: "tailnet.listener.memory",
@@ -714,12 +765,14 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	// cluster Service, which a NetworkPolicy admits their pods alone to, and no longer over a
 	// loopback they share with it.
 	env, err := core.ListenerConfig{
-		MachineID:      machineID,
-		Port:           core.DefaultListenerPort,
-		ListenHost:     "0.0.0.0",
-		AllowedHosts:   append([]string{host}, l.AllowedHosts...),
-		NATSReplicas:   s.natsReplicas,
-		StreamMaxBytes: s.streamMaxBytes,
+		MachineID:               machineID,
+		Port:                    core.DefaultListenerPort,
+		ListenHost:              "0.0.0.0",
+		AllowedHosts:            append([]string{host}, l.AllowedHosts...),
+		NATSReplicas:            s.natsReplicas,
+		StreamMaxBytes:          s.streamMaxBytes,
+		SenderMessagesPerMinute: rate,
+		SenderMessageBurst:      burst,
 	}.Env([]string{s.serviceURL})
 	if err != nil {
 		return nil, nil, err
@@ -731,10 +784,12 @@ func newClusteredHubTailnet(args *ClusteredNatsHubArgs, s clusteredHubSettings) 
 	return tailnet, &listenerUser{machineID: machineID, nkey: l.NKey}, nil
 }
 
-// authorizationRefusal is a refusal of the users' rendering as a core.InputError: one that already
-// is passes unchanged; any other names the input its message starts with, as authorization and core
-// name a user (users[<i>], the listener, the session user or its noAuthUser).
+// authorizationRefusal is a refusal of the users' rendering as a core.InputError: core's refusal of
+// the callout names the hub's input authCallout (calloutRefusal); any other that already is passes
+// unchanged; any other names the input its message starts with, as authorization and core name a
+// user (users[<i>], the listener, the session user or its noAuthUser).
 func authorizationRefusal(err error) error {
+	err = calloutRefusal(err)
 	var input *core.InputError
 	if errors.As(err, &input) {
 		return err

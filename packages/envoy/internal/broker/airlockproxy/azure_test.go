@@ -71,7 +71,7 @@ func newAzureRig(t *testing.T, o Options) (*rig, *airlocktest.MicrosoftStand) {
 	r.grants.connections[azureFederatedPlaceholder] = requests.AirlockConnection{
 		GrantID: testGrantID, EnrollmentID: testEnrollID, RequestID: testRequest, Issue: testIssue,
 		Names: map[string]requests.AirlockGrantName{
-			azureName: {Kind: "azure-login", Slots: map[string]string{requests.SlotAzureFederated: azureFederatedPlaceholder}},
+			azureName: {Type: "azure-login", Slots: map[string]string{requests.SlotAzureFederated: azureFederatedPlaceholder}},
 		},
 	}
 	// No expiry on the federated token itself: what these rows are about is the life of the
@@ -79,7 +79,7 @@ func newAzureRig(t *testing.T, o Options) (*rig, *airlocktest.MicrosoftStand) {
 	// application and tenant are the document's, which every exchange is held to.
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
 		azureName: {
-			Kind:  "azure-login",
+			Type:  "azure-login",
 			Slots: map[string]string{requests.SlotAzureFederated: azureRealFederated},
 			Azure: secrets.AzureLoginValue{TenantID: azureTenantID, ClientID: azureClientID},
 		},

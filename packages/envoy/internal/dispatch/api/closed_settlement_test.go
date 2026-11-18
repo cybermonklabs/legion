@@ -156,7 +156,7 @@ func TestASettlementAfterACloseChangesNoAsk(t *testing.T) {
 	peer := connectBrowserPeer(t, documentService, spec)
 
 	closeIssueThroughPatch(t, handler, database, issue.Key)
-	alice := model.Actor{Kind: "user", ID: "alice"}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	requireWithdrawn(t, handler, issue.Key, withdrawn, alice)
 	if got := readBlockAsk(t, handler, answered); got.State != "answered" {
 		t.Fatalf("the decision answered before the close reads %s after it, want answered", got.State)

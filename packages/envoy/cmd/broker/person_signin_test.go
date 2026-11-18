@@ -12,10 +12,15 @@ package main
 import (
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -103,8 +108,8 @@ func TestTheBinaryTakesAPersonsSignInOnAMachine(t *testing.T) {
 			{"person", answer["person"], person, "the person whose own Google token was the subject"},
 			{"machine", answer["machine"], pinnedFleetAccount, "the machine whose token acted for them"},
 			{"service", answer["service"], nil, "no service, since this token names a person"},
-			{"project", answer["project"], nil, "no project: a person reaches whichever projects they reach"},
-			{"project_scope", answer["project_scope"], oauthwire.ProjectScopePerson, "that the token is held to no one project"},
+			{"projects", answer["projects"], nil, "no project, since the trade asked for none"},
+			{"project_scope", answer["project_scope"], oauthwire.ProjectScopePerson, "that the token acts as its person"},
 			{"jkt", answer["jkt"], firstJKT, "the box key the sign-in is bound to"},
 		} {
 			if field.got != field.want {
@@ -226,6 +231,58 @@ func TestTheBinaryTakesAPersonsSignInOnAMachine(t *testing.T) {
 			t.Fatalf("the person's second box = %d %v, want 200: revoking one sign-in ends one", status, body)
 		}
 	})
+}
+
+// TestASignInTradeNamesTheProjectsItsSessionWorksOn is the outcome D1 names, on the surface a
+// signed-in person's session uses: the real binary, a person's own Google identity token with the
+// machine's as the actor, and the projects the session was started with in the form's projects
+// parameter, as the TypeScript sign-in client sends AGENT_SECRETS_PROJECTS. A project its person
+// may see comes back from introspection as exactly that list under the person scope; one they may
+// not see is refused, naming it.
+func TestASignInTradeNamesTheProjectsItsSessionWorksOn(t *testing.T) {
+	databaseURL := storetest.URL(t)
+	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
+	github.PublishKey(t, "github-key")
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	googleKey := google.PublishKey(t, "google-key")
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+		privateProject: {Visibility: "private", Owner: privateOwner, Listed: []string{person}},
+		"SECRET":       {Visibility: "private", Owner: privateOwner},
+	}, map[string]string{person: projectaccess.MemberFull})
+	tokenFile := filepath.Join(t.TempDir(), "dispatch-access-token")
+	if err := os.WriteFile(tokenFile, []byte(dispatch.Token+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := append(googleExchangeEnv(t, databaseURL, cluster, github, google, longAccessSeconds),
+		"BROKER_PROJECT_ACCESS_URL="+dispatch.URL, "BROKER_PROJECT_ACCESS_TOKEN_FILE="+tokenFile)
+	broker := startBroker(t, brokerOptions{Env: env})
+	broker.AwaitRecord(t, "project access check", map[string]any{"state": "on"})
+	live := newLiveBroker(broker.Addr, proofKey(t))
+	trade := func(session, projects string) (int, map[string]any) {
+		form := signInForm(mintPersonToken(t, google, googleKey, person, deviceAudience, true, signInDomain),
+			mintMachineToken(t, google, googleKey, pinnedFleetAccount, machineAudience, true, fleetCloudProject, fleetInstanceName), session)
+		form.Set(oauthwire.FormProjects, projects)
+		return live.exchange(t, form)
+	}
+
+	status, body := trade("ada-box-priv", privateProject)
+	token, _ := body["access_token"].(string)
+	if status != http.StatusOK || token == "" {
+		t.Fatalf("the sign-in trade naming %s = %d %v, want an access token", privateProject, status, body)
+	}
+	status, answer := live.introspect(t, token, apiToken)
+	t.Logf("introspection of the sign-in's token: %d %v", status, answer)
+	if got := projectsOf(t, answer); status != http.StatusOK || answer["active"] != true || answer["project_scope"] != oauthwire.ProjectScopePerson || !slices.Equal(got, []string{privateProject}) {
+		t.Fatalf("introspection = %d %v, want a live person token naming exactly [%s]", status, answer, privateProject)
+	}
+
+	status, body = trade("ada-box-secret", "SECRET")
+	description, _ := body["error_description"].(string)
+	if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil || !strings.Contains(description, "names a project its person cannot see: SECRET") {
+		t.Fatalf("the sign-in trade naming SECRET = %d %v %q, want 400 invalid_request naming SECRET", status, body["error"], description)
+	}
+	t.Logf("the refusal: %s", description)
 }
 
 // mintPersonToken is a person's own Google identity token as the device grant answers one: the

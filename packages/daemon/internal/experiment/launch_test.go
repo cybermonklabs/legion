@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -63,7 +64,7 @@ func TestTheArmsAreTheRecordedRowsInTheDeclaredOrder(t *testing.T) {
 		tree:  {{Experiment: "alpha", Variant: "on"}},
 		issue: {{Experiment: "beta", Variant: "on"}},
 	}
-	arms := ForLaunch(declaredPair(), "/state").Arms(recorded, tree, issue)
+	arms := ForLaunch(declaredPair(), "/state").Arms(recorded, tree, issue, claim.RoleImplementer)
 	wantVariants := []runtime.Variant{
 		{Experiment: "alpha", Name: "on", ConfigFiles: []string{"/etc/legion-alpha/alpha.yml"},
 			ConfigFilesField: "projects.TEST.experiments.alpha.variants.on.config_files"},
@@ -96,7 +97,7 @@ func TestTheMemoryBlocksArmReadsTheBlocksOwnInstructionsCopy(t *testing.T) {
 		{"experiments.memory", keyed, "/state/experiments/memory/memory.md"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			arms := ForLaunch(tc.project.ExperimentsDeclared("projects.TEST"), "/state").Arms(recorded, tree, tree)
+			arms := ForLaunch(tc.project.ExperimentsDeclared("projects.TEST"), "/state").Arms(recorded, tree, tree, claim.RoleImplementer)
 			if want := []string{tc.want}; !reflect.DeepEqual(arms.Instructions, want) {
 				t.Errorf("Instructions = %q, want %q", arms.Instructions, want)
 			}
@@ -122,9 +123,38 @@ func TestAnUnrecordedUnitAndAnArmTheFileDroppedRunInNoArm(t *testing.T) {
 			map[string][]record.Assignment{tree: {{Experiment: "beta", Variant: "on"}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if arms := launch.Arms(tc.recorded, tree, issue); arms.Variants != nil || arms.Instructions != nil {
+			if arms := launch.Arms(tc.recorded, tree, issue, claim.RoleImplementer); arms.Variants != nil || arms.Instructions != nil {
 				t.Errorf("Arms = %+v, want none", arms)
 			}
 		})
+	}
+}
+
+// An experiment's `roles` decides which launches load its arms, one experiment at a time: a
+// reviewer's launch takes no arm of the tree experiment that names only the implementer, and
+// still takes its arm of the issue experiment that names no roles, in the declared order.
+func TestARoleAnExperimentLeavesOutTakesNoArmOfThatExperimentAlone(t *testing.T) {
+	const tree, issue = "LEGION-1", "LEGION-2"
+	recorded := map[string][]record.Assignment{
+		tree:  {{Experiment: "alpha", Variant: "on"}},
+		issue: {{Experiment: "beta", Variant: "on"}},
+	}
+	declared := declaredPair()
+	declared[0].Roles = []claim.Role{claim.RoleImplementer}
+	launch := ForLaunch(declared, "/state")
+	alpha := runtime.Variant{Experiment: "alpha", Name: "on", ConfigFiles: []string{"/etc/legion-alpha/alpha.yml"},
+		ConfigFilesField: "projects.TEST.experiments.alpha.variants.on.config_files", Roles: []claim.Role{claim.RoleImplementer}}
+	beta := runtime.Variant{Experiment: "beta", Name: "on"}
+	for _, tc := range []struct {
+		role claim.Role
+		want []runtime.Variant
+	}{
+		{claim.RoleImplementer, []runtime.Variant{alpha, beta}},
+		{claim.RoleReviewer, []runtime.Variant{beta}},
+		{claim.RoleTester, []runtime.Variant{beta}},
+	} {
+		if arms := launch.Arms(recorded, tree, issue, tc.role); !reflect.DeepEqual(arms.Variants, tc.want) {
+			t.Errorf("the %s's Variants = %+v, want %+v", tc.role, arms.Variants, tc.want)
+		}
 	}
 }

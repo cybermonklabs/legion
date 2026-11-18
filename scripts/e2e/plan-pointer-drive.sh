@@ -287,14 +287,15 @@ compose_prompt() {
     bun "$root/scripts/e2e/plan-pointer-drive.ts" compose "$dir" "$module" "$issue" ||
     fail "the implementer's pane did not compose from $module"
   # The composer's answer is the whole `--append-system-prompt` argument as shell text, so the
-  # shell itself turns it into the prompt file: no regular expression reads it.
+  # shell itself turns it into its two words, the flag and the path of the file the composer
+  # wrote the prompt to: no regular expression reads it.
   eval "args=( $(cat "$dir/arg.txt") )" ||
     fail "the composed argument in $dir/arg.txt is no shell word list"
   [ "${#args[@]}" -eq 2 ] ||
-    fail "the composed argument in $dir/arg.txt is ${#args[@]} shell word(s), not the two the composer answers with: --append-system-prompt and the prompt"
+    fail "the composed argument in $dir/arg.txt is ${#args[@]} shell word(s), not the two the composer answers with: --append-system-prompt and the prompt file"
   [ "${args[0]}" = "--append-system-prompt" ] ||
     fail "the composed argument starts with '${args[0]}', not --append-system-prompt"
-  printf '%s' "${args[1]}" >"$dir/prompt.txt"
+  cp -- "${args[1]}" "$dir/prompt.txt" || fail "the composed prompt file ${args[1]} could not be read"
   [ -s "$dir/prompt.txt" ] || fail "the prompt composed from $module is empty"
 }
 

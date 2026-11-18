@@ -410,9 +410,9 @@ func readPaneReport(command string, res result, expectWindow bool) (paneReport, 
 }
 
 // Spawn starts a fresh agent for spec's claim: under the launch lock, a refusal while the claim's
-// process still runs, then the pane's secrets written as files and a pane in the issue's window, or
-// a new window for it, running `legion worker-shim` around OMP. The returned locator carries the
-// incarnation read at launch.
+// process still runs, then the pane's secrets and its composed system prompt written as files and a
+// pane in the issue's window, or a new window for it, running `legion worker-shim` around OMP. The
+// returned locator carries the incarnation read at launch.
 // A spec with a ResumeSessionFile is refused: continuing a recorded agent is Resume's, so there is
 // one path to `--resume`.
 func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
@@ -478,27 +478,27 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 	return nil
 }
 
-// launch is Spawn's and Resume's shared half: every check that needs no tmux, then, under the launch
-// lock, the refusal of a claim whose process still runs, the secret files, the claim's gh bundle
-// and the pane. The refusal comes first, so a refused launch rewrites none of the files the live
-// process reads. A session found in no folder it searched is runtime.ErrSessionFileMissing,
-// whatever the claim recorded and whether or not the operator's takeover is on
-// (takingOverSession): the search is the same search either way, and a session nothing holds is
-// the same fact however the daemon is configured. The caller starts a fresh agent in its place,
-// charged nothing and reported (supervise's start), which is also what a taken-over runtime's
-// session gets, since nothing tells it from this host's own (sessionfile.go).
+// launch is Spawn's and Resume's shared half: every check that needs no tmux, the composed system
+// prompt among them (runtime.ComposePrompt), then, under the launch lock, the refusal of a claim
+// whose process still runs, the secret files, the prompt's file, the claim's gh bundle and the
+// pane. The prompt is composed before anything is written, so a prompt file that cannot be read
+// leaves no file behind. The refusal of a live claim comes before the
+// writes, so a refused launch rewrites none of the files the live process reads. The prompt's
+// file is written before the pane opens (runtime.WriteSystemPrompt says why).
+//
+// A session found in no folder it searched is runtime.ErrSessionFileMissing, whatever the claim
+// recorded and whether or not the operator's takeover is on (takingOverSession): the search is the
+// same search either way, and a session nothing holds is the same fact however the daemon is
+// configured. The caller starts a fresh agent in its place, charged nothing and reported
+// (supervise's start), which is also what a taken-over runtime's session gets, since nothing tells
+// it from this host's own (sessionfile.go).
 func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err
 	}
-	for _, path := range slices.Concat(spec.Prompt.RolePromptPaths,
-		[]string{spec.Prompt.DeploymentInstructionsPath}, spec.Prompt.VariantInstructionsPaths) {
-		if path == "" {
-			continue
-		}
-		if _, err := os.Stat(path); err != nil {
-			return runtime.Locator{}, fmt.Errorf("spawn %s: prompt file: %w", spec.Claim, err)
-		}
+	prompt, err := runtime.ComposePrompt(spec.Prompt)
+	if err != nil {
+		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
 	backend := runtime.Of(spec.Backend)
 	launcher, ok := r.launchers[backend]
@@ -552,6 +552,10 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 	if err := runtime.WriteSecretFiles(r.stateDir, files); err != nil {
 		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
 	}
+	promptFile, err := runtime.WriteSystemPrompt(r.stateDir, string(spec.Claim), prompt)
+	if err != nil {
+		return runtime.Locator{}, fmt.Errorf("spawn %s: %w", spec.Claim, err)
+	}
 	ghDefault, err := r.writeGitHubCredential(spec, credential)
 	if err != nil {
 		return runtime.Locator{}, err
@@ -561,7 +565,7 @@ func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.L
 		path = spec.Env["PATH"]
 	}
 	path = workerbin.Path(path, r.stateDir)
-	inner, backendPairs, err := launcher.Launch(spec, Host{StateDir: r.stateDir, Legion: r.legion})
+	inner, backendPairs, err := launcher.Launch(spec, Host{StateDir: r.stateDir, Legion: r.legion}, promptFile)
 	if err != nil {
 		return runtime.Locator{}, err
 	}

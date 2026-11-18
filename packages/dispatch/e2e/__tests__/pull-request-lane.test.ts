@@ -29,6 +29,7 @@ import {
   stubProjectNames,
   tagged,
 } from "../configurations";
+import { rowLimit } from "./bounded-subprocess";
 import { listing, projectArguments, retained } from "./playwright-listing";
 
 /** The rows the pull-request lane schedules, and the rows of the default selection, read from
@@ -38,18 +39,13 @@ import { listing, projectArguments, retained } from "./playwright-listing";
  *  names no project holds no row of theirs, and no row of theirs is stubbed. Both start here
  *  rather than inside a test, so the second collects while the first does. */
 const lane = retained(
-  listing("e2e/playwright.config.ts", {}, [
+  listing(import.meta.url, "e2e/playwright.config.ts", {}, [
     ...projectArguments(pullRequestLaneProjects),
     "--grep",
     tagged("pr").source,
   ])
 );
-const defaultSelection = retained(listing("e2e/playwright.config.ts", {}));
-
-/** The two listings collect at once and cost about five seconds together on a two-core pod,
- *  measured at this head; a minute and a half is the ceiling at which something is wrong rather
- *  than slow. */
-const listingTimeout = 90_000;
+const defaultSelection = retained(listing(import.meta.url, "e2e/playwright.config.ts", {}));
 
 /** The number of rows the pull-request lane may schedule. */
 const laneBudget = 330;
@@ -77,7 +73,7 @@ test(
         '(packages/dispatch/AGENTS.md, "The stubbed layer") or take its `@pr` tag off.'
     ).toBeLessThanOrEqual(realStackBudget);
   },
-  listingTimeout
+  rowLimit("listing")
 );
 
 test(
@@ -96,5 +92,5 @@ test(
     ).toEqual([]);
     expect(stubbed.length).toBeGreaterThan(0);
   },
-  listingTimeout
+  rowLimit("listing")
 );

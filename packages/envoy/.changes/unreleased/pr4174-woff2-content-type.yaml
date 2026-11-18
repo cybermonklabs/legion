@@ -1,0 +1,4 @@
+kind: Fixed
+body: |-
+  Dispatch's server sends a `.woff2` file as `font/woff2`. It sent `application/octet-stream`, so
+  the typeface the dashboard now ships was answered as an unknown file.

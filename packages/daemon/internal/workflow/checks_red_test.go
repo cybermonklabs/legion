@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -21,11 +22,12 @@ import (
 // information the worker holding the phase decides on - re-run, wait, or fix - and not the
 // daemon's to read the semantics of. What the settlement says is told instead, as one message per
 // role to three roles: the worker holding the issue's phase, the implementer, whose code the
-// checks ran on, and the tree's architect, who owns the tree. Each message names every check the
-// settlement reports and the conclusion it reports for it, in name order. A role named twice - the
-// implementer holding the phase, the architect holding accepting - is told once, and a phase no
-// worker holds names none. Nothing else happens: no phase moves, no architect
-// hears checks-red, no worker is started, and no return is counted.
+// checks ran on, and the architect that owns the issue, here the root's, since the issue is the
+// tree's root. Each message names every check the settlement reports and the conclusion it
+// reports for it, in name order. A role named twice - the implementer holding the phase, the
+// architect holding admitted or accepting - is told once, and a phase no worker holds names none.
+// Nothing else happens: no phase moves, no architect hears checks-red, no worker is started, and
+// no return is counted.
 func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 	for _, tc := range []struct {
 		from   phase.Phase
@@ -33,6 +35,7 @@ func TestASettlementMovesNothingAndTellsTheThreeRoles(t *testing.T) {
 		// roles are the roles told, in the order tellChecks addresses them.
 		roles []claim.Role
 	}{
+		{phase.Admitted, "in_progress", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
 		{phase.Implementing, "in_progress", []claim.Role{claim.RoleArchitect, claim.RoleImplementer}},
 		{phase.Testing, "testing", []claim.Role{claim.RoleArchitect, claim.RoleTester, claim.RoleImplementer}},
 		{phase.Reviewing, "needs_review", []claim.Role{claim.RoleArchitect, claim.RoleReviewer, claim.RoleImplementer}},
@@ -349,12 +352,21 @@ func TestAConflictingHeadSendsTheIssueBackToImplementingFromEveryLaterPhase(t *t
 			}
 			want := "the head conflicts with main: GitHub runs no checks on it; merge main forward"
 			reason, from := checksRedNotice(t, pool)
-			var status string
-			if err := pool.QueryRow(context.Background(), "select payload->>'status' from outbox where kind = 'dispatch_status'").Scan(&status); err != nil {
+			var status, posted string
+			if err := pool.QueryRow(context.Background(),
+				"select payload->>'status', coalesce(payload->>'reason', '') from outbox where kind = 'dispatch_status'").Scan(&status, &posted); err != nil {
 				t.Fatalf("read the status write: %v", err)
 			}
 			if task := implementerTask(t, pool); !strings.Contains(task, want) || !strings.Contains(reason, want) || from != tc.from || status != "in_progress" {
 				t.Fatalf("task %q, notice %q from %q, status %q; want both to say %q, from %s, and the issue in_progress", task, reason, from, status, want, tc.from)
+			}
+			// The move is the daemon's own, so no worker's act on Dispatch says why the issue went
+			// back: the status write posts the reason on the issue first, naming the phase it left,
+			// the pull request and head that conflict, and the base.
+			wantPosted := fmt.Sprintf("Legion moved this issue from %s back to implementing, because pull request #42 at head head conflicts with main. "+
+				"GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward.", tc.from)
+			if posted != wantPosted {
+				t.Fatalf("the status write posts %q on the issue, want %q", posted, wantPosted)
 			}
 			// The return is a pass and no review round: the implementer answers a conflict with a
 			// forward merge nobody asked it for, so it costs the issue nothing against

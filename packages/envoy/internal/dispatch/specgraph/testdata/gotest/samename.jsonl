@@ -1,0 +1,20 @@
+{"Time":"2026-11-16T16:19:26.795661845Z","Action":"start","Package":"example.com/acme/gotest/samename"}
+{"Time":"2026-11-16T16:19:26.817712481Z","Action":"run","Package":"example.com/acme/gotest/samename","Test":"TestSame"}
+{"Time":"2026-11-16T16:19:26.817774463Z","Action":"output","Package":"example.com/acme/gotest/samename","Test":"TestSame","Output":"=== RUN   TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.817815991Z","Action":"output","Package":"example.com/acme/gotest/samename","Test":"TestSame","Output":"=== PAUSE TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.817818344Z","Action":"pause","Package":"example.com/acme/gotest/samename","Test":"TestSame"}
+{"Time":"2026-11-16T16:19:26.817820327Z","Action":"run","Package":"example.com/acme/gotest/samename","Test":"TestSame"}
+{"Time":"2026-11-16T16:19:26.817824649Z","Action":"output","Package":"example.com/acme/gotest/samename","Test":"TestSame","Output":"=== RUN   TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.817827112Z","Action":"output","Package":"example.com/acme/gotest/samename","Test":"TestSame","Output":"=== PAUSE TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.817828307Z","Action":"pause","Package":"example.com/acme/gotest/samename","Test":"TestSame"}
+{"Time":"2026-11-16T16:19:26.817830424Z","Action":"cont","Package":"example.com/acme/gotest/samename","Test":"TestSame"}
+{"Time":"2026-11-16T16:19:26.817831944Z","Action":"output","Package":"example.com/acme/gotest/samename","Test":"TestSame","Output":"=== CONT  TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.817835799Z","Action":"output","Package":"example.com/acme/gotest/samename","Test":"TestSame","Output":"--- PASS: TestSame (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.817840253Z","Action":"pass","Package":"example.com/acme/gotest/samename","Test":"TestSame","Elapsed":0}
+{"Time":"2026-11-16T16:19:26.817846127Z","Action":"cont","Package":"example.com/acme/gotest/samename","Test":"TestSame"}
+{"Time":"2026-11-16T16:19:26.81784761Z","Action":"output","Package":"example.com/acme/gotest/samename","Test":"TestSame","Output":"=== CONT  TestSame\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.817849387Z","Action":"output","Package":"example.com/acme/gotest/samename","Test":"TestSame","Output":"--- FAIL: TestSame (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.817857127Z","Action":"fail","Package":"example.com/acme/gotest/samename","Test":"TestSame","Elapsed":0}
+{"Time":"2026-11-16T16:19:26.817883852Z","Action":"output","Package":"example.com/acme/gotest/samename","Output":"FAIL\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.820988334Z","Action":"output","Package":"example.com/acme/gotest/samename","Output":"FAIL\texample.com/acme/gotest/samename\t0.025s\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:26.82104622Z","Action":"fail","Package":"example.com/acme/gotest/samename","Elapsed":0.025}

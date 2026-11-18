@@ -38,8 +38,8 @@ func newStubBroker(t *testing.T, refusal string) *stubBroker {
 
 // newStubBrokerFixingASession is newStubBroker for a broker whose entry for this machine fixes
 // the session fixed: a trade naming any other name is refused exactly as the exchange's
-// resolveSession refuses it (ErrSessionMismatch, invalid_grant, naming what the machine writes
-// as), and a trade naming that one is taken.
+// resolveSession refuses it (ErrSessionMismatch, invalid_request, naming the session the entry's
+// tokens carry), and a trade naming that one is taken.
 func newStubBrokerFixingASession(t *testing.T, refusal, fixed string) *stubBroker {
 	t.Helper()
 	broker := &stubBroker{}
@@ -54,13 +54,13 @@ func newStubBrokerFixingASession(t *testing.T, refusal, fixed string) *stubBroke
 		broker.forms = append(broker.forms, form)
 		broker.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		said := refusal
+		said, code := refusal, "invalid_grant"
 		if said == "" && fixed != "" && session != fixed {
-			said = "this machine writes as " + fixed
+			said, code = "this machine's tokens name the session "+fixed, "invalid_request"
 		}
 		if said != "" {
 			w.WriteHeader(http.StatusBadRequest)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant", "error_description": said})
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": code, "error_description": said})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -205,7 +205,7 @@ func TestAControllerOnTheBrokerRouteIsHandedNoBearerPointer(t *testing.T) {
 }
 
 // TestAnEntryThatFixesASessionRefusesTheControllerStart: an entry that fixes a session answers
-// every trade naming another `invalid_grant`, and the controller's session names its own id,
+// every trade naming another `invalid_request`, and the controller's session names its own id,
 // which no deployment can have fixed. So a Kubernetes-identity controller whose entry fixes a
 // session can write nothing, and the start says what the broker said instead of launching it.
 // The operator's AGENT_SECRETS_SESSION naming that very session does not rescue it: the session
@@ -215,7 +215,7 @@ func TestAnEntryThatFixesASessionRefusesTheControllerStart(t *testing.T) {
 	c := newControllerStart(t, d, controllerOptions{dispatchBroker: true})
 	c.provesAnIdentity(newStubBrokerFixingASession(t, "", "legion-demo-controller"))
 
-	c.refused("writes as legion-demo-controller")
+	c.refused("tokens name the session legion-demo-controller")
 	c.wantNoSecretRequest()
 	if c.launched() {
 		t.Error("Oh My Pi was launched for a controller whose every Dispatch write the broker refuses")

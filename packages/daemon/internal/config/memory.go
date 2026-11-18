@@ -87,7 +87,7 @@ func checkMemory(cfg Config) error {
 		if memory.Word() != ExperimentOff && len(memory.ConfigFiles) == 0 {
 			return fmt.Errorf("%s is %s and names no config_files: a memory-group tree's roles read their memory overlays from that key, so name at least one, or set mode: off", field, memory.Mode)
 		}
-		if err := checkDeclaredOverlays(cfg, field+".config_files", "the block", memory.ConfigFiles); err != nil {
+		if err := checkDeclaredOverlays(cfg, field+".config_files", "the block", memory.ConfigFiles, nil); err != nil {
 			return err
 		}
 	}

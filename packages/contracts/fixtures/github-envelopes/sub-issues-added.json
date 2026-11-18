@@ -1,0 +1,19 @@
+{
+  "topic": "notifications.github.example-org.example-repo.issue.41.sub_issue",
+  "payload_summary": "sub issue sub_issue_added: example-org/example-repo#41",
+  "payload": {
+    "action": "sub_issue_added",
+    "kind": "sub_issue",
+    "number": "41",
+    "parent_number": "41",
+    "parent_repo": "example-org/example-repo",
+    "parent_title": "Parent acceptance issue",
+    "parent_url": "https://example.invalid/example-org/example-repo/issues/41",
+    "repo": "example-org/example-repo",
+    "sender": "octocat",
+    "sub_issue_number": "43",
+    "sub_issue_repo": "example-org/example-repo",
+    "sub_issue_title": "Child acceptance issue",
+    "sub_issue_url": "https://example.invalid/example-org/example-repo/issues/43"
+  }
+}

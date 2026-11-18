@@ -1,15 +1,17 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CaseKind, CaseRow } from "../build-corpus";
 import { CorpusError, UsageError } from "../corpus-io";
 import {
+  claimCutRefusal,
   type Draw,
   type DrawCase,
   DrawError,
   drawSlices,
   type FinalTestSource,
+  main,
   pinnedBacklogRoots,
   renderingCheckOf,
   TARGETS,
@@ -34,6 +36,7 @@ const DECIDED: NeverDecideAnswer = {
   answer: "none\nthe document asks for no act the agent never decides",
   source: "model",
   fault: null,
+  servedModel: "anthropic/claude-opus-5-5",
   inputTokens: 900,
   outputTokens: 30,
 };
@@ -362,6 +365,14 @@ describe("drawSlices under a read of the reserve", () => {
       heldOutsideReport: { total: 0, cases: [] },
       parentChanges: [],
       nearDuplicates: { threshold: 0.9, joins: [] },
+      trees: held
+        .filter((one) => one.row.caseId.endsWith("-0"))
+        .map((one) => ({
+          group: `tree:${one.row.issueKey}`,
+          slice: "report" as const,
+          cases: [0, 1, 2].map((at) => one.row.caseId.replace(/-0$/, `-${at}`)),
+        }))
+        .sort((one, other) => (one.group < other.group ? -1 : 1)),
     });
     expect(draw.counts.fit.approval).toBeGreaterThan(TARGETS.approval.fit - 3);
   });
@@ -408,12 +419,98 @@ describe("drawSlices under a read of the reserve", () => {
     expect(draw.finalTest?.heldOutsideReport.total).toBe(0);
   });
 
-  test("an eligible tree report has no room for goes to another slice and is named", () => {
+  test("report takes every eligible tree whole, past its targets", () => {
     const cases = reserved(90);
     const draw = drawSlices(cases, 7, source(cases));
-    expect(draw.counts.report.approval).toBe(249);
+    // 270 approval cases against report's 250: the final test is every eligible tree.
+    expect(draw.counts.report.approval).toBe(270);
     expect(draw.finalTest?.groups).toBe(90);
-    expect(draw.finalTest?.heldOutsideReport.total).toBe(21);
+    expect(draw.finalTest?.heldOutsideReport.total).toBe(0);
+    const trees = draw.finalTest?.trees ?? [];
+    expect(trees).toHaveLength(90);
+    expect(trees.every((tree) => tree.slice === "report")).toBe(true);
+  });
+
+  test("an eligible tree holding a question still reaches report when its question places are full", () => {
+    // Sixty trees, each one approval request and one question: report's targets hold 50
+    // questions, and the ten trees past them are the final test's all the same.
+    const cases = Array.from({ length: 60 }, (_, group) => [
+      drawCase(caseRow(`r-${group}-a`, "approval", `RES-${group}`)),
+      drawCase(caseRow(`r-${group}-q`, "question", `RES-${group}`)),
+    ]).flat();
+    const draw = drawSlices(cases, 7, source(cases));
+    expect(draw.counts.report).toEqual({ approval: 60, question: 60 });
+    expect(draw.finalTest?.trees.filter((tree) => tree.slice === "report")).toHaveLength(60);
+  });
+
+  test("a claim draw takes a cut at or before the reserve's, and refuses a later one", () => {
+    expect(claimCutRefusal(Date.parse("2026-11-16T00:00:00Z"))).toBeNull();
+    expect(claimCutRefusal(Date.parse("2026-11-01T00:00:00Z"))).toBeNull();
+    expect(claimCutRefusal(Date.parse("2026-11-18T00:00:00Z"))).toContain(
+      "takes a --cut at or before the reserve's cut, 2026-11-16T00:00:00Z"
+    );
+  });
+
+  test("the command that reads the reserve stops before the corpus on each claim guard", async () => {
+    // Each guard runs before any corpus is read, so a corpus path that does not exist shows the
+    // guard, not a missing file, answered.
+    const base = ["--corpus", "/nowhere/corpus", "--out", "/nowhere/out"];
+    const claim = [
+      "--seed",
+      "7",
+      "--scorer-records",
+      "/nowhere/a",
+      "--round-sessions",
+      "/nowhere/b",
+    ];
+    const runs: Array<[string[], string]> = [
+      [[...base, "--cut", "2026-11-16T00:00:00Z"], "takes --seed, the seed its registration names"],
+      [
+        [...base, "--cut", "2026-11-16T00:00:00Z", "--seed", "7"],
+        "takes --scorer-records and --round-sessions",
+      ],
+      [
+        [...base, "--cut", "2026-11-18T00:00:00Z", ...claim],
+        "takes a --cut at or before the reserve's cut, 2026-11-16T00:00:00Z",
+      ],
+    ];
+    const before = process.env.APPROVAL_EVAL_RESERVE;
+    process.env.APPROVAL_EVAL_RESERVE = "read:claim:test";
+    const lines: string[] = [];
+    const error = spyOn(console, "error").mockImplementation((line?: unknown) => {
+      lines.push(String(line));
+    });
+    try {
+      for (const [argv, words] of runs) {
+        lines.length = 0;
+        expect(await main(argv)).toBe(2);
+        expect(lines.join("\n")).toContain(words);
+      }
+    } finally {
+      error.mockRestore();
+      if (before === undefined) delete process.env.APPROVAL_EVAL_RESERVE;
+      else process.env.APPROVAL_EVAL_RESERVE = before;
+    }
+  });
+
+  test("an eligible tree whose every case the never-decide rule held is recorded in no slice", () => {
+    const held: NeverDecideAnswer = {
+      ...DECIDED,
+      held: true,
+      kind: "destructive-act",
+      reason: "The change list asks for the spool directory to be removed.",
+      answer: "destructive-act\nThe change list asks for the spool directory to be removed.",
+    };
+    const cases = [...corpus(), ...reserved(3)].map((one) =>
+      one.row.issueKey === "RES-1" ? drawCase(one.row, held) : one
+    );
+    const draw = drawSlices(cases, 7, source(cases));
+    expect(draw.finalTest?.groups).toBe(2);
+    expect(draw.finalTest?.trees).toEqual([
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-0", "r-0-1", "r-0-2"] },
+      { group: "tree:RES-1", slice: null, cases: ["r-1-0", "r-1-1", "r-1-2"] },
+      { group: "tree:RES-2", slice: "report", cases: ["r-2-0", "r-2-1", "r-2-2"] },
+    ]);
   });
 
   test("with no eligible tree, report stays empty", () => {

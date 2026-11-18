@@ -162,6 +162,14 @@ jobs:
       - name: Check the whole tree with Biome
         run: bunx biome check .
 
+      # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
+      # floor, so a live proof that starts one, and a script or page that installs one, must name
+      # one the floor takes. The test scans every tracked shell script and every tracked text file
+      # for those, so it runs here, on every change: the test job runs it too, but only when its
+      # filter selects scripts/e2e, and a new driver or page can be anywhere.
+      - name: Check every NATS server a script starts or installs is one the floor takes
+        run: bun test scripts/e2e/lib/nats-image.test.ts
+
       # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
       # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
       # loads with `bun build --metafile`, and holds every such file to that gate's filter,

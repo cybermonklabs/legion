@@ -171,6 +171,7 @@ func TestCoreAuthorizationKeysAreTheSchemasNames(t *testing.T) {
 		{reflect.TypeFor[envoyaws.AuthorizationArgs](), reflect.TypeFor[core.Authorization]()},
 		{reflect.TypeFor[envoyaws.UserArgs](), reflect.TypeFor[core.User]()},
 		{reflect.TypeFor[envoynats.RulesArgs](), reflect.TypeFor[core.Rules]()},
+		{reflect.TypeFor[envoynats.AuthCalloutArgs](), reflect.TypeFor[core.AuthCallout]()},
 	} {
 		args, mirror := pair[0], pair[1]
 		read := 0
