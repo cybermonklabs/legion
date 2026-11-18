@@ -1407,14 +1407,17 @@ func mergeEnv(base, updates []string) []string {
 	return out
 }
 
-// withoutEnv is env with every entry naming name dropped. mergeEnv can only give a name a value,
-// and a launcher that must tell a generation nothing about a name has to leave it unset: a role
-// that read an empty DSN would take it for a server at libpq's defaults rather than for none.
-func withoutEnv(env []string, name string) []string {
+// withoutEnv is env with every entry naming any of names dropped. mergeEnv can only give a name a
+// value, and a launcher that must tell a generation nothing about a name has to leave it unset: a
+// role that read an empty DSN would take it for a server at libpq's defaults rather than for none.
+func withoutEnv(env []string, names ...string) []string {
 	out := make([]string, 0, len(env))
+entries:
 	for _, entry := range env {
-		if strings.HasPrefix(entry, name+"=") {
-			continue
+		for _, name := range names {
+			if strings.HasPrefix(entry, name+"=") {
+				continue entries
+			}
 		}
 		out = append(out, entry)
 	}

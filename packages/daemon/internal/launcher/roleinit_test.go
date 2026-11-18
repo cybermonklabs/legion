@@ -55,7 +55,8 @@ type stagePlan struct {
 // agentPlan is what the agent reports on: the paths its role should and should not reach, the
 // process the stage started outside its namespaces, and the detached, SIGTERM-ignoring process it
 // leaves behind for the stage to look for once the namespaces are gone. Label is what its lines
-// carry, so the stage's two generations read apart.
+// carry, so the stage's two generations read apart. TestPGLog says the stage made the server's
+// log before this generation, so role-init bound it at the fixed path.
 type agentPlan struct {
 	Home       string
 	HomeMounts string
@@ -68,6 +69,7 @@ type agentPlan struct {
 	Generation uint64
 	OutsidePID int
 	Detached   string
+	TestPGLog  bool
 }
 
 // TestRoleNamespaceProbeHelper is the probe itself: cloned into a role's namespaces, it does the
@@ -90,11 +92,14 @@ func TestRoleNamespaceProbeHelper(t *testing.T) {
 
 // Every start of a role runs in namespaces of its own. The role reads its own gh bundle and its
 // generation's credentials at the fixed paths every role is told; a sibling role's directory and
-// every launcher token, its own included, are gone; it sees and can signal only its own
-// processes; what it writes under its home and in its temporary directories lands on its own
-// layer, invisible to the container; every mount its home carried is still there; its config home
-// is its own, a copy of the pod's shared one that no sibling reads; and when the role's init exits
-// nothing of the role is left, not even a detached process that ignores SIGTERM.
+// every launcher token, its own included, are gone; it reads the log of the pod's test database
+// at its fixed path, the one file from under the roles directory it sees, and can neither write
+// it nor, from a further namespace of its own, replace or remove it, and the launcher's file
+// stays a regular file; it sees and can signal only its own processes; what it writes under its
+// home and in its temporary directories lands on its own layer, invisible to the container; every
+// mount its home carried is still there; its config home is its own, a copy of the pod's shared
+// one that no sibling reads; and when the role's init exits nothing of the role is left, not even
+// a detached process that ignores SIGTERM.
 func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 	requireRoleNamespaces(t)
 	self, err := os.Executable()
@@ -189,6 +194,21 @@ func TestARoleRunsInNamespacesOfItsOwn(t *testing.T) {
 		{"agent pty", "opened", "the role's agent can open a terminal of its own"},
 		{"agent pts-own", "1", "the terminal the role opened is in its own /dev/pts"},
 		{"agent2 pts-entries", "0", "the relaunch's /dev/pts holds none of the container's terminals either"},
+		// The pod's test database log: the one file from under the roles directory a role reads,
+		// through a read-only bind of that file alone.
+		{"agent testpg-log", "testpg-line-1", "the role reads the pod's test database log at the fixed path every role is told"},
+		{"agent testpg-log-write", "refused", "the role cannot write the log: role-init binds it read-only"},
+		{"stage testpg-source", "testpg-line-1", "the role's write never reached the server's log, which holds what the stage wrote and nothing else"},
+		// What the bind rests on: a namespace the role makes of its own may remount its view of
+		// the log read-write (gVisor allows it, Linux refuses), and even then the log is a mount
+		// point, which no rename, unlink or link replaces, so what the role reads is still the
+		// server's file and the launcher's file is still a regular one.
+		{"agent testpg-log-swap", "rename=busy unlink=busy link=busy", "a namespace of the role's own can neither rename a file over the log, nor remove it, nor link a file over it: it is a mount point"},
+		{"agent testpg-log-after-swap", "testpg-line-1", "the log the role's own namespace reads after those tries is still the server's"},
+		{"stage testpg-source-kind", "regular", "the server's log is still the regular file the launcher made, not a link or anything the role put there"},
+		{"agent2 testpg-log", "testpg-line-1; testpg-line-2", "the relaunched role reads what the server has logged since, both lines"},
+		{"agent2 testpg-log-swap", "rename=busy unlink=busy link=busy", "the relaunched role can neither replace nor remove the log either"},
+		{"agent-sibling testpg-log", "", "a role of a pod that serves no test database starts with an empty mount point where the log would be"},
 	} {
 		if got, ok := report[want.key]; !ok || got != want.value {
 			t.Errorf("%s = %q, want %q: %s\n%s", want.key, got, want.value, want.why, output)
@@ -349,6 +369,19 @@ func runStage(plan stagePlan) error {
 			return err
 		}
 	}
+	// The pod's test database log, as the launcher makes it under the roles directory before any
+	// role starts, holding the server's first line, and its mount point under the fixed root,
+	// the empty file the worker image makes.
+	serverLog := testPGLog(rolesDir)
+	if err := os.MkdirAll(testPGDir(rolesDir), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(serverLog, []byte("testpg-line-1\n"), 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(fixedRoot, RoleTestPGLog), nil, 0o444); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		return err
 	}
@@ -425,6 +458,7 @@ func runStage(plan stagePlan) error {
 	layout := agentPlan{
 		Home: home, HomeMounts: homeMounts, RolesDir: rolesDir, FixedRoot: fixedRoot, Role: plan.Role,
 		Sibling: plan.Sibling, Owner: plan.Owner, OutsidePID: outside.Process.Pid, Detached: plan.Detached,
+		TestPGLog: true,
 	}
 
 	if err := runGeneration(plan, layout, 1, "agent"); err != nil {
@@ -438,6 +472,11 @@ func runStage(plan stagePlan) error {
 	fmt.Printf("stage container-tmp=%s\n", presence(filepath.Join("/tmp", "planted")))
 	fmt.Printf("stage container-shm=%s\n", presence(filepath.Join("/dev/shm", "planted")))
 	fmt.Printf("stage detached=%s\n", detachedProcess(plan.Detached))
+	// The log's lines go on the one line a report carries (oneLine), here and in the agent.
+	fmt.Printf("stage testpg-source=%s\n", oneLine(content(serverLog)))
+	// Read without following a link: a link the role had put in the file's place would name
+	// something else, and a link is what role-init refuses to bind.
+	fmt.Printf("stage testpg-source-kind=%s\n", fileKind(serverLog))
 
 	// The role's relaunch: a second generation over the same role-homes volume, with the
 	// agent-secrets directory gone, as a pod that is not enrolled with the secrets broker has it.
@@ -458,6 +497,18 @@ func runStage(plan stagePlan) error {
 			return err
 		}
 	}
+	// The server has gone on logging since the role's first generation: a second line, appended
+	// to the same file as the server appends.
+	appending, err := os.OpenFile(serverLog, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := appending.WriteString("testpg-line-2\n"); err != nil {
+		return err
+	}
+	if err := appending.Close(); err != nil {
+		return err
+	}
 	layout.Detached = plan.Detached + "2"
 	// What the links named is reported even when the generation failed, so a role-init that
 	// followed one shows where it wrote.
@@ -477,10 +528,16 @@ func runStage(plan stagePlan) error {
 	if err := os.MkdirAll(filepath.Join(siblingConfig, "stale"), 0o755); err != nil {
 		return err
 	}
+	// The sibling starts as a role of a pod that serves no test database does: with no log under
+	// the roles directory, so role-init binds nothing over the mount point.
+	if err := os.Remove(serverLog); err != nil {
+		return err
+	}
 	siblingPlan := plan
 	siblingPlan.Role, siblingPlan.Sibling = plan.Sibling, plan.Role
 	siblingLayout := layout
 	siblingLayout.Role, siblingLayout.Sibling, siblingLayout.Detached = plan.Sibling, plan.Role, plan.Detached+"3"
+	siblingLayout.TestPGLog = false
 	if err := runGeneration(siblingPlan, siblingLayout, 1, "agent-sibling"); err != nil {
 		return err
 	}
@@ -590,6 +647,22 @@ func TestRoleInitAgentHelper(t *testing.T) {
 	say("own-gh", content(filepath.Join(plan.FixedRoot, RoleGHDir, plan.Owner, "hosts.yml")))
 	say("own-boot-token", content(filepath.Join(plan.FixedRoot, RolePrivateDir, "g1", "LEGION_BOOT_TOKEN")))
 	say("own-state", writable(filepath.Join(plan.FixedRoot, RoleStateDir)))
+	// The pod's test database log at its fixed path: what the server has written so far, which
+	// the role reads and cannot add to.
+	say("testpg-log", oneLine(content(filepath.Join(plan.FixedRoot, RoleTestPGLog))))
+	say("testpg-log-write", appended(filepath.Join(plan.FixedRoot, RoleTestPGLog)))
+	// The property that bind rests on, tried from a further namespace of the role's own, as an
+	// agent's `unshare -Urm` makes one: the log is a mount point there too, so even over a view
+	// remounted read-write it can be neither replaced nor removed. A generation with no log bound
+	// has an empty file of the image's there, which nothing need hold, so it tries nothing.
+	if plan.TestPGLog {
+		remount, swap, after := swapLog(plan.FixedRoot)
+		say("testpg-log-remount", remount)
+		say("testpg-log-swap", swap)
+		say("testpg-log-after-swap", after)
+	} else {
+		say("testpg-log-swap", "no-log")
+	}
 	// The agent-secrets directory is bound only when the pod is enrolled with the broker: its
 	// key is the role's own in the first generation, and the second runs with none.
 	say("own-agent-secrets", presence(filepath.Join(plan.FixedRoot, RoleAgentSecretsDir, "key.pem")))
@@ -750,6 +823,69 @@ if [ -e "$1/$2" ]; then echo uncovered; elif [ "$unmounted" = yes ]; then echo u
 	return strings.TrimSpace(string(output))
 }
 
+// swapLog is what a further namespace of the role's own (a user and a mount namespace, as an
+// agent's `unshare -Urm` makes) can do to the test database log bound under fixedRoot. The nested
+// shell first remounts its view of the log read-write, which Linux refuses and gVisor allows, so
+// remount is reported and asserted nowhere. It then makes a file in fixedRoot itself, on the
+// filesystem the log's mount point sits on, so no refusal below is EXDEV, and tries to rename that
+// file over the log, to remove the log, and to link that file over it. Each try reads `busy` when
+// its error says so (EBUSY, a mount point's refusal), `allowed` when it went through, and its
+// error's own text otherwise; swap is the three, `rename=… unlink=… link=…`. after is the log's
+// content as that namespace reads it once the tries are done, where a rename or link that went
+// through would show the planted file's emptiness instead. The planted file is removed again.
+// A nested namespace that could not be made answers `no-namespace: …` for all three.
+func swapLog(fixedRoot string) (remount, swap, after string) {
+	script := `log=$1 planted=$2
+if mount -o remount,bind,rw "$log" 2>/dev/null; then echo allowed; else echo refused; fi
+try() {
+	if err=$("$@" 2>&1); then
+		echo allowed
+		return
+	fi
+	case $err in
+	*[Bb][Uu][Ss][Yy]*) echo busy ;;
+	*) printf '%s' "$err" | tr '\n' ' ' ;;
+	esac
+}
+: > "$planted"
+rename=$(try mv -f "$planted" "$log")
+unlink=$(try rm -f "$log")
+: > "$planted"
+link=$(try ln -f "$planted" "$log")
+rm -f "$planted"
+echo "rename=$rename unlink=$unlink link=$link"
+cat "$log" 2>&1
+exit 0`
+	nested := exec.Command("/bin/sh", "-c", script, "sh", filepath.Join(fixedRoot, RoleTestPGLog), filepath.Join(fixedRoot, "testpg-swap"))
+	nested.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+	}
+	output, err := nested.Output()
+	if err != nil {
+		failed := "no-namespace: " + err.Error()
+		return failed, failed, failed
+	}
+	remount, rest, _ := strings.Cut(string(output), "\n")
+	swap, after, _ = strings.Cut(rest, "\n")
+	return remount, strings.TrimSpace(swap), oneLine(after)
+}
+
+// fileKind is what Lstat finds at path, never following a link: `regular` for a regular file, the
+// file's type otherwise, and the error's text where there is nothing to read.
+func fileKind(path string) string {
+	info, err := os.Lstat(path)
+	switch {
+	case err != nil:
+		return "unreadable: " + err.Error()
+	case info.Mode().IsRegular():
+		return "regular"
+	default:
+		return info.Mode().Type().String()
+	}
+}
+
 // The uncover probe can fail: over a cover a further mount namespace may remove — one made in the
 // same user namespace, so the kernel does not lock it, as the reviewer's reproduction had it — it
 // answers `uncovered`, read in the namespace where the unmount happened. A probe that read the
@@ -862,6 +998,26 @@ func content(path string) string {
 		return "unreadable: " + err.Error()
 	}
 	return strings.TrimSpace(string(body))
+}
+
+// appended is what the role gets when it tries to add a line to the file at path: `refused` where
+// the open is denied because the file is on a read-only mount (EROFS), `written` when the line
+// went in, and the error's own text for anything else. EROFS alone is the bind's refusal: the
+// role's agent maps to the file's owner and the file is 0600, so a permission denial would come
+// from something other than the bind, and its text is reported rather than read as the bind's.
+func appended(path string) string {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	switch {
+	case errors.Is(err, syscall.EROFS):
+		return "refused"
+	case err != nil:
+		return err.Error()
+	}
+	defer file.Close()
+	if _, err := file.WriteString("written-by-the-role\n"); err != nil {
+		return err.Error()
+	}
+	return "written"
 }
 
 func writable(dir string) string {
