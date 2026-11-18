@@ -503,9 +503,12 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // the architect, whose decision it is whether the work is reopened, reassigned, or cancelled, as the
 // shipped daemon routes it. It records the head the close carries, which every synchronize before
 // it left, and keeps the close's clock when it is the later one, so a reopen or a synchronize older
-// than the close, redelivered late, changes nothing. A close of a merged pull request changes
-// nothing: GitHub never closes one, so the close is older than the merge, which carries no clock to
-// fence it.
+// than the close, redelivered late, changes nothing. A close that finds the pull request already
+// closed records its head and clock too. When it is newer than the record, it is a second close
+// whose reopen has not been delivered yet, and the architect is told; at the record's clock or with
+// no clock it is a redelivery, and it tells the architect nothing more. A close of a merged pull
+// request changes nothing: GitHub never closes one, so the close is older than the merge, which
+// carries no clock to fence it.
 func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestClosed) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil || pr.State == record.PullRequestMerged || classify.LateLifecycle(fact.UpdatedAt, pr.HeadUpdatedAt) {
