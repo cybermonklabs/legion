@@ -133,6 +133,13 @@ export const commentEventPayloadFields = {
    *  move the ask between "waiting on you" and "waiting on the agent" without re-reading it.
    *  Absent when the comment does not reply to an open ask. */
   ask_waiting_on: z.enum(ASK_TURNS).optional(),
+  /** The sessions that own the ask this comment replies in, read when the comment was written:
+   *  the ask's author when a session wrote it, then each session that follows it, in the order
+   *  they joined, each once. Every copy of the event carries the same list, so a reader that
+   *  knows its own session tells from it whether the reply is on that session's own ask. `[]`
+   *  when no session owns the ask. Carried by `comment.created` alone; absent on a comment
+   *  outside an ask's thread and from a Dispatch older than the field. */
+  ask_sessions: z.array(z.string()).optional(),
   ...referenceChangesFields,
   ...threadLoginsFields,
   ...carriedBodyFields,
@@ -158,6 +165,9 @@ export type CommentEventPayload = z.output<typeof WrittenCommentEventPayloadSche
 export const CommentEventPayloadSchema = z
   .object({
     id: commentFields.id.optional(),
+    /** The project document the comment is on, null on an issue comment: with `anchor`'s
+     *  `artifact_id` and the issue key, what tells a comment on a document from one on an issue. */
+    artifact_id: commentFields.artifact_id,
     artifact_name: commentEventPayloadFields.artifact_name.optional(),
     project_key: commentEventPayloadFields.project_key,
     artifact_slug: commentEventPayloadFields.artifact_slug,
@@ -167,6 +177,9 @@ export const CommentEventPayloadSchema = z
     ask_question: commentEventPayloadFields.ask_question,
     ask_state: commentEventPayloadFields.ask_state,
     ask_waiting_on: commentEventPayloadFields.ask_waiting_on,
+    /** Whose ask the reply is on, as `commentEventPayloadFields.ask_sessions` says. A stand-in
+     *  (`payload_omitted`) drops it when the list encodes to more than 256 bytes. */
+    ask_sessions: commentEventPayloadFields.ask_sessions,
     turn: commentFields.turn.optional(),
     anchor: z
       .object({

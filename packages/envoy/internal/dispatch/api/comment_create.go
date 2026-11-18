@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -382,6 +383,31 @@ func (s *server) describeAsk(
 		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "ask_id must identify an ask on this owner")
 	}
 	return target, err
+}
+
+// askSessions is what a comment.created in askID's thread says about whose ask it is
+// (model.CommentEventPayload.AskSessions): the ask's author when a session wrote it, then each
+// session that follows it in the order asks.Followers reads them (since, then session id), each
+// once, and [] when no session owns it. tx must hold the comment's insert and the follow its
+// author takes (asks.FollowAuthor), so a session that replies is one of them.
+func askSessions(ctx context.Context, tx pgx.Tx, askID string) ([]string, error) {
+	sessions := []string{}
+	if err := tx.QueryRow(ctx, `
+		select coalesce(array_agg(session_id order by place, since, session_id), '{}')
+		from (
+			select session_id, min(place) as place, min(since) as since
+			from (
+				select author->>'id' as session_id, 0 as place, null::timestamptz as since
+				from asks where id = $1 and author->>'kind' = 'session'
+				union all
+				select session_id, 1, since from ask_followers where ask_id = $1
+			) owners
+			group by session_id
+		) sessions
+	`, askID).Scan(&sessions); err != nil {
+		return nil, fmt.Errorf("read the sessions that own ask %s: %w", askID, err)
+	}
+	return sessions, nil
 }
 
 // commentRoute is the owner's delivery route as the Envoy listener resolved it before the
@@ -956,6 +982,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if comment.AskID != nil {
+		payload.AskSessions, err = askSessions(r.Context(), tx, *comment.AskID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	event, err := s.appendEvent(r.Context(), tx, owner.event(
 		"comment.created",

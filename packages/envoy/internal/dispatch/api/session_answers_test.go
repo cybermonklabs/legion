@@ -630,7 +630,8 @@ func TestSessionAnswersListsAnEditedCommentAtItsCurrentBody(t *testing.T) {
 
 // A reply in the session's ask's thread that mentions the session would reach it twice, by the
 // mention and as the ask's follower; the outbox leaves the follower copy to the delivered mention,
-// and the list holds the reply once, as a mention.
+// and the list holds the reply once, as a reply on the session's own ask, which outranks the
+// mention.
 func TestSessionAnswersLeavesAFollowersReplyToTheDeliveredMentionAndListsItOnce(t *testing.T) {
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
@@ -646,8 +647,8 @@ func TestSessionAnswersLeavesAFollowersReplyToTheDeliveredMentionAndListsItOnce(
 	}
 
 	item := f.only(t, answersSession)
-	if item.ID != reply || item.Relation != model.SessionAnswerRelationMentionedYou || item.Ask == nil || item.Ask.ID != askID {
-		t.Fatalf("item = %+v, want the reply once, as a mention in the ask's thread", item)
+	if item.ID != reply || item.Relation != model.SessionAnswerRelationRepliedOnYourAsk || item.Ask == nil || item.Ask.ID != askID {
+		t.Fatalf("item = %+v, want the reply once, as a reply on the session's own ask", item)
 	}
 }
 

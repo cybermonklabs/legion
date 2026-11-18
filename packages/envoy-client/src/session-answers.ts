@@ -46,7 +46,9 @@ export const NO_ANSWERS_ROUTE_REASON = "this Dispatch build has no answers route
 
 const RELATION_PHRASES: Readonly<Record<SessionAnswerRelation, string>> = {
   answered_your_ask: "answered your ask",
+  answered_an_ask: "answered an ask",
   declined_your_ask: "declined to answer your ask",
+  declined_an_ask: "declined to answer an ask",
   replied_on_your_ask: "replied on your ask",
   replied_in_a_comment_thread: "replied in a comment thread",
   commented_on_a_document: "commented on a document",
