@@ -24,8 +24,9 @@ section can use the words without stopping to explain them.
   questions an agent asks you, the approvals, the messages and the status everyone reads. Legion
   never reads or writes a GitHub issue.
 - **GitHub** holds the code: one branch, `legion/<KEY>`, and one pull request per issue, in the
-  issue's repository. A project spans every repository Dispatch maps to it (Settings →
-  Repositories → Projects); each issue targets one of them, the one Dispatch resolves for it (its
+  issue's repository. Dispatch maps repositories to a project (Settings → Repositories →
+  Projects), which gives the project its default repository and the repositories Legion prepares
+  before an issue names one; each issue targets one repository, the one Dispatch resolves for it (its
   own, else its nearest ancestor's, else the project's default), which Legion records, with that
   repository's default branch as GitHub names it, when it first records the issue, and keeps.
   Legion acts there through two GitHub Apps, so the account that reviews a change is never the one
@@ -42,19 +43,27 @@ One Legion deployment can work issues across several GitHub repositories, under 
 with exactly one repository per issue — never two.
 A change that spans repositories uses child issues, each in one repository.
 Several children may share a repository, each child's own `--repo` fixed when the daemon records it.
-Every pane and pod holds a write token, minted from the role's GitHub App, for its own issue's
-repository alone, and read-only tokens for every other repository the project maps. Its gh bundle
-holds one directory per owner, one more per owner a configured rename moved a repository away
-from while the project serves the name it moved to, and an `<owner>/<repo>` directory for each
-other repository served by the issue's recorded
-owner and by the owner whose installation serves the issue's repository. The write token stands in
-two of those directories, the recorded owner's and the serving owner's, which are one directory
-unless a rename moved the issue's repository, and every other directory is read-only, an
-`<owner>/<repo>` directory over the one repository its own name resolves to. `legion gh`, the `gh`
-wrapper every pane and pod runs, reads the repository's own
-directory where the bundle holds one and the owner's otherwise, and `git` reaches the same bundle
-through a credential helper that picks a directory the same way, so a push to any other repository
-is refused there, not merely discouraged.
+An issue may name any `owner/name`, whether or not Dispatch maps it to the project, and the
+account that installs a role's GitHub App decides what that role reaches.
+Every worker holds a gh bundle of its role's GitHub App, with one token for each owner that App
+is installed on.
+Each token is minted on that owner's installation with the role's own permissions: the implement
+App's write set for the implementer and the merger, the review App's review set for every other
+role.
+The bundle holds one directory per owner the App is installed on, one more per owner a
+configured rename moved a repository away from while the project serves the name it moved to, and
+one for the issue's recorded owner.
+An issue pod shows its roles the directories that both Apps' bundles hold.
+No directory holds a read-only token, so a role writes in every repository its App reaches,
+whichever owner holds it.
+The repository an issue names decides only which directory `GH_CONFIG_DIR` names: its owner's,
+or, for a repository a configured rename moved, the directory of the owner it moved to.
+The controller's bundle is the one bundle of read-only tokens.
+Each token reaches every repository its own installation holds.
+`legion gh`, the `gh` wrapper every pane and pod runs, reads the directory of the owner of the
+repository a command names, and `git` reaches the same bundle through a credential helper that
+picks a directory the same way, so a command naming an owner the App is not installed on is
+refused there, not merely discouraged.
 
 ## The controller
 

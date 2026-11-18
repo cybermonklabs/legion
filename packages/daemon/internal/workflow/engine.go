@@ -95,6 +95,13 @@ type Config struct {
 	// into that repository's recovery whatever it resolves
 	// to by then. It keeps no state of the issue's own. Nil notes none.
 	NoteUnread func(key, resolved string)
+	// HearRepository is told, inside the transaction that writes a new issue record, of the
+	// repository GitHub spells that record's: the daemon has GitHub intake hear it and the
+	// runtime keep a repository cache of it from that moment, on the transaction's commit, so
+	// work in a repository no project maps gets the same event and cache service as work in a
+	// mapped one (daemon's hearRecorded). It is told every recording, including one on a
+	// repository already heard, which costs the daemon one comparison. Nil tells none.
+	HearRepository func(ctx context.Context, repo string)
 	// ReadMergeState is asked, on the commit of a fact that leaves a review round waiting on
 	// GitHub's merge state for the pull request's head (askMergeState), to read it: the one thing
 	// a reviewing round is owed from outside the record, and what moves an approved issue to
@@ -624,8 +631,10 @@ func (e *Engine) recordChildUnderLiveTree(ctx context.Context, tx pgx.Tx, fact i
 }
 
 // recordChild records an unrecorded todo child under root's live tree on the repository its event
-// resolves to, or, when that is none or one Legion does not serve, records nothing and says why on
-// the child and to the architect that owns its parent (refuseChild).
+// resolves to, or, when that is none or one GitHub does not answer for as a repository a role App
+// reaches, records nothing and says why on the child and to the architect that owns its parent
+// (refuseChild). A child recorded on a repository nothing named before has that repository heard
+// and cached from here (Config.HearRepository).
 //
 // The daemon holds no record of this child, so this entry is the one moment the issue-unit
 // experiments the project declares are drawn for it (drawExperiments), in the transaction that
@@ -633,7 +642,7 @@ func (e *Engine) recordChildUnderLiveTree(ctx context.Context, tx pgx.Tx, fact i
 // rerun and an adoption, each of a record the daemon already holds, draw nothing, and an
 // experiment declared after a child was recorded never reaches it.
 func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.DispatchIssue) error {
-	resolution, err := e.ResolveRepository(fact.ResolvedRepo)
+	resolution, err := e.ResolveIssueRepository(fact)
 	if err != nil {
 		return err
 	}
@@ -643,7 +652,20 @@ func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	if err := e.enterChild(ctx, tx, root, fact, root.Generation, resolution); err != nil {
 		return err
 	}
+	e.HearRepository(ctx, resolution.GitHubRepo)
 	return e.drawExperiments(ctx, tx, fact.Key)
+}
+
+// HearRepository QUEUES the repository an issue has just been recorded on, inside the transaction
+// that writes the record (Config.HearRepository). It makes no stream call under the lock and
+// cannot fail the transaction: hearRecorded publishes once the transaction has returned, and only
+// then does GitHub intake hear the repository and the runtime keep a repository cache of it.
+// Admission calls it for the roots and orphans it records; a deployment that configures none is
+// told nothing.
+func (e *Engine) HearRepository(ctx context.Context, repo string) {
+	if hear := e.cfg.HearRepository; hear != nil {
+		hear(ctx, repo)
+	}
 }
 
 // RecordedFact is the todo fact an issue's own record already says, for a run no live event

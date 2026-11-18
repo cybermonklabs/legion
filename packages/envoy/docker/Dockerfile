@@ -120,6 +120,9 @@ COPY packages/envoy/roleholder ./roleholder
 # natsversion: the nats-server versions envoy-listener refuses to start against, which its session
 # consumers read (internal/bus) and the Legion daemon reads too.
 COPY packages/envoy/natsversion ./natsversion
+# brokeraddr: the secrets broker's configured address, in a type no output prints whole, which
+# agent-secrets holds AGENT_SECRETS_URL as (cmd/agent-secrets/identity.go).
+COPY packages/envoy/brokeraddr ./brokeraddr
 # The Go contracts file is generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go

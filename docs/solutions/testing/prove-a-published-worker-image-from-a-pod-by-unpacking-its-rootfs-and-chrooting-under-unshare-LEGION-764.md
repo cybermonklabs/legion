@@ -74,7 +74,7 @@ set -euo pipefail
 tag="$1"; rootfs="$2"; repo=cybermonklabs/legion-worker
 tok="$(curl -fsS "https://ghcr.io/token?scope=repository:${repo}:pull" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')"
 mkdir -p "$rootfs" /tmp/layers
-curl -fsS -H "Authorization: Bearer $tok" \
+printf 'Authorization: Bearer %s' "$tok" | curl -fsS -H @- \
   -H 'Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
   "https://ghcr.io/v2/${repo}/manifests/${tag}" > /tmp/manifest.json
 sha256sum /tmp/manifest.json   # equals the Worker Image run's containerimage.digest
@@ -82,7 +82,10 @@ mapfile -t layers < <(python3 -c 'import json; m=json.load(open("/tmp/manifest.j
 for entry in "${layers[@]}"; do
   d="${entry%% *}"; mt="${entry#* }"; f="/tmp/layers/${d#sha256:}.tar"
   case "$mt" in *gzip) comp="-z" ;; *zstd) comp="--zstd" ;; *) comp="" ;; esac
-  curl -fsSL -H "Authorization: Bearer $tok" "https://ghcr.io/v2/${repo}/blobs/${d}" -o "$f"
+  # ghcr.io answers a blob with a 307 to the store that holds it, so the bearer goes with the
+  # first request alone and the store is read with none.
+  loc="$(printf 'Authorization: Bearer %s' "$tok" | curl -fsS -H @- -w '%{redirect_url}' "https://ghcr.io/v2/${repo}/blobs/${d}" -o "$f")"
+  [ -z "$loc" ] || curl -fsSL "$loc" -o "$f"
   tar -t $comp -f "$f" | grep -E '(^|/)\.wh\.' | while IFS= read -r wh; do
     dir="$(dirname "$wh")"; base="$(basename "$wh")"
     if [ "$base" = ".wh..wh..opq" ]; then rm -rf "${rootfs:?}/${dir:?}"/* 2>/dev/null || true
