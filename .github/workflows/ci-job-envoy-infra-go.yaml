@@ -32,7 +32,15 @@ env:
 jobs:
   envoy-infra-go:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
+    # With a go-envoy-infra entry filled for the run's module files, both vets take a second and the
+    # job took 537 s (run 44016277498, from an entry a dispatched fill saved on its branch), the live
+    # tests 423 s of it. A run whose module files main has not filled, such as a pull request that
+    # changes them, restores an entry built from older module versions and rebuilds what moved. At
+    # worst that is both vets nearly from nothing, and the whole job then took 959 and 1059 s in
+    # runs 44013632169 and 43996496498, whose entry was eleven days old and held no darwin objects.
+    # With no entry at all, as after an eviction, the job took 921 s (run 44026580304). This limit
+    # is for those cases. Those four runs ran the job on ubuntu-24.04, before it moved to arm64.
+    timeout-minutes: 20
     env:
       TESTCONTAINERS_RYUK_DISABLED: "true"
     steps:
@@ -44,13 +52,16 @@ jobs:
         with:
           go-version-file: packages/envoy/infra/go.mod
           cache: false
-      # go-envoy-infra.
+      # go-envoy-infra, under the key .github/workflows/ci-caches.yaml's envoy-infra job fills: the
+      # runner's architecture, the Go version and the hash of the files that choose the module
+      # versions, so a run whose module files main has already filled restores an entry built from
+      # the same versions.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
           restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
       - name: Pull the NATS and Postgres test container images
         uses: ./.github/actions/pull-test-images
@@ -70,6 +81,20 @@ jobs:
         working-directory: packages/envoy/infra
       - name: Vet envoy-infra, its live-test tags included
         run: go vet -tags pulumilive,natslive ./...
+        working-directory: packages/envoy/infra
+      # The same vet as macOS compiles the module: its commands ship for darwin
+      # (.github/envoy-infra-targets.json), and a file with no build constraint that uses a symbol
+      # only a `//go:build linux` file defines compiles on this runner and nowhere else. The vet
+      # runs once per tag set .github/scripts/go_build_tags.py reads off the module's own build
+      # constraints, so a file under a tag that lands later, or under a negated one, is vetted too.
+      # One darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
+      - name: Vet envoy-infra for darwin, its live-test tags included
+        run: |
+          flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
+          while IFS= read -r flag; do
+            echo "Vetting for darwin with $flag"
+            GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
+          done <<< "$flags"
         working-directory: packages/envoy/infra
       # Every package of the module except internal/textcheck, whose tests are the text-check
       # job's: a change to only what they read must not start this job, and they must not run

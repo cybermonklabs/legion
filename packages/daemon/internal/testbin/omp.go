@@ -1,6 +1,7 @@
 package testbin
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -116,4 +117,31 @@ func SessionFiles(t *testing.T, sessions string) []string {
 	}
 	slices.Sort(files)
 	return files
+}
+
+// ModelChanges are the models a session file's model-change records name, in the order the
+// session wrote them.
+func ModelChanges(t *testing.T, sessionFile string) []string {
+	t.Helper()
+	contents, err := os.ReadFile(sessionFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var models []string
+	for _, line := range bytes.Split(contents, []byte("\n")) {
+		if len(line) == 0 {
+			continue
+		}
+		var record struct {
+			Type  string `json:"type"`
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("parse session record %q: %v", line, err)
+		}
+		if record.Type == "model_change" {
+			models = append(models, record.Model)
+		}
+	}
+	return models
 }

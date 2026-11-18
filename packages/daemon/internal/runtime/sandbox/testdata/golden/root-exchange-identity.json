@@ -539,6 +539,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-architect-boot"
@@ -589,6 +593,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-planner-boot"
@@ -639,6 +647,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-implementer-boot"
@@ -689,6 +701,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-tester-boot"
@@ -739,6 +755,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-reviewer-boot"
@@ -789,6 +809,10 @@
                 {
                   "key": "github-config-sjawhar",
                   "path": "sjawhar/config.yml"
+                },
+                {
+                  "key": "github-renames",
+                  "path": "renames.txt"
                 }
               ],
               "secretName": "legion-legion-legion-208-merger-boot"

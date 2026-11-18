@@ -247,10 +247,13 @@ func (w *workflowRuntime) waitOutLimits(ctx context.Context, unheld []limitedRea
 // unreadDefaultBranch is mapped left out for now because GitHub did not answer the read of its
 // default branch with err: a refusal carrying err as its readErr, which is what the refresher reads
 // the mapping again for (awaitingRead, installReadRetry), and admission reads as a repository
-// GitHub is being read again for (lookup's unread).
+// GitHub is being read again for (lookup's unread). Both role Apps are carried as installed,
+// since GitHub answered so before the default branch was read (checkMapping accepted it): legion
+// state reports what GitHub answered of the Apps on every refusal it has an answer for, so this
+// one row cannot read as an App missing (refusedRepository.apps).
 func unreadDefaultBranch(mapped mappedRepository, err error) refusedRepository {
 	return refusedRepository{Repo: mapped.Repo.String(), Reason: fmt.Sprintf("GitHub did not answer the read of its default branch: %v; Legion reads it again", err),
-		readErr: err, mappedDefault: mapped.Default}
+		apps: appAnswers{answered: true, implement: true, review: true}, readErr: err, mappedDefault: mapped.Default}
 }
 
 // limitAttributes is what a log line says of read's rate limit: how long GitHub asked the reader to
