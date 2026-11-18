@@ -172,6 +172,13 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// KeyRemakeInterval is how often the key remake loop checks the reading of the stored keys,
+	// zero for delivery.KeyRemakeEvery's 30 s; only DISPATCH_TEST_KEY_REMAKE_INTERVAL, under the
+	// test hooks, sets it.
+	KeyRemakeInterval time.Duration
+	// KeyRemakeOff starts no key remake loop, for a test that must see stored keys stay on another
+	// reading; only DISPATCH_TEST_KEY_REMAKE_OFF=1, under the test hooks, sets it.
+	KeyRemakeOff bool
 	// OIDCIssuer and OIDCAudience configure verification of projected
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
@@ -353,6 +360,12 @@ func main() {
 	if err := delivery.PrepareAttribution(ctx, database.Pool); err != nil {
 		slog.Error("dispatch: prepare the statement of a pull request's issue", "error", err)
 		os.Exit(1)
+	}
+	// Each process remakes the stored keys of another reading from its start, before it listens:
+	// a change of the reading by a migration, a version of Postgres or any other cause reaches
+	// every row within one interval and one remake, with no App key, no lease and no restart.
+	if !boot.KeyRemakeOff {
+		go delivery.KeyRemakeLoop(ctx, database.Pool, boot.KeyRemakeInterval)
 	}
 
 	// document_search (migration 20261101182447) holds each document's latest search vector,
@@ -1262,6 +1275,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_KEY_REMAKE_INTERVAL", &boot.KeyRemakeInterval},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1277,6 +1291,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_ROSTER_UNCACHED", &boot.ListenerRosterUncached},
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
+		{"DISPATCH_TEST_KEY_REMAKE_OFF", &boot.KeyRemakeOff},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err

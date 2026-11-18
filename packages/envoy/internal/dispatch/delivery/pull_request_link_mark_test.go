@@ -23,8 +23,8 @@ import (
 )
 
 // writeLink does to one link of issueKey what the issue routes do (api's patchIssue): it locks
-// the issue's row, adds the link or deletes it, and marks the head rows of the pull request the
-// link names (MarkHeadsLinked), in one transaction.
+// the issue's row and adds the link or deletes it, in one transaction. It writes no head row: the
+// statement reads the links at each read.
 func writeLink(t *testing.T, ctx context.Context, pool *store.Pool, issueKey, url string, add bool) {
 	t.Helper()
 	tx, err := pool.Begin(ctx)
@@ -41,9 +41,6 @@ func writeLink(t *testing.T, ctx context.Context, pool *store.Pool, issueKey, ur
 	}
 	if _, err := tx.Exec(ctx, statement, issueKey, url); err != nil {
 		t.Fatalf("write the link of %s to %s: %v", issueKey, url, err)
-	}
-	if err := MarkHeadsLinked(ctx, tx, []string{url}); err != nil {
-		t.Fatal(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the link of %s to %s: %v", issueKey, url, err)

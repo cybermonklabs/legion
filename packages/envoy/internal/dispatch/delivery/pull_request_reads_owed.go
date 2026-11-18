@@ -22,8 +22,8 @@ package delivery
 // land an older answer after it, and two answers of one second say nothing of which is the newer);
 // and pull_request_heads_unread_write, for a write of the release before that changes a fact of a
 // row a read of GitHub wrote. An insert of the release before, and its update of a row no read
-// marked, owe nothing: the reconcile's open arm reads such an open row, its merged arm a merged
-// one once, and a closed one stays closed, which is no basis. An envelope leaves the intake with
+// marked, owe nothing: the reconcile's open arm reads such an open row, its facts line a merged
+// one while it has no facts, and a closed one stays closed, which is no basis. An envelope leaves the intake with
 // no record of its pull request only where it names no pull request GitHub can have
 // (Intake.deliver), which is checked before anything is read or written (pullRequestNamed). Where
 // its repository's canonical name is no name GitHub can have, the read is owed under the name the

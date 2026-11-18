@@ -1872,6 +1872,40 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		// This case fails until settings.go has the row and resolveBootConfig reads it into
+		// KeyRemakeInterval through testHookDuration, under the test hooks alone.
+		"DISPATCH_TEST_KEY_REMAKE_INTERVAL": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.KeyRemakeInterval != 0 {
+				t.Errorf("DISPATCH_TEST_KEY_REMAKE_INTERVAL unset: KeyRemakeInterval = %v, want 0 (delivery.KeyRemakeEvery's thirty seconds)", boot.KeyRemakeInterval)
+			}
+			const quick = time.Second
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":               "1",
+				"DISPATCH_TEST_KEY_REMAKE_INTERVAL": quick.String(),
+			})
+			if boot.KeyRemakeInterval != quick {
+				t.Errorf("DISPATCH_TEST_KEY_REMAKE_INTERVAL: KeyRemakeInterval = %v, want %v", boot.KeyRemakeInterval, quick)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_KEY_REMAKE_INTERVAL": invalid},
+					fmt.Sprintf("DISPATCH_TEST_KEY_REMAKE_INTERVAL=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_KEY_REMAKE_INTERVAL": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		// This case fails until settings.go has the row and resolveBootConfig reads it into
+		// KeyRemakeOff through testHookBool, under the test hooks alone.
+		"DISPATCH_TEST_KEY_REMAKE_OFF": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_KEY_REMAKE_OFF": "1"}); !boot.KeyRemakeOff {
+				t.Error("DISPATCH_TEST_KEY_REMAKE_OFF=1: KeyRemakeOff false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_KEY_REMAKE_OFF": "true"}); boot.KeyRemakeOff {
+				t.Error("DISPATCH_TEST_KEY_REMAKE_OFF=true: KeyRemakeOff true, want only 1 to set it")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.KeyRemakeOff {
+				t.Error("unset: KeyRemakeOff true")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_KEY_REMAKE_OFF": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.MaintenanceSweepInterval != 0 {
 				t.Errorf("DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL unset: MaintenanceSweepInterval = %v, want 0 (api.MaintenanceSweepInterval's minute)", boot.MaintenanceSweepInterval)

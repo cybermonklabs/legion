@@ -93,32 +93,19 @@ func seedGadgetsIssueUnderTheOldName(t *testing.T, ctx context.Context, pool *st
 }
 
 // storedHead is one stored row as a test reads it: the shape every writer fills in
-// (PullRequestHead), plus the attribution_rule column, which is no field of it, and the issue and
-// the source that every reader answers for the pull request (PullRequestIssues): the rule's answer
-// for a pull request with facts, and R4's fallback for one with none. No writer names the columns
-// issue_key and attribution_source, so a test reads what the readers answer.
+// (PullRequestHead), plus the issue and the source that every reader answers for the pull request
+// (PullRequestIssues): the rule's answer for a pull request with facts, and R4's fallback for one
+// with none. No head writer names the columns issue_key and attribution_source. A pass writes the
+// readers' answer to them (SyncAttributions), so a test reads what the readers answer.
 type storedHead struct {
 	PullRequestHead
 	IssueKey          *string
 	AttributionSource string
-	attributionRule   int
-}
-
-// stampLegacyAttributionRule sets a stored row's attribution_rule to 0, the rule a row written
-// before that column has: the rule that took the first candidate outright, whatever repository
-// its issue resolved to. A test that needs such a row writes it with this one update.
-func stampLegacyAttributionRule(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int) {
-	t.Helper()
-	if _, err := pool.Exec(ctx, `
-		update pull_request_heads set attribution_rule = 0 where repo = $1 and number = $2
-	`, repo, number); err != nil {
-		t.Fatalf("make %s#%d a row of the rule before this one: %v", repo, number, err)
-	}
 }
 
 // seedStoredIssue stores issue and source on the results row of repo#number with one update: a
-// row of an older release, whose writer stored its verdict. No writer of this build stores one,
-// and the statement reads it only as R4's fallback, for a pull request with no current texts.
+// row of an older release, whose writer stored its verdict. No head writer of this build stores
+// one. The statement reads it only as R4's fallback, for a pull request with no current texts.
 func seedStoredIssue(t *testing.T, ctx context.Context, pool *store.Pool, repo string, number int, issue *string, source string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
@@ -132,10 +119,10 @@ func readHead(t *testing.T, ctx context.Context, pool *store.Pool, repo string, 
 	t.Helper()
 	var head storedHead
 	if err := pool.QueryRow(ctx, `
-		select repo, number, head_sha, head_ref, base_ref, state, checked_at, attribution_rule
+		select repo, number, head_sha, head_ref, base_ref, state, checked_at
 		from pull_request_heads where repo = $1 and number = $2
 	`, repo, number).Scan(&head.Repo, &head.Number, &head.HeadSHA, &head.HeadRef, &head.BaseRef,
-		&head.State, &head.CheckedAt, &head.attributionRule); err != nil {
+		&head.State, &head.CheckedAt); err != nil {
 		t.Fatalf("read the head of %s#%d: %v", repo, number, err)
 	}
 	key := PullRequestKey{Repo: repo, Number: number}
@@ -150,7 +137,9 @@ func readHead(t *testing.T, ctx context.Context, pool *store.Pool, repo string, 
 // The reconcile re-reads an open pull request nobody has sent an event for in five minutes and
 // writes the head GitHub reports, with the issue the attribution picks. A pull request its head
 // branch already attributes costs no commits read: the commit messages are the last of the five
-// sources, and the event path skips them in the same case.
+// sources, and the event path skips them in the same case. The open arm reads #42 by one batched
+// query (readFactsBatch), whose answer holds the messages, so it pages no commits over REST. An
+// open arm that reads nothing, or one that pages the commits over REST, makes this test fail.
 func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -170,8 +159,10 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 		})
 	})
 	var commitReads atomic.Int32
-	fake.handle("GET /repos/acme/widgets/pulls/42/commits", func(w http.ResponseWriter, _ *http.Request) {
-		commitReads.Add(1)
+	fake.handle("GET /repos/acme/widgets/pulls/42/commits", func(w http.ResponseWriter, r *http.Request) {
+		if restRead(r) {
+			commitReads.Add(1)
+		}
 		mustEncode(t, w, []any{})
 	})
 	client := fake.newTestClient()
@@ -215,7 +206,7 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 		t.Fatalf("the re-read head's checked_at = %v, want it moved forward", head.CheckedAt)
 	}
 	if reads := commitReads.Load(); reads != 0 {
-		t.Fatalf("the re-read paged the commit messages %d times, want none: its title already attributes it", reads)
+		t.Fatalf("the re-read paged the commit messages over REST %d times, want none: its title already attributes it", reads)
 	}
 	// The pass is idempotent: nothing is stale a second time.
 	again, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
@@ -818,255 +809,12 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 	}
 }
 
-// A merged row credited to nobody that no read has reached is attributed by the next reconcile
-// pass, and by that pass alone. A build before this change left such rows: it wrote a
-// merge from an envelope a publisher older than head_repo made, which could not show the head to
-// be this repository's. The envelope's handler now reads the pull request from GitHub, whose
-// answer always names head.repo, so no envelope leaves such a row any more, but the rows already
-// stored are what the merged arm of ListStalePullRequestHeads reads, and nothing but the
-// reconcile ever looks at a merged row again. HeadAttributedTo is the read api/results.go's
-// comparisonReader makes of this package, so the test asserts through it rather than standing
-// an API up.
-//
-// The rows beside it are the arm's bound: a merged row that carries an issue, one this rule has
-// judged already, a fork's head the read credits to nobody, and a row whose pull request GitHub
-// no longer has, which the pass cannot read at all and stamps instead
-// (MarkPullRequestHeadChecked) — rule and time together, since the rule is what ends the offer
-// of a row whose checked_at an older rule already set.
-func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T) {
-	fastPageRetries(t)
-	pool, ctx := deliveryTestPool(t)
-	seedDeliverySettings(t, ctx, pool)
-	issue := seedHeadIssue(t, ctx, pool, 7)
-
-	const mergedHead = "cccccccccccccccccccccccccccccccccccccccc"
-	var pullReads atomic.Int32
-	fake := newFakeGitHub(t)
-	// GitHub's own answer always names head.repo, which is what attributes the row.
-	fake.handle("GET /repos/acme/widgets/pulls/61", func(w http.ResponseWriter, _ *http.Request) {
-		pullReads.Add(1)
-		mustEncode(t, w, map[string]any{
-			"number": 61, "title": "HEAD-7 the work", "body": "",
-			"html_url": "https://github.com/acme/widgets/pull/61",
-			"state":    "closed", "merged": true, "merged_at": "2026-02-06T00:00:00Z",
-			"updated_at": "2026-02-06T00:00:00Z",
-			"head": map[string]any{
-				"ref": "legion/HEAD-7", "sha": mergedHead,
-				"repo": map[string]any{"full_name": "acme/widgets"},
-			},
-			"base": map[string]any{"ref": "main"},
-		})
-	})
-	// #64's head is a fork's, so GitHub's answer attributes it to nobody either: the row is
-	// taken once all the same, and stamped, which is the whole of the bound.
-	var forkReads atomic.Int32
-	fake.handle("GET /repos/acme/widgets/pulls/64", func(w http.ResponseWriter, _ *http.Request) {
-		forkReads.Add(1)
-		mustEncode(t, w, map[string]any{
-			"number": 64, "title": "HEAD-7 the work", "body": "",
-			"html_url": "https://github.com/acme/widgets/pull/64",
-			"state":    "closed", "merged": true, "merged_at": "2026-02-06T00:00:00Z",
-			"updated_at": "2026-02-06T00:00:00Z",
-			"head": map[string]any{
-				"ref": "legion/HEAD-7", "sha": "ffffffffffffffffffffffffffffffffffffffff",
-				"repo": map[string]any{"full_name": "stranger/widgets"},
-			},
-			"base": map[string]any{"ref": "main"},
-		})
-	})
-	// #66 is #64 as a row with an empty title and URL holds it: the release before stores the
-	// envelope's own title and url (legion-envoy-v30.35.1, pull_request_heads.go:1137), which an
-	// envelope that carries neither leaves empty. GitHub's answer of the row's own second adds
-	// both, a changed fact of GitHub's, so the read owes one more (the trigger
-	// pull_request_heads_older_read): two reads, then none.
-	var emptyReads atomic.Int32
-	fake.handle("GET /repos/acme/widgets/pulls/66", func(w http.ResponseWriter, _ *http.Request) {
-		emptyReads.Add(1)
-		mustEncode(t, w, map[string]any{
-			"number": 66, "title": "HEAD-7 the work", "body": "",
-			"html_url": "https://github.com/acme/widgets/pull/66",
-			"state":    "closed", "merged": true, "merged_at": "2026-02-06T00:00:00Z",
-			"updated_at": "2026-02-06T00:00:00Z",
-			"head": map[string]any{
-				"ref": "legion/HEAD-7", "sha": "9999999999999999999999999999999999999999",
-				"repo": map[string]any{"full_name": "stranger/widgets"},
-			},
-			"base": map[string]any{"ref": "main"},
-		})
-	})
-	// #65's pull request is gone — GitHub answers 404 — so the pass can read nothing about it
-	// and stamps the row instead (MarkPullRequestHeadChecked). The stamp carries the rule as
-	// well as the time, which is what ends this row's offer: a merged row credited to nobody is
-	// taken while its stored rule is older than this one, whatever its checked_at
-	// (ListStalePullRequestHeads).
-	var goneReads atomic.Int32
-	fake.handle("GET /repos/acme/widgets/pulls/65", func(w http.ResponseWriter, _ *http.Request) {
-		goneReads.Add(1)
-		w.WriteHeader(http.StatusNotFound)
-		fmt.Fprint(w, `{"message":"Not Found"}`)
-	})
-	fake.handle("GET /repos/acme/widgets/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("#%s's commit messages were paged; its title attributes it, and an envelope naming no head repository attributes nobody whatever they say", r.PathValue("number"))
-		mustEncode(t, w, []any{})
-	})
-	client := fake.newTestClient()
-
-	// The merge, as such a build stored it: merged, credited to nobody, and unstamped.
-	mergedAt := time.Date(2026, 2, 6, 0, 0, 0, 0, time.UTC)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
-		Repo: "acme/widgets", Number: 61, HeadSHA: mergedHead, HeadRef: "legion/HEAD-7", BaseRef: "main",
-		State: "merged", Title: "HEAD-7 the work",
-		URL: "https://github.com/acme/widgets/pull/61", EventAt: &mergedAt,
-	}); err != nil {
-		t.Fatalf("store the merged row an older build left: %v", err)
-	}
-	stored := readHead(t, ctx, pool, "acme/widgets", 61)
-	if stored.IssueKey != nil || stored.AttributionSource != "none" || stored.CheckedAt != nil {
-		t.Fatalf("#61 = %+v, want it merged, attributed to nobody and unstamped", stored)
-	}
-	if attributed, err := HeadAttributedTo(ctx, pool, issue, mergedHead); err != nil || attributed {
-		t.Fatalf("HeadAttributedTo(%s) before the pass = %v, %v; want false", issue, attributed, err)
-	}
-
-	// The bound, from the other side: a merged row that carries an attribution, and one this
-	// rule has already judged and left unattributed, are no business of the pass.
-	eventAt := time.Date(2026, 2, 6, 0, 0, 0, 0, time.UTC)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
-		Repo: "acme/widgets", Number: 62, HeadSHA: "dddddddddddddddddddddddddddddddddddddddd",
-		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", EventAt: &eventAt,
-	}); err != nil {
-		t.Fatalf("store the attributed merged head: %v", err)
-	}
-	seedStoredIssue(t, ctx, pool, "acme/widgets", 62, &issue, "title_body")
-	// Read an hour ago by this build's own rule, which is what takes it out of the merged arm:
-	// the arm offers a merged row to each rule once, and this row has had its offer. A row
-	// stamped by an older rule is taken, which is
-	// TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody (reconcile_test.go).
-	read := time.Now().Add(-time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
-		Repo: "acme/widgets", Number: 63, HeadSHA: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-		HeadRef: "topic", BaseRef: "main", State: "merged", EventAt: &eventAt, CheckedAt: &read,
-	}); err != nil {
-		t.Fatalf("store the merged head this rule has judged already: %v", err)
-	}
-	// The fork's merge as an envelope stored it, with the title and the URL GitHub answers: an
-	// answer of the row's own second that changed a fact of GitHub's would owe one more read
-	// (the trigger pull_request_heads_older_read), which is no part of the merged arm's bound.
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
-		Repo: "acme/widgets", Number: 64, HeadSHA: "ffffffffffffffffffffffffffffffffffffffff",
-		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", Title: "HEAD-7 the work",
-		URL: "https://github.com/acme/widgets/pull/64", EventAt: &eventAt,
-	}); err != nil {
-		t.Fatalf("store the merged head of a fork's pull request: %v", err)
-	}
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
-		Repo: "acme/widgets", Number: 66, HeadSHA: "9999999999999999999999999999999999999999",
-		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", EventAt: &eventAt,
-	}); err != nil {
-		t.Fatalf("store the merged head with an empty title and URL: %v", err)
-	}
-	// The gone pull request, as a row an older rule judged: merged, credited to nobody, and
-	// stamped read by that rule's own pass. Its offer to this rule is open, so the pass takes it.
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
-		Repo: "acme/widgets", Number: 65, HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		HeadRef: "legion/HEAD-7", BaseRef: "main", State: "merged", EventAt: &eventAt,
-		CheckedAt: &read,
-	}); err != nil {
-		t.Fatalf("store the merged head whose pull request is gone: %v", err)
-	}
-	stampLegacyAttributionRule(t, ctx, pool, "acme/widgets", 65)
-	batch, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
-	if err != nil {
-		t.Fatalf("list the stale heads: %v", err)
-	}
-	// Not fatal: the pass below is the behaviour this test is for, and its own assertions say
-	// what an empty batch costs the issue.
-	if len(batch) != 4 || batch[0].Number != 61 || batch[1].Number != 64 || batch[2].Number != 66 || batch[3].Number != 65 {
-		t.Errorf("the batch = %+v, want #61, #64, #66 and #65: an attributed merged row and one this rule has judged are not taken", batch)
-	}
-
-	reconcile := NewReconcile(pool, client, nil)
-	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
-		t.Fatalf("reconcile the pull request heads: %v", err)
-	}
-	settled := readHead(t, ctx, pool, "acme/widgets", 61)
-	if settled.IssueKey == nil || *settled.IssueKey != issue || settled.AttributionSource != "branch" {
-		t.Fatalf("#61 after the pass = %+v, want %s from its head branch", settled, issue)
-	}
-	if settled.State != "merged" || settled.HeadSHA != mergedHead {
-		t.Fatalf("#61 after the pass = %+v, want the merged head unchanged", settled)
-	}
-	if settled.CheckedAt == nil {
-		t.Fatalf("#61 after the pass = %+v, want it stamped read", settled)
-	}
-	attributed, err := HeadAttributedTo(ctx, pool, issue, mergedHead)
-	if err != nil || !attributed {
-		t.Fatalf("HeadAttributedTo(%s) after the pass = %v, %v; want true: a result stands at it",
-			issue, attributed, err)
-	}
-	if unread := readHead(t, ctx, pool, "acme/widgets", 62); unread.CheckedAt != nil {
-		t.Fatalf("#62 = %+v, want it never read: it carries an attribution already", unread)
-	}
-	if reads := pullReads.Load(); reads != 1 {
-		t.Fatalf("the pass read #61 from GitHub %d times, want once", reads)
-	}
-	fork := readHead(t, ctx, pool, "acme/widgets", 64)
-	if fork.IssueKey != nil || fork.AttributionSource != "none" {
-		t.Fatalf("#64 after the pass = %+v, want it still attributed to nobody: its head is a fork's", fork)
-	}
-	if fork.CheckedAt == nil {
-		t.Fatalf("#64 after the pass = %+v, want it stamped read even though the read attributed nobody", fork)
-	}
-	gone := readHead(t, ctx, pool, "acme/widgets", 65)
-	if gone.attributionRule != AttributionRuleVersion {
-		t.Fatalf("#65's attribution_rule after the pass = %d, want %d: a row the pass could not read at all is one this rule has been offered",
-			gone.attributionRule, AttributionRuleVersion)
-	}
-	if gone.CheckedAt == nil || !gone.CheckedAt.After(read) {
-		t.Fatalf("#65's checked_at after the pass = %v, want a time after the stamp it had: its pull request is gone, so the pass stamps the row", gone.CheckedAt)
-	}
-	if gone.IssueKey != nil {
-		t.Fatalf("#65 after the pass = %+v, want it still credited to nobody: GitHub has nothing to say about it", gone)
-	}
-
-	// Once, and once only: the refresh stamps the row whether or not it could attribute it, and
-	// a row it could not read at all is stamped too, so no row comes back to the list.
-	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
-		t.Fatalf("reconcile a second time: %v", err)
-	}
-	if reads := pullReads.Load(); reads != 1 {
-		t.Fatalf("a second pass read #61 from GitHub again (%d reads in all), want the row taken once", reads)
-	}
-	if reads := forkReads.Load(); reads != 1 {
-		t.Fatalf("a second pass read #64 from GitHub again (%d reads in all), want the row taken once though it is still attributed to nobody", reads)
-	}
-	if reads := goneReads.Load(); reads != 1 {
-		t.Fatalf("a second pass asked GitHub for the gone #65 again (%d reads in all), want the row taken once: the stamp carries the rule as well as the time", reads)
-	}
-	if reads := emptyReads.Load(); reads != 2 {
-		t.Fatalf("#66 was read %d times by two passes, want 2: the first answer filled the empty title and URL of its own second, which owes one more read", reads)
-	}
-	if err := reconcile.reconcilePullRequestHeads(ctx, time.Now()); err != nil {
-		t.Fatalf("reconcile a third time: %v", err)
-	}
-	if reads, owed := emptyReads.Load(), owedCount(t, ctx, pool, "acme/widgets", 66); reads != 2 || owed != 0 {
-		t.Fatalf("after a third pass #66 was read %d times and is owed %d reads, want 2 and none: the second read changed no fact", reads, owed)
-	}
-	again, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
-	if err != nil {
-		t.Fatalf("list the stale heads again: %v", err)
-	}
-	if len(again) != 0 {
-		t.Fatalf("a third pass would read %+v, want nothing: #65 among them, since the stamp of the rule is what ends a gone row's offer", again)
-	}
-}
-
-// The other side of that merged arm: a merge envelope a publisher older than head_repo made
-// keeps the attribution the opening wrote. The envelope's own head_repo is read nowhere: its
-// handler reads the pull request from GitHub, whose answer names head.repo, so the merge is a
-// complete read that attributes the row by its branch again. The row is stamped and attributed,
-// so the merged arm, which takes only rows no read has reached or an older rule judged, never
-// needs to take it, and a result at the merged head stands at it.
+// A merge envelope that a publisher older than head_repo made keeps the attribution that the
+// opening wrote. The handler reads no head_repo of the envelope: it reads the pull request from
+// GitHub, whose answer names head.repo. So the merge is a complete read, and the branch
+// attributes the row again. A result at the merged head stands at it, and the stale list offers
+// no merged row. A handler that writes the envelope's fields, or a stale list that offers a
+// merged row, makes this test fail.
 func TestAMergeEnvelopeNamingNoHeadRepositoryKeepsTheStoredAttribution(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -1133,7 +881,7 @@ func TestAMergeEnvelopeNamingNoHeadRepositoryKeepsTheStoredAttribution(t *testin
 		t.Fatalf("list the stale heads: %v", err)
 	}
 	if len(batch) != 0 {
-		t.Fatalf("the stale batch = %+v, want nothing: the merged row is attributed and stamped already", batch)
+		t.Fatalf("the stale batch = %+v, want nothing: the list offers open rows alone, and #71 is merged", batch)
 	}
 }
 

@@ -161,8 +161,10 @@ func TestAPullRequestUpsertWithNewContentLogsOneChange(t *testing.T) {
 
 // TestAReconcileReupsertOfTheSameFactsLogsNothing: what a reconcile pass that finds nothing new
 // writes -- the merged-PR search's partial re-upsert of a complete row and of a partial one, the
-// attribution pass over rows whose issue did not change, and a run and its jobs written again with
-// the same facts -- logs no change.
+// attribution pass over rows whose issue did not change, the sync of each answer
+// (SyncAttributions) over a results row of #8 whose current texts name nobody and whose timeline
+// row names nobody, and a run and its jobs written again with the same facts -- logs no change.
+// It fails where the sync writes another value to a timeline row whose answer did not change.
 func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
@@ -176,6 +178,16 @@ func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 	partial.Partial = true
 	if err := UpsertPullRequest(ctx, pool, partial); err != nil {
 		t.Fatalf("seed the partial row: %v", err)
+	}
+	// The results row of #8: its texts are current and name nobody, and its timeline row names
+	// nobody, so the sync has nothing to write.
+	results := PullRequestHead{
+		Repo: "acme/widgets", Number: 8, HeadSHA: headOf(8), HeadRef: "work/complete", BaseRef: "main",
+		State: "merged", Title: complete.Title, URL: complete.URL, EventAt: &merged,
+		Texts: &PullRequestTexts{HeadRepo: "acme/widgets", BaseRef: "main", Title: complete.Title, CommitMessages: []string{}, MessagesRead: true},
+	}
+	if err := UpsertPullRequestHead(ctx, pool, results); err != nil {
+		t.Fatalf("seed the results row of #8: %v", err)
 	}
 	run := changeTestRun(500, DeliveryRunKindDeploy, merged, merged.Add(time.Minute))
 	completed := merged.Add(time.Hour)
@@ -202,6 +214,9 @@ func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 	for range 2 {
 		if _, err := AttributePullRequests(ctx, pool, AttributionResolveBatch); err != nil {
 			t.Fatalf("AttributePullRequests: %v", err)
+		}
+		if _, err := SyncAttributions(ctx, pool); err != nil {
+			t.Fatalf("SyncAttributions: %v", err)
 		}
 	}
 	if err := UpsertRun(ctx, pool, run); err != nil {

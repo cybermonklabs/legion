@@ -7,10 +7,12 @@
 package delivery
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -518,46 +521,474 @@ func (r *Reconcile) reconcilePartialPullRequests(ctx context.Context) error {
 	return nil
 }
 
-// reconcilePullRequestHeads first reads the pull requests owed a read (readOwedPullRequests), and
-// then re-reads the pull request heads ListStalePullRequestHeads hands it, at most
-// PullRequestHeadBatch of them a pass, the longest unread first: the open rows Dispatch last
-// checked over PullRequestHeadStaleAfter ago, the merged rows credited to nobody that no read has
-// reached, and every merged row a rule older than this build's judged, each of those taken once
-// per rule version (AttributionRuleVersion). Each read stores GitHub's facts of the pull request
-// (RefreshPullRequestHead), and the statement gives its issue from them at each read.
-// GitHub's `pull_request` events carry every head move, so this is the
-// backstop for an event that never arrived — a delivery Dispatch was down for, a repository whose
-// webhook was installed late — and the one way a merge that happened while Dispatch was not
-// listening reaches the head row at all. The merged arm is the backstop for a row a write left
-// unattributed or unstamped, and for a rule that has changed since: a write whose commit messages
-// could not be read is incomplete, and GitHub's own answer, read again here, can attribute that
-// row, and a merged row is the one row no other writer ever revisits before a result at its head
-// stands at no basis for good. A rate limit ends no read of the pass (passRateLimit): the pass
-// reads every row it listed and then fails with the first limit it met, as every other GitHub
-// step's limit fails the pass; any other per-row failure is logged and leaves the row for the
-// next pass. Both arms look the installation of each repository up through the pass's own
-// lookups (passInstallations), so a repository the App is not installed on costs the pass one
-// lookup however many of its rows it reads.
+// reconcilePullRequestHeads is the head pass, the first step of every reconcile pass. In this
+// order it reads the pull requests owed a read (readOwedPullRequests); reads again the open rows
+// read longer than PullRequestHeadStaleAfter ago, at most PullRequestHeadBatch of them
+// (readOpenHeads); reads the facts of each pull request that has none (readFactsLine); writes
+// the answer of the statement over the stored facts to every stored row of each pull request
+// (SyncAttributions); and appends the events of the queued moves (AppendAttributionEvents). The
+// last two run whatever the reads answered. It remakes no keys: KeyRemakeLoop does, in each
+// process. It logs one line of what it did in each pass, also where every count is 0.
+//
+// GitHub's `pull_request` events carry every head move, so the reads are the backstop for an
+// event that never arrived — a delivery Dispatch was down for, a repository whose webhook was
+// installed late — and the one way a merge that happened while Dispatch was not listening reaches
+// the head row at all. The facts line is the one way a pull request stored with no facts gets
+// them, and so an answer of the rule: a row a release before stored, a timeline row with no
+// results row, a read whose commit messages failed. A rate limit of one installation ends no read
+// of another (passRateLimit): the pass reads the rows of every other installation, and then fails
+// with the first limit it met, as every other GitHub step's limit fails the pass. Any other failure
+// of GitHub is logged and leaves the pull request for the next pass. Every read looks the
+// installation of each repository up through the pass's own lookups (passInstallations), so a
+// repository the App is not installed on costs the pass one lookup however many of its rows it
+// reads. It answers the first limit and each failure of the database.
 func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time) error {
 	var limited passRateLimit
 	installations := &passInstallations{}
+	var failures []error
 	if err := r.readOwedPullRequests(ctx, now, installations, &limited); err != nil {
-		return err
+		failures = append(failures, err)
 	}
+	if err := r.readOpenHeads(ctx, now, installations, &limited); err != nil {
+		failures = append(failures, err)
+	}
+	line, err := r.readFactsLine(ctx, installations, &limited)
+	if err != nil {
+		failures = append(failures, err)
+	}
+	synced, err := SyncAttributions(ctx, r.pool)
+	if err != nil {
+		failures = append(failures, err)
+	}
+	appended, err := AppendAttributionEvents(ctx, r.pool, r.events)
+	if err != nil {
+		failures = append(failures, err)
+	}
+	var queued int
+	if err := r.pool.QueryRow(ctx, `select count(*) from pull_request_attribution_moves`).Scan(&queued); err != nil {
+		failures = append(failures, fmt.Errorf("count the queued attribution moves: %w", err))
+	}
+	attributes := []any{"facts_left_before", line.LeftBefore, "facts_left", line.Left, "reads_left", line.ReadsLeft,
+		"facts_refused", line.Refused, "changes", synced.Changes, "events", appended, "moves_queued", queued}
+	if first := limited.first.Load(); first != nil {
+		attributes = append(attributes, "rate_limit_scope", first.Scope)
+	}
+	slog.Info("dispatch delivery: pull request attribution", attributes...)
+	return errors.Join(append([]error{limited.err()}, failures...)...)
+}
+
+// HeadPass runs the head pass once, at the time of the call, as runOnce runs it first
+// (reconcilePullRequestHeads): for a caller outside this package that reads what one pass leaves,
+// as the API's tests do.
+func (r *Reconcile) HeadPass(ctx context.Context) error {
+	return r.reconcilePullRequestHeads(ctx, time.Now())
+}
+
+// readOpenHeads is the open arm of the head pass: it reads each open row ListStalePullRequestHeads
+// hands it by the batched query (readFactsOf), and writes GitHub's answer under the canonical name.
+// A row whose read gives no answer is stamped checked, so it does not hold the front of every
+// batch; one whose answer holds a value no row holds is stamped refused.
+func (r *Reconcile) readOpenHeads(ctx context.Context, now time.Time, installations *passInstallations, limited *passRateLimit) error {
 	stale, err := ListStalePullRequestHeads(ctx, r.pool, PullRequestHeadBatch, now)
 	if err != nil {
 		return err
 	}
-	refresh := func(ctx context.Context, head PullRequestHead) error {
-		if _, _, err := RefreshPullRequestHead(ctx, r.pool, r.github, installations, head.Repo, head.Number, now); err != nil && !limited.keep(err) {
-			slog.Warn("dispatch delivery: re-read a pull request head", "repo", head.Repo, "number", head.Number, "error", err)
+	targets := make([]factsTarget, len(stale))
+	for i, ref := range stale {
+		targets[i] = factsTarget{ref: ref}
+	}
+	return r.readFactsOf(ctx, installations, limited, targets, now, false, func(ctx context.Context, target factsTarget, outcome factsOutcome) error {
+		switch outcome {
+		case factsWritten:
+			return nil
+		case factsNoRowHolds:
+			return r.stampFactsRefused(ctx, target)
+		default:
+			return MarkPullRequestHeadChecked(ctx, r.pool, target.ref.StoredUnder, target.ref.Number, now)
+		}
+	})
+}
+
+// factsTarget is one pull request a pass reads the facts of: its ref, under the canonical name,
+// and the stored name of its timeline row where it has no results row ("" where it has one).
+type factsTarget struct {
+	ref      PullRequestRef
+	timeline string
+}
+
+// factsOutcome is what the read of one target came to (readFactsOf).
+type factsOutcome int
+
+const (
+	// factsWritten: GitHub's answer is written, or the refresh of a too-large answer stored it.
+	factsWritten factsOutcome = iota
+	// factsNoAnswer: GitHub gave nothing for the pull request, or the App cannot read its
+	// repository. That is no proof that it does not exist.
+	factsNoAnswer
+	// factsAbsent: GitHub proved that no such pull request exists (pullRequestAbsent).
+	factsAbsent
+	// factsNotProved: GitHub answered the pull request absent, and gave no proof of it.
+	factsNotProved
+	// factsNoRowHolds: GitHub's answer holds a value no row holds (errNoRowHolds).
+	factsNoRowHolds
+)
+
+// readFactsOf reads the facts of targets by the batched query, FactsBatchSize pull requests a
+// query (readFactsBatchWithin), and settles each target it reads with what its read came to. It
+// groups the targets by installation (passInstallations.repositoryToken of the canonical name,
+// githubapp.Client.TokenScope), and reads the groups in parallel and each group's queries in
+// sequence, within the installation's budget for the pass (passInstallations.factsBudget). It
+// writes each answer under the canonical name and drops the row under ref.StoredUnder
+// (upsertHeadUnderCanonicalName). With proveAbsence, an answer of absence goes to
+// pullRequestAbsent, which asks GitHub once more with the query's token. A rate limit goes to
+// limited and ends the reads of its installation, and the other installations go on. Any other
+// failure of GitHub is logged and ends the reads of its installation for this pass. A target of a
+// query that failed is not settled. It answers each failure of the database.
+func (r *Reconcile) readFactsOf(
+	ctx context.Context, installations *passInstallations, limited *passRateLimit, targets []factsTarget,
+	now time.Time, proveAbsence bool, settle func(context.Context, factsTarget, factsOutcome) error,
+) error {
+	var (
+		mu       sync.Mutex
+		failures []error
+	)
+	fail := func(err error) {
+		if err != nil {
+			mu.Lock()
+			failures = append(failures, err)
+			mu.Unlock()
+		}
+	}
+	type group struct {
+		scope, token string
+		targets      []factsTarget
+	}
+	var groups []*group
+	byScope := map[string]*group{}
+	for _, target := range targets {
+		token, err := installations.repositoryToken(ctx, r.github, target.ref.Owner, target.ref.Repo)
+		switch {
+		case err == nil:
+		case repositoryUnreadable(err):
+			fail(settle(ctx, target, factsNoAnswer))
+			continue
+		case limited.keep(err):
+			continue
+		default:
+			slog.Warn("dispatch delivery: mint the token of a read of a pull request's facts; the next pass reads it",
+				"repo", target.ref.Owner+"/"+target.ref.Repo, "number", target.ref.Number, "error", err)
+			continue
+		}
+		scope := r.github.TokenScope(token)
+		g, found := byScope[scope]
+		if !found {
+			g = &group{scope: scope, token: token}
+			byScope[scope] = g
+			groups = append(groups, g)
+		}
+		g.targets = append(g.targets, target)
+	}
+	var wait sync.WaitGroup
+	for _, g := range groups {
+		budget := installations.factsBudget(g.scope)
+		wait.Go(func() {
+			for start := 0; start < len(g.targets); start += FactsBatchSize {
+				chunk := g.targets[start:min(start+FactsBatchSize, len(g.targets))]
+				refs := make([]PullRequestRef, len(chunk))
+				for i, target := range chunk {
+					refs[i] = target.ref
+				}
+				answers, err := readFactsBatchWithin(ctx, r.pool, r.github, installations, g.token, refs, now, budget)
+				for _, target := range chunk {
+					answer, found := answers[target.ref]
+					switch {
+					case found && answer.Head != nil:
+						_, written := upsertHeadUnderCanonicalName(ctx, r.pool, *answer.Head, target.ref.StoredUnder)
+						switch {
+						case errors.Is(written, errNoRowHolds):
+							fail(settle(ctx, target, factsNoRowHolds))
+						case written != nil:
+							fail(written)
+						default:
+							fail(settle(ctx, target, factsWritten))
+						}
+					case found && answer.Stored:
+						fail(settle(ctx, target, factsWritten))
+					case found && answer.Absent:
+						outcome := factsNotProved
+						if proveAbsence {
+							absent, askErr := pullRequestAbsent(ctx, r.github, &pullRequestRefusal{err: ErrPullRequestNotFound,
+								owner: target.ref.Owner, repo: target.ref.Repo, number: target.ref.Number, token: g.token})
+							if askErr != nil && !limited.keep(askErr) {
+								slog.Warn("dispatch delivery: ask GitHub whether a repository holds a pull request it answered absent; the next pass reads it again",
+									"repo", target.ref.Owner+"/"+target.ref.Repo, "number", target.ref.Number, "error", askErr)
+							}
+							if absent {
+								outcome = factsAbsent
+							}
+						}
+						fail(settle(ctx, target, outcome))
+					case !found && err == nil:
+						fail(settle(ctx, target, factsNoAnswer))
+					}
+				}
+				if err != nil {
+					if !errors.Is(err, errFactsBudgetSpent) && !limited.keep(err) {
+						slog.Warn("dispatch delivery: read the facts of pull requests; the next pass reads them again",
+							"installation", g.scope, "pull_requests", len(chunk), "error", err)
+					}
+					return
+				}
+			}
+		})
+	}
+	wait.Wait()
+	return errors.Join(failures...)
+}
+
+// stampFactsRefused records that the last read of target's facts was refused: attribution_refused_at
+// on each results row of the pull request, under each name the renaming rule reads as its canonical
+// name, or facts_refused_at on its timeline row where it has no results row. The line reads a
+// refused pull request after every other, the oldest refusal first, and no refusal ends its read.
+func (r *Reconcile) stampFactsRefused(ctx context.Context, target factsTarget) error {
+	if target.timeline != "" {
+		if _, err := r.pool.Exec(ctx, `update delivery_pull_requests set facts_refused_at = clock_timestamp() where repo = $1 and number = $2`,
+			target.timeline, target.ref.Number); err != nil {
+			return fmt.Errorf("record the refused read of %s#%d: %w", target.timeline, target.ref.Number, err)
 		}
 		return nil
 	}
-	// refresh answers nil on every path, so the fan-out has no failure of its own to stop on; a
-	// rate limit is kept in limited.
-	_ = boundedFanOut(ctx, reconcilePartialConcurrency, stale, refresh)
-	return limited.err()
+	return r.stampResultsRows(ctx, target.ref, "attribution_refused_at")
+}
+
+// stampResultsRows sets column, attribution_refused_at or attribution_absent_at, to now on each
+// results row of ref's pull request, under each name the renaming rule reads as its canonical name.
+// Neither column is a fact of the head, so the write owes no read.
+func (r *Reconcile) stampResultsRows(ctx context.Context, ref PullRequestRef, column string) error {
+	canonical := ref.Owner + "/" + ref.Repo
+	if _, err := r.pool.Exec(ctx, `update pull_request_heads set `+column+` = clock_timestamp()
+		where number = $2 and lower(`+refs.CanonicalRepoSQL("repo")+`) = lower($1)`, canonical, ref.Number); err != nil {
+		return fmt.Errorf("record %s of %s#%d: %w", column, canonical, ref.Number, err)
+	}
+	return nil
+}
+
+// FactsLine is what one facts line counted (readFactsLine): the pull requests with no facts
+// before its reads (LeftBefore) and after them (Left), the pull requests a pass still reads after
+// them (ReadsLeft), and the part of those whose last read was refused (Refused).
+type FactsLine struct{ LeftBefore, Left, ReadsLeft, Refused int }
+
+// factsEntry is one pull request of the facts line, with what the line orders it by.
+type factsEntry struct {
+	target                                               factsTarget
+	hasResults, open, unread, textsCurrent, messagesRead bool
+	known, hasFacts, likelyWrong                         bool
+	fallback                                             *string
+	refusedAt, newest                                    *time.Time
+}
+
+// rank is the place of the entry's kind in the line's order: open rows, then rows whose answer is
+// not known, then results rows no read of GitHub wrote, then rows whose fallback differs from the
+// answer of their title and branch alone, then the rest, then rows whose messages are not read
+// though a higher source decides their answer, and last the rows refused before.
+func (e factsEntry) rank() int {
+	switch {
+	case e.refusedAt != nil:
+		return 6
+	case e.open:
+		return 0
+	case e.textsCurrent && !e.known:
+		return 1
+	case e.hasResults && e.unread:
+		return 2
+	case e.likelyWrong:
+		return 3
+	case e.textsCurrent && !e.messagesRead:
+		return 5
+	default:
+		return 4
+	}
+}
+
+// readFactsLine reads the facts of the pull requests a pass still reads, the facts line: each
+// results row that is open or merged, that GitHub has not proved absent, and whose texts are not
+// current or whose messages are not read, and each timeline row that is not unfetchable and has no
+// results row under any name (factsLineJudged). It takes each pull request once, under its
+// canonical name, and reads it by the batched query in the line's order (factsEntry.rank), within
+// the installation's budget of the pass, which the open arm spent first (readFactsOf). So it reads
+// at most FactsQueriesPerPass × FactsBatchSize pull requests of each installation.
+//
+// It writes each answer under the canonical name and drops the row under an old name. A write
+// that checkHeadRow refuses stamps the pull request refused, and the line goes on. An answer of
+// absence goes to pullRequestAbsent: its proof sets attribution_absent_at on the results rows, or
+// marks the timeline row unfetchable (MarkPullRequestUnfetchable), and no proof stamps it refused.
+// GitHub giving nothing for a pull request stamps it refused too. No single refusal ends a read: a
+// refused pull request stays in the line, after every other.
+func (r *Reconcile) readFactsLine(ctx context.Context, installations *passInstallations, limited *passRateLimit) (FactsLine, error) {
+	entries, err := r.factsEntries(ctx)
+	if err != nil {
+		return FactsLine{}, err
+	}
+	var line FactsLine
+	for _, entry := range entries {
+		if !entry.hasFacts {
+			line.LeftBefore++
+		}
+		if entry.refusedAt != nil {
+			line.Refused++
+		}
+	}
+	line.Left, line.ReadsLeft = line.LeftBefore, len(entries)
+	if len(entries) == 0 {
+		return line, nil
+	}
+	if err := r.markLikelyWrong(ctx, entries); err != nil {
+		return line, err
+	}
+	slices.SortStableFunc(entries, compareFactsEntries)
+	targets := make([]factsTarget, len(entries))
+	for i, entry := range entries {
+		targets[i] = entry.target
+	}
+	readErr := r.readFactsOf(ctx, installations, limited, targets, time.Now(), true, r.settleFacts)
+	counts, err := ReadAttributionCounts(ctx, r.pool)
+	if err != nil {
+		return line, errors.Join(readErr, err)
+	}
+	line.Left, line.ReadsLeft, line.Refused = counts.FactsLeft, counts.ReadsLeft, counts.FactsRefused
+	return line, readErr
+}
+
+// settleFacts acts on what the facts line's read of target came to (readFactsOf).
+func (r *Reconcile) settleFacts(ctx context.Context, target factsTarget, outcome factsOutcome) error {
+	switch outcome {
+	case factsWritten:
+		return nil
+	case factsAbsent:
+		if target.timeline != "" {
+			if err := MarkPullRequestUnfetchable(ctx, r.pool, target.timeline, target.ref.Number, "GitHub proved that no such pull request exists"); err != nil {
+				return fmt.Errorf("mark %s#%d unfetchable: %w", target.timeline, target.ref.Number, err)
+			}
+			return nil
+		}
+		return r.stampResultsRows(ctx, target.ref, "attribution_absent_at")
+	default:
+		return r.stampFactsRefused(ctx, target)
+	}
+}
+
+// compareFactsEntries orders the facts line: by rank, the oldest refusal first among the refused,
+// and then the newest first, by the time GitHub last updated the pull request and then its number.
+func compareFactsEntries(a, b factsEntry) int {
+	if c := cmp.Compare(a.rank(), b.rank()); c != 0 {
+		return c
+	}
+	if a.refusedAt != nil && b.refusedAt != nil {
+		if c := a.refusedAt.Compare(*b.refusedAt); c != 0 {
+			return c
+		}
+	}
+	switch {
+	case a.newest != nil && b.newest == nil:
+		return -1
+	case a.newest == nil && b.newest != nil:
+		return 1
+	case a.newest != nil && b.newest != nil:
+		if c := b.newest.Compare(*a.newest); c != 0 {
+			return c
+		}
+	}
+	if c := cmp.Compare(b.target.ref.Number, a.target.ref.Number); c != 0 {
+		return c
+	}
+	return strings.Compare(a.target.ref.Owner+"/"+a.target.ref.Repo, b.target.ref.Owner+"/"+b.target.ref.Repo)
+}
+
+// factsEntries reads the entries of the facts line, each under its canonical name, with what the
+// line orders it by (attributionStatements.factsLine).
+func (r *Reconcile) factsEntries(ctx context.Context) ([]factsEntry, error) {
+	statements, err := attribution()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := r.pool.Query(ctx, statements.factsLine)
+	if err != nil {
+		return nil, fmt.Errorf("read the facts line: %w", err)
+	}
+	defer rows.Close()
+	var entries []factsEntry
+	for rows.Next() {
+		var entry factsEntry
+		var canonical, storedUnder, timeline string
+		if err := rows.Scan(&canonical, &entry.target.ref.Number, &storedUnder, &entry.hasResults, &timeline,
+			&entry.open, &entry.unread, &entry.textsCurrent, &entry.messagesRead, &entry.known, &entry.hasFacts,
+			&entry.fallback, &entry.refusedAt, &entry.newest); err != nil {
+			return nil, fmt.Errorf("read the facts line: %w", err)
+		}
+		owner, repo, err := splitRepo(canonical)
+		if err != nil {
+			slog.Warn("dispatch delivery: a pull request of the facts line names no repository GitHub can have", "repo", canonical, "number", entry.target.ref.Number, "error", err)
+			continue
+		}
+		entry.target.ref.Owner, entry.target.ref.Repo, entry.target.ref.StoredUnder = owner, repo, storedUnder
+		if !entry.hasResults {
+			entry.target.timeline = timeline
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the facts line: %w", err)
+	}
+	return entries, nil
+}
+
+// markLikelyWrong marks each entry with a results row and no current texts whose fallback differs
+// from the answer of the statement over the keys of its title and branch alone
+// (attributionStatements.titleAndBranchAnswers): the rows whose stored issue is most likely wrong,
+// which the line reads before the rest.
+func (r *Reconcile) markLikelyWrong(ctx context.Context, entries []factsEntry) error {
+	var repos []string
+	var numbers []int
+	for _, entry := range entries {
+		if entry.hasResults && !entry.textsCurrent {
+			repos, numbers = append(repos, entry.target.ref.Owner+"/"+entry.target.ref.Repo), append(numbers, entry.target.ref.Number)
+		}
+	}
+	if len(repos) == 0 {
+		return nil
+	}
+	statements, err := attribution()
+	if err != nil {
+		return err
+	}
+	rows, err := r.pool.Query(ctx, statements.titleAndBranchAnswers, repos, numbers)
+	if err != nil {
+		return fmt.Errorf("read the answers of the titles and branches of the facts line: %w", err)
+	}
+	defer rows.Close()
+	answers := map[PullRequestKey]*string{}
+	for rows.Next() {
+		var key PullRequestKey
+		var issue *string
+		if err := rows.Scan(&key.Repo, &key.Number, &issue); err != nil {
+			return fmt.Errorf("read the answers of the titles and branches of the facts line: %w", err)
+		}
+		answers[key] = issue
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the answers of the titles and branches of the facts line: %w", err)
+	}
+	for i := range entries {
+		entry := &entries[i]
+		guess, found := answers[PullRequestKey{Repo: entry.target.ref.Owner + "/" + entry.target.ref.Repo, Number: entry.target.ref.Number}]
+		entry.likelyWrong = found && !equalIssue(guess, entry.fallback)
+	}
+	return nil
+}
+
+// equalIssue reports whether two issue keys, each nil for nobody, name one issue.
+func equalIssue(a, b *string) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }
 
 // passRateLimit is the first rate limit the reads of one head pass met (reconcilePullRequestHeads).

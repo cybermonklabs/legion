@@ -102,26 +102,35 @@ func pr2808Payload(listForm bool) map[string]any {
 	return payload
 }
 
-// pr2808GitHub answers #2808's three reads the writers make, and counts the commit-message
-// pages read: the fifth source, which two of #2808's 32 commit messages fill with ACME-3044.
-func pr2808GitHub(t *testing.T) (*fakeGitHub, *atomic.Int32) {
+// pr2808Reads counts the REST reads of #2808's fake (restRead): the reads of a pull request and
+// the pages of its commit messages. The messages are the fifth source, and two of #2808's 32
+// commit messages hold ACME-3044. The fake counts a batched query (readFactsBatch) apart.
+type pr2808Reads struct{ pulls, commitPages atomic.Int32 }
+
+// pr2808GitHub answers #2808's three reads the writers make, and counts its REST reads.
+func pr2808GitHub(t *testing.T) (*fakeGitHub, *pr2808Reads) {
 	t.Helper()
 	fake := newFakeGitHub(t)
 	fake.installationRepos = []string{pr2808Repo}
-	fake.handle("GET /repos/acme/tools/pulls/2808", func(w http.ResponseWriter, _ *http.Request) {
+	reads := &pr2808Reads{}
+	fake.handle("GET /repos/acme/tools/pulls/2808", func(w http.ResponseWriter, r *http.Request) {
+		if restRead(r) {
+			reads.pulls.Add(1)
+		}
 		mustEncode(t, w, pr2808Payload(false))
 	})
 	fake.handle("GET /repos/acme/tools/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
 		mustEncode(t, w, []any{pr2808Payload(true)})
 	})
-	var commitPages atomic.Int32
-	fake.handle("GET /repos/acme/tools/pulls/2808/commits", func(w http.ResponseWriter, _ *http.Request) {
-		commitPages.Add(1)
+	fake.handle("GET /repos/acme/tools/pulls/2808/commits", func(w http.ResponseWriter, r *http.Request) {
+		if restRead(r) {
+			reads.commitPages.Add(1)
+		}
 		mustEncode(t, w, []any{
 			map[string]any{"sha": pr2808Head, "commit": map[string]any{"message": "ci-review: the split\n\nDispatch: ACME-3044", "author": map[string]any{"date": "2026-11-09T12:00:00Z"}}},
 		})
 	})
-	return fake, &commitPages
+	return fake, reads
 }
 
 // pr2808Envelope is the `pull_request` envelope of #2808's merge, as contracts' githubPayload
@@ -137,9 +146,9 @@ func pr2808Envelope() map[string]string {
 }
 
 // storePR2808AsAnOlderRuleJudgedIt writes #2808's row as the older build left it: credited to
-// ACME-3044 from the title and the body, judged by a rule older than this build's, read at
-// pr2808Judged. The row has the texts of GitHub's answer, as a writer of this build stores them,
-// and the older build's verdict is stored with one update, as that build stored it.
+// ACME-3044 from the title and the body, read at pr2808Judged. The row has the texts of GitHub's
+// answer, as a writer of this build stores them, and the older build's verdict is stored with one
+// update, as that build stored it.
 func storePR2808AsAnOlderRuleJudgedIt(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	updated := time.Date(2026, 11, 12, 0, 49, 50, 0, time.UTC)
@@ -152,10 +161,10 @@ func storePR2808AsAnOlderRuleJudgedIt(t *testing.T, ctx context.Context, pool *s
 		t.Fatalf("store #2808 as the older rule judged it: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
-		update pull_request_heads set issue_key = $5, attribution_source = $6, attribution_rule = $3, checked_at = $4::timestamptz
+		update pull_request_heads set issue_key = $4, attribution_source = $5, checked_at = $3::timestamptz
 		where repo = $1 and number = $2
-	`, pr2808Repo, pr2808Number, AttributionRuleVersion-1, pr2808Judged, pr2808Wrong, string(sourceTitleBody)); err != nil {
-		t.Fatalf("make #2808 a row of the rule before this one: %v", err)
+	`, pr2808Repo, pr2808Number, pr2808Judged, pr2808Wrong, string(sourceTitleBody)); err != nil {
+		t.Fatalf("store the older rule's verdict of #2808: %v", err)
 	}
 }
 
@@ -179,12 +188,13 @@ func dropPR2808(t *testing.T, ctx context.Context, pool *store.Pool) {
 
 // Every writer of pull_request_heads, given #2808's true facts, credits ACME-2250 from the head
 // branch (rank 3), above ACME-3044, the first key of the body (rank 4), and reads no commit
-// message, since rank 3 already holds a candidate.
+// message over REST, since rank 3 already holds a candidate. A writer that ranks the body above
+// the branch, or one that pages the messages, makes this test fail.
 func TestPR2808EveryWriterGivesTheBranchsIssue(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedPR2808Issues(t, ctx, pool)
-	fake, commitPages := pr2808GitHub(t)
+	fake, reads := pr2808GitHub(t)
 	client := fake.newTestClient()
 	broker := events.NewBroker()
 
@@ -217,15 +227,15 @@ func TestPR2808EveryWriterGivesTheBranchsIssue(t *testing.T) {
 	} {
 		t.Run(writer.name, func(t *testing.T) {
 			dropPR2808(t, ctx, pool)
-			commitPages.Store(0)
+			reads.commitPages.Store(0)
 			writer.write(t)
 			issue, source := pr2808Credit(t, ctx, pool)
 			t.Logf("#2808 credits %s from %s", issue, source)
 			if issue != pr2808Right || source != string(sourceBranch) {
 				t.Errorf("#2808 credits %s from %q, want %s from the branch %s", issue, source, pr2808Right, pr2808Branch)
 			}
-			if pages := commitPages.Load(); pages != 0 {
-				t.Errorf("the write read %d pages of commit messages, want none: the branch already names a held issue", pages)
+			if pages := reads.commitPages.Load(); pages != 0 {
+				t.Errorf("the write read %d pages of commit messages over REST, want none: the branch already names a held issue", pages)
 			}
 		})
 	}
@@ -257,33 +267,49 @@ func TestPR2808AnEnvelopeWithoutItsBranchGivesTheBodysFirstKey(t *testing.T) {
 }
 
 // The class. A pull request's stored issue is a verdict of the rule of the build that wrote it.
-// A later build that ranks the sources otherwise reaches a stored merged row only by reading
-// that row from GitHub again, at most RejudgedHeadsPerPass rows a pass, the rows read longest
-// ago first; until then the results read compares the check of the old verdict's issue with that
-// row, and the check of the right issue with nothing. The test stores one pass's worth of
-// older-rule rows read before #2808, then runs one reconcile pass.
+// A later build reads no stored verdict of a pull request with current texts: the statement gives
+// its issue from the texts at each read. One pass reads every row with no facts, and here every
+// row has facts. So the pass reads nothing of GitHub, and #2808 credits its branch's issue. The
+// test stores 50 merged rows before #2808, each with an older rule's stored issue. A reader that
+// answers a stored verdict, or a pass that reads a row whose texts are current, makes it fail.
 func TestPR2808AStoredVerdictOfAnOlderRuleStandsNoLongerThanOnePass(t *testing.T) {
-	issue, source, comparedWithWrong := judgePR2808BehindOlderRows(t, RejudgedHeadsPerPass)
-	if issue != pr2808Right {
-		t.Errorf("after the first pass of a build of rule %d, #2808 still credits %s from %q, the verdict of rule %d; want %s from its branch",
-			AttributionRuleVersion, issue, source, AttributionRuleVersion-1, pr2808Right)
+	pass := judgePR2808BehindOlderRows(t, 50)
+	if pass.issue != pr2808Right {
+		t.Errorf("after one pass, #2808 still credits %s from %q, the verdict of an older rule; want %s from its branch",
+			pass.issue, pass.source, pr2808Right)
 	}
-	if comparedWithWrong {
+	if pass.comparedWithWrong {
 		t.Errorf("the results read compares %s's before_merge checks with #2808 at %s", pr2808Wrong, pr2808Head)
+	}
+	if pass.restReads != 0 || pass.factsQueries != 0 {
+		t.Errorf("the pass read GitHub %d times over REST and asked %d batched queries, want none: every row has current texts and read messages",
+			pass.restReads, pass.factsQueries)
 	}
 }
 
-// judgePR2808BehindOlderRows stores ahead merged rows an older rule judged, each read before
-// #2808, then #2808 as the older build left it, runs one reconcile pass, and answers what
-// #2808's row credits and whether the results read compares ACME-3044 with it.
-func judgePR2808BehindOlderRows(t *testing.T, ahead int) (issue, source string, comparedWithWrong bool) {
+// pr2808Pass is what one reconcile pass over #2808 and the rows before it leaves. It holds the
+// issue and the source that #2808 credits, and whether the results read compares ACME-3044 with
+// it. It also holds the reads of GitHub that the pass made, over REST and by batched queries.
+type pr2808Pass struct {
+	issue, source           string
+	comparedWithWrong       bool
+	restReads, factsQueries int32
+}
+
+// judgePR2808BehindOlderRows stores ahead merged rows, each with current texts and the issue an
+// older rule stored, each read before #2808. Then it stores #2808 as the older build left it, and
+// runs one reconcile pass. It counts the reads of GitHub that the pass made.
+func judgePR2808BehindOlderRows(t *testing.T, ahead int) pr2808Pass {
 	t.Helper()
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
 	seedPR2808Issues(t, ctx, pool)
-	fake, _ := pr2808GitHub(t)
+	fake, reads := pr2808GitHub(t)
 	// The rows ahead of #2808 are other merged pull requests of the repository that name no issue.
 	fake.handle("GET /repos/acme/tools/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
+		if restRead(r) {
+			reads.pulls.Add(1)
+		}
 		number, err := strconv.Atoi(r.PathValue("number"))
 		if err != nil {
 			t.Errorf("pull request number %q: %v", r.PathValue("number"), err)
@@ -296,7 +322,10 @@ func judgePR2808BehindOlderRows(t *testing.T, ahead int) (issue, source string, 
 			"base": map[string]any{"ref": "main"},
 		})
 	})
-	fake.handle("GET /repos/acme/tools/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
+	fake.handle("GET /repos/acme/tools/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
+		if restRead(r) {
+			reads.commitPages.Add(1)
+		}
 		mustEncode(t, w, []any{})
 	})
 	earlier := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
@@ -309,9 +338,9 @@ func judgePR2808BehindOlderRows(t *testing.T, ahead int) (issue, source string, 
 			t.Fatalf("store merged row #%d: %v", number, err)
 		}
 		if _, err := pool.Exec(ctx, `
-			update pull_request_heads set attribution_rule = $3, checked_at = $4 where repo = $1 and number = $2
-		`, pr2808Repo, number, AttributionRuleVersion-1, earlier.Add(time.Duration(number)*time.Second)); err != nil {
-			t.Fatalf("make #%d a row of the rule before this one: %v", number, err)
+			update pull_request_heads set issue_key = $3, attribution_source = $4, checked_at = $5 where repo = $1 and number = $2
+		`, pr2808Repo, number, pr2808Wrong, string(sourceTitleBody), earlier.Add(time.Duration(number)*time.Second)); err != nil {
+			t.Fatalf("store the older rule's verdict of #%d: %v", number, err)
 		}
 	}
 	storePR2808AsAnOlderRuleJudgedIt(t, ctx, pool)
@@ -319,16 +348,20 @@ func judgePR2808BehindOlderRows(t *testing.T, ahead int) (issue, source string, 
 	if err := NewReconcile(pool, fake.newTestClient(), events.NewBroker()).reconcilePullRequestHeads(ctx, time.Now()); err != nil {
 		t.Fatalf("reconcile the pull request heads: %v", err)
 	}
-	issue, source = pr2808Credit(t, ctx, pool)
-	t.Logf("with %d older-rule rows read before it, after one pass #2808 credits %s from %s", ahead, issue, source)
+	var pass pr2808Pass
+	pass.issue, pass.source = pr2808Credit(t, ctx, pool)
+	pass.restReads = reads.pulls.Load() + reads.commitPages.Load()
+	pass.factsQueries = fake.factsQueries.Load()
+	t.Logf("with %d older-rule rows read before it, after one pass #2808 credits %s from %s; the pass made %d REST reads and %d batched queries",
+		ahead, pass.issue, pass.source, pass.restReads, pass.factsQueries)
 	wrongHeads, err := HeadsAttributedTo(ctx, pool, pr2808Wrong)
 	if err != nil {
 		t.Fatalf("read the heads of %s: %v", pr2808Wrong, err)
 	}
 	for _, head := range wrongHeads {
-		comparedWithWrong = comparedWithWrong || head.Number == pr2808Number
+		pass.comparedWithWrong = pass.comparedWithWrong || head.Number == pr2808Number
 	}
-	return issue, source, comparedWithWrong
+	return pass
 }
 
 // Dispatch stores two attributions of one pull request: delivery_pull_requests, for the

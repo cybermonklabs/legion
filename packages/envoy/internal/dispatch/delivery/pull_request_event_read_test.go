@@ -39,7 +39,11 @@ import (
 // not read. holdFirst, where a test sets it before any read, runs at the first pull request read
 // after its answer is taken and before it is sent: a test moves GitHub on there, or holds the
 // answer back. before, where a test sets it before any read, runs at each read of one number
-// before its answer is taken.
+// before its answer is taken. The fake answers the batched query of facts (readFactsBatch) from
+// the same state, before the mux sees it (fakeGitHub.answerFactsQuery). factsReads counts each
+// pull request that the query answers, and reads and commitReads do not. holdFirst and before do
+// not run for it. A REST read of the rest of the messages after the query is a read of the
+// commits, and commitReads counts it.
 type githubPulls struct {
 	mu             sync.Mutex
 	pulls          map[int]map[string]any
@@ -54,6 +58,7 @@ type githubPulls struct {
 	commitReads    atomic.Int32
 	repoReads      atomic.Int32
 	absenceQueries atomic.Int32
+	factsReads     atomic.Int32
 }
 
 func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls {
@@ -135,7 +140,8 @@ func serveGitHubPulls(t *testing.T, fake *fakeGitHub, repo string) *githubPulls 
 // holds or GitHub's NOT_FOUND on the path repository.pullRequest for a number it does not hold,
 // and a null repository with NOT_FOUND on the path repository for one it does not serve, one the
 // App is not installed on (notInstalled), and one the installation lost (hidden). Each answer is
-// taken before it is counted (absenceQueries). Any other query is a test's mistake.
+// taken before it is counted (absenceQueries). The fake answers the batched query of facts before
+// its mux sees it (fakeGitHub.serveHTTP), so any other query is a test's mistake.
 func (f *fakeGitHub) answerAbsenceQuery(w http.ResponseWriter, r *http.Request) {
 	query, variables := decodeGraphQLRequest(f.t, r)
 	if !strings.Contains(query, "pullRequest(number: $number)") {

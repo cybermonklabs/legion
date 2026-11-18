@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -36,9 +35,9 @@ import (
 // recorded result, and by the read of an issue's results for a `before_merge` result's commit, at
 // most once every CommitPullReadStaleAfter — and the reconcile's five-minute pass (reconcile.go),
 // which reads the pull requests owed a read (pull_request_reads_owed.go), every failure before any
-// refusal, creating each one's row where none exists, and then takes every open row read longer
-// than five minutes ago and every merged row the rule this build judges by has not judged yet —
-// one offer per rule version (AttributionRuleVersion, ListStalePullRequestHeads).
+// refusal, creating each one's row where none exists, then reads every open row read longer than
+// five minutes ago (ListStalePullRequestHeads), and then reads the facts of every pull request
+// that has none, the facts line (Reconcile.readFactsLine).
 //
 // A row a read of GitHub wrote is marked (github_read_at), and only a marked row's time stops a
 // read of GitHub or wins against GitHub's answer (headReadCovers, upsertHeadRow): a release
@@ -382,33 +381,6 @@ func upsertTexts(ctx context.Context, tx refs.Execer, head PullRequestHead) erro
 	return nil
 }
 
-// AttributionEventType is the event that records a change of a pull request's issue: one on the
-// issue the pull request left and one on the issue it reached, each carrying the same payload, so
-// either issue's timeline shows the whole move. A pull request that reaches an issue from nobody
-// has one event, on the issue it reached, and one that is uncredited has one on the issue it left.
-const AttributionEventType = "issue.pull_request_attribution_changed"
-
-// AttributionEventActor writes every issue.pull_request_attribution_changed: a system actor,
-// since no person or session asked for the move — a link someone added, a branch GitHub
-// reported, or this build's own ranking of the sources decided it. Broker.Notify is false for a
-// system actor, which keeps the event out of inboxes and routed delivery; the outbox publishes
-// it on the issue's subject as it does every unpublished event, and the event feed and the
-// event log carry it.
-var AttributionEventActor = model.Actor{Kind: "system", ID: "delivery-attribution"}
-
-// IssuePullRequestAttributionEventPayload is an issue.pull_request_attribution_changed event's
-// payload: the pull request (its repository, number and URL), the issue it left and the issue it
-// reached — either is null, never both — and the attribution source that decided the new issue
-// (attributionSource, "none" where the pull request is now credited to nobody).
-type IssuePullRequestAttributionEventPayload struct {
-	Repo   string  `json:"repo"`
-	Number int     `json:"number"`
-	URL    string  `json:"url"`
-	From   *string `json:"from"`
-	To     *string `json:"to"`
-	Source string  `json:"source"`
-}
-
 // headWriteRollback bounds the rollback of that transaction, which runs on a context of its
 // own and so is bounded by nothing else. Two seconds is longer than the one statement each
 // rollback here can be undoing and far inside any caller's own patience.
@@ -693,8 +665,9 @@ const newestPullRequestHeadSelect = `
 // parents and mappings as they stand then, and the reconcile reads an open row again.
 //
 // A closed-unmerged row is counted for nothing, as HeadAttributedTo counts it for nothing: it
-// is no basis a result stands at, the reconcile keeps no such row in its passes
-// (ListStalePullRequestHeads takes the open and the merged), and a pull request closed at a
+// is no basis a result stands at, the reconcile reads no such row again (ListStalePullRequestHeads
+// takes the open rows, and the facts line the open and merged rows with no facts), and a pull
+// request closed at a
 // commit does not stop another being opened from the same head. Counting one would leave every
 // result at that commit standing at no basis for good.
 //
@@ -780,160 +753,57 @@ const (
 	PullRequestHeadBatch      = 200
 )
 
-// ListStalePullRequestHeads is at most limit rows for the reconcile to read again, the longest
-// unread first: every open row whose checked_at is older than PullRequestHeadStaleAfter (a row
-// never read first), every merged row that no read has reached since it was written or marked
-// (checked_at null: credited to nobody, written by a read that could not read every source, or
-// marked by a write of a link to it, MarkHeadsLinked), and every merged row a rule older than this
-// build's judged (AttributionRuleVersion).
+// ListStalePullRequestHeads is at most limit open rows for the reconcile to read again, the
+// longest unread first: every open row whose checked_at is older than PullRequestHeadStaleAfter,
+// a row never read first. An open row comes round every five minutes, so a head that an event
+// never brought moves within one pass of its staleness. A merged row is read by the facts line
+// while it has no facts (Reconcile.readFactsLine), and no pass reads a merged row with facts
+// again: the statement gives its issue from those facts at each read.
 //
-// A merged row is revisited at all because nothing else ever revisits one. An open row comes
-// round every five minutes; a merged row is written once more at most, by an envelope or a
-// read-through, and a recorded result reads through only for a commit no head Dispatch knows.
-// So a merged row left credited to nobody stays that way, and every `before_merge` result at
-// that head stands at no basis for ever: a merge delivered by a `pull_request` envelope naming no
-// head repository is one such row (recordPullRequestHead attributes nobody, since it cannot
-// tell this repository's branch from a fork's), and so is every pull request merged under an
-// older attribution rule that credited nobody — a title naming another repository's issue first
-// was the whole of INFRA-1240.
-//
-// The rule half of the arm takes a row an older rule credited too, which is R8 of INFRA-1522:
-// rule 2 ranks the head branch and the two links above the title and the body, so a child's
-// pull request that rule 1 credited to the parent its title names belongs to the child, and
-// only a read that judges the row again moves it. Under rule 1 that half was held to the rows
-// credited to nobody, since nothing but the repository test could then pass a candidate over
-// and a credited row would have kept its issue; a change of the ranking is exactly the change
-// that can move one, so the rows already credited are read again with the rest.
-//
-// The bound is one offer per rule version, and the read ends the offer whatever it concluded.
-// Only a reader of GitHub stamps attribution_rule and checked_at — the reconcile's own refresh
-// (RefreshPullRequestHead), MarkPullRequestHeadChecked for a row it could not read at all, the
-// read-through, and the intake only when its read of an envelope's pull request was complete
-// (UpsertPullRequestHead keeps both where the write carries no read time). So a merged row is
-// taken once per rule: the refresh stamps it at AttributionRuleVersion whether or not GitHub's
-// answer attributed it, and it comes back only when a later build raises that constant, which is
-// how a change to the attribution reaches the merged rows already stored. The `checked_at is
-// null` half of the uncredited term keeps that bound: without it every merged row credited to
-// nobody would come back every pass for ever.
-//
-// The arm is written as `checked_at is null or attribution_rule < $3` over the merged rows,
-// rather than one condition, because the two terms are what the two partial indexes hold
-// (pull_request_heads_merged_unread, as 20261117172917 builds it, and
-// pull_request_heads_merged_rule, 20261111060005): written this way the planner takes a bitmap of
-// each and ors them. The first term takes a merged row credited to an issue too since
-// 20261117172917, since a link written to its pull request after its last read leaves the row
-// unread (MarkHeadsLinked), and the issue the row credits is what that link can change.
-//
-// The rule half is read in a pass of its own, bounded by RejudgedHeadsPerPass, and the rest of
-// limit goes to the rows a reader meets now: the open rows, whose head decides a live result,
-// and the merged rows no read ever reached. Raising the rule offers every merged row of the
-// deployment once, which on a production-shaped table measured for INFRA-1522 is 12,000 rows,
-// about 12,000 GitHub reads and 2,400 an hour against an installation's 5,000 — half a
-// deployment's budget for five hours, for a backfill nothing live waits on. At 50 a pass it is
-// about 600 an hour and about a day, and a table of a few hundred merged rows is still a few
-// passes. The two reads are ordered the same way and the bound is applied to their sum, so a
-// pass never reads more rows than it did before. The rule half takes no row the first read can
-// take (a merged row with checked_at null), so no row is listed twice and read twice at once in
-// one pass: every write of a merged row that a read of this build makes leaves attribution_rule
-// at 0, so such a row is in both halves otherwise.
-func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int, now time.Time) ([]PullRequestHead, error) {
-	heads, err := listStaleHeads(ctx, pool, `
-		select repo, number from pull_request_heads
-		where (state = 'open' and (checked_at is null or checked_at < $1))
-		   or (state = 'merged' and checked_at is null)
-		order by checked_at nulls first, repo, number
+// Each ref names the pull request under the canonical name of its repository
+// (refs.CanonicalRepoSQL), the name a read of GitHub answers under, and StoredUnder names the row
+// as it is stored. The read writes the row under the canonical name and drops the row under the
+// old name (upsertHeadUnderCanonicalName), so a row stored under a name that was renamed away is
+// offered once.
+func ListStalePullRequestHeads(ctx context.Context, pool *store.Pool, limit int, now time.Time) ([]PullRequestRef, error) {
+	rows, err := pool.Query(ctx, `
+		select h.repo, `+refs.CanonicalRepoSQL("h.repo")+`, h.number from pull_request_heads h
+		where h.state = 'open' and (h.checked_at is null or h.checked_at < $1)
+		order by h.checked_at nulls first, h.repo, h.number
 		limit $2
 	`, now.Add(-PullRequestHeadStaleAfter), limit)
-	if err != nil {
-		return nil, err
-	}
-	rejudge := min(RejudgedHeadsPerPass, limit-len(heads))
-	if rejudge <= 0 {
-		return heads, nil
-	}
-	rejudged, err := listStaleHeads(ctx, pool, `
-		select repo, number from pull_request_heads
-		where state = 'merged' and attribution_rule < $1 and checked_at is not null
-		order by checked_at nulls first, repo, number
-		limit $2
-	`, AttributionRuleVersion, rejudge)
-	if err != nil {
-		return nil, err
-	}
-	return append(heads, rejudged...), nil
-}
-
-// MarkHeadsLinked marks each stored head row of the pull requests whose URL is one of urls
-// unread (checked_at null) and counts the mark on the row (link_mark), in tx, the transaction of
-// the write that added or removed those links of an issue (issue_external_links). No head write
-// reads the mark: the statement reads the links at each read, so a link reaches every reader of
-// a pull request with current texts at once. The mark hands the row to the next reconcile pass
-// (ListStalePullRequestHeads), which reads the facts of a row that has none. The mark owes no
-// read (pull_request_reads_owed): the head is not in doubt, and neither trigger of the table owes
-// anything for it. A URL that is no stored pull request's marks nothing. The URLs are compared
-// lowercased, as the statement compares them, and the rows are locked in (repository, number)
-// order.
-func MarkHeadsLinked(ctx context.Context, tx refs.Execer, urls []string) error {
-	if len(urls) == 0 {
-		return nil
-	}
-	lowered := make([]string, len(urls))
-	for i, url := range urls {
-		lowered[i] = strings.ToLower(url)
-	}
-	if _, err := tx.Exec(ctx, `
-		update pull_request_heads h set checked_at = null, link_mark = coalesce(h.link_mark, 0) + 1
-		from (
-			select repo, number from pull_request_heads
-			where lower(url) = any($1::text[])
-			order by repo, number
-			for no key update
-		) linked
-		where h.repo = linked.repo and h.number = linked.number
-	`, lowered); err != nil {
-		return fmt.Errorf("mark the heads of the linked pull requests unread: %w", err)
-	}
-	return nil
-}
-
-// RejudgedHeadsPerPass is how many merged rows one reconcile pass offers under the rule-version
-// clause alone (ListStalePullRequestHeads). It bounds the one-off backfill a raised
-// AttributionRuleVersion starts, which nothing live waits on, so the pass's own batch stays with
-// the rows a reader meets now.
-const RejudgedHeadsPerPass = 50
-
-// listStaleHeads reads one of ListStalePullRequestHeads's two selects.
-func listStaleHeads(ctx context.Context, pool *store.Pool, query string, args ...any) ([]PullRequestHead, error) {
-	rows, err := pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list the stale pull request heads: %w", err)
 	}
 	defer rows.Close()
-	var heads []PullRequestHead
+	var stale []PullRequestRef
 	for rows.Next() {
-		var head PullRequestHead
-		if err := rows.Scan(&head.Repo, &head.Number); err != nil {
+		var stored, canonical string
+		var number int
+		if err := rows.Scan(&stored, &canonical, &number); err != nil {
 			return nil, fmt.Errorf("list the stale pull request heads: %w", err)
 		}
-		heads = append(heads, head)
+		owner, repo, err := splitRepo(canonical)
+		if err != nil {
+			logging.FromContext(ctx).Warn("dispatch delivery: a stale pull request head names no repository GitHub can have", "repo", stored, "number", number, "error", err)
+			continue
+		}
+		stale = append(stale, PullRequestRef{Owner: owner, Repo: repo, Number: number, StoredUnder: stored})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list the stale pull request heads: %w", err)
 	}
-	return heads, nil
+	return stale, nil
 }
 
 // MarkPullRequestHeadChecked stamps checked_at on a row the reconcile read but could not
 // complete — the repository unreadable, the pull request gone — so one unreadable pull request
-// does not hold the batch every pass. It stamps attribution_rule with it, from the constant and
-// not from a parameter, since the row the caller could not read is one the current rule has now
-// been offered: that is the same bound the refresh carries, and without it a merged row credited
-// to nobody whose pull request is gone would come back to the merged arm every pass for ever.
+// does not hold the batch every pass.
 func MarkPullRequestHeadChecked(ctx context.Context, pool *store.Pool, repoFull string, number int, now time.Time) error {
 	_, err := pool.Exec(ctx, `
-		update pull_request_heads set checked_at = $3, attribution_rule = $4
+		update pull_request_heads set checked_at = $3
 		where repo = $1 and number = $2
-	`, repoFull, number, now, AttributionRuleVersion)
+	`, repoFull, number, now)
 	if err != nil {
 		return fmt.Errorf("stamp the head of %s#%d: %w", repoFull, number, err)
 	}

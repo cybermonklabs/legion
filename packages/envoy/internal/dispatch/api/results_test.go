@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -1950,14 +1951,18 @@ func TestChildsResultInItsOwnRepositoryStandsAtNoBasisOnTheParentsTab(t *testing
 // commitPullsFake is the GitHub a read-time read-through reads (readThroughGitHub): it answers
 // GET /repos/{owner}/{repo}/commits/{sha}/pulls from the body its test set last, so a test can
 // open a pull request between two reads, and counts every such ask per repository, so a test can
-// show what one read of an issue's results spent.
+// show what one read of an issue's results spent. It also answers the batched query of the facts
+// of pull requests from pull (serveFactsQuery), and counts those queries apart from the asks.
 type commitPullsFake struct {
 	mu     sync.Mutex
 	asked  map[string]int
 	answer func(repo, sha string) string
 	// pull answers GET /repos/{owner}/{repo}/pulls/{number}, the read the delivery intake makes
-	// of the pull request an event names; "" or no function is GitHub's 404.
+	// of the pull request an event names, and each pull request of the batched query of facts;
+	// "" or no function is GitHub's 404.
 	pull func(repo, number string) string
+	// factsQueried counts the batched queries of facts that GitHub was asked.
+	factsQueried int
 }
 
 // pullAnswers sets what GET /repos/{owner}/{repo}/pulls/{number} answers from now on.
@@ -2011,6 +2016,144 @@ func (f *commitPullsFake) serveCommitPulls(w http.ResponseWriter, r *http.Reques
 	fmt.Fprint(w, answer(repo, r.PathValue("sha")))
 }
 
+// factsQueries is how often GitHub has been asked the batched query of facts, for any repository.
+func (f *commitPullsFake) factsQueries() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.factsQueried
+}
+
+// factsAlias reads the aliases of the batched query of facts (delivery's factsQuery), in their
+// order. Each is a repository alias with the names of its two variables, or a pull request alias
+// with its number.
+var factsAlias = regexp.MustCompile(`(r\d+): repository\(owner: \$(\w+), name: \$(\w+)\)|(p\d+): pullRequest\(number: (\d+)\)`)
+
+// serveFactsQuery answers POST /graphql for the batched query of facts (delivery's
+// readFactsBatch), whose text holds the fragment pullRequestFacts. Each pull request is the REST
+// answer of pull, in the fields of the query (factsNodeOf). GitHub's 404 is a null pull request
+// with NOT_FOUND on its alias path. A repository that the App is not installed on is a null
+// repository with NOT_FOUND on its alias. The fake answers any other query 404, as the mux did
+// before it served this query.
+func (f *commitPullsFake) serveFactsQuery(t *testing.T, installed map[string]bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Query     string         `json:"query"`
+			Variables map[string]any `json:"variables"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || !strings.Contains(request.Query, "fragment pullRequestFacts") {
+			http.NotFound(w, r)
+			return
+		}
+		f.mu.Lock()
+		f.factsQueried++
+		answer := f.pull
+		f.mu.Unlock()
+		data := map[string]any{}
+		var refusals []any
+		var current map[string]any
+		var repoAlias, repo string
+		for _, alias := range factsAlias.FindAllStringSubmatch(request.Query, -1) {
+			if alias[1] != "" {
+				owner, _ := request.Variables[alias[2]].(string)
+				name, _ := request.Variables[alias[3]].(string)
+				repoAlias, repo = alias[1], owner+"/"+name
+				if !installed[repo] {
+					current = nil
+					data[repoAlias] = nil
+					refusals = append(refusals, map[string]any{"type": "NOT_FOUND", "path": []any{repoAlias},
+						"message": fmt.Sprintf("Could not resolve to a Repository with the name '%s'.", repo)})
+					continue
+				}
+				current = map[string]any{}
+				data[repoAlias] = current
+				continue
+			}
+			if current == nil {
+				continue
+			}
+			number, _ := strconv.Atoi(alias[5])
+			body := ""
+			if answer != nil {
+				body = answer(repo, alias[5])
+			}
+			if body == "" {
+				current[alias[4]] = nil
+				refusals = append(refusals, map[string]any{"type": "NOT_FOUND", "path": []any{repoAlias, alias[4]},
+					"message": fmt.Sprintf("Could not resolve to a PullRequest with the number of %d.", number)})
+				continue
+			}
+			node, err := factsNodeOf(body, number)
+			if err != nil {
+				t.Errorf("the answer of %s#%d is no pull request of GitHub's REST API: %v", repo, number, err)
+				http.Error(w, `{"message":"Server Error"}`, http.StatusInternalServerError)
+				return
+			}
+			current[alias[4]] = node
+		}
+		response := map[string]any{"data": data}
+		if len(refusals) > 0 {
+			response["errors"] = refusals
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Errorf("encode the answer to the facts query: %v", err)
+		}
+	}
+}
+
+// factsNodeOf is the pull request number of one REST answer, body, as the batched query of facts
+// answers it (delivery's factsNode). GraphQL's state is OPEN, CLOSED or MERGED, and a REST answer
+// with merged true or a merged_at is MERGED. The commits are an empty page, as the REST commits
+// route answers them.
+func factsNodeOf(body string, number int) (map[string]any, error) {
+	var pull struct {
+		Title          string  `json:"title"`
+		Body           string  `json:"body"`
+		HTMLURL        string  `json:"html_url"`
+		State          string  `json:"state"`
+		Merged         bool    `json:"merged"`
+		MergedAt       *string `json:"merged_at"`
+		UpdatedAt      *string `json:"updated_at"`
+		MergeCommitSHA *string `json:"merge_commit_sha"`
+		Head           struct {
+			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
+			Repo *struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"head"`
+		Base struct {
+			Ref string `json:"ref"`
+		} `json:"base"`
+	}
+	if err := json.Unmarshal([]byte(body), &pull); err != nil {
+		return nil, err
+	}
+	state := "CLOSED"
+	switch {
+	case pull.State == "open":
+		state = "OPEN"
+	case pull.Merged || pull.MergedAt != nil:
+		state = "MERGED"
+	}
+	var mergedAt, headRepository, mergeCommit any
+	if state == "MERGED" && pull.MergedAt != nil {
+		mergedAt = *pull.MergedAt
+	}
+	if pull.Head.Repo != nil {
+		headRepository = map[string]any{"nameWithOwner": pull.Head.Repo.FullName}
+	}
+	if pull.MergeCommitSHA != nil {
+		mergeCommit = map[string]any{"oid": *pull.MergeCommitSHA}
+	}
+	return map[string]any{
+		"number": number, "title": pull.Title, "body": pull.Body, "url": pull.HTMLURL,
+		"state": state, "merged": state == "MERGED", "mergedAt": mergedAt, "updatedAt": pull.UpdatedAt,
+		"headRefName": pull.Head.Ref, "headRefOid": pull.Head.SHA, "baseRefName": pull.Base.Ref,
+		"headRepository": headRepository, "mergeCommit": mergeCommit,
+		"commits": map[string]any{"totalCount": 0, "nodes": []any{}},
+	}, nil
+}
+
 // openPullAt is GitHub's answer for a commit that is the head of one open pull request titled
 // after issueKey, in whichever repository was asked about.
 func openPullAt(number int, issueKey string) func(repo, sha string) string {
@@ -2027,7 +2170,9 @@ func openPullAt(number int, issueKey string) func(repo, sha string) string {
 // GitHub it reads. The App is installed on repos and on nothing else, every repository it can
 // read answers `main` as its default branch (so a commit heading no pull request is
 // `other_commit` rather than `unknown`), each pull request's commit messages are an empty
-// page, and one commit's pull requests are the fake's, which counts the asks.
+// page, and one commit's pull requests are the fake's, which counts the asks. The fake answers
+// the batched query of the facts of pull requests from its pull requests, and counts that query
+// apart (serveFactsQuery).
 func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Store, *server, *commitPullsFake) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -2058,6 +2203,7 @@ func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Stor
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", fake.serveCommitPulls)
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", fake.servePull)
+	mux.HandleFunc("POST /graphql", fake.serveFactsQuery(t, installed))
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
 	})

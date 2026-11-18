@@ -1067,6 +1067,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/delivery/attribution": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description What the attribution of the stored pull requests still waits on, counted at the request, with no delivery settings and no App key: {facts_left, reads_left, facts_refused, reading, keys_on_another_reading, moves_queued, links_in_two_cases}. reads_left is the pull requests a reconcile pass still reads the facts of: an open or merged results row whose texts are not current or whose commit messages are not read, and a timeline row with no results row; a pull request GitHub proved absent is in no count. facts_left is the part of them with no facts, whose issue is the stored one or not known; facts_refused the part whose last read GitHub refused. reading is the identity of the reading that runs now, and keys_on_another_reading the stored texts whose keys another reading made. moves_queued is the changes of a pull request's issue that wait for their events. links_in_two_cases is the URLs, folded to lower case, that more than one issue links. */
+    get: operations["getApiV1DeliveryAttribution"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/delivery/measures": {
     parameters: {
       query?: never;
@@ -3625,6 +3642,15 @@ export interface components {
       urgency: string;
       waiting_on?: string;
       waiting_on_person?: string;
+    };
+    AttributionCounts: {
+      facts_left: number;
+      facts_refused: number;
+      keys_on_another_reading: number;
+      links_in_two_cases: number;
+      moves_queued: number;
+      reading: string;
+      reads_left: number;
     };
     BasisLearnedAt: {
       /** Format: date-time */
@@ -9005,6 +9031,38 @@ export interface operations {
       };
     };
   };
+  getApiV1DeliveryAttribution: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AttributionCounts"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1DeliveryMeasures: {
     parameters: {
       query?: {
@@ -13942,6 +14000,7 @@ export type AskSnooze = components["schemas"]["AskSnooze"];
 export type AskSnoozeInput = components["schemas"]["AskSnoozeInput"];
 export type AskThread = components["schemas"]["AskThread"];
 export type AskWithTrees = components["schemas"]["AskWithTrees"];
+export type AttributionCounts = components["schemas"]["AttributionCounts"];
 export type BasisLearnedAt = components["schemas"]["BasisLearnedAt"];
 export type BlockAttributeValue = components["schemas"]["BlockAttributeValue"];
 export type BlockLink = components["schemas"]["BlockLink"];

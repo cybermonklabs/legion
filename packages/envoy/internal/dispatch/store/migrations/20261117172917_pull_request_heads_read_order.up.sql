@@ -9,14 +9,6 @@
 --                      GitHub takes with one statement, nextval, just before its request goes out
 --                      (delivery.startRead). Null on every row a release before this one
 --                      inserted, and left as it was by that release's update (below).
---   link_mark          how many writes of a link to the row's pull request have marked the row
---                      unread (delivery.MarkHeadsLinked). Each head write reads it before its
---                      attribution reads the links, and its upsert leaves the row unread where the
---                      count has moved since (delivery.upsertHeadRow): where the row is stored
---                      before the link is written, a write that judged the row's issue from links
---                      a later write changed does not stamp the row read again. A link written
---                      while a write inserts the row marks nothing. Null on a row no such write
---                      has marked.
 --
 -- 20261117114124 ordered the two answers by github_read_at, the clock of each process that read.
 -- A stored read start ahead of a reader's clock, from two replicas whose clocks differ or a clock
@@ -44,30 +36,15 @@
 -- one second that differ in a fact GitHub answers owe a read whichever of the two the row keeps,
 -- and the next read writes what GitHub holds then.
 --
--- The migration also widens pull_request_heads_merged_unread to every merged row no read has
--- reached, credited or not (`state = 'merged' and checked_at is null`), which the reconcile's merged
--- arm now reads (delivery.ListStalePullRequestHeads): a write of a link to a pull request marks its
--- row unread (delivery.MarkHeadsLinked), and a merged row credited to an issue is one such a link
--- can move. The release before's arm, `issue_key is null and checked_at is null`, selects a
--- subset of the rows the new index holds, and an index decides a plan, never an answer.
---
 -- The migration runs in one transaction, and its first statement takes pull_request_heads' ACCESS
 -- EXCLUSIVE lock, which it holds until it commits, so every read and write of a head row waits
--- for the whole migration: the two columns are nullable with no default, which writes the catalog
--- alone and rewrites no row, and the index build reads every row of the table, which holds a row
--- per pull request Dispatch has seen an event for, thousands and not millions. The runner's
--- lock_timeout bounds the migration's wait behind a writer. `create or replace function` takes
--- the function's own catalogue row. The census sizes the table, since an index built on an
--- existing table reads its rows, and answers 0: the migration refuses and rewrites no row. The
--- release before reads neither column nor the sequence's new use, so it rolls beside this one;
--- its upsert compares no link_mark, so during the roll its write of a marked row can stamp the
--- row read before the next pass judges it. Rolling back past this migration is an image rollback
+-- for the whole migration: the column is nullable with no default, which writes the catalog
+-- alone and rewrites no row. The runner's lock_timeout bounds the migration's wait behind a
+-- writer. `create or replace function` takes the function's own catalogue row. The migration
+-- refuses and rewrites no row. The release before reads neither the column nor the sequence's
+-- new use, so it rolls beside this one. Rolling back past this migration is an image rollback
 -- alone: the function then orders by a column no write of that release sets, so it never skips.
-alter table pull_request_heads add column github_read_order bigint, add column link_mark bigint;
-
-drop index pull_request_heads_merged_unread;
-create index pull_request_heads_merged_unread on pull_request_heads (repo, number)
-  where state = 'merged' and checked_at is null;
+alter table pull_request_heads add column github_read_order bigint;
 
 create or replace function pull_request_heads_older_read() returns trigger language plpgsql as $$
 begin

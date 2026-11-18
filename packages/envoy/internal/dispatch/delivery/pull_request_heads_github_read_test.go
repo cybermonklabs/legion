@@ -111,8 +111,8 @@ const releaseBeforeUpsertHeadRow = `
 		   or excluded.event_at >= pull_request_heads.event_at
 	`
 
-// releaseBeforeAttributionRule is the AttributionRuleVersion of the release before, the rule
-// its writes stamp.
+// releaseBeforeAttributionRule is the attribution_rule that the release before stamps on its
+// writes.
 const releaseBeforeAttributionRule = 2
 
 // releaseBeforeAttribution is the issue the release before's write carries with a head: the issue
@@ -154,10 +154,12 @@ func writeHeadAsTheReleaseBefore(t *testing.T, ctx context.Context, pool *store.
 //
 // From there GitHub's answer must win at the first read of it this build makes: a later event of
 // the pull request reads GitHub and writes its answer, though the stored time is later than
-// GitHub's; and with no event at all, the reconcile's next pass reads the merged row once and
-// writes GitHub's answer. Before the fix the event read nothing (headReadCovers took the forged
-// time for GitHub's), and the pass offered the row nothing (its attribution rule was the current
-// one) and would have refused GitHub's older time if it had.
+// GitHub's. With no event at all, the release before's write owes a read
+// (pull_request_heads_unread_write). The reconcile's next pass makes that read once over REST, and
+// writes GitHub's answer. The fake counts a batched query of the facts line apart from that read.
+// Before the fix the event read nothing (headReadCovers took the forged time for GitHub's), and
+// the pass would have refused GitHub's older time. A write that keeps the forged head, or a pass
+// that reads the owed row more than once over REST, makes this test fail.
 func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing.T) {
 	for _, repair := range []string{"a later event of GitHub", "the reconcile's next pass"} {
 		t.Run(repair, func(t *testing.T) {
@@ -211,7 +213,7 @@ func TestARowTheReleaseBeforeWritesBesideThisBuildStopsNoReadOfGitHub(t *testing
 			case "the reconcile's next pass":
 				NewReconcile(pool, client, events.NewBroker()).runOnce(ctx)
 				if reads := github.reads.Load() - readsBefore; reads != 1 {
-					t.Errorf("the pass read the pull request from GitHub %d times, want once: the merged row the release before wrote was offered nothing", reads)
+					t.Errorf("the pass read the pull request from GitHub over REST %d times, want once: the read that the release before's write owes", reads)
 				}
 			}
 

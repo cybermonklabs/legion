@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -101,12 +102,63 @@ func readFactsBatch(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
 	installations *passInstallations, token string, refs []PullRequestRef, now time.Time,
 ) (map[PullRequestRef]batchAnswer, error) {
+	return readFactsBatchWithin(ctx, pool, client, installations, token, refs, now, nil)
+}
+
+// readFactsBatchWithin is readFactsBatch, each of whose GraphQL requests, splits included, takes
+// one request of budget first. A request budget does not cover is not sent: the read ends with
+// errFactsBudgetSpent and the answers of the requests before it. A nil budget sends every request.
+func readFactsBatchWithin(
+	ctx context.Context, pool *store.Pool, client *githubapp.Client,
+	installations *passInstallations, token string, refs []PullRequestRef, now time.Time, budget *factsBudget,
+) (map[PullRequestRef]batchAnswer, error) {
 	if len(refs) > FactsBatchSize {
 		return nil, fmt.Errorf("a batched read of facts takes at most %d pull requests, not %d", FactsBatchSize, len(refs))
 	}
 	answers := make(map[PullRequestRef]batchAnswer, len(refs))
-	batch := factsRead{pool: pool, client: client, installations: installations, token: token, now: now, answers: answers}
+	batch := factsRead{pool: pool, client: client, installations: installations, token: token, now: now, budget: budget, answers: answers}
 	return answers, batch.query(ctx, refs)
+}
+
+// errFactsBudgetSpent ends a batched read whose installation has sent every facts query a pass
+// may send (FactsQueriesPerPass).
+var errFactsBudgetSpent = errors.New("the pass has sent every query of facts it may send for this installation")
+
+// factsBudget is the GraphQL requests one installation may still send in one pass to read facts:
+// FactsQueriesPerPass at the start, shared by the open arm and the facts line
+// (passInstallations.factsBudget).
+type factsBudget struct {
+	mu   sync.Mutex
+	left int
+}
+
+// take takes one request of the budget, and answers false where none is left.
+func (b *factsBudget) take() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.left <= 0 {
+		return false
+	}
+	b.left--
+	return true
+}
+
+// remaining is the requests the budget still covers.
+func (b *factsBudget) remaining() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.left
+}
+
+// factsBudget is the budget of the installation scope (githubapp.Client.TokenScope) in this pass,
+// made at FactsQueriesPerPass where the pass has none yet. A nil passInstallations, a caller with
+// no pass, gets a new budget at each call.
+func (p *passInstallations) factsBudget(scope string) *factsBudget {
+	if p == nil {
+		return &factsBudget{left: FactsQueriesPerPass}
+	}
+	budget, _ := p.budgets.LoadOrStore(scope, &factsBudget{left: FactsQueriesPerPass})
+	return budget.(*factsBudget)
 }
 
 // factsRead is one call of readFactsBatch: what each of its requests needs, and the answers it
@@ -117,6 +169,7 @@ type factsRead struct {
 	installations *passInstallations
 	token         string
 	now           time.Time
+	budget        *factsBudget
 	answers       map[PullRequestRef]batchAnswer
 }
 
@@ -138,6 +191,9 @@ type factsRepository struct {
 func (f *factsRead) query(ctx context.Context, refs []PullRequestRef) error {
 	if len(refs) == 0 {
 		return nil
+	}
+	if f.budget != nil && !f.budget.take() {
+		return errFactsBudgetSpent
 	}
 	text, variables, repositories := factsQuery(refs)
 	read, err := startRead(ctx, f.pool)

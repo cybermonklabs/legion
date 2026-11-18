@@ -25,34 +25,53 @@ import (
 // repository and then of the pull request. oversize, where set, says whether the answer to a
 // query of those numbers is above the client's 1 MiB: such an answer carries 2 MiB of padding.
 // It records each query, each REST read of a pull request, and each page of commits asked.
+//
+// The fake answers the batched query before its mux sees it (fakeGitHub.facts). answerAbsence
+// answers the absence query (absenceQuery) on POST /graphql from the same pull requests. A
+// repository can be on a second installation (install). The bearer token of each query names its
+// installation (installationIDFromToken), and each query records it (queriesOf). GitHub's GraphQL
+// rate limit answers each query of limitedInstallation.
 type batchGitHub struct {
-	t *testing.T
+	t    *testing.T
+	fake *fakeGitHub
 
-	mu           sync.Mutex
-	pulls        map[string]map[int]batchPull
-	gone         map[string]bool
-	oversize     func(numbers []int) bool
-	failCommits  bool
-	queries      []batchQuery
-	pullReads    map[string]int
-	commitPages  []int
-	commitBearer []string
+	mu                  sync.Mutex
+	pulls               map[string]map[int]batchPull
+	gone                map[string]bool
+	oversize            func(numbers []int) bool
+	failCommits         bool
+	limitedInstallation int64
+	queries             []batchQuery
+	absenceAsked        []string
+	pullReads           map[string]int
+	commitPages         []int
+	commitBearer        []string
 }
 
 // batchPull is one pull request batchGitHub holds. state is open, closed or merged. headRepo is
-// the repository of the head branch, "" for the pull request's own repository.
+// the repository of the head branch, "" for the pull request's own repository. queryMessages,
+// where above 0, is the count of messages the query answers, fewer than GitHub's first 100. The
+// query answers the number of an undecodable pull request as a JSON string, which no factsNode
+// decodes.
 type batchPull struct {
 	state, head, branch, title, body, headRepo string
 	updatedAt                                  time.Time
 	messages                                   []string
+	queryMessages                              int
+	undecodable                                bool
 }
 
-// batchQuery is one GraphQL query batchGitHub was asked: its text, its bearer, the numbers it
-// asked for in the order of its aliases, and the count of its repository aliases.
+// batchQuery is one GraphQL query that batchGitHub was asked. It holds its text, its bearer and
+// that token's installation. It holds the numbers it asked for in the order of its aliases, and
+// each as "owner/repo#number". It holds the count of its repository aliases, and whether the fake
+// answered it with a rate limit.
 type batchQuery struct {
 	text, bearer string
+	installation int64
 	numbers      []int
+	pulls        []string
 	repositories int
+	limited      bool
 }
 
 // batchAlias reads the aliases of a facts query in their order: a repository alias and the names
@@ -61,11 +80,63 @@ var batchAlias = regexp.MustCompile(`(r\d+): repository\(owner: \$(\w+), name: \
 
 func serveBatchGitHub(t *testing.T, fake *fakeGitHub) *batchGitHub {
 	t.Helper()
-	g := &batchGitHub{t: t, pulls: map[string]map[int]batchPull{}, gone: map[string]bool{}, pullReads: map[string]int{}}
-	fake.handle("POST /graphql", g.answerQuery)
+	g := &batchGitHub{t: t, fake: fake, pulls: map[string]map[int]batchPull{}, gone: map[string]bool{}, pullReads: map[string]int{}}
+	fake.facts = g.answerQuery
+	fake.handle("POST /graphql", g.answerAbsence)
 	fake.handle("GET /repos/{owner}/{repo}/pulls/{number}", g.answerPull)
 	fake.handle("GET /repos/{owner}/{repo}/pulls/{number}/commits", g.answerCommits)
 	return g
+}
+
+// install puts each of repos on installation id, which GET /repos/{owner}/{repo}/installation
+// then answers (fakeGitHub.installationOf). Call it before newTestClient.
+func (g *batchGitHub) install(id int64, repos ...string) {
+	if g.fake.installationOf == nil {
+		g.fake.installationOf = map[string]int64{}
+	}
+	for _, repo := range repos {
+		g.fake.installationOf[repo] = id
+	}
+}
+
+// limitInstallation makes GitHub answer each GraphQL query of installation id with its GraphQL
+// rate limit.
+func (g *batchGitHub) limitInstallation(id int64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.limitedInstallation = id
+}
+
+// queriesOf is the count of the batched queries sent with a token of installation id.
+func (g *batchGitHub) queriesOf(id int64) int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	count := 0
+	for _, query := range g.queries {
+		if query.installation == id {
+			count++
+		}
+	}
+	return count
+}
+
+// absenceQueries is each pull request the absence query asked about, as "owner/repo#number".
+func (g *batchGitHub) absenceQueries() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.absenceAsked)
+}
+
+// pullsAsked is each pull request that a batched query asked about, as "owner/repo#number", in
+// the order of the queries and of their aliases.
+func (g *batchGitHub) pullsAsked() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var pulls []string
+	for _, query := range g.queries {
+		pulls = append(pulls, query.pulls...)
+	}
+	return pulls
 }
 
 // set makes GitHub hold pull request number of repo.
@@ -133,7 +204,7 @@ func (g *batchGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	query := batchQuery{text: request.Query, bearer: r.Header.Get("Authorization")}
+	query := batchQuery{text: request.Query, bearer: r.Header.Get("Authorization"), installation: installationIDFromToken(r)}
 	data := map[string]any{}
 	var refusals []any
 	var current map[string]any
@@ -157,6 +228,7 @@ func (g *batchGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		number, _ := strconv.Atoi(alias[5])
 		query.numbers = append(query.numbers, number)
+		query.pulls = append(query.pulls, fmt.Sprintf("%s#%d", repo, number))
 		if current == nil {
 			continue
 		}
@@ -169,7 +241,12 @@ func (g *batchGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		current[alias[4]] = pull.node(repo, number)
 	}
+	query.limited = g.limitedInstallation != 0 && query.installation == g.limitedInstallation
 	g.queries = append(g.queries, query)
+	if query.limited {
+		answerGraphQLRateLimit(w)
+		return
+	}
 	answer := map[string]any{"data": data}
 	if len(refusals) > 0 {
 		answer["errors"] = refusals
@@ -178,6 +255,56 @@ func (g *batchGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		answer["extensions"] = map[string]any{"padding": strings.Repeat("x", 2<<20)}
 	}
 	mustEncode(g.t, w, answer)
+}
+
+// answerAbsence answers the absence query (absenceQuery) from the pull requests that the fake
+// holds, in GitHub's shapes (pullRequestAbsent's doc comment). A repository in gone answers null
+// with NOT_FOUND on the path repository. Any other repository answers the count of its pull
+// requests beside the pull request. For a number it does not hold, it answers null beside the
+// count, with NOT_FOUND on the path repository.pullRequest. GitHub's GraphQL rate limit answers a
+// query of limitedInstallation. It records each query (absenceQueries). Any other query is a
+// test's mistake.
+func (g *batchGitHub) answerAbsence(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		g.t.Errorf("decode a GraphQL request: %v", err)
+		http.Error(w, `{"message":"Problems parsing JSON"}`, http.StatusBadRequest)
+		return
+	}
+	if !strings.Contains(request.Query, "pullRequest(number: $number)") {
+		g.t.Errorf("POST /graphql asked %q; this fake answers the facts query and the absence query only", request.Query)
+		http.Error(w, `{"message":"unexpected query"}`, http.StatusBadRequest)
+		return
+	}
+	owner, _ := request.Variables["owner"].(string)
+	name, _ := request.Variables["name"].(string)
+	number, _ := request.Variables["number"].(float64)
+	repo := owner + "/" + name
+	g.mu.Lock()
+	g.absenceAsked = append(g.absenceAsked, fmt.Sprintf("%s#%d", repo, int(number)))
+	limited := g.limitedInstallation != 0 && installationIDFromToken(r) == g.limitedInstallation
+	gone := g.gone[repo]
+	_, held := g.pulls[repo][int(number)]
+	counted := map[string]any{"totalCount": len(g.pulls[repo])}
+	g.mu.Unlock()
+	switch {
+	case limited:
+		answerGraphQLRateLimit(w)
+	case gone:
+		mustEncode(g.t, w, nullRepositoryAnswer(repo))
+	case held:
+		mustEncode(g.t, w, map[string]any{"data": map[string]any{"repository": map[string]any{
+			"pullRequests": counted, "pullRequest": map[string]any{"number": int(number)}}}})
+	default:
+		mustEncode(g.t, w, map[string]any{
+			"data": map[string]any{"repository": map[string]any{"pullRequests": counted, "pullRequest": nil}},
+			"errors": []any{map[string]any{"type": "NOT_FOUND", "path": []any{"repository", "pullRequest"},
+				"message": fmt.Sprintf("Could not resolve to a PullRequest with the number of %d.", int(number))}},
+		})
+	}
 }
 
 func (g *batchGitHub) answerPull(w http.ResponseWriter, r *http.Request) {
@@ -232,9 +359,17 @@ func (p batchPull) headRepository(repo string) string {
 
 // node is the pull request as GitHub's GraphQL API answers the fields of the facts query.
 func (p batchPull) node(repo string, number int) map[string]any {
-	nodes := make([]any, 0, min(100, len(p.messages)))
-	for _, message := range p.messages[:min(100, len(p.messages))] {
+	answered := p.messages[:min(factsPage, len(p.messages))]
+	if p.queryMessages > 0 {
+		answered = answered[:min(p.queryMessages, len(answered))]
+	}
+	nodes := make([]any, 0, len(answered))
+	for _, message := range answered {
 		nodes = append(nodes, map[string]any{"commit": map[string]any{"message": message}})
+	}
+	var numberField any = number
+	if p.undecodable {
+		numberField = strconv.Itoa(number)
 	}
 	var mergedAt, mergeCommit any
 	if p.state == "merged" {
@@ -242,7 +377,7 @@ func (p batchPull) node(repo string, number int) map[string]any {
 		mergeCommit = map[string]any{"oid": fakeSHA("m", number)}
 	}
 	return map[string]any{
-		"number": number, "title": p.title, "body": p.body,
+		"number": numberField, "title": p.title, "body": p.body,
 		"url":   fmt.Sprintf("https://github.com/%s/pull/%d", repo, number),
 		"state": strings.ToUpper(p.state), "merged": p.state == "merged", "mergedAt": mergedAt,
 		"updatedAt":   p.updatedAt.UTC().Format(time.RFC3339),
@@ -724,4 +859,147 @@ func TestAnAbsentAliasIsAbsent(t *testing.T) {
 			t.Errorf("the answer of acme/gone#5 = %s, want no answer: its repository answered null", describeBatchAnswer(answer, found))
 		}
 	})
+}
+
+// The query can answer fewer than 100 messages of a pull request of more than 100 commits. Then
+// the pages of the query and of REST do not line up. So the read takes every page from the first
+// and keeps no message of the query: it holds GitHub's 250 messages, each once, in order. The
+// control in the same test: a query that answers the first 100 messages reads the rest from the
+// second page. A read that always starts at the second page fails the first case. A read that
+// always starts at the first page fails the control (factsRead.answer).
+func TestAQueryOfFewerThanAHundredMessagesReadsEveryPageFromTheFirst(t *testing.T) {
+	for _, kase := range []struct {
+		name          string
+		queryMessages int
+		pages         []int
+	}{
+		{name: "the_query_answers_40_messages", queryMessages: 40, pages: []int{1, 2, 3}},
+		{name: "control_the_query_answers_the_first_100", pages: []int{2, 3}},
+	} {
+		t.Run(kase.name, func(t *testing.T) {
+			pool, ctx := deliveryTestPool(t)
+			fake := newFakeGitHub(t)
+			github := serveBatchGitHub(t, fake)
+			const repo, number = "acme/widgets", 801
+			pull := openPull(number, time.Now().UTC().Add(-time.Hour).Truncate(time.Second))
+			pull.messages = make([]string, 250)
+			for i := range pull.messages {
+				pull.messages[i] = fmt.Sprintf("Commit %d of the long change.", i+1)
+			}
+			pull.queryMessages = kase.queryMessages
+			github.set(repo, number, pull)
+			client := fake.newTestClient()
+			refs := batchRefs(repo, number)
+
+			answers := readBatchOrFail(t, ctx, pool, client, batchToken(t, ctx, client, repo), refs)
+
+			answer := answers[refs[0]]
+			if answer.Head == nil || answer.Head.Texts == nil {
+				t.Fatalf("the answer of #%d = %s, want its head row with its texts", number, describeBatchAnswer(answer, true))
+			}
+			if texts := answer.Head.Texts; !texts.MessagesRead || !slices.Equal(texts.CommitMessages, pull.messages) {
+				t.Errorf("#%d holds %d messages, read %v; want the 250 of GitHub, each once, in order", number, len(texts.CommitMessages), texts.MessagesRead)
+			}
+			if pages := github.pagesAsked(); !slices.Equal(pages, kase.pages) {
+				t.Errorf("the pages of commits asked = %v, want %v", pages, kase.pages)
+			}
+		})
+	}
+}
+
+// A pull request whose answer alone is above the client's 1 MiB goes to the refresh
+// (RefreshPullRequestHead). GitHub can refuse that REST read with a 404. Then the ref is out of
+// the answers, as for a null alias: no answer, no error and no stored row. The other pull request
+// of the batch keeps its answer. The control in the same test: where the REST read answers, the
+// ref's answer is the stored facts. A read that gives a refused refresh an answer, or that ends
+// with an error, fails the first case (factsRead.refresh).
+func TestARefusedRefreshLeavesAPullRequestTooLargeAloneOutOfTheAnswers(t *testing.T) {
+	second := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	for _, held := range []bool{false, true} {
+		name := map[bool]string{false: "the_refresh_answers_404", true: "control_the_refresh_answers"}[held]
+		t.Run(name, func(t *testing.T) {
+			pool, ctx := deliveryTestPool(t)
+			fake := newFakeGitHub(t)
+			github := serveBatchGitHub(t, fake)
+			const repo, large, small = "acme/widgets", 901, 902
+			if held {
+				github.set(repo, large, openPull(large, second))
+			}
+			github.set(repo, small, openPull(small, second))
+			github.oversize = func(asked []int) bool { return slices.Contains(asked, large) }
+			client := fake.newTestClient()
+			refs := batchRefs(repo, large, small)
+
+			answers := readBatchOrFail(t, ctx, pool, client, batchToken(t, ctx, client, repo), refs)
+
+			answer, found := answers[refs[0]]
+			switch {
+			case held && (!found || !answer.Stored || answer.Facts == nil || answer.Head != nil):
+				t.Errorf("the answer of #%d = %s, want the facts that the refresh stored", large, describeBatchAnswer(answer, found))
+			case !held && found:
+				t.Errorf("the answer of #%d = %s, want no answer: GitHub refused the refresh with a 404", large, describeBatchAnswer(answer, found))
+			}
+			if answer := answers[refs[1]]; answer.Head == nil || answer.Head.HeadSHA != fakeSHA("h", small) {
+				t.Errorf("the answer of #%d = %s, want its head row", small, describeBatchAnswer(answer, true))
+			}
+			if got := github.restReadsOf(repo, large); got != 1 {
+				t.Errorf("GET /repos/%s/pulls/%d was asked %d times, want once: the refresh", repo, large, got)
+			}
+			want := map[bool]int{false: 0, true: 1}[held]
+			var rows int
+			if err := pool.QueryRow(ctx, `select count(*) from pull_request_heads where repo = $1 and number = $2`, repo, large).Scan(&rows); err != nil || rows != want {
+				t.Errorf("results rows of #%d after the read = %d (%v), want %d", large, rows, err, want)
+			}
+		})
+	}
+}
+
+// An alias whose answer does not decode ends the read with an error that names it. The answers
+// before it come back with the error. These are the ten of the first half's request, and the
+// aliases of the second half's request before it. No alias after it has an answer, and no request
+// follows. The read takes the aliases of a request in their order (factsRead.decode). The control
+// in the same test: the same twenty, with every alias decodable, answer twenty and no error. A
+// read that drops the answers it had, or that goes on past the alias, fails the first case
+// (factsRead.query).
+func TestAnAliasThatDoesNotDecodeEndsTheRead(t *testing.T) {
+	second := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	for _, garbled := range []bool{true, false} {
+		name := map[bool]string{true: "alias_515_does_not_decode", false: "control_every_alias_decodes"}[garbled]
+		t.Run(name, func(t *testing.T) {
+			pool, ctx := deliveryTestPool(t)
+			fake := newFakeGitHub(t)
+			github := serveBatchGitHub(t, fake)
+			const repo, bad = "acme/widgets", 515
+			numbers := numbersFrom(501, 20)
+			for _, number := range numbers {
+				pull := openPull(number, second)
+				pull.undecodable = garbled && number == bad
+				github.set(repo, number, pull)
+			}
+			github.oversize = func(asked []int) bool { return len(asked) > 10 }
+			client := fake.newTestClient()
+			refs := batchRefs(repo, numbers...)
+
+			answers, err := readFactsBatch(ctx, pool, client, nil, batchToken(t, ctx, client, repo), refs, time.Now())
+
+			if asked := len(github.asked()); asked != 3 {
+				t.Errorf("readFactsBatch sent %d queries, want 3: the twenty, and two halves of ten", asked)
+			}
+			if !garbled {
+				if err != nil || len(answers) != len(refs) {
+					t.Errorf("readFactsBatch answered %d of %d pull requests and the error %v, want each and no error", len(answers), len(refs), err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%s#%d", repo, bad)) {
+				t.Errorf("readFactsBatch answered the error %v, want one that names %s#%d, whose answer does not decode", err, repo, bad)
+			}
+			for _, ref := range refs {
+				answer, found := answers[ref]
+				if want := ref.Number < bad; found != want || found && answer.Head == nil {
+					t.Errorf("the answer of #%d = %s, want an answer with a head row %v: only an alias before #%d has one", ref.Number, describeBatchAnswer(answer, found), want, bad)
+				}
+			}
+		})
+	}
 }

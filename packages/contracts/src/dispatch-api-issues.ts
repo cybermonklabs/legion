@@ -367,11 +367,16 @@ export type CheckResultRetractedEventPayload = z.output<
 >;
 
 /** `issue.pull_request_attribution_changed`: a pull request Dispatch credited to one issue now
- *  belongs to another, which changes what that issue's results are measured against. One event
- *  goes on the issue it left and one on the issue it reached, each carrying this payload;
- *  `from` and `to` are those two issues, either null and never both, and `source` is what
- *  decided the new one (`external_link`, `github_issue_link`, `branch`, `title_body`,
- *  `commit_message`, or `none` where the pull request is now credited to nobody). */
+ *  belongs to another, which changes what that issue's results are measured against. The
+ *  delivery reconcile pass appends these events after the pass writes the new issue, not in the
+ *  write. One pass appends the events of at most 500 changes, the oldest first, so n changes
+ *  need ceil(n / 500) passes. Two or more changes of one pull request before its events are one
+ *  change, from the first issue it left to the last issue it reached, and a change and its
+ *  change back append nothing. One event goes on the issue it left and one on the issue it
+ *  reached, where that issue is set and still exists, each carrying this payload; `from` and
+ *  `to` are those two issues, either null and never both, and `source` is what decided the new
+ *  one (`external_link`, `github_issue_link`, `branch`, `title_body`, `commit_message`, or
+ *  `none` where the pull request is now credited to nobody). */
 export const IssuePullRequestAttributionEventPayloadSchema = z
   .strictObject({
     repo: z.string(),

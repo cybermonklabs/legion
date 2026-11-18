@@ -128,8 +128,10 @@ func pullRequestAbsent(ctx context.Context, client *githubapp.Client, refused *p
 // answer, and a repository the App is not installed on costs the pass no further call: each of its
 // rows is read as the refusal it is, and stays owed. It is a memory of work and nothing more: it
 // keeps only GitHub's answer that no installation covers the repository, it ends no record, and
-// the next pass asks again, so an installation that comes back is found at the next pass.
-type passInstallations struct{ known sync.Map }
+// the next pass asks again, so an installation that comes back is found at the next pass. It also
+// holds each installation's budget of facts queries for the pass (factsBudget), which the open arm
+// and the facts line share.
+type passInstallations struct{ known, budgets sync.Map }
 
 // installationLookup is one repository's lookup of a pass, made once.
 type installationLookup struct {

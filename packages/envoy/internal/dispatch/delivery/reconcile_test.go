@@ -264,7 +264,9 @@ func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
 
 // TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers proves S3: a partial row
 // whose completing fetch answers a permanent 404 is marked unfetchable (not retried every pass
-// forever), and a later successful fetch of the same pull request clears it again.
+// forever), and a later successful fetch of the same pull request clears it again. The head
+// pass's facts line reads the row by a batched query (readFactsBatch), which the fake counts
+// apart; the test counts the REST reads alone. A completion that reads a marked row makes it fail.
 func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -280,7 +282,9 @@ func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *te
 	requests := 0
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/pulls/70", func(w http.ResponseWriter, r *http.Request) {
-		requests++
+		if restRead(r) {
+			requests++
+		}
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	})
@@ -308,13 +312,13 @@ func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *te
 		t.Errorf("pr.UnfetchableReason = %v, want it to name the 404", pr.UnfetchableReason)
 	}
 	if requests != 1 {
-		t.Fatalf("requests to GET the pull request = %d, want 1", requests)
+		t.Fatalf("REST requests to GET the pull request = %d, want 1", requests)
 	}
 
 	// A second pass must not retry it: ListPartialPullRequests excludes a marked row.
 	reconcile.runOnce(ctx)
 	if requests != 1 {
-		t.Fatalf("requests after a second pass = %d, want still 1 (an unfetchable row is never retried)", requests)
+		t.Fatalf("REST requests after a second pass = %d, want still 1 (an unfetchable row is never retried)", requests)
 	}
 
 	// A later successful fetch of the same pull request (a live webhook retry, here simulated
@@ -501,7 +505,9 @@ func TestReconcileMarksA404RunJobsUnfetchableAndSkipsItUntilItRecovers(t *testin
 // errgroup.WithContext + SetLimit(8) rate-limit stop end to end: among several partial rows, the
 // one answering a 403 secondary-rate-limit response must stop every further completion from
 // starting (never more than the ones already in flight when it happened), and the pass must be
-// reported failed, not successful.
+// reported failed, not successful. The head pass's facts line reads the rows by a batched query
+// (readFactsBatch), and the fake counts it apart. The test counts the completions' REST reads
+// alone. A completion that goes on past the first limit makes it fail.
 func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConcurrency(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -520,7 +526,9 @@ func TestReconcilePartialPullRequestsStopsOnRateLimitInsteadOfRetryingAtFullConc
 	var attempts atomic.Int64
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
-		attempts.Add(1)
+		if restRead(r) {
+			attempts.Add(1)
+		}
 		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.Header().Set("Retry-After", "60")
 		w.WriteHeader(http.StatusForbidden)
@@ -728,20 +736,12 @@ func TestReconcileRefreshesAPullRequestHeadWithNoDeliverySettings(t *testing.T) 
 	}
 }
 
-// A merged pull request whose stored row credits nobody is attributed by the next pass, whatever
-// the row's own history: the issue's requirement is that a wrongly attributed row is corrected by
-// the next pass (dispatch://INFRA-1240/spec#b-r3), and the rule that credits it has just changed,
-// so what an earlier pass concluded about a row is no answer for this one. The population is
-// every pull request merged before this change whose title or body named another repository's
-// issue first: the merge envelope read GitHub in full, which stamps the row read
-// (recordPullRequestHead), and the old rule credited nobody, so the row is merged, unattributed
-// and stamped. ListStalePullRequestHeads takes a merged row credited to nobody only until the
-// rule this build judges by has judged it (AttributionRuleVersion), so a row an older rule
-// judged is offered once more; nothing else ever revisits a merged row, and a recorded result
-// reads through only for a commit no head Dispatch knows — so without this the row keeps no
-// issue for good and every `before_merge` result at that head stands at no basis for ever,
-// which is the defect this issue exists to fix (its own witness, theorem-labs/agent-infra#2131
-// for INFRA-1219, merged at 2026-11-05T01:09:12Z with head 0018f0a1af2f, is such a row).
+// An earlier pass left a merged pull request credited to nobody, and its row has no texts. The
+// facts line of the next pass reads it and attributes it. One batched query (readFactsBatch) reads
+// it, and the pass writes the statement's answer to the stored row (SyncAttributions). The pass
+// after it reads nothing of the row: its texts are current and its messages are read. The fake
+// counts the batched queries apart from the REST reads. A facts line that skips a merged row, a
+// write that stores no texts, or a second read makes this test fail.
 func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -750,8 +750,12 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 	const sha = "6060606060606060606060606060606060606060"
 	title := foreign + ": the other repository's issue, and " + own + " (this one)"
 
+	var restReads atomic.Int32
 	fake := newFakeGitHub(t)
-	fake.handle("GET /repos/acme/gadgets/pulls/60", func(w http.ResponseWriter, _ *http.Request) {
+	fake.handle("GET /repos/acme/gadgets/pulls/60", func(w http.ResponseWriter, r *http.Request) {
+		if restRead(r) {
+			restReads.Add(1)
+		}
 		mustEncode(t, w, map[string]any{
 			"number": 60, "title": title, "body": "", "html_url": "https://github.com/acme/gadgets/pull/60",
 			"state": "closed", "merged": true, "updated_at": "2026-02-07T00:00:00Z",
@@ -762,115 +766,55 @@ func TestReconcileAttributesAMergedHeadAnEarlierPassLeftCreditedToNobody(t *test
 			"base": map[string]any{"ref": "main"},
 		})
 	})
-	fake.handle("GET /repos/acme/gadgets/pulls/60/commits", func(w http.ResponseWriter, _ *http.Request) {
+	fake.handle("GET /repos/acme/gadgets/pulls/60/commits", func(w http.ResponseWriter, r *http.Request) {
+		if restRead(r) {
+			restReads.Add(1)
+		}
 		mustEncode(t, w, []any{})
 	})
 
+	// The row as an earlier pass left it: merged, credited to nobody, stamped read a day ago, and
+	// with no texts.
 	stamped := time.Now().Add(-24 * time.Hour)
 	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
 		Repo: "acme/gadgets", Number: 60, HeadSHA: sha, HeadRef: "legion/" + own, BaseRef: "main",
 		State: "merged",
 		Title: title, URL: "https://github.com/acme/gadgets/pull/60", CheckedAt: &stamped,
 	}); err != nil {
-		t.Fatalf("store the merged head the old rule left: %v", err)
+		t.Fatalf("store the merged head an earlier pass left: %v", err)
 	}
-	// The rule that judged it: no writer stamps a rule that is not this build's, so the row an
-	// older rule left is written and then stamped with that rule's number.
-	stampLegacyAttributionRule(t, ctx, pool, "acme/gadgets", 60)
+	if before := readHead(t, ctx, pool, "acme/gadgets", 60); before.IssueKey != nil {
+		t.Fatalf("the merged head before the pass = %v, want nobody: the row has no texts and stores no issue", before.IssueKey)
+	}
 
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+	reconcile.runOnce(ctx)
 
 	head := readHead(t, ctx, pool, "acme/gadgets", 60)
 	if head.IssueKey == nil || *head.IssueKey != own {
 		t.Fatalf("the merged head after a pass = %v, want %s: %s resolves to acme/widgets, %s to this repository",
 			head.IssueKey, own, foreign, own)
 	}
+	if stored := storedIssueOf(t, ctx, pool, "acme/gadgets", 60); stored == nil || *stored != own {
+		t.Fatalf("the merged row stores %v after a pass, want %s: the pass writes each answer to the stored row", stored, own)
+	}
 	attributed, err := HeadAttributedTo(ctx, pool, own, sha)
 	if err != nil || !attributed {
 		t.Fatalf("HeadAttributedTo(%s, its merged head) = %v, %v; want true: a result stands at it",
 			own, attributed, err)
 	}
-}
-
-// The other half of that repair: the re-judging is bounded, so the pass that corrects a merged
-// row does not go on reading it for ever. attribution_rule records the rule that judged a row
-// (AttributionRuleVersion), the merged arm offers a row to each rule once, and the refresh
-// stamps the rule as it writes the attribution — so the pass above reads the pull request from
-// GitHub exactly once, and the pass after it has no business with the row. Without that bound
-// every merged pull request credited to nobody would cost three GitHub calls every five
-// minutes, for ever, which is the shape the architect refused.
-//
-// The pull request here is titled after the other repository's issue alone, so this rule credits
-// it to nobody as the rule before it did. That is what makes the read count pin the rule bound
-// and not the arm's `issue_key is null`: a row this pass credited would leave the arm on its
-// issue alone, while this row stays in every way the arm reads but the rule it is stamped with.
-func TestReconcileReadsAMergedHeadItReJudgedOnlyOnce(t *testing.T) {
-	fastPageRetries(t)
-	pool, ctx := deliveryTestPool(t)
-	foreign := seedHeadIssue(t, ctx, pool, 61)
-	// acme/gadgets is a repository of its own project, as in the test above: what makes the
-	// title's issue foreign is that it resolves to acme/widgets, not that Dispatch maps nothing
-	// for the pull request's own repository.
-	seedProjectRepository(t, ctx, pool, "GDGT", "Gadgets", gadgetsRepo)
-	const sha = "6161616161616161616161616161616161616161"
-	title := foreign + ": the other repository's issue, and no issue of this one"
-
-	var pullReads atomic.Int32
-	fake := newFakeGitHub(t)
-	fake.handle("GET /repos/acme/gadgets/pulls/61", func(w http.ResponseWriter, _ *http.Request) {
-		pullReads.Add(1)
-		mustEncode(t, w, map[string]any{
-			"number": 61, "title": title, "body": "", "html_url": "https://github.com/acme/gadgets/pull/61",
-			"state": "closed", "merged": true, "updated_at": "2026-02-07T00:00:00Z",
-			"head": map[string]any{
-				"ref": "topic", "sha": sha,
-				"repo": map[string]any{"full_name": "acme/gadgets"},
-			},
-			"base": map[string]any{"ref": "main"},
-		})
-	})
-	fake.handle("GET /repos/acme/gadgets/pulls/61/commits", func(w http.ResponseWriter, _ *http.Request) {
-		mustEncode(t, w, []any{})
-	})
-
-	// A row stored before this build: merged, credited to nobody, stamped read, and judged by
-	// the rule that took the first candidate outright, which attribution_rule numbers 0. No
-	// writer stamps that rule, so the row is written and then stamped with it.
-	stamped := time.Now().Add(-24 * time.Hour)
-	if err := UpsertPullRequestHead(ctx, pool, PullRequestHead{
-		Repo: "acme/gadgets", Number: 61, HeadSHA: sha, HeadRef: "topic", BaseRef: "main",
-		State: "merged",
-		Title: title, URL: "https://github.com/acme/gadgets/pull/61", CheckedAt: &stamped,
-	}); err != nil {
-		t.Fatalf("store the merged head the old rule left: %v", err)
-	}
-	stampLegacyAttributionRule(t, ctx, pool, "acme/gadgets", 61)
-
-	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
-	reconcile.runOnce(ctx)
-	head := readHead(t, ctx, pool, "acme/gadgets", 61)
-	if head.IssueKey != nil {
-		t.Fatalf("the merged head after the first pass = %v, want nobody: %s resolves to acme/widgets, and the title names no issue of acme/gadgets",
-			head.IssueKey, foreign)
-	}
-	if head.attributionRule != AttributionRuleVersion {
-		t.Fatalf("the merged head's attribution_rule after the first pass = %d, want %d: the read stamps the rule that judged it",
-			head.attributionRule, AttributionRuleVersion)
+	queries := fake.factsQueries.Load()
+	if rest := restReads.Load(); queries != 1 || rest != 0 {
+		t.Fatalf("the pass asked %d batched queries and made %d REST reads, want 1 and 0: the facts line reads the row with no texts once",
+			queries, rest)
 	}
 
 	reconcile.runOnce(ctx)
-	if reads := pullReads.Load(); reads != 1 {
-		t.Fatalf("the two passes read the merged pull request from GitHub %d times, want once: the rule that judged the row is the current one now",
-			reads)
+	if again, rest := fake.factsQueries.Load()-queries, restReads.Load(); again != 0 || rest != 0 {
+		t.Fatalf("the next pass asked %d batched queries, and the two passes made %d REST reads; want none: the row has current texts and read messages",
+			again, rest)
 	}
-	stale, err := ListStalePullRequestHeads(ctx, pool, PullRequestHeadBatch, time.Now())
-	if err != nil {
-		t.Fatalf("list the stale heads: %v", err)
-	}
-	if len(stale) != 0 {
-		t.Fatalf("a third pass would read %+v, want nothing: this rule has judged every merged row", stale)
-	}
-	if again := readHead(t, ctx, pool, "acme/gadgets", 61); again.IssueKey != nil {
-		t.Fatalf("the merged head after the second pass = %v, want nobody still", again.IssueKey)
+	if again := readHead(t, ctx, pool, "acme/gadgets", 60); again.IssueKey == nil || *again.IssueKey != own {
+		t.Fatalf("the merged head after the next pass = %v, want %s still", again.IssueKey, own)
 	}
 }

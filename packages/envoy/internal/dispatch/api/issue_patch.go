@@ -13,47 +13,17 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// deleteIssueExternalLinks deletes every external link of the issue key, in tx, and answers the
-// URLs it held, which a PATCH that replaces the links compares with the URLs it writes
-// (changedLinks).
-func deleteIssueExternalLinks(ctx context.Context, tx pgx.Tx, key string) ([]string, error) {
-	rows, err := tx.Query(ctx, `delete from issue_external_links where issue_key = $1 returning url`, key)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, pgx.RowTo[string])
-}
-
-// changedLinks is every URL of removed or added that the other does not hold, compared
-// lowercased as the attribution compares a link with a pull request's URL: the links a PATCH gave
-// the issue or took away. A URL a PATCH writes again, its kind retyped or not, changes nothing.
-func changedLinks(removed, added []string) []string {
-	held := func(urls []string) map[string]bool {
-		set := make(map[string]bool, len(urls))
-		for _, url := range urls {
-			set[strings.ToLower(url)] = true
-		}
-		return set
-	}
-	before, after := held(removed), held(added)
-	var changed []string
-	for url := range before {
-		if !after[url] {
-			changed = append(changed, url)
-		}
-	}
-	for url := range after {
-		if !before[url] {
-			changed = append(changed, url)
-		}
-	}
-	slices.Sort(changed)
-	return changed
+// deleteIssueExternalLinks deletes every external link of the issue key, in tx: a PATCH that
+// replaces the links writes each one it sends again. The statement that gives a pull request's
+// issue reads the links as they stand at each read (delivery's attributedTerms), so a link this
+// write gives or takes away reaches every reader of the pull requests it names with no mark.
+func deleteIssueExternalLinks(ctx context.Context, tx pgx.Tx, key string) error {
+	_, err := tx.Exec(ctx, `delete from issue_external_links where issue_key = $1`, key)
+	return err
 }
 
 // issueUpdatedNow is the value every write that stamps an issue's updated_at itself sets it to:
@@ -429,8 +399,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if input.ExternalLinks != nil {
-		removed, err := deleteIssueExternalLinks(r.Context(), tx, key)
-		if err != nil {
+		if err := deleteIssueExternalLinks(r.Context(), tx, key); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -439,7 +408,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			heldBefore = append(heldBefore, link.URL)
 		}
 		sent := make(map[string]bool, len(*input.ExternalLinks))
-		added := make([]string, 0, len(*input.ExternalLinks))
 		for _, link := range *input.ExternalLinks {
 			if err := validateExternalURL(link.URL); err != nil {
 				s.writeHandlerError(w, err)
@@ -484,14 +452,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			added = append(added, link.URL)
-		}
-		// The links an issue gains or loses are an input of the attribution of the pull requests
-		// they name, which no event of those pull requests carries, so their stored head rows are
-		// read again by the first reconcile pass that reaches them (delivery.MarkHeadsLinked).
-		if err := delivery.MarkHeadsLinked(r.Context(), tx, changedLinks(removed, added)); err != nil {
-			s.writeHandlerError(w, err)
-			return
 		}
 		changed = true
 	}

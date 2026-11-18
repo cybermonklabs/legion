@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -44,8 +43,8 @@ func githubIssueLink(url string) []map[string]string {
 // while its record stored no row for the commit: the merged row is stored by the writer of a read
 // of GitHub, with the texts of GitHub's answer. At the results read the statement gives the tie
 // from those stored facts, so the result stands at the merged head and the read asks GitHub
-// nothing. A merged row is read again by no pass of Dispatch's once the current rule has judged
-// it, and the statement needs no read. Four ties no event carries:
+// nothing. No pass reads a merged row again while its texts are current and its messages are
+// read, and the statement needs no read. Four ties no event carries:
 //
 //   - a link of the check's issue to a GitHub issue the pull request's body cites;
 //   - a parent, with the pull request's repository, given to the issue the title names;
@@ -259,26 +258,21 @@ func TestAMergedHeadOfTheChecksOwnIssueIsNotReadThrough(t *testing.T) {
 	}
 }
 
-// onePass runs the head arm of one reconcile pass over database: every row
-// delivery.ListStalePullRequestHeads hands it, read from GitHub (delivery.RefreshPullRequestHead).
+// onePass runs one head pass of the reconcile over database, as each reconcile pass runs it
+// (delivery.Reconcile.HeadPass). It holds the owed reads, the open rows, the facts line, the write
+// of each answer to its stored rows, and the events of each move. It reads GitHub through
+// served's client.
 func onePass(t *testing.T, database *store.Store, served *server) {
 	t.Helper()
-	ctx := context.Background()
-	now := time.Now()
-	stale, err := delivery.ListStalePullRequestHeads(ctx, database.Pool, delivery.PullRequestHeadBatch, now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, head := range stale {
-		if _, _, err := delivery.RefreshPullRequestHead(ctx, database.Pool, served.deps.GitHub, nil, head.Repo, head.Number, now); err != nil {
-			t.Fatalf("read %s#%d: %v", head.Repo, head.Number, err)
-		}
+	if err := delivery.NewReconcile(database.Pool, served.deps.GitHub, served.deps.Events).HeadPass(context.Background()); err != nil {
+		t.Fatalf("one head pass: %v", err)
 	}
 }
 
-// writeReadMergedRow stores the row a complete read of GitHub leaves for pull request number of
-// repo, merged at sha: its URL, credited to issueKey ("" for none), read now and judged by the
-// current rule (delivery.AttributionRuleVersion), so the reconcile offers it no read of its own.
+// writeReadMergedRow stores the row that a read of the release before leaves for pull request
+// number of repo, merged at sha. The row holds its URL, the issue issueKey ("" for none), and
+// checked_at now. It stores no texts, because that release stores none. So the statement answers
+// the stored issue until the facts line of a pass reads the row from GitHub.
 func writeReadMergedRow(t *testing.T, database *store.Store, repo string, number int, sha, issueKey string) {
 	t.Helper()
 	var attributed *string
@@ -286,9 +280,9 @@ func writeReadMergedRow(t *testing.T, database *store.Store, repo string, number
 		attributed = &issueKey
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, url, event_at, checked_at, attribution_rule)
-		values ($1, $2, $3, 'feature/no-key', 'main', 'merged', $4, $5, now(), now(), $6)
-	`, repo, number, sha, attributed, fmt.Sprintf("https://github.com/%s/pull/%d", repo, number), delivery.AttributionRuleVersion); err != nil {
+		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, url, event_at, checked_at)
+		values ($1, $2, $3, 'feature/no-key', 'main', 'merged', $4, $5, now(), now())
+	`, repo, number, sha, attributed, fmt.Sprintf("https://github.com/%s/pull/%d", repo, number)); err != nil {
 		t.Fatalf("store the merged row of %s#%d: %v", repo, number, err)
 	}
 }
@@ -304,24 +298,15 @@ func comparedWithPull(t *testing.T, read issueResults, blockID string, number in
 	return false
 }
 
-// checkedAt is the checked_at of one stored head row, nil where no read has reached it since its
-// last write or mark.
-func checkedAt(t *testing.T, database *store.Store, repo string, number int) *time.Time {
-	t.Helper()
-	var at *time.Time
-	if err := database.Pool.QueryRow(context.Background(),
-		`select checked_at from pull_request_heads where repo = $1 and number = $2`, repo, number).Scan(&at); err != nil {
-		t.Fatalf("read the head of %s#%d: %v", repo, number, err)
-	}
-	return at
-}
-
-// A PATCH that links an issue to a merged pull request, or unlinks it, marks the pull request's
-// stored row, and the reconcile's next pass attributes the row with the links as they stand, with
-// no event of the pull request and no result at its head. The PATCH asks GitHub nothing. Between
-// the PATCH and the pass the results route compares the issue's checks with the row as it was. A
-// link to a URL that is no pull request's, and one to a pull request Dispatch stores no row for,
-// mark nothing; the second is read through at a results read of a result at its head, as at main.
+// A PATCH links an issue to a merged pull request, or unlinks it. The next head pass of the
+// reconcile follows it, with no event of the pull request and no result at its head. The PATCH
+// asks GitHub nothing. The merged row has no texts, as a row of the release before has none, so
+// the statement answers the row's stored issue. Between the PATCH and the pass, the results route
+// thus compares the issue's checks with the row as it was. The pass reads the row's facts in its
+// facts line, with the batched query. The check then compares with the links as they stand. The
+// test fails where the head pass does not read a merged row with no texts. A link to a URL that
+// is no pull request's, and one to a pull request with no stored row, store no row. The results
+// read reads GitHub for a result at the head of the second, as at main.
 func TestALinkWrittenToAMergedPullRequestIsFollowedByTheNextPass(t *testing.T) {
 	t.Run("a_link_added", func(t *testing.T) {
 		handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
@@ -336,14 +321,12 @@ func TestALinkWrittenToAMergedPullRequestIsFollowedByTheNextPass(t *testing.T) {
 		})
 		spent := fake.asks("acme/widgets")
 		patchIssue(t, handler, issue.Key, map[string]any{"external_links": []map[string]string{{"url": "https://github.com/acme/widgets/pull/84"}}})
-		marked := checkedAt(t, database, "acme/widgets", 84)
+		patchAsks := fake.asks("acme/widgets") - spent
 		between := comparedWithPull(t, readResults(t, handler, issue.Key), "k1", 84)
+		queried := fake.factsQueries()
 		onePass(t, database, served)
 		after := comparedWithPull(t, readResults(t, handler, issue.Key), "k1", 84)
-		t.Logf("checked_at_after_patch=%v compared_between=%v compared_after_one_pass=%v patch_asks=%d", marked, between, after, fake.asks("acme/widgets")-spent)
-		if marked != nil {
-			t.Errorf("the PATCH that linked #84 left its row read at %s, want it marked unread", marked.Format(time.RFC3339Nano))
-		}
+		t.Logf("compared_between=%v compared_after_one_pass=%v patch_asks=%d pass_facts_queries=%d", between, after, patchAsks, fake.factsQueries()-queried)
 		if between {
 			t.Errorf("between the PATCH and the pass the check compares with #84, want the row as it was")
 		}
@@ -364,33 +347,28 @@ func TestALinkWrittenToAMergedPullRequestIsFollowedByTheNextPass(t *testing.T) {
 			return mergedPull(repo, 85, headCommit, "A change", "")
 		})
 		patchIssue(t, handler, issue.Key, map[string]any{"external_links": []map[string]string{}})
-		marked := checkedAt(t, database, "acme/widgets", 85)
+		queried := fake.factsQueries()
 		onePass(t, database, served)
 		after := comparedWithPull(t, readResults(t, handler, issue.Key), "k1", 85)
-		t.Logf("checked_at_after_patch=%v compared_after_one_pass=%v", marked, after)
-		if marked != nil {
-			t.Errorf("the PATCH that unlinked #85 left its row read at %s, want it marked unread", marked.Format(time.RFC3339Nano))
-		}
+		t.Logf("compared_after_one_pass=%v pass_facts_queries=%d", after, fake.factsQueries()-queried)
 		if after {
 			t.Errorf("after one pass the check still compares with #85, which the issue no longer links")
 		}
 	})
 	t.Run("a_link_to_no_pull_request_and_one_to_a_pull_request_with_no_row", func(t *testing.T) {
 		handler, database, served, fake := readThroughGitHub(t, "acme/widgets")
-		issue := issueInRepository(t, handler, "RMTI", "acme/widgets", "Links that mark nothing")
+		issue := issueInRepository(t, handler, "RMTI", "acme/widgets", "Links that store no row")
 		uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 		writeReadMergedRow(t, database, "acme/widgets", 86, newHeadCommit, "")
-		before := checkedAt(t, database, "acme/widgets", 86)
 		patchIssue(t, handler, issue.Key, map[string]any{"external_links": []map[string]string{
 			{"url": "https://example.com/a-design-note"}, {"url": "https://github.com/acme/widgets/pull/87"},
 		}})
-		after := checkedAt(t, database, "acme/widgets", 86)
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from pull_request_heads`).Scan(&rows); err != nil {
 			t.Fatal(err)
 		}
-		if before == nil || after == nil || !after.Equal(*before) || rows != 1 {
-			t.Errorf("the PATCH changed the row of #86 from checked_at %v to %v, %d rows stored: want the one row as it was", before, after, rows)
+		if rows != 1 {
+			t.Errorf("after the PATCH %d rows are stored, want the one row of #86", rows)
 		}
 		// #87 has no row, so a result at its head is read through, as at main.
 		recorded := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil)))
