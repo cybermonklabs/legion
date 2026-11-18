@@ -452,7 +452,7 @@ func main() {
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
 	enr := &enroll.Service{
 		Store: st, Lease: lease, Pod: pod, ServiceLogins: cfg.ServiceLogins, ServicesByAccount: cfg.ServicesByAccount,
-		VMServicesByAccount: cfg.VMServicesByAccount,
+		VMServicesByAccount: cfg.VMServicesByAccount, PodOperators: cfg.PodOperators,
 	}
 	enr.Chain = enroll.NewChainVerifier(st, cfg.PublicURL, time.Duration(cfg.ProofSkewSeconds)*time.Second)
 	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry))
@@ -1102,6 +1102,7 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
+		PodOperators:        cfg.PodOperators,
 		// The two types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
