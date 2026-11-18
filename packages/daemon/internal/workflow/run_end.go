@@ -98,11 +98,7 @@ func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 		return nil
 	}
 	runs.settled = true
-	var keys []string
-	for _, written := range record.IssuesWritten(ctx) {
-		keys = append(keys, written.Key)
-	}
-	return e.settleRuns(ctx, tx, runs, keys, true, nil)
+	return e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), true, nil)
 }
 
 // nameMoveEnd names the end of the run issue stands in that a move on trigger into to ends: the

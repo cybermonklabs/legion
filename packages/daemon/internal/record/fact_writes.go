@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,17 +19,11 @@ type issueWrites struct {
 	before map[string]*Issue
 }
 
-// WrittenIssue is one issue the writes of a transaction touched: its key, and its record as it
-// stood before the first of those writes, nil where it had none.
-type WrittenIssue struct {
-	Key    string
-	Before *Issue
-}
-
 // WithIssueWrites answers ctx in which the store keeps each issue a write touches — its record
 // (PutIssue) or its pull request (PutPullRequest) — with the record as it stood before the first
-// such write, which IssuesWritten answers. A ctx that keeps them already is answered as it is, so
-// the writes of one transaction are kept once whoever asks for them.
+// such write: IssuesWritten answers the keys, and IssueBefore the record of each. A ctx that keeps
+// them already is answered as it is, so the writes of one transaction are kept once whoever asks
+// for them.
 func WithIssueWrites(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(issueWritesKey{}).(*issueWrites); ok {
 		return ctx
@@ -36,19 +31,14 @@ func WithIssueWrites(ctx context.Context) context.Context {
 	return context.WithValue(ctx, issueWritesKey{}, &issueWrites{before: map[string]*Issue{}})
 }
 
-// IssuesWritten is each issue a write in ctx touched, in the order of the first write of each,
-// with its record as it stood before that write: nothing for a ctx that keeps no writes
-// (WithIssueWrites).
-func IssuesWritten(ctx context.Context) []WrittenIssue {
+// IssuesWritten is the key of each issue a write in ctx touched, in the order of the first write of
+// each: nothing for a ctx that keeps no writes (WithIssueWrites).
+func IssuesWritten(ctx context.Context) []string {
 	writes, ok := ctx.Value(issueWritesKey{}).(*issueWrites)
 	if !ok {
 		return nil
 	}
-	written := make([]WrittenIssue, 0, len(writes.order))
-	for _, key := range writes.order {
-		written = append(written, WrittenIssue{Key: key, Before: writes.before[key]})
-	}
-	return written
+	return slices.Clone(writes.order)
 }
 
 // IssueBefore is the record of key as it stood before the first write in ctx that touched it, and
