@@ -1,6 +1,6 @@
 // Package memoryguard ends a process it may end when a container nears its memory limit, the
 // process that grew the most over its last few reads, else the largest one new to its stay in the
-// band, else the one that grew the most since the previous kill, else the largest, a fork that
+// band, else the one that grew the most since the rise's first kill, else the largest, a fork that
 // still runs its parent's program counted by what it holds over its parent, so that the kernel
 // does not end the whole sandbox instead (INFRA-3557, by the rules of INFRA-3531). Under gVisor
 // the host kernel sees one sandbox and not its processes: a container that passes its limit loses

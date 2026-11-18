@@ -401,7 +401,7 @@ runtime:
     #     act_percent: 85              # it, it ends with SIGKILL the process that grew the most over its last
     #     floor_percent: 10            # few reads, else the largest one it has read at most once in its last
     #     wait_seconds: 5              # two readings near the limit, else the one that grew the most since the
-    #     interval_milliseconds: 100   # previous kill, else the largest, a fork that still runs its parent's
+    #     interval_milliseconds: 100   # rise's first kill, else the largest, a fork that still runs its parent's
     #   controller_pod:                # program counted by what it holds over its parent, and tells the role
     #     enabled: true                # whose process it was. Legion's own processes and each role's agent are
     #     act_percent: 85              # never ended. After a kill it waits for that process to exit, at most
