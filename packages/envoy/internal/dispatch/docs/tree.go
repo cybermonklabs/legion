@@ -632,11 +632,18 @@ func (w *roomWeighing) roomScans() *roomScans {
 }
 
 // roomStateBytes is the bytes of encoded state the room is tracked at (roomApplies.state), and
-// zero for a document no room's load listed, which is tracked at nothing: the hook then bounds
-// its applies by the whole of maxRoomStateBytes, as it weighs such a room against the byte bound
-// on the update's own bytes alone.
+// zero for a document no room's load listed, which is tracked at nothing.
 func (w *roomWeighing) roomStateBytes() int64 {
 	return w.applies().stateBytes()
+}
+
+// roomResidentBytes is what the room holds of encoded state and pending queue together
+// (roomApplies.residentBytes): what the state cap's allowance weighs a browser's update against
+// and what a copy of the room carries, and zero for a document no room's load listed, which is
+// tracked at nothing: the hook then bounds its applies by the whole of maxRoomStateBytes, as it
+// weighs such a room against the byte bound on the update's own bytes alone.
+func (w *roomWeighing) roomResidentBytes() int64 {
+	return w.applies().residentBytes()
 }
 
 // size is the room's last published measurement - the bytes of its rendering - and whether it has

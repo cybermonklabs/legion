@@ -542,19 +542,21 @@ func structCeiling(doc *crdt.Doc) uint64 {
 	return storedCeiling(plusCapped(uint64(doc.StructCount()), uint64(parked.Items)), parked)
 }
 
-// storedCeiling is how many items the encoded state of a room carries for its next load to
-// decode: held, the structs the room holds now with each parked struct counted once, as an
-// apply's report counts them (crdt.ApplyReport.Structs, heldStructs); each parked struct again,
-// since the state carries it with at most a skip over the gap it waits behind (withParked,
-// crdt/update.go:268-296 in sjawhar/ygo v1.55.1-sami.8); and each parked delete range once, for
-// the struct its drain can leave split.
+// storedCeiling is how many items a room is weighed at against the decode cap: held, the structs
+// the room holds now with each parked struct counted once, as an apply's report counts them
+// (crdt.ApplyReport.Structs, heldStructs); each parked struct again; and each parked delete range
+// once, for the struct its drain can leave split.
 //
-// A parked struct is counted twice because a skip is an item of the encoded update as the struct
-// itself is, and a frame can make the state carry one skip for every struct it parks: the structs
-// of one client's contiguous clocks travel as one group behind one skip, but structs each waiting
-// behind a gap of their own do not, and a frame of GC structs alternating with one-clock gaps
-// parked 524,283 structs into a 1,048,576-item state under a count that charged each of them once
-// (TestR7ParkedStructsBehindTheirOwnGapsPassTheDecodeCap, dispatch://INFRA-179, review 7).
+// A room stores nothing it parks (leaveParkedOut), so the two parked terms are not what its next
+// load decodes but what bounds its pending queue in memory: the queue comes out of the same
+// headroom as what the room integrates, at what the stored state carried for it when it was
+// stored, a skip over its gap beside each struct (withParked, crdt/update.go:268-296 in
+// sjawhar/ygo v1.55.1-sami.8), where the queue's own cap (Server.MaxPendingItems) would let it
+// grow to maxUpdateItems beside a room already at the decode cap. A frame of GC structs
+// alternating with one-clock gaps parked 524,283 structs into a 1,048,576-item state under a
+// count that charged each of them once (TestR7ParkedStructsBehindTheirOwnGapsPassTheDecodeCap,
+// dispatch://INFRA-179, review 7). Rows an earlier build stored of what parked are still
+// decoded, and parked, by the next load, which these terms count as they always did.
 func storedCeiling(held uint64, parked crdt.PendingStats) uint64 {
 	return plusCapped(held, uint64(parked.Items)+uint64(parked.DeleteRanges))
 }

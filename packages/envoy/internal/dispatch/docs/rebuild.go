@@ -303,12 +303,10 @@ func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64, tracked int64) (w
 // and make the replica's weak pointer strong for none of it (roomWeighing): the struct total is
 // a walk of the store's client slices and a read of its pending queue, and tracked is a field.
 // A refusal of a browser's update offers the rebuild only where this answers near
-// (peerRule.refusal, refusedStuckBacklog), so no close offers a rebuild the route answers 409
-// DOCUMENT_LIVE: a state-cap refusal of a paste past the margin, a decode-cap refusal of a frame
-// past the structs' share and a stalled backlog all closed DOC_NEEDS_REBUILD in rooms this route
-// refused (the TestR7A...RefusalIsOfferedARebuildTheRouteRefuses tests and
-// TestR7OneFrameOfParkedDeleteRangesLocksEveryEditorOutOfASmallDocument, dispatch://INFRA-179,
-// review 7).
+// (peerRule.refusal), so no close offers a rebuild the route answers 409 DOCUMENT_LIVE: a
+// state-cap refusal of a paste past the margin and a decode-cap refusal of a frame past the
+// structs' share both closed DOC_NEEDS_REBUILD in rooms this route refused (the
+// TestR7A...RefusalIsOfferedARebuildTheRouteRefuses tests, dispatch://INFRA-179, review 7).
 //
 // It answers far where the route may still take the room by its whole text or its scan total. A
 // refusal there is of the edit's own size, and its remedy is a smaller edit, which a room this

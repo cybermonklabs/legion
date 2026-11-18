@@ -751,7 +751,7 @@ func closedIssueCommentMark(ctx context.Context, write *liveWrite) bool {
 // is the room's own, advancing the instance's cursor only at the commit. So the cursor compared is
 // the one the transaction sees, with its flush's versions folded in (transactionCursor,
 // RoomFlush.heldThrough), as its appends' gate compares it (appendingCursor). Compared bare, a
-// room whose update a batch still lingered over when the transaction's snapshot stored it reads as
+// room whose update a batch had still to store when the transaction's snapshot stored it reads as
 // behind, and the write forks the committed store, which holds neither that update nor anything
 // after it.
 //

@@ -221,7 +221,11 @@ func (r *roomScans) reserve(origin any, ceiling int) *scanAllowance {
 
 // settle ends allowance, whose apply returned err: it gives the reservation back and adds what the
 // apply's scans passed to the total - its committed transaction's count, or for a refused apply
-// the count its refusal reports. Nil settles nothing.
+// the count its refusal reports. What a discarded drain scanned (crdt.DrainDiscardedError.Scanned)
+// is left out: the apply's own allowance bounded how long that drain held the document's lock,
+// and nothing it scanned is left in the room, whose total counts what reaching its own state
+// cost. A discarded drain is checked first, since the refusal that stopped it can be what its
+// error wraps (crdt.RefusedUpdateError). Nil settles nothing.
 func (r *roomScans) settle(allowance *scanAllowance, err error) {
 	if r == nil || allowance == nil {
 		return
@@ -230,8 +234,13 @@ func (r *roomScans) settle(allowance *scanAllowance, err error) {
 	defer r.mu.Unlock()
 	delete(r.applies, allowance.origin)
 	r.reserved -= int64(allowance.scans)
+	var discarded *crdt.DrainDiscardedError
 	var refused *crdt.RefusedUpdateError
 	switch {
+	case errors.As(err, &discarded):
+		if allowance.committed {
+			r.used += max(int64(allowance.scanned)-int64(discarded.Scanned), 0)
+		}
 	case errors.As(err, &refused):
 		r.used += int64(refused.Scanned)
 	case allowance.committed:

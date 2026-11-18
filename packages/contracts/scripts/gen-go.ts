@@ -13,6 +13,9 @@ import {
   DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
   DOCUMENT_BUSY_CLOSE_CODE,
   DOCUMENT_BUSY_CLOSE_REASON,
+  DOCUMENT_CLIENT_ID_MESSAGE_PREFIX,
+  DOCUMENT_CLIENT_ID_PARAMETER,
+  DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON,
   DOCUMENT_NEEDS_REBUILD_CLOSE_REASON,
   DOCUMENT_NEWER_CONTENT_CLOSE_CODE,
   DOCUMENT_NEWER_CONTENT_CLOSE_REASON,
@@ -538,15 +541,17 @@ const DocumentSchemaCloseReason = ${JSON.stringify(DOCUMENT_SCHEMA_CLOSE_REASON)
 // is rebuilt - it would carry the room's encoded state past the most one room may hold, or the
 // document past the structs ygo decodes in one update, or its history has used up what the room
 // lets its applies scan - DocumentRebuiltCloseReason
-// the one that still holds a history a rebuild replaced, and DocumentUpdateRefusedCloseReason the
+// the one that still holds a history a rebuild replaced, DocumentUpdateRefusedCloseReason the
 // one whose update holds content the document does not take - bytes the decoder refuses, or
-// content the Proof editor never sends; DocumentBusyCloseCode and DocumentBusyCloseReason close a
-// browser the room-memory budget has no room for, and the one whose update would grow a document
-// while that budget is full.
+// content the Proof editor never sends - and DocumentClientIdRefusedCloseReason the one whose
+// update carries an edit under a client id that is not the sender's; DocumentBusyCloseCode and
+// DocumentBusyCloseReason close a browser the room-memory budget has no room for, and the one
+// whose update would grow a document while that budget is full.
 // Generated from DOCUMENT_TOO_LARGE_CLOSE_CODE, DOCUMENT_TOO_LARGE_CLOSE_REASON,
 // DOCUMENT_TOO_TANGLED_CLOSE_REASON, DOCUMENT_NEEDS_REBUILD_CLOSE_REASON,
-// DOCUMENT_REBUILT_CLOSE_REASON, DOCUMENT_UPDATE_REFUSED_CLOSE_REASON, DOCUMENT_BUSY_CLOSE_CODE
-// and DOCUMENT_BUSY_CLOSE_REASON in packages/contracts so the server's closes and the dashboard's
+// DOCUMENT_REBUILT_CLOSE_REASON, DOCUMENT_UPDATE_REFUSED_CLOSE_REASON,
+// DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, DOCUMENT_BUSY_CLOSE_CODE and
+// DOCUMENT_BUSY_CLOSE_REASON in packages/contracts so the server's closes and the dashboard's
 // reading of them cannot drift apart.
 const DocumentTooLargeCloseCode = ${DOCUMENT_TOO_LARGE_CLOSE_CODE}
 const DocumentTooLargeCloseReason = ${JSON.stringify(DOCUMENT_TOO_LARGE_CLOSE_REASON)}
@@ -554,8 +559,18 @@ const DocumentTooTangledCloseReason = ${JSON.stringify(DOCUMENT_TOO_TANGLED_CLOS
 const DocumentNeedsRebuildCloseReason = ${JSON.stringify(DOCUMENT_NEEDS_REBUILD_CLOSE_REASON)}
 const DocumentRebuiltCloseReason = ${JSON.stringify(DOCUMENT_REBUILT_CLOSE_REASON)}
 const DocumentUpdateRefusedCloseReason = ${JSON.stringify(DOCUMENT_UPDATE_REFUSED_CLOSE_REASON)}
+const DocumentClientIdRefusedCloseReason = ${JSON.stringify(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON)}
 const DocumentBusyCloseCode = ${DOCUMENT_BUSY_CLOSE_CODE}
 const DocumentBusyCloseReason = ${JSON.stringify(DOCUMENT_BUSY_CLOSE_REASON)}
+
+// DocumentClientIdParameter is the query parameter a document websocket's page presents the Yjs
+// client id it holds for that document under, and DocumentClientIdMessagePrefix starts the
+// stateless message that socket is sent first, naming the client id Dispatch gives the page.
+// Generated from DOCUMENT_CLIENT_ID_PARAMETER and DOCUMENT_CLIENT_ID_MESSAGE_PREFIX in
+// packages/contracts so the server's admission and the dashboard's reading of it cannot drift
+// apart.
+const DocumentClientIdParameter = ${JSON.stringify(DOCUMENT_CLIENT_ID_PARAMETER)}
+const DocumentClientIdMessagePrefix = ${JSON.stringify(DOCUMENT_CLIENT_ID_MESSAGE_PREFIX)}
 
 // DocumentNewerContentCloseCode and DocumentNewerContentCloseReason close a document websocket
 // whose room holds an element this build cannot read, before any sync. The Hocuspocus provider

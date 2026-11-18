@@ -459,6 +459,30 @@ export const DOCUMENT_REBUILT_CLOSE_REASON = "DOC_REBUILT";
  *  `contracts.DocumentUpdateRefusedCloseReason`. */
 export const DOCUMENT_UPDATE_REFUSED_CLOSE_REASON = "DOC_UPDATE_REFUSED";
 
+/** The reason the document websocket closes with `DOCUMENT_TOO_LARGE_CLOSE_CODE` when the update
+ *  carries an edit under a client id that is not the sender's: one Dispatch gave another person,
+ *  one another person's edits claimed first, or one Dispatch never gave out at all
+ *  (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`). Nothing of it is stored or relayed. Permanent like the
+ *  size refusal: the browser that sent it would send it again on every reconnect, so the dashboard
+ *  drops the refused edit, re-reads the document and takes a fresh client id with it. Generated
+ *  into Go as `contracts.DocumentClientIdRefusedCloseReason`. */
+export const DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON = "DOC_CLIENT_ID_REFUSED";
+
+/** The query parameter a document websocket's page presents the Yjs client id it holds for that
+ *  document under, empty when it holds none yet. Its presence says the page takes the client id
+ *  Dispatch gives it (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`); a page that sends no such parameter is
+ *  a build from before Dispatch gave client ids out. Generated into Go as
+ *  `contracts.DocumentClientIdParameter`. */
+export const DOCUMENT_CLIENT_ID_PARAMETER = "client_id";
+
+/** The start of the Hocuspocus stateless message a document websocket sends first, before any
+ *  other frame, on a socket that presented `DOCUMENT_CLIENT_ID_PARAMETER`: this prefix, then the
+ *  decimal client id Dispatch gives that socket's page for the document. It is the id the page
+ *  presented where Dispatch had given that id to the same person, and an id given out afresh
+ *  otherwise. The page writes and announces its presence under no other id. Generated into Go as
+ *  `contracts.DocumentClientIdMessagePrefix`. */
+export const DOCUMENT_CLIENT_ID_MESSAGE_PREFIX = "dispatch.client_id:";
+
 /**
  * The close code the document websocket (`/ws/doc/{room}`) refuses with when the memory budget over
  * the documents it holds open is full and no room can be closed: a browser asking for one more

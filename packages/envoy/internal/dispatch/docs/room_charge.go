@@ -16,14 +16,17 @@ import (
 // tracked state at bytesOfHeapAStateByte and its structs at bytesOfHeapAStruct in each of its
 // two copies (roomWeight), and the room it belongs to.
 //
-// Its only writer is the room's update observer, whose drain of the room's update log weighs the
-// room again from the room's tracked state (renderedReplica.chargeAdded), whoever wrote what it
-// drained: a browser's update the peer hook admitted, an API write's publish, an injected
-// update, settlement's repair. The tracked state is what each remote apply's report added as it
+// Its writer is the room's update observer, whose drain of the room's update log weighs the
+// room again from the room's tracked state and what its pending queue holds
+// (renderedReplica.chargeAdded, roomApplies.residentBytes), whoever wrote what it drained: a
+// browser's update the peer hook admitted, an API write's publish, an injected update,
+// settlement's repair. The tracked state is what each remote apply's report added as it
 // committed and what the drain counted for a commit no report covers (roomApplies.state,
-// renderedReplica.countCommit). The peer hook charges nothing of its own: an update it admits is
-// drained by that observer inside the apply that committed it (crdt/doc.go:984-992), and one its
-// apply refused committed nothing to drain and reported nothing.
+// renderedReplica.countCommit). An update the peer hook admits is drained by that observer inside
+// the apply that committed it (crdt/doc.go:984-992), before the hook can read what the apply left
+// in the queue, so the hook weighs the room once more itself where its queue's charge moved
+// (Service.weighPeerUpdate, roomApplies.noteQueued); one its apply refused committed nothing to
+// drain and reported nothing.
 //
 // The charge lasts as long as the room's instance. Its load makes it, from the stored state the
 // load decoded (chargeLoadedRoom); each drain weighs it again; a compaction that folds the room's

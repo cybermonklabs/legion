@@ -50,9 +50,8 @@ import (
 // SyncStep1 cuts the whole of what the browser is missing into frames and holds every one of
 // them at once (ygo's sync.EncodeSyncStep2Split), so a room many browsers join at once holds its
 // own state once more per join, and nothing in ygo bounds how many of those run together. Every
-// room's answer is cut from its own structs and decodes nothing of the document, and what a room
-// parks is read back on its own beside the cut, so each answer takes the cut's weight and what
-// that read-back allocates (answerWeight, parkedAnswerWeight).
+// room's answer is cut from its own structs, decodes nothing of the document and carries nothing
+// the room parks, so each answer takes the cut's weight (answerWeight).
 //
 // Every taker takes its bytes before it takes a database connection, so no grant is held behind
 // a connection pool a holder of another grant could fill, and a wait a request's context ends is
@@ -395,15 +394,15 @@ func holdFreeLoad(bytes int64) func() {
 
 // copyOfRoom is what one whole copy of the room holding live costs the pod's load concurrency: a
 // live write's fork of it, cloned or decoded (warmFork), and the decode-cap count's copy
-// (structsAfter). It is the room's tracked state bytes and the structs the room holds at
-// copyWeight - the bytes of the stored state the room's load decoded plus what each commit since
-// added as the library reports it (roomStateBytes, roomApplies.state), and the structs the room's
-// last committed apply reported it holding (roomApplies.structsHeld, crdt.ApplyReport.Structs),
-// which a split-dense
-// copy is as heavy in the pool by as it is in the budget. Both are read off the room's own
-// listing without a lock, an encode or a walk of the document. The report counts what the room
-// has parked with what its store holds: a copy carries the room's pending queue with its
-// store, so a room holding a parked backlog costs the pool what that backlog costs it.
+// (structsAfter). It is what the room holds and the structs it holds at copyWeight - the bytes of
+// the stored state the room's load decoded plus what each commit since added as the library
+// reports it, with what its pending queue holds beside them (roomResidentBytes, residentBytes),
+// and the structs the room's last committed apply reported it holding (roomApplies.structsHeld,
+// crdt.ApplyReport.Structs), which a split-dense copy is as heavy in the pool by as it is in the
+// budget. Both are read off the room's own listing without a lock, an encode or a walk of the
+// document. The report counts what the room has parked with what its store holds: a copy carries
+// the room's pending queue with its store, so a room holding a parked backlog costs the pool what
+// that backlog costs it.
 //
 // A document no room's load listed is tracked at nothing, and nothing here can name its size
 // without encoding it, so a copy of one takes a whole slot: the writes that reach this on such a
@@ -411,7 +410,7 @@ func holdFreeLoad(bytes int64) func() {
 // evicted, and one slot is what every taker took before this was weighed at all.
 func (s *Service) copyOfRoom(live *crdt.Doc) int64 {
 	weighing := s.roomWeighingOf(live)
-	if tracked := weighing.roomStateBytes(); tracked > 0 {
+	if tracked := weighing.roomResidentBytes(); tracked > 0 {
 		return copyWeight(tracked, int64(weighing.applies().structsHeld(live)))
 	}
 	return loadSlotBytes

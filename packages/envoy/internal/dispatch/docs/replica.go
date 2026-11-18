@@ -35,52 +35,37 @@ import (
 // deletes what its transaction deleted while its own insertions wait for the earlier one's - a
 // tree no transaction left.
 //
-// A logged commit is two parts, and the replica takes both: the update ygo handed the room's
-// observers (crdt.LoggedUpdate.Update), what the transaction integrated, and what it parked
-// (Parked) - the structs and deletions waiting for something the document lacks, which the room
-// holds and the update leaves out, as Yjs's update event does. So the replica is the room's copy,
-// what the room holds parked included. Without the parked part the replica would not be the room
-// while a gap is open: what a reader takes from it (readLive) and its encoded state, which carries
-// parked structs (crdt.EncodeStateAsUpdateV1), would both leave out what the room is holding. The
-// fill repairs no more than its own arrival: the transaction that fills a gap integrates what
-// waited, so that commit's own update carries it, and a copy fed the update part alone reads the
-// room's whole text from the fill onwards - measured on this pin and on the library's main, where
-// such a copy reads the room's text once the missing update arrives. So the parked part is what
-// the store needs, the stored document holding what the room parked so that the edit survives a
-// restart, and what the window before the fill needs, where a reader must not be answered a
-// document the room is not. A commit that only parked has no update observer (ygo calls none for
-// a transaction that changes nothing), so the room drains its entry right after the transaction
-// instead, from ygo's after-transaction callback (onLoadDocument), whatever path the update
-// reached the room by.
+// A logged commit is two parts, and the replica takes one: the update ygo handed the room's
+// observers (crdt.LoggedUpdate.Update), what the transaction integrated. What it parked (Parked) -
+// the structs and deletions waiting for something the document lacks - is no part of the
+// document until it lands (leaveParkedOut): the room's encoded state, what a reader takes of it
+// and what the store holds all leave it out, and the transaction that fills a gap integrates
+// what waited, so that commit's own update carries it. So the replica, fed the update part alone,
+// holds the room's document at every commit. A commit that only parked has no update observer
+// (ygo calls none for a transaction that changes nothing), so the room drains its entry right
+// after the transaction instead, from ygo's after-transaction callback (onLoadDocument), whatever
+// path the update reached the room by; the replica takes it as one more commit position.
 //
 // What waited behind a gap lands in the replica through the commit that landed it in the room,
-// never through a drain of the replica's own. A drain of the room's pending queue that lands is
-// part of its transaction, so the commit's update carries what it landed; and one the room takes
-// back - refused by the room's apply check (crdt.ErrApplyCheckDrain, renderCheck) or stopped by
-// the apply's scan allowance (roomScans) - leaves the structs parked again in the room while the
-// update that filled their gap stands, and the commit's update leaves them out. The replica's
-// document has neither that check nor that allowance, so the drain the same update starts in it
-// would land what the room took back: measured before this, a refused drain of 5,000 newlines
-// left the room parking one struct and rendering 300,603 bytes and the replica parking none and
-// rendering 1,285,603, and the replica's next rendering, of its own document, published a size the
-// next keystroke into prose was refused against
+// never through a drain of the replica's own. A replica can hold parked content only where the
+// load that made it decoded some into both copies - rows an earlier build stored of what parked -
+// and a drain of the room's pending queue that lands is part of its transaction, so the commit's
+// update carries what it landed; one the room takes back - refused by the room's apply check
+// (crdt.ErrApplyCheckDrain, renderCheck) or stopped by the apply's scan allowance (roomScans) -
+// is discarded in the room while the update that filled the gap stands, and the commit's update
+// leaves it out. The replica's document has neither that check nor that allowance, so the drain
+// the same update starts in it would land what the room discarded: measured before this, a
+// refused drain of 5,000 newlines left the room rendering 300,603 bytes and the replica rendering
+// 1,285,603, and the replica's next rendering, of its own document, published a size the next
+// keystroke into prose was refused against
 // (TestARefusedDrainLeavesTheReplicaParkingWhatTheRoomParks). So the replica's document refuses
-// every drain that lands anything (holdParked): ygo checks a drain only where it lands a struct or
-// a deletion, and takes a refused one back with the queue as the drain found it while the update
-// stands (crdt.WithApplyCheck). The replica therefore integrates exactly what each commit's
-// update carries and parks again what the room parked again; its drain stands only where it lands
-// nothing, dropping from the queue what the update has itself integrated, as the room's drain that
-// landed it did. A replica that starts from an encode of the room instead (start, startFromRead)
-// lands what the room took back and still parks, as every decode of the room's state does: no
-// update says that a struct whose gap is filled was taken back.
+// every drain that lands anything (holdParked), and discards it as the room did (leaveParkedOut):
+// ygo checks a drain only where it lands a struct or a deletion. The replica therefore
+// integrates exactly what each commit's update carries; its drain stands only where it lands
+// nothing, dropping from the queue what the update has itself integrated, as the room's drain
+// that landed it did.
 //
-// Applying the parked part integrates nothing, so it renders nothing new: its transaction names
-// no changed type (crdt.Transaction.ChangedTypes), so it touches no block of the record the
-// update is classified against (noteChangedTypes, touchedBlocks), which takeLocked resets before
-// the update's own apply and again once the update is classified. Both transactions therefore
-// record into the one update's record, which is what the classification is of: the room's state
-// as the commit left it, what it parked included. One commit is consumed, classified and
-// recorded once, whether it parked anything or not (takeLocked).
+// One commit is consumed, classified and recorded once (takeLocked).
 //
 // The observer renders the replica after an update only when it can neither know the update is a
 // margin write's publish into the room its fork was warm-built from (liveWriteOrigin.marginOnly
@@ -508,13 +493,11 @@ func (r *renderedReplica) drainLog() (base []byte, updates []crdt.LoggedUpdate, 
 // that commit's position, for the apply check to weigh the room's next browser update against
 // (publishRendered).
 //
-// Each update is applied in the two parts the log hands over: Update, the structs and deletions
-// the transaction integrated, and then what it parked (crdt.LoggedUpdate.Parked), nil when it
-// parked nothing, each through applyPart, so no drain of the replica's own pending queue lands
-// anything the commit's update did not carry (holdParked). Either failing leaves the replica
-// holding a state the room never had, so it goes to recover with the rest of the drain. The two
-// are one commit: it is consumed, counted, classified and recorded once, and renderedReplica says
-// why the second apply changes no rendering.
+// Each update is applied as the log hands it over: Update, the structs and deletions the
+// transaction integrated, through applyPart, so no drain of the replica's own pending queue lands
+// anything the commit's update did not carry (holdParked). A failure leaves the replica holding a
+// state the room never had, so it goes to recover with the rest of the drain. The commit is
+// consumed, counted, classified and recorded once.
 func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.LoggedUpdate, reports []madeReport) (settles, changed, local bool) {
 	r.pairing = reportPairing{reports: reports}
 	defer r.chargeAdded(len(updates) > 0)
@@ -533,8 +516,8 @@ func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.Lo
 	// the fresh one a recover asked for, the first one where the load handed it no copy, or the
 	// state a read's copy already started it from, which is that same state (startFromRead,
 	// atPoint). The log records that first base all the same, an encode of the room under its
-	// lock at its first commit, parked structs and deletions included (sjawhar/ygo
-	// v1.55.1-sami.7, crdt/update_log.go:68-76), which this drops undecoded.
+	// lock at its first commit, with nothing it parked (leaveParkedOut), which this drops
+	// undecoded.
 	if base != nil && r.doc == nil {
 		r.start(room, base)
 	}
@@ -550,16 +533,7 @@ func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.Lo
 			r.recover(room, updates[i:], note)
 			return settles, changed, local
 		}
-		applies := 1
-		if update.Parked != nil {
-			applies++
-			if err := r.applyPart(update.Parked, false); err != nil {
-				slog.Error("dispatch: apply what a committed update parked to the document's rendered copy", "room", room, "error", err)
-				r.recover(room, updates[i:], note)
-				return settles, changed, local
-			}
-		}
-		report := r.countCommit(update, r.measures >= applies)
+		report := r.countCommit(update, r.measures >= 1)
 		published, rendering := r.consumed(update)
 		// The commit is the replica's next position, which note counts it at.
 		contentChanged, asks := r.changedBy(room, published, rendering, report.checkedAt(r.seq+1))
@@ -574,19 +548,18 @@ func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.Lo
 // pending queue that lands anything (holdParked).
 var errDrainLandsWhatNoCommitCarried = errors.New("the room's commit carries what the room's own drain landed, so the replica's drain lands nothing of its own")
 
-// applyPart applies part, one of the two parts of a logged commit (takeLocked), to the replica's
-// document, and answers nil for an apply whose drain of the pending queue the document's apply
-// check refused (holdParked, crdt.ErrApplyCheckDrain): ygo took that drain back and the part
-// stands, committed. update says whether part is the commit's update carrying a change, whose
-// own check holdParked passes. The caller holds mu.
+// applyPart applies part, a logged commit's update (takeLocked), to the replica's document, and
+// answers nil for an apply whose drain of the pending queue the document's apply check refused
+// (holdParked, crdt.ErrApplyCheckDrain): ygo discarded that drain and the part stands, committed.
+// update says whether part carries a change, whose own check holdParked passes. The caller holds
+// mu.
 //
 // ygo checks an apply's update where it changed the document, and then its drain where that
 // lands a struct or a deletion (crdt.WithApplyCheck). The replica holds the room as the commit
 // before left it, so an update carrying a change - every logged update but the empty one of a
 // commit that only parked - changes the replica's document too, the same structs and deletions
-// being new to it, and its first check is the update's. Nothing else changes it: the parked part
-// only parks there, its structs and deletions waiting on what the room lacked at the commit, so
-// every check of its apply, and of an empty update's, is a drain's.
+// being new to it, and its first check is the update's. Every later check of the apply is a
+// drain's.
 func (r *renderedReplica) applyPart(part []byte, update bool) error {
 	r.passUpdate = update
 	err := crdt.ApplyUpdateV1(r.doc, part, nil)
@@ -598,10 +571,12 @@ func (r *renderedReplica) applyPart(part []byte, update bool) error {
 
 // holdParked is the apply check of the replica's document (crdt.SetApplyCheck, startAt and
 // startFromLoad): it passes the update of the apply in hand (passUpdate, applyPart) and refuses
-// every drain of the pending queue that lands anything, which ygo then takes back with the queue
-// as it found it while the update stands, so the replica integrates nothing but what each
-// commit's update carries (renderedReplica says why). ygo calls it under the replica document's
-// lock, inside an apply applyPart makes holding mu, and it reads nothing of the document.
+// every drain of the pending queue that lands anything, which ygo then discards while the update
+// stands (leaveParkedOut), so the replica integrates nothing but what each commit's update
+// carries (renderedReplica says why). It holds back something only in a replica whose load
+// decoded parked content from rows an earlier build stored; a replica holding none has no drain
+// to refuse. ygo calls it under the replica document's lock, inside an apply applyPart makes
+// holding mu, and it reads nothing of the document.
 func (r *renderedReplica) holdParked(any, *crdt.ApplyView) error {
 	if r.passUpdate {
 		r.passUpdate = false
@@ -675,9 +650,8 @@ func (r *renderedReplica) noteReplicaApply(_ any, report crdt.ApplyReport) {
 // apply of it failed, whether refused as a bounded document refuses a subdocument or a move
 // (noteReplicaApply) or failing in any other way, or the replica held no document to apply it
 // to - it was waiting for the base its recover asked for, or a base it started from did not
-// decode (start). A commit the replica parks is measured, since its report counts a struct
-// where it parks, and an apply that commits and makes no report, which ygo does not do, is
-// owed as well.
+// decode (start). An apply that commits and makes no report, which ygo does not do, is owed as
+// well.
 //
 // It answers the report that covered the commit, the zero report where none did: a browser's
 // apply's report carries the rendering the room's apply check made of the state the commit left,
@@ -689,7 +663,7 @@ func (r *renderedReplica) countCommit(update crdt.LoggedUpdate, measured bool) m
 	if !measured {
 		r.applies().owe()
 	} else {
-		r.applies().added(max(int64(len(update.Update)+len(update.Parked)), r.measured))
+		r.applies().added(max(int64(len(update.Update)), r.measured))
 	}
 	return madeReport{}
 }
@@ -929,8 +903,9 @@ func (r *renderedReplica) startFromRead(doc *crdt.Doc, epoch uint64) *crdt.Doc {
 // update is measured against: the load's rendering (loaded) where the replica still holds it, as
 // start says, and a render of doc otherwise. It subscribes noteChangedTypes to doc's transactions,
 // with doc's own fragment, so what it records is each later update's, gives doc the report each
-// drain measures a commit by (noteReplicaApply), and sets doc's apply check, which takes back every
-// drain of doc's pending queue that lands anything (holdParked). A rendering other than the one
+// drain measures a commit by (noteReplicaApply), leaves what doc parks out of it as the room
+// leaves its own (leaveParkedOut), and sets doc's apply check, which refuses every drain of doc's
+// pending queue that lands anything (holdParked). A rendering other than the one
 // the room last published is published as the room's measurement (publishSize), and the rendering
 // is published at the commit position doc stands at for the room's apply check (publishRendered).
 // The caller holds mu.
@@ -942,6 +917,7 @@ func (r *renderedReplica) startAt(doc *crdt.Doc) {
 	r.doc, r.fragment = doc, fragment
 	doc.OnAfterTransaction(func(txn *crdt.Transaction) { noteChangedTypes(txn, fragment, &r.touched) })
 	doc.SetApplyReport(r.noteReplicaApply)
+	leaveParkedOut(doc)
 	doc.SetApplyCheck(r.holdParked)
 	if loaded != nil {
 		r.rendering = loaded
@@ -1109,7 +1085,8 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 // chargeAdded ends a drain: it drops the reports the drain paired its commits against
 // (roomApplies.settleReports), re-reads the room's state where the drain left its figure owed
 // (roomApplies.reread), and, where the drain handed anything over, charges the room again from
-// the bytes of state its record now holds and the structs the room holds (roomWeight), whoever
+// the bytes of state its record now holds, with what its pending queue holds beside them
+// (roomApplies.residentBytes), and the structs the room holds (roomWeight), whoever
 // wrote what it handed over: a browser's update the peer hook admitted, an API write's publish,
 // an injected update, settlement's repair, any other write of the server's own. It is the
 // budget's one writer while a room stands, and it reads nothing of the document but on a path
@@ -1121,18 +1098,17 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 // path (bytesOfHeapAStateByte).
 //
 // The tally comes from the library's count of what each apply added to the encoded state
-// (crdt.ApplyReport.StateBytes), because the bytes the room's commits log fall short of it. The
-// tally this replaces summed each drained update's own bytes, Update and Parked, and an apply
-// that only parks fires no update observer, so a run of frames each parked behind a gap of its
-// own client raised it by nothing: after 19 frames of 900 KiB the room's encoded state was
-// 17,511,178 bytes, past the 16,777,216 one room may hold, with the tally at 0
-// (TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive). And an update leaves out the
-// header of each item its deletes split: a delete of every other character of a
-// 100,000-character run logged 291,366 bytes against a state of 1,019,797. The report counts a
-// parked struct where it parks and each split where it is made, and the drain that later lands
-// what parked adds only what landing changed. So the tally reads at or above the room's encoded
+// (crdt.ApplyReport.StateBytes), because the bytes the room's commits log fall short of it: an
+// update leaves out the header of each item its deletes split, and a delete of every other
+// character of a 100,000-character run logged 291,366 bytes against a state of 1,019,797. The
+// report counts each split where it is made and each struct where it enters the state, a parked
+// one when the drain that lands it lands it. So the tally reads at or above the room's encoded
 // state, which is the side a cap and a budget need: a tally above the state refuses a browser
-// early, one below it admits a room past the cap.
+// early, one below it admits a room past the cap. What the room holds queued is no part of that
+// state and is resident all the same, so the charge weighs it beside the tally (noteQueued):
+// counted by neither, a run of frames each parked behind a gap of its own client left a room
+// holding 17,511,178 bytes, past the 16,777,216 one room may hold, charged for none of them
+// (TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive).
 //
 // Each committed update is counted exactly once: a remote apply by its report as it commits, and
 // a commit no report covers by the observer whose drain of the room's update log hands it over,
@@ -1155,18 +1131,17 @@ func (r *renderedReplica) chargeAdded(handed bool) {
 	// holds, which is the safe side for a budget. The bytes are read the same way: every
 	// report made before this charge is in them.
 	//
-	// What the room parks is in that figure, as the library counts it: the room stores its
-	// pending queue and its next load decodes it, and a room that parked 897,136 structs
-	// behind a clock gap was charged for none of them while its stored state grew to
-	// 2,994,565 bytes (TestR6Finding2ParkedStructsEscapeTheDecodeCap, dispatch://INFRA-179,
-	// review 6's finding 2). A room between its load and its first remote apply has no report
-	// yet and is read from its document instead, and a replica of a room no load gave a
-	// document - a test's - charges by its state alone.
+	// What the room parks is in the struct figure, as the library counts it: the queue is
+	// resident beside the store, and a room that parked 897,136 structs behind a clock gap was
+	// charged for none of them while it held them (TestR6Finding2ParkedStructsEscapeTheDecodeCap,
+	// dispatch://INFRA-179, review 6's finding 2). A room between its load and its first remote
+	// apply has no report yet and is read from its document instead, and a replica of a room no
+	// load gave a document - a test's - charges by its state alone.
 	var structs int64
 	if r.live != nil {
 		structs = int64(applies.structsHeld(r.live))
 	}
-	charge.weigh(applies.stateBytes(), structs)
+	charge.weigh(applies.residentBytes(), structs)
 }
 
 // keepReplica makes the replica live's update observer keeps, moving through log, live's update
@@ -1197,7 +1172,9 @@ func (r *renderedReplica) chargeAdded(handed bool) {
 // drops it, nothing holds it, so it adds no resident memory and the next collection takes it.
 //
 // The rendering is the room's first measurement either way (publishSize), which the hook weighs
-// the room's first peer update against. The load also reads the clients live's history retires
+// the room's first peer update against. The load leaves what live parks out of the document from
+// here (leaveParkedOut), before anything reads its state or its update log records a base, and
+// reads the clients live's history retires
 // (retiredClientsOf), which the hook refuses a browser's replaced history against; it sets
 // live's apply budget, its allowed roots and its apply report (newRoomApplies), so from here
 // every browser's update applies under the allowance the hook builds for it, may name no other
@@ -1213,6 +1190,7 @@ func (r *renderedReplica) chargeAdded(handed bool) {
 // with the copy where the replica holds one, and by its size alone where it does not, so a room
 // whose load handed no copy renders its first checked update whole.
 func (s *Service) keepReplica(live *crdt.Doc, log *crdt.UpdateLog, loaded *replicaRendering, decoded *crdt.Doc) *renderedReplica {
+	leaveParkedOut(live)
 	logged := newLoggedCommits(live, log)
 	weighing := &roomWeighing{
 		retired: retiredClientsOf(live),
@@ -1238,8 +1216,9 @@ func (s *Service) keepReplica(live *crdt.Doc, log *crdt.UpdateLog, loaded *repli
 // document, with loaded, the load's rendering of that very state, as the rendering the replica's
 // first update is measured against (keepReplica). It subscribes noteChangedTypes to the copy's
 // transactions, as start does on the document it makes, so what the replica records is each
-// update's, and gives the copy the report each drain measures a commit by (noteReplicaApply) and
-// the apply check that takes back every drain of its own that lands anything (holdParked).
+// update's, and gives the copy the report each drain measures a commit by (noteReplicaApply),
+// the room's own setting for what it parks (leaveParkedOut) and the apply check that refuses every
+// drain of its own that lands anything (holdParked).
 // The load's rendering counts as the run's catch-up: it is the rendering of the base the
 // run starts from, taken in place of rendering it (renderPathCounts.catchUpFromLoad). A load that
 // made none - a document outside the schema - leaves the replica no rendering, and its first
@@ -1249,6 +1228,7 @@ func (r *renderedReplica) startFromLoad(decoded *crdt.Doc, loaded *replicaRender
 	r.doc, r.fragment, r.rendering = decoded, fragment, loaded
 	decoded.OnAfterTransaction(func(txn *crdt.Transaction) { noteChangedTypes(txn, fragment, &r.touched) })
 	decoded.SetApplyReport(r.noteReplicaApply)
+	leaveParkedOut(decoded)
 	decoded.SetApplyCheck(r.holdParked)
 	if loaded != nil {
 		r.paths.catchUpFromLoad.Add(1)

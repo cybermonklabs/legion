@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"sync"
 	"sync/atomic"
 	"weak"
@@ -36,14 +35,14 @@ import (
 // reading the update at all - the update's own length, the structs the room's last committed
 // apply reported it holding (crdt.ApplyReport.Structs, roomApplies.structsHeld), what its
 // pending queue holds (crdt.Doc.PendingStats), the room's last published rendering
-// (renderedReplica.publishSize) with what a drain of that queue would add to it, and its tracked
-// state bytes - and let the apply itself count what the update decodes, integrates
-// and adds against that allowance, rolling the whole apply back where it passes
-// (crdt.WithApplyBudget). For a keystroke that is a handful of comparisons; nothing here walks
-// the document, and the update itself is read only by the two header scans a room can pay for -
-// the retired clients' list of a rebuilt room (refusedBeforeApply) and a room holding enough
-// parked content to reach the document bound (drainWouldRender) - neither of which decodes any
-// content.
+// (renderedReplica.publishSize), and its tracked state bytes with what its queue holds beside
+// them - and let the apply itself count what the update decodes, integrates and adds against that
+// allowance, rolling the whole apply back where it passes (crdt.WithApplyBudget). For a keystroke
+// that is a handful of comparisons; nothing here walks the document, and the update itself is
+// read only by the header scans a room can pay for - the first three numbers of every update,
+// which name the one client a keystroke writes under (judgeClients, client_ids.go), and the whole
+// header of an update writing under another client than its socket's and the retired clients'
+// list of a rebuilt room (refusedBeforeApply) - none of which decodes any content.
 //
 // The hook weighs bytes and not elements. Counting a rendering's elements is a whole goldmark
 // parse, 58 to 89 ms at 524 KiB, which no keystroke can pay on a one-processor pod. No cheap
@@ -69,20 +68,23 @@ import (
 // cheap test before the apply: it refuses a frame too large for the room before anything decodes
 // it, holds what one update may carry into a document at the bound to what keeps an editor
 // working (maxPeerInsertAtTheBound), and leaves one past the creep cap nothing to carry at all,
-// so the check renders only what can pass it. What the room holds parked is weighed beside the
-// published rendering, because parked content renders nothing until the apply that fills its gap
-// lands it all at once (drainWouldRender); the check weighs that drain again on what it lands.
+// so the check renders only what can pass it. What the room holds parked renders nothing until
+// the apply that fills its gap lands it, and the check weighs that drain on what it lands: a drain
+// it refuses is discarded, the update that filled the gap stands, and every browser that parked
+// what was discarded is closed (closeDiscardedSenders).
 //
 // The document has a second bound of its own, which bytes cannot see: the decode cap. ygo decodes
 // at most maxUpdateItems structs in one update, and a room's whole state is one update to the next
 // load that reads it, so a room whose state holds more could never be loaded again once its
 // updates were folded. A browser can get there without passing the byte bound - a frame of GC
 // structs is two bytes a struct and renders nothing - so the apply's allowance of structs comes
-// out of what is left of the cap above what the room's stored state carries: the structs the
-// room's last committed apply reported it holding (roomApplies.structsHeld, which counts what
-// the room has parked beside what its store holds), each parked struct again for the skip the
-// state carries it behind, and each parked delete range (storedCeiling). An apply that would
-// integrate more is refused with DocumentTooLargeCloseCode and taken back out whole.
+// out of what is left of the cap above what the room holds: the structs the room's last committed
+// apply reported it holding (roomApplies.structsHeld, which counts what the room has parked
+// beside what its store holds), each parked struct again and each parked delete range
+// (storedCeiling). Nothing a room parks is stored (leaveParkedOut), so those two terms no longer
+// bound a state a load decodes but the room's pending queue in memory, out of the same headroom
+// as what it integrates. An apply that would integrate more is refused with
+// DocumentTooLargeCloseCode and taken back out whole.
 //
 // It can get there without integrating a struct at all. A delete inside a run cuts the item it
 // falls in, and the halves are structs the room keeps until the items between them are gone:
@@ -147,13 +149,13 @@ import (
 // crdt.WithRefusedContent): ygo refuses the whole apply where it reads one, the browser is closed
 // with the document's own refusal, DOC_UPDATE_REFUSED, and the room is left as it was.
 //
-// The last of them is no bound at all but a room that has stopped converging. A drain of the
-// room's pending queue whose splits pass Split is refused and taken back while the apply that
-// filled the gap stands, deliberately: the parked content is another sender's and the sender
-// that filled the gap can neither see it nor send less of it. So a room can hold a backlog no
-// update will drain, and no error says so; what answers it is the room's own reading of its
-// queue, which closes every browser for a rebuild where the room stands near a cap, and leaves
-// the room taking updates where the route would refuse that rebuild (refusedStuckBacklog).
+// The last of them is no bound at all but a drain the room cannot take. A drain of the room's
+// pending queue that its apply check refuses, or whose scans or splits pass the allowance of the
+// apply that filled the gap, is discarded whole while that apply stands, deliberately: the parked
+// content is another sender's and the sender that filled the gap can neither see it nor send
+// less of it (leaveParkedOut). Each browser that parked what was discarded is closed with the
+// close its own frame would have earned (closeDiscardedSenders), and the room holds no backlog
+// that no update will drain.
 
 // maxPeerInsertAtTheBound is the most new content one update may carry into a document already at
 // or over the bound: enough for the editor's own derived writes - heading ids, list labels, anchor
@@ -596,19 +598,12 @@ type roomApplies struct {
 	// ygo applies it with: what the apply may do, and what its own report said it did
 	// (peerApply, applying).
 	inFlight map[any]*peerApply
-	// parkedContent is the content bytes the room holds parked, as the applies that parked them
-	// were charged, from the bytes its backlog took as it was listed (parkedBytes, noteParked,
-	// parkedStructBytes): what a drain of the room's queue would add to its
-	// rendering, which the document bound weighs against the update that can release one
-	// (Service.weighPeerUpdate). It is written by the hook after its apply and read by the hook
-	// before one, so it is an atomic.
-	parkedContent atomic.Int64
-	// parkedFloor is the fewest items and delete ranges the room's pending queue has held at one
-	// of the hook's readings since that queue was last empty, and parkedSeen whether there has
-	// been such a reading: what tells a queue that has stopped falling from one that is still
-	// draining (backlogStalled, refusedStuckBacklog).
-	parkedFloor int
-	parkedSeen  bool
+	// queuedContent is the content bytes the room holds in its pending queue, as the applies that
+	// left the queue holding something were charged (noteQueued, queuedBytes): resident memory the
+	// room's encoded state leaves out (leaveParkedOut), which the state cap's allowance and the
+	// room budget weigh beside the tracked state (residentBytes). It is written by the hook after
+	// its apply and read by the hook before one and by the budget's drains, so it is an atomic.
+	queuedContent atomic.Int64
 	// pressureMark is the room's struct total as the budget's pressure first weighed one of
 	// its updates, and pressureMarked whether the room carries such a mark: what bounds the
 	// room's growth across the whole of one pressure rather than within one update
@@ -690,10 +685,9 @@ func (report madeReport) checkedAt(seq uint64) *replicaRendering {
 }
 
 // peerApply is one of the hook's applies while it runs: the allowance ygo holds it to, and
-// content, the content bytes its own report said it added, which the apply that parks them is
-// charged for whether they integrate now or wait for a gap to fill (crdt.ApplyReport.Bytes,
-// crdt.WithApplyBudget). The hook reads content once the apply has returned, to charge what the
-// apply left parked to the room (roomApplies.noteParked).
+// content, the content bytes its own report said it added, parked or integrated
+// (crdt.ApplyReport.Bytes, crdt.WithApplyBudget). The hook reads content once the apply has
+// returned, to charge what the apply left in the room's pending queue (roomApplies.noteQueued).
 //
 // It is also what the room's apply check keeps of the apply (renderCheck): startAt, how many
 // commits the room had made as the apply began, and counted, whether that was known
@@ -732,13 +726,8 @@ type peerApply struct {
 // replaces: one reading an apply, against one a drain plus one an update weighed plus one a
 // copy taken (the fork's measurement is 13.4 µs for the pair of counters,
 // crdt/doc.go:446-448).
-//
-// The room's parked content starts at what live already parks (parkedStructBytes): a room is
-// listed as its load has decoded its stored state into live, and that state carries what parked
-// in the rooms before it, which the decode parks again.
 func newRoomApplies(live *crdt.Doc, paired bool, logged *loggedCommits) *roomApplies {
 	applies := &roomApplies{paired: paired}
-	applies.parkedContent.Store(parkedStructBytes(live))
 	live.SetApplyBudget(func(origin any) crdt.ApplyBudget {
 		applies.began(origin, logged)
 		return applies.budget(origin)
@@ -747,39 +736,6 @@ func newRoomApplies(live *crdt.Doc, paired bool, logged *loggedCommits) *roomApp
 	live.SetRefusedContent(applies.refusedContent)
 	live.SetApplyReport(func(origin any, report crdt.ApplyReport) { applies.noteApply(origin, report, logged) })
 	return applies
-}
-
-// parkedStructBytes is the bytes of doc's encoded state that its parked structs take: the state
-// past what doc's store holds (crdt.EncodeStateAsUpdateV1 with doc's own state vector), which is
-// its parked structs, each cut at its client's clock in doc, and the whole delete set, less the
-// state past the end of those parked structs as well (crdt.ParseUpdateMeta), which is the delete
-// set alone. It is what a room loaded holding a backlog holds parked, read as bytes rather than
-// as content: no less than the content its structs carry, since each carries it whole, and more
-// by their headers, the safe side of the document bound it is weighed against (drainWouldRender).
-//
-// ygo reports a queue's structs and ranges but not their bytes (crdt.Doc.PendingStats), so this
-// encodes: twice, each a walk of the store for its delete set and a merge of what parks, and
-// only where doc parks a struct - a room whose queue is empty, every room that is converging,
-// reads the stats alone. It runs as a room is listed, once its load has decoded the whole state
-// twice (onLoadDocument, keepReplica). Before it, a room loaded with eight frames of 900 KiB
-// parked started at nothing, and the one update that filled their gaps was weighed on the
-// rendering alone and left the room rendering 7,372,832 bytes
-// (TestALoadedBacklogsDrainIsWeighedAgainstTheDocumentBound, dispatch://INFRA-179).
-func parkedStructBytes(doc *crdt.Doc) int64 {
-	if doc.PendingStats().Items == 0 {
-		return 0
-	}
-	held := doc.StateVector()
-	parked := crdt.EncodeStateAsUpdateV1(doc, held)
-	_, to, err := crdt.ParseUpdateMeta(parked)
-	if err != nil {
-		return int64(len(parked))
-	}
-	past := maps.Clone(held)
-	for client, end := range to {
-		past[client] = max(past[client], end)
-	}
-	return int64(len(parked) - len(crdt.EncodeStateAsUpdateV1(doc, past)))
 }
 
 // noteApply keeps what an apply that has just committed in this room reported: the structs the
@@ -796,17 +752,16 @@ func parkedStructBytes(doc *crdt.Doc) int64 {
 // drain (renderedReplica.countCommit).
 //
 // The bytes are the library's count of the direct form of the encoded state: each struct and
-// skip where the store or the pending queue holds it. A room whose pending queue or pending
-// deletes hold anything encodes through a merge instead, up to 4 bytes shorter for each value
-// the queue touches, so one apply's figure can fall short of what the encode grew by and the
-// running total still never does: measured in the library, a park reported 5 while the state
-// grew 1, the fill that followed reported 6 while it grew 10, and an overwrite collecting ten
-// such values reported -76 while the state moved -36. That is why a reading of a room holding
-// something pending is a lower bound and never replaces the total (take).
+// skip where the store holds it. The pending queue is no part of that state (leaveParkedOut), so
+// a park adds nothing to it, the drain that lands a parked struct adds that struct's whole
+// length, and a drain discarded takes nothing off, since nothing it held had been added; an
+// encode of the room merges nothing of the queue in and reads the same direct form, so a
+// reading of the room is exact against the total whatever it holds queued (reread). What the
+// queue holds in memory is weighed beside it (noteQueued).
 //
 // The content bytes go to the apply's own record where the apply is one of the hook's, so the
-// hook can charge what its apply left parked to the room once it returns (peerApply,
-// noteParked). An apply of any other origin has no record and nothing is kept for it.
+// hook can charge what its apply left in the queue to the room once it returns (peerApply,
+// noteQueued). An apply of any other origin has no record and nothing is kept for it.
 //
 // So does the rendering the room's apply check made of what a hook's apply left: the report is
 // made once the apply has passed its last check and its commit is logged, so that rendering is
@@ -885,15 +840,13 @@ func (a *roomApplies) stateBytes() int64 {
 }
 
 // loaded sets the room's tracked state to stateBytes, what the stored state its load decoded
-// came to (chargeLoadedRoom). A load that left live holding something pending read a lower
-// bound (noteApply), so the figure is owed a re-read from the room itself.
-func (a *roomApplies) loaded(live *crdt.Doc, stateBytes int64) {
-	if a == nil {
-		return
-	}
-	a.state.Store(stateBytes)
-	if live != nil && holdsPending(live) {
-		a.owed.Store(true)
+// came to (chargeLoadedRoom). A load that decoded rows an earlier build stored of what parked
+// holds them in its pending queue, out of its encoded state (leaveParkedOut), so the figure then
+// stands above an encode of the room by those rows: the safe side, and the bytes the queue holds
+// of them in memory, which nothing else counts (noteQueued).
+func (a *roomApplies) loaded(stateBytes int64) {
+	if a != nil {
+		a.state.Store(stateBytes)
 	}
 }
 
@@ -917,11 +870,11 @@ func (a *roomApplies) owe() {
 }
 
 // take sets the room's tracked state to read, a reading of the room's whole encoded state,
-// where it still stands at tracked, and reports whether it did. An exact reading - one of a
-// room holding nothing pending, and nothing the reading leaves out - replaces the figure and
-// settles what was owed; any other reading is a lower bound, so the figure keeps the larger of
-// the two and stays owed if it was. Taking a lower bound as the truth would put the figure
-// below the state, and the room would then be admitted past maxRoomStateBytes by the
+// where it still stands at tracked, and reports whether it did. An exact reading - an encode of
+// the room itself, or a store that holds everything the room does (rebaseMark.covers) - replaces
+// the figure and settles what was owed; any other reading is a lower bound, so the figure keeps
+// the larger of the two and stays owed if it was. Taking a lower bound as the truth would put
+// the figure below the state, and the room would then be admitted past maxRoomStateBytes by the
 // difference.
 func (a *roomApplies) take(tracked, read int64, exact bool) bool {
 	want := read
@@ -954,31 +907,27 @@ func (a *roomApplies) rebase(read int64, exact func() bool) (tracked int64) {
 // to the next: each is thrown away when a report lands while it is taken.
 const rereadTries = 3
 
-// reread re-bases a room whose tracked state is owed (owe, loaded) on an encode of live itself,
-// once live holds nothing pending, where an encode is exact, and reports whether it did; while
-// live holds something it waits, since that reading is a lower bound. The caller holds the
-// replica's lock, so no drain adds to the figure meanwhile, and the commit count is read on both
-// sides of the encode, so a reading is kept only where no report landed while it was taken: it
-// then holds every report the figure holds and no other. A commit after the encode is added to
+// reread re-bases a room whose tracked state is owed (owe) on an encode of live itself, which is
+// exact whatever the room holds queued (noteApply), and reports whether it did. The caller holds
+// the replica's lock, so no drain adds to the figure meanwhile, and the commit count is read on
+// both sides of the encode, so a reading is kept only where no report landed while it was taken:
+// it then holds every report the figure holds and no other. A commit after the encode is added to
 // the figure as it lands, and one the encode holds whose drain is still to come is added again by
 // that drain, which is the safe side. The encode costs what a read of the room costs (53.0 ms on
-// 494,309 structs), and the first drain to find the room owed and holding nothing pending pays
-// it, a keystroke's as well: once for each time a room is owed one, which only a recover, an
-// unmeasured commit or a load of a room holding something pending makes it. Until then each
-// drain reads the room's pending counts (holdsPending).
+// 494,309 structs), and the first drain to find the room owed pays it, a keystroke's as well:
+// once for each time a room is owed one, which only a recover or an unmeasured commit makes it.
 func (a *roomApplies) reread(live *crdt.Doc) bool {
-	if a == nil || live == nil || !a.owed.Load() || holdsPending(live) {
+	if a == nil || live == nil || !a.owed.Load() {
 		return false
 	}
 	for range rereadTries {
 		seen := a.commits.Load()
 		tracked := a.state.Load()
 		read := int64(len(crdt.EncodeStateAsUpdateV1(live, nil)))
-		exact := !holdsPending(live)
 		if a.commits.Load() != seen {
 			continue
 		}
-		if a.take(tracked, read, exact) {
+		if a.take(tracked, read, true) {
 			if read != tracked {
 				slog.Info("dispatch: a room's tracked state was re-read from the room itself",
 					"tracked", tracked, "read", read, "difference", tracked-read)
@@ -987,13 +936,6 @@ func (a *roomApplies) reread(live *crdt.Doc) bool {
 		}
 	}
 	return false
-}
-
-// holdsPending is whether live's pending queue or pending deletes hold anything, which makes an
-// encode of it a lower bound on the state the room's reports track (noteApply).
-func holdsPending(live *crdt.Doc) bool {
-	pending := live.PendingStats()
-	return pending.Items > 0 || pending.DeleteRanges > 0
 }
 
 // reportsMade is the reports made in the room that no drained commit has been paired with yet, in
@@ -1183,72 +1125,62 @@ func (a *roomApplies) passed(running *peerApply, rendering *replicaRendering) {
 	running.checked, running.rendering = true, rendering
 }
 
-// noteParked charges what an apply of the hook's left parked in the room to the room's parked
-// content, the figure the document bound weighs a drain against (parkedContent, parkedBytes).
-// after is what the queue holds once the apply has returned, and content what the apply's report
-// counted of the content it added.
+// noteQueued charges what an apply of the hook's left in the room's pending queue to the bytes
+// that queue holds in memory (queuedContent, queuedBytes). after is what the queue holds once the
+// apply has returned, and content what the apply's report counted of the content it added.
+//
+// The queue is resident in the room and is no part of its encoded state (leaveParkedOut), so the
+// library's count of that state, which the room's tracked state follows, counts nothing an apply
+// parks (crdt.ApplyReport.StateBytes) and reports no figure of the queue's bytes. This is that
+// figure, which the state cap's allowance and the room budget weigh beside the tracked state
+// (roomApplies.residentBytes): without it a browser could park frame after frame each as large as
+// the state cap leaves one apply, and the room would hold them all while its tracked state stood
+// still (TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive).
 //
 // An apply that left the queue holding anything may have parked something of its own, and is
 // charged the whole of its content for it. ygo says what a queue holds and not which apply put
 // it there (crdt.Doc.PendingStats), and counts what an apply parks and what it integrates in one
 // figure (crdt.ApplyReport.Bytes), so no reading tells a park from an integrate, and no count
-// tells a swap from an apply that left the queue alone. Charging only an apply that left the
-// queue holding more structs than it found charged a swap nothing: an update that released one
-// parked struct and parked 900 KiB of its own left eight parked where it found eight, eight such
-// swaps parked 7,372,800 bytes on a charge of eight, and one fill then left the room rendering
-// 7,372,848 bytes (TestParkedContentThatSwapsDrainsNoRoomPastTheDocumentBound). Charging every
-// apply that leaves the queue holding anything is the safe side of the bound, and what it costs
-// is an over-count in a room whose queue stays full while its browsers type, since their
-// keystrokes are charged as parked though they integrate: the drain an update into that room can
-// release is then weighed as larger than it is, and an update that cannot release one is weighed
-// as before (drainWouldRender). An apply that left the queue empty drained it, and what was
-// parked is now rendered and weighed by the room's own measurement, so the charge goes back to
-// nothing. The figure otherwise stands above what the room still holds parked until the queue
-// empties.
+// tells a swap from an apply that left the queue alone: an update that releases one parked
+// struct and parks 900 KiB of its own leaves as many parked as it found. Charging every apply
+// that leaves the queue holding anything is the safe side of the bound, and what it costs is an
+// over-count in a room whose queue stays full while its browsers type, since their keystrokes are
+// charged as queued though they integrate. An apply that left the queue empty drained or
+// discarded all of it, and what landed is in the tracked state from the report of the apply that
+// landed it, so the charge goes back to nothing. The figure otherwise stands above what the room
+// still holds queued until the queue empties.
 //
-// It adds what the hook's own applies park to what the room parked as it was listed: a room
-// loaded already holding a backlog - the stored state carries what parked, and every load parks
-// it again (storeParked) - starts at the bytes that backlog takes of its state
-// (parkedStructBytes, newRoomApplies), so the first drain after such a load is weighed on them.
-func (a *roomApplies) noteParked(after crdt.PendingStats, content int64) {
+// A room loaded holding something queued - rows an earlier build stored of what parked, which
+// the load decodes into the queue again - starts at nothing here, since its tracked state starts
+// at the bytes of the stored state the load decoded, those rows included (chargeLoadedRoom).
+//
+// It answers the figure it leaves.
+func (a *roomApplies) noteQueued(after crdt.PendingStats, content int64) int64 {
 	switch {
 	case a == nil:
+		return 0
 	case after.Items == 0:
-		a.parkedContent.Store(0)
+		a.queuedContent.Store(0)
 	case content > 0:
-		a.parkedContent.Add(content)
+		a.queuedContent.Add(content)
 	}
+	return a.queuedContent.Load()
 }
 
-// parkedBytes is the content the room holds parked, and nothing for a room no load listed.
-func (a *roomApplies) parkedBytes() int64 {
+// queuedBytes is the content the room holds in its pending queue (noteQueued), and nothing for a
+// room no load listed.
+func (a *roomApplies) queuedBytes() int64 {
 	if a == nil {
 		return 0
 	}
-	return a.parkedContent.Load()
+	return a.queuedContent.Load()
 }
 
-// backlogStalled records parked, the items and delete ranges the room's pending queue holds as
-// this update arrives, and reports whether that queue has stopped falling: it holds something and
-// holds no fewer than the fewest this room has read since the queue was last empty. An empty
-// queue forgets the floor, so a room that drains and parks again is read afresh, and the first
-// reading of a new backlog sets the floor and reports nothing - the room has not yet had a
-// chance to see it fall (refusedStuckBacklog).
-func (a *roomApplies) backlogStalled(parked int) bool {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	switch {
-	case parked == 0:
-		a.parkedSeen, a.parkedFloor = false, 0
-		return false
-	case !a.parkedSeen:
-		a.parkedSeen, a.parkedFloor = true, parked
-		return false
-	case parked < a.parkedFloor:
-		a.parkedFloor = parked
-		return false
-	}
-	return true
+// residentBytes is what the room holds of encoded state and pending queue together: its tracked
+// state (stateBytes) and the content its queue holds (queuedBytes), the figure the state cap's
+// allowance and the room budget weigh, and nothing for a room no load listed.
+func (a *roomApplies) residentBytes() int64 {
+	return a.stateBytes() + a.queuedBytes()
 }
 
 // splitsUnderPressure is how many of the room's items the update now being weighed may cut: what
@@ -1272,7 +1204,7 @@ func (a *roomApplies) backlogStalled(parked int) bool {
 // tombstones - is read against the mark as it stands and is allowed the whole of pressureSplits.
 //
 // A room no load listed carries no record to mark and is allowed pressureSplits by each update,
-// as it is bounded by nothing else here either (roomWeighing.applies, refusedStuckBacklog).
+// as it is bounded by nothing else here either (roomWeighing.applies).
 func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 	if a == nil {
 		return pressureSplits
@@ -1302,7 +1234,7 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // An update it does not apply is neither stored nor relayed to the room's other browsers, and the
 // *websocket.PeerClose it refuses with closes that one browser with that code and reason.
 //
-// It refuses three updates before the apply, and every other refusal is the apply's own. The first
+// It refuses one update before the apply, and every other refusal is the apply's own. That one
 // is an update carrying a client group of the history a rebuild replaced - a group of a client the
 // rebuilt history lists as retired, starting below the clock it had reached (retiredMapName),
 // read from the update's own header (crdt.ParseUpdateMeta, which decodes no content). It comes
@@ -1317,18 +1249,6 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // header does not read at all is refused DocumentUpdateRefusedCloseReason there and then: ygo
 // would refuse the same bytes.
 //
-// The second is no judgement of the update at all but of the room it arrives in: a room whose
-// pending queue has stopped falling and whose decode cap leaves less than the drain that would
-// clear it can need is a room no update will make converge, and where it stands near a cap the
-// browser is closed DOC_NEEDS_REBUILD (refusedStuckBacklog); a room far from every cap is left to
-// take the update, since the route would refuse the rebuild that close offers.
-//
-// The third is an update that can release a drain of the room's parked content where that drain
-// would take the room's rendering to the creep cap (refusedDrainPastTheCreep): the allowance there
-// leaves the update no content, but ygo counts against it only the content the update carries and
-// never what its drain lands (crdt.ApplyBudget), so a fill carrying none of its own would land all
-// of it.
-//
 // Everything else is the apply's. The hook builds the allowance this update applies under
 // (peerApplyAllowance) and the roots it may name (peerAllowedRoots), hands both to the room's
 // document for this one apply (roomApplies.applying) and runs it. ygo counts what the apply
@@ -1340,8 +1260,10 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // read loop - is gone, and with it the three running totals the room kept to weigh that walk
 // against. Once the apply has integrated what it may, the room's apply check renders what it left
 // and refuses it the same way where that rendering would pass the bound and its creep and grow
-// (renderCheck, crdt.ErrApplyCheck); a drain the check refuses is taken back alone, the update
-// stands, and the hook answers it as the success it is, with a line of its own (logDrainRefused).
+// (renderCheck, crdt.ErrApplyCheck); a drain the check refuses, or whose scans or splits pass the
+// allowance, is discarded whole while the update stands, the hook answers the update as the
+// success it is, and the browsers that parked what was discarded are closed
+// (closeDiscardedSenders).
 //
 // Every refusal before or inside the apply closes the browser. Under sjawhar/ygo v1.51.3-sami.7
 // a hook's refusal answered the browser SyncStatus(0) and left it connected; upstream
@@ -1382,21 +1304,19 @@ func (a *roomApplies) splitsUnderPressure(structs uint64, full bool) int {
 // connected where a refusal before the apply closes it
 // (provider/websocket/peer_update.go:139-154).
 //
-// A successful apply charges the room's budget nothing here: its report has already added what
-// it added to the room's encoded state to the room's tracked state as it committed
-// (roomApplies.noteApply), and the room's update observer, draining the update inside the apply
-// that committed it, weighs the room again from that figure (renderedReplica.chargeAdded,
-// roomCharge). What the hook does keep from it is what the apply left parked, which no
-// rendering shows and which the next update that could drain it is weighed against
-// (roomApplies.noteParked, drainWouldRender).
+// A successful apply's report has already added what it added to the room's encoded state to the
+// room's tracked state as it committed (roomApplies.noteApply), and the room's update observer,
+// draining the update inside the apply that committed it, weighs the room again from that figure
+// (renderedReplica.chargeAdded, roomCharge). What the hook keeps from it is what the apply left in
+// the room's pending queue, which the encoded state leaves out and the room holds in memory all
+// the same (roomApplies.noteQueued); where that moves, the hook weighs the room again itself.
 func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() error) error {
 	weighing := s.roomWeighingOf(info.Doc)
 	if refusal := s.refusedBeforeApply(info, weighing); refusal != nil {
 		return refusal
 	}
-	// What the room's stored state carries, read once: what is left of the decode cap above it
-	// is both the apply's allowance of structs and splits and the headroom a drain of the
-	// room's backlog would have to come out of.
+	// What the room holds, read once: what is left of the decode cap above it is the apply's
+	// allowance of structs and splits.
 	//
 	// Its structs are the figure the room's last committed apply reported
 	// (roomApplies.structsHeld, crdt.ApplyReport.Structs), and a reading of the document only
@@ -1412,39 +1332,21 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	// applies.
 	//
 	// The queue is then read once itself (crdt.Doc.PendingStats, a read lock and a handful of
-	// fields, allocating nothing at all for the empty queue every converging room has), because
-	// the cap is of the state a load decodes rather than of the document in memory: the state
-	// carries each parked struct with a skip over the gap it waits behind and each parked
-	// delete range of its own (storedCeiling). That reading is the backlog check's too.
+	// fields, allocating nothing at all for the empty queue every converging room has), and each
+	// parked struct is charged again and each parked delete range once (storedCeiling). Nothing
+	// parked is stored any more (leaveParkedOut), so those terms bound the queue the room holds in
+	// memory, out of the same headroom as what it integrates.
 	structs := weighing.applies().structsHeld(info.Doc)
-	parked := info.Doc.PendingStats()
-	ceiling := storedCeiling(structs, parked)
-	if refusal := s.refusedStuckBacklog(info, weighing, parked, ceiling); refusal != nil {
-		return refusal
-	}
+	ceiling := storedCeiling(structs, info.Doc.PendingStats())
 	rendering, measured := weighing.size()
-	// What a drain of the room's parked content would add to that rendering, where this update
-	// can release one. Parked content renders nothing while it waits, so the measurement the
-	// byte bound reads does not move for it, and eight frames of 900 KiB each, every one of
-	// them inside the allowance the bound left, were followed by one 130-byte update that
-	// filled every gap and left the room rendering 7,372,832 bytes
-	// (TestR7ParkedFramesDrainPastTheDocumentBound, dispatch://INFRA-179, review 7). The park
-	// is charged to the state cap where it happens, which is what holds the room's memory down
-	// (crdt.WithApplyBudget, TestTheAllowanceChargesWhatAnUpdateParksAndTheKeyItCarries); the
-	// document bound is of what the document renders, and the drain is where parked content
-	// starts rendering, so that is where this bound weighs it. Where it would take the room to
-	// the creep cap, which leaves the update no content of its own, the update is refused here
-	// whatever it carries, since the allowance counts none of the drain (refusedDrainPastTheCreep).
-	drain := s.drainWouldRender(info, weighing, parked, rendering, measured)
-	rendering += drain
-	if refusal := s.refusedDrainPastTheCreep(info, drain, rendering); refusal != nil {
-		return refusal
-	}
 	// The pressure is read once for this update: whether the open rooms are past their budget,
 	// and what the room's own growth under that pressure has left it to cut with
-	// (splitsUnderPressure), which the mark that reading makes is what bounds.
+	// (splitsUnderPressure), which the mark that reading makes is what bounds. The state cap
+	// weighs what the room holds resident, its tracked state and what its pending queue holds
+	// (roomResidentBytes, noteQueued), so frames that park take the room no further than frames
+	// that land.
 	full := s.underPressure(info.Room)
-	allowance := peerApplyAllowance(int64(len(info.Update)), rendering, weighing.roomStateBytes(),
+	allowance := peerApplyAllowance(int64(len(info.Update)), rendering, weighing.roomResidentBytes(),
 		ceiling, measured, peerPressure{full: full, splits: weighing.applies().splitsUnderPressure(ceiling, full)})
 	// A heavy update takes its bytes before the apply and gives them back once the apply has
 	// returned, so the whole decode runs inside one grant; a keystroke takes none. What it takes
@@ -1459,46 +1361,75 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 		_ = slot.take(context.Background(), copyWeight(int64(len(info.Update)), 0))
 		defer slot.release()
 	}
+	// The client ids the update writes under are judged last before the apply, since the
+	// judgement can claim ids for the sender (judgeClients), which a refusal above would then
+	// have to give back; a claim whose apply does not stand is given back below, and the first
+	// edit a socket lands under its own id marks that id's row (settleClients).
+	judged, refusal := s.judgeClients(info)
+	if refusal != nil {
+		return refusal
+	}
 	// The scan allowance is reserved last, so no refusal above leaves one in flight, and settled
 	// as soon as the apply returns, with what its scans passed.
 	scans := weighing.roomScans()
 	scanning := scans.reserve(info.Origin, scanCeiling(len(info.Update)))
 	content, err := weighing.applies().applying(info.Origin, allowance.budget, apply)
 	scans.settle(scanning, err)
-	if errors.Is(err, crdt.ErrApplyCheckDrain) {
-		// The room's apply check refused what the drain the update released would land, and
-		// ygo took the drain back alone: the update stands and has committed, so it closes
-		// nobody and is the hook's success - ygo answers the sender applied and relays the
-		// update (provider/websocket/peer_update.go, updateStood) - with this line beside it
-		// (renderCheck).
-		logDrainRefused(info, err)
-		err = nil
+	// A drain the room took back leaves the update that released it standing and committed
+	// (crdt.ErrApplyCheckDrain), which ygo answers as the success it is and relays as what it
+	// integrated (provider/websocket/peer_update.go, updateStood); the drain itself was discarded,
+	// and the browsers whose frames it held are told (closeDiscardedSenders).
+	stood := err == nil || errors.Is(err, crdt.ErrApplyCheckDrain)
+	s.settleClients(info, judged, stood)
+	if discarded := (*crdt.DrainDiscardedError)(nil); errors.As(err, &discarded) {
+		s.closeDiscardedSenders(info, discarded)
 	}
-	if err == nil {
-		// What the apply left parked is the room's from here, and what it drained is the
-		// room's rendering, which its update observer measures afresh (noteParked). A refused
-		// apply left the queue as it was and is charged nothing.
-		weighing.applies().noteParked(info.Doc.PendingStats(), content)
-		return nil
+	if !stood {
+		return s.refusedByApply(info, weighing, allowance, scanning, err)
 	}
-	return s.refusedByApply(info, weighing, allowance, scanning, err)
+	// What the apply left in the room's pending queue is the room's from here, in memory beside
+	// its encoded state (noteQueued). The room's update observer charged the room's budget inside
+	// the apply, before the queue could be read, so the room is weighed again where its queue's
+	// charge moved. A refused apply left the queue as it was and is charged nothing.
+	applies := weighing.applies()
+	if before := applies.queuedBytes(); applies.noteQueued(info.Doc.PendingStats(), content) != before {
+		weighing.roomCharge().weigh(applies.residentBytes(), int64(applies.structsHeld(info.Doc)))
+	}
+	return nil
 }
 
-// logDrainRefused is the one line a drain the room's apply check refused leaves: the update that
-// released it stood, and what parked behind its gap stays parked, to be drained by the next
-// update that fills the gap and refused again while it would still render past the bound
-// (crdt.ErrApplyCheckDrain). Nothing else says so - ygo answers the sender applied, relays the
-// update and closes nobody, as for any update the room took - so without it an operator would
-// see a pending queue that stops falling and nothing naming why.
-func logDrainRefused(info websocket.PeerUpdateInfo, err error) {
-	var refusal *renderRefusal
-	before, after := int64(sizeUnmeasured), int64(sizeUnmeasured)
-	if errors.As(err, &refusal) {
-		before, after = refusal.before, refusal.after
+// closeDiscardedSenders closes every browser whose parked frame a refused drain discarded
+// (crdt.DrainDiscardedError.Senders, leaveParkedOut): the update that filled the gap stood and
+// was relayed as what it integrated, and what parked behind the gap is gone from the room, which
+// never relayed, answered applied or stored it. Each sender is given the close its own frame would
+// have earned had it arrived whole: the render check's own close where the check refused what the
+// drain would land (renderRefusal.close: DOC_TOO_LARGE for a rendering past the bound), and
+// DOC_TOO_TANGLED where the drain's scans or splits passed the apply's allowance. The editor drops
+// the frame the server last answered not applied, which the parked frame was, and tells the
+// person why (connection.ts). One the check could not size - it refused the drain as past the line
+// while the rendering the drain started from was not known yet (renderRefusal.unsure) - is closed
+// with the transient DOC_BUSY, as an update of its own would be: nothing says the edit is too
+// large, so the honest answer is the one the editor keeps the edit and sends it again for, and its
+// resend is weighed whole, its gap now filled. A sender already gone is closed by nothing, and its
+// saved row is weighed the same way when it comes back. The close is safe from this goroutine and
+// goes out after the answers the sender is still owed (websocket.Server.ClosePeer).
+func (s *Service) closeDiscardedSenders(info websocket.PeerUpdateInfo, discarded *crdt.DrainDiscardedError) {
+	refusal := documentTooTangled()
+	var rendered *renderRefusal
+	if errors.As(discarded.Cause, &rendered) {
+		refusal = rendered.close()
 	}
-	slog.Warn("dispatch: the room took a browser's update and refused what the drain it released would land; the drain was taken back",
-		"room", info.Room, "update_bytes", len(info.Update), "rendering_before", before, "rendering_after", after,
-		"rendering_limit", maxPeerRenderingBytes, "error", err.Error())
+	closed := 0
+	for _, sender := range discarded.Senders {
+		if s.srv.ClosePeer(sender, refusal.Code, refusal.Reason) {
+			closed++
+		}
+	}
+	slog.Warn("dispatch: the room took a browser's update and discarded the drain it released; the browsers that parked what was discarded are closed",
+		"room", info.Room, "update_bytes", len(info.Update), "discarded_structs", discarded.Structs,
+		"discarded_ranges", discarded.Ranges, "drain_scanned", discarded.Scanned,
+		"senders", len(discarded.Senders), "closed", closed, "close_code", refusal.Code,
+		"close_reason", refusal.Reason, "error", discarded.Error())
 }
 
 // underPressure is whether room's next update is weighed under the budget's pressure: the budget
@@ -1567,181 +1498,6 @@ func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *ro
 		}
 	}
 	return nil
-}
-
-// refusedStuckBacklog is the second refusal the hook makes without applying: a browser's update
-// into a room whose pending queue has stopped falling, which the room can no longer drain, and
-// which stands near a cap.
-//
-// ygo parks a struct that arrives before the struct it is written against and drains the queue
-// inside the next apply that fills the gap. From sjawhar/ygo v1.55.1-sami.8 the splits that drain
-// makes are charged to the apply that lands them, and a drain whose splits pass Split is refused
-// and taken back while that apply stands: the parked content is another sender's, already in this
-// room's queue, and the sender that filled the gap can neither see it nor send less of it, so
-// refusing that sender would refuse every sender of that clock, for ever (crdt.ApplyBudget.Split).
-// The library therefore leaves the room holding a backlog it will not drain, tells no caller, and
-// names what an owner watches instead: a pending queue that stops falling (crdt.Doc.PendingStats).
-//
-// This is that reading, and it is of the room's own state rather than of anything the hook
-// counts: the queue holds something, it holds no fewer than the fewest this room has seen since
-// it was last empty (backlogStalled), and the splits the drain that would clear it can make -
-// one for each parked struct, which cuts the item it lands inside, and two for each parked
-// delete range, which cuts the items its two edges fall in - are more than the apply that fills
-// the gap may make. That figure is the splits' share of what the decode cap leaves above what
-// the room's stored state carries (capShares), the field the drain is charged against, rather
-// than the whole headroom: the rest is the structs' and no drain can be paid out of it.
-// The third test is what tells a stuck room from a room waiting for frames a browser has not
-// sent yet: with headroom above that, the drain cannot be refused for its splits at all, so a
-// queue that is not falling is one whose gap has not been filled, and the room is left alone.
-//
-// The close is DOC_NEEDS_REBUILD, the one close that offers the person the remedy that works.
-// Nothing else is one: the backlog is stored as it parks and parked again by every later load
-// (storeParked), so no reconnect, no eviction and no restart of the pod clears it, while a
-// rebuild writes a history without it. A room this reads wrongly - one whose decode cap leaves
-// that little and whose queue is waiting on a browser that will yet send - is a room whose next
-// insert is refused with the same close for the cap alone (peerRule.refusal).
-//
-// So the refusal is made only where that remedy is one the route takes: where the room stands
-// near a cap by the route's own tests (nearACapUnencoded), as a room whose content has used the
-// decode cap's headroom up does. Elsewhere the room is left alone and takes every update its
-// allowance admits, because there a refusal could only lock every person out. A room far from
-// every cap whose queue passes the splits' share is one whose queue alone is more than a fifth of
-// what the decode cap leaves above its store: in a room whose store holds S structs, a queue of
-// delete ranges passes the share only past (maxUpdateItems-S)/5 of them, and a queue of structs
-// only past (maxUpdateItems-S)/4, which no honest sender parks; and the rebuild its close would
-// offer, the route answers DOCUMENT_LIVE wherever its own tests read the room far. Measured on the
-// reviewer's fixture, one browser's frame of 262,142 delete ranges over a client a 10-struct room
-// had never seen parked them all, and the room then refused every person's keystroke with drain
-// splits of 524,284 against a share of 393,211, offering a rebuild the route refused
-// (TestR7OneFrameOfParkedDeleteRangesLocksEveryEditorOutOfASmallDocument, dispatch://INFRA-179,
-// review 7). The frame itself cannot be refused for it: ygo bounds what an apply parks of delete
-// ranges by no field of its allowance (crdt.ApplyBudget.Bytes, "bounded by Decoded instead"), and
-// the hook reads no update's delete set before its apply.
-//
-// What bounds such a room's queue while it takes updates is what bounds every room's. ygo refuses
-// an update that would park past MaxPendingItems structs, or separately past MaxPendingItems
-// delete ranges, which New sets to maxUpdateItems, 1,048,576 (Service.maxPendingItems,
-// Server.MaxPendingItems; crdt.ErrPendingCap, refusedByApply). The room's stored state carries
-// the queue and its ceiling counts it (storedCeiling), so what the queue takes of the decode cap
-// comes off every later apply's allowance, and the room comes near the cap - where this refuses -
-// by its queue as by its content. And the room budget charges it, from the next commit the room's
-// update observer hands over: the parked structs in its struct total and the parked ranges in its
-// tracked state bytes, both as each apply's report gives them (crdt.ApplyReport.Structs and
-// .StateBytes, renderedReplica.chargeAdded, roomWeight). Measured on 2026-11-16 on the reviewer's
-// fixture, the frame of 262,142 ranges took the room's tracked state from 264 bytes to 1,040,583,
-// and two more frames of 300,000 took it to 3,424,133 with 862,142 ranges parked, where the next
-// frame of 300,000 was refused crdt.ErrPendingCap, and the keystrokes typed after the first frame
-// and after the refused one were all admitted.
-//
-// A room no load listed keeps no floor and is read for nothing, as it is bounded by nothing else
-// here. parked is the reading of the queue the hook already took for the room's ceiling
-// (weighPeerUpdate), so this makes none of its own; the route's reading is taken only once the
-// first three tests hold, which a room whose queue is draining or empty never reaches.
-func (s *Service) refusedStuckBacklog(info websocket.PeerUpdateInfo, weighing *roomWeighing, parked crdt.PendingStats, ceiling uint64) error {
-	applies := weighing.applies()
-	if applies == nil {
-		return nil
-	}
-	if !applies.backlogStalled(parked.Items + parked.DeleteRanges) {
-		return nil
-	}
-	splits := parked.Items + 2*parked.DeleteRanges
-	_, left := capShares(ceiling)
-	if splits <= left || !nearACapUnencoded(info.Doc, weighing.roomStateBytes()) {
-		return nil
-	}
-	refusal := documentNeedsRebuild()
-	logRefusal(info, refusal, "dispatch: refused a browser's update into a room holding a backlog no update will drain",
-		"rule", "the room's pending queue has stopped falling and the splits of its drain are past what the decode cap leaves it",
-		"parked_structs", parked.Items, "parked_ranges", parked.DeleteRanges,
-		"drain_splits", splits, "split_limit", left,
-		"structs", ceiling, "struct_rule_limit", maxUpdateItems)
-	return refusal
-}
-
-// refusedDrainPastTheCreep is the third refusal the hook makes without applying: an update that
-// can release a drain of the room's parked content (drain, drainWouldRender) where the rendering
-// that drain would leave, rendering, is at or past the creep cap, past which the allowance leaves
-// an update no content at all (peerApplyAllowance, ruleCreepCap).
-//
-// The allowance cannot hold such an update to that. Its content count is of what the update
-// carries, parked or integrated, and never of what its drain lands: ygo charges parked content to
-// the apply that parked it and the apply that fills its gap nothing for it (crdt.ApplyBudget), so
-// an allowance of no content refuses a fill that carries a character and admits one that carries
-// none. A fill of no content is easy to write - a character the same update deletes is an item ygo
-// counts as none, and a GC struct at the gap's clock carries none at all - and either released the
-// whole drain: after eight frames of 900 KiB parked, either fill was admitted and left the room
-// rendering 7,372,824 bytes against a document bound of 1,048,576
-// (TestAGapFillCarryingNoContentDrainsNoRoomPastTheDocumentBound).
-//
-// So the update is refused before its apply, whatever it carries, with the close the allowance
-// gives a fill that carries content there: the document's own DOC_TOO_LARGE. It is the drain that
-// is refused, not anything the update carries, so no field of the allowance names it. A drain
-// that leaves the rendering short of the creep cap is the allowance's, as it was: the update may
-// then carry what the byte bound leaves it, and the room ends within the creep cap and that
-// update's own content, as after any update at the bound. What stays parked is what the room had
-// already taken and charged as it parked - the state cap and the decode cap count it and the room
-// budget charges it - and every update that would fill its gap is refused alike.
-func (s *Service) refusedDrainPastTheCreep(info websocket.PeerUpdateInfo, drain, rendering int64) error {
-	if drain <= 0 || rendering < pmdoc.MaxDocumentBytes+maxPeerByteCreep {
-		return nil
-	}
-	refusal := documentTooLarge()
-	logRefusal(info, refusal, "dispatch: refused a browser's update that would release a drain of parked content past the document's byte bound",
-		"rule", "the drain of the room's parked content this update can release would take the document past its byte bound and its creep",
-		"parked_bytes", drain, "rendering_bytes", rendering, "rule_limit", pmdoc.MaxDocumentBytes+maxPeerByteCreep)
-	return refusal
-}
-
-// drainWouldRender is what a drain of the room's parked content would add to the rendering the
-// byte bound weighs this update against: the content the room holds parked (roomApplies
-// .parkedBytes) where this update can release it, and nothing where it cannot.
-//
-// Three things have to hold before the update is read at all, and each is a field already in
-// hand: the room has a rendering to measure, its queue holds structs, and the content they hold
-// is enough to take this apply to the document bound. A room whose parked content cannot reach
-// the bound even with this update's own bytes is weighed exactly as it was before, so a room
-// that is merely taking frames out of order pays nothing for this.
-//
-// Past that the update's header says whether it can fill one of the gaps the queue waits behind:
-// ygo drains only where an apply brings clocks of a client the queue is missing (crdt.Doc
-// .PendingStats, MissingFor; crdt/store.go:150-156), so an update naming none of them leaves the
-// queue where it is and renders nothing of it. The header is read without decoding any content
-// (crdt.ParseUpdateMeta), a walk of the update rather than of the document, and only for a room
-// holding that much parked content.
-func (s *Service) drainWouldRender(info websocket.PeerUpdateInfo, weighing *roomWeighing, parked crdt.PendingStats, rendering int64, measured bool) int64 {
-	content := weighing.applies().parkedBytes()
-	if !measured || parked.Items == 0 || content <= 0 {
-		return 0
-	}
-	if rendering+content+int64(len(info.Update)) < pmdoc.MaxDocumentBytes {
-		return 0
-	}
-	if !fillsAParkedGap(info.Update, parked.MissingFor) {
-		return 0
-	}
-	return content
-}
-
-// fillsAParkedGap reports whether update carries clocks of any client in missing, the clients
-// the room's pending queue waits on (crdt.PendingStats.MissingFor): an update that carries none
-// of them cannot start a drain, and one that carries one may. An update whose header does not
-// read is taken to fill a gap, the safe side of the bound it is weighed for; ygo's own decoder
-// refuses such bytes, and the hook answers that refusal DOC_UPDATE_REFUSED (refusedByApply).
-func fillsAParkedGap(update []byte, missing []crdt.ClientID) bool {
-	if len(missing) == 0 {
-		return false
-	}
-	from, _, err := crdt.ParseUpdateMeta(update)
-	if err != nil {
-		return true
-	}
-	for _, client := range missing {
-		if _, carried := from[client]; carried {
-			return true
-		}
-	}
-	return false
 }
 
 // refusedByApply is the close a failed apply of a browser's update becomes.
@@ -1915,12 +1671,10 @@ func documentTooTangled() *websocket.PeerClose {
 }
 
 // documentNeedsRebuild is the refusal of an update the document cannot take until it is rebuilt -
-// one its room's used-up scan total refuses (rebuildTakes), one that would take its state past
+// one its room's used-up scan total refuses (rebuildTakes), and one that would take its state past
 // maxRoomStateBytes or its structs past maxUpdateItems (peerRule.refusal), each in a room the
-// rebuild route takes, and one
-// into a room near a cap holding a backlog no update will drain (refusedStuckBacklog) - permanent
-// as documentTooLarge is and under the same code, with a reason of its own: the editor offers the
-// rebuild that would take the edit.
+// rebuild route takes - permanent as documentTooLarge is and under the same code, with a reason of
+// its own: the editor offers the rebuild that would take the edit.
 func documentNeedsRebuild() *websocket.PeerClose {
 	return &websocket.PeerClose{
 		Code:   contracts.DocumentTooLargeCloseCode,
@@ -1949,6 +1703,17 @@ func documentUpdateRefused() *websocket.PeerClose {
 	return &websocket.PeerClose{
 		Code:   contracts.DocumentTooLargeCloseCode,
 		Reason: contracts.DocumentUpdateRefusedCloseReason,
+	}
+}
+
+// documentClientIDRefused is the refusal of an update carrying structs under a client id that is
+// not its sender's (judgeClients, client_ids.go), permanent as documentTooLarge is and under the
+// same code, with a reason of its own: the editor drops the refused edit and rebuilds its document
+// under a fresh client id.
+func documentClientIDRefused() *websocket.PeerClose {
+	return &websocket.PeerClose{
+		Code:   contracts.DocumentTooLargeCloseCode,
+		Reason: contracts.DocumentClientIdRefusedCloseReason,
 	}
 }
 

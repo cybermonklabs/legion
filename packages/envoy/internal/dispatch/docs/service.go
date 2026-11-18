@@ -97,13 +97,11 @@ type Deps struct {
 // it (UpdateCredit, taken and landed under that lock), and each gated on what the observer
 // recorded with it (BrowserUpdate). AppendUpdatesWithCredit stores updates of a room the same
 // way, from the updates it is handed rather than the room's queue, which is what the room's
-// persistence does with an update no class was recorded for. AppendParkedUpdate stores a room's
-// parked bytes the same way, with no class, no credit and no settlement owed: they change nothing
-// a settlement reads (storeParked). AppendRoomUpdatesTx appends such a run inside a durable
-// writer's transaction, gated on the flush, and answers the first version it stored with how many
-// of the run it stored, since the gate stores a prefix of a browser's run and refuses the rest; a
-// flush left short that way fails, and its transaction stores nothing of the run
-// (flushThrough). Document writes that join an API transaction use AppendUpdateTx, classifying
+// persistence does with an update no class was recorded for. AppendRoomUpdatesTx appends such a
+// run inside a durable writer's transaction, gated on the flush, and answers the first version it
+// stored with how many of the run it stored, since the gate stores a prefix of a browser's run and
+// refuses the rest; a flush left short that way fails, and its transaction stores nothing of the
+// run (flushThrough). Document writes that join an API transaction use AppendUpdateTx, classifying
 // the update the way the room's update observer classifies a live one. RebuildTx replaces an
 // unreadable history inside the rebuild's transaction, through the same persistence boundary as
 // its preflight load, and only while its head is still the one that load read. Load, ygo's, is a
@@ -122,7 +120,6 @@ type VersionedStore interface {
 	persistence.VersionedPersistence
 	AppendRoomFlush(ctx context.Context, room string, flush *RoomFlush, through uint64, credit *UpdateCredit) (persistence.Version, error)
 	AppendUpdatesWithCredit(ctx context.Context, room string, updates []BrowserUpdate) (first persistence.Version, err error)
-	AppendParkedUpdate(ctx context.Context, room string, update []byte) (persistence.Version, error)
 	AppendRoomUpdatesTx(ctx context.Context, tx pgx.Tx, room string, flush *RoomFlush, updates []BrowserUpdate) (first persistence.Version, stored int, err error)
 	AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool) (persistence.Version, error)
 	RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error)
@@ -328,6 +325,13 @@ type Service struct {
 	// taken and before the close runs. Nil outside tests; tests use it to count the closes that
 	// path starts and to hold one while they make the room load again.
 	beforeRefusedAppendClose func(room string)
+	// beforeRoomAppend runs in the room's persistence before it stores a browser's update
+	// (StoreUpdateStored), once the update is known to be neither dropped nor stored by another
+	// writer. An error it returns is the append's own: the room fails and the update is not
+	// stored, as when the database refuses the transaction. Nil outside tests; tests use it to
+	// lose a commit the room has integrated and relayed. It is set before the service stores
+	// anything, since the persistence reads it unlocked.
+	beforeRoomAppend func(room string) error
 	// betweenCloseSnapshotReads runs in a close for a closed issue between the two readings its
 	// snapshot is made of: the document's pending-settlement row, read first, and the room's
 	// record, read after it (setRoomIssueOpen, closeRefusedAppendRoom, closeSnapshot). Nil
@@ -407,6 +411,10 @@ type Service struct {
 	// loads and injections until the rebuild's transaction ends (Ledger.endRebuilds), and a load
 	// under way as the hold is lifted is refused at its load hook (markRoomLoadRebuilt).
 	rebuilding sync.Map
+	// clientIDsSince is when this database first served a build that gives client ids out
+	// (document_client_ids_since), read once it is recorded and never again: no boot moves it
+	// (claimWindowOpen, client_ids.go). Nil until a read found it.
+	clientIDsSince atomic.Pointer[time.Time]
 	// preloads holds, per room, the durable state a document socket's admission check read and
 	// what it rendered of it (*preloadedDocument), for the room load that socket makes next
 	// (takePreload), which decodes that state rather than reading the store again.
@@ -998,7 +1006,24 @@ func New(deps Deps) *Service {
 	srv.Authorize = service.authorize
 	srv.OnTokenAuthContext = service.authorizeSchemaVersion
 	srv.OnInject = service.allowInject
-	srv.OnPeerUpdate = service.onPeerUpdate
+	srv.OnPeerUpdate = service.weighPeerUpdate
+	// What a browser's frame parks is no part of the document until it lands: the room relays,
+	// answers and stores what each apply integrated, and nothing it parked (leaveParkedOut, which
+	// a room's load sets on the room's document, keepReplica). A frame is relayed as what its apply
+	// integrated - the commit's own update, the structs a drain landed included - rather than as
+	// the bytes the browser sent, so a frame whose structs parked reaches no other browser until
+	// the commit that lands them, which carries them. A frame that left anything of its own parked
+	// is answered not applied, so the editor keeps its saved row and sends it again; nothing
+	// stores parked bytes (the stored rows hold what landed and nothing else), so that row is what
+	// keeps the edit.
+	srv.RelayIntegratedOnly = true
+	srv.AnswerParkedNotApplied = true
+	// 'Saved' means stored: a frame's answer waits until the room's persistence says the commit
+	// it made is stored (StoreUpdateStored), in the order the frames came, and is not applied
+	// where it was not stored - the room failed, or the append was refused - so the editor keeps
+	// the row and sends it to the room that replaces this one. The relay does not wait: the other
+	// browsers are shown the commit as it integrates, as they always were.
+	srv.AnswerOnceStored = true
 	srv.OnLoadDocument = service.onLoadDocument
 	srv.OnLastPeer = service.settleLastPeer
 	// ygo calls it once for every room it retires, whichever way: the idle sweep, CloseRoom.
@@ -1006,11 +1031,9 @@ func New(deps Deps) *Service {
 	srv.OnStateAnswer = service.weighStateAnswer
 	// Every update and whole-state message a read-write browser sends is weighed before the room
 	// takes it, which is what keeps a browser from growing a document past the bound every server
-	// write obeys (weighPeerUpdate), and what the apply parks is stored before ygo answers the
-	// browser (onPeerUpdate). Every answer to a browser's first sync is weighed too: it holds the
-	// whole of what that browser is missing at once, cut into frames, and a room holding parked
-	// structs decodes its whole state twice to cut it, so it takes a grant of the pod's copy heap
-	// for as long as it holds them (weighStateAnswer).
+	// write obeys (weighPeerUpdate). Every answer to a browser's first sync is weighed too: it holds
+	// the whole of what that browser is missing at once, cut into frames, so it takes a grant of the
+	// pod's copy heap for as long as it holds them (weighStateAnswer).
 
 	if newServiceHook != nil {
 		newServiceHook(service)
@@ -3578,43 +3601,27 @@ func (s *Service) waitForDurableAppends(ctx context.Context, room string) error 
 }
 
 // waitForRoomIdle waits until busy, read under the state lock of room's record, no longer holds,
-// or ctx ends; ctx is the wait's bound, a caller's deadline and not a poll. It asks the room's
-// appends to go first, under the record's lock its first look takes: it records appendsFlushed,
-// so an update recorded before that ask lingers no more, and ends every linger waiting. None
-// lingers while it waits (appendWaiters), so it waits out no batch's linger. It sleeps on the
+// or ctx ends; ctx is the wait's bound, a caller's deadline and not a poll. It sleeps on the
 // room's idle signal, which wakes once the record counts no update its persistence has not taken
 // and no append that has not landed (countsFellLocked), and looks the room's record up again at
 // each wake: a failed room's eviction moves the counts to a successor record and wakes the old
 // one's signal (handOverFailedRoomLocked). Each wake runs the settlementWoke hook.
 func (s *Service) waitForRoomIdle(ctx context.Context, room string, busy func(*roomState) bool) error {
-	for flushed := false; ; flushed = true {
+	for {
 		state := s.lockExistingState(room)
 		if state == nil {
 			return nil
-		}
-		if !flushed {
-			state.appendsFlushed = time.Now()
-			state.appendLinger.wake()
 		}
 		if !busy(state) {
 			s.unlockState(room, state)
 			return nil
 		}
 		idle := state.idle.wait()
-		state.appendWaiters++
-		state.appendLinger.wake()
 		s.unlockState(room, state)
-		var err error
 		select {
 		case <-ctx.Done():
-			err = ctx.Err()
+			return ctx.Err()
 		case <-idle:
-		}
-		state.mu.Lock()
-		state.appendWaiters--
-		s.unlockState(room, state)
-		if err != nil {
-			return err
 		}
 		s.settlementWokeUp(room)
 	}

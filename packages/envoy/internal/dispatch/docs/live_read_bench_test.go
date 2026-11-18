@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
@@ -102,7 +103,9 @@ func BenchmarkLiveDocumentRead(b *testing.B) {
 // keystroke under the bound takes. The browser's encode is outside the timing, as it is outside
 // the server's. The hook is in the path because A1's cost clause compares the keystroke without
 // it, at a base that has no hook, against the keystroke with it: a benchmark whose keystrokes never
-// reached the hook could not see what it costs.
+// reached the hook could not see what it costs. Each keystroke carries the context of a socket
+// given the browser's own client id, so the hook judges its client as it judges a page's
+// keystroke (judgeClients).
 func BenchmarkKeystrokeBesideReads(b *testing.B) {
 	live := benchmarkLiveDocument(b, 524<<10)
 	browser, err := snapshotDocument(live)
@@ -117,6 +120,11 @@ func BenchmarkKeystrokeBesideReads(b *testing.B) {
 	// live, so the two stay one document across every run.
 	var sent []byte
 	browser.OnUpdate(func(update []byte, _ any) { sent = update })
+	// The socket's id is marked as having landed already, so no keystroke writes its row: the
+	// benchmark's service has no store (recordLanded).
+	clients := &socketClients{own: browser.ClientID()}
+	clients.landed.Store(true)
+	socket := context.WithValue(context.Background(), connectionContextKey{}, &connectionState{clients: clients})
 	walk := func(doc *crdt.Doc) {
 		if _, err := treeOf(doc); err != nil {
 			b.Error(err)
@@ -176,7 +184,7 @@ func BenchmarkKeystrokeBesideReads(b *testing.B) {
 					for range 120 {
 						time.Sleep(20 * time.Millisecond)
 						browser.Transact(func(txn *crdt.Transaction) { texts[0].Insert(txn, 0, "y", nil) })
-						info := websocket.PeerUpdateInfo{Room: "bench", Doc: live, Update: sent}
+						info := websocket.PeerUpdateInfo{Room: "bench", Doc: live, Update: sent, Context: socket}
 						start := time.Now()
 						err := service.weighPeerUpdate(info, func() error {
 							if err := crdt.ApplyUpdateV1(info.Doc, info.Update, info.Origin); err != nil {

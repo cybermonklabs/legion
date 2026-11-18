@@ -80,31 +80,16 @@ type roomState struct {
 	// updateClasses is the queue of classes the room's update observer recorded, in the order it
 	// recorded them, which is seq order for each room instance (queuedClass). pendingUpdates
 	// counts the durable classes whose update no call of the room's persistence has taken yet,
-	// and queuedBytes is the bytes of the queue's updates, which a batch of the room's browser
-	// appends is bounded by (roomAppendBatchBytes).
+	// and queuedBytes is the bytes of the queue's updates, which the room figures report
+	// (RoomFigures.PendingUpdateBytes).
 	updateClasses  []*queuedClass
 	pendingUpdates int
 	queuedBytes    int
-	// appendLinger is what a lingering browser append of the room waits on, woken to end every
-	// linger at once: when a wait for the room's appends begins (waitForRoomIdle) or another
-	// process's room query asks for them (askRoomAppends) - each records appendsFlushed, so an
-	// update recorded before the ask no longer lingers, and counts itself in appendWaiters, so
-	// no append lingers while it waits - when the queue reaches a batch's cap
-	// (queueUpdateClass), and when the record is handed over (handOverFailedRoomLocked).
-	appendLinger   wakeSignal
-	appendsFlushed time.Time
-	appendWaiters  int
 	// idle is the room's idle signal: what a wait for the room's appends waits on
 	// (waitForRoomIdle) once it finds pendingUpdates or durableAppends above zero, woken once both
 	// are zero again (countsFellLocked), or when the record is handed over with its counts
 	// (handOverFailedRoomLocked). Every place either count falls tells countsFellLocked.
 	idle wakeSignal
-	// parked are the parked bytes of commits that parked something and changed nothing, which no
-	// OnUpdate hands to the room's persistence (classifyDrained). They wait here, with the cursor
-	// of the room instance that parked them, until a drainer that holds no replica lock and no
-	// document lock stores them (storeParked): a drain can run under a settlement's document lock,
-	// and the store takes that lock.
-	parked []parkedBytes
 	// shadow is what the latest committed live write left the room to measure again the classes
 	// of the browser updates stored after its own (roomShadow), nil while none is left.
 	shadow     *roomShadow
@@ -182,8 +167,7 @@ type roomState struct {
 // committed the update, which the update's bytes count against (queueUpdateClass), nil for a class
 // no room instance made. observed is when the observer classified the update, on this process's
 // monotonic clock, which tells the gate an update the room took before its issue closed from one
-// taken after (observedBeforeClose) and is the instant the batch its own call runs lingers from
-// (roomAppendLinger); zero for a class no observer of the room's log classified.
+// taken after (observedBeforeClose); zero for a class no observer of the room's log classified.
 //
 // An update only the room holds - not a published live write's nor a catch-up's, which are stored
 // already - also names instance, the room instance it was made in, whose list of unstored updates
@@ -421,8 +405,6 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 	state.pendingUpdates = 0
 	state.queuedBytes -= carriedBytes
 	state.durableAppends.Add(-durable)
-	// A browser append lingering on this record looks the queue up again on the successor.
-	state.appendLinger.wake()
 	s.rooms.CompareAndSwap(room, state, successor)
 }
 
@@ -430,13 +412,12 @@ func (s *Service) handOverFailedRoomLocked(room string, state *roomState) {
 // open writer, a running or armed settlement, a latest edit source no settlement has read, a
 // failure being recovered from (whose eviction forgets the state itself, evictRoom), a connected
 // browser, a document socket's admission (admitting), an update the room's persistence has not
-// taken or appended, a commit's parked bytes not yet stored, and an in-flight credit whose append
-// has not landed. Its caller holds state.mu.
+// taken or appended, and an in-flight credit whose append has not landed. Its caller holds
+// state.mu.
 func (s *Service) unusedLocked(state *roomState) bool {
 	return state.liveWriter == nil && state.settling == 0 && !s.isSettleTimerArmed(state.settle) &&
 		!state.unsettled && state.failed == nil && len(state.connected) == 0 && state.admitting == 0 &&
-		state.pendingUpdates == 0 && state.durableAppends.Load() == 0 && len(state.inflight) == 0 &&
-		len(state.parked) == 0
+		state.pendingUpdates == 0 && state.durableAppends.Load() == 0 && len(state.inflight) == 0
 }
 
 // holdingLocked names what holds state's room open, for the sweep's line over a budget past its
@@ -466,16 +447,8 @@ func (s *Service) holdingLocked(state *roomState) string {
 		return "a durable append"
 	case len(state.inflight) != 0:
 		return "an apply in flight"
-	case len(state.parked) != 0:
-		return "parked bytes"
 	}
 	return "the room is gone"
-}
-
-// parkedBytes is one commit's parked bytes and the cursor of the room instance that took them.
-type parkedBytes struct {
-	update []byte
-	cursor *roomCursor
 }
 
 // onlyDepartedLocked is whether every browser state names as connected has departed
@@ -498,11 +471,10 @@ func (state *roomState) onlyDepartedLocked() bool {
 // update a writer other than the room's persistence has already stored, or is storing under the
 // document's advisory lock: a published live write's, or a repair's (classifyDrained).
 //
-// A queue that reaches a batch's cap ends the linger of the room's browser append, whose batch
-// has nothing more to wait for. Every update the room commits is recorded here once, so this is
-// also where the bytes it took count as resident, against the token of the load whose instance
-// committed it (residentLoad, countResidentBytes), which an unload of the name ends. A class
-// carrying no token - one a test built by hand - counts no bytes.
+// Every update the room commits is recorded here once, so this is also where the bytes it took
+// count as resident, against the token of the load whose instance committed it (residentLoad,
+// countResidentBytes), which an unload of the name ends. A class carrying no token - one a test
+// built by hand - counts no bytes.
 func (s *Service) queueUpdateClass(room string, update []byte, class documentUpdateClass, stored bool) *queuedClass {
 	state := s.lockState(room)
 	defer s.unlockState(room, state)
@@ -518,9 +490,6 @@ func (s *Service) queueUpdateClass(room string, update []byte, class documentUpd
 	}
 	state.queuedBytes += len(class.update)
 	s.countResidentBytes(class.resident, int64(len(class.update)))
-	if len(state.updateClasses) >= roomAppendBatchUpdates || state.queuedBytes >= roomAppendBatchBytes {
-		state.appendLinger.wake()
-	}
 	return queued
 }
 

@@ -3,7 +3,8 @@ package docs
 // The compaction sweep: the hourly pass over every document with rows to fold, as
 // doc_compaction_owed names them, which compacts what the compaction queue never saw or let go -
 // the rooms a restart, a Shutdown or a Quiesce dropped from it, and the documents another process
-// wrote and never loaded here.
+// wrote and never loaded here. The same pass deletes the client ids no edit used
+// (sweepUnusedClientIDs, client_ids.go).
 
 import (
 	"context"
@@ -96,9 +97,13 @@ func (s *Service) compactionSweepPass(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
+	unused, err := sweepUnusedClientIDs(ctx, pool)
+	if err != nil && ctx.Err() == nil {
+		slog.Error("dispatch: document compaction sweep", "error", err)
+	}
 	slog.Info("dispatch: document compaction sweep",
 		"candidates", len(rooms), "compacted", compacted, "rows_deleted", deleted, "left_to_queue", left,
-		"forgotten", forgotten)
+		"forgotten", forgotten, "unused_client_ids_deleted", unused)
 }
 
 // compactionCandidates lists every document doc_compaction_owed names: the documents an append

@@ -15,14 +15,14 @@ import (
 )
 
 // A room loaded holding a backlog weighs the drain of that backlog against the document bound,
-// as the room that parked it did: the stored state carries what parked and the load parks it
-// again, and the room's parked content starts at the bytes that backlog takes of its state
-// (parkedStructBytes, newRoomApplies) rather than at nothing. This is review 7's
-// TestR7ParkedFramesDrainPastTheDocumentBound across a load: eight frames of 900 KiB park in one
-// room, each behind a gap of a browser of its own, the room's state is loaded as a room's load
-// loads it (loadAndType), and the one update that fills every gap is handed to the loaded room's
-// hook. Weighed on the loaded room's rendering alone, it was admitted and the drain left the room
-// rendering past the document bound and its creep.
+// as the room that parked it did: the stored state an earlier build wrote carries what parked and
+// the load parks it again, and the one update that fills every gap lands it only as the room's
+// apply check passes what it lands, discarding it otherwise (renderCheck, leaveParkedOut). This is
+// review 7's TestR7ParkedFramesDrainPastTheDocumentBound across a load: eight frames of 900 KiB
+// park in one room, each behind a gap of a browser of its own, the room's state is loaded as a
+// room's load loads it (loadAndType), and the one update that fills every gap is handed to the
+// loaded room's hook. Weighed on the loaded room's rendering alone, it was admitted and the drain
+// left the room rendering past the document bound and its creep.
 func TestALoadedBacklogsDrainIsWeighedAgainstTheDocumentBound(t *testing.T) {
 	const frames, each = 8, 900 << 10
 	service, parker, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
@@ -41,17 +41,21 @@ func TestALoadedBacklogsDrainIsWeighedAgainstTheDocumentBound(t *testing.T) {
 			t.Fatalf("a parked frame was answered %v (applied %t), want it admitted", err, called)
 		}
 	}
-	state := crdt.EncodeStateAsUpdateV1(parker, nil)
+	// The room leaves what it parks out of its state (leaveParkedOut), so the rows an earlier
+	// build stored of what parked are the frames themselves, folded into the state after it.
+	state, err := crdt.MergeUpdatesV1(append([][]byte{crdt.EncodeStateAsUpdateV1(parker, nil)}, parking...)...)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runtime.KeepAlive(replica)
 
 	loaded := loadAndType(t, state, nil)
 	parked := loaded.live.PendingStats()
-	seeded := loaded.replica.applies().parkedBytes()
 	rendering, _ := loaded.replica.size()
-	t.Logf("the loaded room parks %d structs, its %d-byte state's backlog taken at %d bytes against the %d of content the frames carried, rendering %d bytes",
-		parked.Items, len(state), seeded, frames*each, rendering)
-	if seeded < frames*each {
-		t.Errorf("the loaded room starts with %d bytes parked, under the %d its backlog carries: the drain is weighed on less than it lands", seeded, frames*each)
+	t.Logf("the loaded room parks %d structs from its %d-byte state, against the %d of content the frames carried, rendering %d bytes",
+		parked.Items, len(state), frames*each, rendering)
+	if parked.Items == 0 {
+		t.Fatal("the loaded room parks nothing: the fixture does not load a backlog")
 	}
 	fill, err := crdt.MergeUpdatesV1(fills...)
 	if err != nil {
@@ -72,18 +76,15 @@ func TestALoadedBacklogsDrainIsWeighedAgainstTheDocumentBound(t *testing.T) {
 	}
 }
 
-// Parked content that swaps is weighed as it parks. The room's parked content was charged an
-// apply's content only where the apply left the queue holding more structs than it found
-// (roomApplies.noteParked), so an update that released one parked struct and parked one of its
-// own left the queue's count where it was and was charged nothing. That is a swap, and swaps
-// repeat: eight browsers each park one character behind one they keep back, and then each of
-// eight frames sends one of those characters, releasing that browser's parked struct, and parks
-// 900 KiB of a browser of its own behind a character the room never receives. Each swap leaves
-// eight structs parked, the figure the drain is weighed on stays at the eight bytes the first
-// frame parked, and one update filling every gap lands all eight frames at once. Charged on every
-// apply that leaves the queue holding anything, the room's parked content reads the first
-// frame's 900 KiB, the second swap is weighed against the drain it can release and refused at
-// the byte bound, and the fill lands one frame and stays under the bound.
+// Parked content that swaps drains no room past the document bound. eight browsers each park one
+// character behind one they keep back, and then each of eight frames sends one of those
+// characters, releasing that browser's parked struct, and parks 900 KiB of a browser of its own
+// behind a character the room never receives. Each swap leaves eight structs parked, so no count
+// of the queue tells it from an apply that left the queue alone, and one update filling every gap
+// would land all eight frames at once. The room's apply check weighs that drain on what it lands
+// and discards it where it would render past the bound (renderCheck, leaveParkedOut), and the
+// queue's bytes are charged on every apply that leaves it holding anything (noteQueued), so the
+// swaps are weighed against the state cap as they park.
 func TestParkedContentThatSwapsDrainsNoRoomPastTheDocumentBound(t *testing.T) {
 	const swaps, each = 8, 900 << 10
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
@@ -126,13 +127,13 @@ func TestParkedContentThatSwapsDrainsNoRoomPastTheDocumentBound(t *testing.T) {
 	if err, called := weighInto(service, room, parks); err != nil || !called {
 		t.Fatalf("the frame parking one character for each of %d browsers was answered %v (apply ran %t), want it admitted", swaps, err, called)
 	}
-	t.Logf("one %d-byte frame parks %d structs; the room's parked content reads %d bytes, rendering %d",
-		len(parks), room.PendingStats().Items, service.roomWeighingOf(room).applies().parkedBytes(), publish())
+	t.Logf("one %d-byte frame parks %d structs; the room's queue is charged %d bytes, rendering %d",
+		len(parks), room.PendingStats().Items, service.roomWeighingOf(room).applies().queuedBytes(), publish())
 	for i, swap := range swapping {
 		found := room.PendingStats().Items
 		err, called := weighInto(service, room, swap)
-		t.Logf("swap %d: %d bytes, hook=%v, apply ran %t; parked structs %d -> %d; parked content read %d bytes; rendering %d bytes",
-			i+1, len(swap), err, called, found, room.PendingStats().Items, service.roomWeighingOf(room).applies().parkedBytes(), publish())
+		t.Logf("swap %d: %d bytes, hook=%v, apply ran %t; parked structs %d -> %d; queue charged %d bytes; rendering %d bytes",
+			i+1, len(swap), err, called, found, room.PendingStats().Items, service.roomWeighingOf(room).applies().queuedBytes(), publish())
 	}
 	fill, err := crdt.MergeUpdatesV1(fills...)
 	if err != nil {

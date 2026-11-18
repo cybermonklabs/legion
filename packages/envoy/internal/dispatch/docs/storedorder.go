@@ -27,10 +27,11 @@ import (
 //  2. Versions. A version's markdown is the render of the fold through its doc_update_version.
 //  3. Pending. No update is stored ahead of one it depends on: a row that adds parked structs or
 //     deletions is a mismatch unless a later row carries what it parked again, which the commit
-//     that integrates a peer's stored parked edit does (storeParked, judgeParkedRows). A row
-//     still parked when the history ends is counted as awaiting its predecessor, not reported:
-//     the store cannot tell an edit whose predecessor has not arrived from one whose dependency
-//     was never stored.
+//     that integrates a peer's stored parked edit does (judgeParkedRows). A room stores nothing
+//     it parks (leaveParkedOut), so only rows an earlier build stored of what parked, and a
+//     published write whose update waits on an item, are such rows. A row still parked when the
+//     history ends is counted as awaiting its predecessor, not reported: the store cannot tell an
+//     edit whose predecessor has not arrived from one whose dependency was never stored.
 //
 // The fold starts from the document's oldest retained update, its base. Compaction folds older
 // history into that row (Compact) and a rebuild replaces the whole history with one row there
@@ -127,8 +128,8 @@ type StoredOrderReport struct {
 	// which a compaction folded into it: nothing of those was compared either.
 	VersionsChecked, VersionsSkipped, VersionsCompacted int
 	// UpdatesAwaitingPredecessor counts the updates after which the fold parks structs no later
-	// row resolves: a peer's edit the room stored ahead of an edit it builds on that has not
-	// arrived (storeParked), or a row whose dependency was never stored, which the store alone
+	// row resolves: a peer's edit an earlier build's room stored ahead of an edit it builds on
+	// that has not arrived, or a row whose dependency was never stored, which the store alone
 	// cannot tell apart. A dependency the room held and the store lost also leaves every version
 	// recorded after it rendering text the fold lacks, which the version rule reports.
 	UpdatesAwaitingPredecessor int

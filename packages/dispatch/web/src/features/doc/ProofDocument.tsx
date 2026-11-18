@@ -297,11 +297,14 @@ export function ProofDocument({
   const [loadError, setLoadError] = useState<string | undefined>(undefined);
   // The server refused this browser's last edit, as one that would take the document past its size
   // bound, one it could not merge quickly enough, one the document cannot take until it is
-  // rebuilt, or one typed against the history someone else's rebuild replaced: the close reason
-  // that says which, which the notice's sentence (`refusedEditNotice`) and its rebuild offer are
-  // read from. The edit is gone and the notice stays until the person dismisses it or rebuilds
-  // the document.
-  const [refusedEdit, setRefusedEdit] = useState<string | undefined>(undefined);
+  // rebuilt, one typed against the history someone else's rebuild replaced, or one made under a
+  // client id Dispatch did not give this person: the close reason that says which, which the
+  // notice's sentence (`refusedEditNotice`) and its rebuild offer are read from, with how many
+  // saved edits went with it where the connection says (`dropped`). The edit is gone and the
+  // notice stays until the person dismisses it or rebuilds the document.
+  const [refusedEdit, setRefusedEdit] = useState<
+    { reason: string; dropped: number | undefined } | undefined
+  >(undefined);
   // A write to this document that the server refused because only a rebuild lets the document
   // take it, made from its margin, one of its ask blocks or anywhere else in the app: the refusal
   // names this document's rebuild route (`nearCapRefusalDocument`), which the server does only
@@ -932,7 +935,7 @@ export function ProofDocument({
               setConnection("connecting");
               refusalTimer = window.setTimeout(admit, delay);
             },
-            onEditRefused: (reason) => {
+            onEditRefused: (reason, dropped) => {
               if (!mounted) {
                 return;
               }
@@ -941,7 +944,7 @@ export function ProofDocument({
               // the document afresh from the server, then replays the rows that are left.
               teardown();
               setBusy(false);
-              setRefusedEdit(reason);
+              setRefusedEdit({ dropped, reason });
               setConnection("connecting");
               admit();
             },
@@ -1172,7 +1175,8 @@ export function ProofDocument({
   // someone else's rebuild replaced (`DOCUMENT_REBUILT_CLOSE_REASON`) has just been rebuilt, and
   // the route answers a second rebuild of it `409`; an edit too large, too tangled or holding
   // content the document does not take is the edit's own refusal, which no rebuild mends.
-  const refusedEditOffersRebuild = page && refusedEdit === DOCUMENT_NEEDS_REBUILD_CLOSE_REASON;
+  const refusedEditOffersRebuild =
+    page && refusedEdit?.reason === DOCUMENT_NEEDS_REBUILD_CLOSE_REASON;
   // The document's own read says the rebuild route takes it by the decode cap (`near_decode_cap`),
   // whether or not any write was refused yet: the person who opens the page of a document someone
   // else's write was refused for - an agent's, from the command line - meets the offer here, with
@@ -1215,7 +1219,7 @@ export function ProofDocument({
       ) : null}
       {refusedEdit === undefined ? null : (
         <RefusedEditNotice
-          notice={refusedEditNotice(refusedEdit)}
+          notice={refusedEditNotice(refusedEdit.reason, refusedEdit.dropped)}
           offersRebuild={refusedEditOffersRebuild}
           onDismiss={() => setRefusedEdit(undefined)}
           onRebuild={rebuildLiveDocument}

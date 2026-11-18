@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"time"
 
 	"github.com/reearth/ygo/crdt"
@@ -36,6 +35,10 @@ type connectionState struct {
 	// records it, the answer to the socket's token reads it (authorizeSchemaVersion), a re-check
 	// revokes it (RunSchemaAdmission), and ServeHTTP forgets it once the socket has ended.
 	admission *schemaAdmission
+	// clients is the client ids this socket may write and announce under, which its admission
+	// decided (admitClients, client_ids.go) and which the peer update hook and the awareness
+	// filter judge the socket's frames by.
+	clients *socketClients
 }
 
 type connectionContextKey struct{}
@@ -235,18 +238,28 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 	return a.StoreUpdateContext(context.Background(), room, update)
 }
 
-// StoreUpdateContext stores a room's update, which ygo's persistence worker hands on one call per
-// update, in order: it appends, in one transaction under the document's advisory lock, every
-// update of the same room instance its update observer recorded before this one and no writer has
-// stored yet, this one, and the run of updates the room recorded after it that its batch takes
+// StoreUpdateContext is StoreUpdateStored for a caller that reads only its error.
+func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room string, update []byte) error {
+	_, err := a.StoreUpdateStored(ctx, room, update)
+	return err
+}
+
+// StoreUpdateStored stores a room's update, which ygo's persistence worker hands on one call per
+// update, in order, and says whether the update is stored once it returns
+// (websocket.PersistenceAdapterStored): the room answers the browser whose frame made the commit
+// only then, applied where it is stored and not applied where it is not (Server.AnswerOnceStored,
+// New). It appends, in one transaction under the document's advisory lock, every update of the
+// same room instance its update observer recorded before this one and no writer has stored yet,
+// this one, and the run of updates the room recorded after it that its batch takes
 // (roomBatchThrough), in the room's commit order, each with the in-flight credit and the class its
 // observer recorded (AppendRoomFlush, flushRun). So the order ygo's persistence hands updates on
 // in never decides the order they are stored in, and an update another writer stored first is
 // skipped. It returns nil only once the update is durable, by its own transaction or by one that
-// stored it first, so ygo's flush still means every update it held is stored.
+// stored it first, or once it is dropped, so ygo's flush still means every update it held is
+// stored or dropped.
 //
-// Unless something waits on the room, the call lingers for the room's queue to fill before its
-// batch goes, at most roomAppendLinger from the update's recording (room_appends.go).
+// The call goes at once. While it is in flight the room's later updates queue behind it, and the
+// call ygo makes next takes them all (group commit, room_appends.go).
 //
 // Each append carries what the observer recorded with its updates: the room instance they were
 // made in (documentUpdateClass.cursor) and when the room took each (documentUpdateClass.observed),
@@ -268,23 +281,24 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 // is closed (settleRoomWithin).
 //
 // A replaced history fails the room, as any failed append does: the room reloads from the store,
-// which is the close-and-reload a replaced history needs (plan D3.3), and the browser resends the
-// update to the reloaded room. A refused update on a closed issue is dropped and closes the room
-// for its issue (refuseClosedIssueAppend), so its browsers reconnect read-only. Either is decided
-// under the document's advisory lock, so it is never this process's own write in flight, and
-// needs no room-sync lane to run.
+// which is the close-and-reload a replaced history needs (plan D3.3), and the browser, answered
+// not applied, resends the update to the reloaded room. A refused update on a closed issue is
+// dropped and closes the room for its issue (refuseClosedIssueAppend), so its browsers reconnect
+// read-only. Either is decided under the document's advisory lock, so it is never this process's
+// own write in flight, and needs no room-sync lane to run.
 //
 // An update that never reaches the store - its room failed, or a live write, a settlement or a
 // catch-up already made it durable - lands its credit here instead: the room drops it with the
 // update, which the browser resends. Whichever way the append ends, the update leaves its
-// instance's unstored updates once it has.
-func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room string, update []byte) error {
+// instance's unstored updates once it has. One a writer made durable is stored; a dropped one is
+// not.
+func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room string, update []byte) (stored bool, err error) {
 	if a.service.roomFailed(room) {
 		// The failed room's update is dropped and its browser resends it to the room that
 		// replaces this one, but its class is taken all the same, so the work the record counts
 		// for it ends here (dropUpdate).
 		a.dropUpdate(room, update)
-		return nil
+		return false, nil
 	}
 	class, counted, found := a.service.consumeUpdateClass(room, update)
 	if found {
@@ -300,10 +314,16 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	// class is not stored, and is stored all the same; the repair's own update then finds its
 	// class stored.
 	suppressed := a.service.consumeSuppressedPersistence(room, update)
-	if class.stored.Load() || (suppressed && !found) || a.service.roomFailed(room) {
-		return nil
+	if writer := class.stored.Load() || (suppressed && !found); writer || a.service.roomFailed(room) {
+		return writer, nil
 	}
 	a.service.hooks.awaitPersistenceHold(ctx, room)
+	if fail := a.service.beforeRoomAppend; fail != nil {
+		if err := fail(room); err != nil {
+			a.service.failRoom(room, err)
+			return false, err
+		}
+	}
 	if !found {
 		// An update no class was recorded for is stored on its own: the room's queue holds
 		// nothing to flush it with, and the gate reads the cursor marked above.
@@ -316,12 +336,12 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 		if _, err := a.store.AppendUpdatesWithCredit(withRoomCursor(ctx, class.cursor), room, updates); err != nil {
 			if errors.Is(err, ErrIssueClosed) {
 				a.service.refuseClosedIssueAppend(room, class.instance)
-				return nil
+				return false, nil
 			}
 			a.service.failRoom(room, err)
-			return err
+			return false, err
 		}
-		return nil
+		return true, nil
 	}
 	// The call's own update must read back into a fresh copy before its batch is stored, as an
 	// append of updates the store is handed checks (AppendUpdatesWithCredit): one the room took
@@ -332,32 +352,16 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	// finds its class stored and decodes nothing.
 	if err := crdt.ApplyUpdateV1(newDocumentCopy(), update, nil); err != nil {
 		a.service.failRoom(room, err)
-		return err
-	}
-	through, wake, wait := a.service.roomBatchThrough(room, class, true)
-	if wake != nil {
-		timer := time.NewTimer(wait)
-		select {
-		case <-wake:
-		case <-timer.C:
-		}
-		timer.Stop()
-		// Another writer may have stored the update while it lingered (a settlement, a live
-		// write, a peer's batch): there is nothing left for this call to store, and its batch
-		// must not meet the gate for it, which refuses a room behind the head.
-		if a.service.roomFailed(room) || class.stored.Load() {
-			return nil
-		}
-		through, _, _ = a.service.roomBatchThrough(room, class, false)
+		return false, err
 	}
 	flush := &RoomFlush{service: a.service, room: room, cursor: class.cursor}
-	if _, err := a.store.AppendRoomFlush(ctx, room, flush, through, class.credit); err != nil {
+	if _, err := a.store.AppendRoomFlush(ctx, room, flush, a.service.roomBatchThrough(room, class), class.credit); err != nil {
 		if errors.Is(err, ErrIssueClosed) {
 			a.service.refuseClosedIssueAppend(room, class.instance)
-			return nil
+			return false, nil
 		}
 		a.service.failRoom(room, err)
-		return err
+		return false, err
 	}
 	if flush.storedContentChange() {
 		a.service.scheduleSettleAfterAppend(room)
@@ -365,7 +369,7 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	if class.cursor.takeReplaced() {
 		a.service.closeRoomOnReplacedHistory(room, class.instance)
 	}
-	return nil
+	return true, nil
 }
 
 // Compact is ygo's room-close compaction: its persistence worker calls it as it exits, the server's
@@ -834,14 +838,14 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	})
 	// A commit that changed nothing the room holds - one whose whole update waits for an edit the
 	// room has not received, so it only parked - has no update observer (ygo calls OnUpdate only
-	// for a transaction that changes the document, reearth/ygo#350), but ygo logs it, with what it
-	// parked (crdt.LoggedUpdate.Parked). ygo calls OnAfterTransaction for every committed
-	// transaction, outside the document's lock and before OnUpdate, so the replica is drained here
-	// for a transaction that changed no shared type while the log holds something: the replica
-	// takes the commit, and what it parked is queued for the store (classifyDrained), whichever
-	// path the update reached the room by - a peer's connection, or a published write whose
-	// update waits on an item a cold fork read from the store. A transaction that changed a
-	// shared type is drained by the update observer above, after the steps it takes first.
+	// for a transaction that changes the document, reearth/ygo#350), but ygo logs it. ygo calls
+	// OnAfterTransaction for every committed transaction, outside the document's lock and before
+	// OnUpdate, so the replica is drained here for a transaction that changed no shared type while
+	// the log holds something: the replica takes the commit as one more position and nothing
+	// else (classifyDrained), whichever path the update reached the room by - a peer's
+	// connection, or a published write whose update waits on an item a cold fork read from the
+	// store. A transaction that changed a shared type is drained by the update observer above,
+	// after the steps it takes first.
 	doc.OnAfterTransaction(func(txn *crdt.Transaction) {
 		if replica.log.Pending() > 0 && len(txn.ChangedTypes()) == 0 {
 			s.observeRoomUpdates(room, replica)
@@ -851,24 +855,26 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	return nil
 }
 
-// onPeerUpdate is ygo's Server.OnPeerUpdate, the service's one hook on a browser's update: it
-// weighs the update and runs the apply the room hands it (weighPeerUpdate), and then stores what
-// that apply parked. ygo hands the room's persistence only what an update integrated, through
-// OnUpdate, and nothing at all for one that only parked bytes - it waits for an edit the room
-// has not received - so this is the one place the parked bytes are made durable: the drain the
-// apply ran (the room's update observer, or its after-transaction drain for a commit that
-// changed nothing, onLoadDocument) queued them (classifyDrained), and storeParked appends them
-// before ygo answers the peer and before ygo's Shutdown, which waits for this hook, can let the
-// process exit. The hook runs on the peer's read loop, which holds no lock of the service's, so
-// it can wait for the document's lock the store takes; an OnUpdate observer cannot, since it
-// runs on the goroutine that committed, which can be a settlement holding that lock.
+// leaveParkedOut makes what doc parks no part of it until it lands. doc is a room's document, set
+// as the room's load lists it (keepReplica), or a document of its replica. Its encodes - the whole
+// state a read or a rebuild takes, the answer to
+// a browser's first sync, the base its update log records - carry what it integrated and nothing
+// of its pending queue (crdt.Doc.SetParkedOutOfState), and a drain of that queue taken back
+// discards everything the update that filled the gap released rather than parking it again,
+// naming the applies that parked it (crdt.Doc.SetDiscardRefusedDrain, closeDiscardedSenders).
+// With the server's half (New: RelayIntegratedOnly, AnswerParkedNotApplied) a parked frame is
+// neither relayed, nor answered applied, nor stored, nor shown to a reader, so it is kept only by
+// the editor that sent it, which sends it again, and by the queue until the gap fills. The queue
+// itself stays bounded by the room's pending cap (Server.MaxPendingItems) and is charged against
+// the decode cap's headroom (storedCeiling).
 //
-// An apply can fail after parking bytes, so its error does not skip the durable append; an
-// update the weighing refuses never reaches the apply, so it parks nothing and queues nothing.
-func (s *Service) onPeerUpdate(info websocket.PeerUpdateInfo, apply func() error) error {
-	err := s.weighPeerUpdate(info, apply)
-	s.storeParked(info.Room)
-	return err
+// The replica's documents take it as the room's does, so the two agree on what a drain landed:
+// the only parked content a replica can hold is what a load decoded into both from rows an
+// earlier build stored of what parked, and a drain of it that the room discarded the replica's
+// own check refuses (holdParked) and discards alike.
+func leaveParkedOut(doc *crdt.Doc) {
+	doc.SetParkedOutOfState(true)
+	doc.SetDiscardRefusedDrain(true)
 }
 
 // weighStateAnswer is ygo's Server.OnStateAnswer: the room runs it immediately before it answers
@@ -885,12 +891,10 @@ func (s *Service) onPeerUpdate(info websocket.PeerUpdateInfo, apply func() error
 // the browser's write queue (ygo's sync.EncodeSyncStep2Split), all of it built on the peer's read
 // loop, so a room holds its state once more for each browser it answers. Every room's answer is
 // cut from its own structs (crdt.SplitStateAsUpdateV1), which builds the frames and the cut's own
-// record of each client and decodes nothing, and what a room parks is read back on its own - each
-// parked struct encoded and decoded alone into a document of the cut's own, and each client's
-// parked deletions as one update - and placed after the room's own structs (readParked,
-// theorem-labs/ygo v1.55.1-theorem.6 crdt/split.go:149-183). Measured on a run of a million
-// keystrokes, 1,000,010 structs, an answer to a browser holding nothing held 24,071,008 to
-// 25,428,848 bytes above the document, having allocated about 25.7 MB in under 900 objects
+// record of each client and decodes nothing, and carries nothing the room parks, which is no part
+// of its state (leaveParkedOut). Measured on a run of a million keystrokes, 1,000,010 structs, an
+// answer to a browser holding nothing held 24,071,008 to 25,428,848 bytes above the document,
+// having allocated about 25.7 MB in under 900 objects
 // (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot). Before the fork's v1.55.1-sami.14,
 // which this tag carries, a room that parked anything was cut from its encoded state instead,
 // decoding the whole document twice - 371,149,976 to 429,891,496 bytes held and about 840 MB
@@ -900,17 +904,12 @@ func (s *Service) onPeerUpdate(info websocket.PeerUpdateInfo, apply func() error
 // process queued for it.
 //
 // The grant is read off the room without encoding anything: its tracked state bytes, which the
-// service holds (roomWeighing.roomStateBytes); the structs the answer may have to encode, which
-// ygo counts with the room's parked structs in, since the answer carries those too
-// (websocket.StateAnswerInfo.Structs); and what the room parks, read off its pending queue
-// (crdt.Doc.PendingStats). All three are read again once the grant is in hand and the grant
-// topped up where the room grew, or parked more, while this answer waited for it, which costs
-// nothing where it did not (StateAnswerInfo.StructsNow, and loadSlot.take, which takes the
-// difference alone): the answer is built after this returns, so a grant sized before a wait is
-// otherwise a grant sized on a room that has since changed. The library reads the queue under
-// the document's lock as the cut begins, which no hook can take, so what a room parks in the
-// instant between the second read and that lock is read back under a grant that does not count
-// it.
+// service holds (roomWeighing.roomStateBytes), and the structs the answer may have to encode
+// (websocket.StateAnswerInfo.Structs). Both are read again once the grant is in hand and the
+// grant topped up where the room grew while this answer waited for it, which costs nothing where
+// it did not (StateAnswerInfo.StructsNow, and loadSlot.take, which takes the difference alone):
+// the answer is built after this returns, so a grant sized before a wait is otherwise a grant
+// sized on a room that has since changed.
 //
 // A wait is bounded by WriteWaitBound, the server's own bound on what a caller spends at a
 // memory bound, and the browser a refusal closes is closed DOC_BUSY, the transient close the
@@ -939,15 +938,10 @@ func (s *Service) weighStateAnswer(info websocket.StateAnswerInfo) (func(), erro
 // answerWeight is what one answer to a browser's SyncStep1 takes of the pod's copy heap, for the
 // room live tracked at stateBytes of state and holding structs structs, as ygo's answer is built
 // for that room as it stands (crdt.SplitStateAsUpdateV1, weighStateAnswer): the cut of the room's
-// own structs (cutAnswerWeight), with what reading back what the room parks adds to it
-// (parkedAnswerWeight).
-//
-// What the room parks is read as Doc.PendingStats reports it: the document's read lock and two
-// counters, and, for a room that parks a struct, a slice of the clients its parked structs wait
-// for, sorted. ygo reads the same stats for each answer already, to count the structs it hands
-// this hook.
+// own structs (cutAnswerWeight), which is the whole answer, since nothing the room parks is read
+// back into it (leaveParkedOut).
 func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
-	return parkedAnswerWeight(cutAnswerWeight(stateBytes, int64(live.ClientCount()), structs), live.PendingStats())
+	return cutAnswerWeight(stateBytes, int64(live.ClientCount()), structs)
 }
 
 // cutAnswerWeight is what an answer cut from a room's own structs takes of the pod's copy heap, at
@@ -1067,83 +1061,6 @@ const answerHeapAnAnswer = 4_096
 // the ids count from 1, so that the first 127 take one. It is set past the most.
 const answerFrameStructs = 16_000
 
-// parkedAnswerWeight is cut, what an answer's cut of a room's own structs takes of the pod's copy
-// heap (cutAnswerWeight), with what the answer's read-back of what the room parks adds to it, at
-// most one slot, as every taker is (copyWeight): answerHeapAParkedRead once for a room that parks
-// anything, answerHeapAParkedStruct for each struct in its pending queue and
-// answerHeapAParkedRange for each range of its pending delete set. A room that parks nothing
-// reads nothing back and is weighed on its cut alone.
-//
-// It is priced on what the room parks and on nothing else, because that is all the read-back
-// walks: at theorem-labs/ygo v1.55.1-theorem.6 every room's answer is cut from its own structs,
-// and what it parks is encoded and decoded alone (readParked, crdt/split.go:149-183). The bytes
-// of what it parks are not priced here again: they are in the room's tracked state, which the
-// cut's state term already prices at answerHeapAStateByte, and a parked struct's content costs
-// the answer less than the same content integrated (answerHeapAParkedStruct). The price this
-// replaces was 149 per cent of a whole copy of the room, priced for an answer from the room's
-// encoded state that the tag no longer makes: one 11-byte frame parking one struct multiplied a
-// 40,010-struct room's grant by 15.5, from 2,430,072 bytes to 37,558,325, while its answer
-// allocated 2,020,608 bytes against 2,019,832, and a 640,000-struct room's grant became
-// the whole pool at the calibration (TestR7ForkAParkedRoomsAnswerCostsWhatTheUnparkedRoomsDoes,
-// TestR7ForkTheParkedGrantReachesTheWholeCopyHeapSlot, dispatch://INFRA-179, review 7).
-func parkedAnswerWeight(cut int64, parked crdt.PendingStats) int64 {
-	if parked.Items == 0 && parked.DeleteRanges == 0 {
-		return cut
-	}
-	read := answerHeapAParkedRead + int64(parked.Items)*answerHeapAParkedStruct + int64(parked.DeleteRanges)*answerHeapAParkedRange
-	return min(cut+read, loadSlotBytes)
-}
-
-// answerHeapAParkedStruct is what an answer allocates to read back one struct of a room's pending
-// queue: the struct encoded alone, decoded into the cut's own reader document, and the queue and
-// map entries the cut keeps for its client where the room holds none of that client's structs.
-// It is priced on allocation, which stands above what the read-back holds, rather than on what
-// it holds, as the cut is: what the read-back decodes it keeps until the answer is sent, in the
-// reader document every parked struct is read back into, so its held heap grows with the queue
-// as its allocation does, where the cut's stops at one update's scratch; and its own held heap
-// can be read only beside the cut's, where its allocation is exact on its own.
-//
-// Measured 2026-11-16 on theorem-labs/ygo v1.55.1-theorem.6, as the allocation of an answer to a
-// browser holding nothing from a room parking n structs, less the same room's answer parking
-// nothing, each the fewest of five answers (TestAParkedRoomsAnswerIsGrantedWhatItsReadBackAllocates,
-// which repeats the shapes below at n of 1, 16 and 1,000), on the seeded paragraph alone and with
-// a run of 40,000 keystrokes, which read the same. The worst shape is a margin record of a client
-// of its own, a struct naming its root and its key and holding a map: 1,865.5 bytes a struct at
-// 16, 1,859.3 at 1,000, 1,751.6 at 10,000 and 1,794.4 at 100,000. Then a GC struct of a client of
-// its own, 1,335 to 1,369.6 up to 1,000 and 1,173 at 200,000; a keystroke behind its run's gap,
-// 758 to 839; and a GC struct behind its run's gap, 696 to 739. A struct's bytes add to that what
-// the state term already charges for them: a parked margin record of 921,600 bytes allocated
-// 4,631,648 where the same record integrated allocated 6,482,200, and a room parking 1,000 map
-// entries of 512-byte keys allocated 4,295,096 in all, under the 4,578,232 its cut is granted.
-//
-// It is set at 2,048, 9.8 per cent past the worst, and the margin is for what one shape does not
-// repeat: the read-back's maps and slices grow by doubling, so the allocation of one shape moved
-// between runs by up to 3.4 per cent (50,000 structs of clients of their own allocated 58,651,600
-// and 60,632,744 bytes), and a size between those measured stands at another point of that
-// doubling. What the read-back holds at once is less than what it allocates: 22 to 51 per cent
-// of it for those shapes at 1,000 and 10,000 structs, read at the live heap (liveHeapPeak, in a
-// process run with GODEBUG gcstoptheworld=1).
-const answerHeapAParkedStruct = 2_048
-
-// answerHeapAParkedRange is what an answer allocates to read back one range of a room's pending
-// delete set: each client's parked ranges encoded and decoded as one update, merged into the delete
-// set the cut writes, and the cut's record of that client's deletions. Measured as
-// answerHeapAParkedStruct is: the worst shape is a range of a client of its own, 568 bytes a range
-// at 2, 756 at 16, 872 at 128, 899.2 at 1,000, 847 at 10,000 and 793 at 100,000; ranges of one
-// client cost 64 to 142 each. The library reports the ranges and not their clients
-// (crdt.PendingStats.DeleteRanges), so each is priced as one of a client of its own. It is set at
-// 1,024, 13.9 per cent past the worst, for the same reason answerHeapAParkedStruct is set past its
-// own; what the read-back holds at once is 11 to 41 per cent of its allocation.
-const answerHeapAParkedRange = 1_024
-
-// answerHeapAParkedRead is what an answer allocates to read anything back at all, beyond what it
-// allocates for each struct and range: the reader document, the maps of parked structs and of
-// runs, and the cut's state vector. Measured as answerHeapAParkedStruct is, one parked struct
-// allocated 2,216 to 3,304 bytes in all (the margin record of a client of its own the most) and
-// one parked range 1,920 to 1,936. It is set at 2,048, so that one struct is priced at 4,096 and
-// one range at 3,072, 24 and 59 per cent past the most each measured.
-const answerHeapAParkedRead = 2_048
-
 // refusedStateAnswer is the close a browser is given whose first sync the pod's copy heap had no
 // room to answer inside the server's wait bound, and the one line that says so: the room, what
 // the answer would have carried, the grant it waited for (answerWeight), and the bound it waited
@@ -1201,39 +1118,6 @@ func (s *Service) armDrainedSettle(room string, settles, changed, local bool) {
 	}
 }
 
-// storeParked appends, in the order the room committed them, the parked bytes its drains queued
-// (classifyDrained), each on its own and gated on the cursor of the room instance that parked
-// it (AppendParkedUpdate). It stores them with no class, no credit and no settlement owed: they
-// changed nothing the room renders, and the commit that integrates them marks the document owed.
-// A load of the stored history parks them again and integrates them once their predecessor
-// arrives, which a browser that reconnects sends; the commit that integrates them stores them a
-// second time, in its own update, which a load applies to no effect, since a struct a document
-// already holds is skipped. The bytes are bounded by the room's pending queue (MaxPendingItems),
-// which refuses an update that would park past it, and a struct sent again parks only once, so a
-// peer that keeps sending what cannot integrate cannot grow the store past that bound per room
-// instance. An append that fails fails the room, as any of the room's appends does.
-func (s *Service) storeParked(room string) {
-	for {
-		state := s.lockExistingState(room)
-		if state == nil || len(state.parked) == 0 {
-			if state != nil {
-				s.unlockState(room, state)
-			}
-			return
-		}
-		next := state.parked[0]
-		state.parked = slices.Delete(state.parked, 0, 1)
-		s.unlockState(room, state)
-		if s.roomFailed(room) {
-			continue
-		}
-		ctx := withRoomCursor(context.Background(), next.cursor)
-		if _, err := s.persistence.AppendParkedUpdate(ctx, room, next.update); err != nil {
-			s.failRoom(room, fmt.Errorf("store the parked bytes of a document update: %w", err))
-		}
-	}
-}
-
 // classifyDrained records the class of logged, the update room's log handed over at commit
 // position seq in instance, given whether it changed the room's rendered markdown and the ask
 // blocks it left when it did (renderedReplica). It is the room's drainClassifier, which runs
@@ -1244,14 +1128,10 @@ func (s *Service) storeParked(room string) {
 //
 // A commit can park bytes - structs or deletions that wait for an edit the room has not received -
 // and ygo logs them in Parked, beside an Update that carries only what the commit integrated, the
-// bytes OnUpdate hands the room's persistence. So the room's persistence never stores parked bytes,
-// and they are queued on the room's record for storeParked to store on their own, outside the
-// replica's lock - a drain runs under a settlement's document lock too (treePoint), and the store
-// takes that lock. Parked bytes a published live write left are already durable, stored by the
-// transaction that wrote it, and a catch-up's are the stored rows themselves, so only another
-// origin's bytes are queued. A commit that only parked
-// is logged with an empty update (emptyUpdateV1), and ygo calls no OnUpdate for it, so no
-// persistence call will ever take a class for it: none is queued.
+// bytes OnUpdate hands the room's persistence. The parked bytes are no part of the document until
+// the commit that lands them, whose own update carries them (leaveParkedOut), so nothing here
+// takes them. A commit that only parked is logged with an empty update (emptyUpdateV1), and ygo
+// calls no OnUpdate for it, so no persistence call will ever take a class for it: none is queued.
 //
 // The cursor is the instance's, taken here rather than looked up when the update reaches the
 // store: a room evicted and reloaded in between is a different instance, which did not take this
@@ -1263,11 +1143,6 @@ func (s *Service) storeParked(room string) {
 func (s *Service) classifyDrained(room string, instance *roomInstance, logged crdt.LoggedUpdate, seq uint64, contentChanged bool, asks func() map[string]struct{}) (settles, changed, local bool) {
 	origin, published := logged.Origin.(*liveWriteOrigin)
 	_, remote := logged.Origin.(*remoteUpdateOrigin)
-	if len(logged.Parked) > 0 && !published && !remote {
-		state := s.lockState(room)
-		state.parked = append(state.parked, parkedBytes{update: logged.Parked, cursor: &instance.cursor})
-		s.unlockState(room, state)
-	}
 	if len(logged.Parked) > 0 && bytes.Equal(logged.Update, emptyUpdateV1) {
 		return false, false, false
 	}

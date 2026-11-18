@@ -59,6 +59,16 @@ export interface PendingSync {
    */
   dropRefused(restored: Promise<void>): Promise<void>;
   /**
+   * Deletes every saved row - this tab's and every other tab's - whose edit is under one of
+   * `clients`, or, where none are named, under a client of the Update frame this socket's server
+   * last answered as not applied, once `restored` has settled, and answers how many saved rows it
+   * deleted. The server refused that frame with `DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON`: the
+   * client id it writes under is not this person's, so every other row under that id would meet
+   * the same refusal, one reconnect at a time, and they go together. Rows under other ids stay,
+   * and the rebuilt document replays them as it replays any row.
+   */
+  dropClientRows(restored: Promise<void>, clients?: readonly number[]): Promise<number>;
+  /**
    * Takes the current socket's admission as it authenticates: whether it is read-only decides from
    * then on whether a local update is a person's edit to store. Restoring and pruning the stored
    * rows wait for `synced`.
@@ -836,6 +846,49 @@ export function startPendingSync({
         await clearUpdate(entry);
       } catch (error) {
         console.error("Could not drop a refused pending document edit", error);
+      }
+    },
+    async dropClientRows(restored, clients) {
+      const entry = refused;
+      refused = undefined;
+      await restored;
+      // A refused SyncStep2 names no client of its own here, as it names no row: the rebuilt
+      // document replays each restored row as an Update of its own, and the client of the one
+      // the server refuses then is the one whose rows go.
+      const named = new Set(
+        clients ??
+          (entry?.kind === "update"
+            ? Y.decodeUpdate(entry.update).structs.map((struct) => struct.id.client)
+            : [])
+      );
+      if (destroyed || named.size === 0) {
+        return 0;
+      }
+      const writesUnder = (update: Uint8Array): boolean =>
+        Y.decodeUpdate(update).structs.some((struct) => named.has(struct.id.client));
+      try {
+        derived = derived.filter((held) => !writesUnder(held.update));
+        const dropping = recorded.filter((entry) => writesUnder(entry.update));
+        recorded = recorded.filter((entry) => !writesUnder(entry.update));
+        await Promise.all(dropping.map((entry) => entry.written));
+        for (const entry of dropping) {
+          persistedSeqByOrdinal.delete(entry.ordinal);
+        }
+        const edits = await ready;
+        if (edits === undefined) {
+          return dropping.length;
+        }
+        const keys = (await edits.restoreRows())
+          .filter((row) => writesUnder(row.update))
+          .map((row) => row.key);
+        if (keys.length > 0) {
+          await edits.drop(keys);
+        }
+        await report();
+        return keys.length;
+      } catch (error) {
+        console.error("Could not drop the pending document edits under a refused client id", error);
+        return 0;
       }
     },
     authenticated(nextReadOnly) {

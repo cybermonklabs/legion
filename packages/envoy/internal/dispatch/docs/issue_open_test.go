@@ -472,7 +472,7 @@ func TestABatchStraddlingTheIssuesCloseStoresWhatTheRoomTookInTime(t *testing.T)
 	queued := queueAKeystrokeEachSideOfTheClose(t, database, service, alice, artifactID, "before", 3*closeMargin)
 	// The batch of the first keystroke runs through the second: without that this would be two
 	// appends of one update each, not one run the close cuts.
-	if through, _, _ := service.roomBatchThrough(artifactID, queued[0], false); through != queued[1].seq {
+	if through := service.roomBatchThrough(artifactID, queued[0]); through != queued[1].seq {
 		t.Fatalf("the batch of the first keystroke runs through position %d, not the second keystroke's %d: the two are not one run", through, queued[1].seq)
 	}
 

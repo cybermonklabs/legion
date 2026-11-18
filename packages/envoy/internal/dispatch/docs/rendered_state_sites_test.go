@@ -132,7 +132,7 @@ func TestARebuildSeedsTheStateItReplacesAndVersionsAWholeRenderOfItsSeed(t *test
 				if latest, _ := latestVersionOf(t, service.store, artifactID); !strings.Contains(before, unversioned) || strings.Contains(latest, unversioned) {
 					t.Fatalf("the room renders %q and its latest version %q, want alice's paragraph in the room alone, so nothing here is tested", before, latest)
 				}
-				service.roomWeighingOf(live).applies().loaded(live, maxRoomStateBytes-1<<10)
+				service.roomWeighingOf(live).applies().loaded(maxRoomStateBytes - 1<<10)
 			} else {
 				database := storetest.Open(t)
 				artifactID = createDocument(t, database, "before\n")
@@ -221,13 +221,14 @@ func gapRoom(t *testing.T, newlines int, held bool) (room *rcRoom, fill []byte) 
 }
 
 // A drain of the room's pending queue is checked on its own once the update that filled its gap
-// has passed (crdt.ErrApplyCheckDrain): a drain the check refuses is taken back while the update
-// stands, so the rendering the room keeps for the commit is the update's own check's, and a drain
-// it passes lands, so the rendering is the drain's (roomApplies.passed). Either way what the room
-// places at the commit - its record of its rendering, and what the replica publishes once it takes
-// the commit (takeChecked) - is a whole render of the room there: here 5,000 newlines, which would
-// take the room past the bound and its creep, and 3, which would not, each parked behind a
-// keystroke that then fills their gap, with the replica following the room and held behind it.
+// has passed (crdt.ErrApplyCheckDrain): a drain the check refuses is discarded while the update
+// stands (leaveParkedOut), so the rendering the room keeps for the commit is the update's own
+// check's, and a drain it passes lands, so the rendering is the drain's (roomApplies.passed).
+// Either way what the room places at the commit - its record of its rendering, and what the
+// replica publishes once it takes the commit (takeChecked) - is a whole render of the room there:
+// here 5,000 newlines, which would take the room past the bound and its creep, and 3, which would
+// not, each parked behind a keystroke that then fills their gap, with the replica following the
+// room and held behind it.
 func TestADrainTheCheckPassesOrRefusesLeavesTheRenderingOfTheStateItsCommitStandsAt(t *testing.T) {
 	skipAtTheBoundsUnderRace(t)
 	for _, row := range []struct {
@@ -246,8 +247,11 @@ func TestADrainTheCheckPassesOrRefusesLeavesTheRenderingOfTheStateItsCommitStand
 			if err := room.frame(t, row.name+", the keystroke filling the gap", fill); err != nil {
 				t.Fatalf("the keystroke filling the gap was answered %v, want it taken", err)
 			}
-			if parked := room.live.PendingStats().Items > 0; parked != row.refused {
-				t.Fatalf("the room parks the newlines %t after the keystroke, want %t", parked, row.refused)
+			if parked := room.live.PendingStats().Items; parked != 0 {
+				t.Fatalf("the room parks %d structs after the keystroke, want the newlines landed or discarded", parked)
+			}
+			if landed := room.live.StateVector().Clock(gapNewlinesClient) > 0; landed == row.refused {
+				t.Fatalf("the room holds the newlines %t after the keystroke, want %t", landed, !row.refused)
 			}
 			if row.held {
 				room.release()
@@ -261,30 +265,28 @@ func TestADrainTheCheckPassesOrRefusesLeavesTheRenderingOfTheStateItsCommitStand
 	}
 }
 
-// The replica follows the room by what each commit integrated and then what it parked
-// (crdt.LoggedUpdate), so it must park what the room parks. A drain the room's apply check refuses
-// is taken back in the room and its structs parked again, and the commit's update leaves them out;
-// the replica's apply of the keystroke that filled the gap starts the same drain in its own
-// document, which must take it back too (holdParked), or the replica holds newlines the room does
-// not. The rendering the replica takes for that commit is the check's, of the room, but each one it
-// makes after it is of its own document: a server write of one character into the code block is
-// spliced from the replica's code block, so a replica holding the newlines publishes, at the
-// room's commit, a rendering of the 5,000 newlines the room still parks - past the bound, where
-// the room renders about 300 KB - and a browser's keystroke into the prose, weighed against it, is
-// refused as growing the document past the bound. The keystroke is what an editor sends, its
-// transaction's own update (rcRoom.edit).
-func TestARefusedDrainLeavesTheReplicaParkingWhatTheRoomParks(t *testing.T) {
+// The replica follows the room by what each commit integrated (crdt.LoggedUpdate.Update), so it
+// must hold what the room holds. A drain the room's apply check refuses is discarded in the room,
+// and the commit's update leaves it out; the replica never held the newlines, which parked in the
+// room and in no commit's update, so its apply of the keystroke that filled the gap drains nothing
+// of its own. The rendering the replica takes for that commit is the check's, of the room, but each
+// one it makes after it is of its own document: a server write of one character into the code
+// block is spliced from the replica's code block, so a replica holding the newlines would publish,
+// at the room's commit, a rendering of 5,000 newlines the room does not hold - past the bound,
+// where the room renders about 300 KB - and a browser's keystroke into the prose, weighed against
+// it, would be refused as growing the document past the bound. The keystroke is what an editor
+// sends, its transaction's own update (rcRoom.edit).
+func TestARefusedDrainLeavesTheReplicaHoldingWhatTheRoomHolds(t *testing.T) {
 	skipAtTheBoundsUnderRace(t)
 	room, fill := gapRoom(t, 5_000, false)
 	if err := room.frame(t, "the keystroke filling the gap", fill); err != nil {
 		t.Fatalf("the keystroke filling the gap was answered %v, want it taken", err)
 	}
-	roomParks, replicaParks := room.live.PendingStats(), room.replica.doc.PendingStats()
-	if roomParks.Items == 0 {
-		t.Fatal("the room drained the newlines, so the check refused no drain and nothing here is tested")
+	if room.live.StateVector().Clock(gapNewlinesClient) != 0 {
+		t.Fatal("the room landed the newlines, so the check refused no drain and nothing here is tested")
 	}
-	if roomParks.Items != replicaParks.Items || roomParks.DeleteRanges != replicaParks.DeleteRanges {
-		t.Errorf("after the refused drain the replica parks %+v, want the room's %+v", replicaParks, roomParks)
+	if roomParks, replicaParks := room.live.PendingStats(), room.replica.doc.PendingStats(); roomParks.Items != 0 || replicaParks.Items != 0 {
+		t.Errorf("after the refused drain the room parks %+v and the replica %+v, want the newlines discarded from both", roomParks, replicaParks)
 	}
 	roomRendering, roomErr := renderDocument(room.live)
 	replicaRendering, replicaErr := renderDocument(room.replica.doc)
@@ -309,16 +311,15 @@ func TestARefusedDrainLeavesTheReplicaParkingWhatTheRoomParks(t *testing.T) {
 	room.requireRenderedAs(t, "after a server write into the code block", whole)
 }
 
-// A drain the apply's scan allowance cannot hold is taken back in the room while the update that
-// filled its gap stands (roomScans; crdt/apply_rollback.go, drainParked), as a drain the room's
-// apply check refuses is, and the replica parks again what the room parks again (holdParked):
-// here 20 items of one client, each naming the first of 2,000 characters a browser typed one a
-// keystroke as its left origin, park behind the client's missing first clock, and the item that
-// fills it is admitted with its drain taken back, the drain's scans passing what the filler's
-// allowance leaves. The replica's document is the room's after the filler (requireReplicaIsRoom,
-// which frame holds), and so is what the replica renders after it: a server write into the
-// paragraph is spliced from the replica's paragraph, which a replica holding the 20 items renders
-// with them.
+// A drain the apply's scan allowance cannot hold is discarded in the room while the update that
+// filled its gap stands (roomScans, leaveParkedOut), as a drain the room's apply check refuses is,
+// and what it scanned is not charged to the room's scan total (roomScans.settle): here 20 items
+// of one client, each naming the first of 2,000 characters a browser typed one a keystroke as its
+// left origin, park behind the client's missing first clock, and the item that fills it is
+// admitted with its drain discarded, the drain's scans passing what the filler's allowance leaves.
+// The replica's document is the room's after the filler (requireReplicaIsRoom, which frame holds),
+// and so is what the replica renders after it: a server write into the paragraph is spliced from
+// the replica's paragraph, which a replica holding the 20 items would render with them.
 func TestADrainTheScanAllowanceStopsLeavesTheReplicaParkingWhatTheRoomParks(t *testing.T) {
 	const typed, waiting = 2_000, 20
 	room := newRCRoom(t, stateOf(t, "# Title\n\nOne paragraph of ordinary prose.\n"))
@@ -338,12 +339,16 @@ func TestADrainTheScanAllowanceStopsLeavesTheReplicaParkingWhatTheRoomParks(t *t
 	if allowance := browserScanCeiling(filler); waiting*(typed-1) <= allowance {
 		t.Fatalf("the parked items would scan %d items, want past the filler's %d allowance", waiting*(typed-1), allowance)
 	}
-	if err := room.frame(t, "the filler, whose drain the scan allowance takes back", filler); err != nil {
-		t.Fatalf("the filler was answered %v, want it admitted with its drain taken back", err)
+	usedBefore, _ := room.replica.roomScans().figures()
+	if err := room.frame(t, "the filler, whose drain the scan allowance discards", filler); err != nil {
+		t.Fatalf("the filler was answered %v, want it admitted with its drain discarded", err)
 	}
-	if held, pending := room.live.StateVector().Clock(9), room.live.PendingStats(); held != 1 || pending.Items != waiting {
-		t.Fatalf("the room holds client 9 to clock %d and parks %+v, want the filler alone landed and the %d items parked, so no drain was taken back and nothing here is tested",
+	if held, pending := room.live.StateVector().Clock(9), room.live.PendingStats(); held != 1 || pending.Items != 0 {
+		t.Fatalf("the room holds client 9 to clock %d and parks %+v, want the filler alone landed and the %d items discarded, so no drain was discarded and nothing here is tested",
 			held, pending, waiting)
+	}
+	if usedAfter, _ := room.replica.roomScans().figures(); usedAfter-usedBefore >= int64(waiting*(typed-1)) {
+		t.Errorf("the room's scan total grew by %d over the filler, want less than the %d its discarded drain scanned", usedAfter-usedBefore, waiting*(typed-1))
 	}
 	text := paragraphTexts(room.live)[0]
 	room.live.Transact(func(txn *crdt.Transaction) { text.Insert(txn, 0, "s", nil) }, &struct{ server string }{"rendered state sites test"})
@@ -356,11 +361,11 @@ func TestADrainTheScanAllowanceStopsLeavesTheReplicaParkingWhatTheRoomParks(t *t
 
 // A settlement versions the room as its replica holds it at the point it reads (atPoint): the
 // replica's document and its rendering of it (replicaRead). After a drain the room's apply check
-// refused and took back, the version it stores is a whole render of the room: right after the
+// refused and discarded, the version it stores is a whole render of the room: right after the
 // refused drain, where the replica holds the check's rendering of the commit (takeChecked), and
 // after a write of the server's own into the code block the newlines would have gone into, which
 // the replica renders from its own document (updateChangesMarkdown), so a replica holding the
-// newlines the room parks versions them.
+// newlines the room discarded would version them.
 func TestASettlementAfterARefusedDrainVersionsAWholeRenderOfTheRoom(t *testing.T) {
 	skipAtTheBoundsUnderRace(t)
 	for _, row := range []struct {
@@ -403,7 +408,7 @@ func TestASettlementAfterARefusedDrainVersionsAWholeRenderOfTheRoom(t *testing.T
 				return live != nil && live.StateVector().Clock(client) == typed
 			})
 			live := roomDocument(t, service, artifactID)
-			if live.PendingStats().Items == 0 {
+			if live.StateVector().Clock(gapNewlinesClient) != 0 {
 				t.Fatal("the room drained the newlines, so the check refused no drain and nothing here is tested")
 			}
 			if row.serverWrite {

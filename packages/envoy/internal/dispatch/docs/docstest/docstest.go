@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +23,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	ygsync "github.com/reearth/ygo/sync"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 )
 
@@ -29,6 +32,7 @@ const (
 	messageSync      = 0
 	messageAwareness = 1
 	messageAuth      = 2
+	messageStateless = 5
 )
 
 // The auth message's sub-kinds: the client's token, and the room's two answers to it.
@@ -48,6 +52,9 @@ const (
 type Peer struct {
 	// Doc is the peer's copy of the document. The peer's reader applies the room's updates to it.
 	Doc *crdt.Doc
+	// Given is the client id the room's admission gave the page in the socket's first frame, for
+	// a peer that took one (DialGiven); zero for one that did not.
+	Given crdt.ClientID
 	// Answers carries the whole of each answer the room makes to a sync step 1, once Doc holds
 	// it: the room answers with Update frames of about 64 KiB each and then one sync step 2
 	// carrying only what no Update could (sjawhar/ygo v1.55.1-sami.3), and what arrives here is
@@ -126,6 +133,29 @@ func Dial(t testing.TB, url string, header http.Header, artifactID string, doc *
 // DialContext is Dial for a caller that is not a test, such as a load driver: ctx bounds the
 // connection's opening, a failure is returned, and the caller closes the peer.
 func DialContext(ctx context.Context, url string, header http.Header, artifactID string, doc *crdt.Doc) (*Peer, error) {
+	return dial(ctx, url, header, artifactID, false, func(crdt.ClientID) *crdt.Doc { return doc })
+}
+
+// DialGiven connects a peer as a page that takes its client id from Dispatch does: url presents
+// the client id the page holds under contracts.DocumentClientIdParameter (empty for none), the
+// room's admission names the id it gives the page in the socket's first frame, a stateless
+// message (contracts.DocumentClientIdMessagePrefix), and doc makes the peer's copy of the document
+// from that id - a new document under it, or the copy a reconnecting page kept. The peer's Given is
+// that id. The connection closes when t ends.
+func DialGiven(t testing.TB, url string, header http.Header, artifactID string, doc func(given crdt.ClientID) *crdt.Doc) *Peer {
+	t.Helper()
+	peer, err := dial(context.Background(), url, header, artifactID, true, doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(peer.Close)
+	return peer
+}
+
+// dial connects the peer, reading the socket's first frame for the client id it names first where
+// given says the page takes one, then makes the peer's document with doc, starts its reader and
+// asks the room for what the document lacks.
+func dial(ctx context.Context, url string, header http.Header, artifactID string, given bool, doc func(crdt.ClientID) *crdt.Doc) (*Peer, error) {
 	connection, response, err := gws.DefaultDialer.DialContext(ctx, url, header)
 	if err != nil {
 		if response != nil {
@@ -135,9 +165,16 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 		}
 		return nil, fmt.Errorf("connect a peer to document %s: %w", artifactID, err)
 	}
+	var client crdt.ClientID
+	if given {
+		if client, err = readGivenClient(connection); err != nil {
+			connection.Close()
+			return nil, fmt.Errorf("read the client id document %s's room gave the page: %w", artifactID, err)
+		}
+	}
 	answers, awareness, ended := make(chan []byte, 16), make(chan []AwarenessEntry, 64), make(chan struct{})
 	peer := &Peer{
-		Doc: doc, Answers: answers, Awareness: awareness, Ended: ended, UpgradeHeader: response.Header,
+		Doc: doc(client), Given: client, Answers: answers, Awareness: awareness, Ended: ended, UpgradeHeader: response.Header,
 		artifactID: artifactID, connection: connection, auth: make(chan authReply, 4),
 		awareness: make(map[uint64]AwarenessEntry), awarenessChanged: make(chan struct{}), clocks: make(map[uint64]uint64),
 	}
@@ -146,11 +183,43 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 		peer.endedAt = time.Now()
 		close(ended)
 	}()
-	if err := peer.Write(ygsync.EncodeSyncStep1(doc)); err != nil {
+	if err := peer.Write(ygsync.EncodeSyncStep1(peer.Doc)); err != nil {
 		peer.Close()
 		return nil, fmt.Errorf("ask document %s's room for the document: %w", artifactID, err)
 	}
 	return peer, nil
+}
+
+// readGivenClient reads the socket's first frame as the stateless message naming the page's client
+// id, within ten seconds.
+func readGivenClient(connection *gws.Conn) (crdt.ClientID, error) {
+	if err := connection.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return 0, err
+	}
+	_, message, err := connection.ReadMessage()
+	if err != nil {
+		return 0, err
+	}
+	if err := connection.SetReadDeadline(time.Time{}); err != nil {
+		return 0, err
+	}
+	decoder := encoding.NewDecoder(message)
+	if _, err := decoder.ReadVarString(); err != nil {
+		return 0, err
+	}
+	if kind, err := decoder.ReadVarUint(); err != nil || kind != messageStateless {
+		return 0, fmt.Errorf("the first frame is message kind %d, not a stateless message (%v)", kind, err)
+	}
+	payload, err := decoder.ReadVarString()
+	if err != nil {
+		return 0, err
+	}
+	digits, named := strings.CutPrefix(payload, contracts.DocumentClientIdMessagePrefix)
+	if !named {
+		return 0, fmt.Errorf("the first frame's stateless message %q names no client id", payload)
+	}
+	client, err := strconv.ParseUint(digits, 10, 64)
+	return crdt.ClientID(client), err
 }
 
 // Write sends syncMessage to the room as Hocuspocus carries it: the document's name, then the sync

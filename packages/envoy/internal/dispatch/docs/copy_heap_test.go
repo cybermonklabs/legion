@@ -318,17 +318,16 @@ const stateAnswerParker = 7_000_001
 
 // A state answer holds no more heap than its grant, whether its room parks anything or not
 // (weighStateAnswer, answerWeight): every room's answer is cut from its own structs
-// (crdt.SplitStateAsUpdateV1), and what a room parks is read back on its own beside the cut
-// (readParked, theorem-labs/ygo v1.55.1-theorem.6). For each shape this answers a browser that
-// holds nothing six times on one document, three times parking nothing and three times parking
-// a struct, alternating: it parks the struct before each such answer and lands it after, so both
-// answer the same structs. Each answer is what ygo's server builds between the hook's admission
-// and its release (answerFrames), measured as a copy is (measureLoad, copyMeasurementGCPercent):
-// the most heap it held above the document, which is what the grant covers, since the frames are
-// that heap's until the release and the browser's write queue's after it; what it allocated; and
-// in how many objects. These are the readings answerHeapAStateByte and answerHeapAClient are set
-// from; what a room parks is priced from its allocation instead
-// (TestAParkedRoomsAnswerIsGrantedWhatItsReadBackAllocates).
+// (crdt.SplitStateAsUpdateV1), and what a room parks is no part of its state (leaveParkedOut), so
+// an answer from a room that parks carries nothing of it and is granted what its cut is. For each
+// shape this answers a browser that holds nothing six times on one document, three times parking
+// nothing and three times parking a struct, alternating: it parks the struct before each such
+// answer and lands it after, so both answer the same structs. Each answer is what ygo's server
+// builds between the hook's admission and its release (answerFrames), measured as a copy is
+// (measureLoad, copyMeasurementGCPercent): the most heap it held above the document, which is
+// what the grant covers, since the frames are that heap's until the release and the browser's
+// write queue's after it; what it allocated; and in how many objects. These are the readings
+// answerHeapAStateByte and answerHeapAClient are set from.
 //
 // Every row is a measurement, run with DISPATCH_MEASURE_COPY_HEAP=1 alone: an answer's peak moves
 // with where the collector runs, by half again on a busy machine (a mebibyte of prose answered
@@ -396,9 +395,11 @@ func TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot(t *testing.T) {
 }
 
 // measureStateAnswers answers doc's state to a browser that holds nothing three times parking
-// nothing and three times parking a struct, alternating, and fails an answer whose peak passes its
+// nothing and three times parking a struct, alternating, with doc leaving what it parks out of
+// its state as a room's document does (leaveParkedOut), and fails an answer whose peak passes its
 // grant (TestAStateAnswerHoldsNoMoreHeapThanItsGrantParkedOrNot).
 func measureStateAnswers(t *testing.T, doc *crdt.Doc) {
+	leaveParkedOut(doc)
 	if parks(doc) {
 		t.Fatal("the document parks something before the measurement parked anything")
 	}
@@ -418,7 +419,7 @@ func measureStateAnswers(t *testing.T, doc *crdt.Doc) {
 				t.Fatalf("run %d: the document parks something: %t, want %t", run, parks(doc), parked)
 			}
 			state := int64(len(crdt.EncodeStateAsUpdateV1(doc, nil)))
-			structs := int64(doc.StructCount() + doc.PendingStats().Items)
+			structs := int64(doc.StructCount())
 			weight := answerWeight(doc, state, structs)
 			cost := func() loadCost {
 				defer debug.SetGCPercent(debug.SetGCPercent(copyMeasurementGCPercent))
@@ -751,103 +752,6 @@ func answerAllocation(t *testing.T, doc *crdt.Doc, step1 []byte) int64 {
 		fewest = min(fewest, int64(after.TotalAlloc-before.TotalAlloc))
 	}
 	return fewest
-}
-
-// An answer from a room that parks is granted, past what its cut is granted, no less than what
-// reading back what the room parks adds to what the answer allocates (parkedAnswerWeight). For
-// each shape a browser can make a room park - GC structs and keystrokes behind their run's gap,
-// GC structs and margin records each of a client the room holds nothing of, the margin record
-// being the heaviest small struct, and delete ranges of one client and each of a client of its
-// own - at 1, 16 and 1,000 of them, it answers a browser holding nothing from the seeded
-// paragraph with a run of 4,000 keystrokes, each its own struct (chainedRun), parking that and
-// from the same room parking nothing, and holds what the grant adds for what the room parks
-// (parkedAnswerWeight less its cut) to how much more the first answer allocated
-// (answerAllocation, the fewest of five each). Each room is built afresh, since a clone squashes
-// the run into one struct (crdt.Doc.Clone). The larger sizes and the other rooms
-// answerHeapAParkedStruct and answerHeapAParkedRange quote were run on the same shapes by hand;
-// the per-struct figure is at its most between 16 and 1,000. It runs in a process of its own
-// (measuredAlone), where nothing else allocates while an answer is counted.
-func TestAParkedRoomsAnswerIsGrantedWhatItsReadBackAllocates(t *testing.T) {
-	skipUnderRace(t)
-	if !measuredAlone(t) {
-		return
-	}
-	step1 := ygsync.EncodeSyncStep1(crdt.New())
-	room := func() *crdt.Doc {
-		doc := seededDocumentCopy(t)
-		chainedRun(t, doc, lastCharacter(t, doc), 1_000, 4_000)
-		return doc
-	}
-	unparked := answerAllocation(t, room(), step1)
-	for _, shape := range []struct {
-		name  string
-		frame func(n int) []byte
-	}{
-		{"GC structs behind their run's gap", func(n int) []byte { return parkedGCFrame(7_100_001, n) }},
-		{"keystrokes behind their run's gap", func(n int) []byte { return parkedKeystrokes(7_100_002, n) }},
-		{"GC structs each of a client of its own", func(n int) []byte { return parkedOfClientsOfTheirOwn(7_200_001, n, false) }},
-		{"margin records each of a client of its own", func(n int) []byte { return parkedOfClientsOfTheirOwn(7_300_001, n, true) }},
-		{"delete ranges of one client", func(n int) []byte { return deleteRangesFrom(8_200_001, n) }},
-		{"delete ranges each of a client of its own", func(n int) []byte { return deleteRangesOfClientsOfTheirOwn(8_300_001, n) }},
-	} {
-		for _, n := range []int{1, 16, 1_000} {
-			doc := room()
-			if err := crdt.ApplyUpdateV1(doc, shape.frame(n), nil); err != nil {
-				t.Fatalf("%d %s: %v", n, shape.name, err)
-			}
-			parked := doc.PendingStats()
-			if parked.Items+parked.DeleteRanges != n {
-				t.Fatalf("%d %s left the room parking %+v, want all %d", n, shape.name, parked, n)
-			}
-			state := int64(len(crdt.EncodeStateAsUpdateV1(doc, nil)))
-			cut := cutAnswerWeight(state, int64(doc.ClientCount()), int64(doc.StructCount()+parked.Items))
-			priced := parkedAnswerWeight(cut, parked) - cut
-			more := answerAllocation(t, doc, step1) - unparked
-			t.Logf("%d %s: the answer allocates %d bytes more than parking nothing, %.1f each, against %d its grant adds (%.2f of it)",
-				n, shape.name, more, float64(more)/float64(n), priced, float64(priced)/float64(more))
-			if priced < more {
-				t.Errorf("an answer from a room parking %d %s allocates %d bytes more than one parking nothing, and its grant adds %d: the grant is below what the answer allocates",
-					n, shape.name, more, priced)
-			}
-		}
-	}
-}
-
-// parkedKeystrokes is client's frame of n one-character items from clock 1, each after the one
-// before and the first after the client's clock 0, which no room holds: a run of keystrokes whose
-// first was lost, so the whole run parks behind that gap.
-func parkedKeystrokes(client uint64, n int) []byte {
-	f := newV1Frame(1).group(n, client, 1)
-	for clock := range n {
-		f = f.raw(structStringRef | infoHasOrigin).uint(client).uint(uint64(clock)).str("a")
-	}
-	return f.noDeletes()
-}
-
-// parkedOfClientsOfTheirOwn is a frame of n structs each of a client of its own from first, each
-// at its client's clock 1 so that it parks behind that client's clock 0: a GC struct, or, with
-// records, a margin record under the key "k", which names its root and its key and holds a map.
-func parkedOfClientsOfTheirOwn(first uint64, n int, records bool) []byte {
-	f := newV1Frame(n)
-	for client := range uint64(n) {
-		f = f.group(1, first+client, 1)
-		if records {
-			f = f.rooted(byte(structAnyRef), marksMapName, "k").uint(1).any(map[string]any{"text": "x"})
-		} else {
-			f = f.gc(1)
-		}
-	}
-	return f.noDeletes()
-}
-
-// deleteRangesOfClientsOfTheirOwn is a frame of no structs whose delete set holds one range of one
-// clock for each of n clients from first, none of which a room holds anything of.
-func deleteRangesOfClientsOfTheirOwn(first uint64, n int) []byte {
-	f := newV1Frame(0).uint(uint64(n))
-	for client := range uint64(n) {
-		f = f.uint(first + client).uint(1).uint(0).uint(1)
-	}
-	return f.done()
 }
 
 // smallStructsDocument is the seeded document holding clients clients of each GC structs each

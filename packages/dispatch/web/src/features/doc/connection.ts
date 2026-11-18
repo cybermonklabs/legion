@@ -1,6 +1,8 @@
 import type { HocuspocusProvider } from "@hocuspocus/provider";
 import {
   DOCUMENT_BUSY_CLOSE_CODE,
+  DOCUMENT_CLIENT_ID_PARAMETER,
+  DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON,
   DOCUMENT_NEEDS_REBUILD_CLOSE_REASON,
   DOCUMENT_REBUILT_CLOSE_REASON,
   DOCUMENT_SCHEMA_CLOSE_CODE,
@@ -102,17 +104,20 @@ export function reconnectingNotice(
  * until it is rebuilt (`DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`: its edit history has used up what the
  * server lets it scan), one this browser typed against the history someone else's rebuild replaced
  * (`DOCUMENT_REBUILT_CLOSE_REASON`), one holding content the document does not take
- * (`DOCUMENT_UPDATE_REFUSED_CLOSE_REASON`), or one that would make the
+ * (`DOCUMENT_UPDATE_REFUSED_CLOSE_REASON`), one made under a client id Dispatch did not give this
+ * browser's person (`DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON`), or one that would make the
  * document too large. Every one of them is permanent: the refused edit is dropped and the
  * document re-read, so a reconnect cannot meet the same refusal again.
  *
  * The rebuilt document's notice promises no other edit is kept, because none typed against the
  * replaced history is: the restore drops each of those rows and reports when they were saved
- * (`pending-sync.ts`, `addsParking`). Of these refusals the page offers a rebuild only for
- * `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`, the one a rebuild helps (`ProofDocument`); a rebuild of a
- * document just rebuilt is answered 409.
+ * (`pending-sync.ts`, `addsParking`). The client id refusal names how many edits went, `dropped`:
+ * every saved row under the refused id goes with the refused edit, since each would meet the same
+ * refusal (`dropClientRows`), so its notice says no more than that. Of these refusals the page
+ * offers a rebuild only for `DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`, the one a rebuild helps
+ * (`ProofDocument`); a rebuild of a document just rebuilt is answered 409.
  */
-export function refusedEditNotice(reason: string): string {
+export function refusedEditNotice(reason: string, dropped?: number): string {
   switch (reason) {
     case DOCUMENT_TOO_TANGLED_CLOSE_REASON:
       return "Your last edit was not saved: Dispatch could not merge it into this document quickly enough. Your other edits are kept.";
@@ -122,6 +127,12 @@ export function refusedEditNotice(reason: string): string {
       return "Someone else rebuilt this document, so the edits you had not sent could not be kept. Dispatch has reloaded the rebuilt document.";
     case DOCUMENT_UPDATE_REFUSED_CLOSE_REASON:
       return "Your last edit was not saved: it holds content this document does not take.";
+    case DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON: {
+      const count = Math.max(1, dropped ?? 1);
+      return count === 1
+        ? "1 of your edits was not saved: it was made under an editing identity Dispatch did not give you, so it cannot be sent. Dispatch has reloaded the document."
+        : `${count} of your edits were not saved: they were made under an editing identity Dispatch did not give you, so they cannot be sent. Dispatch has reloaded the document.`;
+    }
     default:
       return "Your last edit was not saved: it would make this document larger than a Dispatch document may be. Your other edits are kept.";
   }
@@ -175,15 +186,20 @@ export interface ConnectionCallbacks {
    * the close's reason: the edit would take the document past its size bound, the server could
    * not merge it quickly enough (`DOCUMENT_TOO_TANGLED_CLOSE_REASON`), the document must be
    * rebuilt before it can take it (`DOCUMENT_NEEDS_REBUILD_CLOSE_REASON`), the edit was typed
-   * against a history someone else's rebuild replaced (`DOCUMENT_REBUILT_CLOSE_REASON`), or it
-   * holds content the document does not take (`DOCUMENT_UPDATE_REFUSED_CLOSE_REASON`). It fires
-   * with `DOCUMENT_REBUILT_CLOSE_REASON` too when a socket closes any other way while this
-   * connection's document holds the history a rebuild replaced (`holdsReplacedHistory`). The
-   * connection has stopped reconnecting and the refused edit's saved row is gone; the refused
-   * text is still in this connection's document, so the host rebuilds it from a fresh read rather
-   * than let a reconnect send it again.
+   * against a history someone else's rebuild replaced (`DOCUMENT_REBUILT_CLOSE_REASON`), it
+   * holds content the document does not take (`DOCUMENT_UPDATE_REFUSED_CLOSE_REASON`), or it was
+   * made under a client id Dispatch did not give this browser's person
+   * (`DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON`). It fires with that last reason too when the
+   * server will not give back the client id this connection's document has written under (the
+   * socket's first frame, `readClientIdMessage`), and with `DOCUMENT_REBUILT_CLOSE_REASON` when a
+   * socket closes any other way while this connection's document holds the history a rebuild
+   * replaced (`holdsReplacedHistory`). The
+   * connection has stopped reconnecting and the refused edit's saved row is gone - for the client
+   * id refusal, every saved row under the refused id, `dropped` of them (`dropClientRows`); the
+   * refused text is still in this connection's document, so the host rebuilds it from a fresh read
+   * rather than let a reconnect send it again.
    */
-  onEditRefused(reason: string): void;
+  onEditRefused(reason: string, dropped?: number): void;
   /**
    * Fires `true` when the server closed the socket because the memory it keeps for open documents
    * is full (`DOCUMENT_BUSY_CLOSE_CODE`), and `false` once it applies a frame from this browser
@@ -266,18 +282,39 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
   const [
     { HocuspocusProvider, HocuspocusProviderWebsocket },
     { Doc },
+    { Awareness: Presence },
     { openPendingEdits },
     { holdsReplacedHistory, startPendingSync },
+    { readClientIdMessage },
   ] = await importWhenOnline(() =>
     Promise.all([
       import("@hocuspocus/provider"),
       import("yjs"),
+      import("y-protocols/awareness"),
       import("./pending-edits"),
       import("./pending-sync"),
+      import("./sync-frame"),
     ])
   );
   return (artifactId, callbacks) => {
+    // The document starts with the id Yjs drew for it, which it never writes or announces under:
+    // the first frame of its first socket gives it the one Dispatch gave this page
+    // (`takeClientId`), and every later socket presents that id back and is given it again. So
+    // the same document keeps one client id across every reconnect, its offline edits included,
+    // and only a new document - the host's rebuild after a refusal - takes a fresh one.
     const doc = new Doc();
+    // y-protocols makes an awareness with an empty state under the document's id. That id is not
+    // the one this document will write under, so the state is taken back before the provider
+    // listens - the provider queues what its awareness emits for the socket it has yet to open -
+    // and set again under the id the first socket gives (`takeClientId`).
+    const presence = new Presence(doc);
+    presence.setLocalState(null);
+    // `clientId` settles as the document takes the id it writes under, which is when its saved
+    // rows can be keyed by it; `socketAnswered` is whether the current socket has delivered its
+    // first frame, the one that names that id.
+    const clientId = Promise.withResolvers<number>();
+    let clientIdTaken = false;
+    let socketAnswered = false;
     let destroyed = false;
     // Whether any admission has been handed to the pending sync: the first one's restore ends in
     // the host's `onSynced`.
@@ -305,6 +342,8 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     const WebSocketPolyfill = class extends globalThis.WebSocket {
       constructor(url: string, protocols?: string | string[]) {
         super(url, protocols);
+        // The socket's first frame is the one that names this document's client id.
+        socketAnswered = false;
         // The socket the host was told to expect is on the wire: no reconnect waits now.
         if (waiting !== undefined) {
           waiting = undefined;
@@ -340,14 +379,18 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     // timeout added to this path must outlast that wait, or the reconnect queues the browser again.
     //
     // The server decides admission from these when it accepts the socket. A server that predates
-    // `schema_creatable` ignores that parameter.
+    // `schema_creatable` ignores that parameter, and one that predates client ids ignores
+    // `DOCUMENT_CLIENT_ID_PARAMETER`: the client id this document holds, empty until a socket has
+    // given it one (`takeClientId`). The provider reads these afresh for each socket it opens.
+    const parameters: Record<string, string | number> = {
+      [DOCUMENT_CLIENT_ID_PARAMETER]: "",
+      schema_creatable: callbacks.schemaCreatable,
+      schema_version: callbacks.schemaVersion,
+    };
     const websocket = new HocuspocusProviderWebsocket({
       WebSocketPolyfill,
       connect: false,
-      parameters: {
-        schema_creatable: callbacks.schemaCreatable,
-        schema_version: callbacks.schemaVersion,
-      },
+      parameters,
       url: wsUrl(artifactId),
     });
     // Every admission's restore waits for its own socket's authentication and SyncStep2 alike,
@@ -380,16 +423,57 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
       });
     };
     // Ends this connection for an edit the server refused, and tells the host why once the
-    // refused frame's saved row is gone. The provider's own close handler, which runs before the
-    // connection's, has already started a reconnect that this disconnect ends.
-    const refuseEdit = (reason: string) => {
+    // refused frame's saved row is gone: for the client id refusal, every saved row under the
+    // refused id, or under `clients` where the caller names the ids itself (`dropClientRows`).
+    // The provider's own close handler, which runs before the connection's, has already started a
+    // reconnect that this disconnect ends.
+    const refuseEdit = (reason: string, clients?: readonly number[]) => {
       // The refused frame is taken now, from the socket the server has just closed.
-      void Promise.resolve(sync?.dropRefused(restored)).then(() => {
+      const dropping: Promise<number | undefined> =
+        reason === DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON
+          ? Promise.resolve(sync?.dropClientRows(restored, clients))
+          : Promise.resolve(sync?.dropRefused(restored)).then(() => undefined);
+      void dropping.then((dropped) => {
         if (!destroyed) {
-          callbacks.onEditRefused(reason);
+          callbacks.onEditRefused(reason, dropped);
         }
       });
       provider.disconnect();
+    };
+    // Takes the client id the current socket's first frame names (`readClientIdMessage`), or
+    // keeps the one the document holds when that frame names none, as a server of a build from
+    // before Dispatch gave client ids out sends none. The id is the document's own until it has
+    // written under it: a document that has not - the first socket's, before any edit - takes
+    // the id it is given, with its awareness, whose client id y-protocols copied from the document
+    // when the provider made it. One that has, and is given another id, holds edits the server
+    // will not take as this person's: it is refused as such an edit is, and the host rebuilds it
+    // under a fresh id. Its presence is announced only from here (the provider's own announcement
+    // at each socket's open sends nothing while the local state is null), so no other reader ever
+    // sees it under an id the server did not give it.
+    const takeClientId = (given: number | undefined) => {
+      const held = doc.clientID;
+      if (given !== undefined && given !== held) {
+        if (doc.store.clients.has(held)) {
+          refuseEdit(DOCUMENT_CLIENT_ID_REFUSED_CLOSE_REASON, [held]);
+          return;
+        }
+        // A state announced under the id the document held is taken back under it first; the
+        // first socket's document announced none.
+        const state = presence.getLocalState();
+        if (state !== null) {
+          presence.setLocalState(null);
+        }
+        doc.clientID = given;
+        presence.clientID = given;
+        presence.setLocalState(state ?? {});
+      } else if (presence.getLocalState() === null) {
+        presence.setLocalState({});
+      }
+      parameters[DOCUMENT_CLIENT_ID_PARAMETER] = String(doc.clientID);
+      if (!clientIdTaken) {
+        clientIdTaken = true;
+        clientId.resolve(doc.clientID);
+      }
     };
     // Decides when the next socket goes out after every close that ends no refusal: a socket the
     // server answered and one that failed before any answer alike, `DOCUMENT_BUSY_CLOSE_CODE`
@@ -430,6 +514,7 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
       void websocket.connect();
     };
     provider = new HocuspocusProvider({
+      awareness: presence,
       document: doc,
       name: artifactId,
       onAuthenticated: () => {
@@ -490,12 +575,19 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
         if (!(event.data instanceof ArrayBuffer)) {
           return;
         }
+        const frame = new Uint8Array(event.data);
+        // The provider hands the frame on only after this returns, so the document holds the id
+        // the socket gives it before it answers the server's SyncStep1 that follows.
+        if (!socketAnswered) {
+          socketAnswered = true;
+          takeClientId(readClientIdMessage(frame));
+        }
         // The pending sync parses the frame, which is the one parse of it: it answers whether the
         // server applied the frame it acknowledges, and `undefined` for anything else. It answers
         // after it has cleared the acknowledged row, so a busy close that arrived meanwhile -
         // after this frame, as the socket delivered them - keeps the notice up.
         const closesBefore = busyCloses;
-        void Promise.resolve(sync?.frameReceived(new Uint8Array(event.data))).then((applied) => {
+        void Promise.resolve(sync?.frameReceived(frame)).then((applied) => {
           if (busy && applied === true && busyCloses === closesBefore) {
             busy = false;
             callbacks.onBusy(false);
@@ -527,7 +619,14 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
       doc,
       onChange: callbacks.onPending,
       remoteOrigin: provider,
-      store: openPendingEdits(artifactId, doc.clientID),
+      // The saved rows are keyed by the id this document writes under, which its first socket
+      // gives it; no edit is typed before then, since the editor is made only once that socket
+      // has synced (`onSynced`). A browser with no IndexedDB keeps no rows under any id, and says
+      // so as the connection starts rather than once a socket has answered.
+      store:
+        globalThis.indexedDB === undefined
+          ? Promise.resolve(undefined)
+          : clientId.promise.then((id) => openPendingEdits(artifactId, id)),
     });
     void websocket.connect();
     return {

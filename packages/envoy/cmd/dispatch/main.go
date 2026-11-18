@@ -903,6 +903,12 @@ func main() {
 	// version write stored: every mention indexed before migration 0092, and each rebuild-refs
 	// inserts (LEGION-531), woken by the refs trigger that announces each mention left owed.
 	go documentService.RunReferenceExcerptReconciliation(ctx, referenceExcerptLeases, excerptsWake)
+	// The first boot of a build that gives client ids out records when that was, once: an
+	// earlier build's client ids stay claimable for 30 days from it, and no later boot moves it
+	// (docs.Service.RecordClientIDsSince).
+	if err := documentService.RecordClientIDsSince(ctx); err != nil {
+		slog.Error("dispatch: boot", "error", err)
+	}
 	// Documents the compaction queues let go - every room a restart, a Shutdown or a Quiesce
 	// dropped from one - fold within an hour of coming due, whether or not NATS is configured
 	// (INFRA-593).

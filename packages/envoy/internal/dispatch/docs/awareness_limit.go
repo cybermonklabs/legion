@@ -41,6 +41,19 @@ import (
 // the other processes like any other removal, and the filter frees a client's place as the socket
 // takes that client away. So a room's awareness holds its sockets' clients at most, and the
 // sockets of a process are themselves bounded (Service.canAddConnection).
+//
+// Before the count, a socket carries awareness only under the client ids it may announce
+// (socketClients.announces, client_ids.go): a page given its client id by the socket's admission
+// announces its presence under that id alone, so the filter drops every other entry - another
+// reader's cursor sent under that reader's id, as much as the echo of it an honest provider sends
+// back - and a page of an earlier build may name no id Dispatch gave anyone. A cursor or a
+// presence is the same act under a client id as an edit is, and the same rule refuses it.
+//
+// The same filter is where a sync step 2 is known as one: ygo hands the peer update hook a step 2
+// and an incremental update alike, as bytes, and only the Hocuspocus header says which. So a sync
+// step 2 is read whole here and handed on with the structs under another person's client ids cut
+// out of it (collectStepTwo, Service.stepTwoCut), which ygo then applies, relays and answers as
+// the step 2 it is.
 
 const (
 	// maxAwarenessClientsPerSocket is how many awareness clients one document socket may hold at
@@ -80,6 +93,12 @@ const (
 	maxFrameHeader = 14
 	// hocuspocusAwareness is the Hocuspocus message type of an awareness update.
 	hocuspocusAwareness = 1
+	// hocuspocusSync and hocuspocusSyncReply are the Hocuspocus message types that carry a Yjs
+	// sync message, and syncStepTwo the sync message type of a whole-state answer: the sync step 2
+	// a provider sends in answer to the room's sync step 1 (y-protocols sync, messageYjsSyncStep2).
+	hocuspocusSync      = 0
+	hocuspocusSyncReply = 4
+	syncStepTwo         = 1
 )
 
 // noAwarenessChange is an awareness update naming no client - y-protocols' encoding of an update
@@ -103,6 +122,9 @@ const (
 	// limitSkipping: an awareness message past maxAwarenessMessageBytes; its bytes are discarded
 	// and ygo is given an awareness message naming no client in its place.
 	limitSkipping
+	// limitStepTwo: a sync step 2 is being read whole, to be handed on with the structs under
+	// another person's client ids cut out of it (awarenessLimitConn.cut).
+	limitStepTwo
 )
 
 // awarenessLimitWriter is a document socket's response writer: the connection ygo's websocket
@@ -116,6 +138,12 @@ const (
 type awarenessLimitWriter struct {
 	http.ResponseWriter
 	room string
+	// clients is the ids the socket may announce under, nil for a socket no admission decided
+	// them for, whose entries only the count holds.
+	clients *socketClients
+	// cut is what the filter does to the update of each sync step 2 the socket sends before ygo
+	// reads it, nil for none (Service.stepTwoCut).
+	cut func(update []byte) []byte
 }
 
 func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -133,6 +161,8 @@ func (w *awarenessLimitWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		pending = bytes.Clone(head)
 	}
 	filtered := newAwarenessLimitConn(conn, w.room, pending)
+	filtered.clients = w.clients
+	filtered.cut = w.cut
 	buffers.Reader.Reset(filtered)
 	return filtered, buffers, nil
 }
@@ -146,6 +176,12 @@ func (w *awarenessLimitWriter) Unwrap() http.ResponseWriter { return w.ResponseW
 type awarenessLimitConn struct {
 	net.Conn
 	room string
+	// clients is the ids the socket may announce under (awarenessLimitWriter.clients).
+	clients *socketClients
+	// cut is what the filter does to the update of each sync step 2 (awarenessLimitWriter.cut);
+	// kind is the Hocuspocus type of the sync step 2 being read, which the rewritten message keeps.
+	cut  func(update []byte) []byte
+	kind uint64
 	// live is the awareness clients this socket holds now: a client announced takes a place and a
 	// client taken away gives it back, so a socket that announces and removes one client at a
 	// time is never refused.
@@ -231,6 +267,8 @@ func (c *awarenessLimitConn) readFrame() error {
 		return c.skip(payload, final)
 	case limitAwareness:
 		return c.collect(payload, final)
+	case limitStepTwo:
+		return c.collectStepTwo(payload, final)
 	default:
 		return c.decide(payload, final)
 	}
@@ -277,11 +315,56 @@ func (c *awarenessLimitConn) decide(payload int64, final bool) error {
 		c.message = append(c.message[:0], c.message[read:]...)
 		c.mode = limitAwareness
 		return c.collect(rest, final)
+	case c.cut != nil && (kind == hocuspocusSync || kind == hocuspocusSyncReply) &&
+		read < len(c.message) && c.message[read] == syncStepTwo:
+		// A whole-state answer, read whole and handed on cut (collectStepTwo). One whose sync
+		// type the first frame does not hold passes as it arrived, and the peer update hook
+		// refuses whatever of it is not the sender's.
+		c.name, c.kind = name, kind
+		c.message = append(c.message[:0], c.message[read+1:]...)
+		c.mode = limitStepTwo
+		return c.collectStepTwo(rest, final)
 	default:
-		// Not an awareness message: ygo reads it as it arrived.
+		// Not an awareness message nor a sync step 2: ygo reads it as it arrived.
 		c.pass(rest, final)
 		return nil
 	}
+}
+
+// collectStepTwo reads the rest of a sync step 2 - n more bytes of the frame in hand, and the
+// frames after it - and, once it ends, hands ygo the sync step 2 of the update cut makes of its
+// update: the structs under another person's client ids taken out, so they never reach the apply
+// while the rest of the answer lands (Service.stepTwoCut). A message past the most one may carry
+// (maxMessageBytes) ends the connection, as ygo's reader would refuse it, and one whose update
+// does not read reaches ygo as it arrived. The message is held whole until it ends, beside the
+// copy ygo's reader holds once it is handed on, so its buffer is let go then rather than kept for
+// the socket's next message.
+func (c *awarenessLimitConn) collectStepTwo(n int64, final bool) error {
+	if int64(len(c.message))+n > maxMessageBytes {
+		return fmt.Errorf("dispatch: a document socket's sync step 2 is past the %d bytes one message may carry", maxMessageBytes)
+	}
+	start := len(c.message)
+	c.message = append(c.message, make([]byte, n)...)
+	if _, err := io.ReadFull(c.src, c.message[start:]); err != nil {
+		return err
+	}
+	c.unmask(start)
+	if !final {
+		return nil
+	}
+	c.mode = limitIdle
+	body := c.message
+	if update, err := encoding.NewDecoder(c.message).ReadVarBytes(); err == nil {
+		body = encoding.EncodeBytes(func(encoder *encoding.Encoder) { encoder.WriteVarBytes(c.cut(update)) })
+	}
+	c.writeFrame(gws.BinaryMessage, true, encoding.EncodeBytes(func(encoder *encoding.Encoder) {
+		encoder.WriteVarString(c.name)
+		encoder.WriteVarUint(c.kind)
+		encoder.WriteVarUint(syncStepTwo)
+		encoder.WriteRaw(body)
+	}))
+	c.message = nil
+	return nil
 }
 
 // collect reads the rest of an awareness message - n more bytes of the frame in hand, and the
@@ -349,9 +432,9 @@ func (c *awarenessLimitConn) unmask(start int) {
 }
 
 // allowed is the awareness update a socket may send of the one it sent: the entries of the
-// clients it holds, and of the clients it may still take, in the order they arrived. A client it
-// takes away gives its place back, and the removal of a client it never held says nothing and is
-// dropped with the rest.
+// clients it holds, and of the clients it may still take, in the order they arrived, each under an
+// id the socket may announce under. A client it takes away gives its place back, and the removal
+// of a client it never held says nothing and is dropped with the rest.
 func (c *awarenessLimitConn) allowed(message []byte) []byte {
 	update, err := encoding.NewDecoder(message).ReadVarBytes()
 	if err != nil {
@@ -365,6 +448,9 @@ func (c *awarenessLimitConn) allowed(message []byte) []byte {
 	}
 	kept := make([][]byte, 0, len(entries))
 	for _, entry := range entries {
+		if c.clients != nil && !c.clients.announces(entry.client) {
+			continue
+		}
 		_, held := c.live[entry.client]
 		switch {
 		case entry.removed:

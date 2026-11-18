@@ -219,7 +219,7 @@ const roomsApplicationName = "dispatch-rooms"
 // roomAppendsPoolSize bounds the connections the document rooms' browser updates are stored on
 // (Pool.RoomAppends). Only the browser batch path takes one: a room's queued browser updates are
 // stored together, in one transaction, so a room holds a connection for its batch's few round
-// trips and starts at most one batch per linger window, and a handful of connections serve many
+// trips and has at most one batch in flight at a time, and a handful of connections serve many
 // rooms writing at once. Eight is twice the rooms pool and an eighth of the shared one: every
 // connection here is one more in the server's total against the database's limit, so it is small
 // on purpose, and a room that finds all eight held waits for another batch to commit.

@@ -36,11 +36,12 @@ import (
 // (maxPeerRenderingBytes) and larger than the rendering the apply found; ygo then rolls the whole
 // apply back, byte for byte, and fires no observer (crdt.ErrApplyCheck). An apply that leaves the
 // rendering no larger is never refused by it, so a document already past the bound can still be
-// shortened. A refused drain is taken back alone and the update that filled its gap stands
-// (crdt.ErrApplyCheckDrain), which closes nobody (weighPeerUpdate). The structs it would have
-// landed stay parked in the room, and in its replica too: the commit's update leaves them out, and
-// the replica's document refuses every drain of its own that lands anything, so it integrates
-// only what each commit's update carries (renderedReplica, holdParked).
+// shortened. A refused drain is discarded and the update that filled its gap stands
+// (crdt.ErrApplyCheckDrain, leaveParkedOut), and the browsers whose frames it held are closed
+// DOC_TOO_LARGE (closeDiscardedSenders). What it would have landed is gone from the room, and
+// never reached its replica: the commit's update leaves it out, and the replica's document refuses
+// every drain of its own that lands anything, so it integrates only what each commit's update
+// carries (renderedReplica, holdParked).
 //
 // It judges the hook's own applies alone - those the hook reserved an allowance for
 // (roomApplies.inFlight), which is every update and whole-state message a read-write browser
@@ -420,8 +421,9 @@ var errRenderPanicked = errors.New("rendering the document the update leaves pan
 // where what it found is not known (unsure), or does not render at all where it rendered before,
 // cause saying why. ygo wraps it inside the apply's crdt.RefusedUpdateError, beside
 // crdt.ErrApplyCheck, and the hook reads it back to close that browser and log why
-// (refusedByApply); a drain's refusal comes back inside crdt.ErrApplyCheckDrain instead, which
-// closes nobody.
+// (refusedByApply); a drain's refusal comes back as the cause of a crdt.DrainDiscardedError
+// instead, which leaves the update standing and closes the browsers whose parked frames the drain
+// held with this refusal's close (closeDiscardedSenders).
 type renderRefusal struct {
 	before, after int64
 	unsure        bool

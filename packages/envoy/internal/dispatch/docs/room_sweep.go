@@ -24,12 +24,12 @@ import (
 // It is one of the two paths with no report to read, and so one of the two anchors on the
 // reports: the load's own decode of the stored state runs before the room's document is given
 // the report at all (bootstrapLoadedState, keepReplica), so the structs the room starts at are
-// this reading and no apply's. What the load parks is counted with what its store holds, as a
-// report counts it: a load parks what its stored history parked, and those structs are in both
-// copies and in the state the next load decodes.
+// this reading and no apply's. A load that decodes rows an earlier build stored of what parked
+// parks them again, out of the room's encoded state (leaveParkedOut): their structs are in both
+// copies' queues and in the struct figure, and their bytes in the stored state this charges.
 func (s *Service) chargeLoadedRoom(room string, replica *renderedReplica, stateBytes int64) *roomCharge {
 	charge := s.budget.load(room, stateBytes, int64(anchorStructs(room, replica.applies(), replica.live)))
-	replica.applies().loaded(replica.live, stateBytes)
+	replica.applies().loaded(stateBytes)
 	replica.charge.Store(charge)
 	return charge
 }
@@ -40,15 +40,14 @@ func (s *Service) chargeLoadedRoom(room string, replica *renderedReplica, stateB
 // (markRebase). A room this server does not hold, or one no load listed, is left alone.
 //
 // The tracked state is the library's own count of what each commit added (roomApplies.state),
-// which follows the direct form of the encoded state, each struct where the store or the
-// pending queue holds it. The reading replaces it only where the reading is exact: where the
-// room holds nothing pending, which an encode reaches the direct form of, and nothing the store
-// had not taken. That settles whatever the figure was owed and any margin it carried - the
-// bytes a server's delete is counted at above what it took out (countCommit). Any other reading
-// is a lower bound, and the figure keeps the larger of the two (roomApplies.take). A room whose
-// pending queue or pending deletes hold anything encodes through a merge that can be shorter
-// than the direct form, and taking that as the truth would put the figure below what the room
-// holds once its gaps fill.
+// which follows the direct form of the encoded state, each struct where the store holds it: the
+// pending queue is no part of that state (leaveParkedOut), so an encode, and a compaction's fold
+// of rows the room stored, reach that direct form whatever the room holds queued. The reading
+// replaces the figure only where it is exact: where the store held everything the room did. That
+// settles whatever the figure was owed and any margin it carried - the bytes a server's delete is
+// counted at above what it took out (countCommit). Any other reading is a lower bound, and the
+// figure keeps the larger of the two (roomApplies.take). What the queue holds in memory is
+// weighed beside the figure and is no part of the reading (roomApplies.residentBytes).
 //
 // The reading is of the store and not of the room, so it also falls short wherever the room
 // holds a commit the store has not taken: one still in the room's persistence, or one the room
@@ -90,14 +89,14 @@ func (s *Service) rebaseResident(room string, live *crdt.Doc, stateBytes int64, 
 		slog.Log(context.Background(), level, "dispatch: a room's tracked state differs from what its re-base read",
 			"room", room, "tracked", tracked, "read", stateBytes, "difference", tracked-stateBytes)
 	}
-	weighing.roomCharge().weigh(applies.stateBytes(), int64(anchorStructs(room, applies, live)))
+	weighing.roomCharge().weigh(applies.residentBytes(), int64(anchorStructs(room, applies, live)))
 }
 
 // rebaseMark is what a compaction reads of a resident room before it reads the room's stored
 // history (markRebase): live, the room's document, commits, the commits the room's tracked
 // state had taken (roomApplies.commits), and stored, whether the store then held everything the
-// room did - no commit the room's replica had still to drain from its log, none of its instance's
-// listed as unstored, and nothing pending.
+// room did - no commit the room's replica had still to drain from its log, and none of its
+// instance's listed as unstored.
 type rebaseMark struct {
 	live    *crdt.Doc
 	commits uint64
@@ -122,7 +121,10 @@ func (s *Service) markRebase(room string) rebaseMark {
 // repair is appended under the document's advisory lock, which the compaction's write takes
 // too (lockRoom), so a repair the room holds is a row above the fold point by the time the
 // compaction checks there is none, and no re-base follows. A room whose load kept no instance
-// lists nothing the mark can read, and is never marked stored.
+// lists nothing the mark can read, and is never marked stored. What the room holds in its pending
+// queue is no part of what the store must hold: it is no part of the document until it lands
+// (leaveParkedOut), and the commit that lands it is one more commit the log holds until it is
+// stored, so a room holding something queued is marked stored as any other.
 func (s *Service) markResident(live *crdt.Doc) rebaseMark {
 	replica := s.replicaOf(live)
 	instance := s.instanceOf(live)
@@ -132,7 +134,7 @@ func (s *Service) markResident(live *crdt.Doc) rebaseMark {
 	replica.lockForUpdate()
 	defer replica.mu.Unlock()
 	mark := rebaseMark{live: live, commits: replica.applies().commits.Load()}
-	mark.stored = (replica.log == nil || replica.log.Pending() == 0) && !instance.holdsUnstored() && !holdsPending(live)
+	mark.stored = (replica.log == nil || replica.log.Pending() == 0) && !instance.holdsUnstored()
 	return mark
 }
 

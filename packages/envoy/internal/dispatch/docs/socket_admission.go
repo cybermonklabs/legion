@@ -330,6 +330,16 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	// The page's client id is decided last, once nothing above can refuse the socket, so an id is
+	// given out only to a socket that is served (admitClients, client_ids.go).
+	clients, err := s.admitClients(ctx, room, actor, r)
+	if err != nil {
+		slog.Warn("dispatch: a document socket's admission could not give its page a client id; answered 503",
+			"room", room, "error", err)
+		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
+		return
+	}
+	connection.clients = clients
 	// The state the admission read is offered to the room's load only now, once the budget has
 	// made room for that load: a socket refused above makes no room and leaves nothing behind
 	// for one (offerPreload, takePreload).
@@ -338,9 +348,17 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	connection.admission.documentSince = documentSince
 	ctx = context.WithValue(ctx, connectionContextKey{}, connection)
+	// A page that takes the client id Dispatch gives it is sent that id as the socket's first
+	// frame (clientIDWriter).
+	if !clients.legacy {
+		w = &clientIDWriter{ResponseWriter: w, frame: clientIDFrame(room, clients.own)}
+	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
-	// frames (awareness_limit.go).
-	s.srv.ServeHTTP(&awarenessLimitWriter{ResponseWriter: w, room: room}, r.WithContext(ctx))
+	// frames, to the ids the socket may announce under, and each sync step 2 it sends reaches ygo
+	// with another person's structs cut out (awareness_limit.go, stepTwoCut).
+	s.srv.ServeHTTP(&awarenessLimitWriter{
+		ResponseWriter: w, room: room, clients: clients, cut: s.stepTwoCut(ctx, room, actor, clients),
+	}, r.WithContext(ctx))
 }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above
