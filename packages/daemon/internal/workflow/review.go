@@ -398,7 +398,9 @@ type RoundRefusal struct {
 }
 
 // RefusalLasts is how long a refusal of a review stands (RoundRefusal.Lasts), one of its three
-// values.
+// values. The zero value is none of them, so a refusal whose writer names no Lasts stands at no
+// head: the reviewer's row keeps nothing of it (review), and the daemon's read does not remember
+// it (daemon's reviewToApply).
 type RefusalLasts int
 
 const (
@@ -407,7 +409,7 @@ const (
 	// the one refusal the reviewer's row keeps for the stuck notice (review), as a decision the
 	// round could still have had, and the next read of the pull request's reviews judges the review
 	// again at the head the record holds then (daemon's reviewToApply).
-	RefusedAtThisHead RefusalLasts = iota
+	RefusedAtThisHead RefusalLasts = iota + 1
 	// RefusedAtEveryHead is a refusal that stands whatever the record comes to hold: who wrote the
 	// review (DecidesRound), and a person's review read from GitHub's list, whose commit_id is
 	// GitHub's own and moves with the pull request. It is no decision the round lost, so the
