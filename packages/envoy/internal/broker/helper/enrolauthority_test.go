@@ -49,11 +49,20 @@ type enrolBroker struct {
 	enrols      []enrolCall
 	revokes     []enrolCall
 	// enrolRefusals and revokeRefusals, when set, answer that many calls of that kind with
-	// enrolStatus/enrolCode (revokeStatus/revokeCode) instead of the success.
+	// enrolStatus/enrolCode (revokeStatus/revokeCode) instead of the success. revokeByCredential,
+	// when it names the credential a DELETE was signed with, answers that DELETE with its status
+	// and code instead, before revokeRefusals is read.
 	enrolRefusals, revokeRefusals int
 	enrolStatus, revokeStatus     int
 	enrolCode, revokeCode         string
+	revokeByCredential            map[string]revokeAnswer
 	next                          int
+}
+
+// revokeAnswer is a refusal the enrol broker gives a DELETE signed with one credential.
+type revokeAnswer struct {
+	status int
+	code   string
 }
 
 func newEnrolBroker(t *testing.T) *enrolBroker {
@@ -88,7 +97,9 @@ func newEnrolBroker(t *testing.T) *enrolBroker {
 		b.mu.Lock()
 		b.revokes = append(b.revokes, enrolCall{body: map[string]any{"id": r.PathValue("id")}, credential: credential})
 		status, code := 0, ""
-		if b.revokeRefusals > 0 {
+		if answer, ok := b.revokeByCredential[credential]; ok {
+			status, code = answer.status, answer.code
+		} else if b.revokeRefusals > 0 {
 			b.revokeRefusals--
 			status, code = b.revokeStatus, b.revokeCode
 		}

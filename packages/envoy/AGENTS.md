@@ -6621,8 +6621,8 @@ While that marker is there and younger than 160 s by mtime, a call waits for `ke
 with no fresh marker nothing waits, and the Go shim never writes one, so a pod never waits.
 `agent-secrets identity` answers locally, with no broker call and no registration, whether the calling process has a session identity (exit 0 for a launcher's `key.pem` with no `machine-session` marker beside it, a fresh marker, or the helper's sign probe answering OK or NOT_ENROLLED;
 exit 1 otherwise, a key dir an older client marked `machine-session` included, with a notice when a helper is expected but cannot be asked), for callers that choose between the broker and another backend.
-A helper holding no launcher credential (never logged in, or after it dropped its login, below, until the operator logs the machine in again) enrolls no one:
-its sign and sign-request answer NO_CREDENTIAL, so `identity` exits 1 and every other command fails, each with the same not-logged-in notice naming `agent-secrets machine login`.
+A helper holding no launcher credential (never logged in, after it dropped its login, below, or in identity mode before its trade loop trades or once it has stopped) enrolls no one:
+its sign and sign-request answer NO_CREDENTIAL, so `identity` exits 1 and every other command fails, each quoting the helper's own NO_CREDENTIAL answer, which names the cure of the helper's mode (`brokerclient.Hint`): a machine login in machine-login mode, the trade loop in identity mode.
 
 The machine login is an OAuth 2.0 device authorization grant on the broker's own endpoints (`helper.Broker.Login`, client id `agent-secrets-helper`):
 a fresh P-256 key signs a `launcher_credential` request object naming the host and the operator file's login as `login_hint`, sent to `POST /v1/oauth/device_authorization` with the key's thumbprint as `dpop_jkt`;

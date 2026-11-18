@@ -229,24 +229,44 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		}
 	})
 
-	// A revoke under a person's sign-in that the broker answers 403 MEMBERSHIP_HELD is answered
-	// as it came. It is not the broker's "not this credential's" (OPERATOR_MISMATCH,
-	// NOT_ENROLLING_CREDENTIAL), so the helper does not sign it again with this machine's own
-	// credential, whose answer could only hide the hold.
+	// A revoke under a person's sign-in that the broker answers 403 MEMBERSHIP_HELD is signed
+	// again with this machine's own credential, since the enrolment may be the machine's to end.
+	// Where the machine's own revoke succeeds, the enrolment ends. Where the machine is told the
+	// enrolment is not its own, the person's refusal is the answer, since it says why; and where
+	// the machine's revoke fails any other way, that failure is the answer.
 	t.Run("revoke", func(t *testing.T) {
-		f := newEnrolBroker(t)
-		b, _, _ := machineIdentityBroker(t, f)
-		person := signedIn(t, f, heldPerson, "credential-of-adas-sign-in")
-		b.SignIns = &stubSignIns{authority: person}
-		f.revokeRefusals, f.revokeStatus, f.revokeCode = 1, http.StatusForbidden, "MEMBERSHIP_HELD"
+		for _, tc := range []struct {
+			name    string
+			machine *revokeAnswer // the broker's answer to the machine's own revoke; nil ends it
+			code    string        // the refusal Revoke answers with; "" is success
+		}{
+			{"the machine made the enrolment", nil, ""},
+			{"the enrolment is not the machine's either", &revokeAnswer{http.StatusForbidden, "NOT_ENROLLING_CREDENTIAL"}, "MEMBERSHIP_HELD"},
+			{"the machine's revoke fails another way", &revokeAnswer{http.StatusForbidden, "LAUNCHER_REVOKED"}, "LAUNCHER_REVOKED"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				f := newEnrolBroker(t)
+				b, _, machine := machineIdentityBroker(t, f)
+				person := signedIn(t, f, heldPerson, "credential-of-adas-sign-in")
+				b.SignIns = &stubSignIns{authority: person}
+				f.revokeByCredential = map[string]revokeAnswer{person.CredentialID: {http.StatusForbidden, "MEMBERSHIP_HELD"}}
+				if tc.machine != nil {
+					f.revokeByCredential[machine] = *tc.machine
+				}
 
-		err := b.Revoke(context.Background(), "enr-1")
-		var be *BrokerError
-		if !errors.As(err, &be) || be.Status != http.StatusForbidden || be.Code != "MEMBERSHIP_HELD" {
-			t.Fatalf("a revoke while %s is held answered %v; want the broker's 403 MEMBERSHIP_HELD as it came", heldPerson, err)
-		}
-		if _, revokes := f.calls(); len(revokes) != 1 || revokes[0].credential != person.CredentialID {
-			t.Fatalf("the revokes were %+v; want one, signed with %s, and no second under this machine's own credential", revokes, person.CredentialID)
+				err := b.Revoke(context.Background(), "enr-1")
+				var be *BrokerError
+				switch {
+				case tc.code == "" && err != nil:
+					t.Fatalf("a revoke of an enrolment the machine made, while %s is held, answered %v; want it ended", heldPerson, err)
+				case tc.code != "" && (!errors.As(err, &be) || be.Status != http.StatusForbidden || be.Code != tc.code):
+					t.Fatalf("a revoke while %s is held answered %v; want the broker's 403 %s", heldPerson, err, tc.code)
+				}
+				_, revokes := f.calls()
+				if len(revokes) != 2 || revokes[0].credential != person.CredentialID || revokes[1].credential != machine {
+					t.Fatalf("the revokes were %+v; want two, signed with %s and then %s", revokes, person.CredentialID, machine)
+				}
+			})
 		}
 	})
 }

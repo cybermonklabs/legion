@@ -1560,16 +1560,16 @@ func (b *Broker) renewIdentity(ctx context.Context, cur identity) (time.Time, er
 
 // Revoke deletes the enrollment and every grant under it. 204 and 404 both mean done.
 //
-// It signs with the credential enrolAuthority would choose now and, where the broker answers
-// that this is not that enrolment's credential (403 OPERATOR_MISMATCH or
-// NOT_ENROLLING_CREDENTIAL), with this machine's own. The broker lets a credential end only the
+// It signs with the credential enrolAuthority would choose now and, where the broker refuses that
+// credential (any 403), again with this machine's own. The broker lets a credential end only the
 // enrolments of its own operator, and a machine's only those it made itself (enroll.authorized,
 // ErrNotEnrollingCredential), while the helper keeps no note of which of the two enrolled a given
 // session: a key it enrolled for a launcher leaves it none at all, and a restart leaves it the
-// enrollment id alone. Two attempts settle every case, and only those two refusals cost the
-// second. Any other 403 is the broker's answer about the credential itself, such as a person
-// Dispatch holds (MEMBERSHIP_HELD), and is answered as it came: the machine's own credential would
-// only be told the enrolment is not its own, and the refusal would be lost.
+// enrollment id alone. Two attempts settle every case. A 403 that is not "not this credential's"
+// (a person Dispatch holds, MEMBERSHIP_HELD) is a refusal of the person's credential, and an
+// enrolment the machine made is still the machine's to end, so the second attempt runs for it too;
+// but where the machine is then told the enrolment is not its own either, the person's refusal is
+// the answer, since it says why, and the machine's would only lose that.
 func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
 	authority, cred, err := b.signingAuthority(ctx)
 	if err != nil {
@@ -1577,14 +1577,19 @@ func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
 	}
 	err = b.revokeUnder(ctx, authority, cred, enrollmentID)
 	var be *BrokerError
-	if cred != nil || !errors.As(err, &be) || !be.notTheEnrollingCredential() {
+	if cred != nil || !errors.As(err, &be) || be.Status != http.StatusForbidden {
 		return err
 	}
 	machine := b.cred.Load()
 	if machine == nil {
 		return err
 	}
-	return b.revokeUnder(ctx, &brokerclient.Authority{Key: machine.key, CredentialID: machine.id}, machine, enrollmentID)
+	again := b.revokeUnder(ctx, &brokerclient.Authority{Key: machine.key, CredentialID: machine.id}, machine, enrollmentID)
+	var mine *BrokerError
+	if !be.notTheEnrollingCredential() && errors.As(again, &mine) && mine.notTheEnrollingCredential() {
+		return err
+	}
+	return again
 }
 
 // revokeUnder is one DELETE /v1/enrollments/{id} signed with authority; cred is this machine's
