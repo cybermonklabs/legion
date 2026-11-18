@@ -35,10 +35,13 @@ type reconciled struct {
 	token      string
 	scope      string
 	headScopes []string
-	// queryScopes is headScopes with GraphQL's own scope beside them, which is what the limits
-	// before a query are read under: a query is budgeted under the App's GraphQL points as well
-	// as under the token's own scopes. It is built once with the repository, so the pages of a
-	// repository share the one slice however many queries the pass asks.
+	// queryScope is the GraphQL scope of the token's installation
+	// (githubapp.GraphQLInstallationScope): the scope a query of this repository is budgeted
+	// under, and the scope a limit that GitHub answers a query with is named by.
+	queryScope string
+	// queryScopes is headScopes with queryScope beside them, which is what the limits before a
+	// query are read under. It is built once with the repository, so the pages of a repository
+	// share the one slice however many queries the pass asks.
 	queryScopes []string
 	reconcile   bool
 }
@@ -93,6 +96,13 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 	// beside the App's before each of this repository's head reads, and is what a limit GitHub
 	// answers one of those reads with is named by.
 	scope := r.GitHub.TokenScope(token)
+	// The installation's GraphQL limit is read before the first request made with its token.
+	// Before the token, the pass cannot know the installation. A limit in force on it ends the
+	// pass here, so no request of this repository goes to GitHub inside it.
+	queryScope := githubapp.GraphQLInstallationScope(scope)
+	if at := r.limited(ctx, queryScope); at != nil {
+		return reconciled{}, at
+	}
 	state, at, err := r.identify(ctx, row, owner, name, token, scope, c)
 	if at != nil {
 		return reconciled{}, at
@@ -132,7 +142,8 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 		token:       token,
 		scope:       scope,
 		headScopes:  headScopes,
-		queryScopes: withGraphQL(headScopes),
+		queryScope:  queryScope,
+		queryScopes: withGraphQL(headScopes, queryScope),
 		reconcile:   true,
 	}, nil
 }

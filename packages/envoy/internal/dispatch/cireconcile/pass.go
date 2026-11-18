@@ -250,9 +250,10 @@ func (r *Reconciler) visitRepository(ctx context.Context, writer Writer, from cu
 	if r.cutShort(ctx, c) {
 		return w.cut()
 	}
-	// Another process may have met a limit since this pass started, so the shared limits are
-	// read again before each repository.
-	if at := r.limited(ctx, githubapp.AppScope, githubapp.GraphQLScope); at != nil {
+	// Another process may have met a limit since this pass started, so the App's limit is read
+	// again before each repository. The installation's GraphQL limit is read once the token
+	// names the installation, before any request of the repository (resolve).
+	if at := r.limited(ctx, githubapp.AppScope); at != nil {
 		return w.stopped(at)
 	}
 	repository, at := r.resolve(ctx, from.repository, c, read)
@@ -373,7 +374,7 @@ func (w *walk) page(ctx context.Context) (queryPage, *ending, bool) {
 		return queryPage{}, w.stopped(at), false
 	}
 	page, err := r.query(ctx, w.repository, w.here.after, c)
-	if at := stopAt(err, githubapp.GraphQLScope); at != nil {
+	if at := stopAt(err, w.repository.queryScope); at != nil {
 		// A rate limit is the pass ending, never a page to read another way: reading this
 		// page's heads over REST would be exactly the requests GitHub has just asked this
 		// App to stop sending.

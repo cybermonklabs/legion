@@ -181,9 +181,9 @@ func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
 
 // GraphQLRateLimit reads a rate-limited answer to a GraphQL query, which GitHub spells several
 // ways and none of them the way it spells a rate-limited REST call, and says which of GitHub's
-// two limits it is. A query past the App's primary GraphQL budget is answered HTTP 200 with an
-// `errors` entry of type RATE_LIMITED and a null `data`, so a caller reading the status alone
-// sees a good answer and a caller reading `data` alone sees an empty one. The request that
+// two limits it is. A query past its installation's primary GraphQL budget is answered HTTP 200
+// with an `errors` entry of type RATE_LIMITED and a null `data`, so a caller reading the status
+// alone sees a good answer and a caller reading `data` alone sees an empty one. The request that
 // spends the last point is answered with its data and `x-ratelimit-remaining: 0`. A secondary
 // limit -- too many points a minute, too many queries at once -- is answered either 200 or 403,
 // with a `retry-after` header, or with GitHub's wording about a secondary rate limit and no
@@ -213,12 +213,12 @@ func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
 // with, and the response headers, and those are the whole of what is read.
 //
 // secondary tells the two limits apart, which the caller records under different scopes
-// (Client.GraphQL): GitHub budgets the App's GraphQL points apart from its REST calls, while the
-// secondary limits are shared between the two. GitHub's own wording decides it wherever the
-// answer carries it, since GitHub writes that sentence for nothing else; then the two statements
-// that the primary budget is spent, the RATE_LIMITED entry and no requests remaining; and a
-// `retry-after`, or the 429 GitHub answers too many requests with, where neither of those says
-// the budget is spent.
+// (Client.GraphQL): GitHub budgets each installation's GraphQL points apart from its REST calls,
+// while the secondary limits are shared between the two. GitHub's own wording decides it wherever
+// the answer carries it, since GitHub writes that sentence for nothing else; then the two
+// statements that the primary budget is spent, the RATE_LIMITED entry and no requests remaining;
+// and a `retry-after`, or the 429 GitHub answers too many requests with, where neither of those
+// says the budget is spent.
 func GraphQLRateLimit(status int, header http.Header, body []byte) (limited *RateLimitError, secondary bool) {
 	spent, worded := graphQLLimitErrors(body)
 	exhausted := header.Get("X-Ratelimit-Remaining") == "0"
@@ -241,14 +241,14 @@ func GraphQLRateLimit(status int, header http.Header, body []byte) (limited *Rat
 }
 
 // graphQLLimitErrors reads a GraphQL answer for the two things GitHub says a rate limit with in
-// its own envelope: an entry of `errors` whose type is RATE_LIMITED, which is the App's GraphQL
-// budget spent, and GitHub's secondary-limit wording, "You have exceeded a secondary rate
+// its own envelope: an entry of `errors` whose type is RATE_LIMITED, which is the installation's
+// GraphQL budget spent, and GitHub's secondary-limit wording, "You have exceeded a secondary rate
 // limit", which is all a secondary limit gives when it comes with no header and no error type.
 // The wording is read from an entry's message and from the body's own top-level `message`,
 // because GitHub answers a secondary limit at 403 with the REST-shaped body that carries it
 // there and no `errors` at all, and a reader of the entries alone takes such an answer for the
-// App's spent GraphQL budget and records it under the wrong scope. It is matched on the phrase
-// alone, since GitHub has worded the rest of the sentence more than one way.
+// installation's spent GraphQL budget and records it under the wrong scope. It is matched on the
+// phrase alone, since GitHub has worded the rest of the sentence more than one way.
 //
 // `data` is a repository's own, and is read for neither: a body that is not the envelope at all
 // -- which cannot be a 200 from GitHub's GraphQL endpoint -- holds no such entry and no such

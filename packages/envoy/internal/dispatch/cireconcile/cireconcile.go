@@ -13,8 +13,8 @@
 // each page of each repository's open pull requests, which for 833 heads of 16 repositories
 // measures 1,720 requests and 26 minutes 25 seconds -- five passes' worth of a 5-minute
 // interval, which no pass finishes within its bound and which leaves the loop looking dead for
-// the whole of it. The same read in queries is about 53 of them, about 318 points of the App's
-// GraphQL budget and about 178 seconds of GitHub's own processing time.
+// the whole of it. The same read in queries is about 53 of them, about 318 GraphQL points of
+// the installations' budgets and about 178 seconds of GitHub's own processing time.
 //
 // What a query cannot answer whole is read over REST: paged, conditional on the ETags the pass
 // kept, and recorded through the same writes. That is a head with more check suites than one
@@ -50,11 +50,12 @@
 // has not changed the page; and the shared rate limits every Dispatch process obeys
 // (githubapp/ratelimit) are read before the pass starts, before each repository, before each
 // query and before each head, with a limit in force ending the pass where it stands. GitHub
-// budgets GraphQL apart from REST and answers a GraphQL limit in its own way, so a primary
-// limit a query meets -- the App's GraphQL points spent -- is recorded under
-// githubapp.GraphQLScope and leaves every REST read of every process going, while a secondary
-// limit, which GitHub shares between an installation's REST calls and its queries, is recorded
-// under that installation's own scope and holds both (githubapp.GraphQLRateLimit).
+// budgets GraphQL apart from REST and answers a GraphQL limit in its own way. GitHub gives each
+// installation its own GraphQL budget. So a primary limit that a query meets is recorded under
+// the GraphQL scope of the query's installation (githubapp.GraphQLInstallationScope). It holds
+// the queries of that installation and leaves every REST read of every process going. A
+// secondary limit, which GitHub shares between an installation's REST calls and its queries, is
+// recorded under that installation's own scope and holds both (githubapp.GraphQLRateLimit).
 //
 // One pass is bound at the interval its loop runs it on (Reconciler.PassTimeout), so it always
 // ends before the pass after it is due and always logs its one line. The pass walks one stable
@@ -237,13 +238,13 @@ func scopes(tokenScope string) []string {
 	return []string{githubapp.AppScope, tokenScope}
 }
 
-// withGraphQL is those scopes with GitHub's GraphQL budget beside them, which is what a query
-// is held by: GitHub budgets GraphQL apart from REST, so a query is stopped by a limit on
-// either.
-func withGraphQL(headScopes []string) []string {
+// withGraphQL is those scopes with queryScope beside them, the GraphQL scope of the token's
+// installation (githubapp.GraphQLInstallationScope), which is what a query is held by: GitHub
+// budgets GraphQL apart from REST, so a query is stopped by a limit on either.
+func withGraphQL(headScopes []string, queryScope string) []string {
 	held := make([]string, 0, len(headScopes)+1)
 	held = append(held, headScopes...)
-	return append(held, githubapp.GraphQLScope)
+	return append(held, queryScope)
 }
 
 // remember writes one entry of a map the Reconciler keeps between passes, making the map on the

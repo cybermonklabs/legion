@@ -863,41 +863,43 @@ const maxCommitPages = 5
 // attribution). On an error it answers the messages of the pages it read.
 func fetchCommitMessages(ctx context.Context, client *githubapp.Client, owner, repo string, number int) ([]string, error) {
 	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
-	messages, _, err := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
+	messages, _, err := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number, 1)
 	return messages, err
 }
 
 // fetchCommitMessagesWithToken is fetchCommitMessages asking token for each page's installation
-// token, by readGitHubPage's rule. It also answers how many commit pages it asked GitHub for, the
-// failed one included, so a caller can count what a read cost (reconcileAttributionInputs' call
-// budget).
-func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number int) ([]string, int, error) {
+// token, by readGitHubPage's rule. It reads from firstPage on: 1 for every message, and 2 for the
+// messages after the 100 that one GraphQL query answers (readFactsBatch). It also answers how
+// many commit pages it asked GitHub for, the failed one included, so a caller can count what a
+// read cost (reconcileAttributionInputs' call budget).
+func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number, firstPage int) ([]string, int, error) {
 	var messages []string
-	for page := 1; page <= maxCommitPages; page++ {
+	for page := firstPage; page <= maxCommitPages; page++ {
+		asked := page - firstPage + 1
 		current, err := token()
 		if err != nil {
-			return messages, page - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
+			return messages, asked - 1, fmt.Errorf("mint installation token for %s/%s PR #%d commits page %d: %w", owner, repo, number, page, err)
 		}
 		commitsPath := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100&page=%d", url.PathEscape(owner), url.PathEscape(repo), number, page)
 		body, status, header, err := readGitHubPage(ctx, client, current, commitsPath)
 		if err != nil {
-			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+			return messages, asked, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
 		}
 		if err := githubapp.CheckResponse(status, header, body); err != nil {
-			return messages, page, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
+			return messages, asked, fmt.Errorf("fetch commits of PR #%d page %d: %w", number, page, err)
 		}
 		var commits []commitMessagePayload
 		if err := json.Unmarshal(body, &commits); err != nil {
-			return messages, page, fmt.Errorf("decode commits of PR #%d page %d: %w", number, page, err)
+			return messages, asked, fmt.Errorf("decode commits of PR #%d page %d: %w", number, page, err)
 		}
 		for _, c := range commits {
 			messages = append(messages, c.Commit.Message)
 		}
 		if len(commits) < 100 {
-			return messages, page, nil
+			return messages, asked, nil
 		}
 	}
-	return messages, maxCommitPages, nil
+	return messages, max(0, maxCommitPages-firstPage+1), nil
 }
 
 // sessionTrailers is every `Omp-Session:` commit trailer across messages (LEGION-294's rule,

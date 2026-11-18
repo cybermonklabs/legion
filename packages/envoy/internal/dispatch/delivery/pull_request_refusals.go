@@ -70,10 +70,11 @@ const absenceQuery = `query($owner: String!, $name: String!, $number: Int!) {
 // that has it again answers the pull request. No memory of a pass or of the process ends a record:
 // each refusal is asked about on its own, at its own read. The call is githubapp.Client.GraphQL,
 // the client the CI reconcile's batched read queries GitHub through (cireconcile.Reconciler.query),
-// held by the token's installation scope and by the App's GraphQL budget (githubapp.GraphQLScope).
-// It costs one request, one point of that budget (the count included: `rateLimit { cost }` answers
-// 1), for each read of a 404 or a 410 a pass makes: at most RefusedReadsPerPass from the refusals,
-// and from the failures each that GitHub now refuses so, up to PullRequestHeadBatch more.
+// held by the token's installation scope and by that installation's GraphQL budget
+// (githubapp.GraphQLInstallationScope). It costs one request, one point of that budget (the count
+// included: `rateLimit { cost }` answers 1), for each read of a 404 or a 410 a pass makes: at
+// most RefusedReadsPerPass from the refusals, and from the failures each that GitHub now refuses
+// so, up to PullRequestHeadBatch more.
 func pullRequestAbsent(ctx context.Context, client *githubapp.Client, refused *pullRequestRefusal) (bool, error) {
 	if refused == nil || refused.token == "" || !errors.Is(refused.err, ErrPullRequestNotFound) {
 		return false, nil

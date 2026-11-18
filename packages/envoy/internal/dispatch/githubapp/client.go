@@ -247,7 +247,7 @@ func (c *ttlCache[K, V]) forget(key K) {
 // Limits is the GitHub rate limits every process obeys together (ratelimit.Store, over
 // github_rate_limits): GitHub budgets the App and each installation, not a process, so a limit
 // one process meets must stop the others from asking too. Scopes are AppScope,
-// InstallationScope's and GraphQLScope.
+// InstallationScope's, GraphQLInstallationScope's and GraphQLScope.
 type Limits interface {
 	// Wait is how long the limit in force on scope has left, zero when none is, and when that limit
 	// was last recorded: the same for one limit however much of it has passed, changed by every
@@ -272,26 +272,32 @@ const AppScope = "app"
 // requests are counted under.
 func InstallationScope(id int64) string { return "installation:" + strconv.FormatInt(id, 10) }
 
-// GraphQLScope is the scope of every GraphQL query the App makes, which GitHub budgets apart
-// from the REST calls made with the same token: a GraphQL query is charged in points against a
-// budget of its own, and GitHub answers a query past it with HTTP 200 and an `errors` entry of
-// type RATE_LIMITED rather than with the 403 or 429 a REST call over its budget gets
-// (GraphQLRateLimit).
+// GraphQLInstallationScope is the scope of a GraphQL query made with a token of installation, a
+// TokenScope answer such as "installation:42". The scope is "graphql:" followed by that answer.
 //
-// It is one scope for the App rather than one for each installation, where the REST scopes are
-// two, because the budget it stands for is the App's: GitHub charges the App's GraphQL points
-// whichever installation's token spends them. A primary limit on it leaves every REST call
-// going -- a spent GraphQL budget says nothing about the REST budget of the installation whose
-// token spent it, and the Dispatch processes read far more over REST than they query -- which
-// is what a scope of its own buys, and it stops every process's queries at once rather than
-// leaving each to find the limit for itself. A process that meets it can name this scope before
-// it holds a token for any installation.
+// GitHub budgets GraphQL apart from REST. It charges a query in points against a budget of its
+// own. It answers a query past that budget with HTTP 200 and an `errors` entry of type
+// RATE_LIMITED, not with the 403 or 429 of REST (GraphQLRateLimit). GitHub's documentation gives
+// each installation its own GraphQL budget. So a primary limit holds the queries of one
+// installation in every process, and no query of another installation. It holds no REST call: a
+// spent GraphQL budget says nothing about the REST budget of the same installation.
 //
-// A secondary limit is not recorded here. GitHub shares its secondary limits between REST and
-// GraphQL for the installation whose token met one, so a query that meets one is recorded under
-// that installation's scope, where it holds that installation's REST reads as well as its
-// queries (recordGraphQLLimit). Only a limit met with a token this client did not mint, which
-// names no installation, falls back to this scope.
+// A secondary limit is not recorded here. GitHub shares it between the REST calls and the
+// queries of one installation, so it goes under InstallationScope (recordGraphQLLimit).
+//
+// An empty installation is the TokenScope answer for a token that this client did not mint. It
+// gives GraphQLScope.
+func GraphQLInstallationScope(installation string) string {
+	if installation == "" {
+		return GraphQLScope
+	}
+	return "graphql:" + installation
+}
+
+// GraphQLScope is the scope of a GraphQL query made with a token that names no installation: a
+// token that this client did not mint (TokenScope). Nothing tells which installation such a token
+// spends, so a limit that it meets holds each query of that kind. A query with a token of a known
+// installation is held by GraphQLInstallationScope instead.
 const GraphQLScope = "graphql"
 
 // Option configures a Client New builds.
@@ -668,13 +674,13 @@ func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag st
 // connection does not share that restriction, which is why delivery/github_prs.go's merged-PR
 // search uses this instead of REST search.
 //
-// It is held by two of the shared rate limits rather than one. The token's own installation
-// scope holds it as it holds every REST call made with that token (send), and GraphQLScope holds
-// it as GitHub's separate GraphQL budget: a query sent while either is in force is not sent at
-// all and answers a held *RateLimitError, and an answer GraphQLRateLimit reads as a GraphQL
-// limit -- which request's own REST detection cannot see, since GitHub answers one with HTTP 200
-// as readily as with 403 -- is recorded and returned as that error rather than as an answer. The
-// caller therefore never has to tell a rate-limited 200 from a good one.
+// Two of the shared rate limits hold it. The token's installation scope holds it as it holds
+// each REST call made with that token (send). The GraphQL scope of that installation holds it as
+// GitHub's separate GraphQL budget of the installation (GraphQLInstallationScope). A query sent
+// while either limit is in force is not sent, and answers a held *RateLimitError. GitHub can
+// answer a GraphQL limit with HTTP 200, which the REST detection of request cannot see. So
+// GraphQLRateLimit reads the answer here, and a limit it finds is recorded and returned as that
+// error, not as an answer. The caller never has to tell a rate-limited 200 from a good one.
 //
 // Which scope that limit is recorded under is which of GitHub's two limits it is
 // (recordGraphQLLimit), and the query's answer is read for the limit here rather than by send,
@@ -687,16 +693,17 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	if err != nil {
 		return nil, 0, nil, fmt.Errorf("encode GraphQL request: %w", err)
 	}
+	installation := c.TokenScope(token)
 	if c.limits != nil {
-		wait, recorded, err := c.limits.Wait(ctx, GraphQLScope)
+		scope := GraphQLInstallationScope(installation)
+		wait, recorded, err := c.limits.Wait(ctx, scope)
 		switch {
 		case err != nil:
-			logging.FromContext(ctx).Warn("dispatch githubapp: the shared GitHub GraphQL rate limit was not read; the query is sent", "scope", GraphQLScope, "error", err)
+			logging.FromContext(ctx).Warn("dispatch githubapp: the shared GitHub GraphQL rate limit was not read; the query is sent", "scope", scope, "error", err)
 		case wait > 0:
-			return nil, 0, nil, &RateLimitError{Wait: wait, Scope: GraphQLScope, Held: true, Recorded: recorded}
+			return nil, 0, nil, &RateLimitError{Wait: wait, Scope: scope, Held: true, Recorded: recorded}
 		}
 	}
-	installation := c.TokenScope(token)
 	body, status, header, err := c.send(ctx, installation, http.MethodPost, c.base+"/graphql", "Bearer "+token, mediaTypeJSON, "", bytes.NewReader(payload), responseLimit)
 	if err != nil || c.limits == nil {
 		return body, status, header, err
@@ -712,10 +719,10 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 // recordGraphQLLimit records the limit a query met under the scope GitHub budgets it against,
 // and names that scope on the error the caller is given.
 //
-// A primary limit is the App's GraphQL points spent, which GitHub budgets apart from the REST
-// calls made with the same token: it goes under GraphQLScope, where it stops every process's
-// queries and leaves every process's REST reads going, since a spent GraphQL budget says nothing
-// about any installation's REST budget.
+// A primary limit is the spent GraphQL budget of the token's installation. It goes under the
+// GraphQL scope of that installation (GraphQLInstallationScope). There it holds the queries of
+// that installation in every process. It holds no REST read and no query of another
+// installation.
 //
 // A secondary limit -- too many points a minute, too many requests at once -- is shared between
 // REST and GraphQL for the installation whose token met it, so it goes under that installation's
@@ -724,8 +731,8 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 // Strike rather than Record because GitHub asks a client that keeps meeting one to back off
 // further each time.
 //
-// A token this client did not mint has no installation scope to name (TokenScope). Such a
-// secondary limit falls back to GraphQLScope: holding the App's queries is less than GitHub asks
+// A token this client did not mint has no installation scope to name (TokenScope). A limit of
+// either kind that such a token meets goes under GraphQLScope: that holds less than GitHub asks
 // for, and it is all this client knows to hold.
 func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, limited *RateLimitError, secondary bool) {
 	record, cancel := limitRecordContext(ctx)
@@ -742,9 +749,10 @@ func (c *Client) recordGraphQLLimit(ctx context.Context, installation string, li
 		limited.Wait = max(limited.Wait, struck.Wait)
 		return
 	}
-	limited.Scope = GraphQLScope
-	if err := c.limits.Record(record, GraphQLScope, limited.Wait); err != nil {
-		logging.FromContext(ctx).Error("dispatch githubapp: GitHub's GraphQL rate limit was not recorded; other processes may query inside it", "scope", GraphQLScope, "wait", limited.Wait, "error", err)
+	scope := GraphQLInstallationScope(installation)
+	limited.Scope = scope
+	if err := c.limits.Record(record, scope, limited.Wait); err != nil {
+		logging.FromContext(ctx).Error("dispatch githubapp: GitHub's GraphQL rate limit was not recorded; other processes may query inside it", "scope", scope, "wait", limited.Wait, "error", err)
 	}
 }
 

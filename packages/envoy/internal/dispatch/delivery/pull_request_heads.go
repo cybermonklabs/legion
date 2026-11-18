@@ -1010,7 +1010,9 @@ func mergeCommitOf(payload pullRequestPayload) string {
 	return *payload.MergeCommitSHA
 }
 
-// FetchedFacts is one read of a pull request from GitHub, as RefreshPullRequestHead stored it.
+// FetchedFacts is one read of a pull request from GitHub, as RefreshPullRequestHead stored it. A
+// batched read gives the same facts from its query, which its caller stores (readFactsBatch):
+// its Payload holds the fields that the query reads, and its Texts are the texts to store.
 type FetchedFacts struct {
 	Canonical   string             // the repository's canonical name, which the row is stored under
 	Owner, Repo string             // Canonical split
@@ -1098,7 +1100,7 @@ func storePullRequestFacts(
 	if err != nil {
 		return answer(), err
 	}
-	messages, _, readErr := fetchCommitMessagesWithToken(ctx, client, func() (string, error) { return token, nil }, owner, repo, payload.Number)
+	messages, _, readErr := fetchCommitMessagesWithToken(ctx, client, func() (string, error) { return token, nil }, owner, repo, payload.Number, 1)
 	if readErr != nil {
 		if limited, ok := githubapp.AsRateLimit(readErr); ok {
 			return answer(), limited

@@ -240,7 +240,7 @@ func fetchAttributionFacts(ctx context.Context, client *githubapp.Client, owner,
 	if err != nil {
 		return attributionFacts{}, 1, err
 	}
-	messages, pages, err := fetchCommitMessagesWithToken(ctx, client, tokenSource, owner, repo, number)
+	messages, pages, err := fetchCommitMessagesWithToken(ctx, client, tokenSource, owner, repo, number, 1)
 	if err != nil {
 		return attributionFacts{}, 1 + pages, err
 	}

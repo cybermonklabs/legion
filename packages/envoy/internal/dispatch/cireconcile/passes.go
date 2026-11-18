@@ -209,7 +209,7 @@ type PassRecord struct {
 // PassCounts is what one pass did, the same eight numbers its one log line carries.
 type PassCounts struct {
 	// GraphQLQueries is the batched queries the pass asked and GraphQLPoints what GitHub
-	// charged them against the App's GraphQL budget.
+	// charged them against the GraphQL budgets of their installations.
 	GraphQLQueries int `json:"graphql_queries"`
 	GraphQLPoints  int `json:"graphql_points"`
 	// RESTRequests is the REST reads beside them and RESTNotModified how many of those GitHub
