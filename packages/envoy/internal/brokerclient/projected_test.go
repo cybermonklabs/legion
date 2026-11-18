@@ -41,7 +41,7 @@ func TestProjectedServiceAccountTokenIsTradedAndRenewed(t *testing.T) {
 
 	waits := make(chan time.Duration, 4)
 	client, err := New(Config{
-		BrokerURL:   broker.URL(),
+		BrokerURL:   broker.Address(),
 		Key:         testKey(t),
 		Subject:     NewProjectedToken(path),
 		Session:     "example-worker-session",
@@ -138,7 +138,7 @@ func TestProjectedTokenThatCannotBeReadReachesTheBrokerNever(t *testing.T) {
 		return 200, map[string]any{"access_token": "never", "token_type": "DPoP", "expires_in": 60}
 	})
 	client, err := New(Config{
-		BrokerURL: broker.URL(),
+		BrokerURL: broker.Address(),
 		Key:       testKey(t),
 		Subject:   NewProjectedToken(filepath.Join(t.TempDir(), "absent")),
 	})

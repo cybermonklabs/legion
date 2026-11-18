@@ -1,0 +1,23 @@
+{
+  "action": "sub_issue_added",
+  "parent_issue_id": 3216548790,
+  "parent_issue": {
+    "number": 41,
+    "title": "Parent acceptance issue",
+    "html_url": "https://example.invalid/example-org/example-repo/issues/41",
+    "user": { "login": "octocat" }
+  },
+  "sub_issue_id": 3216548890,
+  "sub_issue": {
+    "number": 43,
+    "title": "Child acceptance issue",
+    "html_url": "https://example.invalid/example-org/example-repo/issues/43",
+    "user": { "login": "octocat" }
+  },
+  "sender": { "login": "octocat", "type": "User" },
+  "repository": {
+    "name": "example-repo",
+    "full_name": "example-org/example-repo",
+    "owner": { "login": "example-org" }
+  }
+}

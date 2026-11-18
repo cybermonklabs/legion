@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/brokeraddr"
 )
 
 // These two rows hold the paths of requestReach.settle that no HTTP/1 row reaches. Over HTTP/1
@@ -52,7 +54,7 @@ func pointBrokerAtHTTP2(t *testing.T, r *rig, handler http.HandlerFunc) <-chan s
 	h2.EnableHTTP2 = true
 	h2.StartTLS()
 	t.Cleanup(h2.Close)
-	r.srv.Broker.URL = h2.URL
+	r.srv.Broker.URL = brokeraddr.New(h2.URL)
 	r.srv.Broker.HTTP = &http.Client{Transport: neverEndingBody{base: h2.Client().Transport}}
 	return proto
 }
