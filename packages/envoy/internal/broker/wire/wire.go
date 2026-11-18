@@ -83,15 +83,22 @@ type LauncherCredentialResp struct {
 	// The machine's host name, as a person's machine login named it; for a token login, its
 	// ServiceAccount's <namespace>/<name>, or a machine's <project>/<zone>/<instance name>.
 	Host string `json:"host"`
-	// The service a service's login is for (legion-daemon), whose sessions are its pods, or the
-	// fleet a machine belongs to; null for a person's own machine.
+	// The service a service's login is for (legion-daemon), whose sessions are its pods, the
+	// login service of a person's pod login, or the fleet a machine belongs to; null for a
+	// person's own machine.
 	Service *string `json:"service"`
 	// What a token login proved: its ServiceAccount
 	// (system:serviceaccount:<namespace>:<name>), or a machine as the token exchange names it
 	// (exchange.MachineSubject); null for every login a person approved.
 	Subject *string `json:"subject"`
+	// For a person's pod login, the person it acts for. A person's pod login is the token login
+	// of a Kubernetes ServiceAccount that BROKER_POD_OPERATORS maps to a person, and this is that
+	// person as the setting maps the account now. Only that person lists and revokes the login.
+	// Null for every other login, a service's and a person's own machine's among them.
+	Person *string `json:"person"`
 	// The login of the person who approved the login (anyone signed in may have approved a service's
-	// login before token logins); "" for a service's token login, which no person approves.
+	// login before token logins); "" for every token login, a service's and a person's pod login
+	// among them, which no person approves.
 	ApprovedBy string `json:"approved_by"`
 	// When the login was approved, or a token login's first login.
 	IssuedAt time.Time `json:"issued_at"`

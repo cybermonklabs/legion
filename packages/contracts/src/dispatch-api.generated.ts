@@ -1866,7 +1866,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. */
+    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login. */
     get: operations["getApiV1MachineLogins"];
     put?: never;
     post?: never;
@@ -1885,7 +1885,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one. */
+    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the pod logs in again with its token under a new login while the setting maps its account. */
     post: operations["postApiV1MachineLoginsByIdRevoke"];
     delete?: never;
     options?: never;
@@ -5386,6 +5386,7 @@ export interface components {
       host: string;
       /** Format: date-time */
       issued_at: string;
+      person: null | string;
       service: null | string;
       subject: null | string;
     };

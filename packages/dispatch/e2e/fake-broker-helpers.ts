@@ -1,6 +1,12 @@
 import { test } from "@playwright/test";
 
-import type { FakeGrant, FakeMachineLogin, FakePendingRequest, FakeSignIn } from "./fake-broker";
+import type {
+  FakeGrant,
+  FakeLauncherCredential,
+  FakeMachineLogin,
+  FakePendingRequest,
+  FakeSignIn,
+} from "./fake-broker";
 import { usesFakeBroker } from "./harness-broker";
 import { harnessPorts } from "./harness-ports";
 
@@ -31,6 +37,18 @@ export async function setPendingCredentialRequests(
 export async function setCredentialGrants(grants: readonly FakeGrant[]): Promise<void> {
   test.skip(!usesFakeBroker, "this run's server reads no fake broker (e2e/harness-broker.ts)");
   await fixtureRequest("/__fixture/grants", grants);
+}
+
+/** Replaces the live machine logins the fake broker lists wholesale
+ *  (`GET /v1/launcher-credentials`, which the machine-login page's Machine logins section reads),
+ *  each beside the login whose list holds it. A row is relayed as seeded, its `person` with it,
+ *  which is what marks a person's pod login. Skipped the same way `setPendingCredentialRequests`
+ *  is. */
+export async function setLauncherCredentials(
+  credentials: readonly FakeLauncherCredential[]
+): Promise<void> {
+  test.skip(!usesFakeBroker, "this run's server reads no fake broker (e2e/harness-broker.ts)");
+  await fixtureRequest("/__fixture/launcher-credentials", credentials);
 }
 
 /** Replaces the machine logins a typed code selects on the fake broker, each the code its

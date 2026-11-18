@@ -73,9 +73,11 @@ func (s *server) listLauncherCredentials(w http.ResponseWriter, r *http.Request,
 // writeLauncherCredentials answers the machine logins list names for person, each one that can
 // still reach a secret: not revoked, and either unexpired or expired with a session it enrolled
 // still running. Dispatch's machine-logins page lists every service's login, whoever approved it,
-// and the person's own machines' (enroll.Service.LiveCredentials); the person's own machine lists
-// their machines' alone (enroll.Service.OwnLiveCredentials). Both answer through it, so each row
-// the two share is the same bytes.
+// and the person's own machines' and pod logins (enroll.Service.LiveCredentials); the person's own
+// machine lists their machines' and pod logins alone (enroll.Service.OwnLiveCredentials). A
+// person's pod login names its person (wire.LauncherCredentialResp.Person), so Dispatch shows it
+// as the person's own and not as a service's login. Both answer through it, so each row the two
+// share is the same bytes.
 func (s *server) writeLauncherCredentials(w http.ResponseWriter, r *http.Request, list func(context.Context, string) ([]enroll.LiveCredential, error), person string) {
 	rows, err := list(r.Context(), person)
 	if err != nil {
@@ -84,7 +86,7 @@ func (s *server) writeLauncherCredentials(w http.ResponseWriter, r *http.Request
 	}
 	out := make([]wire.LauncherCredentialResp, len(rows))
 	for i, c := range rows {
-		out[i] = wire.LauncherCredentialResp{CredentialID: c.ID.String(), Host: c.Host, Service: c.Service, Subject: c.Subject, ApprovedBy: c.ApprovedBy, IssuedAt: c.IssuedAt, ExpiresAt: c.ExpiresAt, Expired: c.Expired}
+		out[i] = wire.LauncherCredentialResp{CredentialID: c.ID.String(), Host: c.Host, Service: c.Service, Subject: c.Subject, Person: c.Person, ApprovedBy: c.ApprovedBy, IssuedAt: c.IssuedAt, ExpiresAt: c.ExpiresAt, Expired: c.Expired}
 	}
 	writeJSON(w, http.StatusOK, launcherCredentialsResponse{Credentials: out})
 }

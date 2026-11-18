@@ -62,7 +62,7 @@ function MachineLoginDecision({
  * place a machine record gets Approve/Deny buttons. A looked-up login already decided shows its
  * decision, and so does one decided here, in their place, so a second click never reaches the
  * broker's already-decided refusal. Below it, the machine logins the viewer may revoke that can
- * still reach a secret: their own machines' and every service's.
+ * still reach a secret: their own machines', their own pods' and every service's.
  */
 export function MachineLoginPage(): ReactNode {
   const [code, setCode] = useState("");

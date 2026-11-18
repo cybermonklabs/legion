@@ -7582,7 +7582,7 @@
     },
     "/api/v1/machine-logins": {
       "get": {
-        "description": "List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it.",
+        "description": "List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, for the caller's own machines, and for the caller's own pods, unexpired or expired with a session still running, each naming who approved it. A person's pod login is the login of a pod whose Kubernetes account the broker's BROKER_POD_OPERATORS maps to a person. Only that person's list holds it, and its person field names that person. The field is null on every other login.",
         "operationId": "getApiV1MachineLogins",
         "parameters": [
           {
@@ -7624,7 +7624,7 @@
     },
     "/api/v1/machine-logins/{id}/revoke": {
       "post": {
-        "description": "Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one.",
+        "description": "Revoke a machine login, expired or not, ending every session it enrolled, a service's pods and a person's pod included. Anyone signed in revokes a service's login. Only the person who approved a person's machine login revokes that one. Only the person that a person's pod login names (its person: the broker's BROKER_POD_OPERATORS maps the pod's Kubernetes account to that person) revokes that one, and the pod logs in again with its token under a new login while the setting maps its account.",
         "operationId": "postApiV1MachineLoginsByIdRevoke",
         "parameters": [
           {
@@ -22783,6 +22783,12 @@
             "format": "date-time",
             "type": "string"
           },
+          "person": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "service": {
             "type": [
               "null",
@@ -22801,6 +22807,7 @@
           "host",
           "service",
           "subject",
+          "person",
           "approved_by",
           "issued_at",
           "expires_at",

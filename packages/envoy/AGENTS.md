@@ -7754,13 +7754,15 @@ Each sweeper tick (`requests.Sweeper`) runs `oauthstore.Store.Sweep`:
 it deletes device codes an hour past their expiry (a late poll still answers `expired_token`), DPoP proofs, nonces and access tokens past theirs, and a refresh token family only once none of its rows is still redeemable, so a replay of a rotated token still finds its family while any descendant lives.
 Each kind goes row by row in batches of 1,000, at most 10 batches per tick; a larger backlog finishes on later ticks.
 
-`GET /v1/launcher-credentials?approver=<email>` lists the machine logins a person may revoke that can still reach a secret (id, host, service, `approved_by`, issued, expires, `expired`):
+`GET /v1/launcher-credentials?approver=<email>` lists the machine logins a person may revoke that can still reach a secret (id, host, service, `subject`, `person`, `approved_by`, issued, expires, `expired`):
 every unrevoked one that is unexpired or still has a live enrollment, live as `Lookup` means it (not revoked, its lease not lapsed).
 A login's enrollments outlive its expiry, since each session renews with its own key and `Renew` reads the credential only for a machine's own session (`Lookup` never does), so an expired login stays listed, `expired: true`, until its last enrollment ends or its lease lapses, swept or not, and revoking every listed login ends every session the person's machines started.
 A machine's own login is the exception its sessions make: held to a live login, they stop renewing at its expiry and lapse within one lease (`ErrMachineLoginEnded`).
 `POST /v1/launcher-credentials/{id}/revoke-by-approver` `{approver}` ends one, expired or not (`enroll.Service.RevokeCredential`).
 A service's credential (the Legion daemon's, `launcher_credentials.service` set, of a subject `BROKER_POD_OPERATORS` does not map) carries no operator (`authorized` lets a credential with no operator enroll pods for no person, and `Revoke` also needs a pod enrollment's `launcher_credential_id` to be the caller's) and acts as no person, so both routes give it to every login but `anyone` and an empty one, whoever approved it.
 A token login whose subject `BROKER_POD_OPERATORS` maps is no such credential: both routes give it to the person the setting maps its subject to and to nobody else, whatever its row's operator (`enroll.Service.LiveCredentials`, `revokeCredential`).
+Its row's `person` names that person, read from the setting as the list is, so Dispatch's page shows it as that person's own pod and not as a service's login.
+`person` is null on every other row, and `GET /v1/operator/machines` writes it the same way.
 A person's own credential keys on the approver of the `launcher_credential` record it was minted from (`credential_requests.approver`, joined through `launcher_credentials.record_id` and required to be of kind `launcher_credential`), never on the credential's `operator`;
 the two are the same person (`machine.Service.ApplyDecision` mints the operator from the approving login).
 `approved_by` is the login the record's `approved` event records (`credential_request_events`).

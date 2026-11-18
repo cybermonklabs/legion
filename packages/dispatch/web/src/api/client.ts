@@ -1819,16 +1819,16 @@ export class DispatchApiClient {
     await this.post("/api/v1/credential-grants/{id}/revoke", { id: grantId }, undefined, bounds);
   }
 
-  /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines'
-   *  and every service's, whoever approved it, that are unexpired or expired with a session still
-   *  running. */
+  /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines',
+   *  their own pods' (`person` set) and every service's, whoever approved it, that are unexpired
+   *  or expired with a session still running. */
   getMachineLogins() {
     return this.read("/api/v1/machine-logins", {});
   }
 
-  /** Revoke a machine login, expired or not: a service's, or one of the viewer's machines'.
-   *  Dispatch names the viewer as the person revoking, and every session the login enrolled ends
-   *  with it. */
+  /** Revoke a machine login, expired or not: a service's, one of the viewer's machines', or one
+   *  of the viewer's pods'. Dispatch names the viewer as the person revoking, and every session
+   *  the login enrolled ends with it. */
   async revokeMachineLogin(credentialId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/machine-logins/{id}/revoke", { id: credentialId }, undefined, bounds);
   }

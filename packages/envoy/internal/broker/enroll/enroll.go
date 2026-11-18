@@ -120,6 +120,11 @@ type LiveCredential struct {
 	// (system:serviceaccount:<namespace>:<name>), or a machine as the token exchange names it
 	// (exchange.MachineSubject); nil for every login a person approved.
 	Subject *string
+	// Person is the person a person's pod login acts for: the person BROKER_POD_OPERATORS maps
+	// the login's subject to now, which is the person whose list holds it. It is nil for every
+	// other login. liveCredentials sets it from the setting after the query, so the query reads
+	// no column for it.
+	Person *string `db:"-"`
 	// ApprovedBy is the login of the person who approved it, "" for every token login, a person's
 	// pod login among them, which no person approves.
 	ApprovedBy string
@@ -1795,12 +1800,13 @@ func (s *Service) Revoke(ctx context.Context, cred Credential, id, by string) er
 //
 // A token login whose subject BROKER_POD_OPERATORS maps is its person's own machine login, with
 // or without a pod and an operator on its row. It is listed to that person alone, here and by
-// OwnLiveCredentials, and to nobody else, whatever its row's operator. The list reads the setting
-// as it is now and not the row, because the row can lose its person. On the schema this release
-// ships, every pod of one account shares one row (IssueTokenLoginTx). A login of the account from
-// a token bound to no pod moves that row to no operator and no pod. Read by the row, the login
-// would then be every person's to revoke, and that revoke would end the person's pod enrollments
-// (endCredential).
+// OwnLiveCredentials, and to nobody else, whatever its row's operator. Its Person names that
+// person, so a page can show the login as the person's pod and not as a service's login. Every
+// other login's Person is nil. The list reads the setting as it is now and not the row, because
+// the row can lose its person. On the schema this release ships, every pod of one account shares
+// one row (IssueTokenLoginTx). A login of the account from a token bound to no pod moves that row
+// to no operator and no pod. Read by the row, the login would then be every person's to revoke,
+// and that revoke would end the person's pod enrollments (endCredential).
 //
 // A person's sign-in on a machine holds a launcher credential too, and that one is never listed
 // here: it is one person's, it is already listed as that person's sign-in
@@ -1872,7 +1878,16 @@ func (s *Service) liveCredentials(ctx context.Context, person string, services b
 	// service's login. Which list a credential belongs on is its subject's to say, and the
 	// subject is read here rather than matched in SQL so that exchange.PersonSubject's shape is
 	// written down once.
-	return slices.DeleteFunc(live, func(c LiveCredential) bool { return signInCredential(c.Subject) }), nil
+	live = slices.DeleteFunc(live, func(c LiveCredential) bool { return signInCredential(c.Subject) })
+	// A login whose subject the setting maps is in this list only as person's own ($3), so its
+	// Person is person. It is read from the setting, as the statement's arrays are, and not from
+	// the row's operator, which can name no one or a person the setting no longer names.
+	for i := range live {
+		if owner := s.podOperator(live[i].Subject); owner != "" {
+			live[i].Person = &owner
+		}
+	}
+	return live, nil
 }
 
 // RevokeCredential ends launcher credential id on the word of person, expired or not: from then on

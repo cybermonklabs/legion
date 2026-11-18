@@ -276,11 +276,13 @@ revoked a2df6d16-adc1-434e-b479-496defb3a5c8 at the broker AGENT_SECRETS_URL nam
 The machine-login page lists the services' logins, the Legion daemon's, beside them, and revokes
 them. This one a person approved before services logged in with their own Kubernetes token; a
 daemon's token login is listed the same way with `approved_by` empty and `subject` naming its
-ServiceAccount:
+ServiceAccount. `person` is null on both rows. Only a person's pod login, a token login of an
+account that `BROKER_POD_OPERATORS` maps to a person, names that person there, and only that
+person's list holds it:
 
 ```console
 $ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -H @- "$AGENT_SECRETS_URL/v1/launcher-credentials?approver=ada@example.com"
-{"credentials":[{"credential_id":"d4187389-953c-4156-90c1-1dd937e9bf0b","host":"example-host-devbox","service":null,"subject":null,"approved_by":"ada@example.com","issued_at":"2026-10-10T14:56:01.121955Z","expires_at":"2026-10-17T14:56:01.122701Z","expired":false},{"credential_id":"8f4c8ae4-b73e-4a60-a591-725667480f1a","host":"example-host-cluster","service":"legion-daemon","subject":null,"approved_by":"bob@example.com","issued_at":"2026-10-10T14:55:59.906427Z","expires_at":"2026-10-17T14:55:59.9071Z","expired":false}]}
+{"credentials":[{"credential_id":"d4187389-953c-4156-90c1-1dd937e9bf0b","host":"example-host-devbox","service":null,"subject":null,"person":null,"approved_by":"ada@example.com","issued_at":"2026-10-10T14:56:01.121955Z","expires_at":"2026-10-17T14:56:01.122701Z","expired":false},{"credential_id":"8f4c8ae4-b73e-4a60-a591-725667480f1a","host":"example-host-cluster","service":"legion-daemon","subject":null,"person":null,"approved_by":"bob@example.com","issued_at":"2026-10-10T14:55:59.906427Z","expires_at":"2026-10-17T14:55:59.9071Z","expired":false}]}
 $ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -X POST -H @- -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/launcher-credentials/8f4c8ae4-b73e-4a60-a591-725667480f1a/revoke-by-approver"
 {"state":"revoked"}
 ```
