@@ -5,8 +5,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 
 // lib/report-port.sh is the one reader of the port a process that bound port 0 itself logs. These
 // rows run it as each of its callers has it: sourced alone, as envoy-session-delivery.sh sources
-// it; through lib/rig.sh; and through packages/pi-envoy/scripts/local-stack.sh, which the two
-// pi-envoy smokes source, and their role-takeover/clients.sh calls it from.
+// it, and through lib/rig.sh.
 
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("report-port-test");
@@ -35,7 +34,6 @@ const callers = {
 fail() { echo "$*" >&2; exit 1; }
 root=$1 evidence='' work='' timeout_hook=''
 . "$root/scripts/e2e/lib/rig.sh"`,
-  "packages/pi-envoy/scripts/local-stack.sh": '. "$1/packages/pi-envoy/scripts/local-stack.sh"',
 };
 
 /** Runs `call` in a shell that sourced `source`, with the log as $2 and the pattern as $3. */
