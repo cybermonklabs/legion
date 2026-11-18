@@ -99,10 +99,14 @@ func parseGhHelp(requested []string, text string) (ghCommand, error) {
 			switch {
 			case entry == "":
 			case section == "FLAGS" || section == "INHERITED FLAGS":
-				if strings.HasPrefix(entry, "-") {
-					if err := cmd.addFlag(line); err != nil {
-						return ghCommand{}, fmt.Errorf("cannot read the options of %s: %w; pass -R <owner>/<repo>", what, err)
-					}
+				// Every line of an options section lists one option: a line that does not, such
+				// as the continuation of a description gh wrapped, is refused rather than skipped,
+				// since a later gh might write an option there in a form this does not know.
+				if !strings.HasPrefix(entry, "-") {
+					return ghCommand{}, fmt.Errorf("cannot read the options of %s: a line %q of its %s names no option; pass -R <owner>/<repo>", what, entry, section)
+				}
+				if err := cmd.addFlag(line); err != nil {
+					return ghCommand{}, fmt.Errorf("cannot read the options of %s: %w; pass -R <owner>/<repo>", what, err)
 				}
 			case section == "ALIASES":
 				for _, alias := range strings.Split(entry, ",") {
@@ -122,6 +126,11 @@ func parseGhHelp(requested []string, text string) (ghCommand, error) {
 				}
 			}
 			continue
+		}
+		// An option at the margin of an options section would otherwise be read as the heading of
+		// the next section, and its option never listed.
+		if (section == "FLAGS" || section == "INHERITED FLAGS") && strings.HasPrefix(line, "-") {
+			return ghCommand{}, fmt.Errorf("cannot read the options of %s: a line %q at the margin of its %s; pass -R <owner>/<repo>", what, strings.TrimSpace(line), section)
 		}
 		section = strings.TrimSpace(line)
 		if strings.HasSuffix(section, "COMMANDS") {
@@ -261,11 +270,25 @@ func (c *ghCommand) mayRead(word string) error {
 	return nil
 }
 
-// addFlag records one option line of a FLAGS section, refusing one this cannot read.
+// addFlag records one option line of a FLAGS section, refusing one this cannot read: a line of no
+// form gh prints, a placeholder that is pflag's optional-value marker alone (`--web [=true]`,
+// which pflag never prints apart from a type), and an option or a shorthand the help already
+// listed, which would otherwise replace the first silently.
 func (c *ghCommand) addFlag(line string) error {
 	match := ghFlagLine.FindStringSubmatch(line)
 	if match == nil {
 		return fmt.Errorf("an option line %q", strings.TrimSpace(line))
+	}
+	if strings.HasPrefix(match[3], "[=") {
+		return fmt.Errorf("an option line %q, whose optional-value marker names no type", strings.TrimSpace(line))
+	}
+	if _, repeated := c.flags[match[2]]; repeated {
+		return fmt.Errorf("an option line %q, which lists --%s again", strings.TrimSpace(line), match[2])
+	}
+	if match[1] != "" {
+		if prior, repeated := c.shorts[match[1][0]]; repeated {
+			return fmt.Errorf("an option line %q, whose -%s the help already gives --%s", strings.TrimSpace(line), match[1], prior)
+		}
 	}
 	flag := ghFlag{placeholder: match[3], description: match[4]}
 	if flag.placeholder != "" {

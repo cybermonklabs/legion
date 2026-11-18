@@ -179,6 +179,11 @@ func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
 		{"no usage", prView, "FLAGS\n  --help   Show help for command\n", "names no usage"},
 		{"no --help", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  -w, --web   Open\n", "lists no --help"},
 		{"an option line it cannot read", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w --web   Open\n", "cannot read the options"},
+		{"a line of an options section naming no option", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n           for this command\n", "names no option"},
+		{"an option at the margin of an options section", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n-w, --web   Open\n", "at the margin of its FLAGS"},
+		{"an optional-value marker that names no type", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w, --web [=true|false]   Open\n", "optional-value marker names no type"},
+		{"an option listed twice", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  -w, --web   Open\n\nINHERITED FLAGS\n  --help   Show help\n  --web string   Open\n", "lists --web again"},
+		{"a shorthand listed twice", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w, --web   Open\n  -w, --watch   Watch\n", "already gives --web"},
 		{"a parent's help", prView, "USAGE\n  gh pr <command> [flags]\n", "gh has no command"},
 		{"gh co's, pr checkout's, which lists no alias co", []string{"co"}, co, "is a gh alias"},
 	} {
