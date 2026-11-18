@@ -292,6 +292,7 @@ Both endpoints accept only an App JWT, which is why Dispatch runs this.
 The webhook the App delivers to is the Envoy listener's `/webhook/github`.
 A redelivery carries the original `X-GitHub-Delivery`, and the listener publishes GitHub envelopes under a JetStream MsgId of it.
 So redelivering a delivery that did reach the stream adds nothing to the stream.
+`DISPATCH_TEST_REDELIVERY_INTERVAL` replaces the sweep's two minutes for an end-to-end test, and a deployment never sets it.
 
 - Every failed delivery is asked for again, whatever status code its failed attempts carry:
   a 5xx, an attempt GitHub could not complete, and a 4xx alike (the listener's 401 for a signature it cannot check, 400 for a body it cannot use, 422 for a publish NATS refused), since what the listener cannot take now it may take later.
@@ -1379,6 +1380,11 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   a read that fails is tried again 30 s later.
   The release before this one polls the row every 30 s and may run beside it during a roll.
 
+- The record of GitHub reads, which `/healthz` answers as `github` (Routes, below), is one copy per process (`githubreads.Copy`), read at start and again each time any process writes `github_read_attempts`:
+  the table's row trigger notifies `dispatch_github_read_attempts` (`20261118020802`) with the read's name, and each of the four loops that read GitHub under a lease (the delivery reconcile, the architecture import, the webhook redelivery sweep and the CI reconcile, below) writes its read's row at the end of each pass that asked GitHub anything or met a failure, unless this process's shutdown cut the pass short.
+  The copy is kept only where a GitHub App is configured and holds no timer, and the probe reads it alone, so `github` sends the database no statement;
+  a read that fails is logged at WARN and keeps the copy it had until the next wake, which is a write by any process or the hub's next successful LISTEN.
+
 The two leased woken loops take their lease with no period.
 A process that finds it held tries again
 — every 2 s for the excerpts, every 5 s for the edit notices, plus up to a tenth again
@@ -1404,6 +1410,8 @@ A process that finds it held tries again
   The webhook redelivery sweep (Webhook redelivery, above; `redeliver.Interval`) runs every 2 minutes, its first sweep at start.
   Each waits the interval plus up to a tenth again after every pass (`duty.Jittered`), drawn afresh every period, so two processes' passes drift apart rather than ticking in step.
   `DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL` replaces the delivery reconcile's 5 minutes for an end-to-end test, and a deployment never sets it.
+  `DISPATCH_TEST_REDELIVERY_INTERVAL` replaces the sweep's 2 minutes for an end-to-end test, and a deployment never sets it.
+  `DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1` runs the architecture import's first pass as the process starts, rather than after the random delay, for an end-to-end test that must see a pass inside its window, as `DISPATCH_TEST_RECONCILE_AT_START=1` does for the delivery reconcile, and a deployment never sets either.
   GitHub has no feed of what these three would miss.
   A reconcile pass re-reads the pull request heads first, whether or not the deployment has delivery settings and outside the deploy repository's permission check (`Reconcile.runOnce`), since every deployment compares a recorded result with those heads;
   every other step of the pass is gated on the settings and on that check, so a deployment with no settings runs the head pass and nothing else.
@@ -1429,7 +1437,7 @@ The pass records each try in the database (`doc_settlements_pending.tried_at`), 
 **One shared listener per process.**
 Every woken loop waits on the process's one `pglisten.Hub`, the shared LISTEN connection the document rooms' room sync is registered on too (named `dispatch-listener <process id>` in `pg_stat_activity`, logged under the owner `dispatch`), which holds one connection from the store's listener pool and LISTENs on every loop's channel beside the room-sync channels.
 A channel is registered only for a loop that will run:
-`dispatch_embeddings` only with an embedder, and `dispatch_delivery_settings` only with NATS and the GitHub App.
+`dispatch_embeddings` only with an embedder, `dispatch_delivery_settings` only with NATS and the GitHub App, and `dispatch_github_read_attempts` only with a GitHub App configured.
 No loop waits for the listener: each runs its boot pass whether or not it has connected, and keeps its due-time timers while it has no connection.
 Postgres does not replay a notification sent while nothing listened, so the hub signals every loop after each successful LISTEN, the first included, and a change made while it was redialing (backing off 1 to 30 s) is caught up then.
 
@@ -2085,6 +2093,13 @@ the events outbox's publisher holds `dispatch-outbox` there, and each delivery i
 A release deletes the row and notifies `dispatch_duty_holds` with the name in one statement, which wakes a standby at once.
 It creates a table and touches no row, and the release before it neither reads nor writes it; its census answers `0`.
 Its identifier is the UTC moment it was created, as every migration added since the numbered series closed is (Database migrations, above).
+
+Migration `20261118020802_github_read_attempts` creates `github_read_attempts`, the newest attempt of each GitHub read Dispatch makes under a lease, which `/healthz` answers as `github` (Routes below).
+The key is `read`, and a check holds it to the four names `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and `ci_reconcile`.
+`at` is when the attempt was recorded, by the database's clock, `succeeded` whether it sent requests to GitHub and noted no failure, and `cause` the text of its first failure, at most 1,024 bytes;
+two checks hold `cause` to that length and null exactly when `succeeded` is true.
+The loop that holds a read's lease writes that read's row over the one before it when its pass ends (`store.GitHubReadAttempts.Record`), and a row trigger notifies `dispatch_github_read_attempts` with the read's name at each write, which refreshes every process's copy of the record (Background loops, above).
+A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
 Migration `20261101030537_server_processes_schema` adds four columns to `server_processes`:
 `schema_version` and `schema_creatable`, the document schema numbers each process reads and creates, which the document socket's admission reads (Two builds at once, above);
@@ -3599,6 +3614,54 @@ Each item below names a path with its method and identity, then its purpose.
   `outbox_publisher` says whether this process publishes the events outbox now:
   `true` while it holds the outbox's publisher hold and the hold's deadline has not passed, `false` while it stands by for another process's, after it lost the hold, and with NATS disabled.
   One process of a deployment publishes at a time, so a healthy process may report `false`, and the field never decides `ok` or the status.
+  `github` names each GitHub read Dispatch makes under a lease with its newest attempt (`githubreads`, `gitHubReads` in `main.go`), and it never decides `ok` or the status:
+  a process serves everything but those reads while GitHub fails, so failing the probe would take every server process out of service for an outage each of them serves through.
+  It is `null` where no GitHub App is configured (neither the `DISPATCH_APP_*` settings nor `app.json` name one, `loadAppCredentials`), and otherwise holds `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and `ci_reconcile`, in that order, each `{state, at, cause}`:
+
+  - `state` is `succeeded` when the newest recorded attempt sent requests to GitHub and noted no failure, `failed` when it noted one, `no_attempt` while the record holds no attempt of the read, `unknown` until this process's first read of the record succeeds, and `off` where this process does not run the read:
+    all four without the App private key, and `webhook_redelivery` and `ci_reconcile` without NATS as well, since `webhookSweeper` and `ciReconciler` build nothing without a NATS client.
+    `at` is when that attempt was recorded as its pass ended, by the database's clock, in RFC 3339 UTC, and is `null` unless the state is `succeeded` or `failed`.
+    `cause` is the text of the attempt's first failure, made storable (`text.StorableReplacement`) and cut on a character boundary to at most 1,024 bytes (`githubreads.CauseLimit`), ending with ` … (cut from <n> bytes)` inside that limit when it was cut;
+    it is `null` unless the state is `failed`, and the entry's Go type sets neither where the state carries none (`gitHubReadEntryOf`).
+
+  - The probe sends the database nothing for `github` and waits on nothing:
+    it answers from this process's copy of `github_read_attempts` (`githubreads.Copy`), read at start and again each time any process writes a row (Background loops, above), and a read that fails keeps the copy it had.
+    So a missing table or a failed read of the record changes neither `db`, `ok` nor the status.
+    During a roll the release before this one writes no row, so an entry can be an interval or more old, which `at` shows.
+
+  - A cause can name a repository: the route takes no credential, a GitHub error carries the URL it asked, and Dispatch answers on its private network alone.
+
+  - The delivery intakes read GitHub too, for each webhook event (`FetchPullRequest`, `FetchWorkflowRun` and `ListWorkflowRunJobs` in `internal/dispatch/delivery`), and have no entry of their own:
+    they report through `delivery_reconcile`, since the delivery reconcile reads the same pull requests and runs with the same App every interval, so a GitHub failure of those reads shows there within one pass.
+
+  - An attempt is one pass a loop runs under its lease, on the process that holds the lease (`duty.Exclusive`): one sweep, one import of every enabled source, one delivery reconcile pass or one CI reconcile pass.
+    It opens in the function the lease runs and in nothing a route or a command also calls, so `envoy-dispatch redeliver-webhooks`, the Settings Refresh of a source and `dispatch architecture-sync` record nothing.
+    It is recorded when the pass ends (`githubreads.Finish`), in place of the attempt before it:
+    nothing when the pass sent GitHub nothing and noted no failure (the sweep before NATS connects, a CI reconcile that binds no CI record writer or maps no repository, an architecture import with no enabled source, a delivery reconcile with no settings and no pull request head to re-read), nothing when this process's shutdown cut the pass short, `failed` when a failure was noted, and `succeeded` otherwise.
+    The write runs on a context of its own bounded at five seconds, so a CI reconcile pass that ends on its own bound is still recorded, and a failed write is logged at ERROR and changes nothing else of the pass.
+    A CI reconcile pass can end `complete` in `ci_reconcile_passes` and record `failed` here: that row says how the pass ended, and this record says whether a GitHub read of it failed.
+
+  - An attempt notes failures of two kinds, and both are listed here whole.
+    A failure of the first kind is noted by the GitHub client on each request a pass sends (`githubapp.(*Client).send`, the one function that sends anything to GitHub, and `GraphQL`): the answers no caller takes as data.
+    They are no answer (a transport error, the client's own `RequestTimeout` of 20 seconds ending while the caller's context is live, a body it could not read, a body past its limit), a 5xx or a 401, and a rate limit:
+    an answer `RateLimit` reads as one (a 429, or a 403 that carries a limit), one `GraphQLRateLimit` reads (in a 200 too), or a limit `github_rate_limits` already holds, which stops the request before it is sent.
+    The client notes no other 403, and no 404, 409 or 422: the same answer is data at one point and a failure at another, and only the loop's points below tell the two apart.
+    It notes nothing for a request whose caller's context ended, by the pass's own bound or this process's shutdown.
+    Such a cause reads as the client's own errors do: `<METHOD> <URL>: status <n>: <body>` for a 5xx or a 401, `<METHOD> <URL>: <error>` for a transport error or a body past the limit, `read <METHOD> <URL> response: <error>` for a body it could not read, `<METHOD> <URL>: rate-limited by GitHub (status <n>), next request in <wait>: <body>` for a limit GitHub answered, and, for a limit that held the request, the limit's scope and when it was recorded.
+
+  - A failure of the second kind is noted by each loop at each point where it gives up part of the GitHub read the deployment configured it to make, each a point where it already logs or records that failure;
+    it counts whatever failed there, since a database error inside such a step ends that read too, and its cause is the loop's own error, which names the repository where there is one:
+    the redelivery sweep where its listing of the App webhook's deliveries fails (`Sweep`), where GitHub refuses a redelivery request (`decide`, `RequestRefused`), and where a rate limit stops the sweep (`Report.RateLimitedUntil`);
+    the CI reconcile where a mapped repository gets no token, no answer to its identity read, a name that is not `owner/name` or no listing of its open pull requests, where a head cannot be read (`headFailed`, an answer too large included), and where a rate limit ends the pass, one in force at its start included (`Pass`), but not where the pass's own ending killed the read (`cutShort`);
+    the architecture import where a source's sync fails at one of its four steps that read GitHub, `resolve` (the installation token), `Ref`, `Dir` or `DirFiles` (`Importer.syncOnce`), which covers the App not installed on the repository, a missing Contents permission and a branch GitHub does not have;
+    and the delivery reconcile where the deploy repository's permission check fails (`DeliveryPermissions`), where a step that reads GitHub returns an error (`recordRead` in `Reconcile.runOnce`: the merged, partial and head pull request steps, both workflows' runs, and the attribution inputs of stored pull requests), and where it gives up one row of such a step after the answers it takes as data: a head it cannot re-read (`reconcilePullRequestHeads`), a head attributed without its commit messages (`attributeHead`), a partial pull request it cannot complete (`completePartialPullRequest`, a 403 included) and a stored pull request whose attribution inputs it cannot read (`readAttributionInputs`).
+    One failed request can be noted twice, once by the client and once by the loop, and the cause is the first noted.
+
+  - These are no failure, and an attempt that meets only them stays `succeeded`:
+    an answer a loop takes as data about one object and goes on, which is a delivery GitHub no longer has (a 404 to the redelivery request, marked `Expired`), a pull request or a workflow run that GitHub says is gone or whose repository no installation covers (404, 410 or `ErrNoInstallation`, marked unfetchable by `completePartialPullRequest`, the attribution read and the run jobs read), a pull request head GitHub no longer has or of a repository the App cannot read (`repositoryUnreadable`, stamped read), and a `304`;
+    a page the delivery reconcile asks for again after a 502, a 504 or a timeout (`retryGitHubPage`, at most three tries) and then reads, and a CI reconcile query whose repository the REST listing then reads, since each try and each query runs in a held scope of the attempt (`githubreads.Hold`), whose notes are dropped when the next try reads what it asked for and kept when it does not, so a page that fails every try counts by its last;
+    and an error outside the points above: of the database or NATS, which `db` and `nats` report (the sweep before NATS connects, the CI reconcile's check of a head's CI record), of the delivery reconcile's steps that read no GitHub (attributing stored pull requests, recording `issue.deployed` events), and of what an architecture source's files say (`notes.Parse`, a refused projection), which `architecture_sources.last_error` records.
+    The delivery reconcile's runs backfills never fail its pass (`backfillRuns`), but the client still notes what they meet of the first kind.
 
 - `/livez` (GET; none)
 
