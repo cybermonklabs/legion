@@ -159,8 +159,9 @@ type mentionClaimState struct {
 	// applies what it read only while the count is the one it began under: a refresh that lost
 	// its answer after the read took the row may have written a claim the read never saw.
 	lost uint64
-	// trying is that a try of the attempt is in flight (mentionSender.trying), which the re-read of
-	// the unsure claims leaves alone while it runs (rereadUnsure).
+	// trying is that a try of the attempt is in flight (mentionSender.trying), from before the try
+	// until its park records its claim or the send ends (next), which the re-read of the unsure
+	// claims leaves alone (rereadUnsure).
 	trying bool
 }
 
@@ -499,9 +500,10 @@ func (m *mentionSender) next(lane laneKey, finished mentionKey) (mentionSend, la
 	return item, lane, true
 }
 
-// trying marks key's try in flight, or done: the one writer of this sender's own its row can have
-// beside the refresh, which rereadUnsure leaves alone while it runs. A send that only reads its
-// claim (claimKnown) writes nothing, and is not marked.
+// trying marks key's try in flight: the one writer of this sender's own its row can have beside
+// the refresh, which rereadUnsure leaves alone while it runs. The mark stays until the try's park
+// clears it, under the lock it records the try's claim under (park), or the send ends (next). A
+// send that only reads its claim (claimKnown) writes nothing, and is not marked.
 func (m *mentionSender) trying(key mentionKey, inFlight bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -788,18 +790,19 @@ func (m *mentionSender) keepClaims() {
 // The statement runs without the lock, so for its length a row carries a newer claim than the map
 // records. That gap is safe: the row's claim only moves forward, so the delivery sweep, which
 // reads committed rows past a lease, sees it live sooner, never later, and the lane's bound send
-// accepts any claim at or past the one it carries within a lease (model.DeliveryClaimSinceSQL). Its result is
-// recorded only for a key whose claim the map still holds as the snapshot took it, so a claim
-// written meanwhile - a keyed repeat's (queueLocked) - is never set back.
+// accepts any claim at or past the one it carries within a lease (model.DeliveryClaimSinceSQL).
+// Its result is recorded only for a key whose claim the map still holds as the snapshot took it,
+// so a claim written meanwhile - a keyed repeat's (queueLocked) - is never set back.
 //
 // A statement that answers an error may have committed all the same, so it leaves every claim it
 // named that the map still holds unknown (mentionClaimState.unsure), never assumed, and the
-// refresh re-reads those rows at once (rereadUnsure); a send in flight re-reads its own before it
-// parks, and the next refresh or try re-reads whatever is still unknown before it acts on it
-// (claimKnown). A read proves a row's claim this sender's own while it is less than a lease after
-// the claim recorded (model.DeliveryClaimSinceSQL), and a lost refresh wrote at most one claim
-// past the one recorded, since every refresh after it names the recorded one, which the row no
-// longer carries.
+// refresh re-reads those rows at once (rereadUnsure), leaving a send whose try is in flight to
+// its park, which records the claim that try took; the next refresh or try re-reads whatever is
+// still unknown before it acts on it (claimKnown). A read proves a row's claim this sender's own
+// while it is less than a lease after the claim recorded (model.DeliveryClaimSinceSQL), and a lost
+// refresh wrote at most one claim past the one recorded, less than a lease after it, since it
+// writes only while the claim it names is live and every refresh after it names the recorded one,
+// which the row no longer carries.
 func (m *mentionSender) refreshHeldClaims(ctx context.Context) {
 	m.rereadUnsure(ctx)
 	m.mu.Lock()
