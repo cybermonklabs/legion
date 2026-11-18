@@ -1257,9 +1257,14 @@ the standard logger, which the broker writes as one line for each write, its fir
 256 bytes and the rest kept as `stack`. So no such line holds a placeholder as it was minted or
 lowercased: a command that writes its placeholder into its request's path, its
 `X-Correlation-Id` or the host it asks for, or a service that names it in its certificate, has
-`[placeholder]` written there. A value the mask reads that is nil, or one whose methods fail or
-panic, is written as slog writes it — `<nil>`, `null`, `!ERROR:…` or `!PANIC: …`, with a
-placeholder in that text masked too — and never ends the call. Two kinds of text are not masked.
+`[placeholder]` written there. The mask reads a value in each form slog's JSON and text handlers
+write it, as each handler computes it — an error's text or the value's JSON, and its
+`AppendText`, its `MarshalText`, a byte slice's bytes or fmt's `%+v` — so a placeholder that only
+one of those forms holds is masked too. A value the mask reads that is nil, or one whose methods
+fail or panic, is written as slog writes it — `<nil>`, `null`, `!ERROR:…` or `!PANIC: …`, with a
+placeholder in that text masked too — and the mask never ends the call: where slog alone would
+panic printing a failure whose text holds a placeholder, the mask writes that text, masked. Two
+kinds of text are not masked.
 A library that writes to stderr or stdout itself writes past it — the Anthropic SDK's warnings,
 go-retryablehttp's default client, the pg_query WebAssembly module's stdout and stderr, and the
 Google client libraries' own logger when `GOOGLE_SDK_GO_LOGGING_LEVEL` is set and a client was

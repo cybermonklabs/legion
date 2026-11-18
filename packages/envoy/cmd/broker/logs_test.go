@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -83,10 +84,33 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 	// the library builds it: grpclog's init (errors to stderr, infos and warnings dropped,
 	// verbosity 0, text lines) and OpenTelemetry's internal/global (stdr on a log.Logger of
 	// stderr). Otherwise a later test's OpenTelemetry lines would go into this test's finished
-	// buffer, and its grpc lines through grpcLog rather than grpc's own logger.
+	// buffer, and its grpc lines through grpcLog rather than grpc's own logger. Their stderr is
+	// libraryStderr, os.Stderr but for the check below.
+	libraryStderr := &redirectedStderr{}
+	// The check, which runs once the defaults are back (cleanups run last-registered first) and
+	// while the broker's handler is still the default: a grpc error and an OpenTelemetry error
+	// reach each library's own default, and not the broker's log.
 	t.Cleanup(func() {
-		grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, os.Stderr))
-		otel.SetLogger(stdr.New(log.New(os.Stderr, "", log.LstdFlags|log.Lshortfile)))
+		var stderr logtest.Buffer
+		libraryStderr.point(&stderr)
+		defer libraryStderr.point(nil)
+		before := out.Len()
+		grpclog.Errorf("a grpc error after the test")
+		otel.SetTracerProvider(otel.GetTracerProvider())
+		if late := out.String()[before:]; late != "" {
+			t.Errorf("after the test, the broker's log took %q; want grpc's and OpenTelemetry's lines on their own loggers", late)
+		}
+		written := stderr.String()
+		if !strings.Contains(written, "ERROR: ") || !strings.Contains(written, "a grpc error after the test") {
+			t.Errorf("after the test, grpc's error did not reach grpc's own logger, which writes \"ERROR: \" and the text: %q", written)
+		}
+		if !strings.Contains(written, "Setting tracer provider to its current value") {
+			t.Errorf("after the test, OpenTelemetry's error did not reach its own logger: %q", written)
+		}
+	})
+	t.Cleanup(func() {
+		grpclog.SetLoggerV2(grpclog.NewLoggerV2(io.Discard, io.Discard, libraryStderr))
+		otel.SetLogger(stdr.New(log.New(libraryStderr, "", log.LstdFlags|log.Lshortfile)))
 	})
 	setUpLogging(out)
 
@@ -207,6 +231,28 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 func stringOf(v any) string {
 	text, _ := v.(string)
 	return text
+}
+
+// redirectedStderr writes to os.Stderr, or to the writer a check points it at for a moment.
+type redirectedStderr struct {
+	mu sync.Mutex
+	to io.Writer
+}
+
+func (r *redirectedStderr) Write(p []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.to != nil {
+		return r.to.Write(p)
+	}
+	return os.Stderr.Write(p)
+}
+
+// point sends what r is written to w, or to os.Stderr again when w is nil.
+func (r *redirectedStderr) point(w io.Writer) {
+	r.mu.Lock()
+	r.to = w
+	r.mu.Unlock()
 }
 
 // TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger: the AWS configuration openStore

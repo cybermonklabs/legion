@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/netip"
@@ -101,11 +102,56 @@ type stringShows struct{ held string }
 
 func (s stringShows) String() string { return s.held }
 
+// errorMarshalsText is an error whose MarshalText holds what its Error does not: the JSON handler
+// writes its Error, the text handler its MarshalText.
+type errorMarshalsText struct{ held string }
+
+func (errorMarshalsText) Error() string                  { return "an error" }
+func (e errorMarshalsText) MarshalText() ([]byte, error) { return []byte(e.held), nil }
+
+// errorFormats is an error whose Format shows, for "%+v", what its Error does not: the text
+// handler writes it with "%+v".
+type errorFormats struct{ held string }
+
+func (errorFormats) Error() string { return "an error" }
+func (e errorFormats) Format(f fmt.State, verb rune) {
+	if f.Flag('+') {
+		fmt.Fprint(f, e.held)
+		return
+	}
+	fmt.Fprint(f, "an error")
+}
+
+// formatsPlus is a value whose Format shows, for "%+v" alone, a field its JSON leaves out.
+type formatsPlus struct{ held string }
+
+func (p formatsPlus) Format(f fmt.State, verb rune) {
+	if f.Flag('+') {
+		fmt.Fprint(f, p.held)
+		return
+	}
+	fmt.Fprint(f, "nothing")
+}
+
+// namedBytes is a byte slice of a named type: the text handler writes its bytes as text, the JSON
+// handler in base64, and fmt as numbers.
+type namedBytes []byte
+
+// appendsText is a value whose AppendText, which the text handler writes before any other form,
+// holds what its JSON does not.
+type appendsText struct{}
+
+func (appendsText) MarshalJSON() ([]byte, error)        { return []byte(`"nothing"`), nil }
+func (appendsText) AppendText(b []byte) ([]byte, error) { return append(b, workerPlaceholder...), nil }
+
 // TestTheMaskReadsEachFormAHandlerWrites: the JSON handler writes a value of kind any as its JSON
 // and fmt does not. It follows a pointer fmt prints as an address, it reads a field a String
 // method hides, and it writes an error that marshals itself as that JSON; a []byte it writes in
 // base64, which the text handler writes as text; and a String method can show what the JSON
-// leaves out. A placeholder in any of those forms is masked in the form the line is written in.
+// leaves out. The text handler writes a value's AppendText, else its MarshalText, else a byte
+// slice's bytes, its type named or not, else fmt's "%+v", which calls a Format: each can show what
+// the JSON handler's form, an error's Error among them, does not. A placeholder in any of those
+// forms is masked in the form the line is written in.
 func TestTheMaskReadsEachFormAHandlerWrites(t *testing.T) {
 	held := workerPlaceholder
 	for _, c := range []struct {
@@ -122,6 +168,11 @@ func TestTheMaskReadsEachFormAHandlerWrites(t *testing.T) {
 		{"a []byte", []byte(held)},
 		{"a json.RawMessage", json.RawMessage(`"` + held + `"`)},
 		{"a slice of strings", []string{held}},
+		{"an error whose MarshalText shows what its Error does not", errorMarshalsText{held}},
+		{"an error whose Format shows what its Error does not", errorFormats{held}},
+		{"a value whose Format shows for %+v what its JSON leaves out", formatsPlus{held}},
+		{"a byte slice of a named type", namedBytes(held)},
+		{"a value whose AppendText shows what its JSON does not", appendsText{}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			for _, handler := range []struct {
@@ -229,6 +280,21 @@ func (marshalErrorPanicsNested) MarshalJSON() ([]byte, error) {
 	return nil, errorPanicsWithAPanickingValue{}
 }
 
+// errorPanicsThreeDeep is an error whose Error panics with errorPanicsWithAPanickingValue{}: its
+// placeholder is three panics deep. The JSON handler alone calls Error, and its recover panics
+// printing that value, so the log call panics; the text handler alone reaches Error through fmt,
+// which reports one panic more, and writes "!PANIC: %!v(PANIC=Error method: " and the
+// placeholder.
+type errorPanicsThreeDeep struct{}
+
+func (errorPanicsThreeDeep) Error() string { panic(errorPanicsWithAPanickingValue{}) }
+
+// marshalPanicsNested's MarshalJSON panics with errorPanicsWithAPanickingValue{}: the JSON
+// handler alone panics, as for errorPanicsThreeDeep, and the text handler alone writes "{}".
+type marshalPanicsNested struct{}
+
+func (marshalPanicsNested) MarshalJSON() ([]byte, error) { panic(errorPanicsWithAPanickingValue{}) }
+
 // TestTheMaskWritesWhatSlogWritesForAValueThatPanics: the mask computes a value's forms by
 // calling its methods, and a method of a nil receiver, or one that panics of its own, must not
 // crash the log call: with SetDefaultLog that call is the whole process's. A nil pointer, a nil
@@ -241,10 +307,11 @@ func (marshalErrorPanicsNested) MarshalJSON() ([]byte, error) {
 // that line with the placeholder written as placeholderMark, so the mask spells the failure as
 // slog does. A row whose placeholder only a later form holds, a String the JSON leaves out, is
 // written as that form by the mask, which no JSON line of slog's holds, so it is held to the
-// mark alone.
+// mark alone. A handler alone may panic, for a value whose failure it cannot print: the mask
+// must then write the line, masked, so such a row is a masked row.
 func TestTheMaskWritesWhatSlogWritesForAValueThatPanics(t *testing.T) {
 	var nilError error = (*errorThroughNil)(nil)
-	spelled := 0
+	spelled, alonePanicked := 0, 0
 	for _, c := range []struct {
 		name   string
 		value  any
@@ -277,6 +344,14 @@ func TestTheMaskWritesWhatSlogWritesForAValueThatPanics(t *testing.T) {
 		// has no form to mask and writes what slog alone writes.
 		{"a MarshalJSON whose error's Error panics with a value whose Error panics with the placeholder", marshalErrorPanicsNested{}, true},
 		{"a MarshalJSON whose error's Error panics twice over", marshalErrorPanics{}, false},
+		// The placeholder three panics deep, where the JSON handler alone panics: the text
+		// handler alone writes it inside fmt's report, and the mask reads that form too, the text
+		// handler's, and writes it masked over both handlers.
+		{"an Error that panics three deep with the placeholder at the bottom", errorPanicsThreeDeep{}, true},
+		// A MarshalJSON's panic whose value fmt cannot print, panicking again with the
+		// placeholder: the JSON handler alone panics, and the mask reads "!PANIC: " and that
+		// second panic's value and writes it masked.
+		{"a MarshalJSON that panics with a value whose printing panics with the placeholder", marshalPanicsNested{}, true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			for _, handler := range []struct {
@@ -291,15 +366,26 @@ func TestTheMaskWritesWhatSlogWritesForAValueThatPanics(t *testing.T) {
 				}},
 			} {
 				var plain, masked bytes.Buffer
-				slog.New(handler.new(&plain)).Info("a line", "value", c.value)
 				func() {
 					defer func() {
 						if panicked := recover(); panicked != nil {
-							t.Fatalf("the mask over the %s handler panicked: %v", handler.name, panicked)
+							alonePanicked++
+							if !c.masked {
+								t.Errorf("the %s handler alone panicked, for a row the mask is not to mask: %v", handler.name, panicked)
+							}
 						}
 					}()
-					slog.New(maskedHandler{handler.new(&masked)}).Info("a line", "value", c.value)
+					slog.New(handler.new(&plain)).Info("a line", "value", c.value)
 				}()
+				maskPanicked := func() (panicked any) {
+					defer func() { panicked = recover() }()
+					slog.New(maskedHandler{handler.new(&masked)}).Info("a line", "value", c.value)
+					return nil
+				}()
+				if maskPanicked != nil {
+					t.Errorf("the mask over the %s handler panicked: %v", handler.name, maskPanicked)
+					continue
+				}
 				switch {
 				case strings.Contains(strings.ToLower(masked.String()), strings.ToLower(workerPlaceholder)):
 					t.Errorf("the mask over the %s handler wrote the placeholder: %q", handler.name, masked.String())
@@ -320,6 +406,10 @@ func TestTheMaskWritesWhatSlogWritesForAValueThatPanics(t *testing.T) {
 	// writes with the placeholder in it, so it can fail.
 	if spelled != 5 {
 		t.Fatalf("the JSON handler alone wrote the placeholder for %d rows; want 5, the rows whose failure text holds it", spelled)
+	}
+	// And the rows the JSON handler alone panics for are the two that say so, and no others.
+	if alonePanicked != 2 {
+		t.Fatalf("a handler alone panicked %d times; want 2, the JSON handler for the two rows whose value it cannot print", alonePanicked)
 	}
 }
 

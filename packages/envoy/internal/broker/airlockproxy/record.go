@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -186,12 +187,14 @@ func maskAttr(a slog.Attr) *slog.Attr {
 	return &replaced
 }
 
-// anyForms is each text a handler may write a value of kind any as. An error that does not
-// marshal itself is written as its text by every handler. Any other value is written as its JSON
-// by the JSON handler, which follows a pointer and calls a MarshalJSON method, where fmt prints a
-// pointer's address and calls a String method instead, so the two can hold different text, and
-// as fmt writes it, or its MarshalText, by the text handler; a []byte is its bytes as text, which
-// the text handler writes and the JSON handler writes in base64.
+// anyForms is each text a handler may write a value of kind any as, computed as that handler
+// computes it. The JSON handler writes an error that does not marshal itself as its Error, and any
+// other value as its JSON, which follows a pointer and calls a MarshalJSON method. The text
+// handler writes a value's AppendText, else its MarshalText, else a byte slice's bytes (its type
+// and its element's may be named), else fmt's "%+v", which prints a pointer's address and calls a
+// Format, an Error or a String method instead. So the two can hold different text: a field a
+// String hides, a pointer's target, a []byte the JSON writes in base64, or the text an error's
+// MarshalText or Format shows that its Error does not.
 //
 // Each form is computed under a recover of its own (formOf), since a method of a nil receiver - an
 // Error, a MarshalText - may dereference it, encoding/json re-panics the panic of a MarshalJSON,
@@ -200,9 +203,9 @@ func maskAttr(a slog.Attr) *slog.Attr {
 // its place, "!ERROR:" and the error's text for a method that answered an error and "!PANIC: "
 // and the value for one that panicked, since that text can hold what the value held. So a value
 // no form of which holds a placeholder is handed to the handler as it is, and written as slog
-// writes it, and one some form of which does is written as that form, masked. A nil value has no
-// form of its own: a nil receiver's String may show text all the same, which the text handler
-// would write, so its forms are read as any value's are.
+// writes it, and one some form of which does is written as the first such form, masked. A nil
+// value has no form of its own: a nil receiver's String may show text all the same, which the
+// text handler would write, so its forms are read as any value's are.
 func anyForms(v any) []string {
 	var forms []string
 	add := func(form func() (string, error)) {
@@ -211,35 +214,55 @@ func anyForms(v any) []string {
 	err, isError := v.(error)
 	if _, marshals := v.(json.Marshaler); isError && !marshals {
 		add(func() (string, error) { return err.Error(), nil })
-		return forms
-	}
-	if b, ok := v.([]byte); ok {
-		forms = append(forms, string(b))
-	}
-	add(func() (string, error) {
-		encoded, err := json.Marshal(v)
-		return string(encoded), err
-	})
-	if isError {
-		add(func() (string, error) { return err.Error(), nil })
-	}
-	add(func() (string, error) { return fmt.Sprint(v), nil })
-	if marshaler, ok := v.(encoding.TextMarshaler); ok {
+	} else {
 		add(func() (string, error) {
-			text, err := marshaler.MarshalText()
-			return string(text), err
+			encoded, err := json.Marshal(v)
+			return string(encoded), err
 		})
 	}
+	switch text := v.(type) {
+	case encoding.TextAppender:
+		add(func() (string, error) {
+			appended, err := text.AppendText(nil)
+			return string(appended), err
+		})
+	case encoding.TextMarshaler:
+		add(func() (string, error) {
+			marshaled, err := text.MarshalText()
+			return string(marshaled), err
+		})
+	default:
+		if raw, ok := byteSlice(v); ok {
+			forms = append(forms, string(raw))
+		} else {
+			add(func() (string, error) { return fmt.Sprintf("%+v", v), nil })
+		}
+	}
 	return forms
+}
+
+// byteSlice is v's bytes when v is a slice of bytes, its type and its element's named or not, as
+// slog's text handler reads it.
+func byteSlice(v any) ([]byte, bool) {
+	if raw, ok := v.([]byte); ok {
+		return raw, true
+	}
+	if t := reflect.TypeOf(v); t != nil && t.Kind() == reflect.Slice && t.Elem().Kind() == reflect.Uint8 {
+		return reflect.ValueOf(v).Bytes(), true
+	}
+	return nil, false
 }
 
 // formOf is the text a handler may write for one form of a value: the form's own text; for a form
 // whose method answered an error, "!ERROR:" and the error, as slog writes it; and for one whose
 // method panicked, "!PANIC: " and the panic's value, as slog writes it. Each is computed under a
-// recover. fmt reports a panic of the error's own Error in its place, "%!v(PANIC=Error method:
-// …)", as it does for slog; where fmt panics again - the first panic's value cannot be printed
-// either - slog's own recover writes "!PANIC: " and the value of that second panic, and so does
-// this. A text whose own computation panics past that is dropped.
+// recover. fmt reports a panic of an Error or String it calls in its place, "%!v(PANIC=Error
+// method: …)", as it does for slog. Where fmt panics again - the value that panic carried cannot
+// be printed either - the form is "!PANIC: " and the value of that second panic: for an error's
+// text, that is what slog's own recover writes; for a panic's value, slog's recover, reading the
+// same form, panics as well and the log call with it, but the second panic's value can hold what
+// the value held, so the mask reads it and writes a line. A text whose own computation panics
+// past that is dropped.
 func formOf(form func() (string, error)) []string {
 	var (
 		text     string
@@ -257,7 +280,10 @@ func formOf(form func() (string, error)) []string {
 	}()
 	switch {
 	case failed:
-		texts, _ := guarded(func() string { return fmt.Sprintf("!PANIC: %v", panicked) })
+		texts, again := guarded(func() string { return fmt.Sprintf("!PANIC: %v", panicked) })
+		if again != nil {
+			texts, _ = guarded(func() string { return fmt.Sprintf("!PANIC: %v", again) })
+		}
 		return texts
 	case err != nil:
 		texts, again := guarded(func() string { return fmt.Sprintf("!ERROR:%v", err) })
