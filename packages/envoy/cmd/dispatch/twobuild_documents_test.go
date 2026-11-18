@@ -593,10 +593,12 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	reader.process.call(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer",
 		`{"selected":["First"],"expected_edited_at":null}`, http.StatusOK)
 
-	// The carried approval is in the approver's name, proven as the approver's own review was: the
-	// harness pairs this tree with the newest release before it, and every release from
-	// legion-envoy-v30.44.0 on stores model.Actor.Proven (main's #4281), so in both directions
-	// neither build may lose the mark when it carries the other's review.
+	// The carried approval is in the approver's name, and its whole actor crosses the builds, the
+	// proven flag included: neither build may lose the mark when it carries the other's review.
+	// Every release from legion-envoy-v30.44.0 on stores model.Actor.Proven (main's #4281), and
+	// no pair the harness makes holds a build older than that: dispatch-two-builds pairs this tree
+	// with the newest release before it, which only moves forward, and dispatch-two-builds-same
+	// pairs it with its own build. So the comparison holds every field of the actor, the flag too.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		var reviews []servedReview
