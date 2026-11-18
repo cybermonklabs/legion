@@ -49,7 +49,13 @@ function proofLog(lines: string[] | null): string {
   return path;
 }
 
-/** Runs BODY after the script's control settings, its two control functions and the lib's note. */
+// The script's part_two_steps, a list of lines that scriptAssignments, which reads one line or one
+// quoted string, does not take whole.
+const partTwoSteps =
+  /^part_two_steps=\(\n[\s\S]*?\n\)$/m.exec(readFileSync(script, "utf8"))?.[0] ?? "";
+
+/** Runs BODY after the script's control settings, its control and part-two functions and the
+ * lib's note. */
 function controls(body: string) {
   const result = Bun.spawnSync([
     "bash",
@@ -60,9 +66,16 @@ ${note}
 ${assignment("control_step")}
 ${assignment("control_setup_checks")}
 ${assignment("control_failure")}
-${assignment("part_two_arms")}
+${partTwoSteps}
+${assignment("part_two_arm_pick")}
 ${assignment("part_two_runs")}
+${assignment("part_two_minutes")}
+${assignment("part_two_setup_minutes")}
+${assignment("head_only_step")}
+${assignment("head_only_why")}
 ${fn("control_verdict")}
+${fn("step_arms")}
+${fn("part_two_deadline")}
 ${fn("part_two_step")}
 ${body}`,
   ]);
@@ -187,23 +200,27 @@ describe("part one's negative control", () => {
 });
 
 const a4 = "a4-the-architect-tells-the-child-reviewer";
+const off = "off-the-architect-tells-the-holders";
 // One run's line as part two's driver prints it at the run's end.
-const runLine = (arm: string, n: number, outcome: string) =>
-  `run ${a4} ${arm} ${n}: ${outcome} in 140s, 31 model calls`;
+const runLine = (step: string, arm: string, n: number, outcome: string) =>
+  `run ${step} ${arm} ${n}: ${outcome} in 140s, 31 model calls`;
 const passed = "PASS";
 const failed =
   "FAIL: the reviewer of AS1-2 was sent no Envoy message naming version 2 and the change";
 const setupFailed =
   "SETUP: the reviewer of AS1-2 did not end its start turn within the run's bound";
 const harnessFailed = "HARNESS: the harness failed; its log is above";
+// What the last line says in a4's place once its base arm is retired, by the measurement that
+// retired it.
+const headOnly = "(head only: the base arm passed 10 of 10 at 578c6abb, main meets R4 since #4203)";
 
-/** part_two_step over the A4 lines LINES, after PICK, the settings the arguments check makes of a
- * pick ("" for none): the step's part of the last line, the head runs that missed, and the notes
- * it printed. */
-function partTwoStep(lines: string[], pick = "") {
+/** part_two_step over STEP's lines LINES, named WORD on the last line, after PICK, the settings
+ * the arguments check makes of a pick ("" for none): the step's part of the last line, the head
+ * runs that missed, and the notes it printed. */
+function partTwoStep(step: string, word: string, lines: string[], pick = "") {
   const proof = proofLog([`=== RUN   TestRealSessionsTellAndAnswerANewVersionLive`, ...lines]);
   const run = controls(`${pick}
-part_two_step ${JSON.stringify(proof)} ${a4} a4
+part_two_step ${JSON.stringify(proof)} ${step} ${word}
 printf 'said=%s\\nmissed=%s\\n' "$step_said" "$head_missed"`);
   expect(run.err).toBe("");
   const said = /^said=(.*)$/m.exec(run.out)?.[1];
@@ -211,61 +228,87 @@ printf 'said=%s\\nmissed=%s\\n' "$step_said" "$head_missed"`);
   return { said, missed, notes: run.out };
 }
 
-const headPassed = [1, 2, 3].map((n) => runLine("head", n, passed));
+const headPassed = (step: string) => [1, 2, 3].map((n) => runLine(step, "head", n, passed));
 
 describe("part two's count of each arm", () => {
   test("does not count a base run that stopped at its setup, and does not bite on it", () => {
-    const step = partTwoStep([
-      ...headPassed,
-      runLine("base", 1, passed),
-      runLine("base", 2, passed),
-      runLine("base", 3, setupFailed),
+    const step = partTwoStep(off, "off", [
+      ...headPassed(off),
+      runLine(off, "base", 1, passed),
+      runLine(off, "base", 2, passed),
+      runLine(off, "base", 3, setupFailed),
     ]);
     expect(step.said).toBe(
-      "a4 head 3/3, base 2/2 with 1 not counted (no control: the base arm passed every run that reached its assertion)"
+      "off head 3/3, base 2/2 with 1 not counted (no control: the base arm passed every run that reached its assertion)"
     );
     expect(step.missed).toBe("");
-    expect(step.notes).toContain(`   not counted: ${runLine("base", 3, setupFailed)}\n`);
+    expect(step.notes).toContain(`   not counted: ${runLine(off, "base", 3, setupFailed)}\n`);
   });
 
   test("bites on a base run that failed at its assertion, beside one not counted", () => {
-    const step = partTwoStep([
-      ...headPassed,
-      runLine("base", 1, passed),
-      runLine("base", 2, failed),
-      runLine("base", 3, setupFailed),
+    const step = partTwoStep(off, "off", [
+      ...headPassed(off),
+      runLine(off, "base", 1, passed),
+      runLine(off, "base", 2, failed),
+      runLine(off, "base", 3, setupFailed),
     ]);
-    expect(step.said).toBe("a4 head 3/3, base 1/2 with 1 not counted (control bites)");
+    expect(step.said).toBe("off head 3/3, base 1/2 with 1 not counted (control bites)");
     expect(step.missed).toBe("");
   });
 
   test("is no control when every base run stopped before its assertion", () => {
-    const step = partTwoStep([
-      ...headPassed,
-      runLine("base", 1, setupFailed),
-      runLine("base", 2, setupFailed),
-      runLine("base", 3, harnessFailed),
+    const step = partTwoStep(off, "off", [
+      ...headPassed(off),
+      runLine(off, "base", 1, setupFailed),
+      runLine(off, "base", 2, setupFailed),
+      runLine(off, "base", 3, harnessFailed),
     ]);
     expect(step.said).toBe(
-      "a4 head 3/3, base 0/0 with 3 not counted (no control: no base run reached its assertion)"
+      "off head 3/3, base 0/0 with 3 not counted (no control: no base run reached its assertion)"
     );
   });
 
   test("names a head run that stopped at its setup, which is no pass", () => {
     // The driver stops at the first head run that does not pass, so the base arm never runs.
-    const step = partTwoStep([runLine("head", 1, passed), runLine("head", 2, setupFailed)]);
-    expect(step.said).toBe("a4 head 1/1 with 1 not counted, base 0/0 (base did not run)");
-    expect(step.missed).toBe(`; a4: 2 of 3 head runs ran; ${runLine("head", 2, setupFailed)}`);
+    const step = partTwoStep(off, "off", [
+      runLine(off, "head", 1, passed),
+      runLine(off, "head", 2, setupFailed),
+    ]);
+    expect(step.said).toBe("off head 1/1 with 1 not counted, base 0/0 (base did not run)");
+    expect(step.missed).toBe(
+      `; off: 2 of 3 head runs ran; ${runLine(off, "head", 2, setupFailed)}`
+    );
   });
 
-  // A pick of the base arm alone, as the measurement of a4's control makes it: the arm is counted
+  // A run with no arm picked makes a4 in the head arm alone: the last line names the measurement
+  // that retired its base arm, and a base line the driver printed for it is not counted, so a
+  // base FAIL there would not make a control bite that the full run no longer has.
+  test("counts a4's head arm alone in a full run, and names why its base arm is retired", () => {
+    const step = partTwoStep(a4, "a4", [...headPassed(a4), runLine(a4, "base", 1, failed)]);
+    expect(step.said).toBe(`a4 head 3/3 ${headOnly}`);
+    expect(step.missed).toBe("");
+    expect(step.notes).not.toContain(`${a4} base:`);
+  });
+
+  test("still owes every head run of a4 in a full run", () => {
+    const step = partTwoStep(a4, "a4", [
+      runLine(a4, "head", 1, passed),
+      runLine(a4, "head", 2, setupFailed),
+    ]);
+    expect(step.said).toBe(`a4 head 1/1 with 1 not counted ${headOnly}`);
+    expect(step.missed).toBe(`; a4: 2 of 3 head runs ran; ${runLine(a4, "head", 2, setupFailed)}`);
+  });
+
+  // A pick of a4's base arm alone, the command that repeats the measurement: the arm is counted
   // against the pick's own count of runs, no head run is owed, and a base FAIL still bites.
-  test("counts a pick of the base arm alone against its own count of runs", () => {
+  test("counts a pick of a4's base arm alone against its own count of runs", () => {
     const outcomes = [passed, failed, failed, setupFailed, passed];
     const runs = [...outcomes, failed, failed, passed, failed, failed];
     const step = partTwoStep(
-      runs.map((outcome, i) => runLine("base", i + 1, outcome)),
-      "part_two_arms=base part_two_runs=10"
+      a4,
+      "a4",
+      runs.map((outcome, i) => runLine(a4, "base", i + 1, outcome)),
+      "part_two_arm_pick=base part_two_runs=10"
     );
     expect(step.said).toBe("a4 base 3/9 with 1 not counted (control bites)");
     expect(step.missed).toBe("");
@@ -275,9 +318,34 @@ describe("part two's count of each arm", () => {
   });
 
   test("is no control when the pick leaves the base arm out", () => {
-    const step = partTwoStep(headPassed, "part_two_arms=head");
-    expect(step.said).toBe("a4 head 3/3 (no control: the pick leaves the base arm out)");
+    const step = partTwoStep(off, "off", headPassed(off), "part_two_arm_pick=head");
+    expect(step.said).toBe("off head 3/3 (no control: the pick leaves the base arm out)");
     expect(step.missed).toBe("");
+  });
+});
+
+/** part_two_deadline after PICK, the settings the arguments check makes of a pick ("" for none). */
+function partTwoDeadline(pick = "") {
+  const run = controls(`${pick}
+part_two_deadline`);
+  expect(run.err).toBe("");
+  return run.out.trim();
+}
+
+// The driver's deadline counts the runs it makes: nine minutes a run and twenty more. A full run
+// makes a4 three times in the head arm and off and answers three times in each arm, 15 runs; one
+// that counted a4's base arm too would allow 18. A pick of a4's base arm counts that arm alone.
+describe("part two's deadline", () => {
+  test("counts no base run of a4 in a full run", () => {
+    expect(partTwoDeadline()).toBe(`${15 * 9 + 20}m`);
+  });
+
+  test("counts the runs of a pick of a4's base arm", () => {
+    expect(
+      partTwoDeadline(
+        `part_two_steps=("\${part_two_steps[0]}") part_two_arm_pick=base part_two_runs=10`
+      )
+    ).toBe(`${10 * 9 + 20}m`);
   });
 });
 

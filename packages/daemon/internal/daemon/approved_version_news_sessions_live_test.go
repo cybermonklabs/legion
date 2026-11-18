@@ -70,7 +70,8 @@
 // its pane's own command line names and ends the proof when the arm it ran is not the one it
 // meant.
 //
-// Three steps, each run three times in each arm, each run on trees of its own:
+// Three steps, each run three times in each arm it runs in, each run on trees of its own; a4 runs
+// in the head arm alone, and off and answers in both:
 //   - a4-the-architect-tells-the-child-reviewer: under root-issues, a root waiting in admitted and
 //     its child in reviewing, whose reviewer and own architect are live, with the root's architect
 //     live above them; the child's architect is asked to write version 2 of its issue's
@@ -91,11 +92,22 @@
 //     It passes when the first reviewer's request_backward_move names version 2 and moves its
 //     issue back, and the second writes a comment on its issue naming version 2 and stays.
 //
+// a4's base arm is retired. Main's #4203 gives every started child its own architect, and a4
+// drives R4 through it; the base commit's own prompts tell that architect to tell its workers of a
+// version once its parent approves it, which is R4. The base arm passed 10 of its 10 runs at
+// 26392323's merge base, main 578c6abb (dispatch://INFRA-175/artifact/a4-base10-2639232-txt), and
+// the head arm 3 of 3 (dispatch://INFRA-175/artifact/a4-head3-2639232-txt), so no control can
+// separate the arms there: a run with no arm picked makes a4 in the head arm alone
+// (sessionsStep.arms), and the script's last line names that measurement in a4's place, from the
+// constant that holds it (head_only_why in scripts/e2e/approved-version-news.sh). The command
+// that repeats it is APPROVED_VERSION_NEWS_STEP=a4 APPROVED_VERSION_NEWS_ARM=base
+// APPROVED_VERSION_NEWS_RUNS=10 bash scripts/e2e/approved-version-news.sh.
+//
 // Three variables the script passes through narrow a run of part two (pickSessions):
 // APPROVED_VERSION_NEWS_STEP names one step by its word (a4, off or answers),
-// APPROVED_VERSION_NEWS_ARM one arm (head or base), and APPROVED_VERSION_NEWS_RUNS the count of
-// runs each arm makes of each step, so one command measures one arm of one step as often as it
-// asks.
+// APPROVED_VERSION_NEWS_ARM the one arm (head or base) every step it keeps runs in, a4's base arm
+// among them, and APPROVED_VERSION_NEWS_RUNS the count of runs each arm makes of each step, so one
+// command measures one arm of one step as often as it asks.
 //
 // Each run prints `== <step> <arm> <n>`, its evidence (the tool calls and the messages, from the
 // sessions' own transcripts) and `run <step> <arm> <n>: <outcome> …` with its time and the model
@@ -192,18 +204,21 @@ const (
 
 // sessionsStep is one step of part two: its name, which each run's line prints; its word, which
 // the script's last line names it by and APPROVED_VERSION_NEWS_STEP picks it by; the design gate
-// its runs boot under; and its body.
+// its runs boot under; the arms a run that picks no arm makes it in; and its body.
 type sessionsStep struct {
 	name, word string
 	gates      config.DesignGate
+	arms       []string
 	body       func(*sessionsRun) (sessionsOutcome, string)
 }
 
-// sessionsSteps is every step of part two, in the order a run makes them.
+// sessionsSteps is every step of part two, in the order a run makes them. a4 runs in the head arm
+// alone, since its base arm passed every run of the measurement this file's comment names, and the
+// script's head_only_step names the same step.
 var sessionsSteps = []sessionsStep{
-	{sessionsA4, "a4", config.DesignGateRootIssues, (*sessionsRun).a4},
-	{sessionsOff, "off", config.DesignGateOff, (*sessionsRun).off},
-	{sessionsAnswers, "answers", config.DesignGateRootIssues, (*sessionsRun).answers},
+	{sessionsA4, "a4", config.DesignGateRootIssues, []string{sessionsHead}, (*sessionsRun).a4},
+	{sessionsOff, "off", config.DesignGateOff, []string{sessionsHead, sessionsBase}, (*sessionsRun).off},
+	{sessionsAnswers, "answers", config.DesignGateRootIssues, []string{sessionsHead, sessionsBase}, (*sessionsRun).answers},
 }
 
 // The two arms: the prompts this checkout composes, and the base commit's.
@@ -221,20 +236,29 @@ const sessionsRuns = 3
 // this.
 const sessionsRunBound = 8 * time.Minute
 
-// sessionsPick is what one run of part two makes: the steps, the arms, and how many runs each arm
-// makes of each step.
+// sessionsPick is what one run of part two makes: the steps, the one arm every step runs in (""
+// for each step's own arms: arms), and how many runs each arm makes of each step.
 type sessionsPick struct {
 	steps []sessionsStep
-	arms  []string
+	arm   string
 	runs  int
+}
+
+// arms is the arms the pick makes step in: its one arm, or else the step's own.
+func (pick sessionsPick) arms(step sessionsStep) []string {
+	if pick.arm != "" {
+		return []string{pick.arm}
+	}
+	return step.arms
 }
 
 // pickSessions is the pick that APPROVED_VERSION_NEWS_STEP, APPROVED_VERSION_NEWS_ARM and
 // APPROVED_VERSION_NEWS_RUNS name, given here as step, arm and runs: one step by its word, one
-// arm, and a count of runs of 1 or more. Each left empty picks every step, both arms, or
-// sessionsRuns runs. A value that names none of these is refused, naming what it may be.
+// arm for every step, and a count of runs of 1 or more. Each left empty picks every step, each
+// step's own arms, or sessionsRuns runs. A value that names none of these is refused, naming what
+// it may be.
 func pickSessions(step, arm, runs string) (sessionsPick, error) {
-	pick := sessionsPick{steps: sessionsSteps, arms: []string{sessionsHead, sessionsBase}, runs: sessionsRuns}
+	pick := sessionsPick{steps: sessionsSteps, runs: sessionsRuns}
 	if step != "" {
 		words := make([]string, len(sessionsSteps))
 		for i, each := range sessionsSteps {
@@ -250,7 +274,7 @@ func pickSessions(step, arm, runs string) (sessionsPick, error) {
 	switch arm {
 	case "":
 	case sessionsHead, sessionsBase:
-		pick.arms = []string{arm}
+		pick.arm = arm
 	default:
 		return sessionsPick{}, fmt.Errorf("%s=%q names no arm: it is %s or %s", sessionsArmEnv, arm, sessionsHead, sessionsBase)
 	}
@@ -318,10 +342,10 @@ type sessionsLive struct {
 }
 
 // TestRealSessionsTellAndAnswerANewVersionLive runs the steps, arms and count of runs the pick
-// names (pickSessions), by default every step three times in the head arm and then three times in
-// the base arm, and stops at the first head run that does not pass: one that failed its
-// assertion, or one that stopped before it. It stops at a run of either arm that the harness
-// failed too (run). A run that -test.run leaves out is none of these.
+// names (pickSessions), by default each step three times in the head arm and then, for off and
+// answers, three times in the base arm, and stops at the first head run that does not pass: one
+// that failed its assertion, or one that stopped before it. It stops at a run of either arm that
+// the harness failed too (run). A run that -test.run leaves out is none of these.
 func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
 	fixtureenv.Live(t)
 	pick, err := pickSessions(os.Getenv(sessionsStepEnv), os.Getenv(sessionsArmEnv), os.Getenv(sessionsRunsEnv))
@@ -331,7 +355,7 @@ func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
 	s := newSessionsLive(t)
 	runs := 0
 	for _, step := range pick.steps {
-		for _, arm := range pick.arms {
+		for _, arm := range pick.arms(step) {
 			for n := 1; n <= pick.runs; n++ {
 				ran, outcome := s.run(step, arm, n)
 				if !ran {
@@ -347,6 +371,40 @@ func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {
 		}
 	}
 	fmt.Printf("model calls: %d in all, over %d runs\n", s.calls.count(), runs)
+}
+
+// A run that picks no arm makes a4 in the head arm alone, its base arm retired, and off and
+// answers in both; a pick of a4's base arm still makes it, so the measurement that retired it can
+// be repeated, and an arm the pick names is every step's one arm. Each pick is read as the runs it
+// makes, `<word> <arm>` in order, with the count of runs of each.
+func TestApprovedVersionNewsAFullRunMakesA4InTheHeadArmAloneAndAPickStillMakesItsBase(t *testing.T) {
+	for _, tc := range []struct {
+		name, step, arm, runs string
+		want                  []string
+		count                 int
+	}{
+		{"a full run", "", "", "", []string{"a4 head", "off head", "off base", "answers head", "answers base"}, sessionsRuns},
+		{"a4 alone", "a4", "", "", []string{"a4 head"}, sessionsRuns},
+		{"the measurement of a4's base arm", "a4", "base", "10", []string{"a4 base"}, 10},
+		{"the base arm of every step", "", "base", "", []string{"a4 base", "off base", "answers base"}, sessionsRuns},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pick, err := pickSessions(tc.step, tc.arm, tc.runs)
+			if err != nil {
+				t.Fatalf("pickSessions(%q, %q, %q) = %v", tc.step, tc.arm, tc.runs, err)
+			}
+			var made []string
+			for _, step := range pick.steps {
+				for _, arm := range pick.arms(step) {
+					made = append(made, step.word+" "+arm)
+				}
+			}
+			if !slices.Equal(made, tc.want) || pick.runs != tc.count {
+				t.Fatalf("pickSessions(%q, %q, %q) makes %v, %d runs each; want %v, %d runs each",
+					tc.step, tc.arm, tc.runs, made, pick.runs, tc.want, tc.count)
+			}
+		})
+	}
 }
 
 // newSessionsLive starts what every run shares: natsd and the listener on it, Dispatch on that
