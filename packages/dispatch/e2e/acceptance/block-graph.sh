@@ -1532,7 +1532,7 @@ if cli comment --issue "$key" --body-file "$work/a8-over.md" >"$work/out" 2>&1; 
 fi
 grep -qF 'body block 1' "$work/out" ||
   fail A8 "the refusal names the block that passed the bound" "$(<"$work/out")"
-grep -qF '(32001/32000)' "$work/out" ||
+grep -qF ': 32001 of at most 32000' "$work/out" ||
   fail A8 "the refusal names the block's length and the bound" "$(<"$work/out")"
 pass A8 "a 32,001-character paragraph is refused, naming the block and the bound"
 
