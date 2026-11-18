@@ -1157,19 +1157,27 @@ server, each server's `server_id` from its `/varz` and its routes from its `/rou
 port-forward to 8222, its route port through a port-forward to 6222, and its nats container's
 log as `kubectl logs --timestamps` gives it, then reads the pods again. It exits 0 when every
 rule below holds; 1 when one shows the password may be read; and 2 when it could not read all it
-needs, when authorization is not yet in force, when the mesh is not whole or the servers do not
-hold one password, when a route connection from another address named no server, when the log
-holds a line the server did not write, or when a pod changed during the check. It prints no
-password, since it never has one. So anything that can reach a pod's port 6222 can keep the
-check from reaching 0, though not make it pass.
+needs, when the log carries no time of the container runtime's, when authorization is not yet in
+force or loaded within 10 s of a pod's start, when the mesh is not whole or the servers do not
+hold one password, when a route connection from another address named no server, was still open
+when the log was read, or was logged in the 5 s before authorization loaded, when the log holds a
+line the server did not write, or when a pod changed during the check. It prints no password,
+since it never has one, and quotes what a peer chose, a route's `remote_id` and `remote_name` and
+an address from a log line, so no peer can write a line of its own on the operator's terminal. So
+anything that can reach a pod's port 6222 can keep the check from reaching 0, though not make it
+pass.
 
 Every log rule reads only lines in the form nats-server's logger writes (`logger/log.go`: the
-process id, the date and time to the microsecond, the level), and matches a line's level and its
-whole message, never a part of a line: a connection's lines carry text its peer chose, a client's
-`-ERR` text whole at the end of a `Client Error` line (`server/client.go:2268`), so a rule that
-matched the end of a line could be met or tripped by any client. Measured in this change's
-review: a client's line ending in `[INF] Starting nats-server` passed a rotated log as whole, and
-one ending in a `Route connection created` line forced exit 1.
+process id, the date and time to the microsecond, the level), at one level, and matches their
+message: whole for the start line, the hangup and `Reloaded: cluster`; whole, or by the prefix
+before its digest, for `Reloaded server configuration`; by prefix for a failed reload; by a
+pattern from the message's start for a route connection's lines; and by substring for a
+credentialed URL, in the server's lines of itself alone. Never does a rule match the end of a line
+or text anywhere in a connection's line: a connection's lines carry text its peer chose, a
+client's `-ERR` text whole at the end of a `Client Error` line (`server/client.go:2268`), so such
+a rule could be met or tripped by any client. Measured in this change's review: a client's line
+ending in `[INF] Starting nats-server` passed a rotated log as whole, and one ending in a `Route
+connection created` line forced exit 1.
 
 A whole line in that form can still be another process's: nats-server prints a route peer's
 server name unquoted when the route closes (`Router connection closed: <reason> - Remote: %s`,
@@ -1192,9 +1200,13 @@ can make the check stricter, and can turn exit 1 for that peer's own connections
 cannot make it pass, on one condition: authorization loads more than 10 s after each pod's
 container started, which the `env` roll and the two applies after it give, each one after the one
 before has finished. Within those 10 s a reader with the password could forge a start line the
-start rule takes. Measured in this change's review: env, the record, routes, authorization and
-the reader within 4 s of the start let a forged start line pass; the same line written more than
-11 s after the start gave exit 1.
+start rule takes, so the check holds to it: when the runtime read the `Reloaded: cluster` line of
+the reload that loaded authorization within 10 s of the container's `startedAt`, it is exit 2.
+Measured in this change's review: env, the record, routes, authorization and the reader within
+4 s of the start let a forged start line pass; the same line written more than 11 s after the
+start gave exit 1. A log with any line that carries no time of the runtime's is judged by no rule,
+since which of its lines the server wrote cannot be told, and is exit 2; `routes check` always
+reads with `--timestamps`.
 
 - **Every route is the hub's own.** Every route's `ip` is one of the pod IPs and every `remote_id`
   another pod's `server_id`, and each pod has a route to each of its peers. A route's
@@ -1206,29 +1218,41 @@ the reader within 4 s of the start let a forged start line pass; the same line w
   one, so one server's four routes to another showed four ports.
 - **No peer that left had the password.** `/routez` shows only who still holds a route, so a
   process that read the password and then left passes it. The log keeps it: every
-  `Route connection created` line (`server/route.go:2104`) names the connection's peer, and the
-  peer of each one the server logged from the hangup that began the reload which loaded
-  authorization (`Trapped "hangup" signal`, then `Reloaded: cluster`, `server/reload.go:470`) is
-  a pod IP, by IP alone, or the pod's own loopback. Lines before that hangup are not judged: an
-  implicit route carries the password only once authorization applies (`route.go:1092-1094`),
-  and the `env` roll gives each new pod a new IP, so the logs of the pods it rolled first name
-  the old IPs of the ones it rolled after. A log in which no reload loaded authorization is
-  judged whole when the route port requires authorization, since the server then had it from its
-  start. A connection from another address whose peer named no server is exit 2, not 1: one
-  whose login the credential refused (`authentication error` on its `rid`), or one whose close
-  line names no server, with no `- Remote:` (it closed at once, waited out the auth timeout, sent
-  only part of a CONNECT, or named itself with an empty name, which the close line does not show,
-  `server/client.go:2124`). Such a connection can still have carried the password: on one the
-  hub opens it sends the password before the peer names itself (`server/route.go:2087-2094`), and
-  a peer that names itself with an empty name holds a route like any other; measured in this
-  change's review, such a peer the hub dialed got the password 4 times. The log does not say
-  which side opened a connection, so the check neither condemns nor clears it. Find what ran at
-  that address, and treat the password as read unless it is accounted for. Exit 1 there would let
-  any process that reaches 6222 force a rotation, whose `env` and `routes` applies open the routes
-  to it again. One exception: during `env` and `routes`, a process that reaches 6222 can still
-  force exit 1, by a forged `Removed route` line with a password in it, which it times now and
-  writes once for each likely process id of the server's, within one route name, so that one of
-  them carries the id the check reads as the server's (above).
+  `Route connection created` line (`server/route.go:2104`) names the connection's peer. The rule's
+  window opens at the first line the container runtime read within 5 s before the `Reloaded:
+  cluster` line (`server/reload.go:470`) of the reload that loaded authorization, by the
+  runtime's time, which no line a peer writes can move, as it could move a marker such as the
+  reload's `Trapped "hangup" signal`. In that window, the peer of each such line is a pod IP, by
+  IP alone, or the pod's own loopback. Lines before the window are not judged: an implicit route
+  carries the password only once authorization applies (`route.go:1092-1094`), and the `env`
+  roll gives each new pod a new IP, so the logs of the pods it rolled first name the old IPs of
+  the ones it rolled after. A log in which no reload loaded authorization is judged whole when
+  the route port requires authorization, since the server then had it from its start. A
+  connection from another address is exit 1 only when it was logged after the `Reloaded:
+  cluster` line and formed a route by the log, its close line naming a server; every other one
+  is exit 2. One logged before that line, in the window, may predate the reload's new
+  configuration, which the reload takes before it logs the line (`server/reload.go:1561`), and
+  so carried no password, or may be a route the hub dialed after, with it (`route.go:1055-1093`).
+  One still open when the log was read, with no login refused and no close line, may be an
+  accepted connection still waiting for its login: nats-server logs the connection as it
+  accepts it, before any CONNECT, and closes one that logs in to no route at the cluster's auth
+  timeout (`server/route.go:2070-2073`, 2 s by default), so any process that reaches 6222 can hold
+  one open while the log is read, and one that held a route when `/routez` was read is named
+  there. And one whose peer named no server: one whose login the credential refused
+  (`authentication error` on its `rid`), or one whose close line names no server, with no
+  `- Remote:` (it closed at once, waited out the auth timeout, sent only part of a CONNECT, or
+  named itself with an empty name, which the close line does not show, `server/client.go:2124`).
+  Such a connection can still have carried the password: on one the hub opens it sends the
+  password before the peer names itself (`server/route.go:2087-2094`), and a peer that names
+  itself with an empty name holds a route like any other; measured in this change's review, such
+  a peer the hub dialed got the password 4 times. The log does not say which side opened a
+  connection, so the check neither condemns nor clears any of these. Find what ran at that
+  address, and treat the password as read unless it is accounted for. Exit 1 there would let any
+  process that reaches 6222 force a rotation, whose `env` and `routes` applies open the routes to
+  it again. One exception: during `env` and `routes`, a process that reaches 6222 can still force
+  exit 1, by a forged `Removed route` line with a password in it, which it times now and writes
+  once for each likely process id of the server's, within one route name, so that one of them
+  carries the id the check reads as the server's (above).
 - **The log reaches back to the `env` roll.** Each pod's `uid`, `restartCount` and `startedAt`
   are the ones `routes record` saved, its log begins with `Starting nats-server`
   (`server/server.go:2295`) in the logger's form, and the container runtime read that line from
@@ -1239,7 +1263,9 @@ the reader within 4 s of the start let a forged start line pass; the same line w
   client logins. A pod restarted since the record, or a log that does not begin at its start
   line, keeps no log of the routes before it, so neither can be ruled out. A pod whose identity
   or container differs when the check reads the pods again after the pass is exit 2: what the
-  pass read of it may be of two containers, and the next check finds the restart.
+  pass read of it may be of two containers, its log may be of a container that started during
+  the pass, and the next check finds the restart. So its start line finding is exit 2 too, though
+  the new container's start line was read after the start the pass first read.
 - **Authorization is in force with a password.** `/varz` shows no route authorization
   (`ClusterOptsVarz` has no field for it), so the check reads the INFO each route port sends a new
   connection first, and requires `"auth_required":true`, and a `Reloaded server configuration`

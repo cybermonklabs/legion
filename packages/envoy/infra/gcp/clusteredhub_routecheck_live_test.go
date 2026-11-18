@@ -57,6 +57,11 @@ import (
 //   - A refused route login from another address: one route CONNECT with no credential from
 //     127.0.0.5, answered "Authorization Violation", makes the check Unknown, exit 2, naming it,
 //     not PasswordRead. Control: the hub is Clean before it.
+//   - A bare connection held open while the log is read: one connection from 127.0.0.9 that sends
+//     nothing, opened as the check reads that server's log and held while it does, makes the check
+//     Unknown, exit 2, naming it still open, not PasswordRead. Controls: the log the check read
+//     names the connection and no close line for it; and the server closes it at the auth timeout,
+//     after which the check names it a connection whose close line names no server.
 //   - Lines a client writes: a client's -ERR texts end as a route connection's line, a failed
 //     reload's, a URL with a password and the start line, and the check stays Clean; a log rotated
 //     to begin at the forged start line is PasswordRead. Control: the same cut at an ordinary
@@ -68,7 +73,11 @@ import (
 //     the user route and no password, so the check is Unknown. Control: a stranger presenting that
 //     login joins the hub.
 //   - A restart during the check: the last server restarts when the check reads its log, after the
-//     check read the pods, and the check is not Clean, naming the change.
+//     check read the pods, and the check is Unknown, exit 2, naming the change, and naming the new
+//     log's start line, which is the new container's, Unknown, not PasswordRead.
+//
+// Every row's reload onto authorization waits as a rollout's applies do (beforeAuthorization), more
+// than 10 s after each server's start and 6 s after what the row did before it.
 func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 	keys := newLiveHubKeys(t)
 	renders := map[string]*clusteredHubRender{}
@@ -157,7 +166,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.PasswordRead, report.Verdict(), "findings: %v", report.Findings)
-		require.True(t, findingNames(report, routes.PasswordRead, "", "ip 127.0.0.2", "remote_id "+impostor), "findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.PasswordRead, "", "ip 127.0.0.2", `remote_id "`+impostor+`"`), "findings: %v", report.Findings)
 	})
 
 	t.Run("a peer that left before the check", func(t *testing.T) {
@@ -187,7 +196,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.PasswordRead, report.Verdict(), "findings: %v", report.Findings)
-		require.True(t, findingNames(report, routes.PasswordRead, "", "route connection(s) with 127.0.0.3"), "findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.PasswordRead, "", `route connection(s) with "127.0.0.3"`), "findings: %v", report.Findings)
 		for _, f := range report.Findings {
 			require.NotContains(t, f.Detail, "has a route", "control: no /routez names the peer, so a check of /routez alone passes it: %v", f)
 		}
@@ -297,7 +306,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.PasswordRead, report.Verdict(), "findings: %v", report.Findings)
-		require.True(t, findingNames(report, routes.PasswordRead, "", "ip 127.0.0.1", "remote_id "+impostor), "findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.PasswordRead, "", "ip 127.0.0.1", `remote_id "`+impostor+`"`), "findings: %v", report.Findings)
 		for _, f := range report.Findings {
 			require.NotContains(t, f.Detail, "no pod of the hub", "only remote_id tells the impostor apart: %v", f)
 		}
@@ -316,8 +325,37 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		})
 		report = routes.Check(ctx, h, rec)
 		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
-		require.True(t, findingNames(report, routes.Unknown, h.servers[0].name, "1 route connection(s) with 127.0.0.5 since it loaded authorization",
+		require.True(t, findingNames(report, routes.Unknown, h.servers[0].name, `1 route connection(s) with "127.0.0.5" since it loaded authorization`,
 			"whose login the route credential refused"), "findings: %v", report.Findings)
+	})
+
+	t.Run("a bare connection held open while the log is read", func(t *testing.T) {
+		h, rec := staged(t, password)
+		s := h.servers[0]
+		bare := &bareOnLog{stagedHub: h, t: t, pod: s.name, from: "127.0.0.9"}
+		report := routes.Check(ctx, bare, rec)
+		port := strconv.Itoa(bare.conn.LocalAddr().(*net.TCPAddr).Port)
+		var rid string
+		for _, l := range strings.Split(string(bare.read), "\n") {
+			if _, after, ok := strings.Cut(l, "] 127.0.0.9:"+port+" - rid:"); ok && strings.HasSuffix(after, " - Route connection created") {
+				rid = strings.TrimSuffix(after, " - Route connection created")
+			}
+		}
+		require.NotEmpty(t, rid, "control: the log the check read names the bare connection")
+		require.NotContains(t, string(bare.read), " - rid:"+rid+" - Router connection closed: ", "control: the log the check read has no close line for it")
+		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.Unknown, s.name,
+			`1 route connection(s) with "127.0.0.9" since it loaded authorization that were still open when the log was read`), "findings: %v", report.Findings)
+
+		within(t, 15*time.Second, "the auth timeout closing the bare connection", func() error {
+			if !strings.Contains(s.proc.Output.String(), " - rid:"+rid+" - Router connection closed: Authentication Timeout") {
+				return fmt.Errorf("%s has not closed the bare connection yet", s.name)
+			}
+			return nil
+		})
+		report = routes.Check(ctx, h, rec)
+		require.True(t, findingNames(report, routes.Unknown, s.name, `1 route connection(s) with "127.0.0.9" since it loaded authorization whose peer named no server`,
+			"1 whose close line names no server"), "the server closed it at the auth timeout, as the finding says: %v", report.Findings)
 	})
 
 	t.Run("lines a client writes", func(t *testing.T) {
@@ -405,9 +443,11 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		h, rec := staged(t, password)
 		last := h.servers[2]
 		report := routes.Check(ctx, &restartOnLog{stagedHub: h, t: t, pod: last.name}, rec)
-		require.NotEqual(t, routes.Clean, report.Verdict(), "findings: %v", report.Findings)
+		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
 		require.True(t, findingNames(report, routes.Unknown, last.name, "changed during the check", "restartCount 0", "restartCount 1"),
 			"findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.Unknown, last.name, "its container started at", "the pod changed during the check"),
+			"its new log's start line is the new container's, and the pod changed during the check: %v", report.Findings)
 		require.Equal(t, int32(1), last.restarts, "control: the server restarted between the check's read of the pods and of its log")
 	})
 
@@ -511,7 +551,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		report = routes.Check(ctx, h, rec)
 		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
 		for s, host := range closes {
-			require.True(t, findingNames(report, routes.Unknown, s.name, "1 route connection(s) with "+host+" since it loaded authorization whose peer named no server",
+			require.True(t, findingNames(report, routes.Unknown, s.name, `1 route connection(s) with "`+host+`" since it loaded authorization whose peer named no server`,
 				"1 whose close line names no server"), "%s: findings: %v", host, report.Findings)
 		}
 	})
@@ -543,7 +583,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		}
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
-		require.True(t, findingNames(report, routes.Unknown, s.name, "1 route connection(s) with 127.0.0.5 since it loaded authorization whose peer named no server",
+		require.True(t, findingNames(report, routes.Unknown, s.name, `1 route connection(s) with "127.0.0.5" since it loaded authorization whose peer named no server`,
 			"can still have carried the password"), "findings: %v", report.Findings)
 		for _, finding := range report.Findings {
 			require.NotContains(t, finding.Detail, "formed no route", "the route formed, and %s held it: %v", s.name, finding)
@@ -575,8 +615,10 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 			return nil
 		})
 		report := routes.Check(ctx, h, rec)
-		require.True(t, findingNames(report, routes.PasswordRead, s.name, "1 route connection(s) with 127.0.0.5 since it loaded authorization, and"),
-			"findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.Unknown, s.name,
+			`1 route connection(s) with "127.0.0.5" since it loaded authorization that were still open when the log was read`), "findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.PasswordRead, s.name, "has a route from an address that is no pod of the hub: ip 127.0.0.5"),
+			"the route it holds is in /routez: %v", report.Findings)
 		for _, finding := range report.Findings {
 			require.NotContains(t, finding.Detail, "named no server", "the client's line is no refusal of the route's login: %v", finding)
 		}

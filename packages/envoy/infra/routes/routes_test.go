@@ -178,11 +178,25 @@ func (h *fakeHub) atEnv() (back func()) {
 
 var started = time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 
-// logLine is a line as nats-server writes its log, with the pid, the time and the level it
+// The times a clean hub's log writes each stage at: its start and its routes' connections at env,
+// a second after the container started; the reload onto routes two minutes later; and the reload
+// onto authorization two minutes after that, as each apply follows the one before.
+var (
+	envAt           = started.Add(time.Second)
+	routesAt        = started.Add(2 * time.Minute)
+	authorizationAt = started.Add(4 * time.Minute)
+)
+
+// logLineAt is a line as nats-server writes its log at at, with the pid, the time and the level it
 // prefixes.
-func logLine(level, text string) string {
-	return "[7] 2026/11/17 12:00:01.000000 [" + level + "] " + text
+func logLineAt(at time.Time, level, text string) string {
+	return "[7] " + at.UTC().Format("2006/01/02 15:04:05.000000") + " [" + level + "] " + text
 }
+
+// logLine is logLineAt at env's time. A row that appends such a line after the authorization
+// reload puts it in the log rule's window by its place, after the reload's own lines, since the
+// window opens at the first line read within the reload span before the reload.
+func logLine(level, text string) string { return logLineAt(envAt, level, text) }
 
 // logLineOf is logLine's line as a process of another id writes it.
 func logLineOf(pid, level, text string) string {
@@ -198,13 +212,26 @@ func removedRoute(password string) string {
 	return logLine("INF", "Removed route "+url+"@envoy-nats-2.envoy-nats-headless:6222")
 }
 
+// startLinesAt are the lines a server logs as it starts at at.
+func startLinesAt(at time.Time) []string {
+	return []string{logLineAt(at, "INF", "Starting nats-server"), logLineAt(at, "INF", "  Version:  2.15.1")}
+}
+
+// authorizationReloadAt is the reload that loads authorization at at: its hangup, its "Reloaded:
+// cluster" line and its end.
+func authorizationReloadAt(at time.Time) []string {
+	return []string{logLineAt(at, "INF", `Trapped "hangup" signal`), logLineAt(at, "INF", "Reloaded: cluster"),
+		logLineAt(at, "INF", "Reloaded server configuration (def)")}
+}
+
 // The lines of each stage a hub server logs: its start, its routes' connections at env, and the
 // reloads onto routes and onto authorization, each begun by the reloader's hangup.
 var (
-	startLines         = []string{logLine("INF", "Starting nats-server"), logLine("INF", "  Version:  2.15.1")}
-	routesReload       = []string{logLine("INF", `Trapped "hangup" signal`), logLine("INF", "Reloaded: cluster routes"), logLine("INF", "Reloaded server configuration (abc)")}
-	authorizationStart = logLine("INF", `Trapped "hangup" signal`)
-	authorizationLines = []string{logLine("INF", "Reloaded: cluster"), logLine("INF", "Reloaded server configuration (def)")}
+	startLines   = startLinesAt(envAt)
+	routesReload = []string{logLineAt(routesAt, "INF", `Trapped "hangup" signal`), logLineAt(routesAt, "INF", "Reloaded: cluster routes"),
+		logLineAt(routesAt, "INF", "Reloaded server configuration (abc)")}
+	authorizationStart = authorizationReloadAt(authorizationAt)[0]
+	authorizationLines = authorizationReloadAt(authorizationAt)[1:]
 )
 
 // authInfo is the INFO a route port sends with authorization in force, and without.
@@ -285,7 +312,8 @@ func recordOf(t *testing.T, h *fakeHub) routes.Record {
 // longer Clean, or, for the rows whose verdict is Clean, a change the check must not count. A
 // route's remote_name is never what condemns it or clears it: the impostor rows carry a hub
 // server's name. A client's line is one a client can make the server write: its -ERR text whole at
-// the end of a "Client Error" line (client.go:2268); no such line meets or trips a rule.
+// the end of a "Client Error" line (client.go:2268); no such line meets or trips a rule. No finding
+// of any row holds a control character, since a finding reaches the operator's terminal.
 func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 	createdAs := func(address, rid string) string {
 		return logLine("INF", address+" - rid:"+rid+" - Route connection created")
@@ -298,6 +326,19 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 	closedAs := func(address, rid, reason string) string {
 		return logLine("INF", address+" - rid:"+rid+" - Router connection closed: "+reason)
 	}
+	// formed is the close line of a route whose peer named a server.
+	formed := func(address, rid string) string { return closedAs(address, rid, "Client Closed - Remote: rogue") }
+	newPod := routes.Pod{Name: "envoy-nats-3", UID: "uid-envoy-nats-3", IP: "10.0.0.13", Ready: true, StartedAt: started}
+	// restartOnLog restarts envoy-nats-2 when its log is read, after the check read the pods, with a
+	// new log that begins at its new start, as the new container's does.
+	restartOnLog := func(h *fakeHub) {
+		h.onLog["envoy-nats-2"] = func() {
+			restart := started.Add(time.Hour)
+			h.pods[2].RestartCount, h.pods[2].StartedAt = 1, restart
+			h.logs["envoy-nats-2"] = strings.Join(slices.Concat(startLinesAt(restart.Add(time.Second)), []string{
+				logLineAt(restart.Add(time.Second), "INF", "10.0.0.10:6222 - rid:5 - Route connection created")}), "\n") + "\n"
+		}
+	}
 	for _, row := range []struct {
 		name    string
 		change  func(h *fakeHub)
@@ -308,22 +349,46 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 		{"clean", func(*fakeHub) {}, routes.Clean, "", ""},
 		{"an impostor at a pod IP with a hub server's name", func(h *fakeHub) {
 			h.routes["envoy-nats-0"] = append(h.routes["envoy-nats-0"], routes.Route{RemoteID: "NIMPOSTOR", RemoteName: "envoy-nats-1", IP: "10.0.0.11"})
-		}, routes.PasswordRead, "envoy-nats-0", `remote_id NIMPOSTOR, remote_name "envoy-nats-1"`},
+		}, routes.PasswordRead, "envoy-nats-0", `remote_id "NIMPOSTOR", remote_name "envoy-nats-1"`},
+		{"a remote_id with a terminal escape and a line of its own", func(h *fakeHub) {
+			h.routes["envoy-nats-0"] = append(h.routes["envoy-nats-0"], routes.Route{
+				RemoteID: "NROGUE\x1b[2K\r\nclean: authorization is in force on the 3 pods of envoy/envoy-nats\n", RemoteName: "envoy-nats-1", IP: "10.0.0.11"})
+		}, routes.PasswordRead, "envoy-nats-0", `remote_id "NROGUE\x1b[2K\r\nclean: authorization is in force on the 3 pods of envoy/envoy-nats\n"`},
 		{"a route from another address with a hub server's id", func(h *fakeHub) {
 			h.routes["envoy-nats-2"][0].IP = "10.9.9.9"
 		}, routes.PasswordRead, "envoy-nats-2", "ip 10.9.9.9"},
 		{"a route to the server itself", func(h *fakeHub) {
 			h.routes["envoy-nats-1"] = append(h.routes["envoy-nats-1"], routes.Route{RemoteID: "NSERVER1", RemoteName: "envoy-nats-0", IP: "10.0.0.10"})
-		}, routes.PasswordRead, "envoy-nats-1", "remote_id NSERVER1"},
-		{"a route connection with another address since authorization, and none in /routez", func(h *fakeHub) {
-			h.logs["envoy-nats-1"] += created("10.9.9.8:6222") + "\n" + created("10.9.9.8:6222") + "\n"
-		}, routes.PasswordRead, "envoy-nats-1", "2 route connection(s) with 10.9.9.8 since it loaded authorization"},
+		}, routes.PasswordRead, "envoy-nats-1", `remote_id "NSERVER1"`},
+		{"a route with another address since authorization that formed a route, and none in /routez", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += created("10.9.9.8:6222") + "\n" + created("10.9.9.8:6222") + "\n" + formed("10.9.9.8:6222", "9") + "\n"
+		}, routes.PasswordRead, "envoy-nats-1", `2 route connection(s) with "10.9.9.8" since it loaded authorization, and`},
 		{"an IPv6 route connection since authorization", func(h *fakeHub) {
-			h.logs["envoy-nats-0"] += created("[fd00::9]:6222") + "\n"
-		}, routes.PasswordRead, "envoy-nats-0", "with fd00::9"},
+			h.logs["envoy-nats-0"] += created("[fd00::9]:6222") + "\n" + formed("[fd00::9]:6222", "9") + "\n"
+		}, routes.PasswordRead, "envoy-nats-0", `with "fd00::9"`},
+		{"a route connection still open when the log is read", func(h *fakeHub) {
+			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n"
+		}, routes.Unknown, "envoy-nats-1", `1 route connection(s) with "10.9.9.7" since it loaded authorization that were still open when the log was read`},
 		{"a route connection begun by the authorization reload's hangup", func(h *fakeHub) {
 			h.inAuthorizationReload("envoy-nats-2", created("10.9.9.6:6222"))
-		}, routes.PasswordRead, "envoy-nats-2", "with 10.9.9.6"},
+			h.logs["envoy-nats-2"] += formed("10.9.9.6:6222", "9") + "\n"
+		}, routes.Unknown, "envoy-nats-2", `1 route connection(s) with "10.9.9.6" in the 5s before the reload that loaded authorization logged`},
+		{"a route connection read within the span before the reload, before its hangup", func(h *fakeHub) {
+			h.beforeAuthorization("envoy-nats-2", logLineAt(authorizationAt.Add(-2*time.Second), "INF", "10.9.9.6:6222 - rid:9 - Route connection created"))
+			h.logs["envoy-nats-2"] += formed("10.9.9.6:6222", "9") + "\n"
+		}, routes.Unknown, "envoy-nats-2", `with "10.9.9.6" in the 5s before the reload that loaded authorization`},
+		{"a route connection read before the span", func(h *fakeHub) {
+			h.beforeAuthorization("envoy-nats-2", logLineAt(authorizationAt.Add(-6*time.Second), "INF", "10.9.9.6:6222 - rid:9 - Route connection created"))
+			h.logs["envoy-nats-2"] += formed("10.9.9.6:6222", "9") + "\n"
+		}, routes.Clean, "", ""},
+		{"a hangup line a route peer wrote after the reload's own", func(h *fakeHub) {
+			h.inAuthorizationReload("envoy-nats-1", logLineAt(authorizationAt, "INF", "10.9.9.6:6222 - rid:9 - Route connection created")+"\n"+
+				logLineAt(authorizationAt, "INF", `Trapped "hangup" signal`))
+			h.logs["envoy-nats-1"] += formed("10.9.9.6:6222", "9") + "\n"
+		}, routes.Unknown, "envoy-nats-1", `with "10.9.9.6" in the 5s before the reload that loaded authorization`},
+		{"authorization loaded within 10 s of the container's start", func(h *fakeHub) {
+			h.editAuthorizationReload("envoy-nats-0", strings.Join(authorizationReloadAt(started.Add(5*time.Second)), "\n")+"\n")
+		}, routes.Unknown, "envoy-nats-0", "within 10s of its container's start at 2026-11-17T12:00:00Z"},
 		{"an env roll's old pod IP before authorization", func(h *fakeHub) {
 			h.beforeAuthorization("envoy-nats-2", created("10.0.0.99:6222"))
 			h.beforeAuthorization("envoy-nats-1", created("10.0.0.98:41234"))
@@ -332,8 +397,8 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 			h.logs["envoy-nats-0"] += created("127.0.0.1:50000") + "\n" + created("[::1]:50001") + "\n"
 		}, routes.Clean, "", ""},
 		{"another loopback address since authorization", func(h *fakeHub) {
-			h.logs["envoy-nats-0"] += created("127.0.0.2:50000") + "\n"
-		}, routes.PasswordRead, "envoy-nats-0", "with 127.0.0.2"},
+			h.logs["envoy-nats-0"] += created("127.0.0.2:50000") + "\n" + formed("127.0.0.2:50000", "9") + "\n"
+		}, routes.PasswordRead, "envoy-nats-0", `with "127.0.0.2"`},
 		{"a failed reload", func(h *fakeHub) {
 			h.beforeAuthorization("envoy-nats-1", logLine("ERR", "Failed to reload server configuration: error parsing route url"))
 		}, routes.PasswordRead, "envoy-nats-1", "1 failed reload(s)"},
@@ -362,23 +427,23 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 			h.logs["envoy-nats-1"] += stampedAt(started.Add(time.Hour), removedRoute("x")) + "\n"
 		}, routes.Unknown, "envoy-nats-1", "1 line(s) in nats-server's form that its server did not write when they say"},
 		{"a log without the runtime's times", func(h *fakeHub) { h.unstamped["envoy-nats-0"] = true },
-			routes.PasswordRead, "envoy-nats-0", "does not begin with the server's start line"},
+			routes.Unknown, "envoy-nats-0", "line(s) carry no time of the container runtime's"},
 		{"a refused route login from another address since authorization", func(h *fakeHub) {
 			h.logs["envoy-nats-0"] += createdAs("10.9.9.5:50000", "21") + "\n" + refusedAs("10.9.9.5:50000", "21") + "\n"
-		}, routes.Unknown, "envoy-nats-0", "1 route connection(s) with 10.9.9.5 since it loaded authorization whose peer named no server (1 whose login the route credential refused, 0 whose close line names no server)"},
+		}, routes.Unknown, "envoy-nats-0", `1 route connection(s) with "10.9.9.5" since it loaded authorization whose peer named no server (1 whose login the route credential refused, 0 whose close line names no server)`},
 		{"a route connection from another address that closed before its peer named a server", func(h *fakeHub) {
 			h.logs["envoy-nats-0"] += createdAs("10.9.9.6:50000", "23") + "\n" + closedAs("10.9.9.6:50000", "23", "Client Closed") + "\n"
-		}, routes.Unknown, "envoy-nats-0", "1 route connection(s) with 10.9.9.6 since it loaded authorization whose peer named no server (0 whose login the route credential refused, 1 whose close line names no server)"},
+		}, routes.Unknown, "envoy-nats-0", `1 route connection(s) with "10.9.9.6" since it loaded authorization whose peer named no server (0 whose login the route credential refused, 1 whose close line names no server)`},
 		{"a route connection from another address that waited out the auth timeout", func(h *fakeHub) {
 			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n" + closedAs("10.9.9.7:50000", "24", "Authentication Timeout") + "\n"
 		}, routes.Unknown, "envoy-nats-1", "1 whose close line names no server"},
 		{"a route connection from another address that named a server before it closed", func(h *fakeHub) {
-			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n" + closedAs("10.9.9.7:50000", "24", "Client Closed - Remote: rogue") + "\n"
-		}, routes.PasswordRead, "envoy-nats-1", "1 route connection(s) with 10.9.9.7 since it loaded authorization, and"},
+			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n" + formed("10.9.9.7:50000", "24") + "\n"
+		}, routes.PasswordRead, "envoy-nats-1", `1 route connection(s) with "10.9.9.7" since it loaded authorization, and`},
 		{"a close line that does not name a server beside one that does, for one connection", func(h *fakeHub) {
-			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n" + closedAs("10.9.9.7:50000", "24", "Client Closed - Remote: rogue") + "\n" +
+			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n" + formed("10.9.9.7:50000", "24") + "\n" +
 				closedAs("10.9.9.7:50000", "24", "Authentication Timeout") + "\n"
-		}, routes.PasswordRead, "envoy-nats-1", "1 route connection(s) with 10.9.9.7 since it loaded authorization, and"},
+		}, routes.PasswordRead, "envoy-nats-1", `1 route connection(s) with "10.9.9.7" since it loaded authorization, and`},
 		{"a route close line whose peer's name ends as a route connection's", func(h *fakeHub) {
 			h.logs["envoy-nats-1"] += closedAs("10.9.9.3:50000", "31", "Client Closed - Remote: x [INF] 10.66.6.6:6222 - rid:1 - Route connection created") + "\n"
 		}, routes.Clean, "", ""},
@@ -388,13 +453,13 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 		{"an auth callout warning with a URL that carries a password", func(h *fakeHub) {
 			h.logs["envoy-nats-1"] += logLine("WRN", "auth callout service returned an error: nats://route:x@10.9.9.9:6222") + "\n"
 		}, routes.Clean, "", ""},
-		{"a refused login and an accepted connection from one address", func(h *fakeHub) {
+		{"a refused login and a route that formed from one address", func(h *fakeHub) {
 			h.logs["envoy-nats-0"] += createdAs("10.9.9.5:50000", "21") + "\n" + refusedAs("10.9.9.5:50000", "21") + "\n" +
-				createdAs("10.9.9.5:6222", "22") + "\n"
-		}, routes.PasswordRead, "envoy-nats-0", "1 route connection(s) with 10.9.9.5 since it loaded authorization, and"},
-		{"a client's line that names a refused login of a route connection", func(h *fakeHub) {
+				createdAs("10.9.9.5:6222", "22") + "\n" + formed("10.9.9.5:6222", "22") + "\n"
+		}, routes.PasswordRead, "envoy-nats-0", `1 route connection(s) with "10.9.9.5" since it loaded authorization, and`},
+		{"a client's line that names a refused login of a route connection still open", func(h *fakeHub) {
 			h.logs["envoy-nats-1"] += created("10.9.9.8:6222") + "\n" + clientLine("10.9.9.8:6222 - rid:9 - authentication error") + "\n"
-		}, routes.PasswordRead, "envoy-nats-1", "1 route connection(s) with 10.9.9.8 since it loaded authorization, and"},
+		}, routes.Unknown, "envoy-nats-1", `1 route connection(s) with "10.9.9.8" since it loaded authorization that were still open when the log was read`},
 		{"a rollback's Removed route line before authorization", func(h *fakeHub) {
 			h.beforeAuthorization("envoy-nats-1", removedRoute("routePasswordAbc"))
 		}, routes.PasswordRead, "envoy-nats-1", "1 line(s) the server wrote with a URL that carries a user and a password"},
@@ -408,16 +473,22 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 			routes.Unknown, "envoy-nats-2", `its route port took a route login with no user (it answered "PONG"`},
 		{"a route login's answer unread", func(h *fakeHub) { h.refused["envoy-nats-0 login"] = errors.New("reset") },
 			routes.Unknown, "envoy-nats-0", "its route port's answer to a route login with no user could not be read"},
-		{"a restart during the check", func(h *fakeHub) {
-			h.onLog["envoy-nats-2"] = func() {
-				h.pods[2].RestartCount, h.pods[2].StartedAt = 1, started.Add(time.Hour)
-				h.logs["envoy-nats-2"] = strings.Join(slices.Concat(startLines, []string{created("10.0.0.10:6222"), created("10.0.0.11:6222")}), "\n") + "\n"
-			}
-		}, routes.Unknown, "envoy-nats-2", "changed during the check (at its start: uid uid-envoy-nats-2, ip 10.0.0.12, restartCount 0, startedAt 2026-11-17T12:00:00Z; at its end: uid uid-envoy-nats-2, ip 10.0.0.12, restartCount 1"},
+		{"a restart during the check", restartOnLog, routes.Unknown, "envoy-nats-2", "changed during the check (at its start: uid uid-envoy-nats-2, ip 10.0.0.12, restartCount 0, startedAt 2026-11-17T12:00:00Z; at its end: uid uid-envoy-nats-2, ip 10.0.0.12, restartCount 1"},
+		{"a restart during the check, its new log read at its new start", restartOnLog, routes.Unknown, "envoy-nats-2",
+			"its container started at 2026-11-17T12:00:00Z, so it is no start line of that container and the lines since the env roll may be gone; the pod changed during the check"},
+		{"a pod not in the record", func(h *fakeHub) { h.pods = append(h.pods, newPod) }, routes.Unknown, "envoy-nats-3", "is not in the record of"},
+		{"a pod that left during the check", func(h *fakeHub) { h.onLog["envoy-nats-2"] = func() { h.pods = h.pods[:2] } },
+			routes.Unknown, "envoy-nats-2", "left the StatefulSet during the check"},
+		{"a pod that joined during the check", func(h *fakeHub) { h.onLog["envoy-nats-2"] = func() { h.pods = append(slices.Clone(h.pods), newPod) } },
+			routes.Unknown, "envoy-nats-3", "joined the StatefulSet during the check"},
 		{"authorization never loaded", func(h *fakeHub) {
 			h.withoutAuthorizationReload("envoy-nats-0")
 			h.infos["envoy-nats-0"] = authInfo("NSERVER0", false)
 		}, routes.Unknown, "envoy-nats-0", "authorization is not in force: its route port's INFO has no auth_required, and no reload has loaded authorization"},
+		{"authorization not in force, and the log unread", func(h *fakeHub) {
+			h.infos["envoy-nats-0"] = authInfo("NSERVER0", false)
+			h.refused["envoy-nats-0 log"] = errors.New("forbidden")
+		}, routes.Unknown, "envoy-nats-0", "authorization is not in force: its route port's INFO has no auth_required; apply authorization"},
 		{"authorization never loaded, and another address before it", func(h *fakeHub) {
 			h.withoutAuthorizationReload("envoy-nats-0")
 			h.infos["envoy-nats-0"] = authInfo("NSERVER0", false)
@@ -428,8 +499,9 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 		{"authorization since the server started", func(h *fakeHub) { h.withoutAuthorizationReload("envoy-nats-1") }, routes.Clean, "", ""},
 		{"authorization since the start, and another address at env", func(h *fakeHub) {
 			h.withoutAuthorizationReload("envoy-nats-1")
-			h.logs["envoy-nats-1"] = strings.Replace(h.logs["envoy-nats-1"], strings.Join(routesReload, "\n"), created("10.9.9.4:6222")+"\n"+strings.Join(routesReload, "\n"), 1)
-		}, routes.PasswordRead, "envoy-nats-1", "with 10.9.9.4"},
+			h.logs["envoy-nats-1"] = strings.Replace(h.logs["envoy-nats-1"], strings.Join(routesReload, "\n"),
+				created("10.9.9.4:6222")+"\n"+formed("10.9.9.4:6222", "9")+"\n"+strings.Join(routesReload, "\n"), 1)
+		}, routes.PasswordRead, "envoy-nats-1", `with "10.9.9.4"`},
 		{"an authorization reload that did not finish", func(h *fakeHub) {
 			h.logs["envoy-nats-0"] = strings.Replace(h.logs["envoy-nats-0"], authorizationLines[1]+"\n", "", 1)
 		}, routes.Unknown, "envoy-nats-0", `has logged no "[INF] Reloaded server configuration"`},
@@ -470,6 +542,10 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 			rec := recordOf(t, h)
 			row.change(h)
 			report := routes.Check(context.Background(), h, rec)
+			for _, f := range report.Findings {
+				require.False(t, strings.ContainsFunc(f.Detail, func(r rune) bool { return r < 0x20 || r == 0x7f }),
+					"a finding holds a control character: %q", f.Detail)
+			}
 			require.Equal(t, row.verdict, report.Verdict(), "findings: %v", report.Findings)
 			if row.verdict == routes.Clean {
 				require.Empty(t, report.Findings)
@@ -500,16 +576,19 @@ func TestCheckJudgesNoRemoteIDWithoutEveryServerID(t *testing.T) {
 }
 
 // A log read without the container runtime's times, as `kubectl logs` without --timestamps gives
-// it, is named as such: which of its lines the server wrote cannot be told. Control: the same log
-// with the runtime's times is Clean.
+// it, is named as such and judged by no other rule, since which of its lines the server wrote
+// cannot be told, so the check is Unknown, not PasswordRead. Control: the same log with the
+// runtime's times is Clean.
 func TestCheckNeedsTheRuntimesTimes(t *testing.T) {
 	h := cleanHub()
 	rec := recordOf(t, h)
 	require.Empty(t, routes.Check(context.Background(), h, rec).Findings, "control: the log with the runtime's times")
 	h.unstamped["envoy-nats-1"] = true
 	report := routes.Check(context.Background(), h, rec)
-	require.NotEqual(t, routes.Clean, report.Verdict())
-	require.Contains(t, fmt.Sprint(report.Findings), "envoy-nats-1: unknown: 16 of its log's 16 line(s) carry no time of the container runtime's")
+	require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
+	require.Equal(t, []routes.Finding{{Pod: "envoy-nats-1", Verdict: routes.Unknown,
+		Detail: "16 of its log's 16 line(s) carry no time of the container runtime's, so which lines its server wrote cannot be told; " +
+			"read the log as kubectl logs --timestamps gives it"}}, report.Findings)
 }
 
 // Take records every pod, sorted by name, once all are Ready with a running nats container and no
@@ -535,7 +614,7 @@ func TestTakeRecordsOnlyAFinishedRoll(t *testing.T) {
 
 	h.refused["envoy-nats-1 info"] = errors.New("refused")
 	_, err = routes.Take(context.Background(), h, "envoy", "envoy-nats", started)
-	require.ErrorContains(t, err, "the route port's INFO of envoy-nats-1 (refused) could not be read")
+	require.ErrorContains(t, err, "whether authorization is in force is not known on envoy-nats-1 (its route port's INFO could not be read: refused)")
 	delete(h.refused, "envoy-nats-1 info")
 	h.pods[0].Ready = false
 	h.pods[2].StartedAt = time.Time{}

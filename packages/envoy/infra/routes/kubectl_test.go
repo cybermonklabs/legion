@@ -24,13 +24,14 @@ import (
 )
 
 // fakeKubectl is a kubectl that answers from the files in $FAKE_KUBECTL_DIR, as the commands
-// Kubectl runs: `get statefulset`, `get pod <name>`, `port-forward pod/<name> ... :<port>`, which
-// writes its PID to pid-<name>-<port>, then prints the local port in port-<name>-<port> and runs
-// until killed, and `logs pod/<name> --container nats --timestamps`. It appends every command line
-// it is given to calls, and refuses any other. It cuts its arguments joined into one string first,
-// since bash, unlike dash, cuts ${*#...} from each argument apart. A forward writes its PID before
-// it prints its port, since Kubectl goes on once it reads the port and a test may then read the
-// PID; $FAKE_KUBECTL_FORWARD_DELAY, when set, is the seconds a forward waits between the two.
+// OpenKubectl's Source runs: `get statefulset`, `get pod <name>`, `port-forward pod/<name> ...
+// :<port>`, which writes its PID to pid-<name>-<port>, then prints the local port in
+// port-<name>-<port> and runs until killed, and `logs pod/<name> --container nats --timestamps`.
+// It appends every command line it is given to calls, and refuses any other. It cuts its arguments
+// joined into one string first, since bash, unlike dash, cuts ${*#...} from each argument apart. A
+// forward writes its PID before it prints its port, since the Source goes on once it reads the port
+// and a test may then read the PID; $FAKE_KUBECTL_FORWARD_DELAY, when set, is the seconds a forward
+// waits between the two.
 const fakeKubectl = `#!/bin/sh
 dir="$FAKE_KUBECTL_DIR"
 args="$*"
@@ -51,7 +52,7 @@ echo "unexpected: $args" >&2
 exit 3
 `
 
-// kubePod is a pod as `kubectl get pod --output json` prints it, of what Kubectl reads: its Ready
+// kubePod is a pod as `kubectl get pod --output json` prints it, of what the Source reads: its Ready
 // condition, and the nats container's restart count and running start beside the reloader's.
 func kubePod(name, uid, ip string, ready bool, restarts int, startedAt time.Time) map[string]any {
 	status := "False"
@@ -74,7 +75,7 @@ func kubePod(name, uid, ip string, ready bool, restarts int, startedAt time.Time
 
 // fakeKubeHub writes the files fakeKubectl answers from for h's pods, each pod's monitoring port a
 // local HTTP server answering h's /varz and /routez and its route port a local listener that sends
-// h's INFO for it, and returns a Kubectl over that kubectl, under the kubeconfig context
+// h's INFO for it, and returns OpenKubectl's Source over that kubectl, under the kubeconfig context
 // example-context.
 func fakeKubeHub(t *testing.T, h *fakeHub) (routes.Source, string) {
 	t.Helper()
@@ -155,14 +156,14 @@ func routePort(t *testing.T, h *fakeHub, pod string) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
-// Kubectl reads a live hub's pods as the operator's Role allows, each by name, its monitoring port
-// and its route port through one port-forward each per pod for the whole pass, and its nats
-// container's log, each command under the given context and namespace; Close stops every forward.
-// Over the clean hub its check is Clean. Controls: a pod whose nats container is not running is
-// not Ready, so Take refuses; a pod whose monitoring port-forward exits before it listens leaves
-// that pod's /varz unread, so the check is Unknown; a route port whose INFO lacks auth_required,
-// and one that takes the route user with no password, make it Unknown, and a log rotated past the
-// start makes it PasswordRead, each read through kubectl as the clean one was.
+// OpenKubectl's Source reads a live hub's pods as the operator's Role allows, each by name, its
+// monitoring port and its route port through one port-forward each per pod for the whole pass, and
+// its nats container's log, each command under the given context and namespace; Close stops every
+// forward. Over the clean hub its check is Clean. Controls: a pod whose nats container is not
+// running is not Ready, so Take refuses; a pod whose monitoring port-forward exits before it
+// listens leaves that pod's /varz unread, so the check is Unknown; a route port whose INFO lacks
+// auth_required, and one that takes the route user with no password, make it Unknown, and a log
+// rotated past the start makes it PasswordRead, each read through kubectl as the clean one was.
 func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 	h := cleanHub()
 	src, dir := fakeKubeHub(t, h)
@@ -262,7 +263,7 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 	})
 }
 
-// A fake forward's PID file is there once Kubectl has read the forward's port, as
+// A fake forward's PID file is there once the Source has read the forward's port, as
 // TestKubectlReadsTheHubThroughKubectl reads it then, even with 0.2 s between the PID and the
 // port. Control: the order before, the port printed first and the PID written after, fails this
 // test every time with the same wait, and failed that test 1 run in 600 under load.

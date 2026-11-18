@@ -44,13 +44,14 @@ func OpenKubectl(target Target) (Source, error) {
 	if err != nil {
 		return nil, fmt.Errorf("find %s: %w", target.Kubectl, err)
 	}
-	return &Kubectl{Target: target, path: path, forwards: map[string]*forward{}}, nil
+	return &kubectlSource{Target: target, path: path, forwards: map[string]*forward{}}, nil
 }
 
-// Kubectl reads a hub through kubectl: `get statefulset` for its replica count and `get pod` for
-// each ordinal pod, a `port-forward` per pod to its monitoring port and one to its route port, each
-// held for the check's pass over it, and `logs -c nats`.
-type Kubectl struct {
+// kubectlSource reads a hub through kubectl: `get statefulset` for its replica count and `get pod`
+// for each ordinal pod, a `port-forward` per pod to its monitoring port and one to its route port,
+// each held for the check's pass over it, and `logs -c nats`. OpenKubectl makes the one value of
+// it that works: its zero value has no forwards map.
+type kubectlSource struct {
 	Target
 	path     string
 	mu       sync.Mutex
@@ -66,7 +67,7 @@ type forward struct {
 
 // kubectl runs kubectl with args after the context and namespace and returns its stdout, or an
 // error carrying its stderr.
-func (k *Kubectl) kubectl(ctx context.Context, args ...string) ([]byte, error) {
+func (k *kubectlSource) kubectl(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, k.path, k.args(args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -76,7 +77,7 @@ func (k *Kubectl) kubectl(ctx context.Context, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
-func (k *Kubectl) args(args ...string) []string {
+func (k *kubectlSource) args(args ...string) []string {
 	var all []string
 	if k.Context != "" {
 		all = append(all, "--context", k.Context)
@@ -86,7 +87,7 @@ func (k *Kubectl) args(args ...string) []string {
 
 // Pods reads the StatefulSet's replica count and then each of its pods by name, <statefulset>-<i>,
 // as a Role that names the pods allows; a list of the namespace's pods would need more.
-func (k *Kubectl) Pods(ctx context.Context) ([]Pod, error) {
+func (k *kubectlSource) Pods(ctx context.Context) ([]Pod, error) {
 	out, err := k.kubectl(ctx, "get", "statefulset", k.StatefulSet, "--output", "json")
 	if err != nil {
 		return nil, err
@@ -179,7 +180,7 @@ var forwardLine = regexp.MustCompile(`^Forwarding from 127\.0\.0\.1:(\d+) -> \d+
 const forwardTimeout = 30 * time.Second
 
 // forwardTo is the running port-forward to pod's port, started at the first call for that pair.
-func (k *Kubectl) forwardTo(ctx context.Context, pod string, port int) (*forward, error) {
+func (k *kubectlSource) forwardTo(ctx context.Context, pod string, port int) (*forward, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	key := pod + ":" + strconv.Itoa(port)
@@ -239,7 +240,7 @@ func (k *Kubectl) forwardTo(ctx context.Context, pod string, port int) (*forward
 var monitorClient = &http.Client{Timeout: 10 * time.Second}
 
 // Monitor answers a GET of path on the pod's monitoring port through its port-forward.
-func (k *Kubectl) Monitor(ctx context.Context, pod, path string) ([]byte, error) {
+func (k *kubectlSource) Monitor(ctx context.Context, pod, path string) ([]byte, error) {
 	f, err := k.forwardTo(ctx, pod, k.MonitorPort)
 	if err != nil {
 		return nil, err
@@ -265,7 +266,7 @@ func (k *Kubectl) Monitor(ctx context.Context, pod, path string) ([]byte, error)
 
 // Log is the pod's nats container log, as `kubectl logs --timestamps` returns it: the running
 // container's newest file, each line after the time the container runtime read it at.
-func (k *Kubectl) Log(ctx context.Context, pod string) ([]byte, error) {
+func (k *kubectlSource) Log(ctx context.Context, pod string) ([]byte, error) {
 	return k.kubectl(ctx, "logs", "pod/"+pod, "--container", natsContainer, "--timestamps")
 }
 
@@ -275,7 +276,7 @@ const exchangeTimeout = 10 * time.Second
 // RouteExchange is Exchange with the pod's route port through its port-forward: the INFO a server
 // sends every route connection it accepts at once (route.go:1981, :2097-2100), and its answer to
 // send.
-func (k *Kubectl) RouteExchange(ctx context.Context, pod string, send []byte) ([]byte, []byte, error) {
+func (k *kubectlSource) RouteExchange(ctx context.Context, pod string, send []byte) ([]byte, []byte, error) {
 	f, err := k.forwardTo(ctx, pod, k.RoutePort)
 	if err != nil {
 		return nil, nil, err
@@ -322,7 +323,7 @@ func Exchange(ctx context.Context, address string, send []byte) ([]byte, []byte,
 }
 
 // Close stops every port-forward and waits for each to exit.
-func (k *Kubectl) Close() error {
+func (k *kubectlSource) Close() error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 	var errs []error

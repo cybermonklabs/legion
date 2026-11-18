@@ -21,10 +21,11 @@ const usageText = `usage: envoy-infra routes record --namespace <ns> --statefuls
     and every route since it loaded joined two of the hub's servers; 1 when another process held one
     or may have been handed the password, or a log line may hold it (treat the route password as
     read, cut its reach, rotate the password, then record and check again); 2 when it could not read
-    all it needs, when authorization is not in force, when the mesh is not whole or the servers do
-    not hold one password, when a route connection from another address named no server, when the
-    log holds a line in the server's form the server did not write, or when a pod changed during
-    the check.
+    all it needs, when authorization is not in force or loaded within 10 s of a pod's start, when the
+    mesh is not whole or the servers do not hold one password, when a route connection from another
+    address named no server, was still open when the log was read, or was logged in the 5 s before
+    authorization loaded, when the log holds a line in the server's form the server did not write, or
+    when a pod changed during the check.
 `
 
 // timeout bounds a whole command: every kubectl call, port-forward and read it makes.
@@ -167,8 +168,8 @@ func check(ctx context.Context, target Target, recordPath string, stdout, stderr
 		fmt.Fprintln(stdout, "password read: treat the route password as read; cut the reach of each process named above, rotate the password "+
 			"(docs/nats-hub.md, Route authorization), and end the rotation with routes record and routes check again")
 	default:
-		fmt.Fprintln(stdout, "unknown: the check could not read all it needs, or authorization or the mesh is not yet whole, so it concludes nothing; "+
-			"fix what is named above and run it again")
+		fmt.Fprintln(stdout, "unknown: the check could not read all it needs, or the hub is not yet fit to judge, or it can neither condemn nor clear "+
+			"a process named above, so it concludes nothing; fix or find what is named above and run it again")
 	}
 	return int(verdict)
 }

@@ -187,11 +187,30 @@ func (h *stagedHub) start(t *testing.T, s *stagedServer) {
 }
 
 // reload moves every server, one at a time, onto the stage's nats.conf by the reload the chart's
-// config reloader sends, and waits for each to log it, then for the mesh.
+// config reloader sends, and waits for each to log it, then for the mesh. Before the reload onto
+// authorization it waits as a rollout's applies do (beforeAuthorization).
 func (h *stagedHub) reload(t *testing.T, stage string) {
 	t.Helper()
+	if stage == "authorization" {
+		h.beforeAuthorization()
+	}
 	h.reloadEach(t, stage, "Reloaded server configuration", "Failed to reload server configuration")
 	h.awaitMesh(t)
+}
+
+// beforeAuthorization waits until every server started more than 11 s ago and 6 s have passed,
+// so the reload onto authorization comes more than the route check's startDelay (10 s) after each
+// container's start and more than its reloadSpan (5 s, routes/routes.go) after what a row did
+// before it, as the env roll and the two applies that follow it, each after the one before has
+// finished, leave it: a row's peers and reloads before authorization stay out of the check's window.
+func (h *stagedHub) beforeAuthorization() {
+	until := time.Now().Add(6 * time.Second)
+	for _, s := range h.servers {
+		if at := s.startedAt.Add(11 * time.Second); at.After(until) {
+			until = at
+		}
+	}
+	time.Sleep(time.Until(until))
 }
 
 // reloadRefused sends every server the stage's nats.conf the same way, and waits for each to log
@@ -629,4 +648,36 @@ func (r *restartOnLog) Log(ctx context.Context, pod string) ([]byte, error) {
 		r.restart(r.t, r.server(pod))
 	}
 	return r.stagedHub.Log(ctx, pod)
+}
+
+// bareOnLog is the hub with a bare connection, which sends nothing, opened from from to one
+// server's route port when the check reads that server's log, and held open while it does: what
+// any process that reaches the route port can do. It waits for the server to log the connection
+// before the log is read, and keeps the log it read.
+type bareOnLog struct {
+	*stagedHub
+	t    *testing.T
+	pod  string
+	from string
+	conn net.Conn
+	read []byte
+}
+
+func (b *bareOnLog) Log(ctx context.Context, pod string) ([]byte, error) {
+	if pod == b.pod && b.conn == nil {
+		s := b.server(pod)
+		b.conn = dialFrom(b.t, b.from, s.route)
+		port := strconv.Itoa(b.conn.LocalAddr().(*net.TCPAddr).Port)
+		within(b.t, 10*time.Second, "the bare connection in the log", func() error {
+			if !strings.Contains(s.proc.Output.String(), "] "+b.from+":"+port+" - rid:") {
+				return fmt.Errorf("%s has not logged the bare connection yet", s.name)
+			}
+			return nil
+		})
+	}
+	log, err := b.stagedHub.Log(ctx, pod)
+	if pod == b.pod {
+		b.read = log
+	}
+	return log, err
 }

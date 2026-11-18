@@ -65,7 +65,7 @@ func TestRecordThenCheck(t *testing.T) {
 	impostor.routes["envoy-nats-1"] = append(impostor.routes["envoy-nats-1"], routes.Route{RemoteID: "NIMPOSTOR", RemoteName: "envoy-nats-2", IP: "10.0.0.12"})
 	code, stdout = check(impostor)
 	require.Equal(t, 1, code, "stdout %q", stdout)
-	require.Contains(t, stdout, "envoy-nats-1: password read: has a route to a server that is none of the hub's others: ip 10.0.0.12, remote_id NIMPOSTOR")
+	require.Contains(t, stdout, `envoy-nats-1: password read: has a route to a server that is none of the hub's others: ip 10.0.0.12, remote_id "NIMPOSTOR"`)
 	require.Contains(t, stdout, "password read: treat the route password as read")
 
 	refused := cleanHub()
