@@ -420,18 +420,19 @@ print("probe: done", flush=True)
 // included: c-gvisor-real counts across a wave the latepool runs at 4 GiB whose first kill ended a
 // grower within one interval (6 of 7), and asks the rule of each other's, so each traced scenario
 // prints its first kill, whether it came within one interval, what it ended and the rule and the
-// sizes the guard's ended line names (`live: first kill …`, printFirstKill). The guard ranks a
-// process started since its reading before right after growth over its window, the largest first,
-// and at the mark looks for those started since the band's last reading (R1 of spec version 27),
-// so latepool's fresh growers go before its sleeping forks and its parent, which read larger.
-// Otherwise the first kill of a rise may end a sleeping fork or the parent: the guard orders by
-// growth over its window, then by start since its reading before, then by growth since the
-// previous kill of the rise, then by size, and a rise's first kill has no previous kill, so where
-// no grower grew over the window and none is new, as after a fall in sharedpool, the largest goes
-// first. Each prints every kill by what the probe says the process is and, beside the verdict, the
-// kills by kind, with each that ended no grower while a grower lived marked first-of-rise or
-// after-a-kill (`live: kinds …`, printKinds), the first kill (`live: first kill …`) and the run's
-// highest readings (`live: highest …`, printHighest).
+// sizes the guard's ended line names (`live: first kill …`, printFirstKill). The guard ranks the
+// processes new to this stay in the band, those it has read at most once since the band's
+// second-to-last reading, right after growth over its window, the largest first, and at the mark
+// takes as new those its reads there reached, the band's processes it read once and those started
+// since the band's last reading (R1 of spec version 32), so latepool's new growers go before its
+// sleeping forks and its parent, which read larger. Otherwise the first kill of a rise may end a
+// sleeping fork or the parent: the guard orders by growth over its window, then by being new to the
+// stay, then by growth since the previous kill of the rise, then by size, and a rise's first kill
+// has no previous kill, so where no grower grew over the window and none is new, as after a fall in
+// sharedpool, the largest goes first. Each prints every kill by what the probe says the process is
+// and, beside the verdict, the kills by kind, with each that ended no grower while a grower lived
+// marked first-of-rise or after-a-kill (`live: kinds …`, printKinds), the first kill (`live: first
+// kill …`) and the run's highest readings (`live: highest …`, printHighest).
 //
 // `band` is a python3 that allocates until the pod's AnonPages is 5% of the limit below the mark,
 // in the middle of the band where the guard reads the sizes of what it may end at each reading,

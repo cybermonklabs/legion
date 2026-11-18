@@ -2736,8 +2736,9 @@ func TestMemoryGuardCountsAGrowerWhoseStepsAreWiderThanTheWindowAsGrownSinceTheK
 // the mark, is 88.37%. None of them has an earlier read, and over the window nothing grew. At
 // e3a1923c98d7 the guard ended a sleeping fork there, whose end freed nothing, and its next readings
 // rose to 96.82%, 2.4 MiB below the pod's measured kill point. Where nothing grew over the window,
-// the largest process with no earlier read, one started since the reading before, comes first
-// (INFRA-3531 R1, spec version 27): the guard ends a grower at the first reading at the mark.
+// the largest of the processes new to this stay in the band comes first, here the ones the reading
+// at the mark finds started since the band's last reading (INFRA-3531 R1 of spec version 32): the
+// guard ends a grower at the first reading at the mark.
 func TestMemoryGuardEndsAFreshGrowerAtTheMarkBeforeASleepingForkOfASharedBlock(t *testing.T) {
 	block := podLimit / 100 * 56
 	pod := newFakePod(t)
