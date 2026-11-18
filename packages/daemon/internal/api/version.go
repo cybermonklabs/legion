@@ -2265,7 +2265,7 @@ package api
 // so no record holds them and no caller is served them down. main's #4337 (ba774f01) moved what
 // `asked` reads, with no contract number: `UpdateTaskedAt` is now set when the round's ask reached
 // a session of the claim's role (supervise's Machine.PublishUpdateAsk), where it was set when the
-// ask was queued, and an ask that reached none leaves the claim `open` and is asked again. So
+// ask was queued, and an ask that reached none leaves the claim `open`. So
 // `open` is a round whose ask has reached no session of the role yet and `asked` one whose ask
 // reached one. `updateState` is this contract's own field, read by no reader below it, so no
 // serving-down is owed for the change.
