@@ -885,9 +885,10 @@ proxy opens for one writes a line of its own instead: `airlock proxy: a tunnel`,
 grant, its enrollment, the session and the runtime behind it, the host and port asked for and
 the address the broker dialled. A dial the proxy refused or could not make writes
 `airlock proxy: a dial that did not happen`, with those fields, how many addresses the host
-resolved to, the class of the failure and the reason. No field of either line is read from a
-request's headers or its body; the host is the one asked for, lowercased, and cut to 256 bytes,
-and the port is the number it names. A path that
+resolved to, the class of the failure and the reason. The host and the port are the command's
+own text, cut to 256 bytes, the host lowercased and the port read as its number, and a refusal's
+path and correlation id are too; none of that is redaction, so every line the proxy writes has
+each placeholder written whole, in any case, replaced by `[placeholder]`. A path that
 holds a `.` or `..` segment is refused outright
 (`path has a dot segment`), whatever the entry's paths allow, because a reader that resolves
 such a path first — which is what RFC 3986 says it means — reads it as a path the prefix does

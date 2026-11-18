@@ -1194,17 +1194,24 @@ either.
   `unresolved` and for a lookup that was `cancelled`; and for `unreachable` and a dial that was
   `cancelled`, the addresses dialled, as `ip:port` each, separated by spaces, in the order they
   were dialled, as many whole addresses as fit in the field — `resolved` says how many there
-  were in all. A dial the check stops — a refused address, a host that resolved to nothing, a
-  lookup given up — writes this line beside the refusal's own, the first saying where the command
-  asked to go and the second how it was answered.
+  were in all. A `CONNECT` or a plain-HTTP request the proxy's own check stops — a refused
+  address, a host that resolved to nothing, a lookup given up — writes this line beside its
+  refusal line, the first saying where the command asked to go and the second how it was
+  answered. A bound host's request, and a plain-HTTP request whose check passed, are dialled by
+  the proxy's transport, which checks the name again: when that check or that dial fails, the
+  line beside this one is `airlock proxy: upstream`, the `502` the command was answered, and no
+  refusal line.
 
 The proxy reads the port a command asks for once, as the number it names, and writes it as that
 number: a port written with leading zeros is dialled and logged as its number, a URL that names
 no port is read with its scheme's (`80`, or `443` for `https`), and a port that is no number from
-1 to 65535 — `0`, a number past 16 bits, a service name such as `https`, a sign — is refused
-`400` before any lookup or dial: `CONNECT_TARGET_INVALID` on a `CONNECT` and
-`PROXY_TARGET_INVALID` on a plain-HTTP request, with a reason that names the host and not the
-port.
+1 to 65535 is refused `400` before any lookup or dial. The proxy refuses `0` and a number past
+16 bits itself: `CONNECT_TARGET_INVALID` on a `CONNECT` and `PROXY_TARGET_INVALID` on a
+plain-HTTP request, with a reason that names the host and not the port. It refuses a service name
+such as `https`, or a sign, the same way where one reaches it, which is only the Host header a
+`CONNECT` with a path for its target is read by: in a `CONNECT`'s own authority or in a
+plain-HTTP URL, Go's HTTP server refuses such a port before the proxy reads the request, with a
+bare `400 Bad Request` that names no code and writes no line.
 
 Each field whose text the caller chose is cut to its first 256 bytes, so whatever a caller sends,
 each line stays within one Cloud Logging entry. On the refusal line those are the method, the
@@ -1212,14 +1219,23 @@ host, a reason that names the host, the path and the correlation id; on the call
 method, the host and the path, which is all of the caller's text it names; on a tunnel's line and
 a failed dial's, the host, the port, the address and that dial's reason, which names the host.
 
-No refusal line holds a secret's value or a placeholder as it was minted, and no tunnel's or
-failed dial's line does either: no field of any of them is read from a request's headers or its
-body, which is where a command puts a placeholder. The host and the port are the command's own
-text, though: the host is the one asked for, lowercased, with no zone, and cut to 256 bytes, and
-the port is the number it names, so a host a command made of its placeholder is written only
-lowercased. The API port's line holds no message text either: it names the code. Each answer, a
-refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is the one
-record of the API port's `429` and of a device grant's poll answers.
+Many fields of these lines are the command's own text. From its request's headers: a refusal's
+`correlation_id`, which is the `X-Correlation-Id` header, and the host of a `CONNECT` whose target
+is a path, which is its `Host` header. From the rest of its request: the method, the path, the
+host and the port it asked for, the address that host resolved to, and a `reason` or `error` that
+quotes them. A cut to 256 bytes keeps a line small, and lowercasing a host keeps it one spelling;
+neither is redaction. What keeps a placeholder off every line the airlock's proxy port writes,
+a refusal line among them, is that each text the line holds has each placeholder written whole
+— `agent-secrets-placeholder-` and the letters and digits after it, in any case — replaced by
+`[placeholder]` before the line is written. A command that writes its placeholder into its
+request's path, its `X-Correlation-Id` or the host it asks for has `[placeholder]` written
+there; the 32 characters after the prefix written without it are text the proxy cannot tell from
+any other, and are written as they came. No line holds a secret's value: no field is read from a
+request's body or from a header the swap puts a value in. The API port's refusal line takes its
+`correlation_id` from the caller's `X-Correlation-Id` too, and masks no placeholder; its line
+holds no message text, and names the code. Each answer, a refusal or not, also counts in
+`broker_answers_total` ([Metrics](#metrics)), which is the one record of the API port's `429`
+and of a device grant's poll answers.
 
 On the API port, an answer that no refusal line records names its id in no line: a `429`, the two
 answers of a device login's poll, and every answer of 500 and above. `agent-secrets` prints the id

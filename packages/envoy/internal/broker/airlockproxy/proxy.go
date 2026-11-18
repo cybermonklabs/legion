@@ -315,6 +315,9 @@ func New(o Options) *Server {
 	if s.log == nil {
 		s.log = slog.Default()
 	}
+	// Every line this package writes - net/http's through slogWriter among them - is written
+	// with each placeholder in its text masked (maskedHandler).
+	s.log = slog.New(maskedHandler{s.log.Handler()})
 	if s.resolve == nil {
 		s.resolve = ResolveHost
 	}

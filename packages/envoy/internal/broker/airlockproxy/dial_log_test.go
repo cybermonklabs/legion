@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -395,20 +396,22 @@ func TestAFailedDialWritesOneLineNamingItsClass(t *testing.T) {
 // TestNoProxyLineHoldsAValueOrPlaceholder: the airlock exists so that a secret
 // is never written down, and a log line is the first place one would leak. This row plants
 // made-up values where a command really puts them - the proxy password, a request header and a
-// body - and the placeholder itself in each place a line reads the command's own text: the host
-// of a CONNECT and of a plain-HTTP request, the zone of a plain-HTTP address literal, and the
-// port of a CONNECT whose authority is its Host header. It drives a tunnel that opens, each
-// class of failed dial on a CONNECT - an address the proxy never dials, a name that resolves
-// nowhere and a service that cannot be reached - those plantings, and a call to a bound host,
-// and reads every record the proxy wrote, its message and each of its fields. No line may hold
-// the placeholder as it is. A host is written lowercased, so a host the command made of the
-// placeholder stands in its own line only as that lowercased host; anywhere else the placeholder
-// in any case is the command's own text written down, and fails the row too.
+// body - and the placeholder itself in every place a line reads the command's own text: the
+// X-Correlation-Id of every request it sends, the host of a CONNECT's authority and of a CONNECT
+// whose authority is its Host header, the port of such a Host header, the host and the zone of a
+// plain-HTTP URL, the Host header of a plain-HTTP request and of a request on a bound connection,
+// the path of a refused call, and the method of a request that is no proxy request. Between them
+// they write every line the proxy writes about a request: a tunnel's, a forwarded plain-HTTP
+// request's, each class of failed dial, a refusal of the outer server and of a bound call, and a
+// carried call's. It reads every record the proxy wrote, its message and each of its fields, and
+// no line may hold the placeholder in any case: the host is written lowercased, and lowercasing
+// is no redaction, so every line writes placeholderMark where its text held one (maskedHandler).
 func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 	const (
 		plantedHeader = "planted-header-value-nothing-may-log"
 		plantedBody   = "planted-body-value-nothing-may-log"
 		zoned         = "2001:db8::1"
+		plainHost     = "plain.example.net"
 	)
 	r := newRig(t, Options{})
 	unwired := netip.MustParseAddr("93.184.216.44")
@@ -416,47 +419,65 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 	r.answers["nowhere.example.net"] = [][]netip.Addr{{}}
 	r.addresses["unreachable.example.net"] = []netip.Addr{unwired}
 	// The placeholder's host resolves, lowercased, to a public address wired to no service, so
-	// a plain-HTTP request to it passes the check and reaches the transport's own dial.
+	// a CONNECT to it and a plain-HTTP request to it each reach a dial that fails.
 	r.addresses[strings.ToLower(placeholderHost)] = []netip.Addr{unwired}
+	// A plain service the proxy forwards to, so a forwarded request writes its tunnel line.
+	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "the plain service answered")
+	}))
+	t.Cleanup(service.Close)
+	r.addresses[plainHost] = []netip.Addr{netip.MustParseAddr("93.184.216.37")}
+	r.dialTo[net.JoinHostPort(plainHost, "80")] = service.Listener.Addr().String()
+	correlation := "X-Correlation-Id: " + workerPlaceholder + "\r\n"
 
 	// A tunnel that opened, with the planted value in a header of the CONNECT itself.
 	answer, conn, _ := r.connectRaw(net.JoinHostPort(echoHost, "443"),
-		basic(workerPlaceholder), "X-Planted: "+plantedHeader+"\r\n")
+		basic(workerPlaceholder), "X-Planted: "+plantedHeader+"\r\n", correlation)
 	if answer.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT %s = %d; want 200", echoHost, answer.StatusCode)
 	}
 	defer conn.Close()
-	// A refused address, a name that resolves nowhere, a service that cannot be reached, a host
-	// that is the placeholder, and a call to the bound host carrying the placeholder in the
-	// header the entry allows and the planted value in its body.
-	client := r.client(workerPlaceholder)
-	r.connectRaw(net.JoinHostPort("10.1.2.3", "443"), basic(workerPlaceholder))
-	r.connectRaw(net.JoinHostPort("nowhere.example.net", "443"), basic(workerPlaceholder))
-	r.connectRaw(net.JoinHostPort("unreachable.example.net", "443"), basic(workerPlaceholder))
-	r.connectRaw(net.JoinHostPort(placeholderHost, "443"), basic(workerPlaceholder))
-	r.do(client, http.MethodPost, "https://"+boundHost+"/v1/things", plantedBody,
-		"Authorization", "Bearer "+workerPlaceholder, "X-Planted", plantedHeader)
-	// The placeholder as a port: a CONNECT whose request target is a path takes its authority
-	// from its Host header, which net/http does not read as a URL, so any text can stand there.
-	if answer, body := r.requestRaw(http.MethodConnect, "/x", echoHost+":"+workerPlaceholder, basic(workerPlaceholder)); answer.StatusCode == http.StatusOK {
+	// A refused address, a name that resolves nowhere, a service that cannot be reached, and a
+	// host that is the placeholder, as the CONNECT's authority and as the Host header of a
+	// CONNECT whose target is a path, which net/http reads its authority from.
+	r.connectRaw(net.JoinHostPort("10.1.2.3", "443"), basic(workerPlaceholder), correlation)
+	r.connectRaw(net.JoinHostPort("nowhere.example.net", "443"), basic(workerPlaceholder), correlation)
+	r.connectRaw(net.JoinHostPort("unreachable.example.net", "443"), basic(workerPlaceholder), correlation)
+	r.connectRaw(net.JoinHostPort(placeholderHost, "443"), basic(workerPlaceholder), correlation)
+	r.requestRaw(http.MethodConnect, "/x", net.JoinHostPort(placeholderHost, "443"), basic(workerPlaceholder), correlation)
+	// The placeholder as a port, in such a Host header, which net/http does not read as a URL.
+	if answer, body := r.requestRaw(http.MethodConnect, "/x", echoHost+":"+workerPlaceholder, basic(workerPlaceholder), correlation); answer.StatusCode == http.StatusOK {
 		t.Fatalf("a CONNECT whose port is the placeholder answered 200 %q; want it refused", body)
 	}
-	// The placeholder as a plain-HTTP host, in its own case, and as the zone of a plain-HTTP
-	// address literal.
-	r.plainRaw(placeholderHost, "/x", basic(workerPlaceholder))
-	r.plainRaw("["+zoned+"%25"+workerPlaceholder+"]", "/x", basic(workerPlaceholder))
-	r.logs.tunnelsAtLeast(t, 1)
-	failures := r.logs.dialFailuresAtLeast(t, 6)
+	// A carried call to the bound host with the placeholder in the header the entry allows and
+	// the planted value in its body; a call whose Host header is the placeholder's host, which
+	// the decision refuses; and a call whose path holds the placeholder, which no rule allows.
+	client := r.client(workerPlaceholder)
+	r.do(client, http.MethodPost, "https://"+boundHost+"/v1/things", plantedBody,
+		"Authorization", "Bearer "+workerPlaceholder, "X-Planted", plantedHeader, "X-Correlation-Id", workerPlaceholder)
+	r.do(client, http.MethodGet, "https://"+boundHost+"/v1/things", "",
+		"Authorization", "Bearer "+workerPlaceholder, "Host", placeholderHost, "X-Correlation-Id", workerPlaceholder)
+	r.do(client, http.MethodGet, "https://"+boundHost+"/v2/"+workerPlaceholder, "",
+		"Authorization", "Bearer "+workerPlaceholder, "X-Correlation-Id", workerPlaceholder)
+	// The placeholder as a plain-HTTP host, in its own case, as the zone of a plain-HTTP
+	// address literal, and as the Host header of a plain-HTTP request the proxy forwards.
+	r.plainRaw(placeholderHost, "/x", basic(workerPlaceholder), correlation)
+	r.plainRaw("["+zoned+"%25"+workerPlaceholder+"]", "/x", basic(workerPlaceholder), correlation)
+	if answer, body := r.requestRaw(http.MethodGet, "http://"+plainHost+"/status", placeholderHost, basic(workerPlaceholder), correlation); answer.StatusCode != http.StatusOK {
+		t.Fatalf("the forwarded plain-HTTP request answered %d %q; want 200", answer.StatusCode, body)
+	}
+	// The placeholder as the method of a request that is no proxy request at all.
+	r.requestRaw(workerPlaceholder, "/x", "proxy.example.net", correlation)
+	r.logs.tunnelsAtLeast(t, 2)
+	failures := r.logs.dialFailuresAtLeast(t, 7)
 	r.logs.callsAtLeast(t, 1)
 
 	never := []string{workerPlaceholder, workerValue, plantedHeader, plantedBody}
 	lowered := strings.ToLower(workerPlaceholder)
 	for _, record := range r.logs.Records() {
 		written := record.Message
-		fields := map[string]string{}
 		record.Attrs(func(a slog.Attr) bool {
-			fields[a.Key] = fmt.Sprint(a.Value.Any())
-			written += " " + a.Key + "=" + fields[a.Key]
+			written += " " + a.Key + "=" + fmt.Sprint(a.Value.Any())
 			return true
 		})
 		for _, secret := range never {
@@ -464,25 +485,25 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 				t.Errorf("a line the proxy wrote holds a planted value or a placeholder: %q", written)
 			}
 		}
-		for key, value := range fields {
-			if !strings.Contains(strings.ToLower(value), lowered) {
-				continue
-			}
-			// The one place the placeholder may stand, lowercased: a line about the host the
-			// command made of it, as that host and in a reason or an error that quotes it.
-			if fields["host"] == strings.ToLower(placeholderHost) && (key == "host" || key == "reason" || key == "error") {
-				continue
-			}
-			t.Errorf("a line the proxy wrote holds the placeholder, in some case, in its %s: %q", key, written)
+		if strings.Contains(strings.ToLower(written), lowered) {
+			t.Errorf("a line the proxy wrote holds the placeholder, in some case: %q", written)
 		}
 	}
-	// The controls for the hosts: the CONNECT and the plain-HTTP request that named the
-	// placeholder as their host each reached a line, as the host lowercased, and the zoned
-	// literal reached one as the address alone, so a line that kept the host as it came would
-	// hold the placeholder.
-	for _, host := range []string{strings.ToLower(placeholderHost), zoned} {
-		if !slices.ContainsFunc(failures, func(line logLine) bool { return line.fields["host"] == host }) {
-			t.Fatalf("no failed-dial line names the host %q: %v", host, failures)
+	// The controls: each place the placeholder was planted reached a line, which wrote the mark
+	// where the placeholder was, so a line that kept that text as it came would hold it.
+	refusals := r.logs.refusals()
+	for _, control := range []struct {
+		what, field, want string
+		lines             []logLine
+	}{
+		{"a failed dial's host", "host", placeholderMark + ".example.net", failures},
+		{"a failed dial's host, the zone gone", "host", zoned, failures},
+		{"a refusal's correlation id", "correlation_id", placeholderMark, refusals},
+		{"a refusal's method", "method", placeholderMark, refusals},
+		{"a refusal's path", "path", "/v2/" + placeholderMark, refusals},
+	} {
+		if !slices.ContainsFunc(control.lines, func(line logLine) bool { return line.fields[control.field] == control.want }) {
+			t.Errorf("no line names %s %q: %v", control.what, control.want, control.lines)
 		}
 	}
 
@@ -655,5 +676,56 @@ func TestAPortThatNamesNoNumberIsRefusedBeforeAnyDial(t *testing.T) {
 				t.Fatalf("the proxy dialled %v and wrote %v, %v; want no dial and no dial line", r.dialedAddresses(), r.logs.tunnels(), r.logs.dialFailures())
 			}
 		})
+	}
+}
+
+// TestAnAzureExchangeNamesTheGrantItsRequestRead: a request on a decrypted connection reads its
+// grant again, and every dial made for it names that grant, as the request's own line does. A
+// token request's exchange is such a dial - the proxy itself calls the token endpoint for it -
+// so when the grant has moved since the CONNECT, the exchange's failed dial names the grant the
+// token request read and not the one the CONNECT was read for.
+func TestAnAzureExchangeNamesTheGrantItsRequestRead(t *testing.T) {
+	r, _ := newAzureRig(t, Options{})
+	// The CONNECT's check reads the address wired to the service; the exchange's own dial reads
+	// a public address wired to nothing, so the exchange fails at its dial.
+	r.answers[boundHost] = [][]netip.Addr{r.addresses[boundHost], {netip.MustParseAddr("93.184.216.44")}}
+	answer, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(azureFederatedPlaceholder))
+	if answer.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT %s = %d; want 200", boundHost, answer.StatusCode)
+	}
+	defer conn.Close()
+	moved := r.grants.connections[azureFederatedPlaceholder]
+	moved.EnrollmentID, moved.SessionID, moved.RuntimeID = "enrollment-moved", "session-moved", "runtime-moved"
+	r.grants.setConnection(azureFederatedPlaceholder, moved)
+	form := url.Values{
+		"grant_type":            {"client_credentials"},
+		"client_id":             {azureClientID},
+		"scope":                 {azureScope},
+		"client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-bearer"},
+		"client_assertion":      {azureFederatedPlaceholder},
+	}.Encode()
+	client := tls.Client(conn, &tls.Config{RootCAs: r.trust, ServerName: boundHost})
+	client.SetDeadline(time.Now().Add(20 * time.Second))
+	request := "POST " + azureTokenPath + " HTTP/1.1\r\nHost: " + boundHost +
+		"\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: " + fmt.Sprint(len(form)) +
+		"\r\nConnection: close\r\n\r\n" + form
+	if _, err := client.Write([]byte(request)); err != nil {
+		t.Fatalf("write the token request on the decrypted connection: %v", err)
+	}
+	served, err := http.ReadResponse(bufio.NewReader(client), &http.Request{Method: http.MethodPost})
+	if err != nil || served.StatusCode != http.StatusBadGateway {
+		t.Fatalf("the token request answered %v, %v; want 502", served, err)
+	}
+	lines := r.logs.dialFailures()
+	if len(lines) != 1 {
+		t.Fatalf("the proxy wrote %d failed-dial lines for one exchange; want one: %v", len(lines), lines)
+	}
+	for field, want := range map[string]any{
+		"grant": testGrantID, "enrollment": moved.EnrollmentID, "session": moved.SessionID, "runtime": moved.RuntimeID,
+		"host": boundHost, "failure": dialUnreachable,
+	} {
+		if got := lines[0].fields[field]; got != want {
+			t.Errorf("the exchange's failed dial's %s = %v; want %v (whole line: %v)", field, got, want, lines[0].fields)
+		}
 	}
 }

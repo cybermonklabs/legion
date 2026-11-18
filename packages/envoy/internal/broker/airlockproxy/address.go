@@ -234,8 +234,8 @@ const (
 // lines below: the dials this file makes run under the request's own context, and a transport's
 // dial runs under it too, inside the transport. serveProxy puts the grant there for a CONNECT and
 // a plain-HTTP request, and serveBound puts there the grant each request on a decrypted
-// connection read for itself, so a dial made for that request names the caller its call line
-// names, even after the grant has moved since the CONNECT.
+// connection read for itself, before anything is dialled for it, so a dial made for that request
+// names the caller its own line names, even after the grant has moved since the CONNECT.
 type callerKey struct{}
 
 // withCaller is the hand-over of a request's grant to the dials below it.
@@ -243,28 +243,24 @@ func withCaller(ctx context.Context, grant requests.AirlockConnection) context.C
 	return context.WithValue(ctx, callerKey{}, grant)
 }
 
-// callerOfContext is the grant a dial is made for: the one withCaller put there, else the one the
-// decrypted connection a request arrived on was opened with (connKey), and the zero grant for a
-// dial made before either was known.
+// callerOfContext is the grant a dial is made for: the one withCaller put there, and the zero
+// grant for a dial made under none. It reads no other grant - not the one a decrypted connection
+// was opened with (connKey), which a grant that moved since the CONNECT no longer is - so a dial
+// path that hands no grant over writes an empty caller rather than a stale one.
 func callerOfContext(ctx context.Context) requests.AirlockConnection {
-	if grant, ok := ctx.Value(callerKey{}).(requests.AirlockConnection); ok {
-		return grant
-	}
-	if info, ok := ctx.Value(connKey{}).(connInfo); ok {
-		return info.grant
-	}
-	return requests.AirlockConnection{}
+	grant, _ := ctx.Value(callerKey{}).(requests.AirlockConnection)
+	return grant
 }
 
 // dialFields is who a dial was made for and what it was for: the grant, its enrollment, and the
 // session and runtime behind it, then the host and port the caller asked for and the address
-// this process asked the kernel for. No field is read from a request's headers or its body,
-// which is where a command puts a placeholder and where the swap puts a value. The host and the
-// port are the command's own text, though: the host is written lowercased, with no zone, and the
-// port as the number it names (portNumber), so a host the command made of its placeholder stands
-// here only lowercased, and the address is the resolver's answer with that port. Every field
-// passes answer.ClipFields, as a call line's do, so the line stays one Cloud Logging entry
-// whatever the caller asked for.
+// this process asked the kernel for. No field is read from a request's body, or from any of its
+// headers but the Host header a CONNECT with a path for its target is read by. The host and the
+// port are the command's own text: the host is written lowercased, with no zone, and the port as
+// the number it names (portNumber), and the address is the resolver's answer with that port.
+// Lowercasing and the cut every field passes (answer.ClipFields, which keeps the line one Cloud
+// Logging entry) are no redaction: what keeps a placeholder the command wrote into its host off
+// the line is maskedHandler, which every line of this package is written through.
 func dialFields(grant requests.AirlockConnection, host, port, address string) []any {
 	return []any{
 		"enrollment", grant.EnrollmentID,
