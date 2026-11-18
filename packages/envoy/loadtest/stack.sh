@@ -461,9 +461,10 @@ start_nats() {
   note "nats pid $(pid_of nats) on 127.0.0.1:$(port nats), monitor $(port nats_monitor), store $store"
 }
 
+# listener_up sends the listener's bearer on curl's standard input, in no command line.
 listener_up() {
-  curl -fsS --max-time 2 -H "Authorization: Bearer $(jq -r .listener_token "$STACK")" \
-    "http://127.0.0.1:$(port listener)/v1/sessions"
+  printf 'Authorization: Bearer %s' "$(jq -r .listener_token "$STACK")" |
+    curl -fsS --max-time 2 -H @- "http://127.0.0.1:$(port listener)/v1/sessions"
 }
 
 start_listener() {

@@ -127,6 +127,8 @@ filterTest(
     await expect(search).toHaveValue(scene.query);
     await expect(page.getByText("No issues match these filters.")).toBeVisible();
     await assertPageFits(page);
+    await expect(search).toBeVisible();
+    // The wait above drew the search box, and a drawn element has a box, so the box is there.
     const box = await search.boundingBox();
     const viewport = page.viewportSize();
     if (!box || !viewport) throw new Error("The search box or viewport could not be measured");
@@ -235,6 +237,8 @@ bandsTest(
       range.selectNodeContents(node);
       return range.getBoundingClientRect().right;
     });
+    await expect(pill).toBeVisible();
+    // The wait above drew the key pill, and a drawn element has a box, so the box is there.
     const pillBox = await pill.boundingBox();
     if (pillBox === null) {
       throw new Error("project header is not visible");

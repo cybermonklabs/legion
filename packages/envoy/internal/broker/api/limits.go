@@ -410,13 +410,13 @@ func clientAddress(r *http.Request, trustedProxyHeader string) string {
 
 // refuseAddress writes 429 RATE_LIMITED and reports refused when r's source address has no request
 // left in its bucket: POST /v1/launcher-credentials/token's first limit, spent before the token is
-// verified. Otherwise it answers giveBack, which returns the request to the bucket: tokenLogin
-// calls it only for a login whose token verified and that the broker then could not complete
-// (5xx); a token that does not verify always keeps the request it spent.
+// verified. Otherwise it answers giveBack, which returns the request to the bucket at the time it
+// is called: tokenLogin calls it only for a login whose token verified and that the broker then
+// could not complete (5xx); a token that does not verify always keeps the request it spent.
 func (l *launcherLimiter) refuseAddress(w http.ResponseWriter, r *http.Request) (giveBack func(), refused bool) {
-	giveBack, ok := l.perAddress.TakeAt(clientAddress(r, l.trustedProxyHeader), time.Now())
+	giveBackAt, ok := l.perAddress.TakeAt(clientAddress(r, l.trustedProxyHeader), time.Now())
 	if ok {
-		return giveBack, false
+		return func() { giveBackAt(time.Now()) }, false
 	}
 	refuseWithRetryAfter(w, l.perAddress.Every(), "too many launcher credential requests; try again later")
 	return nil, true
@@ -425,15 +425,15 @@ func (l *launcherLimiter) refuseAddress(w http.ResponseWriter, r *http.Request) 
 // refuseAccount writes 429 RATE_LIMITED and reports refused when subject, an account a token login
 // has just verified, has no login left in its account:<subject> bucket. Only a verified token
 // spends it, after its address's bucket. Otherwise it answers giveBack, which returns the login to
-// the bucket: tokenLogin calls it only for a login the broker could not complete (5xx), such as
-// one the database was away for. The Legion daemon retries such a login every few seconds through
-// a database outage, and the broker decided nothing about its token, so there is no guessing to
-// slow; spent, those retries would empty the bucket and refuse the daemon's first login after the
-// outage 429. A refused credential (any 4xx) keeps its login spent.
+// the bucket at the time it is called: tokenLogin calls it only for a login the broker could not
+// complete (5xx), such as one the database was away for. The Legion daemon retries such a login
+// every few seconds through a database outage, and the broker decided nothing about its token, so
+// there is no guessing to slow; spent, those retries would empty the bucket and refuse the
+// daemon's first login after the outage 429. A refused credential (any 4xx) keeps its login spent.
 func (l *launcherLimiter) refuseAccount(w http.ResponseWriter, subject string) (giveBack func(), refused bool) {
-	giveBack, ok := l.perLogin.TakeAt("account:"+subject, time.Now())
+	giveBackAt, ok := l.perLogin.TakeAt("account:"+subject, time.Now())
 	if ok {
-		return giveBack, false
+		return func() { giveBackAt(time.Now()) }, false
 	}
 	refuseWithRetryAfter(w, l.perLogin.Every(), "too many token logins for this ServiceAccount; try again later")
 	return nil, true

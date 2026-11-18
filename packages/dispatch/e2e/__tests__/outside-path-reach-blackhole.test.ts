@@ -15,13 +15,13 @@ import {
   fakeDispatch,
   holdingTarget,
   lineFor,
+  probingRow,
   reachFixtures,
-  row,
   verdict,
   withoutTools,
 } from "./outside-path-reach-fixtures";
 
-const { scratch, drive, list, pathPacing } = reachFixtures();
+const { scratch, drive, list, pathWithCurl } = reachFixtures();
 
 /** The script's own probe, run once here against the blackholed address: exit 28 with the lookup
  *  done and no connect is a drop, and the rows run; exit 7 is a network that refuses the address
@@ -66,22 +66,17 @@ const blackholeSkip = await blackholeDrops();
 if (blackholeSkip !== null) console.warn(`Skipped the blackholed rows: ${blackholeSkip}.`);
 
 describe.concurrent("outside-path-reach.sh", () => {
-  // A dropped address must not hold a probe past curl's own timeouts: one that did would hold its
-  // round into the next, and the last round's into the end of the run. The row reads the run's
-  // order, not its duration: the fake curl writes `probe` to a log as it starts a probe of the
-  // blackholed address and `ended` once that probe is over, and the `sleep` first on PATH writes
-  // `slept 6` once the sleep between two rounds is over. Without its `slept 6` lines the log reads
-  // `probe`, `ended` five times: each probe was over before the next round's probe started, and
-  // the last before the run ended. Without its `ended` lines it reads `probe`, `slept 6` four
-  // times, then `probe`: the rounds waited the whole 6 s. The margin is 3 s: a probe must end, at
-  // curl's 3 s connect timeout, before the next round's probe starts, after the round's 6 s sleep.
-  // A probe that started late under load may still end after the `slept 6` beside it.
-  row(withoutTools || blackholeSkip !== null)(
-    "reads a blackholed address as unreachable and passes, each probe of it ending within its own round",
+  // A dropped address never answers, so a probe of it ends only at a timeout: curl's own, which
+  // keeps the run to its rounds, or the kernel's, which on Linux gives up on the SYN after about
+  // two minutes, and curl says exit 28 for either. So the row does not read how long the run
+  // took, which this host's load moves: it reads what the script asked of the device's curl, the
+  // 3 s to connect that the classifier's rules count on and the 5 s in all, in each round. That
+  // the probes of a round run at once is `outside-path-reach.test.ts`'s holding-targets row.
+  probingRow(withoutTools || blackholeSkip !== null)(
+    "reads a blackholed address as unreachable and passes, curl's own timeouts bounding each probe of it",
     async () => {
       const origin = fakeDispatch();
-      const order = join(scratch, `order-${randomUUID()}`);
-      const address = `telnet://${blackhole.host}:${blackhole.port}`;
+      const asked = join(scratch, `asked-${randomUUID()}`);
       try {
         const run = await drive(
           {
@@ -89,30 +84,33 @@ describe.concurrent("outside-path-reach.sh", () => {
             OUTSIDE_PATH_TARGETS: await list(`blackhole ${blackhole.host} ${blackhole.port}`),
           },
           {
-            path: pathPacing(
-              `case "$*" in *${address}) echo probe >>${order}; ${curl} "$@"; status=$?; ` +
-                `echo ended >>${order}; exit "$status" ;; esac`,
-              order
+            path: pathWithCurl(
+              `case "$*" in *telnet://${blackhole.host}:${blackhole.port}) echo " $* " >>${asked} ;; esac`
             ),
           }
         );
         expect(lineFor(run, "blackhole")).toContain(" unreachable; curl exit 28,");
+        expect(lineFor(run, "blackhole")).toEndWith(
+          "; probes: unreachable, unreachable, unreachable, unreachable, unreachable"
+        );
         expect(verdict(run)).toStartWith("PASS");
         expect(run.code).toBe(0);
-        const log = readFileSync(order, "utf8").split("\n");
-        expect(log.filter((line) => line !== "slept 6").join("\n")).toBe(
-          "probe\nended\n".repeat(5)
-        );
-        expect(log.filter((line) => line !== "ended").join("\n")).toBe(
-          `${"probe\nslept 6\n".repeat(4)}probe\n`
-        );
+        expect(
+          readFileSync(asked, "utf8")
+            .trimEnd()
+            .split("\n")
+            .map((call) => [
+              call.includes(" --connect-timeout 3 "),
+              call.includes(" --max-time 5 "),
+            ])
+        ).toEqual(Array(5).fill([true, true]));
       } finally {
         origin.stop(true);
       }
     }
   );
 
-  row(withoutTools || blackholeSkip !== null)(
+  probingRow(withoutTools || blackholeSkip !== null)(
     "fails the blackholed run once the holding target is added beside it",
     async () => {
       const origin = fakeDispatch();

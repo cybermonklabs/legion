@@ -57,7 +57,7 @@ func signJWT(key *rsa.PrivateKey, appID string, now time.Time) (string, error) {
 }
 
 // generateJWT is GenerateJWT with the App's private key parsed once: every mint signs a JWT, and
-// a token narrowed to a repository set is minted per set, so the parse — nearly the whole cost of
+// one is minted per role, owner and read flag (leaseScope), so the parse — nearly the whole cost of
 // a JWT — is kept rather than paid again. It is kept by the PEM text, so a key the configuration
 // replaces is parsed anew, and two Apps configured with one key share the one parse.
 func (m *Manager) generateJWT(appID, privateKeyPEM string, now time.Time) (string, error) {

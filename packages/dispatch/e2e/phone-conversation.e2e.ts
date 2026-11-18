@@ -1225,6 +1225,7 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
     // falling through when it never comes.
     await expect.poll(() => sent).toBe(true);
 
+    // The wait above drew Reply and nothing has pressed or scrolled since, so its box is there.
     const before = await reply.boundingBox();
     if (before === null) throw new Error("the thread's Reply has no box");
     await page.mouse.move(before.x + before.width / 2, before.y + before.height / 2);
@@ -1383,11 +1384,20 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
     const jump = page.getByTestId("jump-to-latest");
     const turns = page.getByRole("list", { name: "Conversation turns" });
     await expect(page.getByRole("button", { name: "Accept suggestion" })).toBeVisible();
-    // Where the page settled on the latest turn, the one place in the band with no pill.
-    const settled = await page.evaluate(() => window.scrollY);
+    // Where the page settled on the latest turn, the one place in the band with no pill: read
+    // until two reads a poll apart agree, so the page has come to rest there.
+    let settled = Number.NaN;
+    await expect
+      .poll(async () => {
+        const was = settled;
+        settled = await page.evaluate(() => window.scrollY);
+        return settled === was;
+      })
+      .toBe(true);
     // The band ends where the newest card has gone off the top of the screen - its bottom is
     // the scroll position the sweep stops at - so every control on that card is hit-tested on
-    // its way up, not only the header row the card opens with.
+    // its way up, not only the header row the card opens with. The page came to rest above with
+    // the cards drawn, so the bottom read here is where the first card stays.
     const end = await turns.evaluate((list) => {
       const first = list.firstElementChild;
       if (first === null) throw new Error("expected a first turn");
