@@ -508,7 +508,7 @@ func readIssueAskStateWrites(
 		return nil, err
 	}
 	// An issue's documents take no copy lock (lockProjectCopies): the caller holds the issue's
-	// row, as every transaction reading or marking the copies among its documents does.
+	// owner lock, as every transaction reading or marking the copies among its documents does.
 	sources, err := readCopiedAskSources(ctx, tx, artifactID, owner, blocks, unindexedAskBlockIDs(blocks, rows))
 	if err != nil {
 		return nil, err
