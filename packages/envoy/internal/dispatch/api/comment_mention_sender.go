@@ -96,8 +96,8 @@ type mentionSend struct {
 	parks int
 	// heldFor is the session this send last waited to reach, heldBy the earlier event it waited
 	// behind, and heldSince when it first waited, all zero for a send that has not waited; warned
-	// is that its WARN was logged (mentionSender.park). A send that waited reads the rule again for
-	// heldFor before it tries once more (sendCommentMention).
+	// is that a park logged its WARN (mentionSender.park, reportLate). A send that waited reads the
+	// rule again for heldFor before it tries once more (sendCommentMention).
 	heldFor   string
 	heldBy    model.MentionCopyHolder
 	heldSince time.Time
@@ -232,6 +232,10 @@ type mentionSender struct {
 	// parked is the lanes whose head send waits for an earlier event of its comment's owner: no
 	// goroutine serves one, and none is in ready, until unpark.
 	parked map[string]struct{}
+	// waits is, for each held lane (heldLane), what its sends wait behind: the session and the
+	// earlier event its head send last found the session must take first (park). It goes with the
+	// lane (next), and each send's WARN names it (warnHeld).
+	waits map[string]heldWait
 	// ready is the lanes waiting for a goroutine, in the order they started waiting.
 	ready []string
 	// serving is how many goroutines serve lanes.
@@ -273,8 +277,8 @@ func newMentionSender(
 	m := &mentionSender{
 		lifetime: lifetime, ctx: ctx, cancel: cancel, send: send, refresh: refresh, release: release,
 		capacity: maxQueuedMentionSends, claimRefresh: claimRefresh, heldWarnAfter: model.MentionCopyHeldWarnAfter,
-		lanes: map[string][]mentionSend{}, parked: map[string]struct{}{}, claims: map[mentionKey]time.Time{},
-		held: map[mentionKey]struct{}{}, stopped: make(chan struct{}),
+		lanes: map[string][]mentionSend{}, parked: map[string]struct{}{}, waits: map[string]heldWait{},
+		claims: map[mentionKey]time.Time{}, held: map[mentionKey]struct{}{}, stopped: make(chan struct{}),
 	}
 	m.done.Add(1)
 	go m.keepClaims()
@@ -361,7 +365,9 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 
 // serve sends lane's queue, then any lane waiting for a goroutine, until none waits. A send that
 // waited for an earlier event of its comment's owner parks the owner's sends to its recipient
-// (park), and the goroutine goes on with what is left of its lane, or a lane that waits.
+// (park), and the goroutine goes on with what is left of its lane, or a lane that waits. A send
+// that leaves a held lane past heldWarnAfter with no WARN logged for it logs its WARN as it goes
+// (reportLate).
 func (m *mentionSender) serve(lane string) {
 	defer m.done.Done()
 	var finished mentionKey
@@ -374,6 +380,8 @@ func (m *mentionSender) serve(lane string) {
 		if again, waits := m.send(m.ctx, item); waits {
 			m.park(lane, again)
 			finished = mentionKey{}
+		} else {
+			m.reportLate(lane, item)
 		}
 	}
 }
@@ -403,6 +411,7 @@ func (m *mentionSender) next(lane string, finished mentionKey) (mentionSend, str
 	for parked || len(m.lanes[lane]) == 0 {
 		if !parked {
 			delete(m.lanes, lane)
+			delete(m.waits, lane)
 		}
 		if len(m.ready) == 0 {
 			m.serving--
@@ -447,8 +456,9 @@ func heldLane(lane, owner string) string {
 // The wait has no bound, so it shows instead: the held gauges count every send on a held lane
 // (heldSamples), each from when it started waiting there, and each send held heldWarnAfter since it
 // first waited - the one that waited and every send of its owner queued behind it - is logged once
-// at WARN, naming its owner, the earlier event it waits behind and that event's last publish error,
-// beside the ERROR the outbox writes for that event's own failed publish, which is the cause.
+// at WARN (warnHeld), naming its owner, the earlier event it waits behind and that event's last
+// publish error, beside the ERROR the outbox writes for that event's own failed publish, which is
+// the cause: here when a park finds it past the threshold, else as it leaves the lane (reportLate).
 func (m *mentionSender) park(lane string, item mentionSend) {
 	item.parks++
 	now := time.Now()
@@ -479,6 +489,8 @@ func (m *mentionSender) park(lane string, item mentionSend) {
 		m.lanes[lane] = kept
 		m.lanes[held] = moved
 	}
+	wait := heldWait{session: item.heldFor, by: item.heldBy}
+	m.waits[held] = wait
 	var warned []mentionSend
 	for index := range m.lanes[held] {
 		send := &m.lanes[held][index]
@@ -490,12 +502,42 @@ func (m *mentionSender) park(lane string, item mentionSend) {
 	m.parked[held] = struct{}{}
 	m.mu.Unlock()
 	for _, send := range warned {
-		slog.Warn("dispatch: a comment mention's send waits behind an earlier event of its owner",
-			"owner", owner, "comment", send.comment.ID, "target", send.mention.Target, "session", item.heldFor,
-			"event_id", item.heldBy.EventID, "publish_error", deref(item.heldBy.PublishError),
-			"held_for", now.Sub(send.heldSince).Round(time.Second))
+		warnHeld(send, wait, now)
 	}
 	time.AfterFunc(delay, func() { m.unpark(held) })
+}
+
+// heldWait is what the sends of a held lane wait behind: the session the lane's head send last
+// waited to reach and the earlier event it found that session must take first.
+type heldWait struct {
+	session string
+	by      model.MentionCopyHolder
+}
+
+// warnHeld logs the one WARN of send, held behind wait since send.heldSince, as of now: its owner,
+// the earlier event it waits behind and that event's last publish error, beside the ERROR the
+// outbox writes for that event's own failed publish, which is the cause.
+func warnHeld(send mentionSend, wait heldWait, now time.Time) {
+	slog.Warn("dispatch: a comment mention's send waits behind an earlier event of its owner",
+		"owner", send.owner(), "comment", send.comment.ID, "target", send.mention.Target, "session", wait.session,
+		"event_id", wait.by.EventID, "publish_error", deref(wait.by.PublishError),
+		"held_for", now.Sub(send.heldSince).Round(time.Second))
+}
+
+// reportLate logs the WARN of item, a send that has just left lane, a held lane, with no wait
+// left, when it had waited there heldWarnAfter and no WARN was logged for it: its wait passed the
+// threshold while it was in flight, or while it waited behind a send whose try was in flight,
+// which no park saw. Every send held past the threshold is so reported once, however its wait
+// ends.
+func (m *mentionSender) reportLate(lane string, item mentionSend) {
+	now := time.Now()
+	if item.heldSince.IsZero() || item.warned || now.Sub(item.heldSince) < m.heldWarnAfter {
+		return
+	}
+	m.mu.Lock()
+	wait := m.waits[lane]
+	m.mu.Unlock()
+	warnHeld(item, wait, now)
 }
 
 // heldSamples is, by owner, how many sends wait on a held lane behind an earlier event of their
