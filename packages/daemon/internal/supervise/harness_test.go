@@ -168,8 +168,12 @@ func newMemStore() *memStore {
 
 // HoldSessions is the store's: the first claim to record a name holds it, all of one call's names
 // or none, a call whose new names take the claim past MaxHeldNamesPerClaim records none, and the
-// answer about a name never changes after. Every claim of a harness is of one project.
-func (s *memStore) HoldSessions(_ context.Context, _ string, token claim.Token, holds []Hold) ([]claim.Token, error) {
+// answer about a name never changes after. Every claim of a harness is of one project. A call on a
+// context already cancelled answers its error and holds nothing, as a query of Postgres does.
+func (s *memStore) HoldSessions(ctx context.Context, _ string, token claim.Token, holds []Hold) ([]claim.Token, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.failures["HoldSessions"]; err != nil {

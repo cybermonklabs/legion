@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -175,6 +176,26 @@ func TestAClaimThatDoesNotHoldItsSessionSendsNoStopOfIt(t *testing.T) {
 			wantStops(t, *stopped, row.want)
 		})
 	}
+}
+
+// The hold check a clean stop asks first runs on a context the decision's end does not cancel
+// (sessionGone): a holder that has not admitted its names since a restart asks the store, and the
+// daemon's stop must not cut that ask short, since sessionStop.send was written so the daemon's
+// stop does not cut a clean stop short. So a restarted holder whose decision's context has ended
+// is still stopped, once.
+//
+// The control (the pull request records the run): the check on the decision's context, as
+// 3bce483568 wrote it, records no stop.
+func TestARestartedHoldersStopIsNotCutShortByTheEndOfItsDecision(t *testing.T) {
+	h, stopped := sessionStops(t)
+	h.reach(StateReady)
+	h.restart()
+	ended, cancel := context.WithCancel(h.ctx)
+	cancel()
+	h.m.mu.Lock()
+	h.m.sessionGone(ended)
+	h.m.mu.Unlock()
+	wantStops(t, *stopped, []string{session})
 }
 
 // A suspension that ends the claim's process sends the clean stop of its Envoy session, so the
