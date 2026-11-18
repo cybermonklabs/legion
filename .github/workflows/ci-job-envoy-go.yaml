@@ -35,10 +35,10 @@ jobs:
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
-    # plain race-impossible step's three 10-minute runs, which is 31; after that step's 5 minutes
-    # (its measured 2 before the API's claim model joined it, the model's 2 min 10 s, and the API's
-    # test build) the unit step's own 20 is 26; after the unit step, which runs strictly fewer
-    # packages than the 35 minutes it measured before the race lane's left it and so cannot
+    # plain race-impossible step's runs of 10, 5 and 10 minutes, which is 26; after that step's 5
+    # minutes (its measured 2 before the API's claim model joined it, the model's 2 min 30 s, and
+    # the API's test build) the unit step's own 20 is 26; after the unit step, which runs strictly
+    # fewer packages than the 35 minutes it measured before the race lane's left it and so cannot
     # exceed that, the store-form count's own 5 is 46 (two packages, which go test starts at once
     # with -p at least 2, so its -timeout bounds the step); after that step's seconds, the
     # database skip count's own timeout-minutes of 25 is 66
@@ -127,12 +127,13 @@ jobs:
       # lane's own packages and those files' //go:build !race and raceEnabled, so a test added to
       # either and missing here fails the ci-filters job naming this step. Measured over three
       # runs on a two-vCPU pod: the bus under a tenth of a second and the documents package 92 to
-      # 127 s; and on a dev box at GOMAXPROCS=2, the claim model's four periods 1 min 59 s for the
-      # sender as built and 11 s for its blind control. So 10 minutes each is ample.
+      # 127 s; and on a dev box at GOMAXPROCS=2, the claim model's three periods 2 min 30 s, the
+      # sender as built and its blind control together. So 10 minutes each for the bus and the
+      # documents package is ample, and the model's 5 is twice its run.
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
-          go test -count=1 -timeout 10m -run '^(TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
+          go test -count=1 -timeout 5m -run '^(TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       # Everything the three race jobs run is left out here, since they run it under the detector,
