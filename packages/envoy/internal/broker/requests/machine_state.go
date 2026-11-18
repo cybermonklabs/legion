@@ -1872,25 +1872,37 @@ func verifyRecordBody(recordID, body string) (record.Body, error) {
 // own id, its embedded request object still verifies, and it carries exactly one terminal
 // decision, an approval by the login the record names as its approver — a tampered row, a forged
 // grant with no approval event, an approval naming another login, or a second decision all fail
-// here. An automatic grant (no record_id) needs none of this and always passes. Called by Values
-// and reuseLiveGrant. A genuine dependency failure inside m.Chain.Verify (a Postgres error from
-// FetchRecord or FetchDecisions) is returned as-is rather than folded into ErrGrantChainInvalid;
-// only record.ErrChainBroken — every reason the chain itself does not verify — is wrapped.
+// here. An automatic grant (no record_id) needs none of this and always passes. A genuine
+// dependency failure inside m.Chain.Verify (a Postgres error from FetchRecord or FetchDecisions)
+// is returned as-is rather than folded into ErrGrantChainInvalid; only record.ErrChainBroken —
+// every reason the chain itself does not verify — is wrapped. It is verifyChain without the
+// record's id; the releases (checkRelease, for Values and AirlockValues) and reuseLiveGrant call
+// verifyChainForRelease, which logs a chain that fails (GrantChainInvalidMessage).
 func (m *Machine) VerifyChain(ctx context.Context, grantID string) error {
-	var recordID *string
-	if err := m.Store.Pool.QueryRow(ctx, `select r.record_id from grants g join requests r on r.id=g.request_id where g.id=$1`, grantID).Scan(&recordID); err != nil {
-		return err
+	_, err := m.verifyChain(ctx, grantID)
+	return err
+}
+
+// verifyChain is VerifyChain's whole check, and also answers the id of the credential-request
+// record the grant's chain rests on, so a release that logs a chain that fails names that record
+// without reading the grant's row a second time. The id is "" for an automatic grant, which has
+// no record and always passes, and for a grant whose row could not be read; it is the record's
+// whenever the error is ErrGrantChainInvalid.
+func (m *Machine) verifyChain(ctx context.Context, grantID string) (recordID string, err error) {
+	var id *string
+	if err := m.Store.Pool.QueryRow(ctx, `select r.record_id from grants g join requests r on r.id=g.request_id where g.id=$1`, grantID).Scan(&id); err != nil {
+		return "", err
 	}
-	if recordID == nil {
-		return nil
+	if id == nil {
+		return "", nil
 	}
-	if _, err := m.Chain.Verify(ctx, *recordID); err != nil {
+	if _, err := m.Chain.Verify(ctx, *id); err != nil {
 		if errors.Is(err, record.ErrChainBroken) {
-			return fmt.Errorf("%w: %s", ErrGrantChainInvalid, err)
+			return *id, fmt.Errorf("%w: %s", ErrGrantChainInvalid, err)
 		}
-		return err
+		return *id, err
 	}
-	return nil
+	return *id, nil
 }
 
 // RevokeGrant ends a grant a session holds — a session may end only its own grant. Revoking an

@@ -72,6 +72,26 @@ const PendingLeftOutMessage = "broker: a pending request's record does not verif
 // request object.
 const RequestEndedBrokerMovedMessage = "broker: a pending request's record is signed for another broker address; it is ended, and its session's new request replaces it"
 
+// GrantChainInvalidMessage is logged, at WARN, each time a release finds that a grant's whole
+// approval chain no longer verifies (ErrGrantChainInvalid, verifyChainForRelease), in one of three
+// places, which at= names: values, the session's own release (Values), which the session is
+// answered GRANT_CHAIN_INVALID for; airlock, the airlock proxy's read of the values it swaps in
+// (AirlockValues), which the proxy answers the same; and reuse, Create's check of a live grant it
+// would hand back for the same names (reuseLiveGrant), which passes that grant over for the next
+// newest and, with none left, asks afresh. Most often the grant's record was signed for another
+// BROKER_PUBLIC_URL ("aud does not match"): a broker of another address that shares this database
+// made the grant, or this broker did before its public URL changed, and the grant's session asks
+// here now, its enrollment having adopted the grant (enroll.go, adopt). So these lines count each
+// release such a session was refused and each such grant its next ask passed over. It carries
+// grant=<the grant's id>, record_id=<the credential-request record its chain rests on>,
+// enrollment=<the enrollment that holds the grant: the caller's>, at= and reason=<the error's
+// text, which names the link of the chain that failed>, and nothing else: no secret value, no
+// token and no request object. A database failure inside the chain check (verifyChain: reading
+// the grant, its record or its decisions) writes no such line, since it is no failed chain, and
+// the release answers that error as it is. ApplyDecision's refusal of a record whose chain is
+// broken is a decision and no release, and writes none either.
+const GrantChainInvalidMessage = "broker: a grant's approval chain does not verify; it releases nothing"
+
 // Release is one release of a grant: the values the session may hold, when the grant expires,
 // and, when the grant holds a name behind the airlock, how to reach the proxy that holds the
 // rest.
@@ -95,22 +115,26 @@ type grantRelease struct {
 // checkRelease is every check a release of a grant makes before it reads a value, shared by
 // Values and AirlockValues so that what the broker proxies and what it hands over are held to
 // one rule. It re-checks the enrollment and the grant, re-verifies the grant's whole approval
-// chain (VerifyChain), and — when the policy has changed since the grant's request was decided,
-// any granted name is a service's (anyServiceOwned: the policy's version does not cover which
-// service BROKER_SERVICES' accounts prove), or any granted name carries a requesters tag
-// (anyListed: an entry naming a service matches by those same accounts) — that the current
-// policy still allows the session, with the names its operator withheld from it, every granted
-// name under the login that decided it, or, for a grant the model judge decided, under the
-// judge the rules still give that name (stillAllowed), that no granted name's max-grant is now
-// shorter than the lifetime the grant's request signed (overMaxGrant), and that no granted
-// name's airlock entry has changed since the request recorded its fingerprint, which ends the
-// grant for good.
+// chain (verifyChainForRelease, which logs a chain that fails), and — when the policy has
+// changed since the grant's request was decided, any granted name is a service's
+// (anyServiceOwned: the policy's version does not cover which service BROKER_SERVICES' accounts
+// prove), or any granted name carries a requesters tag (anyListed: an entry naming a service
+// matches by those same accounts) — that the current policy still allows the session, with the
+// names its operator withheld from it, every granted name under the login that decided it, or,
+// for a grant the model judge decided, under the judge the rules still give that name
+// (stillAllowed), that no granted name's max-grant is now shorter than the lifetime the grant's
+// request signed (overMaxGrant), and that no granted name's airlock entry has changed since the
+// request recorded its fingerprint, which ends the grant for good.
 //
 // owner, when it is not empty, is the enrollment the caller proved, which must be the grant's own
 // (ErrNotYours). AirlockValues passes none: a proxy connection proves its grant by holding one of
 // that grant's placeholders, which AirlockConnection checked, and the session it belongs to is
 // what the row answers rather than what the caller claims.
-func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (grantRelease, error) {
+//
+// at is the release GrantChainInvalidMessage names when the chain fails: "values" from Values and
+// "airlock" from AirlockValues. The line's enrollment is the grant's own, read here, which is the
+// owner the caller proved wherever it proved one.
+func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (grantRelease, error) {
 	var enrollmentID, requestID, reason, policyVersion, decidedBy string
 	var expires *time.Time
 	var lifetime *int
@@ -134,7 +158,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 	if !live {
 		return grantRelease{}, ErrGrantNotLive
 	}
-	if err := m.VerifyChain(ctx, grantID); err != nil {
+	if err := m.verifyChainForRelease(ctx, grantID, enrollmentID, at); err != nil {
 		return grantRelease{}, err
 	}
 	granted, err := requestedSecrets(ctx, m.Store.Pool, requestID)
@@ -191,6 +215,22 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 	return grantRelease{enrollmentID: enrollmentID, requestID: requestID, reason: reason, expires: expires, granted: granted, set: set}, nil
 }
 
+// verifyChainForRelease is verifyChain for a release of grantID, which enrollmentID holds: the
+// session's (Values) and the airlock proxy's (AirlockValues), both through checkRelease, and
+// Create's reuse of a live grant (reuseLiveGrant). A chain that fails, ErrGrantChainInvalid and
+// only that, writes GrantChainInvalidMessage naming at, the release, with the error's text as its
+// reason; any other error, a database failure inside the check among them, writes nothing, since
+// it is no failed chain. The error is returned as verifyChain answered it, so each caller refuses
+// or passes over exactly as before the line. ApplyDecision, which also answers
+// ErrGrantChainInvalid, is a decision and no release, and does not come through here.
+func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollmentID, at string) error {
+	recordID, err := m.verifyChain(ctx, grantID)
+	if errors.Is(err, ErrGrantChainInvalid) {
+		slog.Warn(GrantChainInvalidMessage, "grant", grantID, "record_id", recordID, "enrollment", enrollmentID, "at", at, "reason", err.Error())
+	}
+	return err
+}
+
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:
 // nil for a grant that lasts until its session ends. Every call runs checkRelease's whole set of
 // re-checks and then the release loop both releases of a grant run (readRelease, release.go). A
@@ -218,7 +258,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 // row and its ReleasedMessage line (auditGrantUsed); nothing else reads them, and they decide
 // nothing about the release.
 func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narrowing *secrets.GitHubNarrowing, call ReleaseCall) (Release, error) {
-	checked, err := m.checkRelease(ctx, grantID, enrollmentID)
+	checked, err := m.checkRelease(ctx, grantID, enrollmentID, "values")
 	if err != nil {
 		return Release{}, err
 	}
@@ -925,34 +965,42 @@ type querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// matchingRequest runs query (whose rows are a request id, that request's own live grant's id and
-// that request's secret names, with $1 bound to enrollmentID and $2 to lifetime, the lifetime the
-// request must have asked for) and answers the first request whose names are exactly sorted with
-// the grant its row named, or "" for both when none is. Names are compared
-// as sets of whole strings, never as one joined string, so a name containing a separator cannot
-// pass for two names. The grant's id is read beside the request's rather than looked up again
-// because reuseLiveGrant ends exactly the grant this row matched when the policy no longer allows
-// it.
+// liveMatch is one row matchingRequests answers: a request whose names are exactly the ones asked
+// for, and the live grant the row named beside it.
+type liveMatch struct {
+	requestID, grantID string
+}
+
+// matchingRequests runs query (whose rows are a request id, that request's own live grant's id
+// and that request's secret names, with $1 bound to enrollmentID and $2 to lifetime, the lifetime
+// the request must have asked for) and answers every request whose names are exactly sorted, each
+// with the grant its row named, in the query's own order, or none. Names are compared as sets of
+// whole strings, never as one joined string, so a name containing a separator cannot pass for
+// two names. The grant's id is read beside the request's rather than looked up again because
+// reuseLiveGrant ends exactly the grant this row matched when the policy no longer allows it.
+// It reads every row and closes them before it returns, so no connection is held open while the
+// caller checks each match, which reads and writes on connections of its own.
 // Which column $1 is compared against is the query's own; every query here names the requests
 // row's own enrollment_id, the column an adoption rewrites.
-func matchingRequest(ctx context.Context, q querier, query, enrollmentID string, lifetime *int, sorted []string) (requestID, grantID string, _ error) {
+func matchingRequests(ctx context.Context, q querier, query, enrollmentID string, lifetime *int, sorted []string) ([]liveMatch, error) {
 	rows, err := q.Query(ctx, query, enrollmentID, lifetime)
 	if err != nil {
-		return "", "", err
+		return nil, err
 	}
 	defer rows.Close()
+	var matches []liveMatch
 	for rows.Next() {
-		var id, grant string
+		var match liveMatch
 		var names []string
-		if err := rows.Scan(&id, &grant, &names); err != nil {
-			return "", "", err
+		if err := rows.Scan(&match.requestID, &match.grantID, &names); err != nil {
+			return nil, err
 		}
 		sort.Strings(names)
 		if slices.Equal(names, sorted) {
-			return id, grant, nil
+			matches = append(matches, match)
 		}
 	}
-	return "", "", rows.Err()
+	return matches, rows.Err()
 }
 
 // writtenBeforeMigration13 is the SQL predicate that request alias was written before migration
@@ -981,9 +1029,23 @@ func writtenBeforeMigration13(alias string) string {
 // (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules still
 // give its name, over the lifetime this reuse matched it on, the grant's own, and refuses one
 // whose secret the policy now tags as an administrator's), and its whole approval chain still
-// verifies (VerifyChain, the same check Values makes). A caller that already holds a live grant
-// for these exact names never re-asks a human who already approved it, a policy tightened since
-// then is never bypassed by reuse, and neither is a chain that no longer verifies.
+// verifies (verifyChainForRelease, the same check Values makes). A caller that already holds a
+// live grant for these exact names never re-asks a human who already approved it, a policy
+// tightened since then is never bypassed by reuse, and neither is a chain that no longer
+// verifies.
+// Every exact match is a candidate, newest grant first, and each gets those checks in turn. A
+// candidate whose chain fails is passed over for the next, and logged (GrantChainInvalidMessage,
+// at=reuse). A session's next enrollment adopts its earlier enrollment's live grants (enroll.go,
+// adopt), so a session that moved here from a broker of another BROKER_PUBLIC_URL sharing this
+// database can hold that broker's grant, whose chain fails here ("aud does not match"), and,
+// after its first grant here, a newer one of this broker for the same names. Taking the first
+// row the query happened to answer, as the lookup did with no order, could take the old grant on
+// any call and ask a person or the judge again on each until the old grant expired. Newest first,
+// the grant the session was given last is the one handed back, and an older one is checked, and
+// its failed chain logged, only when every newer one was passed over. Every other outcome stops
+// at that candidate, as with one: a policy end (below) answers no reusable grant, a grant no
+// longer live answers none, and any other error is returned. With no candidate left there is
+// none, and Create asks afresh.
 // A grant whose secret no longer lists this requester, and a judged grant of a secret the policy
 // now tags as an administrator's, are not merely passed over: each is ended for good here, as
 // Values ends it (errRequesterNotListed, errJudgedAdminSecret), and Create goes on to ask for
@@ -995,60 +1057,63 @@ func writtenBeforeMigration13(alias string) string {
 // a second time for names it already holds
 // (TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack).
 func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, names []string, lifetime *int, set *policy.Set) (Request, bool, error) {
-	id, grantID, err := matchingRequest(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
+	matches, err := matchingRequests(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
 		join request_secrets s on s.request_id=r.id
 		join grants g on g.request_id=r.id
 		where r.enrollment_id=$1 and (
 			r.lifetime_seconds is not distinct from $2 or ($2::int is null and `+writtenBeforeMigration13("r")+`)
 		) and r.state='granted' and g.revoked_at is null and `+grantUnexpired("g")+`
-		group by r.id, g.id`, enr.ID, lifetime, sortedCopy(names))
-	if err != nil || id == "" {
-		return Request{}, false, err
-	}
-	var rulesVersion, decidedBy string
-	if err := m.Store.Pool.QueryRow(ctx, `select rules_version, coalesce(decided_by, '') from requests where id=$1`, id).Scan(&rulesVersion, &decidedBy); err != nil {
-		return Request{}, false, err
-	}
-	granted, err := requestedSecrets(ctx, m.Store.Pool, id)
+		group by r.id, g.id order by g.created_at desc`, enr.ID, lifetime, sortedCopy(names))
 	if err != nil {
 		return Request{}, false, err
 	}
-	if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) {
-		requester, err := m.requester(ctx, m.Store.Pool, enr)
+	for _, match := range matches {
+		var rulesVersion, decidedBy string
+		if err := m.Store.Pool.QueryRow(ctx, `select rules_version, coalesce(decided_by, '') from requests where id=$1`, match.requestID).Scan(&rulesVersion, &decidedBy); err != nil {
+			return Request{}, false, err
+		}
+		granted, err := requestedSecrets(ctx, m.Store.Pool, match.requestID)
 		if err != nil {
 			return Request{}, false, err
 		}
-		for _, g := range granted {
-			err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
-			switch {
-			case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret):
-				// The list dropped this requester while the grant was live, or the secret became
-				// an administrator's, which a person approves every release of: end the grant
-				// here as Values does, rather than leave it live and unrevoked, and answer no
-				// reusable grant so Create goes on to ask for the names afresh.
-				if ended := m.endGrant(ctx, grantID, err); !errors.Is(ended, ErrGrantNotLive) {
-					return Request{}, false, ended
+		if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) {
+			requester, err := m.requester(ctx, m.Store.Pool, enr)
+			if err != nil {
+				return Request{}, false, err
+			}
+			for _, g := range granted {
+				err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester)
+				switch {
+				case errors.Is(err, errRequesterNotListed) || errors.Is(err, errJudgedAdminSecret):
+					// The list dropped this requester while the grant was live, or the secret
+					// became an administrator's, which a person approves every release of: end
+					// the grant here as Values does, rather than leave it live and unrevoked, and
+					// answer no reusable grant so Create goes on to ask for the names afresh.
+					if ended := m.endGrant(ctx, match.grantID, err); !errors.Is(ended, ErrGrantNotLive) {
+						return Request{}, false, ended
+					}
+					return Request{}, false, nil
+				case errors.Is(err, ErrGrantNotLive):
+					return Request{}, false, nil
+				case err != nil:
+					return Request{}, false, err
 				}
-				return Request{}, false, nil
-			case errors.Is(err, ErrGrantNotLive):
-				return Request{}, false, nil
-			case err != nil:
+			}
+		}
+		r, err := m.Get(ctx, match.requestID)
+		if err != nil {
+			return Request{}, false, err
+		}
+		if r.GrantID != nil {
+			if err := m.verifyChainForRelease(ctx, *r.GrantID, enr.ID, "reuse"); errors.Is(err, ErrGrantChainInvalid) {
+				continue
+			} else if err != nil {
 				return Request{}, false, err
 			}
 		}
+		return r, true, nil
 	}
-	r, err := m.Get(ctx, id)
-	if err != nil {
-		return Request{}, false, err
-	}
-	if r.GrantID != nil {
-		if err := m.VerifyChain(ctx, *r.GrantID); errors.Is(err, ErrGrantChainInvalid) {
-			return Request{}, false, nil
-		} else if err != nil {
-			return Request{}, false, err
-		}
-	}
-	return r, true, nil
+	return Request{}, false, nil
 }
 
 // RecordKind reads a credential-request record's own kind ("agent_secret" or
