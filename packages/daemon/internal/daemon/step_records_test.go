@@ -995,6 +995,7 @@ func stepsHold(read stepRecordsRead, want []stepWant) error {
 type stepClaimant struct {
 	r         *stepRecordsRig
 	token     claim.Token
+	issue     string
 	role      claim.Role
 	session   string
 	secret    string
@@ -1010,12 +1011,18 @@ type stepClaimant struct {
 	open []string
 }
 
-// worker is role's claimant: the one already registered, or the launch the daemon makes now,
-// registered and ready under a session of its own.
+// worker is role's claimant on the walk's issue (workerOf).
 func (r *stepRecordsRig) worker(role claim.Role) *stepClaimant {
+	r.t.Helper()
+	return r.workerOf(r.key, role)
+}
+
+// workerOf is role's claimant on issue, an issue of the walk's tree: the one already registered,
+// or the launch the daemon makes now, registered and ready under a session of its own.
+func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 	t := r.t
 	t.Helper()
-	token := r.token(role)
+	token := r.tokenOf(issue, role)
 	if c, ok := r.claims[token]; ok {
 		return c
 	}
@@ -1024,7 +1031,7 @@ func (r *stepRecordsRig) worker(role claim.Role) *stepClaimant {
 	r.built.mu.Lock()
 	address := r.built.address
 	r.built.mu.Unlock()
-	c := &stepClaimant{r: r, token: token, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: stepRecordsModel,
+	c := &stepClaimant{r: r, token: token, issue: issue, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: stepRecordsModel,
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
@@ -1200,7 +1207,7 @@ func (c *stepClaimant) grant() string {
 	t := c.r.t
 	t.Helper()
 	status, body := c.r.d.request(http.MethodPost, "/legion/v1/grants",
-		api.GrantRequest{SessionID: c.session, Secret: c.secret, Tree: c.r.key, Issue: c.r.key}, false)
+		api.GrantRequest{SessionID: c.session, Secret: c.secret, Tree: c.r.key, Issue: c.issue}, false)
 	if status != http.StatusOK {
 		t.Fatalf("the grant of %s = %d %s, want 200", c.token, status, body)
 	}
@@ -1273,36 +1280,71 @@ func (g *stepRecordsGitHub) pullRequest(branch string, number int) string {
 		number, state, merged, "merge-"+stepRecordsHead, mergeable, branch, stepRecordsHead)
 }
 
-// The record of a member of a tree: a child's acceptance is its tree's work, so the record of its
-// step 5 names the architect of the tree's root, with the session that architect's claim holds and
-// the model that answered it, and never an architect of the child's own, whom no claim serves. The
-// child stands in reviewing under the walk's root, on a pull request of its own; a person's
-// approval moves it to accepting, and the root's architect signs it off through its own route.
-func TestAChildsAcceptanceRecordNamesItsTreeArchitect(t *testing.T) {
-	r := newStepRecordsRig(t)
-	child := r.childInAccepting()
-	r.signOff(child)
-	architect := r.worker(claim.RoleArchitect)
-	own, tree := r.tokenOf(child, claim.RoleArchitect), r.token(claim.RoleArchitect)
-	r.waitStepsOf(child, "the child's acceptance as the tree architect's", func(read stepRecordsRead) error {
-		got := read.find("step", 5, 1)
-		switch {
-		case got.ID == "":
-			return fmt.Errorf("the read of %s holds no record of step 5: %+v", child, read)
-		case got.Role != "acceptance" || got.EndedAt == nil || got.Result != "passed":
-			return fmt.Errorf("the acceptance of %s is %+v, want role acceptance, ended passed", child, got)
-		case got.Agent != string(tree) || got.Agent == string(own):
-			return fmt.Errorf("the acceptance of %s names agent %q, want the tree architect %s, not the child's own %s", child, got.Agent, tree, own)
-		case got.Session != architect.session || got.Model != stepRecordsModel:
-			return fmt.Errorf("the acceptance of %s names session %q and model %q, want the tree architect's %s and %s", child, got.Session, got.Model, architect.session, stepRecordsModel)
+// The record of a member of a tree: a child's acceptance is the work of the architect that owns
+// the child when its step starts, so the record of its step 5 names that architect, with the
+// session its claim holds and the model that answered it last. The child stands in reviewing under
+// the walk's root, on a pull request of its own; a person's approval moves it to accepting.
+//   - The child's own architect holds its role: a launch an earlier daemon began, which the boot
+//     relaunches. It signs the child off through its own route while its last answer waits on its
+//     claim's feed (heldRequest), so the record's model is the one its stream read ahead of the
+//     request: the request waited for the child architect's stream, which the record names.
+//   - The control: the child's own architect was never started, so it holds no role, the tree's
+//     architect owns the child, and it signs the child off.
+func TestAChildsAcceptanceRecordNamesItsOwningArchitect(t *testing.T) {
+	acceptance := func(r *stepRecordsRig, child string, agent claim.Token, session, model string) {
+		r.t.Helper()
+		r.waitStepsOf(child, "the child's acceptance as its owning architect's", func(read stepRecordsRead) error {
+			got := read.find("step", 5, 1)
+			switch {
+			case got.ID == "":
+				return fmt.Errorf("the read of %s holds no record of step 5: %+v", child, read)
+			case got.Role != "acceptance" || got.EndedAt == nil || got.Result != "passed":
+				return fmt.Errorf("the acceptance of %s is %+v, want role acceptance, ended passed", child, got)
+			case got.Agent != string(agent) || got.Session != session || got.Model != model:
+				return fmt.Errorf("the acceptance of %s names agent %q, session %q and model %q; want %s, %s and %s", child, got.Agent, got.Session, got.Model, agent, session, model)
+			}
+			return nil
+		})
+	}
+	t.Run("the child's own architect holds its role", func(t *testing.T) {
+		r := newStepRecordsRig(t)
+		child, number := r.seedChildInReviewing()
+		own := r.tokenOf(child, claim.RoleArchitect)
+		if _, err := r.st.AdmitClaim(context.Background(), supervise.Claim{
+			Token: own, Project: r.project, Tree: r.key, Issue: child, Role: claim.RoleArchitect,
+			Generation: 1, State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)),
+		}); err != nil {
+			t.Fatalf("record the unfinished launch of %s's own architect: %v", child, err)
 		}
-		return nil
+		writePrompt(t, r.cfg, own)
+		r.restart()
+		architect := r.workerOf(child, claim.RoleArchitect)
+		r.publishReview(number, "APPROVED")
+		r.waitPhaseOf(child, phase.Accepting)
+		architect.model = "stand-in/child-architect-first"
+		architect.answer()
+		architect.send(shimwire.AgentStart{})
+		architect.waitState(supervise.StateWorking)
+		if status, body := r.heldRequest(architect, "stand-in/child-architect-second", "/legion/v1/signoff", map[string]any{
+			"grantId": architect.grant(), "issue": child,
+		}); status != http.StatusOK {
+			t.Fatalf("the sign-off of %s by its own architect = %d %s, want 200", child, status, body)
+		}
+		r.waitPhaseOf(child, phase.Retro)
+		acceptance(r, child, own, architect.session, "stand-in/child-architect-second")
+	})
+	t.Run("control: the child's own architect was never started", func(t *testing.T) {
+		r := newStepRecordsRig(t)
+		child := r.childInAccepting()
+		r.signOff(child)
+		architect := r.worker(claim.RoleArchitect)
+		acceptance(r, child, r.token(claim.RoleArchitect), architect.session, stepRecordsModel)
 	})
 }
 
 // childInAccepting seeds a child of the walk's root in reviewing (seedChildInReviewing) and has a
-// person approve its pull request's head (publishReview), which moves it to accepting, the tree
-// architect's step; it answers the child's key once the child stands there.
+// person approve its pull request's head (publishReview), which moves it to accepting, the step of
+// the architect that owns it; it answers the child's key once the child stands there.
 func (r *stepRecordsRig) childInAccepting() string {
 	r.t.Helper()
 	child, number := r.seedChildInReviewing()
@@ -1342,7 +1384,8 @@ func TestACompletionNamesTheModelItsStreamReadAheadOfIt(t *testing.T) {
 }
 
 // The record of the architect's own step: a move back out of accepting ends the acceptance, the
-// tree architect's step, as its sign-off does, so its record names the model whose answer the
+// step of the architect that owns the child (the tree's: the child's own was never started), as
+// its sign-off does, so its record names the model whose answer the
 // architect's stream read ahead of the request, though the claim's machine has not decided that
 // answer yet when the request arrives (heldRequest). The architect answers with one model and then
 // with another, and the child's acceptance ends failed, back at implementing, with the architect's
@@ -1375,7 +1418,8 @@ func TestAnArchitectsMoveBackOutOfAcceptingNamesTheModelThatAnsweredLast(t *test
 	})
 }
 
-// A park of a child in accepting ends the acceptance, the tree architect's own step, as a move
+// A park of a child in accepting ends the acceptance, the step of the architect that owns the
+// child (the tree's), as a move
 // back out of accepting does, so its record names the model whose answer the architect's stream
 // read ahead of the request (heldRequest). The child leaves the workflow, and its acceptance ends
 // stopped, returned nowhere, with the architect's session and the second model.
@@ -1487,14 +1531,14 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	t := r.t
 	t.Helper()
 	var created createdIssue
-	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "A child the tree's architect accepts"}, http.StatusCreated, &created)
+	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "A child in the walk's tree"}, http.StatusCreated, &created)
 	number := r.number + 1
 	parent := r.key
 	ctx := context.Background()
 	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: created.Key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Parent: &parent, Project: r.cfg.Project,
-			Title: "A child the tree's architect accepts", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
+			Title: "A child in the walk's tree", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
 			Rank: created.Rank, LastDispatchSeq: created.LastSeq, HandedOver: true,
 		}); err != nil {
 			return err

@@ -258,11 +258,12 @@ func recordsSteps(issue record.Issue) bool { return claim.IsIssueKey(issue.Key) 
 
 // upgradedStart is the agent and the moment of the start of a step at that no start of this
 // release counted, which ran under the release before: the agent its start would have named
-// (startAgent), and the moment its phase worker's entry was raised. Accepting's architect raises
-// no entry, and so the moment is unknown there. A merge whose merger's entry this visit to merging
-// did not raise is one GitHub had already made when the issue reached merging, which started no
-// merger: an entry never raised, or one raised before the retro's completion that brought the
-// issue there, the one move into merging (the table's retro row), which is an earlier visit's.
+// (startAgent, so accepting's is the architect that owns the issue now, acceptingAgent), and the
+// moment its phase worker's entry was raised. Accepting's architect raises no entry, and so the
+// moment is unknown there. A merge whose merger's entry this visit to merging did not raise is one
+// GitHub had already made when the issue reached merging, which started no merger: an entry never
+// raised, or one raised before the retro's completion that brought the issue there, the one move
+// into merging (the table's retro row), which is an earlier visit's.
 func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, time.Time, error) {
 	worker := phase.RoleFor(at)
 	if worker == claim.RoleArchitect {
@@ -287,14 +288,13 @@ func (e *Engine) upgradedStart(ctx context.Context, tx pgx.Tx, issue record.Issu
 	return agent, row.EntryRaisedAt.UTC(), err
 }
 
-// startAgent is the agent a start of the step issue stands in at names: the tree architect for
-// accepting (a sub-architect's own claim is runtime state the record does not hold), nobody for a
-// merge GitHub has already made, where no merger starts, and the claim of the phase's worker
-// otherwise.
+// startAgent is the agent a start of the step issue stands in at names: for accepting, the
+// architect that owns issue now (acceptingAgent), nobody for a merge GitHub has already made,
+// where no merger starts, and the claim of the phase's worker otherwise.
 func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase) (claim.Token, error) {
 	switch at {
 	case phase.Accepting:
-		return stepClaim(issue, issue.Tree, claim.RoleArchitect)
+		return e.acceptingAgent(ctx, tx, issue)
 	case phase.Merging:
 		standing := issue
 		standing.Phase = at
@@ -306,11 +306,26 @@ func (e *Engine) startAgent(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return stepClaim(issue, issue.Key, phase.RoleFor(at))
 }
 
+// acceptingAgent is the agent of issue's accepting step: the claim of the architect that owns
+// issue now (owningArchitect, the owner walk over the claims this transaction reads), the one that
+// signs it off or moves it back. That is a child's own architect while its claim holds its role,
+// else the nearest architect above it whose claim does, else the tree's. It is the one place both
+// a start of accepting (startAgent) and the end of a run of accepting no start counted
+// (upgradedStart) read, so the record names the architect whose request ends the step, and that
+// request waits for that architect's stream (api's apply, record.RunsAStepOn).
+func (e *Engine) acceptingAgent(ctx context.Context, tx pgx.Tx, issue record.Issue) (claim.Token, error) {
+	owner, err := e.owningArchitect(ctx, tx, issue)
+	if err != nil {
+		return "", err
+	}
+	return stepClaim(issue, owner, claim.RoleArchitect)
+}
+
 // startNamedStep writes the start of step, the step issue stands in (standingStep), under the agent
 // that step names (startAgent), the one place that decides who runs a start no phase worker's entry
-// names: a move into accepting, whose tree architect start skips, or into a merge GitHub has
-// already made, which nobody runs and whose close ends it (transition), and admission's promotion
-// of a member whose worker it does not start (StartStepRecord).
+// names: a move into accepting, whose role is the architect, for which start starts no worker, or
+// into a merge GitHub has already made, which nobody runs and whose close ends it (transition), and
+// admission's promotion of a member whose worker it does not start (StartStepRecord).
 func (e *Engine) startNamedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, step standing) error {
 	agent, err := e.startAgent(ctx, tx, issue, step.at)
 	if err != nil {
