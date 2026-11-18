@@ -42,8 +42,7 @@
 #
 # What it does not check: whether a bump is owed. A change to a surface this contract names that
 # leaves version.go alone passes here — that file's own bump rule and the review say when a bump
-# is owed, and this check only keeps two changes from claiming one number and a shipped
-# contract's record from changing (the record rule below).
+# is owed, and this check only keeps two changes from claiming one number.
 #
 # It does check that the files that hold the number agree. Each file after version.go must hold
 # the number version.go declares, as an integer: the fixture
@@ -53,48 +52,24 @@
 # legion.daemonApiVersion. A file this check cannot read there is refused as a read that failed.
 # The two record files beside those fixtures, contract-shapes.json and request-shapes.json, hold
 # the number too, in each record of the daemon's own contract, and the refusals name them; this
-# rule does not read them, since no one field of either holds the number, and packages/daemon's
+# check does not read them, since no one field of either holds the number, and packages/daemon's
 # `go test ./internal/api/` refuses a record set with no record at the declared contract.
 # This rule runs before the pass for a number above the base's, because a bump is where a file
 # is left behind: INFRA-3621's bump forgot state.json, and that pass would have let it through.
 # It reads only this checkout, so its refusal reads no open pull request and names no free
 # number: the files disagree, and the number is not what is wrong.
 #
-# A contract's record is fixed once it ships. A plugin released at a contract reads the shape
-# that contract's records describe, so a change that rewrites one meets every released reader of
-# it with a new shape: a later change that keeps the number and runs `go test ./internal/api/
-# -update`, which rewrites the records of the daemon's own contract, would pass every rule above.
-# So each record of a contract at or below the base's number must be in this checkout as the
-# base holds it — in contract-shapes.json a record is held by its contract and its answer, in
-# request-shapes.json by its contract and its route — and a record there that differs, is gone or
-# is new is refused, naming the file, the contract and the answer or the route, and saying to put
-# the change on a number above the base's and serve it down. A record above the base's number is
-# free. Records are compared as JSON values, whatever their order or the file's layout. A base
-# that holds no such file has shipped no record of it, and nothing of that file is compared; a 404
-# for one is the file's absence, since version.go was read at that same ref. The one removal that
-# passes is a contract dropped whole from the bottom: one this checkout holds no record of, below
-# every contract it does hold, which is what raising ServingFloor makes, since the Go suite
-# refuses a record below the floor. This rule runs whether or not version.go changed, and before
-# the pass for a number above the base's, since a bump licenses no rewrite of a contract below it.
-#
-# On a pull request, a record file that differs from the base's is compared again with the commit
-# this checkout was built on (built_on), and refused only where it differs there too: the tip of
-# the base branch moves on under a merge ref a re-run reuses, and a tip that has taken a later
-# contract since holds records of it that this tree never saw. In a merge group the base is that
-# commit already.
-#
 # Every GitHub read goes through `gh api`, and the base is read over the API rather than out of
-# git: the checkout in CI is one commit deep and fetches no origin/main. Every run reads version.go
-# and the two record files at the base. The one git read is of HEAD's own object, whose parent
-# lines a shallow checkout keeps whatever `git rev-parse HEAD^1` says of them, and it is made only
-# where the declared number is not above the base's or a record file differs from the base's, so
-# a change that bumps the number and leaves the base's records alone reads git not at all. The
-# open pull requests are read only when the check is about to fail, so a passing run makes none of
-# them: one paginated GraphQL query for every open pull request with the paths it changes, drafts
-# counted, and then this file at refs/pull/<number>/head — a ref of this repository, so a fork's
-# head too — for each that changes it. A file list GitHub cut short says nothing about the paths
-# it left out, so that pull request's file is read as well rather than guessed at, and a read that
-# fails refuses the change and names itself.
+# git: the checkout in CI is one commit deep and fetches no origin/main. The one git read is of
+# HEAD's own object, whose parent lines a shallow checkout keeps whatever `git rev-parse HEAD^1`
+# says of them, and it is made only where the declared number is not above the base's, so a
+# change that bumps the number reads git not at all. The open pull requests are read only when
+# the check is about to fail, so a passing run makes none of them: one
+# paginated GraphQL query for every open pull request with the paths it changes, drafts counted,
+# and then this file at refs/pull/<number>/head — a ref of this repository, so a fork's head too
+# — for each that changes it. A file list GitHub cut short says nothing about the paths it left
+# out, so that pull request's file is read as well rather than guessed at, and a read that fails
+# refuses the change and names itself.
 #
 # Run from anywhere: .github/scripts/check-daemon-api-contract.sh
 # CI runs it in ci.yaml's lint job, and its tests in ci.yaml's test job.
@@ -109,7 +84,6 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable
-from functools import cache
 from pathlib import Path
 from urllib.parse import quote
 
@@ -124,27 +98,18 @@ FIELDS = {
     "packages/pi-legion/package.json": ("legion.daemonApiVersion",),
     "packages/claude-envoy/package.json": ("legion.daemonApiVersion",),
 }
-# The two record files hold the number in another way: contract-shapes.json in the record of
-# every answer at the daemon's own contract, and request-shapes.json in its one record of each
-# route, which is the daemon's own contract's. No one field of either holds it, so held_in does
-# not read them: `go test ./internal/api/`, run in packages/daemon, refuses a record set with no
-# record at the declared contract or one at a contract the daemon does not support
-# (TestTheRecordSetIsOneRecordPerAnswerPerContract, TestEveryRecordedRequestFieldIsReadByName),
-# and `-update` there writes the daemon's own records. A record of a lower contract keeps its
-# number, since it names a contract that has shipped, and hold_records reads them for the record
-# rule of the header alone.
+# The two record files hold what the daemon serves and reads: contract-shapes.json a record of
+# each answer at each contract the daemon supports, and request-shapes.json a record of each
+# route's request at each contract from the one that wrote the file on. Each record names its
+# contract, so the number stands in every record of the daemon's own contract and in no one field
+# of either, and held_in does not read them: `go test ./internal/api/`, run in packages/daemon,
+# refuses a record set with no record at the declared contract or one at a contract the daemon
+# does not support (TestTheRecordSetIsOneRecordPerAnswerPerContract,
+# TestEveryRecordedRequestFieldIsReadByName), and `-update` there writes the daemon's own records.
 RECORDS = (
     "packages/contracts/fixtures/daemon-api/contract-shapes.json",
     "packages/contracts/fixtures/daemon-api/request-shapes.json",
 )
-# What a record of each record file is held by beside its contract, and how a refusal names it:
-# contract-shapes.json's by its answer, request-shapes.json's by the route its request goes to.
-RECORD_KEYS = {
-    RECORDS[0]: ("answer", "answer"),
-    RECORDS[1]: ("route", "request to"),
-}
-# A record file's records by the pair each is held by, as records_of reads them.
-Records = dict[tuple[int, str], list[str]]
 # Every file that holds the number: version.go, the files of FIELDS in their order, then the
 # record files. They move together, so a refusal names all of them; each file of FIELDS must hold
 # the number version.go declares, and the Go suite holds the record files to it.
@@ -186,62 +151,33 @@ def fatal(path: str, message: str) -> None:
     raise SystemExit(1)
 
 
-def gh_run(args: list[str], what: str, on: str) -> subprocess.CompletedProcess[str]:
-    """Every GitHub read goes through `gh api`, so one stub first on PATH serves them all. A gh
-    that cannot be run refuses the change, naming on as the file."""
+def gh(args: list[str], what: str) -> str:
+    """Every GitHub read goes through `gh api`, so one stub first on PATH serves them all."""
     try:
-        return subprocess.run(
+        done = subprocess.run(
             ["gh", "api", *args], capture_output=True, text=True, encoding="utf-8"
         )
     except OSError as error:
-        fatal(on, f"could not read {what}: gh could not be run ({one_line(error)})")
-
-
-def gh_answer(done: subprocess.CompletedProcess[str], what: str, on: str) -> str:
-    """What a read by gh_run answered. A read that failed refuses the change, naming on as the
-    file."""
+        fatal(DECLARATION, f"could not read {what}: gh could not be run ({one_line(error)})")
     if done.returncode != 0:
         fatal(
-            on,
+            DECLARATION,
             f"could not read {what}: gh api exited {done.returncode} "
             f"({one_line(done.stderr) or one_line(done.stdout) or 'no output'})",
         )
     return done.stdout
 
 
-def gh(args: list[str], what: str, on: str = DECLARATION) -> str:
-    """A GitHub read, which refuses the change where it fails, an answer of HTTP 404 included."""
-    return gh_answer(gh_run(args, what, on), what, on)
-
-
-def gh_unless_absent(args: list[str], what: str, on: str) -> str | None:
-    """A GitHub read as gh makes it, except that an answer of HTTP 404 is None: record_file_at,
-    the one caller, reads a file the ref may not hold."""
-    done = gh_run(args, what, on)
-    if done.returncode != 0 and "(HTTP 404)" in done.stderr:
-        return None
-    return gh_answer(done, what, on)
-
-
-def contents(repository: str, ref: str, path: str) -> list[str]:
-    """The arguments of a read of path as one ref of the base repository carries it."""
-    return [
-        "-H",
-        "Accept: application/vnd.github.raw",
-        f"repos/{repository}/contents/{path}?ref={quote(ref, safe='')}",
-    ]
-
-
 def read_at(repository: str, ref: str, what: str) -> str:
     """The declaration file as one ref of the base repository carries it."""
-    return gh(contents(repository, ref, DECLARATION), what)
-
-
-def record_file_at(repository: str, ref: str, site: str, what: str) -> str | None:
-    """A record file as one ref of the base repository carries it, or None where that ref holds
-    no such file. Every caller has read version.go at ref already, so GitHub's 404 here is the
-    file's absence and not the ref's."""
-    return gh_unless_absent(contents(repository, ref, site), what, site)
+    return gh(
+        [
+            "-H",
+            "Accept: application/vnd.github.raw",
+            f"repos/{repository}/contents/{DECLARATION}?ref={quote(ref, safe='')}",
+        ],
+        what,
+    )
 
 
 def built_on(what: str) -> str:
@@ -336,179 +272,6 @@ def history_and_declaration(text: str) -> str:
     returned whole."""
     entry = HISTORY.search(text)
     return text[entry.start() if entry else 0 :].rstrip("\n")
-
-
-def records_of(site: str, text: str, what: str) -> Records:
-    """Each record of a copy of site, by the pair it is held by: its contract and its answer or
-    route (RECORD_KEYS). A record is kept as its canonical JSON, so two copies that differ only in
-    the order of their records or the layout of the file compare equal. A pair held twice keeps
-    both records, so a second record of a pair reads as a change of it. A copy that is not a JSON
-    list of records, each with an integer contract and a string answer or route, is refused by
-    name, as a read that failed."""
-    try:
-        document = json.loads(text)
-    except json.JSONDecodeError as error:
-        fatal(site, f"could not read {what}: it is not JSON ({one_line(error)})")
-    if not isinstance(document, list):
-        fatal(site, f"could not read {what}: it is not a JSON list of records")
-    field = RECORD_KEYS[site][0]
-    held: dict[tuple[int, str], list[str]] = {}
-    for record in document:
-        contract = record.get("contract") if isinstance(record, dict) else None
-        name = record.get(field) if isinstance(record, dict) else None
-        # JSON's true is a Python bool, which is an int, and no contract number.
-        if isinstance(contract, bool) or not (isinstance(contract, int) and isinstance(name, str)):
-            fatal(
-                site,
-                f"could not read {what}: a record of it holds no integer contract and string "
-                f"{field} ({one_line(json.dumps(record))[:200]})",
-            )
-        held.setdefault((contract, name), []).append(json.dumps(record, sort_keys=True))
-    return {pair: sorted(texts) for pair, texts in held.items()}
-
-
-def tree_records(site: str) -> Records:
-    """site's records in this checkout, and none where the file is missing: a checkout without a
-    record file the base holds removes every record of it, which the record rule refuses by the
-    first."""
-    what = f"{site} in this checkout"
-    try:
-        text = Path(site).read_bytes().decode("utf-8")
-    except FileNotFoundError:
-        return {}
-    except (OSError, UnicodeDecodeError) as error:
-        fatal(site, f"could not read {what}: {one_line(error)}")
-    return records_of(site, text, what)
-
-
-def dropped(tree: Records, other: Records, base_number: int) -> list[int]:
-    """The contracts at or below base_number that other records and tree drops whole from the
-    bottom: tree holds no record of one, and holds a record of a contract above every one. Raising
-    ServingFloor does exactly that, since the Go suite refuses a record below the floor, so it is
-    the one removal the record rule passes. A tree that holds no record at all drops nothing."""
-    held = {contract for contract, _ in tree}
-    if not held:
-        return []
-    lowest = min(held)
-    below = {contract for contract, _ in other if contract < lowest}
-    return sorted(contract for contract in below if contract <= base_number)
-
-
-def first_change(tree: Records, other: Records, base_number: int) -> tuple[str, int, str] | None:
-    """The first record of a contract at or below base_number, by contract and then by answer or
-    route, that tree does not hold as other does, and how it differs: it "changes" a record both
-    hold, "removes" one only other holds and "adds" one only tree holds. A contract dropped whole
-    from the bottom (dropped) is no change. None where every such record agrees."""
-    skipped = dropped(tree, other, base_number)
-    for pair in sorted(set(tree) | set(other)):
-        contract, name = pair
-        if contract > base_number or contract in skipped or tree.get(pair) == other.get(pair):
-            continue
-        if pair not in tree:
-            return "removes", contract, name
-        if pair not in other:
-            return "adds", contract, name
-        return "changes", contract, name
-    return None
-
-
-@cache
-def built_from(
-    repository: str, event_name: str, base_ref: str, base_is: str, base_text: str
-) -> tuple[str, str, str]:
-    """What this tree was built on, read once for both rules that compare with it: its ref, how a
-    message names it, and its version.go. For a merge group it is the base itself, the commit the
-    queue built the group on, which is already read; for a pull request it is the merge ref's
-    first parent (built_on), read only where a rule needs it, so a change that bumps the number
-    and leaves the base's records alone costs neither read. Its version.go is read first, so a
-    record file it lacks is that file's absence and not a commit this check cannot read. The
-    arguments are the run's: the repository, the event, and the base's ref, how a message names
-    it and its version.go. Both rules pass the same ones, so the cache reads it once."""
-    if event_name == "merge_group":
-        return base_ref, base_is, base_text
-    parent = built_on("the commit GitHub built this pull request's merge ref on")
-    built_is = f"the commit GitHub built this pull request's merge ref on ({parent})"
-    return parent, built_is, read_at(repository, parent, f"{DECLARATION} on {built_is}")
-
-
-def hold_records(
-    repository: str,
-    event_name: str,
-    base_ref: str,
-    base_is: str,
-    base_text: str,
-    base_number: int,
-    tree_number: int,
-) -> None:
-    """The record rule of the header, over each record file in turn. The file is read at the
-    base, and where the base holds none nothing of it is compared. On a pull request, a file whose
-    records differ from the base's is compared again with the commit this tree was built on
-    (built_from), and refused only where it differs there too. The arguments are the run's: the
-    repository, the event, the base's ref, how a message names it, its version.go and its number,
-    and the number this tree declares.
-
-    A refusal for a tree whose own number is above the base's names no free number: the change
-    is to be served down from the number the tree declares, and take would count this pull
-    request's own declaration among the numbers held."""
-    for site in RECORDS:
-        what = f"{site} on the base, {base_is}"
-        text = record_file_at(repository, base_ref, site, what)
-        if text is None:
-            print(f"the base, {base_is}, holds no {site}, so no record of it has shipped")
-            continue
-        tree = tree_records(site)
-        other, other_is = records_of(site, text, what), base_is
-        change = first_change(tree, other, base_number)
-        if change is not None and event_name == "pull_request":
-            ref, other_is, _ = built_from(repository, event_name, base_ref, base_is, base_text)
-            what = f"{site} on {other_is}"
-            text = record_file_at(repository, ref, site, what)
-            if text is None:
-                print(f"{other_is} holds no {site}, so no record of it had shipped under this tree")
-                continue
-            other = records_of(site, text, what)
-            change = first_change(tree, other, base_number)
-        if change is None:
-            print(
-                f"{site} holds each record of a contract at or below {base_number} as {other_is} "
-                f"holds it"
-            )
-            gone = dropped(tree, other, base_number)
-            if gone:
-                print(
-                    f"{site} drops every record of contract {', '.join(map(str, gone))}, below "
-                    f"every contract it still records, as raising ServingFloor does"
-                )
-            continue
-        verb, contract, name = change
-        record = f"contract {contract}'s {RECORD_KEYS[site][1]} `{name}`"
-        did = {
-            "changes": f"changes the record of {record} from the one {other_is} holds",
-            "removes": f"removes the record of {record}, which {other_is} holds",
-            "adds": f"adds a record of {record}, which {other_is} does not hold",
-        }[verb]
-        if tree_number > base_number:
-            advice = (
-                f"This change declares {tree_number}, above the base's: leave contract "
-                f"{contract}'s records as {other_is} holds them, and serve the change down from "
-                f"{tree_number}."
-            )
-        else:
-            advice = (
-                f"Put the change on a number above the base's and serve it down, so a reader at "
-                f"{contract} is still served what its records describe. "
-                f"{renumber(repository, base_number)}"
-            )
-        # The base is named once: where the records compared are the base's own, did names it.
-        carries = f"the {base_number} the base carries"
-        if other_is != base_is:
-            carries += f" ({base_is})"
-        fatal(
-            site,
-            f"{site}: this change {did}, and {contract} is at or below {carries}. A contract's "
-            f"record is fixed once it ships: a plugin released at {contract} reads the shape its "
-            f"records describe. {advice}",
-        )
 
 
 def payload_field(payload: dict, *path: str) -> str:
@@ -667,10 +430,6 @@ for site in FIELDS:
             f"number in legion.daemonApiVersion.",
         )
 
-# The record rule of the header: it runs whether or not version.go changed, and before the pass
-# for a number above the base's.
-hold_records(repository, event_name, base_ref, base_is, base_text, base_number, tree_number)
-
 if tree_number > base_number:
     print(
         f"daemon API contract {tree_number} is above the {base_number} the base carries "
@@ -678,8 +437,15 @@ if tree_number > base_number:
     )
     raise SystemExit(0)
 
-# What this tree was built on (built_from), read here unless the record rule read it already.
-_, built_is, built_text = built_from(repository, event_name, base_ref, base_is, base_text)
+# What this tree was built on. For a merge group it is the base itself, the commit the queue
+# built the group on, which is already read; for a pull request it is the merge ref's first
+# parent, read here rather than above so a change that bumps the number costs neither read.
+if event_name == "merge_group":
+    built_is, built_text = base_is, base_text
+else:
+    parent = built_on("the commit GitHub built this pull request's merge ref on")
+    built_is = f"the commit GitHub built this pull request's merge ref on ({parent})"
+    built_text = read_at(repository, parent, f"{DECLARATION} on {built_is}")
 
 # Only the history and the declaration are compared (history_and_declaration).
 if history_and_declaration(tree_text) == history_and_declaration(built_text):

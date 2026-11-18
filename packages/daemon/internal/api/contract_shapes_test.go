@@ -1176,12 +1176,12 @@ func recordsByKey(records []contractShape) map[shapeKey]contractShape {
 // contract was read then against the version.go entry that explains it. After that an author who
 // meets a red check cannot clear it by writing the records again: `-update` leaves a record of an
 // earlier contract where it is, because that record is what a reader at that contract needs and
-// not a reading of today's code. Nor does a hand edit of the fixture change such a record once
-// its contract has shipped: `.github/scripts/check-daemon-api-contract.sh` refuses a change to a
-// record of a contract at or below the number its base declares, so a change of shape takes a
-// contract above the base's and serves the old shape down. A pair the fixture has no record of at
-// all is no pair `-update` adds either: it fails TestTheRecordSetIsOneRecordPerAnswerPerContract
-// by name, so an answer nobody recorded is seen.
+// not a reading of today's code. A hand edit of such a record passes only where the daemon serves
+// that contract exactly what the edited record describes, so a record of an earlier contract
+// changes only together with the serving-down that produces it, which is what a reviewer reads
+// the diff for. A pair the fixture has no record of at all is no pair `-update` adds either: it
+// fails TestTheRecordSetIsOneRecordPerAnswerPerContract by name, so an answer nobody recorded is
+// seen.
 func updatedRecords(onFile, fresh []contractShape) []contractShape {
 	records := make([]contractShape, 0, len(onFile)+len(fresh))
 	for _, record := range onFile {
@@ -1325,10 +1325,10 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 	}
 	for _, path := range record.KeyPaths {
 		if !carried[path] {
-			advice := fmt.Sprintf("Serve the key to this contract with a stand-in (shaping.go's withFixAttempts is one): the record of %d is fixed once the base carries it, whether or not a reader requires the key.",
+			advice := fmt.Sprintf("Serve the key to this contract with a stand-in (shaping.go's withFixAttempts is one): a reader at %d may require the key, and the removed-key half of the serving rule stands for good.",
 				key.contract)
 			if !shaped {
-				advice = fmt.Sprintf("Serve the key to this contract with a stand-in: the record of %d is fixed once the base carries it, whether or not a reader requires the key. %s",
+				advice = fmt.Sprintf("Serve the key to this contract with a stand-in: a reader at %d may require the key, and the removed-key half of the serving rule stands for good. %s",
 					key.contract, unshapedServingDown("stand-in", key.answer))
 			}
 			problems = append(problems, fmt.Sprintf(

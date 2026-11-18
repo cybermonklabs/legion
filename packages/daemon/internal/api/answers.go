@@ -27,11 +27,11 @@ import (
 // part serves down. dispatch://INFRA-1048 landed the reader that drops an unknown key instead,
 // and the first release carrying that reader declares 49, so once `lowestPluginContract` on the
 // state reports 49 or more, no live reader refuses a key it does not know. The added-key part
-// stays all the same: dropping it would mean editing the records of contracts that have
-// shipped, which check-daemon-api-contract.sh refuses. The bands already written cost nothing
-// more to keep; each later contract that adds a key writes a band for the contracts below it,
-// because their shipped records do not hold that key. The removed-key part stays for good: a
-// reader still needs the key its own contract requires, whatever this daemon stopped writing.
+// may be dropped, with the record entries that serve it, once `lowestPluginContract` reports 49
+// or more, because every build declaring 49 or more ignores a key it does not know; until then
+// each later contract that adds a key writes a band for the contracts below it, because their
+// records do not hold that key. The removed-key part stays for good: a reader still needs the
+// key its own contract requires, whatever this daemon stopped writing.
 // The third part is the value hold-back: the values a later contract added to an enumerated
 // field are held back from a caller below that contract (EnumeratedFields, shaping.go's
 // valueStrips, fieldArrivals.heldBack). It stays after

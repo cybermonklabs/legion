@@ -31,8 +31,8 @@ package api
 // band takes off a key the change adds (`stateNarrowings`), a stand-in writes back a key it removes
 // (`withFixAttempts` is one), and a value strip holds back a value newer than that contract's
 // enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape gate in this
-// package's tests (`contract_shapes_test.go`) and `.github/scripts/check-daemon-api-contract.sh`,
-// which keeps each contract's record fixed once the base carries it, refuse a change that does not.
+// package's tests (`contract_shapes_test.go`) refuses a change that does not, and a record of an
+// earlier contract changed with the serving-down that produces it passes, which a reviewer reads.
 // Under `settings` the rule covers only the top-level keys a supported reader types (answers.go's
 // `typedSettings`): a settings key no reader types needs no band, stand-in or contract number,
 // only its row in settings_test.go's classification and the fixture values the field walk asks for.
@@ -2445,11 +2445,11 @@ package api
 //     names, `HANDOFF_STALE_ASSIGNMENT`, it names in its tool description and not in a branch.
 //   - A change to the type of a field. The records hold key paths, value domains and request
 //     field paths, and no types, so a string that becomes a number passes both gates.
-//   - A change that keeps a contract number the base does not carry yet. A key or a request field
-//     that arrived at that number stands in the records of the daemon's own contract only, and
-//     `-update` writes those again, so the change passes for such keys and fields. Once the base
-//     carries the number, check-daemon-api-contract.sh holds each of its records to the base's,
-//     so a change that keeps it and changes one of its records is refused.
+//   - A change that keeps the daemon's own contract number. A key or a request field it adds or
+//     removes at that number stands in the records of the daemon's own contract only, and
+//     `-update` writes those again, so the change passes both gates for such keys and fields.
+//     The reviewer reads the records' diff, and this file's Bump rule says when a new number is
+//     owed.
 //
 // The request gate catches only a request field that a later type no longer reads. A newly
 // required field, a narrowed value and a changed type all pass it. (This

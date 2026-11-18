@@ -2,9 +2,8 @@
 # Tests for `check-daemon-api-contract.sh`: a change that touches the daemon API contract's
 # history or declaration declares a number above the one its base carries, the refusal names a
 # free number and every file that holds it, the files that hold the number agree on it, an
-# edit of the doc comment above the history touches no contract, a record of a contract at or
-# below the base's number is the base's, and a base, a tree or a file the check cannot read
-# refuses the change.
+# edit of the doc comment above the history touches no contract, and a base, a tree or a file the
+# check cannot read refuses the change.
 #
 # Each case builds a miniature repository under a temporary directory, symlinks the real script
 # into it, and puts a stub `gh` first on PATH, so the script under test is the file CI runs and
@@ -89,11 +88,9 @@ fixture() {
   cat > "$root/bin/gh" <<'SH'
 #!/usr/bin/env bash
 # The GitHub reads the check makes, served out of $STUB_DIR: refs/<ref, slashes as underscores>
-# holds that ref's version.go, files/<ref, slashes as underscores>/<path> any other file of it,
-# and open-prs.json is the one answer to the open-pull-request query, every read of which this
-# stub counts a line of pr-queries. A file that is not there is GitHub's 404, which is how the
-# cases that cannot read a base build it and how a ref holds no record file; a file beside it
-# named <path>.fails is a read that fails otherwise.
+# holds that ref's version.go, and open-prs.json is the one answer to the open-pull-request
+# query, every read of which this stub counts a line of pr-queries. A ref with no file is a read
+# that fails, which is how the cases that cannot read a base build it.
 set -euo pipefail
 [ "${1:-}" = "api" ] || { echo "stub gh: not an api call: $*" >&2; exit 2; }
 shift
@@ -108,22 +105,12 @@ if [ "${1:-}" = "graphql" ]; then
 fi
 endpoint=${*: -1}
 case "$endpoint" in
-  */contents/*\?ref=*) ;;
+  *\?ref=*) ;;
   *) echo "stub gh: unexpected endpoint: $endpoint" >&2; exit 2 ;;
 esac
 ref=${endpoint##*\?ref=}
 ref=${ref//%2F/\/}
-path=${endpoint%%\?ref=*}
-path=${path#*/contents/}
-if [ "$path" = packages/daemon/internal/api/version.go ]; then
-  file="$STUB_DIR/refs/${ref//\//_}"
-else
-  file="$STUB_DIR/files/${ref//\//_}/$path"
-fi
-if [ -f "$file.fails" ]; then
-  echo "gh: Server Error (HTTP 500)" >&2
-  exit 1
-fi
+file="$STUB_DIR/refs/${ref//\//_}"
 if [ ! -f "$file" ]; then
   echo "gh: Not Found (HTTP 404)" >&2
   exit 1
@@ -210,14 +197,12 @@ run_check() {
   queries=$(wc -l < "$root/stub/pr-queries" | tr -d ' ')
 }
 
-# The record files the check names after other_sites, which it reads for the record rule alone:
-# the Go suite holds them to the number (the script's RECORDS).
+# The record files, which the check names after other_sites as files that hold the number: the
+# Go suite holds them to it (the script's RECORDS).
 record_sites=(
   packages/contracts/fixtures/daemon-api/contract-shapes.json
   packages/contracts/fixtures/daemon-api/request-shapes.json
 )
-shapes_file=${record_sites[0]}
-requests_file=${record_sites[1]}
 all_files="packages/daemon/internal/api/version.go$(printf ', %s' "${other_sites[@]}" "${record_sites[@]}")"
 
 # How a refusal for files that disagree says to write the number: the golden tests write the
@@ -587,322 +572,5 @@ check "names both numbers" \
 check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
 check "names every file that holds the number" "$(contains "$out" "$all_files")"
 check "reads the open pull requests once" "$(is "$queries" 1)"
-
-# The cases below lock the record rule: each record of a contract at or below the base's number
-# is in the checkout as the base holds it, in either record file, whatever version.go does.
-
-# answer <contract> <answer> <key path>: one record of contract-shapes.json, as the Go suite
-# writes one, for an answer whose body carries the one key path.
-answer() {
-  printf '{"contract": %s, "answer": "%s", "noBody": false, "keyPaths": ["%s"], "domains": {}}' \
-    "$1" "$2" "$3"
-}
-
-# request <contract> <route> <field path>: one record of request-shapes.json, for a route whose
-# request carries the one field path.
-request() {
-  printf '{"contract": %s, "route": "%s", "fieldPaths": ["%s"]}' "$1" "$2" "$3"
-}
-
-# records <record>...: a record file holding the records given, in that order.
-records() {
-  local separator="" record
-  printf '['
-  for record in "$@"; do
-    printf '%s\n  %s' "$separator" "$record"
-    separator=","
-  done
-  printf '\n]\n'
-}
-
-# served_at <root> <ref> <file> <text>: the stub serves <text> as <file> at <ref>.
-served_at() {
-  local file="$1/stub/files/${2//\//_}/$3"
-  mkdir -p "$(dirname "$file")"
-  printf '%s\n' "$4" > "$file"
-}
-
-# in_checkout <root> <file> <text>: writes <text> as <file> in the checkout.
-in_checkout() {
-  mkdir -p "$(dirname "$1/$2")"
-  printf '%s\n' "$3" > "$1/$2"
-}
-
-# The record set the cases below start from, all at contract 7: two answers and one route.
-park="POST /legion/v1/children/park"
-shipped_shapes=$(records "$(answer 7 refusal error)" "$(answer 7 state issues)")
-shipped_requests=$(records "$(request 7 "$park" issue)")
-
-# shipped_group <name>: a merge group whose base, $group_base, declares 7 and holds the record
-# set above, and whose checkout declares 7 and holds the same set, which a case then changes.
-# Echoes its root.
-group_base=cccccccccccccccccccccccccccccccccccccccc
-group_is="the commit the queue built this group on ($group_base)"
-shipped_group() {
-  local root
-  root=$(fixture "$1")
-  declaration 7 > "$root/stub/refs/$group_base"
-  served_at "$root" "$group_base" "$shapes_file" "$shipped_shapes"
-  served_at "$root" "$group_base" "$requests_file" "$shipped_requests"
-  declaration 7 > "$root/packages/daemon/internal/api/version.go"
-  sites "$root" 7
-  in_checkout "$root" "$shapes_file" "$shipped_shapes"
-  in_checkout "$root" "$requests_file" "$shipped_requests"
-  no_open_pull_requests "$root"
-  merge_group_event "$root" "$group_base"
-  echo "$root"
-}
-
-echo "case: records of the base's contract, unchanged, in another order and layout"
-root=$(shipped_group records-unchanged)
-# The checkout lists the two answers the other way round, on one line, and writes one record's
-# keys in another order: the same records, as JSON reads them.
-in_checkout "$root" "$shapes_file" \
-  '[{"keyPaths": ["issues"], "domains": {}, "noBody": false, "answer": "state", "contract": 7}, '"$(answer 7 refusal error)"']'
-run_check "$root" merge_group
-check "exits 0" "$(is "$status" 0)"
-check "says contract-shapes.json holds the base's records" \
-  "$(contains "$out" "$shapes_file holds each record of a contract at or below 7 as $group_is holds it")"
-check "says request-shapes.json holds the base's records" \
-  "$(contains "$out" "$requests_file holds each record of a contract at or below 7 as $group_is holds it")"
-check "passes on the history, which it leaves alone" \
-  "$(contains "$out" 'so it declares no daemon API contract of its own')"
-check "reads no open pull request" "$(is "$queries" 0)"
-
-echo "case: a record of the base's contract rewritten, version.go left alone"
-root=$(fixture record-rewritten)
-# A change that keeps the number and runs `-update`, which writes the records of the daemon's
-# own contract: its version.go is the one it was built on, so no other rule refuses it.
-parent=$(built_on "$root" 7)
-declaration 7 > "$root/stub/refs/main"
-for ref in main "$parent"; do
-  served_at "$root" "$ref" "$shapes_file" "$shipped_shapes"
-  served_at "$root" "$ref" "$requests_file" "$shipped_requests"
-done
-declaration 7 > "$root/packages/daemon/internal/api/version.go"
-sites "$root" 7
-in_checkout "$root" "$shapes_file" \
-  "$(records "$(answer 7 refusal error)" "$(answer 7 state 'issues.*.check')")"
-in_checkout "$root" "$requests_file" "$shipped_requests"
-no_open_pull_requests "$root"
-pull_request_event "$root" main
-run_check "$root" pull_request
-check "exits 1" "$(is "$status" 1)"
-check "names the file, the contract and the answer" \
-  "$(contains "$out" "^::error file=$shapes_file::$shapes_file: this change changes the record of contract 7's answer .state. from the one the commit GitHub built this pull request's merge ref on ($parent) holds, and 7 is at or below the 7 the base carries (the tip of main)\.")"
-check "says a contract's record is fixed once it ships" \
-  "$(contains "$out" "A contract's record is fixed once it ships: a plugin released at 7 reads the shape its records describe\.")"
-check "says to take a number above the base's and serve the change down" \
-  "$(contains "$out" "Put the change on a number above the base's and serve it down, so a reader at 7 is still served what its records describe\. Take 8, the lowest number above the base's that no open pull request declares,")"
-check "names every file that holds the number" "$(contains "$out" "$all_files")"
-check "does not pass for the version.go it leaves alone" \
-  "$(is "$(contains "$out" 'declares no daemon API contract of its own')" false)"
-check "reads the open pull requests once" "$(is "$queries" 1)"
-check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-
-echo "case: a bump above the base that rewrites a record of the base's contract"
-root=$(shipped_group record-rewritten-by-a-bump)
-declaration 8 > "$root/packages/daemon/internal/api/version.go"
-sites "$root" 8
-in_checkout "$root" "$shapes_file" \
-  "$(records "$(answer 7 refusal error)" "$(answer 7 state 'issues.*.check')" \
-    "$(answer 8 refusal error)" "$(answer 8 state 'issues.*.check')")"
-run_check "$root" merge_group
-check "exits 1" "$(is "$status" 1)"
-check "names the file, the contract and the answer, and the base once" \
-  "$(contains "$out" "^::error file=$shapes_file::$shapes_file: this change changes the record of contract 7's answer .state. from the one $group_is holds, and 7 is at or below the 7 the base carries\. A contract")"
-check "says to serve the change down from the number it declares" \
-  "$(contains "$out" "This change declares 8, above the base's: leave contract 7's records as $group_is holds them, and serve the change down from 8\.")"
-# take would count this change's own number among those held, and name the next one.
-check "names no free number" "$(is "$(contains "$out" 'Take ')" false)"
-check "does not pass the number above the base's" "$(is "$(contains "$out" 'is above')" false)"
-check "reads no open pull request" "$(is "$queries" 0)"
-
-echo "case: records added at a number above the base's"
-root=$(shipped_group records-above)
-# What `-update` writes for a bump: the records of the new contract, beside the base's own.
-declaration 8 > "$root/packages/daemon/internal/api/version.go"
-sites "$root" 8
-in_checkout "$root" "$shapes_file" \
-  "$(records "$(answer 7 refusal error)" "$(answer 7 state issues)" "$(answer 8 issue-record issue)" \
-    "$(answer 8 refusal error)" "$(answer 8 state 'issues.*.check')")"
-in_checkout "$root" "$requests_file" \
-  "$(records "$(request 7 "$park" issue)" "$(request 8 "$park" grantId)")"
-run_check "$root" merge_group
-check "exits 0" "$(is "$status" 0)"
-check "says contract-shapes.json holds the base's records" \
-  "$(contains "$out" "$shapes_file holds each record of a contract at or below 7 as $group_is holds it")"
-check "says request-shapes.json holds the base's records" \
-  "$(contains "$out" "$requests_file holds each record of a contract at or below 7 as $group_is holds it")"
-check "passes the number above the base's" \
-  "$(contains "$out" "daemon API contract 8 is above the 7 the base carries ($group_is)")"
-check "reads no open pull request" "$(is "$queries" 0)"
-
-echo "case: a base that holds neither record file"
-root=$(fixture records-new)
-# This repository's own case when the record files arrived: main held neither, and the change
-# that added them wrote records at contracts at and below its base's number as well as above.
-declaration 7 > "$root/stub/refs/main"
-declaration 8 > "$root/packages/daemon/internal/api/version.go"
-sites "$root" 8
-in_checkout "$root" "$shapes_file" \
-  "$(records "$(answer 6 state issues)" "$(answer 7 state issues)" "$(answer 8 state 'issues.*.check')")"
-in_checkout "$root" "$requests_file" "$(records "$(request 8 "$park" issue)")"
-pull_request_event "$root" main
-run_check "$root" pull_request
-check "exits 0" "$(is "$status" 0)"
-check "says the base holds no contract-shapes.json" \
-  "$(contains "$out" "the base, the tip of main, holds no $shapes_file, so no record of it has shipped")"
-check "says the base holds no request-shapes.json" \
-  "$(contains "$out" "the base, the tip of main, holds no $requests_file, so no record of it has shipped")"
-check "passes the number above the base's" \
-  "$(contains "$out" 'daemon API contract 8 is above the 7 the base carries (the tip of main)')"
-# This fixture is no git checkout, so a read of what it was built on would have refused it.
-check "reads no commit it was built on" "$(is "$(contains "$out" 'merge ref on')" false)"
-check "reads no open pull request" "$(is "$queries" 0)"
-
-echo "case: a request record of the base's contract rewritten"
-root=$(shipped_group request-rewritten)
-in_checkout "$root" "$requests_file" "$(records "$(request 7 "$park" grantId)")"
-run_check "$root" merge_group
-check "exits 1" "$(is "$status" 1)"
-check "names the file, the contract and the request, and the base once" \
-  "$(contains "$out" "^::error file=$requests_file::$requests_file: this change changes the record of contract 7's request to .$park. from the one $group_is holds, and 7 is at or below the 7 the base carries\. A contract")"
-check "says a contract's record is fixed once it ships" \
-  "$(contains "$out" "A contract's record is fixed once it ships")"
-check "names the free number" "$(contains "$out" 'Take 8, the lowest number above')"
-check "names every file that holds the number" "$(contains "$out" "$all_files")"
-check "reads the open pull requests once" "$(is "$queries" 1)"
-
-echo "case: a record of the base's contract removed, or one added at it"
-root=$(shipped_group record-removed)
-in_checkout "$root" "$shapes_file" "$(records "$(answer 7 state issues)")"
-run_check "$root" merge_group
-check "a removed record exits 1" "$(is "$status" 1)"
-check "names the record it removes" \
-  "$(contains "$out" "^::error file=$shapes_file::$shapes_file: this change removes the record of contract 7's answer .refusal., which $group_is holds")"
-
-root=$(shipped_group record-added)
-in_checkout "$root" "$shapes_file" \
-  "$(records "$(answer 7 issue-record issue)" "$(answer 7 refusal error)" "$(answer 7 state issues)")"
-run_check "$root" merge_group
-check "a record added at the base's contract exits 1" "$(is "$status" 1)"
-check "names the record it adds" \
-  "$(contains "$out" "^::error file=$shapes_file::$shapes_file: this change adds a record of contract 7's answer .issue-record., which $group_is does not hold")"
-
-root=$(shipped_group record-file-gone)
-rm "$root/$requests_file"
-run_check "$root" merge_group
-check "a record file gone exits 1" "$(is "$status" 1)"
-check "names the first record it removes" \
-  "$(contains "$out" "^::error file=$requests_file::$requests_file: this change removes the record of contract 7's request to .$park., which $group_is holds")"
-
-echo "case: a contract dropped whole from the bottom of the records"
-# What raising ServingFloor makes: the Go suite refuses a record below the floor, so every record
-# of each contract under the new floor goes. Here 5 and 6 are under it, and 7 stays.
-floor_shapes=$(records "$(answer 5 state issues)" "$(answer 6 state issues)" \
-  "$(answer 7 refusal error)" "$(answer 7 state issues)")
-root=$(shipped_group records-floor-raised)
-served_at "$root" "$group_base" "$shapes_file" "$floor_shapes"
-run_check "$root" merge_group
-check "exits 0" "$(is "$status" 0)"
-check "says it holds each record it keeps" \
-  "$(contains "$out" "$shapes_file holds each record of a contract at or below 7 as $group_is holds it")"
-check "names the contracts it drops" \
-  "$(contains "$out" "$shapes_file drops every record of contract 5, 6, below every contract it still records, as raising ServingFloor does")"
-
-root=$(shipped_group records-middle-dropped)
-served_at "$root" "$group_base" "$shapes_file" "$floor_shapes"
-in_checkout "$root" "$shapes_file" \
-  "$(records "$(answer 5 state issues)" "$(answer 7 refusal error)" "$(answer 7 state issues)")"
-run_check "$root" merge_group
-check "a contract dropped above one it keeps exits 1" "$(is "$status" 1)"
-check "names the first record it removes" \
-  "$(contains "$out" "this change removes the record of contract 6's answer .state., which $group_is holds")"
-
-echo "case: records of a base branch that has taken a later contract since the merge ref was built"
-root=$(fixture records-moved-on)
-# GitHub built this merge ref on a commit at 7, and a re-run reuses it; main has taken 8 since,
-# with its records. This change leaves both record files as the commit it was built on has them.
-parent=$(built_on "$root" 7)
-declaration 8 > "$root/stub/refs/main"
-served_at "$root" main "$shapes_file" \
-  "$(records "$(answer 7 refusal error)" "$(answer 7 state issues)" "$(answer 8 refusal error)" \
-    "$(answer 8 state 'issues.*.check')")"
-served_at "$root" main "$requests_file" \
-  "$(records "$(request 7 "$park" issue)" "$(request 8 "$park" grantId)")"
-served_at "$root" "$parent" "$shapes_file" "$shipped_shapes"
-served_at "$root" "$parent" "$requests_file" "$shipped_requests"
-declaration 7 > "$root/packages/daemon/internal/api/version.go"
-sites "$root" 7
-in_checkout "$root" "$shapes_file" "$shipped_shapes"
-in_checkout "$root" "$requests_file" "$shipped_requests"
-no_open_pull_requests "$root"
-pull_request_event "$root" main
-run_check "$root" pull_request
-check "exits 0" "$(is "$status" 0)"
-check "holds contract-shapes.json to the commit it was built on" \
-  "$(contains "$out" "$shapes_file holds each record of a contract at or below 8 as the commit GitHub built this pull request's merge ref on ($parent) holds it")"
-check "holds request-shapes.json to the commit it was built on" \
-  "$(contains "$out" "$requests_file holds each record of a contract at or below 8 as the commit GitHub built this pull request's merge ref on ($parent) holds it")"
-check "passes on the history it leaves alone" \
-  "$(contains "$out" 'declares no daemon API contract of its own')"
-check "reads no open pull request" "$(is "$queries" 0)"
-
-root=$(fixture records-arrived-since)
-# The record files arrived on main after this merge ref was built, so neither the commit it was
-# built on nor this checkout holds them.
-parent=$(built_on "$root" 7)
-declaration 8 > "$root/stub/refs/main"
-served_at "$root" main "$shapes_file" "$shipped_shapes"
-served_at "$root" main "$requests_file" "$shipped_requests"
-declaration 7 > "$root/packages/daemon/internal/api/version.go"
-sites "$root" 7
-no_open_pull_requests "$root"
-pull_request_event "$root" main
-run_check "$root" pull_request
-check "a record file that arrived since exits 0" "$(is "$status" 0)"
-check "says the commit it was built on holds none" \
-  "$(contains "$out" "the commit GitHub built this pull request's merge ref on ($parent) holds no $shapes_file, so no record of it had shipped under this tree")"
-check "a record file that arrived since reads no open pull request" "$(is "$queries" 0)"
-
-# unreadable_records <name> <where> <text> <reason>: a merge group of the record set above whose
-# contract-shapes.json holds <text> in the checkout (<where> tree) or at the base (<where> base),
-# or fails to be read at the base where <text> is empty, which the check refuses as a read of that
-# copy that failed for <reason>.
-unreadable_records() {
-  local root what
-  root=$(shipped_group "unreadable-records-$1")
-  if [ "$2" = tree ]; then
-    in_checkout "$root" "$shapes_file" "$3"
-    what="$shapes_file in this checkout"
-  else
-    if [ -n "$3" ]; then
-      served_at "$root" "$group_base" "$shapes_file" "$3"
-    else
-      : > "$root/stub/files/$group_base/$shapes_file.fails"
-    fi
-    what="$shapes_file on the base, $group_is"
-  fi
-  run_check "$root" merge_group
-  check "$1: exits 1" "$(is "$status" 1)"
-  check "$1: names the read that failed" \
-    "$(contains "$out" "^::error file=$shapes_file::could not read $what: $4")"
-  check "$1: does not pass for want of a reading" \
-    "$(is "$(contains "$out" 'declares no daemon API contract')" false)"
-  check "$1: reads no open pull request" "$(is "$queries" 0)"
-  check "$1: no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
-}
-
-echo "case: a record file the check cannot read"
-unreadable_records not-json tree '[{"contract": 7' 'it is not JSON ('
-unreadable_records not-a-list base '{"records": []}' 'it is not a JSON list of records$'
-unreadable_records no-contract tree '[{"answer": "state"}]' \
-  'a record of it holds no integer contract and string answer ('
-# JSON's true is a Python bool, which Python counts an int.
-unreadable_records true-contract base '[{"contract": true, "answer": "state"}]' \
-  'a record of it holds no integer contract and string answer ('
-# A read that fails for any reason but a 404 is no absence of the file.
-unreadable_records read-fails base '' 'gh api exited 1 (gh: Server Error (HTTP 500))$'
 
 summary "check-daemon-api-contract.sh"

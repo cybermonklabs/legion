@@ -103,7 +103,7 @@ jobs:
       # change has already merged. The condition tests `github.event_name` and no output of the
       # `changes` job, which rules 2 and 3 of .github/scripts/check-ci-filters.sh require of a
       # step in this job.
-      - name: "Check the daemon API contract: the files that hold its number agree, a change to it declares a number above the base's, and its shipped records are unchanged"
+      - name: "Check the daemon API contract: the files that hold its number agree, and a change to it declares a number above the base's"
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
