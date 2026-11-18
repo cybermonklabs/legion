@@ -153,18 +153,24 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 // row's own repository with that row's own token.
 //
 // Every other step stays gated on the settings and on that check, in that order: the merged
-// pull-request search, the partial rows, both workflows' runs, the runs backfills, the
-// attribution of stored pull requests and RecordDeployedEvents all read a setting (the
-// population, the deploy repository, its workflow paths) or run against the deploy repository's
-// own grants.
+// pull-request search, the partial rows, both workflows' runs, the runs backfills and
+// RecordDeployedEvents all read a setting (the population, the deploy repository, its workflow
+// paths) or run against the deploy repository's own grants.
 //
 // The intake reads no setting for a head either, for the same reason: it binds its durable
 // whether or not the settings exist and writes the head row of every `pull_request` envelope,
 // leaving a merge of the population and a workflow run to the settings (Intake.Run). This pass
 // re-reads only the rows that exist, so without the intake a pull request that no result's
 // read-through has asked GitHub about is a row nothing writes.
+//
+// Each pass logs one line, `dispatch delivery: reconcile pass`, with `took`: the time from the
+// start of runOnce to its return, at every return. The deferred call writes it, so no step of the
+// pass comes after it. duty.RunJittered arms the next timer only after the pass returns, so this
+// is the time between one pass's start and the next one's timer.
 func (r *Reconcile) runOnce(ctx context.Context) {
-	now := time.Now()
+	start := time.Now()
+	defer func() { slog.Info("dispatch delivery: reconcile pass", "took", time.Since(start)) }()
+	now := start
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
 	// logged. At the GetSettings arm there is no delivery_settings row to write it in, or none
@@ -236,14 +242,6 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 		r.backfillRuns(ctx, backfillStep(DeliveryRunKindPRChecks), owner, repo, settings.DeployRepo, settings.PRChecksWorkflowPath, DeliveryRunKindPRChecks, production, now)
 	}
 	r.backfillRuns(ctx, createdAtBackfillStep, owner, repo, settings.DeployRepo, settings.DeployWorkflowPath, DeliveryRunKindDeploy, production, now)
-	// The attribution backfill runs last, within its own call budget: it is the one step whose
-	// work can wait a pass, so the timeline's own facts take the rate limit first.
-	record("read attribution inputs of stored pull requests", r.reconcileAttributionInputs(ctx))
-	if changed, err := AttributePullRequests(ctx, r.pool, AttributionResolveBatch); err != nil {
-		record("attribute stored pull requests", err)
-	} else if changed > 0 {
-		slog.Info("dispatch delivery: attributed stored pull requests", "changed", changed)
-	}
 	// Last, over everything this pass stored and what intake stored since the previous one: the
 	// issue.deployed of every pull request whose shipping run is now known. Its failure is the
 	// pass's, so last_error names it, and the rows it did not reach wait for the next pass.
@@ -487,9 +485,10 @@ func boundedFanOut[T any](ctx context.Context, concurrency int, items []T, fn fu
 }
 
 // reconcilePartialConcurrency bounds how many partial pull requests reconcilePartialPullRequests
-// completes at once. Each one makes two sequential GitHub calls (FetchPullRequest, then
-// fetchSessionTrailers once merged); run one at a time, a 3,500-PR backfill (CONTRACT.md's own
-// measured population size) serializes thousands of round trips end to end. GitHub documents only
+// completes at once. Each one makes sequential GitHub calls (RefreshPullRequestHead, then the
+// first commit and, where that read did not page them, the commit messages); run one at a time,
+// a 3,500-PR backfill (CONTRACT.md's own measured population size) serializes thousands of round
+// trips end to end. GitHub documents only
 // a 100-concurrent-request secondary-rate-limit ceiling and advises against running many requests
 // concurrently at all, not a specific safe number below it -- 8 is this package's own
 // conservative, arbitrary choice, picked to meaningfully parallelize a backfill without treating
@@ -1082,180 +1081,75 @@ func (r *Reconcile) readOwedPullRequests(ctx context.Context, now time.Time, ins
 	return nil
 }
 
-// attributionBackfillCalls bounds the GitHub calls reconcileAttributionInputs makes in one pass. A
-// row costs one call for the pull request and one per page of 100 commits
-// (fetchAttributionFacts): two for a pull request under 100 commits, at most maxAttributionCalls.
-// At twelve passes an hour that is at most 1,440 calls an hour, under a third of an
-// installation's 5,000, and the rest of each pass (the merged-PR search, partial rows, the
-// workflow runs and their jobs) keeps the remainder. How many passes a backlog takes depends on
-// its pull requests' commit counts: about 58 rows a pass while nearly all are under 100 commits
-// (~4,000 rows in about 70 passes, six hours), down to 20 a pass when every one needs all
-// maxCommitPages pages (about 207 passes, 17 hours).
-const attributionBackfillCalls = 120
-
-// maxAttributionCalls is the most one row's attribution read can cost: the pull request and every
-// commits page fetchCommitMessagesWithToken reads (maxCommitPages, intake.go).
-const maxAttributionCalls = 1 + maxCommitPages
-
-// attributionBackfillRows is how many unread rows a pass lists for the backfill: what the call
-// budget reads when every row is under 100 commits (two calls each). A row with more costs more,
-// so a pass then reads fewer of them and leaves the rest listed for the next; the budget, not
-// this count, bounds the calls.
-const attributionBackfillRows = attributionBackfillCalls / 2
-
-// callBudget is one pass's allowance of GitHub calls, shared by concurrent reads. A read reserves
-// the most it can cost before it starts and gives back what it did not use, waiting while other
-// reads hold reservations, so the calls made never exceed the allowance however the reads
-// interleave, and a read gives up only once the allowance is spent.
-//
-// golang.org/x/sync/semaphore.Weighted (routes/router.go) does not fit: its weight is held and
-// handed back whole, while a call made here is spent for good, so the allowance only shrinks. Once
-// fewer calls remain than a read reserves, Acquire(ctx, n) waits for a Release that never comes,
-// until the pass's context ends, and TryAcquire(n) gives up even while another read still holds a
-// reservation it is about to hand partly back. callBudget waits in that case only while some
-// reservation is out, and gives up the moment none is.
-type callBudget struct {
-	mu       sync.Mutex
-	changed  *sync.Cond
-	left     int
-	reserved int
-	spent    int
-}
-
-func newCallBudget(calls int) *callBudget {
-	budget := &callBudget{left: calls}
-	budget.changed = sync.NewCond(&budget.mu)
-	return budget
-}
-
-// reserve takes n calls from the allowance, waiting for reads in flight to give theirs back, or
-// answers false when the allowance cannot cover n.
-func (b *callBudget) reserve(n int) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for b.left < n && b.reserved > 0 {
-		b.changed.Wait()
-	}
-	if b.left < n {
-		return false
-	}
-	b.left -= n
-	b.reserved += n
-	return true
-}
-
-// settle records that a read which reserved `reserved` calls made `used`, and gives the rest back.
-func (b *callBudget) settle(reserved, used int) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.left += reserved - used
-	b.reserved -= reserved
-	b.spent += used
-	b.changed.Broadcast()
-}
-
-// reconcileAttributionInputs reads, once each, the attribution inputs of complete rows stored
-// before those inputs were (ListUnreadAttributionPullRequests, newest first), within
-// attributionBackfillCalls, and stores them with the row's issue resolved from them. A rate limit
-// stops the batch and fails the pass, as for partial rows; a row the budget does not reach waits
-// for a later pass.
-func (r *Reconcile) reconcileAttributionInputs(ctx context.Context) error {
-	unread, err := ListUnreadAttributionPullRequests(ctx, r.pool, attributionBackfillRows)
-	if err != nil {
-		return fmt.Errorf("list pull requests with unread attribution inputs: %w", err)
-	}
-	budget := newCallBudget(attributionBackfillCalls)
-	err = boundedFanOut(ctx, reconcilePartialConcurrency, unread, func(ctx context.Context, pr DeliveryPullRequest) error {
-		return r.readAttributionInputs(ctx, pr, budget)
-	})
-	if len(unread) > 0 {
-		slog.Info("dispatch delivery: read attribution inputs", "listed", len(unread), "calls", budget.spent)
-	}
-	if err != nil {
-		return fmt.Errorf("rate-limited reading attribution inputs: %w", err)
-	}
-	return nil
-}
-
-// readAttributionInputs is reconcileAttributionInputs' per-row body, run as its own boundedFanOut
-// goroutine: it reads only what the attribution needs (fetchAttributionFacts), since the row
-// already holds every other fact, and only when budget still covers the most that read can cost.
-// Like completePartialPullRequest, it returns non-nil only for a *githubapp.RateLimitError, marks
-// a row GitHub no longer has unfetchable, and logs and skips any other failure, leaving the row
-// unread for a later pass.
-func (r *Reconcile) readAttributionInputs(ctx context.Context, pr DeliveryPullRequest, budget *callBudget) error {
-	owner, repo, err := splitRepo(pr.Repo)
-	if err != nil {
-		slog.Warn("dispatch delivery: read attribution inputs", "repo", pr.Repo, "number", pr.Number, "error", err)
-		return nil
-	}
-	if !budget.reserve(maxAttributionCalls) {
-		return nil
-	}
-	facts, calls, err := fetchAttributionFacts(ctx, r.github, owner, repo, pr.Repo, pr.Number)
-	budget.settle(maxAttributionCalls, calls)
-	if err != nil {
-		if limited, ok := githubapp.AsRateLimit(err); ok {
-			slog.Warn("dispatch delivery: stopped reading attribution inputs: rate limit", "repo", pr.Repo, "number", pr.Number, "error", err)
-			return limited
-		}
-		if errors.Is(err, ErrPullRequestNotFound) || errors.Is(err, githubapp.ErrNoInstallation) {
-			if markErr := MarkPullRequestUnfetchable(ctx, r.pool, pr.Repo, pr.Number, err.Error()); markErr != nil {
-				slog.Warn("dispatch delivery: mark pull request unfetchable", "repo", pr.Repo, "number", pr.Number, "error", markErr)
-			}
-			return nil
-		}
-		slog.Warn("dispatch delivery: read attribution inputs", "repo", pr.Repo, "number", pr.Number, "error", err)
-		return nil
-	}
-	inputs := attributionInputsFrom(facts)
-	issueKey, _, err := resolveStoredIssueKey(ctx, r.pool, pr.Repo, pr.URL, inputs)
-	if err != nil {
-		slog.Warn("dispatch delivery: resolve the issue of a backfilled pull request", "repo", pr.Repo, "number", pr.Number, "error", err)
-		return nil
-	}
-	if err := StoreAttributionInputs(ctx, r.pool, pr.Repo, pr.Number, inputs, sessionTrailers(facts.CommitMessages), issueKey); err != nil {
-		slog.Warn("dispatch delivery: store attribution inputs", "repo", pr.Repo, "number", pr.Number, "error", err)
-	}
-	return nil
-}
-
 // completePartialPullRequest is reconcilePartialPullRequests' per-row body, run as its own
-// boundedFanOut goroutine. Returns non-nil only for a *githubapp.RateLimitError (the signal that
-// stops the batch, per reconcilePartialPullRequests' own doc comment, from either FetchPullRequest
-// or completePullRequest's own session-trailer fetch); every other error is logged and swallowed
-// here, since one row's own failure must not stop any other row's completion already in flight.
-// A permanent 404/410 (ErrPullRequestNotFound) or a 404 resolving which installation covers the
-// repository (githubapp.ErrNoInstallation -- the repository itself was deleted or renamed, which
-// its own doc comment already names as exactly this case) both mark the row unfetchable instead
-// of logging a transient-looking warning every pass forever.
+// boundedFanOut goroutine. It reads the pull request once (RefreshPullRequestHead), which stores
+// its results row and its texts, and completes the timeline row from that same read: the first
+// commit's time (completeFetchedPullRequest) and the sessions (completePullRequest, which pages
+// the messages only where the read did not read them). Returns non-nil only for a
+// *githubapp.RateLimitError (the signal that stops the batch, per reconcilePartialPullRequests'
+// own doc comment); every other error is logged and swallowed here, since one row's own failure
+// must not stop any other row's completion already in flight.
+//
+// A refusal marks the row unfetchable only where pullRequestAbsent proves that the repository is
+// readable and holds no such pull request. One 404, or a repository that the App cannot read, is
+// no such proof, so the row stays partial and the next pass reads it again.
 func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryPullRequest) error {
-	owner, repo, err := splitRepo(pr.Repo)
-	if err != nil {
-		slog.Warn("dispatch delivery: partial pull request", "repo", pr.Repo, "number", pr.Number, "error", err)
-		return nil
-	}
-	fetched, err := FetchPullRequest(ctx, r.github, owner, repo, pr.Number)
-	if err != nil {
-		if limited, ok := githubapp.AsRateLimit(err); ok {
-			slog.Warn("dispatch delivery: stopped completing partial pull request: rate limit", "repo", pr.Repo, "number", pr.Number, "error", err)
-			return limited
-		}
-		if errors.Is(err, ErrPullRequestNotFound) || errors.Is(err, githubapp.ErrNoInstallation) {
-			if markErr := MarkPullRequestUnfetchable(ctx, r.pool, pr.Repo, pr.Number, err.Error()); markErr != nil {
-				slog.Warn("dispatch delivery: mark pull request unfetchable", "repo", pr.Repo, "number", pr.Number, "error", markErr)
-			}
+	stopped := func(err error) error {
+		limited, ok := githubapp.AsRateLimit(err)
+		if !ok {
 			return nil
+		}
+		slog.Warn("dispatch delivery: stopped completing partial pull requests: rate limit", "repo", pr.Repo, "number", pr.Number, "error", err)
+		return limited
+	}
+	fetched, refused, err := RefreshPullRequestHead(ctx, r.pool, r.github, nil, pr.Repo, pr.Number, time.Now())
+	if err != nil {
+		if limited := stopped(err); limited != nil {
+			return limited
 		}
 		slog.Warn("dispatch delivery: complete partial pull request", "repo", pr.Repo, "number", pr.Number, "error", err)
 		return nil
 	}
-	if fetched.MergedAt == nil {
+	if refused != nil {
+		absent, askErr := pullRequestAbsent(ctx, r.github, refused)
+		if askErr != nil {
+			if limited := stopped(askErr); limited != nil {
+				return limited
+			}
+			slog.Warn("dispatch delivery: ask GitHub whether a repository holds a partial pull request it refused; the row stays partial",
+				"repo", pr.Repo, "number", pr.Number, "error", askErr)
+			return nil
+		}
+		if !absent {
+			slog.Warn("dispatch delivery: GitHub refused the read of a partial pull request; the next pass reads it again",
+				"repo", pr.Repo, "number", pr.Number, "error", refused.err)
+			return nil
+		}
+		if markErr := MarkPullRequestUnfetchable(ctx, r.pool, pr.Repo, pr.Number, refused.err.Error()); markErr != nil {
+			slog.Warn("dispatch delivery: mark pull request unfetchable", "repo", pr.Repo, "number", pr.Number, "error", markErr)
+		}
 		return nil
 	}
-	if err := completePullRequest(ctx, r.pool, r.github, owner, repo, pr.Repo, pr.Number, fetched, nil); err != nil {
-		if limited, ok := githubapp.AsRateLimit(err); ok {
-			slog.Warn("dispatch delivery: stopped completing partial pull requests: rate limit", "repo", pr.Repo, "number", pr.Number, "error", err)
+	full, err := completeFetchedPullRequest(ctx, r.github, fetched.Token, fetched.Owner, fetched.Repo, fetched.Payload)
+	if err != nil {
+		if limited := stopped(err); limited != nil {
+			return limited
+		}
+		slog.Warn("dispatch delivery: complete partial pull request", "repo", pr.Repo, "number", pr.Number, "error", err)
+		return nil
+	}
+	if full.MergedAt == nil {
+		return nil
+	}
+	var messages []string
+	if fetched.Texts != nil && fetched.Texts.MessagesRead {
+		messages = fetched.Texts.CommitMessages
+		if messages == nil {
+			messages = []string{}
+		}
+	}
+	if err := completePullRequest(ctx, r.pool, r.github, fetched.Owner, fetched.Repo, pr.Repo, pr.Number, full, messages); err != nil {
+		if limited := stopped(err); limited != nil {
 			return limited
 		}
 		slog.Warn("dispatch delivery: complete partial pull request; it stays partial for the next pass", "repo", pr.Repo, "number", pr.Number, "error", err)

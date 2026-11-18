@@ -71,6 +71,14 @@ function renderedRowIndexes(): number[] {
   );
 }
 
+/** The text in the Issue column of the row whose PR column shows `prLabel`. */
+function issueCellOf(prLabel: string): string | null | undefined {
+  const headers = [...document.querySelectorAll("thead th")];
+  const column = headers.findIndex((header) => header.textContent?.startsWith("Issue"));
+  const row = screen.getByRole("link", { name: prLabel }).closest("tr");
+  return row?.children[column]?.textContent;
+}
+
 test("the window holds the rows on screen plus the overscan, clamped at both ends", () => {
   const viewport = 10 * ROW_HEIGHT_PX;
   expect(visibleRowRange(0, viewport, 1000)).toEqual({ first: 0, last: 10 + OVERSCAN_ROWS });
@@ -155,6 +163,29 @@ test("a deployed row's 'deployed' opens its deploy run, and the row's own click 
     await user.click(screen.getByRole("button", { name: "Open deploy run #500" }));
     expect(runs).toEqual([500]);
     expect(opened).toEqual([]);
+  } finally {
+    cleanup();
+  }
+});
+
+// A PR with no issue shows the cause: "Not known yet" until Dispatch reads its commit messages,
+// else "No issue".
+test("a pull request whose issue is not known reads Not known yet, and one with no issue reads No issue", () => {
+  try {
+    renderList([
+      { ...base, issue: null, issue_not_known: true },
+      {
+        ...base,
+        id: "acme/widgets#2",
+        issue: null,
+        issue_not_known: false,
+        number: 2,
+        url: "https://github.com/acme/widgets/pull/2",
+      },
+    ]);
+    // Control: a PR whose issue_not_known is false keeps "No issue".
+    expect(issueCellOf("widgets#2")).toBe("No issue");
+    expect(issueCellOf("widgets#1")).toBe("Not known yet");
   } finally {
     cleanup();
   }

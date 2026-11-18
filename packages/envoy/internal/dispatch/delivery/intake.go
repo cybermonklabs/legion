@@ -39,12 +39,6 @@ import (
 // LEGION-294's own collector reads).
 var ompSessionTrailer = regexp.MustCompile(`(?m)^Omp-Session:\s*(\S+)\s*$`)
 
-// issueKeyCandidate matches a bare Dispatch issue key mention (e.g. ACME-1072), the same shape
-// this codebase's own issueKeyPattern uses elsewhere (packages/envoy/internal/dispatch/api/server.go,
-// packages/envoy/internal/dispatch/text/refs.go) -- duplicated here rather than imported because
-// both are unexported in their own packages and this package does not depend on either.
-var issueKeyCandidate = regexp.MustCompile(`\b[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*\b`)
-
 // Intake wires the NATS consumer to the database, the GitHub App client and the event broker the
 // issue.deployed events go through (RecordDeployedEvents). StartIntakes builds it, and only with
 // the App configured.
@@ -743,22 +737,21 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings *Deliv
 	return true, nil
 }
 
-// completePullRequest finishes writing one merged pull request's complete row -- session
-// trailers, attribution inputs, issue resolution, and the upsert -- once its GitHub facts
-// (FetchPullRequest's answer) are in hand. The shared tail both intake's live
-// handlePullRequestEnvelope and reconcile's completePartialPullRequest call, so "a live webhook
-// completes a PR" and "reconcile completes a partial row" write through the exact same last
-// steps, never two copies that can drift from each other. A commit fetch that fails, for any
-// reason, returns its error without writing anything: completing the row from what was read
-// would record its sessions and commit-message keys short for good. The row stays as it was
-// (still partial, for reconcile's own caller; unwritten, for intake's, whose merged-PR search then
-// finds it), so the next pass retries the whole completion. A rate limit comes back as the
-// *githubapp.RateLimitError, which stops reconcile's batch.
+// completePullRequest finishes writing one merged pull request's complete row -- its session
+// trailers and the upsert -- once its GitHub facts (FetchPullRequest's answer) are in hand. It
+// resolves no issue: the statement gives the issue at each read, from the texts that the read of
+// GitHub stored. The shared tail both intake's live handlePullRequestEnvelope and reconcile's
+// completePartialPullRequest call, so "a live webhook completes a PR" and "reconcile completes a
+// partial row" write through the exact same last steps, never two copies that can drift from each
+// other. A commit fetch that fails, for any reason, returns its error without writing anything:
+// completing the row from what was read would record its sessions short for good. The row stays
+// as it was (still partial, for reconcile's own caller; unwritten, for intake's, whose merged-PR
+// search then finds it), so the next pass retries the whole completion. A rate limit comes back
+// as the *githubapp.RateLimitError, which stops reconcile's batch.
 //
-// read is the pull request's commit messages when the caller has already paged them — intake's
-// head write does, for a pull request its title, body and branch left unattributed — and nil
-// when it has not, which is reconcile's case and intake's commoner one; a non-nil read spares
-// this the same paginated call a second time.
+// read is the pull request's commit messages when the caller has already paged them — the read
+// of GitHub that stored the texts did, where no higher source named a held issue — and nil when
+// it has not; a non-nil read spares this the same paginated call a second time.
 func completePullRequest(ctx context.Context, pool *store.Pool, github *githubapp.Client, owner, repo, repoFull string, number int, fetched FetchedPullRequest, read []string) error {
 	messages := read
 	if messages == nil {
@@ -771,20 +764,11 @@ func completePullRequest(ctx context.Context, pool *store.Pool, github *githubap
 		}
 		messages = paged
 	}
-	inputs := attributionInputsFrom(attributionFacts{
-		Repo: repoFull, URL: fetched.URL, Title: fetched.Title, Body: fetched.Body,
-		HeadRef: fetched.HeadRef, CommitMessages: messages,
-	})
-	issueKey, _, err := resolveStoredIssueKey(ctx, pool, repoFull, fetched.URL, inputs)
-	if err != nil {
-		return err
-	}
 	return UpsertPullRequest(ctx, pool, DeliveryPullRequest{
 		Repo: repoFull, Number: number, Title: fetched.Title, URL: fetched.URL, Author: fetched.Author,
 		CreatedAt: &fetched.CreatedAt, MergedAt: fetched.MergedAt, FirstCommitAt: fetched.FirstCommitAt,
 		MergeCommitSHA: fetched.MergeCommitSHA, Additions: fetched.Additions, Deletions: fetched.Deletions,
-		Rework: IsRework(fetched.Title), IssueKey: issueKey, Sessions: sessionTrailers(messages),
-		Attribution: &inputs, Partial: false,
+		Rework: IsRework(fetched.Title), Sessions: sessionTrailers(messages), Partial: false,
 	})
 }
 
@@ -856,11 +840,10 @@ type commitMessagePayload struct {
 const maxCommitPages = 5
 
 // fetchCommitMessages reads a pull request's commit messages, in commit order: what its session
-// trailers (sessionTrailers) and its commit-message issue keys (AttributionInputs.CommitKeys) are
-// read from. Shared by Intake and Reconcile (both complete a PR the same way; reconcile must read
-// them itself rather than carrying forward whatever a stale row already had, see store.go's
-// UpsertPullRequest doc comment on why a partial row is never allowed to regress a complete one's
-// attribution). On an error it answers the messages of the pages it read.
+// trailers (sessionTrailers) are read from. Shared by Intake and Reconcile (both complete a PR the
+// same way; reconcile must read them itself rather than carrying forward whatever a stale row
+// already had, see store.go's UpsertPullRequest doc comment on why a partial row is never allowed
+// to regress a complete one's sessions). On an error it answers the messages of the pages it read.
 func fetchCommitMessages(ctx context.Context, client *githubapp.Client, owner, repo string, number int) ([]string, error) {
 	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
 	messages, _, err := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number, 1)
@@ -871,7 +854,7 @@ func fetchCommitMessages(ctx context.Context, client *githubapp.Client, owner, r
 // token, by readGitHubPage's rule. It reads from firstPage on: 1 for every message, and 2 for the
 // messages after the 100 that one GraphQL query answers (readFactsBatch). It also answers how
 // many commit pages it asked GitHub for, the failed one included, so a caller can count what a
-// read cost (reconcileAttributionInputs' call budget).
+// read cost.
 func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client, token func() (string, error), owner, repo string, number, firstPage int) ([]string, int, error) {
 	var messages []string
 	for page := firstPage; page <= maxCommitPages; page++ {

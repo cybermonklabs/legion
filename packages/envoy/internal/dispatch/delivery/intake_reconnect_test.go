@@ -171,8 +171,9 @@ const (
 )
 
 // writingGitHub is a fake GitHub of one process's own that answers acme/widgets'
-// handlerFinishedNumber whole -- merged, labelled, with one commit -- so the handler reading it
-// writes the pull request's row and, with a shipping deploy stored, its issue.deployed event.
+// handlerFinishedNumber whole -- merged, labelled, with its head and one commit -- so the handler
+// reading it writes the pull request's results row and texts, whose title names the issue, then
+// its timeline row and, with a shipping deploy stored, its issue.deployed event.
 // The counting fakes of this file's other rows answer 500, which writes nothing and so says
 // nothing about what a person sees. It counts every fetch of that pull request and, when hold is
 // set, holds the first one until the row releases it or the handler making it is abandoned.
@@ -203,7 +204,11 @@ func writingGitHub(t *testing.T, hold bool) (fetches *atomic.Int64, release func
 			"number": number, "title": deployedIssue + ": a widget",
 			"html_url": fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
 			"user":     map[string]any{"login": "octocat"}, "labels": []any{map[string]any{"name": "non-task"}},
-			"created_at": "2024-01-01T00:00:00Z", "merged_at": handlerFinishedMerged,
+			"created_at": "2024-01-01T00:00:00Z", "merged_at": handlerFinishedMerged, "updated_at": handlerFinishedMerged,
+			"state": "closed", "merged": true,
+			"head": map[string]any{"ref": "feature/widget", "sha": fmt.Sprintf("%040d", number),
+				"repo": map[string]any{"full_name": "acme/widgets"}},
+			"base":             map[string]any{"ref": "main"},
 			"merge_commit_sha": fmt.Sprintf("abc%d", number), "additions": 10, "deletions": 2, "body": "",
 		})
 	})

@@ -15,17 +15,16 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// timelineWrite is a statement that writes one of the timeline's tables directly. The bounded
-// attribution walk (AttributePullRequests) is not one: it is a `with` statement that re-resolves up
-// to AttributionResolveBatch stored rows every pass, and is held apart by the row comparison below.
+// timelineWrite is a statement that writes one of the timeline's tables directly. The sync of each
+// answer (SyncAttributions) is not one. It is a `with` statement that writes a timeline row only
+// where the answer changed, and the row comparison below holds it apart.
 var timelineWrite = regexp.MustCompile(`(?is)^\s*(insert\s+into|update|delete\s+from)\s+delivery_(pull_requests|runs|run_jobs)\b`)
 
-// timelineRows is every stored pull request, run and job as one comparable text each, leaving out
-// only attribution_checked_at, the stamp the bounded attribution walk moves on the rows it reads.
+// timelineRows is every stored pull request, run and job as one comparable text each.
 func timelineRows(t *testing.T, ctx context.Context, pool *store.Pool) []string {
 	t.Helper()
 	rows, err := pool.Query(ctx, `
-		select 'pr ' || (to_jsonb(pr) - 'attribution_checked_at')::text from delivery_pull_requests pr
+		select 'pr ' || to_jsonb(pr)::text from delivery_pull_requests pr
 		union all select 'run ' || to_jsonb(r)::text from delivery_runs r
 		union all select 'job ' || to_jsonb(j)::text from delivery_run_jobs j
 		order by 1`)
@@ -39,9 +38,9 @@ func timelineRows(t *testing.T, ctx context.Context, pool *store.Pool) []string 
 	return got
 }
 
-// quietReconcilePass stores prs merged pull requests a month old, with their attribution inputs
-// read, beside one finished deploy run and its job, against a GitHub that has nothing new: the
-// merged-PR search and both run listings answer nothing, and every runs backfill has finished.
+// quietReconcilePass stores prs merged pull requests a month old, beside one finished deploy run
+// and its job, against a GitHub that has nothing new: the merged-PR search and both run listings
+// answer nothing, and every runs backfill has finished.
 // Each pull request has a results row with current texts and read messages, so the head pass's
 // facts line has nothing to read. It runs one reconcile pass to settle the progress
 // rows, then a second on a recorded pool, and answers that second pass's statements once it has
@@ -65,7 +64,6 @@ func quietReconcilePass(t *testing.T, prs int) []string {
 	merged := finished.Add(-30 * 24 * time.Hour).Truncate(time.Second)
 	for number := 1; number <= prs; number++ {
 		pr := changeTestPR(number, merged.Add(time.Duration(number)*time.Minute), "feat: settled")
-		pr.Attribution = &AttributionInputs{}
 		if err := UpsertPullRequest(ctx, pool, pr); err != nil {
 			t.Fatalf("seed #%d: %v", number, err)
 		}
@@ -126,10 +124,9 @@ func quietReconcilePass(t *testing.T, prs int) []string {
 
 // A reconcile pass that GitHub has nothing new for costs a constant number of statements, however
 // many pull requests are stored: the timer stays (GitHub has no feed of the webhooks it would
-// miss), so what it reads every five minutes must not grow with the table. 50 stored rows sit
-// well inside one bounded attribution batch, so they cost the pass no statement more than one. A
-// facts line that reads a pull request with current texts, or a sync whose statements grow with
-// the rows, makes this test fail.
+// miss), so what it reads every five minutes must not grow with the table. A facts line that
+// reads a pull request with current texts, or a sync whose statements grow with the rows, makes
+// this test fail.
 func TestAReconcilePassWithNothingNewCostsTheSameStatementsWhateverIsStored(t *testing.T) {
 	one := quietReconcilePass(t, 1)
 	fifty := quietReconcilePass(t, 50)

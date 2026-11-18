@@ -161,16 +161,15 @@ func TestAPullRequestUpsertWithNewContentLogsOneChange(t *testing.T) {
 
 // TestAReconcileReupsertOfTheSameFactsLogsNothing: what a reconcile pass that finds nothing new
 // writes -- the merged-PR search's partial re-upsert of a complete row and of a partial one, the
-// attribution pass over rows whose issue did not change, the sync of each answer
-// (SyncAttributions) over a results row of #8 whose current texts name nobody and whose timeline
-// row names nobody, and a run and its jobs written again with the same facts -- logs no change.
-// It fails where the sync writes another value to a timeline row whose answer did not change.
+// sync of each answer (SyncAttributions) over a results row of #8 whose current texts name nobody
+// and whose timeline row names nobody, and a run and its jobs written again with the same facts --
+// logs no change. It fails where the sync writes another value to a timeline row whose answer did
+// not change.
 func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	merged := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 
 	complete := changeTestPR(8, merged, "feat: complete")
-	complete.Attribution = &AttributionInputs{}
 	if err := UpsertPullRequest(ctx, pool, complete); err != nil {
 		t.Fatalf("seed the complete row: %v", err)
 	}
@@ -212,9 +211,6 @@ func TestAReconcileReupsertOfTheSameFactsLogsNothing(t *testing.T) {
 		}
 	}
 	for range 2 {
-		if _, err := AttributePullRequests(ctx, pool, AttributionResolveBatch); err != nil {
-			t.Fatalf("AttributePullRequests: %v", err)
-		}
 		if _, err := SyncAttributions(ctx, pool); err != nil {
 			t.Fatalf("SyncAttributions: %v", err)
 		}

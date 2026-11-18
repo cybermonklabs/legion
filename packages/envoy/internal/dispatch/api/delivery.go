@@ -40,13 +40,18 @@ var deliveryFacets = []string{"repo", "parent_agent", "session", "issue", "prior
 var deliveryColorFacets = []string{"repo", "author", "priority", "component", "parent_agent"}
 
 // Placeholder facet values, split by cause as the page labels them (features/delivery/lib/facets.ts
-// holds the same four): a pull request naming no issue, an issue with no priority or no component,
-// and a pull request whose commits name no session.
+// holds the same five): a pull request naming no issue, a pull request whose issue is not known
+// yet, an issue with no priority or no component, and a pull request whose commits name no session.
 const (
-	deliveryNoIssue     = "__no_issue__"
-	deliveryNoPriority  = "__no_priority__"
-	deliveryNoComponent = "__no_component__"
-	deliveryNoSession   = "__no_session__"
+	deliveryNoIssue = "__no_issue__"
+	// deliveryIssueNotKnown is the priority and the component of a pull request whose issue is not
+	// known yet (DeliveryPRView.IssueNotKnown). Five places show it, each with the label "Not known
+	// yet": newDeliveryRow, lib/facets.ts, lib/colorScale.ts, lib/lanes.ts with FacetPanel.tsx, and
+	// lib/prList.ts with DrillDown.tsx.
+	deliveryIssueNotKnown = "__issue_not_known__"
+	deliveryNoPriority    = "__no_priority__"
+	deliveryNoComponent   = "__no_component__"
+	deliveryNoSession     = "__no_session__"
 )
 
 // The rework facet's two values, as the page names them (features/delivery/lib/facets.ts's
@@ -507,7 +512,7 @@ func (p deliveryPopulation) derive(settings delivery.DeliverySettings) deliveryD
 			ID: pr.Repo + "#" + strconv.Itoa(pr.Number), Repo: pr.Repo, Number: pr.Number, Title: pr.Title, URL: pr.URL,
 			Author: pr.Author, CreatedAt: pr.CreatedAt, MergedAt: pr.MergedAt, FirstCommitAt: pr.FirstCommitAt,
 			Additions: pr.Additions, Deletions: pr.Deletions, Partial: pr.Partial, Rework: pr.Rework,
-			Issue: pr.IssueKey, Components: []string{}, Sessions: pr.Sessions,
+			Issue: pr.IssueKey, IssueNotKnown: pr.IssueNotKnown, Components: []string{}, Sessions: pr.Sessions,
 			DeployRun: deployRun, DeployedAt: deployedAt, DeployedStatus: status,
 			UnfetchableReason: pr.UnfetchableReason,
 		}
@@ -894,8 +899,9 @@ type deliveryRow struct {
 
 // newDeliveryRow reads a view's facet values. Every colour-by facet (deliveryColorFacets) gets at
 // least one value, a placeholder when the pull request has none, since deliveryColorCounts colours
-// a row by its first. session gets no placeholder: parent_agent's __no_session__ already filters
-// the pull requests no session wrote.
+// a row by its first. A pull request with no issue gets __issue_not_known__ for priority and
+// component where its issue is not known yet, and __no_issue__ otherwise. session gets no
+// placeholder: parent_agent's __no_session__ already filters the pull requests no session wrote.
 func newDeliveryRow(view delivery.DeliveryPRView) deliveryRow {
 	values := map[string][]string{
 		"repo":     {view.Repo},
@@ -914,6 +920,9 @@ func newDeliveryRow(view delivery.DeliveryPRView) deliveryRow {
 		values["rework"] = []string{deliveryReworkRework}
 	}
 	switch {
+	case view.Issue == nil && view.IssueNotKnown:
+		values["priority"] = []string{deliveryIssueNotKnown}
+		values["component"] = []string{deliveryIssueNotKnown}
 	case view.Issue == nil:
 		values["priority"] = []string{deliveryNoIssue}
 		values["component"] = []string{deliveryNoIssue}

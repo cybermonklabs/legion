@@ -3,7 +3,7 @@
 import type { DeliveryPR, DeliverySessionGroup } from "../../../api/types";
 import {
   DEPLOYED_LABELS,
-  NO_ISSUE,
+  issuePlaceholder,
   NO_PRIORITY,
   NO_SESSION,
   PLACEHOLDER_LABELS,
@@ -30,7 +30,8 @@ export interface PRListRow {
   mergedMs: number | undefined;
   /** Short repo label plus number, e.g. "widgets#123" (see shortRepoLabel). */
   prLabel: string;
-  /** "ACME-100 · P1", "ACME-100 · No priority", or "No issue". */
+  /** "ACME-100 · P1", "ACME-100 · No priority", "No issue", or "Not known yet" (the issue
+   *  placeholder's label, see issuePlaceholder). */
   issueLabel: string;
   /** undefined for a PR with no issue, so it sorts last in either direction. */
   issueSort: IssueSortKey | undefined;
@@ -74,7 +75,7 @@ export function buildPRListRows(
       prLabel: `${shortRepoLabel(allRepos, pr.repo)}#${pr.number}`,
       issueLabel:
         pr.issue === null
-          ? PLACEHOLDER_LABELS[NO_ISSUE]
+          ? PLACEHOLDER_LABELS[issuePlaceholder(pr)]
           : `${pr.issue} \u00b7 ${pr.priority ?? PLACEHOLDER_LABELS[NO_PRIORITY]}`,
       issueSort:
         pr.issue === null

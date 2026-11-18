@@ -11,20 +11,29 @@ export type DeployedFacet = DeliveryPR["deployed_status"];
 
 // Placeholder facet values, split by cause instead of one catch-all "(none)": a PR that links no
 // Dispatch issue reads "No issue", distinct from one whose issue has no priority or no component;
-// a PR whose commits name no session reads "No session". The server counts and selects by the same
-// four values. Same wording everywhere these show: Timeline lanes, FacetPanel's lists, PRList and
-// DrillDown.
+// a PR whose commits name no session reads "No session". The fifth placeholder, "Not known yet",
+// is for a PR whose issue the rule cannot give until Dispatch reads its commit messages. The
+// server counts and selects by the same five values. Same wording everywhere these show: Timeline
+// lanes, FacetPanel's lists, PRList and DrillDown.
 export const NO_ISSUE = "__no_issue__";
+export const ISSUE_NOT_KNOWN = "__issue_not_known__";
 export const NO_PRIORITY = "__no_priority__";
 export const NO_COMPONENT = "__no_component__";
 export const NO_SESSION = "__no_session__";
 
 export const PLACEHOLDER_LABELS: Record<string, string> = {
   [NO_ISSUE]: "No issue",
+  [ISSUE_NOT_KNOWN]: "Not known yet",
   [NO_PRIORITY]: "No priority",
   [NO_COMPONENT]: "No component",
   [NO_SESSION]: "No session",
 };
+
+/** The placeholder of a PR that names no issue: ISSUE_NOT_KNOWN where the server marks its issue
+ *  as not known yet, else NO_ISSUE. */
+export function issuePlaceholder(pr: DeliveryPR): string {
+  return pr.issue_not_known === true ? ISSUE_NOT_KNOWN : NO_ISSUE;
+}
 
 export const DEPLOYED_LABELS: Record<DeployedFacet, string> = {
   deployed: "deployed",

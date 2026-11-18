@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -23,8 +22,9 @@ import (
 )
 
 // readingCorpusPath is the corpus of the reading in the database (attribution_keys): each text
-// as Dispatch stores it, beside the four lists the Go reading gave for it. TestWriteTheReadingCorpus
-// writes it, and TestTheReadingAnswersItsCorpus holds the database to it.
+// as Dispatch stores it, beside the four lists the Go reading gave for it. The file is frozen as
+// the Go reading wrote it (readingCorpusInputs says why), and TestTheReadingAnswersItsCorpus holds
+// the database to it.
 const readingCorpusPath = "testdata/attribution_reading.json"
 
 // readingText is what the reading reads of one pull request: the texts a read of GitHub stores
@@ -78,14 +78,20 @@ type readingInput struct {
 	text readingText
 }
 
-// readingCorpusInputs is every case of this package's tests of citedIssues, uniqueKeys and
-// attributionInputsFrom, as each test spells it, and the texts the reading's own cases add: the
-// two runes Go upper-cases to ASCII, keys a letter or a digit runs into, hosts that are and are
-// not github.com, references a # runs into, two spellings of one issue, a repository whose name
-// lower() folds by locale, and seven texts holding NULs. A text two tests share is one case.
-// The timing bodies of TestCitedIssuesCostsNoMoreThanTheBodyIsLong and
-// TestCitedIssuesCostsNoMoreForACitationFarFromASpace (1 MiB and two of 72 KiB) are left out:
-// they measure time, and the answer test of each of their shapes is here.
+// readingCorpusInputs is every case of the corpus, in the order of the file. It holds each text of
+// the tests of the Go reading (citedIssues, uniqueKeys and attributionInputsFrom), as each test
+// spelled it, and the texts the reading's own cases add: the two runes Go upper-cases to ASCII,
+// keys a letter or a digit runs into, hosts that are and are not github.com, references a # runs
+// into, two spellings of one issue, a repository whose name lower() folds by locale, and seven
+// texts holding NULs. A text two tests share is one case. Each case keeps the name of the test
+// that held its text, also where that test is gone. The timing bodies of
+// TestTheReadingCostsNoMoreThanTheBodyIsLong and TestTheReadingCostsNoMoreForACitationFarFromASpace
+// (1 MiB and two of 72 KiB) are not in it: they measure time, and the answer test of each of their
+// shapes is here.
+//
+// The corpus is frozen as the Go reading wrote it. The package no longer has that reading, so no
+// test can write the corpus again. A new input needs its case added to the corpus by hand: its
+// name, its text as Dispatch stores it, and the four lists the reading must give for it.
 func readingCorpusInputs() []readingInput {
 	inputs := []readingInput{}
 	seen := map[string]bool{}
@@ -258,8 +264,8 @@ func readingCorpusInputs() []readingInput {
 		"Reverts https://github.com/acme/widgets/pull/77.",
 	)
 
-	// The texts of the tests that read a pull request's issue through attributionInputsFrom
-	// (resolvedKey), in the order of their files.
+	// The texts of the tests that read a pull request's issue through resolvedKey, in the order of
+	// their files.
 	add("TestAttributionTakesAnExternalLinkNamingThePullRequest", readingText{Repo: "acme/widgets", Title: "feat: no key here"})
 	add("TestAttributionIgnoresAnExternalLinkNamingAnotherPullRequest", readingText{Repo: "acme/widgets", Body: "Follows https://github.com/acme/widgets/pull/1030."})
 	add("TestAttributionTakesTheHeadBranch", readingText{Repo: "acme/widgets", HeadRef: "fix/attr-121-guard-the-thing"})
@@ -332,59 +338,9 @@ func storedText(text readingText) readingText {
 	return stored
 }
 
-// asciiLower folds A to Z and nothing else, as the reading folds a cited URL. strings.ToLower
-// would not do: it makes İ into i̇, which the reading keeps as İ.
-func asciiLower(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r >= 'A' && r <= 'Z' {
-			return r + 'a' - 'A'
-		}
-		return r
-	}, s)
-}
-
-// TestWriteTheReadingCorpus writes readingCorpusPath from the Go reading, which every writer used
-// before the database read the keys: the lists of each text as GitHub answers it, beside the text
-// as Dispatch stores it. It runs only with ATTRIBUTION_WRITE_CORPUS=1:
-//
-//	ATTRIBUTION_WRITE_CORPUS=1 go test -count=1 -run '^TestWriteTheReadingCorpus$' ./internal/dispatch/delivery/
-func TestWriteTheReadingCorpus(t *testing.T) {
-	if os.Getenv("ATTRIBUTION_WRITE_CORPUS") != "1" {
-		t.Skip("set ATTRIBUTION_WRITE_CORPUS=1 to write " + readingCorpusPath + " from the Go reading")
-	}
-	cases := []readingCase{}
-	for _, input := range readingCorpusInputs() {
-		read := attributionInputsFrom(attributionFacts{
-			Repo: input.text.Repo, Title: input.text.Title, Body: input.text.Body,
-			HeadRef: input.text.HeadRef, CommitMessages: input.text.Messages,
-		})
-		cited := []string{}
-		for _, url := range read.CitedIssues {
-			cited = appendUnique(cited, asciiLower(url))
-		}
-		cases = append(cases, readingCase{
-			Name:        input.name,
-			readingText: storedText(input.text),
-			readingLists: readingLists{
-				TitleKeys: read.TitleKeys, CitedIssues: cited, BranchKeys: read.BranchKeys, CommitKeys: read.CommitKeys,
-			},
-		})
-	}
-	var out bytes.Buffer
-	encoder := json.NewEncoder(&out)
-	encoder.SetEscapeHTML(false)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(cases); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(readingCorpusPath, out.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Logf("wrote %d cases to %s", len(cases), readingCorpusPath)
-}
-
 // readingCorpus reads the corpus and holds it to readingCorpusInputs: a case added to the list
-// and not written, or a file that holds no case, fails here rather than passing on what it lacks.
+// and not to the file, or a file that holds no case, fails here rather than passing on what it
+// lacks.
 func readingCorpus(t *testing.T) []readingCase {
 	t.Helper()
 	raw, err := os.ReadFile(readingCorpusPath)
@@ -397,11 +353,11 @@ func readingCorpus(t *testing.T) []readingCase {
 	}
 	inputs := readingCorpusInputs()
 	if len(cases) != len(inputs) {
-		t.Fatalf("%s holds %d cases, and readingCorpusInputs names %d: write it again (TestWriteTheReadingCorpus)", readingCorpusPath, len(cases), len(inputs))
+		t.Fatalf("%s holds %d cases, and readingCorpusInputs names %d: the corpus is frozen, so add the case of each new input to it by hand", readingCorpusPath, len(cases), len(inputs))
 	}
 	for i, input := range inputs {
 		if cases[i].Name != input.name || !reflect.DeepEqual(cases[i].readingText, storedText(input.text)) {
-			t.Fatalf("case %d of %s is %q, and readingCorpusInputs names %q: write it again (TestWriteTheReadingCorpus)", i+1, readingCorpusPath, cases[i].Name, input.name)
+			t.Fatalf("case %d of %s is %q, and readingCorpusInputs names %q: the corpus is frozen, so change no input, and add the case of a new input by hand", i+1, readingCorpusPath, cases[i].Name, input.name)
 		}
 	}
 	return cases
@@ -544,12 +500,61 @@ func TestTheReadingAnswersItsCorpus(t *testing.T) {
 func TestTheReadingUpperCasesABranchAsGoDid(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	for branch, want := range map[string]string{"ıtem-7": "ITEM-7", "ſec-12": "SEC-12"} {
-		if goRead := uniqueKeys(strings.ToUpper(branch)); !slices.Equal(goRead, []string{want}) {
-			t.Fatalf("the Go reading of the branch %s gives %v, want [%s]", branch, goRead, want)
-		}
 		if got := readingOf(t, ctx, pool, readingText{Repo: "acme/widgets", HeadRef: branch}).BranchKeys; !slices.Equal(got, []string{want}) {
 			t.Errorf("the branch %s gives %q, want [%s]", branch, got, want)
 		}
+	}
+}
+
+// The reading costs time in proportion to the length of the body. The body is 1 MiB, holds no
+// whitespace, and holds an issue path every thirteen bytes. A reading that walks back to the
+// nearest space for each match pays the square of that length. One measure gave 8.8 ms to 25.5 ms
+// for this body. So the deadline of 10 s keeps a loaded machine green, and a walking reading fails.
+func TestTheReadingCostsNoMoreThanTheBodyIsLong(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const cited = "https://github.com/acme/widgets/issues/7"
+	const deadline = 10 * time.Second
+	body := strings.Repeat("/a/b/issues/1", 1<<20/13) + ",github.com/acme/widgets/issues/7"
+	began := time.Now()
+	got := readingOf(t, ctx, pool, readingText{Repo: "acme/widgets", Body: body}).CitedIssues
+	if took := time.Since(began); took > deadline {
+		t.Errorf("the reading of %d bytes took %s, want under %s", len(body), took, deadline)
+	}
+	if !slices.Equal(got, []string{cited}) {
+		t.Fatalf("a body of %d bytes cites %v, want %s and nothing else", len(body), got, cited)
+	}
+	whole := cited + strings.Repeat("x", 4096)
+	if got := readingOf(t, ctx, pool, readingText{Repo: "acme/widgets", Body: whole}).CitedIssues; len(got) != 0 {
+		t.Fatalf("a path running past the issue number cites %v, want nothing", got)
+	}
+}
+
+// Two bodies of one length carry the same 200 citations. Spaces separate them in one body, and
+// commas separate them in the other. A reading that walks back to the nearest space pays the
+// length of the body for each match of the comma body. A reading of a bounded run pays the same
+// for both bodies.
+//
+// Each body is timed three times, in turn with the other, and keeps its best time. The load of
+// the machine only adds to a time, and the turns spread that load over both bodies. One measure
+// gave a ratio of 1.04 between the two best times, and the bound is 8.
+func TestTheReadingCostsNoMoreForACitationFarFromASpace(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const repo = "acme/widgets"
+	one := "github.com/acme/widgets/issues/7"
+	prose := strings.Repeat("a", 65536)
+	bySpace := prose + " " + strings.TrimSuffix(strings.Repeat(one+" ", 200), " ")
+	byComma := prose + "," + strings.TrimSuffix(strings.Repeat(one+",", 200), ",")
+	timed := func(body string) time.Duration {
+		started := time.Now()
+		readingOf(t, ctx, pool, readingText{Repo: repo, Body: body})
+		return time.Since(started)
+	}
+	space, comma := timed(bySpace), timed(byComma)
+	for range 2 {
+		space, comma = min(space, timed(bySpace)), min(comma, timed(byComma))
+	}
+	if comma > 8*space {
+		t.Errorf("the reading of %d bytes separated by commas took %v against %v separated by spaces, more than 8 times as long: a match reads back to the nearest space rather than a bounded run", len(byComma), comma, space)
 	}
 }
 

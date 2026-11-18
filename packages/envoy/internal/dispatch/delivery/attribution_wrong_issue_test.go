@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -364,39 +365,47 @@ func judgePR2808BehindOlderRows(t *testing.T, ahead int) pr2808Pass {
 	return pass
 }
 
-// Dispatch stores two attributions of one pull request: delivery_pull_requests, for the
-// delivery timeline, and pull_request_heads, which the results read compares a check with. The
-// first stores its inputs and every reconcile pass judges a batch of them again from the
-// database alone (AttributePullRequests), so a change of the ranking reaches it without a
-// GitHub read. The second stores no inputs and is judged again only by a read of GitHub. After
-// that pass the two must name one issue.
+// Dispatch keeps two rows of one pull request: delivery_pull_requests, for the delivery
+// timeline, and pull_request_heads, which the results read compares a check with. The timeline
+// row holds ACME-3044, the issue that an older rule stored. The results row holds the texts of
+// GitHub's answer. Each reader takes the issue from the statement over those texts, and not
+// from a stored issue. So the timeline and the results read must name one issue, ACME-2250.
 func TestPR2808TheTwoStoredAttributionsOfOnePullRequestAgree(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedPR2808Issues(t, ctx, pool)
 	merged := time.Date(2026, 11, 11, 23, 10, 25, 0, time.UTC)
 	if _, err := pool.Exec(ctx, `
-		insert into delivery_pull_requests (repo, number, title, url, author, created_at, merged_at, partial,
-			issue_key, attribution_title_keys, attribution_cited_issues, attribution_branch_keys, attribution_commit_keys)
-		values ($1, $2, $3, $4, 'legion-implementer[bot]', $5, $5, false, $6, $7, $8, $9, '{}')
-	`, pr2808Repo, pr2808Number, pr2808Title, pr2808URL, merged, pr2808Wrong,
-		uniqueKeys(pr2808Title+"\n"+pr2808Body), citedIssues(pr2808Repo, pr2808Body), uniqueKeys(strings.ToUpper(pr2808Branch))); err != nil {
+		insert into delivery_pull_requests (repo, number, title, url, author, created_at, merged_at, partial, issue_key)
+		values ($1, $2, $3, $4, 'legion-implementer[bot]', $5, $5, false, $6)
+	`, pr2808Repo, pr2808Number, pr2808Title, pr2808URL, merged, pr2808Wrong); err != nil {
 		t.Fatalf("store #2808's delivery row as the older rule judged it: %v", err)
 	}
 	storePR2808AsAnOlderRuleJudgedIt(t, ctx, pool)
 
-	if _, err := AttributePullRequests(ctx, pool, AttributionResolveBatch); err != nil {
-		t.Fatalf("attribute the stored pull requests: %v", err)
+	day := time.Date(merged.Year(), merged.Month(), merged.Day(), 0, 0, 0, 0, time.UTC)
+	window, err := ListPullRequestsInWindow(ctx, pool, day, day.AddDate(0, 0, 1))
+	if err != nil {
+		t.Fatalf("read the delivery timeline of %s: %v", day.Format(time.DateOnly), err)
 	}
-	var timeline *string
-	if err := pool.QueryRow(ctx, `select issue_key from delivery_pull_requests where repo = $1 and number = $2`,
-		pr2808Repo, pr2808Number).Scan(&timeline); err != nil {
-		t.Fatalf("read #2808's delivery row: %v", err)
+	timeline := "absent"
+	for _, pr := range window {
+		if pr.Repo == pr2808Repo && pr.Number == pr2808Number {
+			timeline = pr2808KeyOf(pr.IssueKey)
+		}
 	}
-	results, source := pr2808Credit(t, ctx, pool)
-	t.Logf("delivery_pull_requests credits %v; pull_request_heads credits %s from %s", pr2808KeyOf(timeline), results, source)
-	if pr2808KeyOf(timeline) != results {
-		t.Errorf("one pull request, two issues: the delivery timeline credits #2808 to %s, the results read to %s (from %q)",
-			pr2808KeyOf(timeline), results, source)
+	heads, err := HeadsAttributedTo(ctx, pool, pr2808Right)
+	if err != nil {
+		t.Fatalf("read the heads of %s: %v", pr2808Right, err)
+	}
+	listed := slices.ContainsFunc(heads, func(head AttributedHead) bool {
+		return head.Number == pr2808Number && head.HeadSHA == pr2808Head
+	})
+	t.Logf("the delivery timeline credits #2808 to %s; the results read of %s lists %+v", timeline, pr2808Right, heads)
+	if timeline != pr2808Right {
+		t.Errorf("the delivery timeline credits #2808 to %s, want %s from its branch %s", timeline, pr2808Right, pr2808Branch)
+	}
+	if !listed {
+		t.Errorf("the results read of %s lists %+v, want #2808 at its head %s", pr2808Right, heads, pr2808Head)
 	}
 }
 

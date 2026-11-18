@@ -17,7 +17,8 @@ import (
 // ErrPullRequestNotFound is a 404 or 410 from GitHub fetching a specific pull request: the pull
 // request or its repository no longer exists, or no longer reaches this token. A permanent
 // condition, unlike every other FetchPullRequest failure (a transient 5xx, a rate limit) --
-// reconcile.completePartialPullRequest marks the row unfetchable rather than retrying it forever.
+// reconcile.completePartialPullRequest marks the row unfetchable once pullRequestAbsent proves it,
+// rather than retrying it forever.
 var ErrPullRequestNotFound = errors.New("pull request not found or gone")
 
 // FetchedPullRequest is one pull request's GitHub facts: everything RawPullRequest needs for the
@@ -27,8 +28,9 @@ var ErrPullRequestNotFound = errors.New("pull request not found or gone")
 // FetchPullRequest fills every field. SearchMergedPullRequests, which reads GitHub's search
 // results rather than the pull request itself, cannot supply MergeCommitSHA, Additions,
 // Deletions, or FirstCommitAt -- GitHub's search-issues response carries none of them -- so those
-// stay nil on a search result; a caller that needs them calls FetchPullRequest afterward (this is
-// reconcile's backfill path; a caller that only needs population-membership facts does not).
+// stay nil on a search result; a caller that needs them reads the pull request itself afterward
+// (the reconcile's completion of a partial row; a caller that only needs population-membership
+// facts does not).
 type FetchedPullRequest struct {
 	Number         int
 	Title          string
@@ -223,33 +225,6 @@ func fetchCommitPullPayloads(ctx context.Context, client *githubapp.Client, toke
 	return payloads, nil
 }
 
-// fetchAttributionFacts reads what the issue attribution needs of a pull request already stored
-// complete, and nothing else: the pull request (its title, body and head branch) and then its
-// commits' messages, one page of 100 at a time. A complete row already holds every other fact
-// FetchPullRequest reads, its first commit's time included, so the backfill makes one call plus
-// one per commits page rather than FetchPullRequest's two plus fetchCommitMessages' pages. It
-// answers how many calls it made, a failed one included (retries inside readGitHubPage aside),
-// for the backfill's call budget.
-func fetchAttributionFacts(ctx context.Context, client *githubapp.Client, owner, repo, repoFull string, number int) (attributionFacts, int, error) {
-	tokenSource := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
-	token, err := tokenSource()
-	if err != nil {
-		return attributionFacts{}, 0, fmt.Errorf("mint installation token for %s PR #%d: %w", repoFull, number, err)
-	}
-	payload, err := fetchPullRequestPayload(ctx, client, token, owner, repo, number)
-	if err != nil {
-		return attributionFacts{}, 1, err
-	}
-	messages, pages, err := fetchCommitMessagesWithToken(ctx, client, tokenSource, owner, repo, number, 1)
-	if err != nil {
-		return attributionFacts{}, 1 + pages, err
-	}
-	return attributionFacts{
-		Repo: repoFull, URL: payload.HTMLURL, Title: payload.Title, Body: payload.Body,
-		HeadRef: payload.Head.Ref, CommitMessages: messages,
-	}, 1 + pages, nil
-}
-
 // commitDate reads one commit's authored time: commit.author.date, or commit.committer.date when
 // GitHub reports no author for the commit (an unlinked email still carries a committer date).
 // Neither present is a malformed answer.
@@ -303,8 +278,8 @@ type searchPullRequestsPage struct {
 // node is some other type) decodes as its zero value and is skipped by requiring a non-zero Number.
 // Carries no `body`: the field is large enough on its own (a long PR description, times up to 100
 // results per page) to push a page over the 1 MiB response limit on its own, and nothing in this
-// path reads it -- reconcile's search-found PRs are stored Partial until a later per-PR
-// FetchPullRequest completes them, which is also where their issue-reference body text is read.
+// path reads it -- reconcile's search-found PRs are stored Partial until a later per-PR read
+// (completePartialPullRequest) completes them, which is also where their body text is read.
 //
 // Author.Typename is GraphQL's own discriminator ("User", "Bot", "Organization", ...) for the
 // `Actor` interface `author` resolves to. GitHub's GraphQL login for a bot-authored pull request
@@ -357,8 +332,8 @@ func fetchedPullRequestFromSearchNode(node searchPullRequestNode) FetchedPullReq
 // day-sized or finer windows on its own, not pass one already that fine. Each result item carries
 // enough to build a FetchedPullRequest-shaped result except MergeCommitSHA, Additions, Deletions
 // and FirstCommitAt (search results carry none of them) -- those fields are left nil, and a
-// caller that needs them calls FetchPullRequest per pull request afterward (reconcile's backfill
-// path does this; a caller that only needs population-membership facts does not).
+// caller that needs them reads each pull request afterward (reconcile's completion of a partial
+// row does this; a caller that only needs population-membership facts does not).
 func SearchMergedPullRequests(ctx context.Context, client *githubapp.Client, owner, repo string, authors []string, since, until time.Time) ([]FetchedPullRequest, error) {
 	token := func() (string, error) { return client.RepositoryToken(ctx, owner, repo) }
 	var found []FetchedPullRequest

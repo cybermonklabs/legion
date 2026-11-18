@@ -381,7 +381,9 @@ func TestHeadsAttributedToNamesAPullRequestWhoseHeadIsNotRead(t *testing.T) {
 	wantReaders(t, ctx, pool, "ACME-131", headOf(131), `at head false, newest none, base ""`)
 }
 
-// No reader answers a stored issue for a pull request with facts, on either of its rows.
+// No reader answers a stored issue for a pull request with facts, on either of its rows. That holds
+// for the readers by issue and for the three readers of the timeline. These are the window, the
+// waiting line and the shipped pull requests that issue.deployed reads. One run ships both.
 func TestNoReaderAnswersAStoredIssueForAPullRequestWithFacts(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	statementIssues(t, ctx, pool, "ACME-141", "ACME-149")
@@ -392,6 +394,15 @@ func TestNoReaderAnswersAStoredIssueForAPullRequestWithFacts(t *testing.T) {
 	wantAnswer(t, ctx, pool, statementRepo, 142, "nobody from none")
 	wantListed(t, ctx, pool, "ACME-149")
 	wantReaders(t, ctx, pool, "ACME-149", headOf(141), `at head false, newest none, base ""`)
+	for _, number := range []int{141, 142} {
+		mergeTimelineRow(t, ctx, pool, statementRepo, number)
+	}
+	seedShippingRun(t, ctx, pool, statementRepo, 7141)
+	wantTimeline(t, ctx, pool, statementRepo, 141, "ACME-141")
+	wantTimeline(t, ctx, pool, statementRepo, 142, "nobody")
+	wantWaiting(t, ctx, pool, statementRepo, 141, "ACME-141")
+	wantWaiting(t, ctx, pool, statementRepo, 142, "nobody")
+	wantShipped(t, ctx, pool, statementRepo, "#141 ACME-141")
 }
 
 // renameStatementRepo renames renamedRepo to acme/new.

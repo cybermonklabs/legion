@@ -101,6 +101,29 @@ test("a facet's options sort by count, read placeholders in words, and say a par
   }
 });
 
+// The server sends "__issue_not_known__" for a PR whose issue is not known yet. The test writes
+// the value out, so it holds the page to the server's value.
+test("a facet reads the value of an issue that is not known as Not known yet, apart from No issue", async () => {
+  const user = userEvent.setup();
+  const priority = { P1: 3, __no_issue__: 2, __issue_not_known__: 1 };
+  renderPanel({
+    data: { ...data, facet_counts: { ...emptyCounts, priority } },
+    filters: noFilters,
+    onChange: () => {},
+  });
+  try {
+    await user.click(screen.getByRole("button", { name: /^Priority/ }));
+    // Control: "__no_issue__" reads "No issue".
+    expect(optionNames("Priority options")).toEqual([
+      "P1, 3 PRs",
+      "No issue, 2 PRs",
+      "Not known yet, 1 PR",
+    ]);
+  } finally {
+    cleanup();
+  }
+});
+
 test("a facet's trigger names the facet and what is picked", () => {
   renderPanel({ data, filters: { ...noFilters, component: ["ACME/api"] }, onChange: () => {} });
   try {

@@ -1,14 +1,6 @@
 package delivery
 
-import (
-	"net/http"
-	"strconv"
-	"sync/atomic"
-	"testing"
-	"time"
-
-	"github.com/sjawhar/envoy/internal/dispatch/events"
-)
+import "testing"
 
 // wantAnswers asks PullRequestIssues for every key of want in one statement, and wants each
 // answer (answerOf's words).
@@ -90,7 +82,7 @@ func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
 // TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn: the statement
 // answers a two-key title as the head row's writer does. Its pair is
 // TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn (pull_request_heads_test.go). One
-// rule answers both — every candidate the five sources name (attributionCandidates), the first of
+// rule answers both — every candidate the five sources name (attributedTerms), the first of
 // them held to the pull request's own repository (attributionHeld).
 func TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
@@ -176,68 +168,4 @@ func TestAStoredPullRequestTitledAfterTwoOfItsOwnIssuesTakesTheFirst(t *testing.
 	storeStatementRow(t, ctx, pool, statementRow{repo: "acme/widgets", number: 221, branch: "main",
 		title: "ATTR-221 and ATTR-222, both of this repository", texts: readTexts("")})
 	wantAnswers(t, pool, map[PullRequestKey]string{{Repo: "acme/widgets", Number: 221}: "ATTR-221 from title_body"})
-}
-
-// TestTheAttributionBackfillStaysWithinItsCallBudget: with more unread rows than one pass's budget
-// covers, a pass makes no more than attributionBackfillCalls GitHub calls for them, the rest wait
-// for later passes, and the workflow runs are read before the backfill spends anything.
-func TestTheAttributionBackfillStaysWithinItsCallBudget(t *testing.T) {
-	pool, ctx := deliveryTestPool(t)
-	seedDeliverySettings(t, ctx, pool)
-	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
-	const rows = attributionBackfillCalls // twice what the budget reads at two calls a row
-	for number := 1000; number < 1000+rows; number++ {
-		if _, err := pool.Exec(ctx, `
-			insert into delivery_pull_requests (repo, number, title, url, author, created_at, merged_at, partial)
-			values ('acme/widgets', $1, 'feat: history', $2, 'octocat', $3, $3, false)`,
-			number, "https://github.com/acme/widgets/pull/"+strconv.Itoa(number), merged); err != nil {
-			t.Fatalf("seed #%d: %v", number, err)
-		}
-	}
-
-	var calls, runListings atomic.Int32
-	var callsBeforeRuns atomic.Int32
-	callsBeforeRuns.Store(-1)
-	fake := newFakeGitHub(t)
-	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
-	})
-	fake.handle("GET /repos/acme/widgets/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		number, _ := strconv.Atoi(r.PathValue("number"))
-		mustEncode(t, w, map[string]any{
-			"number": number, "title": "feat: history", "html_url": "https://github.com/acme/widgets/pull/" + r.PathValue("number"),
-			"body": "", "head": map[string]any{"ref": "feature"},
-		})
-	})
-	fake.handle("GET /repos/acme/widgets/pulls/{number}/commits", func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		mustEncode(t, w, []any{map[string]any{"commit": map[string]any{"message": "feat: history"}}})
-	})
-	for _, workflow := range []string{"deploy.yml", "pr-checks.yml"} {
-		fake.handle("GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2F"+workflow+"/runs", func(w http.ResponseWriter, r *http.Request) {
-			if runListings.Add(1) == 1 {
-				callsBeforeRuns.Store(calls.Load())
-			}
-			mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
-		})
-	}
-
-	NewReconcile(pool, fake.newTestClient(), events.NewBroker()).runOnce(ctx)
-
-	if n := calls.Load(); n > attributionBackfillCalls || n == 0 {
-		t.Fatalf("one pass made %d attribution calls; want between 1 and the budget of %d", n, attributionBackfillCalls)
-	}
-	if before := callsBeforeRuns.Load(); before != 0 {
-		t.Fatalf("%d attribution calls ran before the workflow runs were read; want the backfill after them", before)
-	}
-	var read, unread int
-	if err := pool.QueryRow(ctx, `
-		select count(*) filter (where attribution_title_keys is not null), count(*) filter (where attribution_title_keys is null)
-		from delivery_pull_requests where number >= 1000`).Scan(&read, &unread); err != nil {
-		t.Fatalf("count rows: %v", err)
-	}
-	if read != int(calls.Load())/2 || unread != rows-read || unread == 0 {
-		t.Fatalf("after one pass: %d rows read, %d unread, %d calls; want two calls a row read and the rest left for later passes", read, unread, calls.Load())
-	}
 }

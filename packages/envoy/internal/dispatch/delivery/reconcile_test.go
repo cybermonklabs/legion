@@ -264,9 +264,12 @@ func TestReconcileClearsLastErrorOnceItSucceedsAgain(t *testing.T) {
 
 // TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers proves S3: a partial row
 // whose completing fetch answers a permanent 404 is marked unfetchable (not retried every pass
-// forever), and a later successful fetch of the same pull request clears it again. The head
-// pass's facts line reads the row by a batched query (readFactsBatch), which the fake counts
-// apart; the test counts the REST reads alone. A completion that reads a marked row makes it fail.
+// forever), and a later successful fetch of the same pull request clears it again. The 404 alone
+// is no proof: GitHub's answer to the absence query (pullRequestAbsent) shows the repository
+// readable and the pull request absent, and only that answer marks the row. The head pass's facts
+// line reads the row by a batched query (readFactsBatch), which the fake counts apart; the test
+// counts the REST reads alone. A completion that reads a marked row makes it fail.
+// TestA404ThatGitHubDoesNotProveLeavesAPartialRowForTheNextPass is its control.
 func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -281,16 +284,19 @@ func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *te
 
 	requests := 0
 	fake := newFakeGitHub(t)
+	// The head pass's facts line reads #70 too, by the batched query, which reads this route with
+	// the fake's header. It gets no answer there (422), so the facts line stamps the read refused,
+	// and the completion's REST read is the one that meets the 404.
 	fake.handle("GET /repos/acme/widgets/pulls/70", func(w http.ResponseWriter, r *http.Request) {
-		if restRead(r) {
-			requests++
+		if !restRead(r) {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
 		}
+		requests++
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	})
-	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
-		mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
-	})
+	fake.handle("POST /graphql", answerSearchOrAbsence(t, "acme/widgets", 70, true))
 	fake.handle("GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2Fdeploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
 		mustEncode(t, w, map[string]any{"total_count": 0, "workflow_runs": []any{}})
 	})
@@ -335,6 +341,77 @@ func TestReconcileMarksA404PullRequestUnfetchableAndSkipsItUntilItRecovers(t *te
 	}
 	if recovered.UnfetchableAt != nil || recovered.UnfetchableReason != nil {
 		t.Errorf("recovered.UnfetchableAt = %v, UnfetchableReason = %v, want both nil after a later successful write", recovered.UnfetchableAt, recovered.UnfetchableReason)
+	}
+}
+
+// answerSearchOrAbsence answers POST /graphql: the absence query (absenceQuery) about repo#number,
+// and an empty search for every other query. With proven true the absence query answers as GitHub
+// answers for a readable repository that holds no such pull request: a count of its pull requests
+// beside NOT_FOUND on the path repository.pullRequest. With proven false it answers a null
+// repository, which proves nothing: GitHub answers so alike for a repository the token does not
+// read and for one that does not exist.
+func answerSearchOrAbsence(t *testing.T, repo string, number int, proven bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		query, variables := decodeGraphQLRequest(t, r)
+		if !strings.Contains(query, "pullRequest(number: $number)") {
+			mustEncode(t, w, searchResponseJSON(0, nil, false, ""))
+			return
+		}
+		owner, _ := variables["owner"].(string)
+		name, _ := variables["name"].(string)
+		asked, _ := variables["number"].(float64)
+		if owner+"/"+name != repo || int(asked) != number || !proven {
+			mustEncode(t, w, nullRepositoryAnswer(owner+"/"+name))
+			return
+		}
+		mustEncode(t, w, map[string]any{
+			"data": map[string]any{"repository": map[string]any{"pullRequests": map[string]any{"totalCount": 3}, "pullRequest": nil}},
+			"errors": []any{map[string]any{"type": "NOT_FOUND", "path": []any{"repository", "pullRequest"},
+				"message": fmt.Sprintf("Could not resolve to a PullRequest with the number of %d.", number)}},
+		})
+	}
+}
+
+// A 404 of a partial row's completing read is no proof that the pull request is gone. Where
+// GitHub's absence query does not prove it, the row stays partial and unmarked, and the next pass
+// reads it again: no single refusal ends a read.
+func TestA404ThatGitHubDoesNotProveLeavesAPartialRowForTheNextPass(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+
+	merged := time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC)
+	if err := UpsertPullRequest(ctx, pool, DeliveryPullRequest{
+		Repo: "acme/widgets", Number: 71, Title: "feat: refused", URL: "https://github.com/acme/widgets/pull/71",
+		Author: "octocat", CreatedAt: &merged, Partial: true,
+	}); err != nil {
+		t.Fatalf("seed partial pull request: %v", err)
+	}
+	requests := 0
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/pulls/71", func(w http.ResponseWriter, r *http.Request) {
+		if restRead(r) {
+			requests++
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	})
+	fake.handle("POST /graphql", answerSearchOrAbsence(t, "acme/widgets", 71, false))
+	noRuns(t, fake)
+	reconcile := NewReconcile(pool, fake.newTestClient(), events.NewBroker())
+
+	for pass := 1; pass <= 2; pass++ {
+		reconcile.runOnce(ctx)
+		pr, err := ScanPullRequest(pool.QueryRow(ctx, `select `+PullRequestColumns+` from delivery_pull_requests where repo = $1 and number = $2`, "acme/widgets", 71))
+		if err != nil {
+			t.Fatalf("scan after pass %d: %v", pass, err)
+		}
+		if pr.UnfetchableAt != nil || !pr.Partial {
+			t.Fatalf("after pass %d #71 has partial %v and unfetchable_at %v, want partial and unmarked: GitHub did not prove it absent",
+				pass, pr.Partial, pr.UnfetchableAt)
+		}
+		if requests != pass {
+			t.Fatalf("after pass %d the passes read #71 %d times, want %d: each pass reads an unmarked partial row again", pass, requests, pass)
+		}
 	}
 }
 

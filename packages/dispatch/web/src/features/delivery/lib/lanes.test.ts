@@ -139,6 +139,32 @@ test("placeholder lanes come after Other and always show", () => {
   ]);
 });
 
+// The test writes out the server's value for a PR whose issue is not known yet. So it holds the
+// page to that value.
+test("laned by priority, the lane of an issue that is not known reads Not known yet, after every real lane", () => {
+  const rows = [
+    ...prs.slice(0, 2).map((pr) => ({ ...pr, issue: "ACME-1", priority: "P0" as const })),
+    ...prs.slice(2, 3).map((pr) => ({ ...pr, issue: "ACME-2", priority: "P3" as const })),
+    ...prs.slice(3, 6).map((pr) => ({ ...pr, issue: null, issue_not_known: true })),
+    // Control: a PR whose issue_not_known is false keeps the No issue lane.
+    ...prs.slice(6, 7).map((pr) => ({ ...pr, issue: null, issue_not_known: false })),
+  ];
+  const lanes = foldLanes(rows, {
+    colorBy: "priority",
+    lanes: true,
+    filters: noFilters,
+    width: widthFor(6),
+    components: {},
+    sessionGroups: [],
+  });
+  expect(lanes.map((lane) => [lane.key, lane.label, lane.count])).toEqual([
+    ["P0", "P0", 2],
+    ["P3", "P3", 1],
+    ["__issue_not_known__", "Not known yet", 3],
+    ["__no_issue__", "No issue", 1],
+  ]);
+});
+
 test("a facet with values picked in its own filter shows exactly those, never folded", () => {
   const lanes = foldLanes(prs, {
     colorBy: "author",

@@ -24,7 +24,14 @@ import {
 import { AgentName } from "../refs/AgentName";
 import { buildIssuePath } from "../refs/routes";
 import { useDialog } from "../shell/useDialog";
-import { NO_COMPONENT, NO_ISSUE, NO_PRIORITY, NO_SESSION, PLACEHOLDER_LABELS } from "./lib/facets";
+import {
+  ISSUE_NOT_KNOWN,
+  issuePlaceholder,
+  NO_COMPONENT,
+  NO_PRIORITY,
+  NO_SESSION,
+  PLACEHOLDER_LABELS,
+} from "./lib/facets";
 import { parentAgentLabel } from "./lib/parentAgent";
 import { leadTimeMinutes } from "./lib/prList";
 import { storedSessionTitle } from "./lib/sessionTitles";
@@ -53,7 +60,11 @@ function PRDetail({
   sessionTitles: Readonly<Record<string, string>>;
 }): ReactNode {
   const leadTime = leadTimeMinutes(pr);
-  let componentText = PLACEHOLDER_LABELS[NO_ISSUE];
+  // A PR with no issue shows its issue placeholder on the priority and components lines. The issue
+  // line shows a dash for no issue, and the label as text for an issue that is not known yet.
+  const noIssue = issuePlaceholder(pr);
+  const noIssueLine = noIssue === ISSUE_NOT_KNOWN ? PLACEHOLDER_LABELS[ISSUE_NOT_KNOWN] : "\u2014";
+  let componentText = PLACEHOLDER_LABELS[noIssue];
   if (pr.issue !== null) {
     componentText =
       (pr.components ?? []).length === 0
@@ -78,7 +89,7 @@ function PRDetail({
         <dt className={textMutedOnSurface}>Dispatch issue</dt>
         <dd>
           {pr.issue === null ? (
-            "\u2014"
+            noIssueLine
           ) : (
             <Link
               className={`${linkText} underline`}
@@ -92,7 +103,7 @@ function PRDetail({
         <dt className={textMutedOnSurface}>Priority</dt>
         <dd>
           {pr.issue === null
-            ? PLACEHOLDER_LABELS[NO_ISSUE]
+            ? PLACEHOLDER_LABELS[noIssue]
             : (pr.priority ?? PLACEHOLDER_LABELS[NO_PRIORITY])}
         </dd>
         <dt className={textMutedOnSurface}>Components</dt>
