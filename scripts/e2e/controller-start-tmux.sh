@@ -375,8 +375,9 @@ pass
 
 begin second-start-revokes-the-first
 cap1=$(cat "$ctl_state/secrets/$role")
-grant_before=$(curl -fsS -X POST -H "Authorization: Bearer $(cat "$work/operator-token")" -H 'Content-Type: application/json' \
-  --data '{}' "http://127.0.0.1:$daemon_port/legion/v1/grants" | jq -r .grantId)
+grant_before=$(printf 'Authorization: Bearer %s' "$(cat "$work/operator-token")" |
+  curl -fsS -X POST -H @- -H 'Content-Type: application/json' \
+    --data '{}' "http://127.0.0.1:$daemon_port/legion/v1/grants" | jq -r .grantId)
 # The grant's positive control: before the second start it redeems, reaching the status route's
 # missing Dispatch, so the route takes issue X-1 past the grant check.
 redeem_status() {

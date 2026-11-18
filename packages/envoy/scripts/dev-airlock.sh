@@ -572,6 +572,10 @@ PROXY_FRONT_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
 # two of them never collide. BROKER_DRAIN_SECONDS=0 as dev-broker.sh does: the five-second default
 # exists to outlast a Kubernetes EndpointSlice propagation nothing here has.
 #
+# BROKER_AIRLOCK_TEST_AZURE_AUTHORITY makes the Microsoft stand-in the token authority the
+# azure exchange is held to, in place of login.microsoftonline.com: the proxy refuses an
+# exchange at any other host, and the stand-in is where this stack's az signs in.
+#
 # Each also gets the model judge: the six BROKER_JUDGE_* settings, which are all-or-none, and
 # GCE_METADATA_HOST. The credential the judge presents to its model endpoint is the broker's
 # own Google machine identity, read from the metadata server at call time; pointing
@@ -621,6 +625,7 @@ start_broker() {
   BROKER_AIRLOCK_TEST_RESOLVE="$RESOLVE" \
   BROKER_AIRLOCK_TEST_KEEP_VALUES="$KEEP_VALUES" \
   BROKER_AIRLOCK_TEST_NO_KIND="$NO_KIND" \
+  BROKER_AIRLOCK_TEST_AZURE_AUTHORITY="$MICROSOFT_HOST" \
   BROKER_JUDGE_MODEL_URL="$MODEL_URL" \
   BROKER_JUDGE_MODEL="$JUDGE_MODEL" \
   BROKER_JUDGE_MODEL_PROTOCOL="$JUDGE_MODEL_PROTOCOL" \

@@ -74,6 +74,7 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
   // `hover` presses only once the card holds still and is the element under the pointer; a bare
   // `mouse.move` to a measured box would press on whatever is painted there.
   await source.hover();
+  // The hover above waited for the card to be visible and still, so its box is there.
   const sourceBox = await source.boundingBox();
   if (sourceBox === null) {
     throw new Error("drag source is not visible");
@@ -81,6 +82,7 @@ async function mouseDrag(page: Page, source: Locator, target: Locator, yOffset?:
   await page.mouse.down();
   await page.mouse.move(sourceBox.x + sourceBox.width / 2 + 10, sourceBox.y + sourceBox.height / 2);
   await target.scrollIntoViewIfNeeded();
+  // The scroll above waited for the target to be visible and still, so its box is there.
   const targetBox = await target.boundingBox();
   if (targetBox === null) {
     throw new Error("drag target is not visible");
@@ -706,6 +708,8 @@ async function scrollerAtRest(scroller: Locator): Promise<void> {
 
 /** Puts the `index`-th column's start edge at the scroller's start and waits for the scroll to end. */
 async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
+  await scrollerAtRest(scroller);
+  // The scroller came to rest above, so the offsets read here are the ones it holds still at.
   const target = await scroller.evaluate((element, index) => {
     const section = element.querySelectorAll("section")[index];
     if (section === undefined) {
@@ -761,6 +765,8 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     // K5: a horizontal swipe lands on a column or rail edge (snap-x snap-mandatory).
     const start = await snapOffsets(scroller);
     expect(start.scrollLeft).toBe(0);
+    await expect(scroller).toBeVisible();
+    // The wait above drew the scroller, and a drawn element has a box, so the box is there.
     const box = await scroller.boundingBox();
     if (box === null) {
       throw new Error("board scroller is not visible");
@@ -843,6 +849,8 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     const movePatch = patchOf(page, bravo.key);
     const finger = await pressFinger(page, from);
     await expect(bravoCard).toHaveClass(/opacity-50/);
+    await expect(scroller).toBeVisible();
+    // The wait above drew the scroller, and a drawn element has a box, so the box is there.
     const scrollerBox = await scroller.boundingBox();
     if (scrollerBox === null) {
       throw new Error("board scroller is not visible");
@@ -861,6 +869,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     const drop = scrollerBox.x + scrollerBox.width / 2;
     await finger.moveTo({ x: drop, y: from.y }, 1);
     await scrollerAtRest(scroller);
+    // The scroller came to rest above, so the column's box read now is where the drop lands.
     const landing = await inProgress.boundingBox();
     if (landing === null || landing.x > drop - 40 || landing.x + landing.width < drop + 40) {
       throw new Error(

@@ -131,12 +131,16 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--port-file", required=True)
 parser.add_argument("--certificate", required=True)
 parser.add_argument("--key", required=True)
-parser.add_argument("--token", required=True)
+# The bearer Dispatch must present, read from the file DISPATCH_CHAT_TOKEN_FILE names, so it is in
+# no command line.
+parser.add_argument("--token-file", required=True)
 parser.add_argument("--refusal", required=True)
 parser.add_argument("--status", type=int, default=0)
 parser.add_argument("--chunk", type=int, default=18)
 parser.add_argument("--pause", type=float, default=0.12)
 args = parser.parse_args()
+with open(args.token_file) as handle:
+    args.token = handle.read().strip()
 
 
 def say(message):
@@ -320,7 +324,7 @@ printf '%s\n' "$model_token" >"${workdir}/chat-token"
 python3 "${workdir}/model.py" \
   --port-file "${workdir}/model-port" \
   --certificate "$certificate" --key "${workdir}/model-key.pem" \
-  --token "$model_token" --refusal "${workdir}/model-refusal" --status "$model_status" \
+  --token-file "${workdir}/chat-token" --refusal "${workdir}/model-refusal" --status "$model_status" \
   >"${workdir}/model.log" 2>&1 &
 model_pid=$!
 

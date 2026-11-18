@@ -87,10 +87,13 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		loginAccount = "system:serviceaccount:example-system:example-service-login"
 		podAccount   = "system:serviceaccount:example:example-worker"
 		secretName   = "AIRLOCK_TOKEN"
-		// boundAddress is a public address literal the entry binds, so that the CONNECT this
-		// row makes is neither refused as a local address nor dependent on a resolver this
-		// process may not have: an address literal resolves to itself, and the proxy signs the
-		// bound host's certificate with that address as its IP SAN.
+		// boundHost is a name no resolver answers, which BROKER_AIRLOCK_TEST_RESOLVE gives
+		// boundAddress, a public address, so that the CONNECT this row makes is neither refused
+		// as a local address nor dependent on a resolver this process may not have. The entry
+		// binds the name rather than the address, since the rules validation refuses an address
+		// literal: a TLS client sends no server name for one, and the airlock refuses a request
+		// whose server name is not its CONNECT host.
+		boundHost    = "reread.airlock.test"
 		boundAddress = "93.184.216.34"
 	)
 	databaseURL := storetest.URL(t)
@@ -115,8 +118,9 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		"BROKER_AIRLOCK_CA_CERT_FILE=" + certFile,
 		"BROKER_AIRLOCK_CA_KEY_FILE=" + keyFile,
 		"BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_AIRLOCK_TEST_RESOLVE=" + boundHost + "=" + boundAddress,
 		"BROKER_AIRLOCK_RULES_FILE=" + airlockRulesFile(t,
-			`{"secrets": [{"name": "`+secretName+`", "hosts": ["`+boundAddress+`"], "headers": ["authorization"]}]}`),
+			`{"secrets": [{"name": "`+secretName+`", "hosts": ["`+boundHost+`"], "headers": ["authorization"], "allow": []}]}`),
 	}})
 	requireHealthy(t, broker.Addr)
 	proxyAddr := airlockProxyAddr(t, broker)
@@ -155,7 +159,7 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 	}}
 	call := func(path string) {
 		t.Helper()
-		request, err := http.NewRequest(http.MethodGet, "https://"+boundAddress+path, nil)
+		request, err := http.NewRequest(http.MethodGet, "https://"+boundHost+path, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

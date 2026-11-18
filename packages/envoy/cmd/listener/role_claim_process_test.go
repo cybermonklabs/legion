@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/session"
 )
 
 // The two processes one session id can be claimed under: the one that registered the session and
@@ -158,6 +161,33 @@ func TestASecondProcessOfOneSessionIdTakesTheRoleOnceTheClaimsRenewalIsOlderThan
 	}
 }
 
+// A claim without soft is last-claim-wins: it reads no holder, so the refusal that holds a second
+// process of one session id off the role (roleOwnSessionVerdict) does not reach it. A second
+// process under the holder's session id takes the role with a 200 inside the live window, and the
+// stored claim then names that second process. The soft claim refused first, at the same moment,
+// is what shows the claim was made inside the window.
+func TestAClaimWithoutSoftFromASecondProcessOfOneSessionIdTakesTheRole(t *testing.T) {
+	const (
+		sessionID = "ses_shared_id"
+		role      = "legion-controller"
+	)
+	rig := newRoleClaimProcessRig(t, sessionID)
+	rig.seed(t, sessionID, role, holdingProcess)
+	if refused := rig.claim(sessionID, role, secondProcess); refused.Code != http.StatusConflict {
+		t.Fatalf("a soft claim from the second process: status %d %s, want 409", refused.Code, refused.Body.String())
+	}
+
+	body := fmt.Sprintf(`{"session_id":%q,"role":%q,"client_instance_id":%q}`, sessionID, role, secondProcess)
+	recorder := httptest.NewRecorder()
+	rig.set.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/roles/set", strings.NewReader(body)))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("a claim without soft from the second process: status %d %s, want 200", recorder.Code, recorder.Body.String())
+	}
+	if got := rig.holdingProcessOf(t, role); got != secondProcess {
+		t.Fatalf("the stored claim names the process %q, want %q", got, secondProcess)
+	}
+}
+
 // The refill this guards: a listener restart leaves the role claim view unable to answer, and
 // while it cannot, a registration renews only the roles its interest row names, so a claim only the
 // view would have named goes unrenewed (store.Registry.RenewRoleClaims). A renewal older than the
@@ -301,7 +331,8 @@ func TestARoleClaimThatStatesNoProcessIsWeighedByTheStandingClaimsRenewal(t *tes
 // POST /v1/roles/set names the session alone. A claim that names no process leaves the field out
 // altogether, as the 404 of a lapsed holder does: a client reads an absent field as "no other
 // process holds this role" and an empty one as "another process does", so an empty one would
-// send the holder of such a claim a soft claim it does not need and a 409 naming itself.
+// send the holder of such a claim a soft claim it does not need and a 409 naming itself. The body
+// is decoded into a map, because a member decoded into a *string field reads null as absent.
 func TestTheRoleLookupAnswersTheProcessTheHoldersClaimNames(t *testing.T) {
 	const sessionID = "ses_shared_id"
 	rig := newRoleClaimProcessRig(t, sessionID)
@@ -315,25 +346,19 @@ func TestTheRoleLookupAnswersTheProcessTheHoldersClaimNames(t *testing.T) {
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("GET /v1/roles/%s: status %d %s, want 200", tc.role, recorder.Code, recorder.Body.String())
 			}
-			// A pointer tells the field left out from the field answered empty, which is
-			// the whole of what this case holds.
-			var answer struct {
-				Holder           string  `json:"holder"`
-				ClientInstanceID *string `json:"client_instance_id"`
-			}
+			var answer map[string]json.RawMessage
 			if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 				t.Fatalf("decode %s: %v", recorder.Body.String(), err)
 			}
-			if answer.Holder != sessionID {
-				t.Fatalf("the lookup answers holder %q, want %q", answer.Holder, sessionID)
+			if holder := string(answer["holder"]); holder != `"`+sessionID+`"` {
+				t.Fatalf("the lookup answers holder %s, want %q: %s", holder, sessionID, recorder.Body.String())
 			}
+			value, present := answer["client_instance_id"]
 			switch {
-			case tc.instance == "":
-				if answer.ClientInstanceID != nil {
-					t.Fatalf("the lookup of a claim that names no process answers client_instance_id %q, want the field left out", *answer.ClientInstanceID)
-				}
-			case answer.ClientInstanceID == nil || *answer.ClientInstanceID != tc.instance:
-				t.Fatalf("the lookup answers client_instance_id %v, want %q", answer.ClientInstanceID, tc.instance)
+			case tc.instance == "" && present:
+				t.Fatalf("the lookup of a claim that names no process answers client_instance_id %s, want the field left out: %s", value, recorder.Body.String())
+			case tc.instance != "" && string(value) != `"`+tc.instance+`"`:
+				t.Fatalf("the lookup answers client_instance_id %s, want %q: %s", value, tc.instance, recorder.Body.String())
 			}
 		})
 	}
@@ -363,5 +388,69 @@ func TestTheRoleLookupAnswersALapsedHoldersProcess(t *testing.T) {
 	}
 	if answer.Holder != sessionID || answer.ClientInstanceID != holdingProcess {
 		t.Fatalf("the lapsed answer names holder %q of process %q, want %q of %q", answer.Holder, answer.ClientInstanceID, sessionID, holdingProcess)
+	}
+}
+
+// The 404 of a lapsed holder whose claim names no process leaves client_instance_id out, as the
+// 200 of such a claim does (TestTheRoleLookupAnswersTheProcessTheHoldersClaimNames says why an
+// empty field would mislead the client). A resolution counts a holder lapsed in three forms
+// (roles.ResolveHolder): its record gone, its record standing past the live window
+// (unresponsive), and its record standing past the gone horizon (gone). Where the record stands it
+// still names the process that registered the session, which is no process the claim names, so
+// each row first reads the record it lapses. The body is decoded into a map, because
+// roleHolderError's string member cannot tell an empty field from no field.
+func TestTheRoleLookupOfALapsedClaimThatNamesNoProcessLeavesTheFieldOut(t *testing.T) {
+	const (
+		sessionID = "ses_shared_id"
+		role      = "legion-controller"
+	)
+	for _, row := range []struct {
+		name    string
+		deleted bool
+		elapsed time.Duration
+		state   session.State
+	}{
+		{name: "a holder whose record has gone", deleted: true, state: session.Gone},
+		{name: "an unresponsive holder whose record stands", elapsed: 90 * time.Second, state: session.Unresponsive},
+		{name: "a gone holder whose record still stands", elapsed: 3 * time.Minute, state: session.Gone},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := context.Background()
+			d, now := stalledSessionsRig(t)
+			register(t, d, sessionID, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, ClientInstanceID: holdingProcess})
+			claimRoles(t, d.registry, sessionID, role)
+			if claim, err := d.registry.RoleClaim(ctx, role); err != nil || claim.ClientInstanceID != "" {
+				t.Fatalf("the seeded claim is %+v, %v; want one that names no process", claim, err)
+			}
+			if row.deleted {
+				if err := d.sessions.Delete(ctx, sessionID); err != nil {
+					t.Fatalf("end %s's session: %v", sessionID, err)
+				}
+			}
+			now.advance(row.elapsed)
+			stored, err := d.sessions.Refresh(ctx, sessionID)
+			switch {
+			case row.deleted && !errors.Is(err, nats.ErrKeyNotFound):
+				t.Fatalf("%s's record once its session ended: %+v, %v; want none", sessionID, stored, err)
+			case !row.deleted && (err != nil || stored.ClientInstanceID != holdingProcess):
+				t.Fatalf("%s's record: %+v, %v; want it standing and naming the process %s", sessionID, stored, err, holdingProcess)
+			}
+
+			recorder := httptest.NewRecorder()
+			roleGetHandler(d).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/v1/roles/"+role, nil))
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("GET /v1/roles/%s: status %d %s, want 404", role, recorder.Code, recorder.Body.String())
+			}
+			var answer map[string]json.RawMessage
+			if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
+				t.Fatalf("decode %s: %v", recorder.Body.String(), err)
+			}
+			if holder, state := string(answer["holder"]), string(answer["holder_state"]); holder != `"`+sessionID+`"` || state != `"`+string(row.state)+`"` {
+				t.Fatalf("the lapsed answer names holder %s in state %s, want %q in %q: %s", holder, state, sessionID, row.state, recorder.Body.String())
+			}
+			if value, present := answer["client_instance_id"]; present {
+				t.Fatalf("the lapsed answer of a claim that names no process holds client_instance_id %s, want the field left out: %s", value, recorder.Body.String())
+			}
+		})
 	}
 }

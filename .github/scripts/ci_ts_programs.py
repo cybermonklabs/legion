@@ -12,9 +12,8 @@ Each entry of PROGRAMS is (filter, project, why):
            failure message carries so the reader knows which typecheck holds the file
 
 The pairs are hand-kept and few; the files of each program are derived, which is the point. A
-job that typechecks a second project is a second entry (the envoy-client job typechecks
-broker-client beside its own package, the dispatch-ui job the proof editor beside the dashboard,
-and the test job the four script directories that are no workspace).
+job that typechecks a second project is a second entry (the dispatch-ui job typechecks the proof
+editor beside the dashboard, and the test job the four script directories that are no workspace).
 """
 
 
@@ -28,7 +27,7 @@ def at(job: str, step: str) -> str:
 PROGRAMS = [
     ("contracts", "packages/contracts", at("contracts", "Typecheck contracts (bun run typecheck: bunx tsc --noEmit)")),
     ("envoy_client", "packages/envoy-client", at("envoy-client", "Typecheck Envoy client")),
-    ("envoy_client", "packages/broker-client", at("envoy-client", "Typecheck broker client")),
+    ("broker_client", "packages/broker-client", at("broker-client", "Typecheck the broker client")),
     ("pi_shared", "packages/pi-shared", at("pi-shared", "Typecheck pi-shared")),
     ("pi_envoy", "packages/pi-envoy", at("pi-envoy", "Typecheck pi-envoy")),
     ("pi_legion", "packages/pi-legion", at("pi-legion", "Typecheck pi-legion")),

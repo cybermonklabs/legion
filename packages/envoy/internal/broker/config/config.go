@@ -26,6 +26,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
@@ -304,6 +305,13 @@ type Config struct {
 	// belong to. For the broker's local stack alone: a production start, which is one with
 	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	AirlockTestNoKind bool
+	// BROKER_AIRLOCK_TEST_AZURE_AUTHORITY: the host of the token authority the airlock proxy
+	// makes every exchange of an azure entry's federated token at, in place of
+	// login.microsoftonline.com, so the exchange is made at a stand-in Microsoft. A host name an
+	// airlock rules entry can bind, in lower case and with no "*."; anything else refuses the
+	// start. For the broker's local stack alone: a production start, which is one with
+	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestAzureAuthority string
 	// BROKER_JUDGE_MODEL_URL: the base URL the broker's model judge calls its model at, an
 	// absolute http(s) URL. Required with the rest of JudgeSettings, which are all-or-none:
 	// with none of the five set there is no judge, and every human-tier request waits for the
@@ -1285,6 +1293,26 @@ func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
 		host, strings.Join(named, ", "))
 }
 
+// parseAirlockTestAzureAuthority reads BROKER_AIRLOCK_TEST_AZURE_AUTHORITY, the host the proxy
+// holds every exchange to and compares the ASCII lower-cased host of a token request's
+// connection with, exactly. It refuses, naming the value, a host no rules entry can bind
+// (airlock.HostShapeOK: a scheme, a port, a path, an empty label, a label opening or closing
+// with "-", a last label of digits alone, which an address has), since a token request reaches
+// the proxy only at a host an entry binds; a "*." suffix, which is no one host; and a capital
+// letter, since the proxy compares the value as it is written with a lower-cased host. A value
+// of any of those would refuse every exchange.
+func parseAirlockTestAzureAuthority(value string) (string, error) {
+	const setting = "BROKER_AIRLOCK_TEST_AZURE_AUTHORITY"
+	host := strings.TrimSpace(value)
+	if host == "" {
+		return "", nil
+	}
+	if !airlock.HostShapeOK(host) || strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
+		return "", fmt.Errorf("%s must be a host name in lower case that an airlock rules entry can bind, with no scheme, port, path, address or \"*.\", got %q", setting, host)
+	}
+	return host, nil
+}
+
 // testOnlySwitch reads one of the local stack's test-only switches, the airlock's two and
 // the judge's one: unset is off, and anything strconv.ParseBool does not read is refused rather
 // than taken as off, since a misspelled value would otherwise turn a negative control into the
@@ -1497,6 +1525,9 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AirlockTestNoKind, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
+	}
+	if cfg.AirlockTestAzureAuthority, testSwitchErr = parseAirlockTestAzureAuthority(getenv("BROKER_AIRLOCK_TEST_AZURE_AUTHORITY")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.JudgeTestSkipChecks, testSwitchErr = testOnlySwitch("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {

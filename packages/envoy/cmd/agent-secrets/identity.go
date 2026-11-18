@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
@@ -82,10 +83,11 @@ func keyDir() string {
 
 // brokerBaseURL is the broker's address as brokerURLVar gives it (clientGetenv: the environment,
 // else the settings file), without the slashes it ends in (brokerclient.WithoutTrailingSlashes,
-// the rule both halves of this client read an address by), and empty when neither gives one or
-// it holds nothing but slashes: the one place every form reads it.
-func brokerBaseURL() string {
-	return brokerclient.WithoutTrailingSlashes(clientGetenv(brokerURLVar))
+// the rule both halves of this client read an address by), and the empty Address when neither
+// gives one or it holds nothing but slashes: the one place every form reads it, and as a
+// brokeraddr.Address, so no form holds it as a string it could print.
+func brokerBaseURL() brokeraddr.Address {
+	return brokeraddr.New(brokerclient.WithoutTrailingSlashes(clientGetenv(brokerURLVar)))
 }
 
 // helperSocket is AGENT_SECRETS_HELPER_SOCK, else the helper's default socket; named reports
@@ -262,10 +264,12 @@ func identitySource(stdout, stderr io.Writer) int {
 		reportError(stderr, "agent-secrets identity", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "%s: %s\n", name, detail)
-	if name != "helper" {
+	if name == "helper" {
+		fmt.Fprintf(stdout, "helper: %s%s\n", detail, helperVersionSuffix(detail))
+	} else {
+		fmt.Fprintf(stdout, "%s: %s\n", name, detail)
 		if answer := probeHelper(); answer.answered() {
-			fmt.Fprintf(stdout, "helper: %s\n", answer.sock)
+			fmt.Fprintf(stdout, "helper: %s%s\n", answer.sock, helperVersionSuffix(answer.sock))
 		}
 	}
 	return 0

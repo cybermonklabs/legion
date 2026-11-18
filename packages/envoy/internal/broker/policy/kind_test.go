@@ -335,17 +335,23 @@ func TestAGitHubOwnersCommaIsRefused(t *testing.T) {
 }
 
 // TestAGitHubOwnerThatIsNoGitHubLoginIsRefused: each github-owners entry must be something a
-// GitHub login can be, up to 39 ASCII letters, digits and hyphens starting with a letter or digit,
-// judged as written, or the secret is refused github-owners-malformed. The word none, in any case,
-// is agent-secrets' removal and never a login. A non-ASCII letter that Unicode lowercases onto an
-// ASCII one (U+212A KELVIN SIGN, U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE) is refused rather
-// than read as that ASCII letter. Legacy logins with a trailing or doubled hyphen, which GitHub
-// still serves (`x-` is an organization from 2011), and the longest login are read; a tag that
-// names no entry at all is github-owners-missing.
+// GitHub login can be, up to 39 ASCII letters, digits, hyphens and underscores starting with a
+// letter or digit, judged as written, or the secret is refused github-owners-malformed. The word
+// none, in any case, is agent-secrets' removal and never a login. A non-ASCII letter that Unicode
+// lowercases onto an ASCII one (U+212A KELVIN SIGN, U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE)
+// is refused rather than read as that ASCII letter. Legacy logins with a trailing or doubled
+// hyphen, which GitHub still serves (`x-` is an organization from 2011), a managed user's login,
+// which ends in `_<shortcode>` (`mona-cat_octo`), and the longest login are read; a tag that names
+// no entry at all is github-owners-missing.
 func TestAGitHubOwnerThatIsNoGitHubLoginIsRefused(t *testing.T) {
 	longest := strings.Repeat("a", 39)
 	for _, owners := range []string{
-		"-ada", "-x", "-", "ada_lovelace", "ada.org", "@ada", "ada/b", strings.Repeat("a", 40),
+		"-ada", "-x", "-", // a login starts with a letter or digit, never a hyphen
+		"_ada",                  // nor an underscore: a managed user's _<shortcode> follows a name
+		"ada.org",               // a dot is a repository name's, never a login's
+		"@ada",                  // an @ is a mention's, never a login's
+		"ada/b",                 // a slash is a path's, never a login's
+		strings.Repeat("a", 40), // GitHub's logins are at most 39 characters
 		"none", "None", "NONE",
 		"\u212Aelvin-org", "acme-\u212A",
 		"\u0130stanbul", "b\u0130t",
@@ -379,12 +385,20 @@ func TestAGitHubOwnerThatIsNoGitHubLoginIsRefused(t *testing.T) {
 	}
 	secret := typeSecret("LEGACY_APP_KEY", policy.TypeGitHubApp, "value")
 	secret.Tags[policy.TagGitHubOwners] = "x- acme-org"
-	set, err := policytest.Loader(secrets.NewLocal(secret)).Load(context.Background())
+	// A managed user's login ends in _<shortcode>. ada_lovelace was refused here while the broker
+	// held a login to letters, digits and hyphens, which left such an account one no github-app
+	// secret could name and so one the broker minted no token for.
+	managed := typeSecret("MANAGED_APP_KEY", policy.TypeGitHubApp, "value")
+	managed.Tags[policy.TagGitHubOwners] = "mona-cat_octo acme-org Ada_Lovelace"
+	set, err := policytest.Loader(secrets.NewLocal(secret, managed)).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if got := set.Secrets["LEGACY_APP_KEY"].GitHubOwners; got != "acme-org x-" {
 		t.Fatalf("LEGACY_APP_KEY GitHubOwners = %q, want %q: a trailing-hyphen login is served", got, "acme-org x-")
+	}
+	if got := set.Secrets["MANAGED_APP_KEY"].GitHubOwnerLogins(); !slices.Equal(got, []string{"acme-org", "ada_lovelace", "mona-cat_octo"}) {
+		t.Fatalf("MANAGED_APP_KEY GitHubOwnerLogins = %v, want [acme-org ada_lovelace mona-cat_octo]: a managed user's login is served (refused: %+v)", got, set.Refused)
 	}
 }
 

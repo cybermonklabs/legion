@@ -32,10 +32,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -209,7 +210,7 @@ func lockMachineCache(dir string, exclusive bool) (func(), error) {
 // whose exclusive lock the caller holds.
 func registerMachineSession(ctx context.Context, dir string, identity brokerclient.Source, key *ecdsa.PrivateKey) (string, error) {
 	base := brokerBaseURL()
-	if base == "" {
+	if base.Empty() {
 		return "", fmt.Errorf("this machine proves %s, so %s must name the secrets broker it proves it to", identity.Describe(), brokerURLVar)
 	}
 	thumbprint, err := proof.Thumbprint(&key.PublicKey)
@@ -248,7 +249,7 @@ func registerMachineSession(ctx context.Context, dir string, identity brokerclie
 // broker someone else now answers for — is refused before any token is minted for someone else's
 // service. It writes nothing: a machine with no identity of its own mints nothing, so it keeps no
 // audience, and a later audience or broker still gets the chain's no-source refusal.
-func checkGoogleAudience(base, audience string) error {
+func checkGoogleAudience(base brokeraddr.Address, audience string) error {
 	dir := machineCacheDir()
 	if dir == "" {
 		return nil
@@ -267,7 +268,7 @@ func checkGoogleAudience(base, audience string) error {
 // keepGoogleAudience keeps audience as the one this machine's identity tokens are minted for,
 // once machineSource has found an identity to mint one and before anything is minted, unless an
 // audience is kept already, and refuses it where another writer kept a different one first.
-func keepGoogleAudience(base, audience string) error {
+func keepGoogleAudience(base brokeraddr.Address, audience string) error {
 	dir := machineCacheDir()
 	if dir == "" {
 		return nil
@@ -284,11 +285,12 @@ func keepGoogleAudience(base, audience string) error {
 }
 
 // sameGoogleAudience is the refusal of audience, which the broker at base names, where this
-// machine kept another one in path.
-func sameGoogleAudience(base, audience, kept, path string) error {
+// machine kept another one in path. Both audiences are text a broker's settings answer wrote, so
+// it prints them as base lets that text print (brokeraddr.Address.Words).
+func sameGoogleAudience(base brokeraddr.Address, audience, kept, path string) error {
 	if kept != audience {
-		return fmt.Errorf("the broker at %s names %q as its Google exchange audience, and this machine first read %q there (kept in %s): a broker's audience does not change, so this machine mints no identity token for another one. If the broker's audience did change, remove %s and run the command again",
-			redact.URL(base), audience, kept, path, path)
+		return fmt.Errorf("the broker at %s names %s as its Google exchange audience, and this machine first read %s there (kept in %s): a broker's audience does not change, so this machine mints no identity token for another one. If the broker's audience did change, remove %s and run the command again",
+			base, base.Words(strconv.Quote(audience)), base.Words(strconv.Quote(kept)), path, path)
 	}
 	return nil
 }

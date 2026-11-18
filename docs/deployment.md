@@ -85,6 +85,19 @@ request; `agent-secrets`' exit 75 (still waiting when its own wait ended) is ret
 `legion start --check-config` never runs it, and `installations` cannot be set beside it, since
 the release names every installation.
 
+Both Apps are public GitHub Apps, so any GitHub account can install them.
+What such an install gives depends on where the daemon gets its tokens.
+A daemon that gets its tokens from the secrets broker through `token_command`, as this runbook configures it, is bounded by the broker: the broker releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing.
+A daemon that mints with its own App key counts every installation and keeps no list of owners.
+There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every implementer and merger, and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
+The daemon reads the installations at every bundle it builds, so a running pane holds the new directory within a minute, and loses it within a minute of an uninstall.
+The one exception is the account that holds the pane's own issue repository: that directory cannot be left out, and its token is that owner's cached lease, which stays in use until its expiry is no more than `refreshWindow` (20 minutes, `internal/appauth`) away.
+Until then every bundle built for the pane succeeds and the refresh keeps writing all of its directories, that one holding a token GitHub would no longer mint.
+The first build that mints that owner for real fails, naming the owner; from then every bundle built for the pane fails, no refresh writes any of its directories, and the pane keeps its last tokens until they expire.
+The controller's default owner is refused at once instead, because `ControllerCredential` reads the installations before it mints anything.
+The account's name is among the owners that each later launch of that App's roles is told in its `Legion addressing` line.
+What an install changes for a running pod is in `docs/kubernetes.md`.
+
 Each App needs its own `app_id` and `token_command`, with no second credential source.
 See [Rotating broker-held App keys](#rotating-broker-held-app-keys) for the rotation procedure.
 
@@ -96,28 +109,35 @@ launcher, its `gh`, a script that runs `legion gh`, and its `git`, a script that
 jj of 0.38 or later — the jj bound it refuses to boot below (`resolveTools`, naming
 `LEGION_JJ_PATH`, its own override for the jj it runs) — and the real `gh` (`LEGION_GH_PATH`, or the
 first `gh` on its `PATH`, refused when that is a script), which every pane is told as `LEGION_GH_PATH`. A pane's GitHub identity is
-a set of files that binary reads, one directory per GitHub owner of the project, one more per owner
-a configured rename moved a repository away from while the project serves the name it moved to,
-and an `<owner>/<repo>` directory for each other repository the issue's recorded owner and the
-owner serving the issue's repository serve: the
+a set of files that binary reads, one directory per GitHub owner the role's App is installed on,
+one more per owner a configured rename moved a repository away from while the project serves the
+name it moved to, and one for the issue's own recorded owner: the
 daemon writes gh's own `hosts.yml` (an App installation token, user `x-access-token`) and
 `config.yml` under `<state_dir>/secrets/<claim>-gh/<dir>` (0700, files 0600) when it opens the
-pane — in two directories, the issue's recorded owner's and the one named for the owner whose
-installation serves that repository now, which are one directory unless a rename moved the issue's
-repository, the role's App token for the issue's repository and no other, and in every
-other directory that App's token narrowed to reading contents, pull requests, issues, Actions and metadata
-over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository
-its own name resolves to (each token asks for what the App's installation on
-that owner is granted of the set, and a permission it is granted none of is left out, named in
-a warn record of the daemon's log) — names the issue owner's directory as `GH_CONFIG_DIR`
+pane — in every directory the role's App token on that owner's installation, asked for with the
+role's own permissions, the implement App's write set or the review App's review set, and in no
+directory a token narrowed to reading, the one directory with another owner's token being that
+of an owner a rename moved a repository away from where the App is not installed on it, which
+holds the token of the owner the repository moved to (each token asks for what the App's
+installation on that owner is granted of the set, and a permission it is granted none of is left
+out, named in a warn record of the daemon's log) — names the directory the issue's repository
+routes to as `GH_CONFIG_DIR`, its recorded owner's or, for a repository a configured rename
+moved, that of the owner it moved to,
 and the bundle's root as `LEGION_GH_OWNERS_DIR`, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` set
 empty so nothing outranks the files, and rewrites each directory's `hosts.yml` in place every
 minute from its cached leases (the log lines `tmux runtime: github credential written` and `github
 credential refreshed`, with the claim, role, App, `expiresAt` and the directories written); a pane
 it adopted after a restart is refreshed for the repository its claim's issue works, read from the
-daemon's own state, never one read from the pane's directory. `legion gh` runs the real gh with
-`GH_CONFIG_DIR` at the directory of the repository the command targets where the bundle holds one,
-and of its owner otherwise, the target read as gh reads it, with pflag's rules, from the real gh's own help of
+daemon's own state, never one read from the pane's directory. Each of those tokens reaches every
+repository its own installation holds, which the account chose when it installed the App, and the
+daemon asks GitHub to narrow none of them to a repository. The bundle's root also holds one file
+of its own, `renames.txt`, the configured renames the project's pairs resolve to, which both
+wrappers route a repository a rename moved by and read from there and from nowhere else
+(`ghconfig.PairsFile`). `legion gh` runs the real gh with
+`GH_CONFIG_DIR` at the one directory every repository the command targets is routed to: its
+owner's, or for a repository a configured rename moved, the directory of the owner it moved to,
+each repository routed on its own and an owner the command names alone routed to its own
+directory, the targets read as gh reads them, with pflag's rules, from the real gh's own help of
 each command down to its leaf (`-R`/`--repo` before or after the command, a repository or owner
 argument, before `--` or as a clone's or fork's first after it, a `github.com` URL argument — for a
 `pr` command or `agent-task view` only a pull request's, since gh reads any other as a branch of
@@ -136,9 +156,15 @@ know, a first word gh's own help does not list, anything before the command but 
 `--help`, an argument the leaf's usage has no place for or names in a way it does not know, a
 search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as
 `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot` and `gh
-extension exec`), one naming two owners (an option or a second repository naming one owner while
-gh acts on another's, or a workspace whose remotes name two), one naming an owner the bundle
-holds no directory for, every command where `PATH`'s first `gh` is not Legion's wrapper (a script
+extension exec`), one whose repositories route to two directories (two owners' repositories, an
+option or a second repository naming one owner while gh acts on another's, a workspace whose
+remotes name two, or a repository a configured rename moved beside another of the owner it moved
+from, which run under one directory's token would answer for the other's with less than GitHub
+holds and no error; a moved repository named by both of its names is one directory), one naming
+an owner the bundle holds no directory for, one naming a repository a configured rename moved to
+an owner the bundle holds no directory for, which names the pair, every command where `PATH`'s
+first `gh` is not
+Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing.
@@ -159,8 +185,9 @@ which the wrapper's tables know (`packages/daemon/cmd/legion/testdata`, with the
 regenerates it when that pin moves; `.github/scripts/check-gh-version.sh` fails the build until
 the saved help is the pin's).
 The shared clone's `credential.helper` is `!legion git-credential` with `credential.useHttpPath`
-on, so a pane's `git` and `jj git push` read the hosts.yml of the repository in the path git asks
-about where the bundle holds its directory, the owner's otherwise, and nothing else.
+on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the repository in the
+path git asks about — of the owner a configured rename moved that repository to where a pair
+names it — and nothing else.
 
 The `git` in `bin/` runs `legion git --after <state_dir>/bin` (`packages/daemon/cmd/legion/git.go`).
 The daemon writes it at boot, unless the first `git` on the daemon's own `PATH` is the worker
@@ -567,10 +594,10 @@ provider_keys:
   every commit the pane makes in its own workspace, after the `Omp-Session:` and `Legion-Role:`
   lines every pane's commits carry, so a squash landing that branch carries the issue key in its
   message. A `git commit` gets the session and role lines from the pane's `git`, and no issue line.
-  A repository the key names must be one Dispatch maps to the project (Settings → Repositories →
-  Projects): the mapping is what the project serves, and this key only selects among it, so a name
-  the project does not serve stamps nothing and boot says so once, naming the name and the
-  project.
+  A pane stamps the commit when its launch's repository is one of the names, whatever Dispatch
+  maps to the project (Settings → Repositories → Projects).
+  Boot checks each name against that mapping alone and says once, naming the name and the
+  project, that the mapping does not hold it, which catches a typo.
   A pane of a repository the key does not name is told no key and its commits carry the session
   and role lines alone, as does a commit the pane's shell makes in any other jj repository.
   The variable the pane is told is the runtime's own, so a spec, a `pane_env` and a
@@ -657,8 +684,8 @@ written by whichever daemon wrote last — so the order matters:
    is the takeover of the other runtime's locators: a claim whose pod this daemon cannot see is
    resumed without waiting that process out. Each workspace is provisioned before its first launch.
 4. Retry what failed to launch meanwhile, once the cause is gone: `legion claims retry --failed`
-   (an architect relaunches on its session; a phase worker whose issue is held for its own role
-   retries that phase).
+   (an architect relaunches on its session, or on a new one once supervise's `forgetSession` has
+   dropped it; a phase worker whose issue is held for its own role retries that phase).
 5. Remove `take_over` once no claim can still wake on a session a pod recorded: every claim that
    was running has relaunched in a pane, and no claim the Kubernetes daemon suspended (a
    production check's checking role — the one the project's `production_check` names — waiting

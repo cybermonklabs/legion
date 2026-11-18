@@ -165,7 +165,7 @@ func linesFor(lines []map[string]any, repo string) []map[string]any {
 // what the boot's reconciliation and admission read of the repository's default branch.
 func heldAdmission(t *testing.T, w *workflowRuntime, repo string) {
 	t.Helper()
-	if _, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", ResolvedRepo: repo}, false, 0); err != nil {
+	if _, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", ResolvedRepo: repo}, false, 0, false); err != nil {
 		t.Fatalf("prepare an admission on %s: %v, want it prepared on the branch held", repo, err)
 	}
 }
@@ -281,8 +281,8 @@ func TestABootLeavesOutARepositoryGitHubStillRateLimitsAndServesItOnceGitHubAnsw
 	logs := &syncBuffer{}
 	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs))
 
-	if _, refusal, _, unread := w.repositories.lookup("zeta/tools"); refusal == "" || !unread {
-		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", refusal, unread)
+	if held := w.repositories.lookup("zeta/tools"); held.refusal == "" || !held.unread {
+		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", held.refusal, held.unread)
 	}
 	if !served(w, "acme/widgets") {
 		t.Fatal("acme/widgets is not served, want it served beside the repository left out")
@@ -326,8 +326,8 @@ func TestABootLeavesOutARepositoryWhoseReadAfterARateLimitGetsNoAnswer(t *testin
 	logs := &syncBuffer{}
 	w, _, _, _ := mappingRigWith(t, &installations{}, limitedRig(t, github, logs))
 
-	if _, refusal, _, unread := w.repositories.lookup("zeta/tools"); refusal == "" || !unread {
-		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", refusal, unread)
+	if held := w.repositories.lookup("zeta/tools"); held.refusal == "" || !held.unread {
+		t.Fatalf("zeta/tools = refusal %q, unread %v; want it left out for now", held.refusal, held.unread)
 	}
 	if !served(w, "acme/widgets") {
 		t.Fatal("acme/widgets is not served, want it served beside the repository left out")
@@ -766,7 +766,7 @@ func TestARateLimitedDefaultBranchReadDeliversTheEventAgainAfterGitHubsWait(t *t
 			w := &workflowRuntime{repositories: newRepositories("LEGION", ghrepo.Renames{}), log: quietLogger(),
 				defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now)}
 			w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("zeta/tools"), Default: true}}, nil)
-			_, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", ResolvedRepo: "zeta/tools"}, false, 0)
+			_, err := w.prepareUnrecorded(context.Background(), intake.DispatchIssue{Key: "LEGION-2", Status: "todo", ResolvedRepo: "zeta/tools"}, false, 0, false)
 			var later *intake.RetryLater
 			if !errors.As(err, &later) || later.After != tc.want {
 				t.Fatalf("prepare = %v, want an intake.RetryLater after %s", err, tc.want)
