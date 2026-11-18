@@ -33,6 +33,10 @@
  * | Cancel reply                                 | cell   | cell    | cell    |
  * | Escape in the field                          | cell   | cell    | cell    |
  * | Close, then Discard draft? (the compose)     | cell   | cell    | cell    |
+ * | A newer compose's offer, then Close          | cell   | cell    | cell    |
+ * | A newer compose's offer, then Escape         | cell   | cell    | cell    |
+ * | A newer suggestion's offer, issue closed     | cell   | cell    | cell    |
+ * | A newer compose's offer, lapse and sign-in   | (14)   | (14)    | cell    |
  * | Agents pick                                  | no (3) | no (3)  | no (3)  |
  * | Typed while elsewhere, then unmounted        | -      | no (1)  | -       |
  * | Hidden by the host, mounted                  | no (4) | no (4)  | no (4)  |
@@ -49,6 +53,17 @@
  * own document), so the first document's compose stays open for it and comes back with its text
  * and its note, and that text never fills a compose at another quote: the next compose on the
  * first document, at another selection, starts without it.
+ *
+ * A newer compose on the document is the host's move for the one before it, and offers that
+ * compose's draft beside its own empty field (`offered` in `useKeptDrafts`): typed, handed back by
+ * a refusal, or the send the reader stopped, set aside (`marginComposeKeptKey`). The offer rows
+ * end that newer compose with the draft in front of the reader. Close and Escape ask `Discard
+ * draft?` over it as over typed text, and Discard drops it with the field's draft, so a compose
+ * opened after offers nothing. A suggestion or ask compose ends when its issue closes, which
+ * refuses both, but one that offers a draft stays, the draft beside it, until the reader drops
+ * it. A sign-in after a lapse draws the shell, and the margin's provider, again over the same
+ * stores, so no compose is open: the send the reader stopped goes back under its compose's name
+ * and shows on its document, at its words, with its note.
  *
  * On a phone the margin is a panel over the document (`MarginSheet`'s compact sheet), which the
  * reader opens and closes and the margin opens for each compose it shows, and a thread opens
@@ -120,12 +135,19 @@
  *    (`retypeCompose`) and leaves the draft in the field (`useKeptDrafts`), so it re-addresses
  *    the same compose and moves nothing it holds.
  *
+ * The cells another task of this round answers for:
+ * 14. A typed or refused draft offered beside a newer compose is kept for its words in the unsent
+ *    store (`AwayDraft.anchor`), and a sign-in after a lapse draws the margin's provider again
+ *    with no compose open, which ends the tree that offered it as a reload does. Drawing such a
+ *    kept draft on its document's arrival with no compose open is the reload rows' task, so these
+ *    cells are that task's.
+ *
  * `draft-matrix.margin.coverage.ts` holds each census item this file answers for to a test above
  * or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
-import type { MutationKey } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import type { MutationKey, QueryClient } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
@@ -228,11 +250,11 @@ function RegisterRouteDocument(): ReactNode {
 }
 
 /** The selection bar's Comment on `MARK_ANCHOR`, on a press, and on the other words the cells
- *  compose on: CORE-2's, and others of CORE-1's. */
+ *  compose on: CORE-2's, and others of CORE-1's, where its Suggest opens a suggestion too. */
 function ComposeOnMark(): ReactNode {
   const { composeForMark } = useMargin();
-  const composeOn = (anchor: typeof MARK_ANCHOR) => {
-    void composeForMark({ anchor, kind: "comment" }).catch(() => {});
+  const composeOn = (anchor: typeof MARK_ANCHOR, kind: "comment" | "suggestion" = "comment") => {
+    void composeForMark({ anchor, kind }).catch(() => {});
   };
   return (
     <>
@@ -244,6 +266,9 @@ function ComposeOnMark(): ReactNode {
       </button>
       <button onClick={() => composeOn(ANOTHER_ANCHOR)} type="button">
         Compose on another selection
+      </button>
+      <button onClick={() => composeOn(ANOTHER_ANCHOR, "suggestion")} type="button">
+        Suggest on another selection
       </button>
     </>
   );
@@ -272,6 +297,10 @@ function Travel(): ReactNode {
 
 interface Page {
   readonly createComment: Mock<typeof api.createComment>;
+  readonly queryClient: QueryClient;
+  /** Takes the page away and draws it again over the same query client and stores, as a sign-in
+   *  after a lapse draws the shell (`AuthGate`), and with it the margin's provider. */
+  readonly redraw: () => void;
   readonly restore: () => void;
   readonly user: UserEvent;
 }
@@ -308,16 +337,15 @@ async function openMargin(
   }
   createComment.mockRejectedValue(REFUSAL);
   const restoreViewport = stubViewport(phone ? PHONE_WIDTH : DESKTOP_WIDTH);
-  const view = render(
-    marginPage(
-      queryClient,
-      <>
-        {documents === "spec" ? <RegisterDocument /> : <RegisterRouteDocument />}
-        <ComposeOnMark />
-        <Travel />
-      </>
-    )
+  const tree = marginPage(
+    queryClient,
+    <>
+      {documents === "spec" ? <RegisterDocument /> : <RegisterRouteDocument />}
+      <ComposeOnMark />
+      <Travel />
+    </>
   );
+  let view = render(tree);
   // A phone that arrives at a held reply opens its thread in place of the list, so any card of
   // the margin's will do.
   await waitFor(() =>
@@ -325,6 +353,11 @@ async function openMargin(
   );
   return {
     createComment,
+    queryClient,
+    redraw: () => {
+      view.unmount();
+      view = render(tree);
+    },
     restore: () => {
       view.unmount();
       restoreViewport();
@@ -630,6 +663,117 @@ for (const held of HELD) {
     }
   });
 }
+
+/** Whether a line on screen offers `BODY`, the draft written for `MARK_ANCHOR`'s words, beside a
+ *  newer compose, whatever kind it names. A status inside something hidden is no role the query
+ *  finds. */
+function offeredOnScreen(): boolean {
+  return screen.queryAllByRole("status").some((line) => {
+    const text = line.textContent ?? "";
+    return text.includes(`for other words: “${MARK_ANCHOR.quote}”`) && text.includes(BODY);
+  });
+}
+
+/** The margin's compose on `MARK_ANCHOR` with `BODY` in it, in the state `held` names, and then a
+ *  newer compose on the same document at `ANOTHER_ANCHOR`, opened by the button named `press`,
+ *  which offers that draft beside its own empty field. Answers the newer compose's form. */
+async function offerInNewerCompose(
+  page: Page,
+  held: Held,
+  press = "Compose on another selection"
+): Promise<HTMLElement> {
+  await holdInCompose(page, held);
+  await page.user.click(screen.getByRole("button", { name: press }));
+  const form = (await screen.findByText(ANOTHER_ANCHOR.quote)).closest("form");
+  if (form === null) throw new Error("expected the newer compose's form");
+  await waitFor(() => expect(offeredOnScreen()).toBe(true));
+  return form;
+}
+
+// A newer compose on the document offers the earlier compose's draft beside its own empty field:
+// typed, handed back by a refusal, or the send the reader stopped, set aside. Close and Escape end
+// the newer compose with that draft in front of the reader, so they ask as they do over typed
+// text, and only Discard drops it, its offer with it: a compose opened after offers nothing.
+for (const end of ["Close", "Escape"] as const) {
+  for (const held of HELD) {
+    test(`${HOST} · a compose offering an earlier draft, then ${end} (the margin's compose) · ${held}`, async () => {
+      const page = await openMargin(false, stoppedCompose(held));
+      try {
+        const form = await offerInNewerCompose(page, held);
+        if (end === "Close") {
+          await page.user.click(within(form).getByRole("button", { name: "Close" }));
+        } else {
+          await page.user.click(within(form).getByRole("textbox", { name: "Comment" }));
+          await page.user.keyboard("{Escape}");
+        }
+        const asked = {
+          offered: offeredOnScreen(),
+          prompt: within(form).queryByText("Discard draft?") !== null,
+        };
+        // A role's name given as a string is matched whole, so this is not `Discard my draft`. A
+        // compose that closed at once has no prompt to answer.
+        const discard = within(form).queryByRole("button", { name: "Discard" });
+        if (discard !== null) await page.user.click(discard);
+        const closed = screen.queryByText(ANOTHER_ANCHOR.quote) === null;
+        await page.user.click(screen.getByRole("button", { name: "Compose on another selection" }));
+        await screen.findByText(ANOTHER_ANCHOR.quote);
+        expect({ after: { closed, offered: offeredOnScreen() }, asked }).toEqual({
+          after: { closed: true, offered: false },
+          asked: { offered: true, prompt: true },
+        });
+      } finally {
+        page.restore();
+      }
+    });
+  }
+}
+
+// A closed issue refuses a suggestion and an ask, so a compose of either kind ends when its issue
+// closes (`useMarginSheet`). One that offers an earlier draft keeps the offer in front of the
+// reader: the compose stays, the draft beside it, until the reader drops it.
+for (const held of HELD) {
+  test(`${HOST} · a suggestion compose offering an earlier draft, then its issue closed (the margin's compose) · ${held}`, async () => {
+    const page = await openMargin(false, stoppedCompose(held));
+    try {
+      await offerInNewerCompose(page, held, "Suggest on another selection");
+      act(() => {
+        page.queryClient.setQueryData(["issue", issue.key], {
+          ...issue,
+          closed_at: "2026-09-21T00:00:00Z",
+        });
+      });
+      // A closed issue's compose draws no kind switch, whether it stays or ends.
+      await waitFor(() => expect(screen.queryByRole("group", { name: "Kind" })).toBe(null));
+      expect({ offered: offeredOnScreen() }).toEqual({ offered: true });
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+// A sign-in after the session lapsed draws the shell again (`AuthGate`), and with it the margin's
+// provider, over the same query client and stores: no compose is open any more. The send the
+// reader stopped, set aside for a newer compose, goes back under its own compose's name, so the
+// margin shows it on its document, at its words, with its note, as it did before the newer
+// compose took its place. A typed or refused draft offered there is the reload rows' (14).
+test(`${HOST} · a compose offering an earlier draft, then signed in again after a lapse (the margin's compose) · stopped`, async () => {
+  const page = await openMargin(false, stoppedCompose("stopped"));
+  try {
+    await offerInNewerCompose(page, "stopped");
+    page.redraw();
+    await screen.findByTestId(`margin-comment-${threadA.id}`);
+    // A second for the compose the margin shows on arrival; none on screen reads as absent.
+    await screen.findByRole("textbox", { name: "Comment" }, { timeout: 1_000 }).catch(() => null);
+    const back = composesOnScreen().find((compose) => compose.text === BODY);
+    expect(back ?? "(no compose holds it)").toEqual({
+      note: "stopped",
+      quote: MARK_ANCHOR.quote,
+      text: BODY,
+    });
+  } finally {
+    page.restore();
+  }
+});
 
 /** What a phone reader finds of the margin's compose: whether the review panel is open, and the
  *  compose's words, text and note. On a phone the margin is a panel over the document
