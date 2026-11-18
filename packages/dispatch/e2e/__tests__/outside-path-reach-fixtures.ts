@@ -362,6 +362,25 @@ const eachRunner = [
   "wait",
 ].join("\n");
 
+/** Upper-case names bash keeps read-only or sets for itself, which `export` in the runner would
+ *  refuse or the runner's bash would change before its run starts. */
+const runnerOwnNames: Record<string, true> = {
+  BASHOPTS: true,
+  BASHPID: true,
+  BASH_ARGC: true,
+  BASH_ARGV: true,
+  BASH_LINENO: true,
+  BASH_SOURCE: true,
+  BASH_VERSINFO: true,
+  EUID: true,
+  FUNCNAME: true,
+  GROUPS: true,
+  PPID: true,
+  SHELLOPTS: true,
+  SHLVL: true,
+  UID: true,
+};
+
 /** Reserves the calling test file's scratch directory and returns it with the helpers that write
  *  there. Call it at the test file's module scope: `temporaryDirectory` registers the hooks that
  *  make and remove the directory in the scope it is called from, and this module is evaluated
@@ -460,13 +479,20 @@ export function reachFixtures() {
    *  sets its own, so under bash 5.2 its SHLVL is 2, not 1; it is a background job of a
    *  non-interactive shell, which bash 3.2 starts with SIGINT and SIGQUIT ignored (bash 5.2
    *  restores them at the `exec`); the runs of one call share one HOME, in which none is given a
-   *  `.curlrc`; and its stdout and stderr are files, not pipes. */
+   *  `.curlrc`; and its stdout and stderr are files, not pipes. The runner sets each variable with
+   *  `export` in its own bash, so a name of its own loop (all lower case) or one bash keeps
+   *  read-only would not reach the run as given: `driveEach` refuses such a name. */
   async function driveEach(
     runs: Record<string, string>[],
     options: { path?: string; together?: number } = {}
   ): Promise<Run[]> {
     const out = join(scratch, `each-${randomUUID()}`);
     mkdirSync(out);
+    for (const name of runs.flatMap(Object.keys)) {
+      if (!/^[A-Z][A-Z0-9_]*$/.test(name) || Object.hasOwn(runnerOwnNames, name)) {
+        throw new Error(`driveEach cannot pass ${name} to a run whole: give it through drive`);
+      }
+    }
     const child = Bun.spawn(
       [
         bash,
