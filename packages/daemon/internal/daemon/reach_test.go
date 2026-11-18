@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -207,6 +208,63 @@ func reachClaim(t *testing.T, tree, issue string, role claim.Role, session strin
 func (r *reachRig) with(c supervise.Claim) supervise.Claim {
 	c.Reach = r.reach(c.Token)
 	return c
+}
+
+// countedNotices is a store of the project's own notice records that holds held, and counts the
+// reads and the deletes it is asked for.
+type countedNotices struct {
+	mu             sync.Mutex
+	held           []store.ReachProjectNotice
+	reads, deletes int
+}
+
+func (n *countedNotices) ReachProjectNotices(context.Context, string) ([]store.ReachProjectNotice, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.reads++
+	return slices.Clone(n.held), nil
+}
+
+func (n *countedNotices) PutReachProjectNotice(context.Context, store.ReachProjectNotice) error {
+	return nil
+}
+
+func (n *countedNotices) DeleteReachProjectNotice(context.Context, string, string, claim.Token) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.deletes++
+	n.held = nil
+	return nil
+}
+
+// A daemon whose every list holds a live session reads the project's notice records once, at its
+// first read, and deletes the no-live run's record only where the daemon before it told one; no
+// later read of a live list asks the store anything until a run is told.
+func TestALiveListReadsTheNoLiveRecordOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		held    []store.ReachProjectNotice
+		deletes int
+	}{
+		{name: "no run told", deletes: 0},
+		{name: "a run the last daemon told", held: []store.ReachProjectNotice{{Project: "LEGION",
+			Kind: string(record.EnvoyNoLiveSessionNotice), Told: true}}, deletes: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReachRig(t, false)
+			notices := &countedNotices{held: tc.held}
+			r.k.notices = notices
+			for minute := 1; minute <= 30; minute++ {
+				r.at(time.Duration(minute) * time.Minute)
+				r.listing(map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute})
+				r.sweep()
+			}
+			if notices.reads != 1 || notices.deletes != tc.deletes {
+				t.Fatalf("30 minutes of live lists read the records %d times and deleted the no-live record %d times, want one read and %d deletes",
+					notices.reads, notices.deletes, tc.deletes)
+			}
+		})
+	}
 }
 
 // The 20 minutes are counted from the daemon's boot as well as the session's last registration,

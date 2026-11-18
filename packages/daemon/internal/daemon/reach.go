@@ -416,7 +416,10 @@ func (k *reachKeeper) sweep(ctx context.Context, claims []supervise.Claim) {
 		k.sessions[s.Session] = s
 	}
 	if live {
-		if k.noLiveTold || k.noLiveUncleared || !k.loaded {
+		// The records are read once, at the first read that can, and only a run some daemon told
+		// has a record to delete; a read of them the store refuses deletes the record unread,
+		// which is the one way to end a run whose record cannot be read.
+		if !k.loadNotices(ctx) || k.noLiveTold || k.noLiveUncleared {
 			k.clearNoLive(ctx)
 		}
 		k.noLiveSince, k.noLiveTold = time.Time{}, false
