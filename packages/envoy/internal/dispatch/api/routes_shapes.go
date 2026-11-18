@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -250,6 +251,16 @@ type issueReferencesQuery struct {
 	// version, under its own ETag; absent, empty or `all` is the full answer, another value or
 	// a repeat is 400 INVALID_QUERY.
 	Versions string `query:"versions"`
+}
+
+// referenceTargetsQuery is GET /api/v1/reference-targets's query: the references to resolve.
+type referenceTargetsQuery struct {
+	// Ref is one reference to resolve, given once per reference, at most
+	// referenceTargetsMax of them; naming none is 400 INVALID_REFERENCE and naming more
+	// than the cap is 400 CAP_EXCEEDED. An item id or a block id written short in it is
+	// resolved in the scope the reference names, and a prefix two or more items carry
+	// answers that member gone with ambiguous: true, and every other member is answered.
+	Ref []string `query:"ref"`
 }
 
 // referencesQuery is GET /api/v1/references's query: the edges of one node.
@@ -592,6 +603,19 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/settings/new-issue/_test": {
 		Status: http.StatusOK, Response: newIssueSettings{}, Request: newIssueSettingsInput{},
 	},
+	"GET /api/v1/projects/{key}/legion/daemon": {
+		Status: http.StatusOK, Response: legion.Settings{},
+		// A project that names no daemon answers 200 and the JSON literal `null`
+		// (settings_legion.go).
+		Nullable: true,
+	},
+	"PUT /api/v1/projects/{key}/legion/daemon": {
+		Status: http.StatusOK, Response: legion.Settings{}, Request: putLegionSettingInput{},
+	},
+	"DELETE /api/v1/projects/{key}/legion/daemon": {Status: http.StatusNoContent},
+	"GET /api/v1/projects/{key}/legion/board": {
+		Status: http.StatusOK, Response: legionBoardResponse{},
+	},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},
 	},
@@ -677,8 +701,13 @@ var routeShapes = map[string]routeShape{
 	// The references read answers graphReferencesRead, whose node carries its text's tree and
 	// whose pin carries the pinned text's, so the row names that read for the same reason the
 	// architecture row above does.
-	"GET /api/v1/references":                               {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
-	"GET /api/v1/references/questions":                     {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
+	"GET /api/v1/references":           {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
+	"GET /api/v1/references/questions": {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
+	"GET /api/v1/reference-targets": {
+		Status: http.StatusOK, Response: model.ReferenceTargets{}, Params: referenceTargetsQuery{},
+		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
+		Also: []routeAnswer{{Status: http.StatusNotModified}},
+	},
 	"GET /api/v1/block-links":                              {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
 	"GET /api/v1/issues/{key}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}": {Status: http.StatusNoContent},
@@ -1035,6 +1064,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"DELETE /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {Status: http.StatusOK, Response: liveWritePauseState{}},
 	"POST /api/v1/writes/_test/slow":                                {Status: http.StatusOK, Response: testHookOK{}, Request: slowWriteInput{}},
+	"GET /api/v1/messages/_test/queued":                             {Status: http.StatusOK, Response: queuedMessages{}},
 }
 
 // shapelessRoutes names every mounted row routeShapes does not name. A row with no shape is a

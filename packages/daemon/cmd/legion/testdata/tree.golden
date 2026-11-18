@@ -1,0 +1,52 @@
+legion
+legion claims
+legion claims close	--claim string	--config string	--json bool	--operator-token-file string	--port int	--wait duration
+legion claims compact	--claim string	--config string	--json bool	--operator-token-file string	--port int	--wait duration
+legion claims deliver	--claim string	--config string	--json bool	--operator-token-file string	--port int	--task string	--wait duration
+legion claims forget-session	--claim string	--config string	--json bool	--operator-token-file string	--port int	--session string	--wait duration
+legion claims list	--config string	--json bool	--operator-token-file string	--port int	--wait duration
+legion claims resume	--claim string	--config string	--json bool	--operator-token-file string	--port int	--wait duration
+legion claims retry	--claim string	--config string	--failed bool	--fresh-session bool	--json bool	--operator-token-file string	--port int	--wait duration
+legion claims spawn	--config string	--issue string	--json bool	--operator-token-file string	--port int	--prompt-file string	--role string	--task string	--tree string	--wait duration
+legion claims stop	--claim string	--config string	--json bool	--operator-token-file string	--port int	--wait duration
+legion claims suspend	--claim string	--config string	--json bool	--operator-token-file string	--port int	--wait duration
+legion claude-bridge	hidden
+legion completion
+legion completion bash	--no-descriptions bool
+legion completion fish	--no-descriptions bool
+legion completion powershell	--no-descriptions bool
+legion completion zsh	--no-descriptions bool
+legion config
+legion config check	--config string
+legion config reference	--json bool
+legion controller
+legion controller start	--config string	--daemon-url string
+legion gh	hidden	words unread
+legion git	hidden	words unread
+legion git-credential	hidden	words unread
+legion issue
+legion issue status	--config string	--operator-token-file string	--port int
+legion launcher	hidden	--connect string	--metadata-identity-provider string	--metadata-workload-pool string	--microvm bool	--pod-uid string	--private-dir string	--role stringArray	--roles-dir string	--sandbox string	--session-database string	--session-impersonate-service-account string	--session-instance string	--session-user string	--stop-grace duration	--test-postgres bool	--token-file string
+legion launcher role-init	hidden	--fixed-root string	--generation uint64	--home string	--home-mounts string	--role string	--roles-dir string	--status-fd int
+legion leak-check	hidden
+legion leak-check pre-push	hidden
+legion leak-check text	hidden
+legion legions	--json bool
+legion model-token	hidden	--client-id string	--endpoint string	--region string	--service-account-token-file string	--username string
+legion probe-boot	--config string
+legion probe-image	hidden	--claude-code-pin string	--claude-root string	--daemon-api-version string	--envoy-plugin-root string	--omp string	--plugin-root string	--pod-safety bool	--probe-budget duration	--provider-env-dir string	--role-config-files role=files	--role-namespaces string	--role-references string	--skip-agent-models bool	--skip-browser bool	--test-postgres string
+legion restart
+legion sessions
+legion sessions import	--claims string	--dsn-file string	--tree string	--tree-volume string
+legion skills-check	hidden	--dir string	--omp string
+legion start	--config string
+legion state	--config string	--json bool	--operator-token-file string	--port int
+legion status
+legion stop	--config string
+legion version
+legion worker-shim	hidden	--agent-secrets-bin string	--agent-secrets-key-dir string	--boot-token-file string	--connect string	--pod-safety bool	--pod-token-file string	--provider-env-dir string	--stop-grace duration	--warm-codegraph bool
+legion workspace-init	hidden
+legion workspace-init cache	hidden	--listen string	--refresh duration	--repo string	--root string
+legion workspace-init fetch	hidden	--cache-url string	--feed string	--repo string
+legion workspace-init provision	hidden	--credential-helper string	--default-branch string	--feed string	--issue string	--repo string	--root string
+legion workspace-init skills	hidden	--dir string	--repo string

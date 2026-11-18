@@ -518,7 +518,7 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 // admission slot all stand as they were.
 //
 // A person's move in the Dispatch dashboard and the daemon's own write — which the controller's
-// set_status and an operator's `legion status` both reach the record as — are the same event
+// set_status and an operator's `legion issue status` both reach the record as — are the same event
 // here, so each is a row. Each row then fails the worker again, which holds the issue a second
 // time, and writes todo again: the second release runs as the first did, because the first
 // recorded the event it took with the recorded status kept rather than leaving the record to
@@ -628,7 +628,7 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 		// release below decides the round rather than the merge state.
 		apply("merge-state", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
 			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
-		apply("reviewer-completed", intake.HandoffComplete{Generation: 1, Issue: root, Role: claim.RoleReviewer, Claim: "review-claim",
+		apply("reviewer-completed", intake.HandoffComplete{Generation: 1, Issue: root, Role: claim.RoleReviewer, Claim: reviewClaim,
 			Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 		apply("reviewer-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleReviewer})
 		apply("approved", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "approved", CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne)})

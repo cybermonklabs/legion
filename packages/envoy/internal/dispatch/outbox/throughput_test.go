@@ -459,12 +459,12 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 	if err := reader.Flush(); err != nil {
 		t.Fatalf("flush the holder's subscription: %v", err)
 	}
-	registry, err := envoystore.Open(reader)
+	registry, err := envoystore.Open(t.Context(), reader)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(reader)
+	sessions, err := session.OpenSessionRegistry(t.Context(), reader)
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}

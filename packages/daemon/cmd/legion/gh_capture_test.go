@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -240,7 +241,9 @@ func (c *bufferedConn) Read(b []byte) (int, error) { return c.reader.Read(b) }
 
 // realGHForCapture is the real gh a test that drives one runs: LEGION_GH_PATH when the test runs
 // in a Legion pane or pod, whose `gh` on PATH is the wrapper, else the gh on PATH; a machine with
-// neither skips, as the other gh-backed tests do.
+// neither skips, as the other gh-backed tests do. A gh on PATH that is a script skips too: it is
+// a wrapper of the machine's own (a gh shim that hands each call to the next gh on PATH, which is
+// the `legion gh` this test puts there), as boot refuses one for the real gh (daemon.RefuseScriptGH).
 //
 // It also puts this test binary's own `legion gh` first on the test's PATH
 // (ghWrapperFirstOnPath), because a test that runs `gh` by name must reach the wrapper it is
@@ -256,6 +259,9 @@ func realGHForCapture(t *testing.T) string {
 		found, err := exec.LookPath("gh")
 		if err != nil {
 			t.Skip("no real gh on this machine: the capture test drives one")
+		}
+		if err := daemon.RefuseScriptGH(found); err != nil {
+			t.Skip(err)
 		}
 		path = found
 	}
@@ -500,9 +506,39 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"api", "graphql", "-f", "query={viewer{login}}"}, "acme", ""},
 		{nil, []string{"api", "repos/other/thing"}, "", `the role's GitHub App is not installed on "other"`},
 		{nil, []string{"pr", "view", "1", "-R", "sjawhar/legion", "--bogus"}, "", `"--bogus" is no option`},
+		// gh 2.104.0's --attach uploads a file the leak guard does not read, so it is refused by
+		// name; a gh with no --attach refuses it as an option its help does not list.
+		{nil, []string{"issue", "comment", "1", "-R", "sjawhar/legion", "--body", "capture", "--attach", "notes.svg"}, "", `"--attach"`},
+		// gh 2.104.0 sends github.com's API requests, with the directory's token, to the host
+		// api_host names; gh writes that key, and any key it does not know, with `config set`.
+		{nil, []string{"config", "set", "api_host", "api.example.invalid", "--host", "github.com"}, "", "`gh config set` writes the gh directory's configuration"},
 	} {
 		check(home, tc.env, tc.args, tc.owner, tc.refuse)
 	}
+
+	// A directory whose files send gh's requests elsewhere, as a pane can write its own between
+	// two of the daemon's refreshes, is refused before anything is sent: api_host in hosts.yml's
+	// github.com block, http_unix_socket at the top of config.yml or in a host's block of it.
+	acmeDir := ghconfig.Dir(root, "acme")
+	for _, edit := range []struct{ file, text, key string }{
+		{ghconfig.HostsFile, ghconfig.Hosts(tokens["acme"]) + "    api_host: api.example.invalid\n", "api_host"},
+		{ghconfig.ConfigFile, ghconfig.Config + "http_unix_socket: /tmp/example.sock\n", "http_unix_socket"},
+		{ghconfig.ConfigFile, ghconfig.Config + "hosts:\n    github.com:\n        http_unix_socket: /tmp/example.sock\n", "http_unix_socket"},
+	} {
+		path := filepath.Join(acmeDir, edit.file)
+		kept, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(edit.text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		check(home, nil, []string{"api", "repos/acme/widgets"}, "", path+" sets "+edit.key)
+		if err := os.WriteFile(path, kept, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check(home, nil, []string{"api", "repos/acme/widgets"}, "acme", "")
 
 	// A command naming no repository, or naming another while gh takes the command's own from the
 	// working directory, acts on the repository gh reads from the working directory's git remotes,

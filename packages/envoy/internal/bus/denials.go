@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,7 +74,7 @@ func (c *Client) recordPublishDenial(nc *nats.Conn, violation error) bool {
 	at := time.Now()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if nc != c.Conn {
+	if nc != c.Conn && nc != c.installing {
 		return true
 	}
 	if c.deniedPublishes == nil {
@@ -96,6 +97,7 @@ func (c *Client) recordPublishDenial(nc *nats.Conn, violation error) bool {
 		queue = slices.Delete(queue, 0, len(queue)-publishDenialDepth)
 	}
 	c.deniedPublishes[subject] = queue
+	c.signalRefusal()
 	return true
 }
 
@@ -118,6 +120,11 @@ func (c *Client) recordPublishDenial(nc *nats.Conn, violation error) bool {
 func (c *Client) deniedPublish(subject string, sentAt time.Time) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.deniedPublishLocked(subject, sentAt)
+}
+
+// deniedPublishLocked is deniedPublish with c.mu held.
+func (c *Client) deniedPublishLocked(subject string, sentAt time.Time) error {
 	queue := c.deniedPublishes[subject]
 	for index, denial := range queue {
 		if denial.at.Before(sentAt) {
@@ -131,6 +138,73 @@ func (c *Client) deniedPublish(subject string, sentAt time.Time) error {
 		return deniedPublishError(subject, denial.violation)
 	}
 	return nil
+}
+
+// deniedPublishOf is the server's refusal of the caller's own publish to the first of subjects that
+// has one recorded at or after sentAt (deniedPublish), and nil when none has. A subject that ends
+// in ".>" stands for every subject under it (subjectMatches), for a send whose subject names a
+// part nats.go picks as it sends, such as the name of a watch's consumer.
+func (c *Client) deniedPublishOf(subjects []string, sentAt time.Time) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, pattern := range subjects {
+		if !strings.HasSuffix(pattern, ".>") {
+			if denial := c.deniedPublishLocked(pattern, sentAt); denial != nil {
+				return denial
+			}
+			continue
+		}
+		for subject := range c.deniedPublishes {
+			if !subjectMatches(pattern, subject) {
+				continue
+			}
+			if denial := c.deniedPublishLocked(subject, sentAt); denial != nil {
+				return denial
+			}
+		}
+	}
+	return nil
+}
+
+// subjectMatches reports whether subject is pattern, or lies under it when pattern ends in ".>"
+// (as NATS reads a trailing full wildcard).
+func subjectMatches(pattern, subject string) bool {
+	if prefix, ok := strings.CutSuffix(pattern, ">"); ok && strings.HasSuffix(prefix, ".") {
+		return len(subject) > len(prefix) && strings.HasPrefix(subject, prefix)
+	}
+	return pattern == subject
+}
+
+// refusalSignal is a channel that is closed when the next refusal of a publish on c's connection is
+// recorded (recordPublishDenial, signalRefusal). A send that waits on an answer takes it before its
+// message goes out and selects on it beside its own answer (refusedBy, window.acknowledged,
+// window.request), so a refusal answers the send the moment nats.go hands the server's report
+// over, where a send that read the record only once its own wait ran out spent that whole wait on
+// a request the server had refused at once. The signal says only that some refusal arrived: the
+// woken send takes the signal again, then reads the record (deniedPublishOf), and goes on waiting
+// when the refusal was another send's; a refusal recorded between the two is in the record it
+// reads, since the record is written before the signal is replaced. Taking the signal is one
+// atomic load and allocates nothing, so a send the server answers pays nothing for it.
+func (c *Client) refusalSignal() <-chan struct{} {
+	for {
+		if signal := c.refusal.Load(); signal != nil {
+			return *signal
+		}
+		fresh := make(chan struct{})
+		if c.refusal.CompareAndSwap(nil, &fresh) {
+			return fresh
+		}
+	}
+}
+
+// signalRefusal wakes every send waiting on refusalSignal and puts a new signal in its place. Its
+// caller holds c.mu and has just written the record, so two refusals recorded at once replace
+// the signal one after the other. A refusal allocates one channel; a request allocates none.
+func (c *Client) signalRefusal() {
+	fresh := make(chan struct{})
+	if old := c.refusal.Swap(&fresh); old != nil {
+		close(*old)
+	}
 }
 
 // clearPublishDenials drops every recorded violation, because they were the previous session's:
@@ -205,11 +279,14 @@ func clientOwning(conn *nats.Conn) *Client {
 	return nil
 }
 
-// refusedSend is send's answer, with an answer the server never gave (unanswered) replaced by its
-// refusal of one of subjects, the subjects send publishes to, when the client owning conn
-// recorded one of them at or after the moment this send began. The server reports such a refusal
-// on the connection and never in the request's own answer (publishRefusal), so a request it
-// refused reads exactly like one it is still working on; the record is what tells the two apart.
+// refusedBy is send's answer, or the server's refusal of one of subjects, the subjects send
+// publishes to, when owner, the client that owns the connection send goes out on, records one of
+// them at or after the moment this send began, whichever comes first. The server reports such a
+// refusal on the connection and never in the request's own answer (publishRefusal), so a request
+// it refused reads exactly like one it is still working on until its wait runs out; the record is
+// what tells the two apart, and the signal the record gives (refusalSignal) is what answers the
+// send as soon as the refusal arrives, where reading the record only after send returned spent the
+// request's whole wait, RequestTimeout for a start, on a request refused at once.
 //
 // A request the connection's grant does not cover is refused however often it is sent, so naming
 // the refusal is also what keeps it from being sent again: sentAgain stops at the first answer
@@ -217,23 +294,74 @@ func clientOwning(conn *nats.Conn) *Client {
 // the subject the server refused. subjects are listed in the order a send publishes them, so the
 // refusal a step ends on is the one of the request it stopped at.
 //
-// The time is read before send, because deniedPublish takes only a violation recorded at or after
-// the moment the caller's own message went out and send's message goes out after this. A
-// connection no client owns records nothing, so its send is answered as it was before.
-func refusedSend[T any](conn *nats.Conn, subjects []string, send func() (T, error)) (T, error) {
-	owner := clientOwning(conn)
+// send runs on a goroutine of its own, so a refusal can answer before it returns; that goroutine
+// ends at send's own wait, and its answer is then dropped, as Bounded drops one. That costs a
+// goroutine, a channel and the closure, under a microsecond, which is why it serves the requests
+// of a start, a watch's create and the other requests made once in a while (readsRefusals, the
+// KeyValue handle's Status, watches and stream reads); the reads and writes of a key made on every
+// request the bus serves take refusedAfter, which costs nothing when the server answers. The
+// signal is taken and the time read before send, because deniedPublish takes only a violation
+// recorded at or after the moment the caller's own message went out and send's message goes out
+// after this.
+//
+// The caller names owner, found once for the many requests it makes (readsRefusals and the
+// KeyValue handle look it up with clientOwning); the client's own JetStream context and stream
+// ensure name the client itself (Client.readsOwnRefusals), since the constructor ensures the
+// stream before the client is registered (install). owner nil, a connection no client owns,
+// records nothing, so its send is answered as it was before.
+func refusedBy[T any](owner *Client, subjects []string, send func() (T, error)) (T, error) {
+	if owner == nil {
+		return send()
+	}
+	signal := owner.refusalSignal()
+	sentAt := time.Now()
+	type answer struct {
+		value T
+		err   error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		value, err := send()
+		answered <- answer{value: value, err: err}
+	}()
+	for {
+		select {
+		case got := <-answered:
+			if unanswered(got.err) {
+				// The refusal can be recorded after the send's wait ran out, nats.go handing the
+				// server's report over on another goroutine, so the record is read once more.
+				if denial := owner.deniedPublishOf(subjects, sentAt); denial != nil {
+					return got.value, denial
+				}
+			}
+			return got.value, got.err
+		case <-signal:
+			signal = owner.refusalSignal()
+			if denial := owner.deniedPublishOf(subjects, sentAt); denial != nil {
+				var none T
+				return none, denial
+			}
+		}
+	}
+}
+
+// refusedAfter is send, made on the caller's goroutine, with the server's refusal of one of the
+// subjects in place of its answer when the server left it unanswered and owner's record holds that
+// refusal (deniedPublishOf): the reads and writes of a key the bus makes on every request it
+// serves (KeyValue's Get, Put and the rest, GetFromLeader), which this keeps exactly as fast as a
+// send made without it. A refused one waits out its own wait, as it always has, and then names the
+// refusal where it named only the silence. subjects is called only then, so a send the server
+// answers builds no subject either. owner nil sends as send does.
+func refusedAfter[T any](owner *Client, subjects func() []string, send func() (T, error)) (T, error) {
 	if owner == nil {
 		return send()
 	}
 	sentAt := time.Now()
-	answer, err := send()
-	if !unanswered(err) {
-		return answer, err
-	}
-	for _, subject := range subjects {
-		if denial := owner.deniedPublish(subject, sentAt); denial != nil {
-			return answer, denial
+	value, err := send()
+	if unanswered(err) {
+		if denial := owner.deniedPublishOf(subjects(), sentAt); denial != nil {
+			return value, denial
 		}
 	}
-	return answer, err
+	return value, err
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
@@ -525,6 +526,23 @@ func migrateThrough(t *testing.T, store *Store, version int) {
 			t.Fatalf("apply %s: %v", migration.Name, err)
 		}
 	}
+}
+
+// phaseRowOf is the phases row of role on issue, read through st as the record reads it, and the
+// zero row where it holds none (record.PhaseRowOf). The migration tests read a row through the
+// store they migrated and through one reopened as a daemon restart reopens it.
+func phaseRowOf(t *testing.T, st *Store, issue string, role claim.Role) record.PhaseRow {
+	t.Helper()
+	ctx := context.Background()
+	var rows []record.PhaseRow
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		rows, err = record.NewStore().Phases(ctx, tx, issue)
+		return err
+	}); err != nil {
+		t.Fatalf("read the phases rows of %s: %v", issue, err)
+	}
+	return record.PhaseRowOf(rows, role)
 }
 
 // A daemon upgraded in place has workers holding tasks delivered before the delivery carried its

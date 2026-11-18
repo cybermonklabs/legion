@@ -213,8 +213,8 @@ type nearCopyScore struct {
 	took           time.Duration
 }
 
-// nearCopyGateBound is the bound the replay runs the gate under. Production's is 500 ms
-// (duplicateGateTimeout), which this replay must not be held to: it measures what the gate
+// nearCopyGateBound is the bound the replay runs the gate under. Production's is
+// duplicateGateTimeout, which this replay must not be held to: it measures what the gate
 // costs, and a read cut off at the bound measures nothing. The gate prices the words a cold
 // project's statistics do not hold rather than probing for them (priceUnknownTerms), so no
 // early create pays for probes, but the replay's own walk writes the project as it reads it,

@@ -239,6 +239,47 @@ func TestABrokerItCannotReachNamesNoCredentialTheURLCarries(t *testing.T) {
 	}
 }
 
+// TestABrokerRefusalPrintsNoCredentialItsWordsRepeat: the broker, or whoever answers at its
+// address, refuses the lookup in its error envelope with words that repeat the credential
+// --broker carries. Beside that address devrelay's refusal names the status and none of what the
+// answerer wrote, its words or its code; beside a clean address it prints the words and the code.
+func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
+	token := tokenFile(t, "caller-token")
+	var words string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := json.Marshal(map[string]string{"code": "CALLER_NOT_LISTED", "error": words})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	credentialed := strings.Replace(srv.URL, "://", "://tokuser9f3:hunter2pw@", 1)
+	words = "the caller at " + credentialed + " is not listed"
+	approve := func(broker string) string {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"machine-approve", "--code", "KQ7M-X4PZ", "--broker", broker, "--account-token-file", token, "--login", testApprover}, &stdout, &stderr); code != 1 {
+			t.Fatalf("--broker %s: exit %d, want 1\nstdout: %s\nstderr: %s", broker, code, stdout.String(), stderr.String())
+		}
+		return stdout.String() + stderr.String()
+	}
+	out := approve(credentialed)
+	for _, withheld := range []string{"tokuser9f3", "hunter2pw", "is not listed", "CALLER_NOT_LISTED"} {
+		if strings.Contains(out, withheld) {
+			t.Errorf("the refusal beside a credentialed address names %q, which the answerer wrote: %q", withheld, out)
+		}
+	}
+	if !strings.Contains(out, "HTTP 403") {
+		t.Errorf("the refusal beside a credentialed address is %q, want the status", out)
+	}
+	out = approve(srv.URL)
+	for _, want := range []string{words, "CALLER_NOT_LISTED", "HTTP 403"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the refusal beside a clean address is %q, want it to carry %q", out, want)
+		}
+	}
+}
+
 // TestUsageNamesNoCredentialTheEnvironmentURLCarries: a bad flag prints the usage text, which
 // prints each flag's default; AGENT_SECRETS_URL is read after parsing, so its credential is not
 // one of them.

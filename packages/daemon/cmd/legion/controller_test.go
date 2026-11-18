@@ -91,7 +91,7 @@ func (s *statusWrites) SetStatus(_ context.Context, key, status string) (dispatc
 	return dispatch.Issue{}, nil
 }
 
-// controllerDaemon is the daemon's HTTP surface as `legion controller start` and `legion status`
+// controllerDaemon is the daemon's HTTP surface as `legion controller start` and `legion issue status`
 // reach it: the real api.NewServer over an in-memory controller record, grants, and Dispatch, on
 // a loopback port, with every request that reached it recorded.
 type controllerDaemon struct {
@@ -211,7 +211,7 @@ func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise
 }
 
 // newControllerDaemonWithOptions is the daemon's HTTP surface as `legion controller start` and
-// `legion status` reach it: the real api.NewServer over an in-memory controller record, grants,
+// `legion issue status` reach it: the real api.NewServer over an in-memory controller record, grants,
 // and Dispatch, on a loopback port, with every request that reached it recorded.
 func newControllerDaemonWithOptions(t *testing.T, opts controllerDaemonOptions) *controllerDaemon {
 	t.Helper()
@@ -822,6 +822,58 @@ func TestControllerStartLaunchesOhMyPiWithTheSharedControllerEnvironment(t *test
 	wantLog := fmt.Sprintf("[legion] starting the controller for demo against %s; state in %s\n", d.url, c.defaultDir)
 	if errb != wantProbe+wantNoApp+wantLog {
 		t.Errorf("stderr = %q, want %q", errb, wantProbe+wantNoApp+wantLog)
+	}
+}
+
+// Under `omp_invocation: mise x <tool> -- omp`, the Oh My Pi mise starts, the load probe's and the
+// controller's, has the controller's launcher directory first on its PATH, ahead of whatever mise
+// put first. The stand-in mise answers `where <tool>` with an install whose bin/omp is the
+// recording Oh My Pi, and runs `x <tool> -- <program> <args…>` as mise runs it under an operator's
+// `_.path` entry: a dotfiles shims directory first on PATH, then the program, exec'd.
+func TestControllerStartUnderMiseKeepsTheLauncherDirectoryFirstOnOhMyPisPath(t *testing.T) {
+	d := newControllerDaemon(t)
+	c := newControllerStart(t, d, controllerOptions{})
+	const tool = "github:sjawhar/oh-my-pi@18.1.21"
+	scratch := t.TempDir()
+	install, shims, mise := filepath.Join(scratch, "install"), filepath.Join(scratch, ".dotfiles", "shims"), filepath.Join(scratch, "mise")
+	if err := os.MkdirAll(filepath.Join(install, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(c.record, "omp"), filepath.Join(install, "bin", "omp")); err != nil {
+		t.Fatal(err)
+	}
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = where ] && [ "$2" = %[1]s ]; then
+  echo %[2]s
+  exit 0
+fi
+if [ "$1" = x ] && [ "$2" = %[1]s ] && [ "$3" = -- ]; then
+  shift 3
+  PATH=%[3]s:$PATH
+  exec "$@"
+fi
+echo "stand-in mise: unexpected argv: $*" >&2
+exit 64
+`, shellprefix.Word(tool), shellprefix.Word(install), shellprefix.Word(shims))
+	if err := os.WriteFile(mise, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("LEGION_OMP_PATH", "")
+	t.Setenv("LEGION_MISE_PATH", mise)
+	config, err := os.ReadFile(c.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.write("controller.yaml", string(config)+"omp_invocation: mise x "+tool+" -- omp\n", 0o600)
+	if code, _, errb := c.run(); code != 0 {
+		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+	}
+	bin := filepath.Join(c.defaultDir, "bin")
+	want := bin + ":" + shims + ":" + bin + ":/usr/bin:/bin"
+	for name, env := range map[string]map[string]string{"the load probe's": c.probeEnv(), "the controller's": c.env()} {
+		if got := env["PATH"]; got != want {
+			t.Errorf("%s Oh My Pi ran with PATH %s, want %s: the controller's launcher directory first, then the PATH mise made", name, got, want)
+		}
 	}
 }
 
@@ -1673,9 +1725,9 @@ func TestControllerStartUsage(t *testing.T) {
 		argv []string
 		want string
 	}{
-		{[]string{"legion", "controller"}, subcommandUsage("controller", controllerCommands)},
-		{[]string{"legion", "controller", "stop"}, `legion controller: unknown subcommand "stop"`},
-		{[]string{"legion", "controller", "start"}, "usage: legion controller start --config <controller.yaml> [--daemon-url <url>]"},
+		{[]string{"legion", "controller"}, "legion controller [command]"},
+		{[]string{"legion", "controller", "stop"}, `legion controller: unknown command "stop" for "legion controller"`},
+		{[]string{"legion", "controller", "start"}, "legion controller start: --config is required"},
 	} {
 		var out, errb bytes.Buffer
 		if code := run(context.Background(), tc.argv, &out, &errb); code != 2 || !strings.Contains(errb.String(), tc.want) {

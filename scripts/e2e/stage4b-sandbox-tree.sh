@@ -42,8 +42,8 @@
 # in the Dispatch dashboard — is not one this driver can make, since every write it sends
 # production Dispatch names a session as its author (lib/workflow.sh), the daemon sets a live
 # root's status back when the session writing it holds no claim in the tree, and the operator's
-# `legion status` writes only todo, backlog or icebox, none of them the done a hand-over needs.
-# A finished root's hand-over of a child keeps its cover in the daemon's own tests
+# `legion issue status` writes only todo, backlog or icebox, none of them the done a hand-over
+# needs. A finished root's hand-over of a child keeps its cover in the daemon's own tests
 # (packages/daemon/internal/admit/finished_root_test.go).
 # Between the operator's controller and tree 4, the daemon runs under `controller: daemon` and back
 # (daemon-controller-liveness). Each checkpoint prints `== <name>`, what it observed with the source
@@ -203,7 +203,7 @@ repo=sjawhar/legion-smoke
 dispatch_base=${LEGION_E2E_DISPATCH_URL:-}
 # The proof human writes with the agents' bearer, so it names a session of its own: one that holds
 # no claim, whose status write on a live root the daemon therefore sets back, as it does any outside
-# session's. The run takes a tree out with `legion status` (take_out), the daemon's own write.
+# session's. The run takes a tree out with `legion issue status` (take_out), the daemon's own write.
 dispatch_actor=legion-e2e4b-proof-human-$$
 envoy_url=${LEGION_E2E_ENVOY_URL:-}
 nats_url=${LEGION_E2E_NATS_URL:-}
@@ -837,8 +837,8 @@ claims_on_handed_addresses() {
 # bearer, and waits for Dispatch to show it and for the tree's pods to be gone.
 take_out() {
   local issue=$1 out
-  out=$("$work/legion" status "$issue" backlog --operator-token-file "$work/operator-token" --config "$work/legion.yaml" 2>&1) ||
-    fail "legion status $issue backlog from the operator shell: $out"
+  out=$("$work/legion" issue status "$issue" backlog --operator-token-file "$work/operator-token" --config "$work/legion.yaml" 2>&1) ||
+    fail "legion issue status $issue backlog from the operator shell: $out"
   until_true 120 "Dispatch to show $issue in backlog" dispatch_status_is "$issue" backlog
   until_true 600 "$issue's pods to be gone" sh -c \
     "out=\$(timeout 120 kubectl --context '$operator' -n '$namespace' get pods -l 'legion.dev/project=$run_label,legion.dev/tree=$issue' -o name) && [ -z \"\$out\" ]"
@@ -3285,11 +3285,11 @@ pod_account=$pod_service_account
 [ -z "$pod_file" ] || pod_account=$(block_account)
 # The branch-built daemon links no release plugin pair (only a release workflow build does), so a
 # daemon started from this checkout boots in the degraded mode (a Warn and `plugins: none` from
-# `--check-config`) unless the run's legion.yaml names runtime.kubernetes.plugins itself. Stage 4b
-# relaunches no stale role onto that pair — every claim in this run registers at the branch
+# `legion config check`) unless the run's legion.yaml names runtime.kubernetes.plugins itself. Stage
+# 4b relaunches no stale role onto that pair — every claim in this run registers at the branch
 # daemon's own contract, so the boot pass and the registration path post nothing (restart-mid-tree
 # below asserts exactly that negative) — so naming the pair here never exercises the kept-pod
-# install; it only keeps `legion start --check-config` and the boot log off the degraded-mode
+# install; it only keeps `legion config check` and the boot log off the degraded-mode
 # lines for a run that otherwise has nothing to name, and it must name a source the pod can
 # actually read: the image carries the two plugins already unpacked under /opt/legion, not as
 # tarballs, and their manifests name the monorepo's workspace packages, which `bun add` refuses to
@@ -3599,7 +3599,7 @@ while that turn still runs does not count, and once in this run. Its issue is ti
 that title and park it in icebox, as the skill says for the default report issue.
 EOF
 write_legion_config
-out=$("$work/legion" start --check-config --config "$work/legion.yaml" 2>&1) || fail "legion start --check-config refused the proof's config: $out"
+out=$("$work/legion" config check --config "$work/legion.yaml" 2>&1) || fail "legion config check refused the proof's config: $out"
 note "$out"
 implement_app=$(role_app implementer)
 review_app=$(role_app reviewer)
@@ -3869,8 +3869,8 @@ grep -qF "launcher dials tcp://$bind:$port_worker_stream, not advertise_host at 
 note "negative control: a recorded pod whose launcher is told --connect tcp://$bind:$port_worker_stream departs from the pod shape: $control"
 # The daemon's loader on the proof's own file: advertise_host dropped, then a loopback bind beside it.
 sed '/^advertise_host: /d' "$work/legion.yaml" >"$work/legion-no-advertise-host.yaml"
-if out=$("$work/legion" start --check-config --config "$work/legion-no-advertise-host.yaml" 2>&1); then
-  fail "legion start --check-config passed bind $bind with no advertise_host: $out"
+if out=$("$work/legion" config check --config "$work/legion-no-advertise-host.yaml" 2>&1); then
+  fail "legion config check passed bind $bind with no advertise_host: $out"
 fi
 case $out in
   *"bind $bind is not an address a pod can reach"*) ;;
@@ -3878,8 +3878,8 @@ case $out in
 esac
 note "bind $bind, no advertise_host: $out"
 sed 's/^bind: .*/bind: 127.0.0.1/' "$work/legion.yaml" >"$work/legion-loopback-bind.yaml"
-if out=$("$work/legion" start --check-config --config "$work/legion-loopback-bind.yaml" 2>&1); then
-  fail "legion start --check-config passed bind 127.0.0.1 beside advertise_host: $out"
+if out=$("$work/legion" config check --config "$work/legion-loopback-bind.yaml" 2>&1); then
+  fail "legion config check passed bind 127.0.0.1 beside advertise_host: $out"
 fi
 case $out in
   *"bind 127.0.0.1 is loopback, where no pod reaches the worker stream"*) ;;
@@ -4434,8 +4434,8 @@ begin issue-cap-moves
 # The proof human's session holds no claim in tree 2, so its backlog on tree 2's live root is set
 # back: Dispatch shows the daemon's own status again, written as legion-daemon:$project, tree 2's
 # architect is told who wrote backlog, and tree 2 keeps its slot. Tree 2 then leaves the line
-# through `legion status`, the daemon's own write, and the slot its root held is freed with it.
-# Nothing waits for that slot here: the line's one waiting root took a slot at child-release, so
+# through `legion issue status`, the daemon's own write, and the slot its root held is freed with
+# it. Nothing waits for that slot here: the line's one waiting root took a slot at child-release, so
 # what this checkpoint reads of the cap is the slot kept and then given up.
 set_status "$tree2" backlog
 until_true 300 "the daemon to set $tree2 back from backlog" status_set_back "$tree2" backlog
@@ -4459,7 +4459,7 @@ take_out "$tree2"
 on_tree "$tree2" until_true 300 "the slot tree 2 held to be freed by its backlog" sh -c \
   "'$work/legion' state --json --config '$work/legion.yaml' | jq -e --arg b '$tree2' '(.admission.active | index(\$b)) == null and (.admission.trees | index(\$b)) == null'"
 state_file cap-moves-admission
-note "legion status moved tree 2 to backlog, its pods gone and the slot it held freed: active $(jq -c .admission.active "$evidence/cap-moves-admission.json"), trees $(jq -c .admission.trees "$evidence/cap-moves-admission.json")"
+note "legion issue status moved tree 2 to backlog, its pods gone and the slot it held freed: active $(jq -c .admission.active "$evidence/cap-moves-admission.json"), trees $(jq -c .admission.trees "$evidence/cap-moves-admission.json")"
 pass
 
 begin tree-moved
@@ -5679,7 +5679,7 @@ begin controller
 # `legion controller start` on the devbox registers with the Sandbox daemon, and tree 3 supplies the
 # held phase whose notice reaches it. Tree 3 then stays held through full-agent-negative, the one
 # live tree without a pull request while a controller runs, and controller-walk takes it out with
-# `legion status … backlog` from the operator shell, which Dispatch shows.
+# `legion issue status … backlog` from the operator shell, which Dispatch shows.
 if [ -n "$skip_controller" ]; then
 take_out "$tree3"
 skipped "STAGE4B_SKIP_CONTROLLER: a development run; tree 3 was only taken out"
@@ -5982,12 +5982,12 @@ note "tree 3's planner, relaunched as process $(jq -r .locator.incarnation <<<"$
 pass
 
 begin controller-walk
-# `legion status … backlog` from the operator shell takes tree 3 out, Dispatch shows it, and the
-# controller is woken about the slot it frees (LEGION-392).
+# `legion issue status … backlog` from the operator shell takes tree 3 out, Dispatch shows it, and
+# the controller is woken about the slot it frees (LEGION-392).
 before_status=$(dispatch_get "issues/$tree3" | jq -r .status)
-out=$("$work/legion" status "$tree3" backlog --operator-token-file "$work/operator-token" --config "$work/legion.yaml" 2>&1) || fail "legion status $tree3 backlog from the operator shell: $out"
+out=$("$work/legion" issue status "$tree3" backlog --operator-token-file "$work/operator-token" --config "$work/legion.yaml" 2>&1) || fail "legion issue status $tree3 backlog from the operator shell: $out"
 until_true 120 "Dispatch to show $tree3 in backlog" dispatch_status_is "$tree3" backlog
-note "legion status $tree3 backlog from the operator shell, with the operator bearer: Dispatch moved $tree3 from $before_status to $(dispatch_get "issues/$tree3" | jq -r .status)"
+note "legion issue status $tree3 backlog from the operator shell, with the operator bearer: Dispatch moved $tree3 from $before_status to $(dispatch_get "issues/$tree3" | jq -r .status)"
 until_true 600 "$tree3's pods to be gone" sh -c \
   "out=\$(timeout 120 kubectl --context '$operator' -n '$namespace' get pods -l 'legion.dev/project=$run_label,legion.dev/tree=$tree3' -o name) && [ -z \"\$out\" ]"
 # The controller's slot wakes reach it, and it takes nothing for them (LEGION-392).
