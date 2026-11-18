@@ -197,8 +197,10 @@ afterEach(resetPinState);
 // otherwise make the next test's first answer start every waiting write's backoff over.
 afterEach(resetReachability);
 // Every `<Timestamp>` shares one tick (`Timestamp.tsx`) that outlives the row that armed it, and a
-// tick a row did not start must not land in another row as an update outside act. It is called
-// off before the clock restore below, so a tick armed on a fake clock is cleared on that clock.
+// tick a row did not start must not land in another row as an update outside act. One armed on a
+// fake clock the row put back never fires and would leave the tick marked as armed, so no later
+// `<Timestamp>` would tick. `clearTimeout` clears a timer of either clock (measured on Bun 1.4.4),
+// so this reset needs no place relative to the clock restore below.
 afterEach(resetTimestampTick);
 
 // A fake clock a test installed is put back here as well as in that test's own `finally` or its
@@ -227,14 +229,14 @@ afterEach(restoreQuietConsoleError);
 //
 // So the `afterEach` below, the preload's last, runs the network report and then the act check,
 // and throws what failed, as one error when both did: as two `afterEach` hooks, the first to throw
-// would skip the other. Placed earlier, a check that throws would leave the next row the drafts,
-// outstanding answers, writes, pin states and reachability the resets above clear, the fake clock
-// and the quiet spy. That hook charges an act message to the row that printed it, that row's
-// earlier `afterEach` hooks included. A message printed between two rows, or in a row whose check
-// was skipped because one of the file's own `afterEach` hooks threw first, is charged to the next
-// row, hence "in or before this row"; the failure's test frames still point at the code that
-// printed it. A message printed after the last row's check, or in a last row whose check was
-// skipped, fails the file through the `afterAll` below, hence "in or after this file's last row".
+// would skip the other. Placed earlier, a check that throws would leave the next row what every
+// reset above clears, the fake clock and the quiet spy. That hook charges an act message to the
+// row that printed it, that row's earlier `afterEach` hooks included. A message printed between
+// two rows, or in a row whose check was skipped because one of the file's own `afterEach` hooks
+// threw first, is charged to the next row, hence "in or before this row"; the failure's test
+// frames still point at the code that printed it. A message printed after the last row's check,
+// or in a last row whose check was skipped, fails the file through the `afterAll` below, hence
+// "in or after this file's last row".
 //
 // That `afterAll` runs the same two checks the same way. It runs once per file under `--parallel`,
 // which `test:web` passes; a plain `bun test` over several files runs it once, at the end of the
