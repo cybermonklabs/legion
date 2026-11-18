@@ -1,0 +1,21 @@
+kind: Fixed
+body: |-
+    `legion gh` closes four more ways a call could send the installation's token, or text the leak
+    guard never read, somewhere it should not. gh now runs with an environment built from an
+    allowlist of the caller's (the paths, the terminal, the locale, how gh prints, git's own settings
+    and Legion's wrapper variables), never the caller's whole: a proxy and a trust store the caller
+    names together (`HTTPS_PROXY` with `SSL_CERT_FILE` or `SSL_CERT_DIR`) handed every request,
+    token included, to whatever that proxy was, and they no longer reach gh. `--editor` (`-e`) and
+    `gh gist edit` are refused: gh runs the editor after the guard has read the call and posts what
+    it wrote. `gh agent-task`, which sends the token to the Copilot API host GitHub names, and `gh
+    auth login`, `logout`, `refresh` and `switch`, which write the gh directory the daemon alone
+    writes, are refused. A gh directory whose `config.yml` holds a `hosts` block, names an alias that
+    shadows a refused command, or is no regular file is refused, and the daemon's refresh never
+    opens a `config.yml` or `hosts.yml` that is no regular file, so a named pipe there stalls no
+    pane's refresh. The guard's curl read, after gh fails on its connection, runs `/usr/bin/curl`
+    and never the first curl on the caller's PATH, and keeps of the caller's environment only what a
+    program carrying a token keeps, so no proxy, trust store or `SSLKEYLOGFILE` of the caller's
+    reaches it.
+time: 2026-11-18T16:09:27Z
+custom:
+    Issue: pr4424

@@ -396,11 +396,12 @@ type ghGuardRecord struct {
 	stderr, gh, checked, log string
 }
 
-// ghRigEnv is the pager and browser the rig's caller names, and what the stand-in gh records of
-// them when it is given them unchanged; ghRigReadEnv is what it records for a call that writes
-// nothing, which runs with no pager and no browser program from the environment.
+// ghRigEnv is what the stand-in gh records of the pager and browsers the rig's caller names for a
+// call guarded whole: none of them, since gh is run from an allowlist of its caller's environment
+// that holds no program (ghChildEnviron); ghRigReadEnv is what it records for a call that writes
+// nothing, which runs with cat as its pager.
 const (
-	ghRigEnv     = "env GH_PAGER=rig-pager GH_BROWSER=rig-gh-browser BROWSER=rig-browser\n"
+	ghRigEnv     = "env GH_PAGER=unset GH_BROWSER=unset BROWSER=unset\n"
 	ghRigReadEnv = "env GH_PAGER=cat GH_BROWSER=unset BROWSER=unset\n"
 )
 
@@ -657,8 +658,8 @@ func TestLegionGhGuardsAReadWholeUnderAnUnprovenCheck(t *testing.T) {
 // guardedWhole fails t unless got is a call the guard read whole under a check that clears it:
 // the check recorded its run of the call, the guard asked gh the visibility of the repository the
 // call names (none for a call naming none, such as a GraphQL call, which the guard scans for that
-// reason), and only then did gh run, with the pager and the browsers the caller set, and the log
-// line is no checked-only one.
+// reason), and only then did gh run, with none of the pager and the browsers the caller set, and
+// the log line is no checked-only one.
 func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 	t.Helper()
 	if got.code != 7 {
@@ -675,7 +676,7 @@ func guardedWhole(t *testing.T, got ghGuardRecord, args []string) {
 		t.Errorf("the guard read the visibility %d times, want %d: %q", reads, wantReads, got.gh)
 	}
 	if want := "gh " + strings.Join(args, " ") + "\n" + ghRigEnv; !strings.Contains(got.gh, want) {
-		t.Errorf("gh recorded %q, want the call %q after the guard, with the caller's pager and browsers", got.gh, want)
+		t.Errorf("gh recorded %q, want the call %q after the guard, with none of the caller's pager and browsers", got.gh, want)
 	}
 	if strings.Contains(got.log, `visibility="checked-only"`) {
 		t.Errorf("the call log reads a call the guard read whole as checked-only: %q", got.log)

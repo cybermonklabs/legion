@@ -140,9 +140,9 @@ each repository routed on its own and an owner the command names alone routed to
 directory, the targets read as gh reads them, with pflag's rules, from the real gh's own help of
 each command down to its leaf (`-R`/`--repo` before or after the command, a repository or owner
 argument, before `--` or as a clone's or fork's first after it, a `github.com` URL argument — for a
-`pr` command or `agent-task view` only a pull request's, since gh reads any other as a branch of
-the command's own repository — every one of a slot gh's usage takes several of, `agent-task view`'s
-`OWNER/REPO#N`, a `repos/<owner>/…` endpoint of `gh api` or a search endpoint's `q`, a search
+`pr` command only a pull request's, since gh reads any other as a branch of the command's own
+repository — every one of a slot gh's usage takes several of, a `repos/<owner>/…` endpoint of
+`gh api` or a search endpoint's `q`, a search
 query's plain `repo:`/`owner:`, the options naming a repository, an owner, a team or an issue by
 URL). The command's own repository counts too whenever gh resolves it, because no argument names
 it, and for `repo set-default`, which reads every remote's network, whatever names it: `GH_REPO`
@@ -168,6 +168,12 @@ Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing.
+It refuses the same way, before gh runs: `--editor`/`-e` on any command, because gh runs the
+editor after the leak guard has read the call and posts what it wrote; `gh gist edit`, which opens
+an editor unless a file is named; `gh agent-task`, which sends the token to the Copilot API host
+GitHub names; `gh auth login`, `logout`, `refresh` and `switch`, which write the gh directory the
+daemon alone writes; and a gh directory whose `config.yml` holds a `hosts` block, names an alias
+that shadows one of those commands, or is no regular file.
 Under a set `GH_TOKEN` or `GITHUB_TOKEN`, `legion gh` runs these calls and refuses every other one:
 the leak guard's own two visibility reads, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names, with that token;
 the shared check's own visibility read, which `legion gh` answers itself with the guard's read;
@@ -179,7 +185,12 @@ The real gh runs with `GH_PATH`
 naming the pane's wrapper, so the git gh runs itself (a clone, the fetch of a fork's parent, `pr
 checkout`) authenticates through the helper gh names after it, `legion gh auth git-credential`,
 which answers as `legion git-credential` does, with `credential.useHttpPath` on for `github.com`;
-and with gh's update check and prompts off. The saved help its tests read is the image's gh's,
+and with gh's update check and prompts off. Its environment is built from an allowlist of the
+caller's (`ghChildEnviron` and `ghChildKeeps`, `packages/daemon/cmd/legion/gh.go`): the paths,
+the terminal, the locale, gh's state directories, `GH_REPO`, how gh prints, git's own settings
+and identity, and Legion's wrapper variables, each kept for a read gh or go-gh makes of it. No
+proxy, trust store, editor, browser or pager variable of the caller's reaches gh, so a proxy and
+a CA the caller names together cannot read its token. The saved help its tests read is the image's gh's,
 with that gh's whole command reference, every argument and every repository-naming option of
 which the wrapper's tables know (`packages/daemon/cmd/legion/testdata`, with the script that
 regenerates it when that pin moves; `.github/scripts/check-gh-version.sh` fails the build until

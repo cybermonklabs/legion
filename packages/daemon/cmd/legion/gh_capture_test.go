@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -11,6 +13,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -22,6 +25,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -29,6 +33,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
+
+// testGhChildEnv names, to this package's test binary run as `legion` (TestMain), environment
+// pairs to hand gh on top of the allowlist runGh builds its environment from (ghChildEnviron), one
+// NAME=value a line: the capture proxy and the CA it signs with, which the allowlist keeps from
+// gh as it keeps any other proxy (testGhChildEnviron).
+const testGhChildEnv = "LEGION_TEST_GH_CHILD_ENV"
 
 // capturedRequest is one request a real gh or git sent to GitHub through the capture proxy: the
 // owner of the repository it targets, read from its path or its GraphQL variables ("" for a
@@ -335,6 +345,12 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		// shared check for; what this test reads is which token each call carries, so its check
 		// clears every call and the guard's own visibility read is answered by the proxy.
 		"PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, t.TempDir(), ghCheckPasses),
+		// The capture proxy, for the gh `legion gh` runs: its environment is an allowlist that
+		// holds no proxy (ghChildEnviron), so only the test binary hands it this one.
+		testGhChildEnv + "=" + strings.Join([]string{
+			"HTTPS_PROXY=" + proxy.url, "https_proxy=" + proxy.url, "NO_PROXY=", "no_proxy=",
+			"SSL_CERT_FILE=" + proxy.caFile, "GIT_SSL_CAINFO=" + proxy.caFile,
+		}, "\n"),
 	}
 	runIn := func(dir string, env []string, name string, args ...string) (int, string) {
 		cmd := exec.Command(name, args...)
@@ -504,6 +520,102 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		check(home, tc.env, tc.args, tc.owner, tc.refuse)
 	}
 
+	// A proxy and a trust store the call's environment names hand gh's token to whatever that proxy
+	// is: a second proxy, with a CA of its own given gh as SSL_CERT_FILE or in SSL_CERT_DIR, would
+	// read every request. gh is run from an allowlist of its caller's environment, which keeps
+	// neither, so that proxy is sent nothing and the call reaches GitHub, here the capture proxy,
+	// with acme's token alone.
+	induced := startCaptureProxy(t)
+	inducedDir := t.TempDir()
+	if ca, err := os.ReadFile(induced.caFile); err != nil || os.WriteFile(filepath.Join(inducedDir, "induced.pem"), ca, 0o600) != nil {
+		t.Fatalf("copy the induced proxy's CA: %v", err)
+	}
+	for _, env := range [][]string{
+		{"HTTPS_PROXY=" + induced.url, "https_proxy=" + induced.url, "SSL_CERT_FILE=" + induced.caFile},
+		{"HTTPS_PROXY=" + induced.url, "https_proxy=" + induced.url, "SSL_CERT_FILE=", "SSL_CERT_DIR=" + inducedDir},
+	} {
+		check(home, env, []string{"api", "repos/acme/widgets"}, "acme", "")
+		if sent := induced.take(); len(sent) != 0 {
+			t.Errorf("legion gh api repos/acme/widgets under %q sent the proxy it names %+v, want nothing", env, sent)
+		}
+	}
+
+	// An editor gh runs after the leak guard has read the call posts what it wrote, which the
+	// guard never read; the Copilot API host GitHub names is handed the token by `gh agent-task`.
+	// Each is refused before gh runs, whatever names the editor, and the editor never runs.
+	editor := filepath.Join(home, "editor.sh")
+	if err := os.WriteFile(editor, []byte("#!/bin/sh\ntouch '"+ran+"-editor'\nprintf 'from the editor\\n' > \"$1\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		env    []string
+		args   []string
+		refuse string
+	}{
+		{[]string{"GH_EDITOR=" + editor}, []string{"issue", "comment", "1", "-R", "acme/widgets", "-e"}, `"-e" runs an editor program`},
+		{[]string{"EDITOR=" + editor}, []string{"pr", "comment", "1", "-R", "acme/widgets", "--editor"}, `"--editor" runs an editor program`},
+		{[]string{"VISUAL=" + editor}, []string{"issue", "create", "-R", "acme/widgets", "--title", "t", "-e"}, `"-e" runs an editor program`},
+		{[]string{"GH_EDITOR=" + editor}, []string{"gist", "edit", "0123456789abcdef"}, "`gh gist edit` opens an editor program"},
+		{nil, []string{"agent-task", "list"}, "`gh agent-task` sends the token to the Copilot API host"},
+	} {
+		check(home, tc.env, tc.args, "", tc.refuse)
+	}
+	if _, err := os.Stat(ran + "-editor"); err == nil {
+		t.Errorf("an editor program ran under `legion gh`")
+	}
+
+	// A gh directory whose config.yml holds a hosts block, which carries settings gh reads per
+	// host (an editor, a pager, a browser, a socket gh sends its requests through), or an alias
+	// shadowing a refused command, is refused before gh runs; one whose config.yml is no regular
+	// file is refused without being opened, so a named pipe there stalls nothing. The pane's own
+	// directory is judged before gh reads any help, so each is refused promptly; each run has a
+	// bound of its own, which a gh stalled on the pipe would meet.
+	acmeConfig := filepath.Join(ghconfig.Dir(root, "acme"), ghconfig.ConfigFile)
+	keptConfig, err := os.ReadFile(acmeConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		plant  func() error
+		refuse string
+	}{
+		{"a hosts block", func() error {
+			return os.WriteFile(acmeConfig, append(slices.Clone(keptConfig), "hosts:\n    github.com:\n        editor: vi\n"...), 0o600)
+		}, "holds a hosts block"},
+		{"an alias shadowing a refused command", func() error {
+			return os.WriteFile(acmeConfig, []byte(ghconfig.Config+"aliases:\n    agent-task: pr view\n"), 0o600)
+		}, "names an alias that shadows a command `legion gh` refuses"},
+		{"a named pipe", func() error {
+			if err := os.Remove(acmeConfig); err != nil {
+				return err
+			}
+			return syscall.Mkfifo(acmeConfig, 0o600)
+		}, "is no regular file"},
+	} {
+		if err := tc.plant(); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		cmd := exec.CommandContext(ctx, os.Args[0], "gh", "api", "repos/acme/widgets")
+		cmd.Env, cmd.Dir = append(append([]string{}, base...), ghEnv...), home
+		out, err := cmd.CombinedOutput()
+		cancel()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.Contains(string(out), tc.refuse) {
+			t.Errorf("legion gh api repos/acme/widgets with %s in config.yml = %v, %q; want exit 2 containing %q", tc.name, err, out, tc.refuse)
+		}
+		if sent := proxy.take(); len(sent) != 0 {
+			t.Errorf("legion gh api repos/acme/widgets with %s in config.yml sent %+v, want nothing", tc.name, sent)
+		}
+		if err := os.RemoveAll(acmeConfig); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(acmeConfig, keptConfig, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	// A command naming no repository, or naming another while gh takes the command's own from the
 	// working directory, acts on the repository gh reads from the working directory's git remotes,
 	// as gh reads them whatever their scheme: in the issue's own workspace it carries acme's
@@ -569,9 +681,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{issueWorkspace, nil, []string{"pr", "view", "sjawhar/legion#2", "--json", "title"}, "acme", ""},
 		{issueWorkspace, nil, []string{"pr", "view", "https://github.com/sjawhar/legion/issues/5", "--json", "title"}, "", "more than one owner"},
 		{otherClone, nil, []string{"pr", "view", "https://github.com/acme/widgets/tree/x", "--json", "title"}, "", "more than one owner"},
-		// Round 6's: agent-task view reads a URL through gh's pr finder too (final, non-blocking);
-		// gh 2.65.0 has no agent-task and refuses it as no command its help lists.
-		{issueWorkspace, nil, []string{"agent-task", "view", "https://github.com/sjawhar/legion/issues/1"}, "", "more than one owner||no command gh's own help lists"},
+		// `gh agent-task` sends the token to the Copilot API host GitHub names, so it is refused
+		// whatever it names; a gh with no agent-task refuses it as no command its help lists.
+		{issueWorkspace, nil, []string{"agent-task", "view", "https://github.com/sjawhar/legion/issues/1"}, "", "`gh agent-task` sends the token||no command gh's own help lists"},
 	}
 	for _, scheme := range []string{"git+https://github.com/sjawhar/legion.git", "ftp://github.com/sjawhar/legion", "ftps://github.com/sjawhar/legion", "file://github.com/sjawhar/legion", "github.com://sjawhar/legion", "git@github.com/sjawhar:legion"} {
 		rows = append(rows, row{workspace([][]string{origin, {"remote", "add", "upstream", scheme}}), nil, []string{"pr", "list", "--json", "title"}, "", "more than one owner"})
@@ -633,5 +745,22 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		if r.auth != "" {
 			t.Errorf("git ls-remote of other/thing sent %s%s with %q, want no credential", r.host, r.path, r.auth)
 		}
+	}
+
+	// `gh auth login`, `logout`, `refresh` and `switch` write or swap the token the gh directory
+	// holds, which the daemon alone writes: each is refused before gh runs, sends nothing, and
+	// leaves acme's hosts.yml as the daemon wrote it. They run last, since a gh that ran them
+	// would change the directory every row above reads.
+	hostsBefore, err := os.ReadFile(filepath.Join(ghconfig.Dir(root, "acme"), ghconfig.HostsFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"auth", "login", "--with-token"}, {"auth", "logout"}, {"auth", "switch"}, {"auth", "refresh"},
+	} {
+		check(home, nil, args, "", "`gh "+strings.Join(args[:2], " ")+"` ")
+	}
+	if hostsAfter, err := os.ReadFile(filepath.Join(ghconfig.Dir(root, "acme"), ghconfig.HostsFile)); err != nil || !bytes.Equal(hostsAfter, hostsBefore) {
+		t.Errorf("acme's hosts.yml changed under the refused auth commands: %q, %v", hostsAfter, err)
 	}
 }

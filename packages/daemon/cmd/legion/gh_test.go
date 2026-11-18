@@ -407,8 +407,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// `--` (deep 1); `repo set-default` reads every remote's network whatever its argument
 		// names (deep 2, quality 1); project link and unlink read no repository of their own
 		// with --team (quality 2); a pr command reads OWNER/REPO#N and a URL other than a pull
-		// request's as a branch of its own repository, and only agent-task view reads OWNER/REPO#N
-		// (final F1).
+		// request's as a branch of its own repository (final F1).
 		{argv: []string{"repo", "fork", "--", "sjawhar/legion"}, remotes: remotes(acmeClone), owner: "sjawhar"},
 		{argv: []string{"repo", "fork", "--org", "acme", "--", "sjawhar/legion"}, err: "more than one owner"},
 		{argv: []string{"repo", "fork", "--", "sjawhar/legion", "--depth=1"}, owner: "sjawhar"},
@@ -453,12 +452,17 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"api", "repos/:owner/:repo/pulls"}, env: map[string]string{"GH_REPO": "sjawhar/legion"}, owner: "sjawhar"},
 		{argv: []string{"api", "graphql", "-f", "o=:owner", "-f", "query=q"}, env: map[string]string{"GH_REPO": "sjawhar/legion"}},
 		{argv: []string{"api", "repos/{owner}/{repo}/commits/{branch}"}, env: map[string]string{"GH_REPO": "sjawhar/legion"}, owner: "sjawhar"},
-		// agent-task view reads OWNER/REPO#N as that repository, and a URL through gh's pr
-		// finder: only a pull request's names its repository. A pr command reads OWNER/REPO#N as a
-		// branch of its own repository.
-		{argv: []string{"agent-task", "view", "sjawhar/legion#1"}, owner: "sjawhar"},
-		{argv: []string{"agent-task", "view", "https://github.com/sjawhar/legion/pull/1"}, remotes: remotes(acmeClone), owner: "sjawhar"},
-		{argv: []string{"agent-task", "view", "https://github.com/sjawhar/legion/issues/1"}, remotes: remotes(acmeClone), err: "more than one owner"},
+		// A pr command reads OWNER/REPO#N as a branch of its own repository. `gh agent-task`
+		// sends the token to the Copilot API host GitHub names, so it is refused whatever it
+		// names, an issue URL and a pull request's alike; and `--editor` runs an editor after the
+		// guard has read the call. Each is refused before any repository is read. (`gh gist
+		// edit` and `gh auth login`, `logout`, `refresh` and `switch`, whose help these saved
+		// files do not hold, are refused in TestRealGhAndGitSendTheTargetOwnersToken, with the
+		// real gh.)
+		{argv: []string{"agent-task", "view", "sjawhar/legion#1"}, err: "`gh agent-task` sends the token to the Copilot API host"},
+		{argv: []string{"agent-task", "view", "https://github.com/sjawhar/legion/pull/1"}, remotes: remotes(acmeClone), err: "`gh agent-task` sends the token"},
+		{argv: []string{"issue", "comment", "1", "-R", "acme/widgets", "-e"}, err: `"-e" runs an editor program`},
+		{argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--editor"}, err: `"--editor" runs an editor program`},
 		{argv: []string{"pr", "view", "sjawhar/legion#1", "-R", "acme/widgets"}, owner: "acme"},
 		// The first re-review's reproductions.
 		{argv: []string{"-R", "sjawhar/legion", "pr", "view", "1", "--json", "title"}, owner: "sjawhar"},
@@ -670,7 +674,6 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 		{argv: []string{"repo", "clone", "sjawhar/legion"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"repo", "clone", "github.com/sjawhar/legion"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"pr", "view", "https://github.com/sjawhar/legion/pull/2/files"}, owner: "sjawhar", repo: "legion"},
-		{argv: []string{"agent-task", "view", "sjawhar/legion#1"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"search", "issues", "repo:sjawhar/legion", "is:open"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "repos/sjawhar/legion/pulls/1/files"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "REPOS/sjawhar/Legion"}, owner: "sjawhar", repo: "legion"},
@@ -852,6 +855,27 @@ func legionGhCommand(t *testing.T, dir string, env map[string]string, args ...st
 		cmd.Env = append(cmd.Env, name+"="+value)
 	}
 	return cmd
+}
+
+// testGhChildEnviron is what this package's test binary, run as `legion`, hands gh beside the
+// allowlist (ghChildTestEnviron): testMainEnv, so the `gh` wrapper gh's git runs as its credential
+// helper runs this binary as `legion` again; every variable of environ the stand-in real gh of
+// these tests reads (GH_STANDIN_*, and the guard's visibility read's own variable, which marks
+// the read the stand-ins answer public); and the pairs testGhChildEnv names. None of these is
+// one ghChildEnviron keeps, which is the point of naming them here and nowhere in the binary.
+func testGhChildEnviron(environ []string) []string {
+	out := []string{testMainEnv + "=1"}
+	for _, pair := range environ {
+		if name, _, _ := strings.Cut(pair, "="); strings.HasPrefix(name, "GH_STANDIN_") || name == leakguard.VisibilityReadVar {
+			out = append(out, pair)
+		}
+	}
+	for _, line := range strings.Split(os.Getenv(testGhChildEnv), "\n") {
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // legionGhIn runs `legion gh args…` as legionGh does, in the working directory dir with stdin,

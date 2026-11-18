@@ -416,15 +416,14 @@ var ghSlotKinds = map[string]ghArgKind{
 
 // ghLeafQuirk is where gh, for one leaf, departs from what its help says, in what the leaf reads
 // as its repository: GH_REPO for its own repository though its -R is a plain string
-// (readsGHRepo); every remote's network whatever names its repository (readsAllRemotes);
-// OWNER/REPO#N in a number's place as that repository's (readsRepositoryNumber); a URL as naming
-// its pull request, and so its repository, only at /OWNER/REPO/pull/N, any other as the name of a
-// branch of its own repository (pullRequestFinder); an option naming its target in place of its
-// own repository (targetOption); and argument names of its own kind (slotKinds).
+// (readsGHRepo); every remote's network whatever names its repository (readsAllRemotes); a URL as
+// naming its pull request, and so its repository, only at /OWNER/REPO/pull/N, any other as the
+// name of a branch of its own repository (pullRequestFinder); an option naming its target in place
+// of its own repository (targetOption); and argument names of its own kind (slotKinds).
 type ghLeafQuirk struct {
-	readsGHRepo, readsAllRemotes, readsRepositoryNumber, pullRequestFinder bool
-	targetOption                                                           string
-	slotKinds                                                              map[string]ghArgKind
+	readsGHRepo, readsAllRemotes, pullRequestFinder bool
+	targetOption                                    string
+	slotKinds                                       map[string]ghArgKind
 }
 
 // ghLeafQuirks are gh 2.98.0's and 2.65.0's quirks, by leaf path, read from gh's source: project
@@ -436,7 +435,6 @@ var ghLeafQuirks = map[string]ghLeafQuirk{
 	"project link":     {readsGHRepo: true, targetOption: "team"},
 	"project unlink":   {readsGHRepo: true, targetOption: "team"},
 	"repo set-default": {readsAllRemotes: true},
-	"agent-task view":  {readsRepositoryNumber: true, pullRequestFinder: true},
 	"repo create":      {slotKinds: map[string]ghArgKind{"name": {kind: "new-repository"}}},
 }
 

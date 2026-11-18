@@ -137,6 +137,11 @@ func Render(token, app string, expiresAt time.Time) Rendered {
 // (replaceFile), so the gh reading it never sees a half-written file, only when its content
 // differs. It reports whether hosts.yml changed. WriteBundle calls it for each directory of a
 // bundle.
+//
+// config.yml is opened only when it is a regular file: a pane can put anything at that path
+// between two writes, and a named pipe there would stall a read of it until something wrote to
+// the pipe, and with it every pane's refresh this walk makes. Anything else at the path is removed
+// and the file written in its place.
 func Write(dir string, rendered Rendered) (changed bool, err error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return false, err
@@ -145,7 +150,9 @@ func Write(dir string, rendered Rendered) (changed bool, err error) {
 		return false, err
 	}
 	config := filepath.Join(dir, ConfigFile)
-	if current, err := os.ReadFile(config); err != nil || string(current) != rendered.Config {
+	if stale, err := configToWrite(config, rendered.Config); err != nil {
+		return false, err
+	} else if stale {
 		if err := os.WriteFile(config, []byte(rendered.Config), 0o600); err != nil {
 			return false, err
 		}
@@ -153,19 +160,47 @@ func Write(dir string, rendered Rendered) (changed bool, err error) {
 	return replaceFile(filepath.Join(dir, HostsFile), rendered.Hosts)
 }
 
+// configToWrite is whether config.yml at path must be written to hold content: it is not there,
+// it is a regular file holding anything else, or it is no regular file at all, which is removed
+// here (a directory with whatever it holds) without being opened.
+func configToWrite(path, content string) (bool, error) {
+	info, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return true, nil
+	case err != nil:
+		return false, err
+	case !info.Mode().IsRegular():
+		return true, os.RemoveAll(path)
+	}
+	current, err := os.ReadFile(path)
+	return err != nil || string(current) != content, nil
+}
+
 // replaceFile brings path to content and reports whether it changed: a temporary file beside it
 // (0600, as os.CreateTemp makes it) renamed over it, so a reader of the file — the gh of a pane
 // reading a hosts.yml, the `legion gh` or `legion git-credential` of one reading the bundle's
 // pairs file — never sees a half-written one. A file whose content already is content is left
 // alone, which is what keeps a bundle's writer from touching the files a lease's turn did not
-// change (WriteBundle, Write).
+// change (WriteBundle, Write). What is at path is read only when it is a regular file, as
+// config.yml is (configToWrite): anything else is removed and the file written in its place.
 func replaceFile(path, content string) (changed bool, err error) {
-	current, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	info, err := os.Lstat(path)
+	switch {
+	case err == nil && !info.Mode().IsRegular():
+		if err := os.RemoveAll(path); err != nil {
+			return false, err
+		}
+	case err == nil:
+		current, err := os.ReadFile(path)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return false, err
+		}
+		if err == nil && bytes.Equal(current, []byte(content)) {
+			return false, nil
+		}
+	case !errors.Is(err, fs.ErrNotExist):
 		return false, err
-	}
-	if err == nil && bytes.Equal(current, []byte(content)) {
-		return false, nil
 	}
 	dir := filepath.Dir(path)
 	temporary, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-")

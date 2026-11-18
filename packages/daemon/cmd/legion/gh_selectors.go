@@ -150,11 +150,6 @@ func (s *selectors) dir(dirFor func(owner, name string) (string, error)) (string
 	return "", fmt.Errorf("the command routes to the gh directories of more than one owner, %s, so it sends no token; name one repository", strings.Join(listed, " and "))
 }
 
-// ghRepositoryNumber is an issue or pull request named OWNER/REPO#N, which gh reads in a number's
-// place as that repository's only for a leaf whose quirk says so; a pr leaf reads it as the name
-// of a branch of its own repository.
-var ghRepositoryNumber = regexp.MustCompile(`^([^/\s#]+/[^/\s#]+)#[0-9]+$`)
-
 // ghPullRequestPath is the path of the one URL gh's pr finder reads as naming its pull request,
 // and so its repository, `/OWNER/REPO/pull/N`; it reads any other URL as the name of a branch of
 // the command's own repository.
@@ -162,7 +157,7 @@ var ghPullRequestPath = regexp.MustCompile(`^/[^/]+/[^/]+/pull/[0-9]+`)
 
 // fromCommand collects the owners the leaf's arguments and options name, and whether one names
 // the command's own repository: -R, a repository, owner or URL argument (through gh's pr finder,
-// only a pull request's), OWNER/REPO#N where the leaf reads it, or its quirk's target option.
+// only a pull request's), or its quirk's target option.
 func (s *selectors) fromCommand(cmd *ghCommand, parsed ghArgs) error {
 	leaf, quirk := cmd.quoted(), quirkOf(cmd.path)
 	s.targeted = len(parsed.values["repo"]) > 0 && cmd.readsGHRepo()
@@ -183,13 +178,6 @@ func (s *selectors) fromCommand(cmd *ghCommand, parsed ghArgs) error {
 			kind, unknown := placed[i].kind()
 			if unknown != "" {
 				return cannotPlace(arg, fmt.Sprintf("fills <%s> of %s's usage, an argument this does not know", unknown, leaf), false)
-			}
-			if placed[i].takes("number") && quirk.readsRepositoryNumber && ghRepositoryNumber.MatchString(arg) {
-				if err := s.repository(ghRepositoryNumber.FindStringSubmatch(arg)[1], "the issue or pull request "+arg); err != nil {
-					return err
-				}
-				s.targeted = true
-				continue
 			}
 			switch kind {
 			case "repository":

@@ -39,11 +39,6 @@ func ghRateLimitRead(argv []string) bool {
 	return slices.Equal(argv, []string{"api", "rate_limit"})
 }
 
-// ghUnguardedUnset are the variables a call no private-name pass reads runs gh without: the
-// browser programs gh would hand a page to (go-gh's browser.New reads GH_BROWSER, then gh's
-// config `browser`, then BROWSER).
-var ghUnguardedUnset = map[string]bool{"GH_BROWSER": true, "BROWSER": true}
-
 // ghReadLeaves are the leaves that send GitHub no request that writes, by the canonical path the
 // help of gh 2.98.0, the gh the worker image pins, names on their USAGE lines, each with the
 // options a call of it may be given and still count as a read (ghReadGrammar): every option its

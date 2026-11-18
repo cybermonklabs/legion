@@ -6,9 +6,63 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
+
+// A pane can put anything at its gh directory's paths between two of the daemon's refreshes, and
+// Write never opens what is no regular file: a named pipe at config.yml or hosts.yml, which a read
+// would wait on until something wrote to it, stalling every pane's refresh behind it, and a
+// directory or a symbolic link there, are each removed and the rendered file written in its place,
+// promptly. Each write runs with a bound of its own, so a Write that opened the pipe fails the row
+// rather than hanging the test.
+func TestWriteOpensNoFileThatIsNoRegularFile(t *testing.T) {
+	rendered := Render("ghs_fifo_token", "implement", time.Now().Add(time.Hour))
+	for _, tc := range []struct {
+		name  string
+		file  string
+		plant func(path string) error
+	}{
+		{"a named pipe at config.yml", ConfigFile, func(path string) error { return syscall.Mkfifo(path, 0o600) }},
+		{"a named pipe at hosts.yml", HostsFile, func(path string) error { return syscall.Mkfifo(path, 0o600) }},
+		{"a directory at config.yml", ConfigFile, func(path string) error { return os.MkdirAll(filepath.Join(path, "inside"), 0o700) }},
+		{"a symbolic link at config.yml", ConfigFile, func(path string) error { return os.Symlink(os.DevNull, path) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := tc.plant(filepath.Join(dir, tc.file)); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				_, err := Write(dir, rendered)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Write: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				// Unblock the stalled read, so the goroutine and the test end.
+				if f, err := os.OpenFile(filepath.Join(dir, tc.file), os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+					_ = f.Close()
+				}
+				t.Fatalf("Write did not return within 5 s with %s", tc.name)
+			}
+			for name, want := range map[string]string{ConfigFile: rendered.Config, HostsFile: rendered.Hosts} {
+				info, err := os.Lstat(filepath.Join(dir, name))
+				if err != nil || !info.Mode().IsRegular() {
+					t.Fatalf("%s is %v (%v), want a regular file", name, info, err)
+				}
+				if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != want {
+					t.Errorf("%s holds %q (%v), want %q", name, got, err, want)
+				}
+			}
+		})
+	}
+}
 
 // Hosts renders exactly the file gh >= 2.40 writes for one account, and TokenFromHosts reads the
 // token back out of it: the daemon writes one and the `legion` CLI reads the other, so the shape
