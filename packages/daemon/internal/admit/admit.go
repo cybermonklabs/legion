@@ -187,18 +187,12 @@ func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 
 // OpenFact and SettleFact are the engine's (intake.Settler): admission writes issues through it —
 // a re-admission's new generation, a promotion's starts — so the runs those writes end are settled
-// whichever of the two a fact applies through, once.
+// whichever of the two a fact applies through, once. Every admission holds an engine (New).
 func (a *Admission) OpenFact(ctx context.Context) context.Context {
-	if a.engine == nil {
-		return ctx
-	}
 	return a.engine.OpenFact(ctx)
 }
 
 func (a *Admission) SettleFact(ctx context.Context, tx pgx.Tx) error {
-	if a.engine == nil {
-		return nil
-	}
 	return a.engine.SettleFact(ctx, tx)
 }
 
