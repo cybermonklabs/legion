@@ -54,10 +54,9 @@ type Minted struct {
 // it, to named repositories of that account, to read access, or to both: GitHub's
 // POST /app/installations/{id}/access_tokens body. It can only narrow what the release would give
 // without it: Owner must be an account the secret's github-owners lists, and the only permissions
-// it names are those of the read set (githubread) that the installation holds, each at read,
-// which GitHub refuses past what the installation holds. An installation that does not hold
-// issues, actions, checks, statuses or attestations gets a token without them, and one that does
-// not hold contents, metadata or pull requests is refused (githubapp.go's readOnlyRequest).
+// it names are contents: read, metadata: read, pull_requests: read and actions: read, which
+// GitHub refuses past what the installation holds; an installation that does not hold actions
+// gets the other three (githubapp.go's optionalReadOnlyPermission).
 // policy.ParseGitHubNarrowing builds it from a caller's input.
 type GitHubNarrowing struct {
 	// Owner is the lowercase login of the one account whose installation the release mints for.
@@ -68,9 +67,9 @@ type GitHubNarrowing struct {
 	// whose body names no permissions all of the App's. Empty leaves the token every repository
 	// the installation reaches.
 	Repositories []string
-	// ReadOnly limits the token to read access to contents, metadata and pull_requests, and to
-	// issues, actions, checks, statuses and attestations where the installation holds them. A
-	// machine that must only read needs it, with or without Repositories.
+	// ReadOnly limits the token to contents: read, metadata: read, pull_requests: read and
+	// actions: read, less the Actions grant an installation does not hold. A machine that must
+	// only read needs it, with or without Repositories.
 	ReadOnly bool
 }
 
@@ -97,13 +96,10 @@ var (
 	ErrMintRefused = errors.New("the upstream refused the mint")
 	// ErrMintNarrowingRefused: the narrowing the release asked for cannot be served: it names an
 	// account the secret's github-owners tag does not list, which requests.Machine.Values refuses
-	// before any minter runs and GitHubApp.Mint refuses again as a second barrier; it is read-only
-	// and GitHub's installations listing says the installation does not hold contents, metadata or
-	// pull requests, which GitHubApp.Mint refuses without a token request; or GitHub answered the
-	// narrowed token request 422, which it does for a repository the installation does not reach
-	// (a misspelled name among them) or a permission the App does not hold. The caller fixes the
-	// narrowing, or has the App granted the read access its installation does not hold; the
-	// secret is not at fault.
+	// before any minter runs and GitHubApp.Mint refuses again as a second barrier, or GitHub
+	// answered the narrowed token request 422, which it does for a repository the installation
+	// does not reach (a misspelled name among them) or a permission the App does not hold. The
+	// caller fixes the narrowing; neither the App nor the secret is at fault.
 	ErrMintNarrowingRefused = errors.New("the narrowing cannot be served")
 	// ErrMintUpstream: GitHub or Google could not be asked or answered no usable reply (the network,
 	// a 5xx, a rate limit, a body past its cap or one that does not decode, a token GitHub describes

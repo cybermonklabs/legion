@@ -40,11 +40,9 @@ const TrailingLineEndingRemovedMessage = "broker: a stored value's trailing line
 // NarrowingRefusedMessage is logged, at WARN, each time a narrowing of a GitHub App token is
 // refused for what it names, which happens in two places. A release's refusal is one: an account
 // a github-app secret of the grant does not list (403 NARROWING_OWNER_NOT_LISTED, before any
-// minter runs), an installation whose listing does not hold contents, metadata or pull requests
-// for a read-only narrowing (422 NARROWING_REFUSED, before any token request), or GitHub's 422 to
-// the narrowed token (422 NARROWING_REFUSED); that case carries grant=, enrollment=, name=<the
-// secret's name> and error=. Create's check of a request's narrowing is the other
-// (narrowing_check.go): every refusal it makes before anybody is asked to
+// minter runs), or GitHub's 422 to the narrowed token (422 NARROWING_REFUSED); that case carries
+// grant=, enrollment=, name=<the secret's name> and error=. Create's check of a request's
+// narrowing is the other (narrowing_check.go): every refusal it makes before anybody is asked to
 // approve the request, which carries enrollment=, name= and error= and no grant= key at all,
 // since no grant exists and the refusal is why none will. Neither case holds a value or a token
 // in any key. A refused authorization the caller fixes, not a mint failure the operator acts on.

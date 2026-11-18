@@ -37,8 +37,8 @@ import (
 //
 // attestations:read is in both sets, because a role reads the attestations of an artifact, such
 // as to check that an image was built from the default branch, and no role makes one: a release
-// workflow does. Neither set asks for more than read of it (githubread says where a token without
-// it was refused).
+// workflow does. Neither set asks for more than read of it (readPermissions says where a token
+// without it was refused).
 //
 // The set says what the App's roles use, never what an installation holds: what an account has
 // approved is the account's, and the cut takes each mint's request down to it (exchangeGranted),
@@ -53,7 +53,7 @@ import (
 // harm; giving the review App's other roles issues read alone would mean keying the set by
 // workflow role rather than by App, a larger change for no measured risk. A token whose request
 // names no issues permission is refused an issue of a private repository with 403 "Resource not
-// accessible by integration" (githubread says where that was measured).
+// accessible by integration" (readPermissions says where that was measured).
 //
 // Repository projects and packages are in neither set, though both Apps' installations hold
 // them: Legion writes no project and no package.

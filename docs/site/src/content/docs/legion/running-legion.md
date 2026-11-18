@@ -124,7 +124,7 @@ approves it. The agent's write token also reaches each repository of its own rep
 that the project does not serve. Its token for each other repository of the project, and for each
 repository of the project's other accounts, is a read lease of the same App: read access to
 contents, metadata, pull requests, issues, Actions, checks, commit statuses and attestations
-(`packages/envoy/githubread`), cut down the same way. The daemon itself reads GitHub with the
+(`appauth.readPermissions`), cut down the same way. The daemon itself reads GitHub with the
 implement App too, at two moments and at no other: as the workflow runtime starts, which covers
 what arrived while the daemon was down, and once an agent's handoff has been recorded, the moment
 the daemon next decides on that pull request's state. It runs on no timer, and it reads one issue's

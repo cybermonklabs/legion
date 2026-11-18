@@ -245,10 +245,9 @@ type githubNarrowing struct {
 	// organization permissions among them, unless read_only is set too. The answer names them
 	// sorted, each once.
 	Repositories []string `json:"repositories,omitempty"`
-	// Optional: true limits the token to read access to contents, metadata and pull_requests, and
-	// to issues, actions, checks, statuses and attestations where the App's installation holds
-	// them. A machine that must only read needs it, with or without repositories. An installation
-	// that does not hold contents, metadata or pull_requests is refused 422 NARROWING_REFUSED.
+	// Optional: true limits the token to contents: read, metadata: read, pull_requests: read and
+	// actions: read, less the Actions grant the installation does not hold. A machine that must
+	// only read needs it, with or without repositories.
 	ReadOnly bool `json:"read_only,omitempty"`
 	// unread is why the github_app object a body sent does not read as a narrowing, "" when it
 	// does. UnmarshalJSON sets it in place of returning an error, so parsedNarrowing answers it
@@ -478,9 +477,9 @@ func writeNarrowingRefusal(w http.ResponseWriter, err error) bool {
 		// and GitHub was not asked.
 		writeError(w, http.StatusForbidden, "NARROWING_OWNER_NOT_LISTED", err.Error())
 	case errors.Is(err, secrets.ErrMintNarrowingRefused):
-		// The narrowing cannot be served: a repository the installation does not reach, or read
-		// access the App does not hold, which GitHub's 422 or the installations listing says.
-		// The message says which it is, and the caller fixes the narrowing.
+		// GitHub refused the narrowed token: a repository the installation does not reach, or a
+		// permission the App does not hold. The message says which it is, and the caller fixes
+		// the narrowing.
 		writeError(w, http.StatusUnprocessableEntity, "NARROWING_REFUSED", err.Error())
 	default:
 		return false

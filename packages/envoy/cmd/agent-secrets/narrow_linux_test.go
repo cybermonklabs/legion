@@ -24,11 +24,10 @@ import (
 
 // TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd drives the real broker (its handlers on a
 // real Postgres, through brokertest's rig), a real helper and this binary, with the broker's own
-// GitHub App minter aimed at a stub GitHub installed on acme and ada, each installation holding
-// every permission of the read set, which answers a token request as GitHub does: the permissions
-// and repositories its body names, or all of them. A session key the machine enrolled reads an
-// agent-tier github-app secret: narrowed to ada's proofs repository, read-only, the command gets
-// ada's token alone, minted with that access_tokens body, which names the whole read set at read;
+// GitHub App minter aimed at a stub GitHub installed on acme and ada, which answers a token
+// request as GitHub does: the permissions and repositories its body names, or all of them. A
+// session key the machine enrolled reads an agent-tier github-app secret: narrowed to ada's proofs
+// repository, read-only, the command gets ada's token alone, minted with that access_tokens body;
 // with no flag, the same grant gives every listed owner's owner-wide token, each minted with no
 // body; narrowed to an account github-owners does not list, nothing runs, the broker answers
 // NARROWING_OWNER_NOT_LISTED and GitHub is asked for no token; narrowed to a repository GitHub
@@ -39,18 +38,12 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 	type tokenRequest struct{ installation, body string }
 	var mu sync.Mutex
 	var asked []tokenRequest
-	// granted is what the listing says each installation holds, and what a token asked for with
-	// no permissions holds.
-	granted := map[string]string{
-		"contents": "write", "metadata": "read", "pull_requests": "write", "issues": "read",
-		"actions": "read", "checks": "read", "statuses": "read", "attestations": "read",
-	}
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/app/installations":
 			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": 7, "account": map[string]string{"login": "acme"}, "permissions": granted},
-				{"id": 8, "account": map[string]string{"login": "ada"}, "permissions": granted},
+				{"id": 7, "account": map[string]string{"login": "acme"}},
+				{"id": 8, "account": map[string]string{"login": "ada"}},
 			})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/access_tokens"):
 			body, _ := io.ReadAll(r.Body)
@@ -70,7 +63,7 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 			}
 			answer := map[string]any{
 				"token": "ghs-" + id, "expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
-				"permissions": granted, "repository_selection": "all",
+				"permissions": map[string]string{"contents": "write", "metadata": "read"}, "repository_selection": "all",
 			}
 			if len(body) > 0 {
 				answer["token"] = "ghs-" + id + "-narrowed"
@@ -159,10 +152,7 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(tokens[0].body), &body); err != nil {
 		t.Fatalf("the access_tokens body %q: %v", tokens[0].body, err)
 	}
-	if want := map[string]any{"repositories": []any{"proofs"}, "permissions": map[string]any{
-		"actions": "read", "attestations": "read", "checks": "read", "contents": "read",
-		"issues": "read", "metadata": "read", "pull_requests": "read", "statuses": "read",
-	}}; !reflect.DeepEqual(body, want) {
+	if want := map[string]any{"repositories": []any{"proofs"}, "permissions": map[string]any{"actions": "read", "contents": "read", "metadata": "read", "pull_requests": "read"}}; !reflect.DeepEqual(body, want) {
 		t.Fatalf("the access_tokens body = %v, want %v", body, want)
 	}
 

@@ -20,11 +20,12 @@ package appauth
 // The release reaches every repository the account's installation holds, here as in key mode: the
 // account that installs the App chooses them, and the daemon asks for no narrowing of them
 // (INFRA-2543). A read-only token holds what the command's read-only release gives: the broker's
-// read-only narrowing asks for key mode's ReadToken set (githubread), cut to what the
-// installation holds, so a permission of the set that an installation does not hold is left out
-// of the release. What a release leaves out is the command's own business: the daemon reads what
-// an installation is granted only where it mints with a key of its own (exchangeGranted), and
-// asks a command for no permission at all.
+// holds the broker's own set, contents, metadata, pull requests and Actions read, less the
+// Actions read an installation that is not granted it does not hold. That set differs from key
+// mode's ReadToken set (readPermissions), so a read lease in token mode holds no issues, checks,
+// statuses or attestations. What a release leaves out is the command's own business: the daemon
+// reads what an installation is granted only where it mints with a key of its own
+// (exchangeGranted), and asks a command for no permission at all.
 //
 // No token reaches a log or an error: the command's stdout is never quoted, and its stderr, which
 // `agent-secrets` uses for the names and the request it waits on, goes to the daemon's stderr and
@@ -366,13 +367,11 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 // `agent-secrets` prints on stderr and runTokenCommand's error carries.
 const brokerNoInstallation = "has no installation on"
 
-// brokerNarrowingRefused is the secrets broker's refusal of a narrowing: for a read-only release,
-// an installation whose listing does not hold contents, metadata or pull requests, which the
-// broker refuses before any token request, or GitHub's 422 when the grant changed between the
-// listing and the token request (packages/envoy/internal/broker/secrets/minterr.go,
-// ErrMintNarrowingRefused). It is carried the same way, and is the key mode's ErrNarrowingRefused
-// by another road. The command is told no repository, so none is among what the broker refuses.
-// The broker's text never quotes GitHub's own and never a token.
+// brokerNarrowingRefused is the secrets broker's refusal of a narrowing GitHub answered 422
+// (packages/envoy/internal/broker/secrets/minterr.go, ErrMintNarrowingRefused), carried the same
+// way: a permission of the read-only release the installation is not granted, which is the key
+// mode's ErrNarrowingRefused by another road. The command is told no repository, so none is among
+// what the broker refuses. The broker's text never quotes GitHub's own and never a token.
 const brokerNarrowingRefused = "the narrowing cannot be served"
 
 // mintFromCommand is mint in token mode: the command's release for the request's owner, narrowed

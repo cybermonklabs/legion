@@ -26,12 +26,6 @@ type GitHubOptions struct {
 	// owner no entry names finds no installation, which is what the minter's own refusal is
 	// about.
 	Installations map[string]int64
-	// Permissions is what the installations listing says the App's installation on each owner
-	// holds, by owner, and what a token request that names no permissions is answered with. An
-	// owner no entry names holds standInGitHubPermissions, each permission of the read set a
-	// read-only narrowing asks for (githubread), so such a narrowing asks for all eight. A test
-	// that drives an installation holding less names its permissions here.
-	Permissions map[string]map[string]string
 	// Token is the installation token every answer carries, and "" is a token of each owner's
 	// own, ghs_standin_<owner>, so a row that mints for two owners can tell the two apart. A
 	// request that named repositories is answered that token and the names it asked for, since
@@ -71,8 +65,9 @@ const (
 	// GitHubTokensRefused answers every token request HTTP 422 and mints nothing, which is what
 	// GitHub answers a body naming a permission the installation does not hold. The answer says
 	// nothing of a rate limit, so the minter reads it as the caller's narrowing and refuses the
-	// release (secrets.GitHubNarrowing.refusal) rather than as the upstream's trouble, and no
-	// token is ever released.
+	// release (secrets.GitHubNarrowing.refusal) rather than as the upstream's trouble. A
+	// read-only narrowing asks once more without actions, which this answers 422 as well, so that
+	// refusal reaches the caller too and no token is ever released.
 	GitHubTokensRefused GitHubTokenAnswer = "refuse"
 	// GitHubTokensRefusedRepository answers that same 422 to a token request whose repositories
 	// name the answer's Repository, and answers every other token request ordinarily. So a
@@ -81,11 +76,10 @@ const (
 	// asking GitHub again with less of the narrowing makes to find which part was refused.
 	GitHubTokensRefusedRepository GitHubTokenAnswer = "refuse-repository"
 	// GitHubTokensRefusedPermissions answers that 422 to a token request whose body names any
-	// permissions — the request a read-only narrowing makes — and answers every other token
-	// request ordinarily. So the read-only half of a narrowing is refused while the repositories
-	// it names are minted, which is the other part a caller looking for the refused one reads. It
-	// is a grant that changed between the listing and the token request: the listing still says
-	// the installation holds what the request asked for.
+	// permissions — the request a read-only narrowing makes, and the second one it makes without
+	// actions — and answers every other token request ordinarily. So the read-only half of a
+	// narrowing is refused while the repositories it names are minted, which is the other part a
+	// caller looking for the refused one reads.
 	GitHubTokensRefusedPermissions GitHubTokenAnswer = "refuse-permissions"
 	// GitHubTokensWider answers each token request a token wider than its body asked for: every
 	// repository of the account rather than the ones the body named, and a grant past the read
@@ -120,38 +114,26 @@ func (a GitHubAnswer) refuses(asked githubAccessTokens) bool {
 	}
 }
 
-// standInGitHubPermissions is what this stand-in says an installation holds when
-// GitHubOptions.Permissions names none for its owner: what the installations listing gives it,
-// and what a token holds when its request named no permissions, since GitHub answers such a
-// request a token holding all of the installation's. It holds every permission of the read set a
-// read-only narrowing asks for — contents, metadata, pull requests, issues, actions, checks,
-// statuses and attestations — so such a narrowing asks for all eight, each at read; contents and
-// pull requests are held at write, as an App that writes them holds them.
-var standInGitHubPermissions = map[string]string{
-	"contents":      "write",
-	"metadata":      "read",
-	"pull_requests": "write",
-	"issues":        "read",
-	"actions":       "read",
-	"checks":        "read",
-	"statuses":      "read",
-	"attestations":  "read",
-}
+// standInGitHubPermissions is what a token holds when its request named none: the permissions
+// this stand-in says every installation of the App was granted. GitHub answers such a request a
+// token holding all of the installation's, and the minter checks the permissions of a read-only
+// narrowing alone, which always names them, so nothing but a caller reading what it got reads
+// these.
+var standInGitHubPermissions = map[string]string{"contents": "write", "metadata": "read", "pull_requests": "write"}
 
 // widerPermission is the grant a widened answer holds past what its body asked for. No narrowing
-// asks for it, and the minter refuses a read-only token holding a permission outside the read
-// set, so it is the permission half of a token wider than asked.
+// asks for it, and the minter refuses a read-only token holding a permission outside contents,
+// metadata, pull requests and actions, so it is the permission half of a token wider than asked.
 const widerPermission, widerPermissionLevel = "administration", "write"
 
 // GitHubStand is the four routes a narrowed github-app release is made, spent and given back
-// over: GET /app/installations, which answers the installations it was given and what each one
-// holds; POST /app/installations/{id}/access_tokens, which answers that installation's token,
-// its expiry and what the token holds, read from the body the request sent; GET
-// /repos/{owner}/{repo}, the read a caller makes with such a token, which answers only for a
-// token this stand-in minted whose scope holds that repository; and DELETE /installation/token,
-// the revoke the minter makes of a token it minted and will not release. Pointing
-// BROKER_AIRLOCK_TEST_GITHUB_API_BASE at a Service answering as one is what makes a github-app
-// secret mint against this process.
+// over: GET /app/installations, which answers the installations it was given; POST
+// /app/installations/{id}/access_tokens, which answers that installation's token, its expiry and
+// what the token holds, read from the body the request sent; GET /repos/{owner}/{repo}, the
+// read a caller makes with such a token, which answers only for a token this stand-in minted
+// whose scope holds that repository; and DELETE /installation/token, the revoke the minter makes
+// of a token it minted and will not release. Pointing BROKER_AIRLOCK_TEST_GITHUB_API_BASE at a
+// Service answering as one is what makes a github-app secret mint against this process.
 //
 // It remembers what each token it minted reaches, since that is the whole of what the repository
 // route decides on, and one stand-in answers several callers of a stack at once, so that record
@@ -220,15 +202,6 @@ func (g *GitHubStand) owners() []string {
 	return owners
 }
 
-// held is what the App's installation on owner holds: its entry of GitHubOptions.Permissions, and
-// standInGitHubPermissions for an owner that has none.
-func (g *GitHubStand) held(owner string) map[string]string {
-	if permissions, named := g.options.Permissions[owner]; named {
-		return permissions
-	}
-	return standInGitHubPermissions
-}
-
 // token is the installation token this stand-in answers for owner, and a token of its own for a
 // request that named repositories: GitHub mints a token for each request, and a stand-in that
 // answered one string for every scope could not tell a narrowed caller from a wide one at its
@@ -282,9 +255,8 @@ func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Reques
 		installations := []map[string]any{}
 		for _, owner := range g.owners() {
 			installations = append(installations, map[string]any{
-				"id":          g.options.Installations[owner],
-				"account":     map[string]string{"login": owner},
-				"permissions": g.held(owner),
+				"id":      g.options.Installations[owner],
+				"account": map[string]string{"login": owner},
 			})
 		}
 		_ = json.NewEncoder(w).Encode(installations)
@@ -303,10 +275,9 @@ func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Reques
 // answerToken is GitHub's answer to one access_tokens request: the token, its expiry and what
 // GitHub says the token holds, which is what the minter checks a narrowing against
 // (secrets.GitHubNarrowing.heldBy). The answer echoes the body: a selection of the repositories
-// it named, or all of the account's when it named none, and the permissions it asked for, or all
-// of the installation's (held) when it named none. The other answers (Answers) answer in its
-// place: three that refuse this request or every one, one that mints wider than asked, and one
-// outage before it.
+// it named, or all of the account's when it named none, and the permissions it asked for. The
+// other answers (Answers) answer in its place: three that refuse this request or every one, one
+// that mints wider than asked, and one outage before it.
 func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner string) {
 	answering := g.answering()
 	asked := githubTokenRequest(seen)
@@ -336,7 +307,7 @@ func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner str
 	}
 	permissions := asked.Permissions
 	if len(permissions) == 0 {
-		permissions = g.held(owner)
+		permissions = standInGitHubPermissions
 	}
 	if answering.Mode == GitHubTokensWider {
 		// Wider on both of the rules a narrowed token is checked by: every repository of the

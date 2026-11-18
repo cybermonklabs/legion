@@ -37,15 +37,14 @@
 #     request is opened. The command does not run, agent-secrets exits 1 naming the secret, that
 #     repository and the sentence the refusal carries, its stderr names no page to approve
 #     anything on, and the broker's own credential_requests holds no record it did not hold
-#     before. The stand-in's records hold the search for the cause - one token request that left
-#     the repositories out - and the mint of the narrowing itself, one token request that named
-#     that repository alone and no second one, which is why the search probes no repository of a
-#     narrowing that names one. Every token the stand-in minted for the run was given back, read
-#     both as the number of revokes it was sent and as a read being refused with the token one of
-#     those revokes carried, which this reads from the records rather than building it from the
-#     stand-in's own rule. Its negative control is the same request for a repository the
-#     stand-in reaches, with a wait of its own, approved on the broker's page as the person does:
-#     the command runs.
+#     before. The stand-in's records hold the search for the cause - a token request that left
+#     the repositories out - and the mint of the narrowing itself, which named that repository
+#     alone and is why the search probes no repository of a narrowing that names one. Every
+#     token the stand-in minted for the run was given back, read both as the number of revokes
+#     it was sent and as a read being refused with the token one of those revokes carried, which
+#     this reads from the records rather than building it from the stand-in's own rule. Its
+#     negative control is the same request for a repository the stand-in reaches, with a wait of
+#     its own, approved on the broker's page as the person does: the command runs.
 #
 # The stand-in's answer to a token request is set while it runs, at the answer route the stack's
 # banner names (POST {"mode": "ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|
@@ -206,12 +205,20 @@ judge() { # <what the property is> <condition...>
 }
 
 # The conditions the properties are judged by. holds reports whether text holds a string,
-# without the text reaching the output. is compares two strings, and lacks is holds' negative.
-# printed_ran reports whether the child printed its word, read from the child's standard output
-# alone (see the header). ran reports a command that exited as it should and printed that word.
+# without the text reaching the output. is compares two strings. lacks is holds' negative, and
+# counted reports a count of at least one. printed_ran reports whether the child printed its
+# word, read from the child's standard output alone (see the header). ran reports a command that
+# exited as it should and printed that word.
 holds() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 is() { [ "$1" = "$2" ]; }
 lacks() { ! holds "$1" "$2"; }
+# counted judges a property that is about what a run asked GitHub for rather than how many times
+# it asked: the mint of a refused read-only narrowing asks once more without actions (secrets'
+# optionalReadOnlyPermission), so one ask of the search below is one record at the stand-in or
+# two.
+counted() { # <how many>
+	[ "${1:-0}" -gt 0 ]
+}
 printed_ran() { # <the child's standard output>
 	printf '%s\n' "$1" | grep -qx ran
 }
@@ -616,11 +623,11 @@ n3099_records_after="$(pending_records)"
 judge "INFRA-3099 k1 the broker wrote no credential-request record for it (it held $n3099_records before the run and $n3099_records_after after it)" \
 	is "$n3099_records" "$n3099_records_after"
 n3099_without_repositories="$(asked_repositories "$n3099_mark" '[]')"
-judge "INFRA-3099 k1 the search for the cause asked GitHub once again, with the repositories left out ($n3099_without_repositories of its token requests named none)" \
-	is 1 "$n3099_without_repositories"
+judge "INFRA-3099 k1 the search for the cause asked GitHub again with the repositories left out ($n3099_without_repositories of its token requests named none)" \
+	counted "$n3099_without_repositories"
 n3099_one_repository="$(asked_repositories "$n3099_mark" "[\"$REFUSED_REPOSITORY\"]")"
-judge "INFRA-3099 k1 GitHub was asked for $REFUSED_REPOSITORY alone in one token request, the mint of the narrowing itself, with no second one, which is why the search needs no probe for it ($n3099_one_repository of its token requests named it alone)" \
-	is 1 "$n3099_one_repository"
+judge "INFRA-3099 k1 GitHub was asked for $REFUSED_REPOSITORY alone, by the mint of the narrowing itself, which is why the search needs no probe for it ($n3099_one_repository of its token requests named it alone)" \
+	counted "$n3099_one_repository"
 n3099_minted="$(minted_tokens "$n3099_mark" "$REFUSED_REPOSITORY")"
 n3099_given_back="$(($(revokes) - n3099_revokes))"
 judge "INFRA-3099 k1 every token the stand-in minted for that run was given back (it minted $n3099_minted and was sent $n3099_given_back revokes)" \

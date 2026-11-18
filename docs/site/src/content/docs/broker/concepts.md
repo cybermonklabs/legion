@@ -599,19 +599,14 @@ The broker evaluates every name
   account its `github-owners` tag lists. A release can narrow that token, with the `github_app`
   body of `POST /v1/grants/{id}/values` or the exec form's `--github-owner`, `--github-repo` and
   `--github-read-only`: the token of one listed account alone, limited to named repositories of
-  that account, to read access, or to both. Read access is `contents: read`, `metadata: read` and
-  `pull_requests: read`, and `issues`, `actions`, `checks`, `statuses` and `attestations` at
-  `read` where the App's installation holds them: the broker reads what the installation holds
-  from GitHub's list of the App's installations, asks only for those, and logs one warning for
-  each permission it leaves out. An installation that does not hold contents, metadata or pull
-  requests is refused `NARROWING_REFUSED`, and the broker asks GitHub for no token. A token
-  limited to repositories alone keeps every permission the App holds, its organization
-  permissions among them, so a token for a machine that must only read is limited to read access
-  too. A narrowing to an account the tag does not list is refused `NARROWING_OWNER_NOT_LISTED`,
-  and one GitHub refuses, such as a repository the installation does not reach,
-  `NARROWING_REFUSED`; the broker releases a narrowed token only once GitHub's answer shows it
-  holds no more. It narrows that release alone; the grant's next release is owner-wide unless it
-  narrows too. A request that
+  that account, to `contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`,
+  or to both. An App whose installation has not been granted Actions gets the other three. A token limited to
+  repositories alone keeps every permission the App holds, its organization permissions among
+  them, so a token for a machine that must only read is limited to read access too. A narrowing
+  to an account the tag does not list is refused `NARROWING_OWNER_NOT_LISTED`, and one GitHub
+  refuses, such as a repository the installation does not reach, `NARROWING_REFUSED`; the broker
+  releases a narrowed token only once GitHub's answer shows it holds no more. It narrows that
+  release alone; the grant's next release is owner-wide unless it narrows too. A request that
   asks for a narrowing carries that same `github_app` body (`POST /v1/requests`). Where a person
   must approve that request, the broker decides the narrowing before the approval request, so a
   narrowing it cannot serve costs nobody an approval. It refuses the request then, and nobody is
@@ -620,10 +615,8 @@ The broker evaluates every name
   (`NARROWING_OWNER_NOT_LISTED`), a name behind the airlock (`NARROWING_BEHIND_AIRLOCK`), an App
   with no installation on the account (`422 NARROWING_REFUSED` on the request, whose message
   says `has no installation on`, where the release of a grant answers it `502 MINT_FAILED`), and
-  a narrowing GitHub refuses or a read-only one for an installation without contents, metadata
-  or pull requests (`NARROWING_REFUSED`). For a narrowing that names repositories or read access,
-  it mints the token the release would mint, where the release would mint one, and revokes it at
-  once. It checks a
+  a narrowing GitHub refuses (`NARROWING_REFUSED`). For a narrowing that names repositories or
+  read access, it mints the token the release would mint and revokes it at once. It checks a
   narrowing to an account alone from the App's list of
   installations and mints no token for it: such a narrowing sends GitHub no repositories and no
   permissions, so GitHub's answer to its token request can refuse the App but not the narrowing.

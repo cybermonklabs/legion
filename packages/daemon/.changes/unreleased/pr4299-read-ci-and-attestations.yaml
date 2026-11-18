@@ -6,8 +6,7 @@ body: |-
     asks for `attestations: read`. Each request is still cut to what the App's installation holds,
     with one warning for each permission it leaves out. So a role and the controller can read the
     check runs, the commit statuses, the pull request check rollup and the attestations of a
-    private repository. The read set has one declaration, `packages/envoy/githubread`, which the
-    secrets broker's read-only narrowing also asks for.
+    private repository.
 time: 2026-11-17T12:46:28Z
 custom:
     Issue: pr4299

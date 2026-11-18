@@ -69,16 +69,16 @@ An owner the command releases nothing for is an App not installed there.
 With no key, the daemon reads each App's bot login from GraphQL's `viewer` under one of its
 tokens, refuses a token whose `GET /apps/<slug>` names an id other than `app_id`, and reads whether
 the App is installed on a repository from that owner's installation's repository list.
-A read-only token holds what the command's read-only release gives.
-The broker's read-only narrowing and a configured key ask for one set, the read set that
-`packages/envoy/githubread` declares: `contents`, `metadata`, `pull_requests`, `issues`,
-`actions`, `checks`, `statuses` and `attestations`, each at `read`.
-Each asks for that set cut to what the App's installation holds, and leaves out each permission
-the installation does not hold: the broker logs one warning for each at every release, and the
-daemon one warn record for each App, owner and permission.
-The broker refuses a read-only release for an installation that does not hold `contents`,
-`metadata` or `pull_requests`, and asks GitHub for no token.
-A configured key reads what the installation is granted before each mint.
+A read-only token holds what the command's read-only release gives: the broker's holds
+`contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, and the first three
+alone where the App's installation has not been granted Actions.
+A configured key asks for a set that differs from the broker's: `contents`, `metadata`,
+`pull_requests`, `issues`, `actions`, `checks`, `statuses` and `attestations`, each at `read`
+(`readPermissions` in `packages/daemon/internal/appauth`), so a role reads an issue, a check run,
+a commit status or an attestation through a key-minted read-only token and not through the
+broker's.
+A configured key reads what the installation is granted before each mint and asks for its set
+cut down to it.
 The daemon passes the command's stderr through as it runs, with every GitHub token in it redacted,
 so `agent-secrets`' line naming the pending request appears in the daemon's log while the review
 App waits for its grant.

@@ -161,7 +161,7 @@ env:
   # of them changes the binary. The notices scripts and the target list are runtime inputs of the
   # release archives and worker image, so any change to one needs a new tag rather than a CI-only
   # rebuild. The envoy packages below are every package `go list -deps ./cmd/legion` reaches
-  # through the module's `replace` on ../envoy — its nine public packages, and the internal ones
+  # through the module's `replace` on ../envoy — its eight public packages, and the internal ones
   # they pull in with them: the splitter, parser, model, contracts, text reader, cache and case
   # fold behind `dispatchbody`, the token client, its wire, its lock and the identity reader behind
   # `brokerclient`, and the contracts behind `sessiontiming` and `subjectforms` — so a change to
@@ -176,9 +176,9 @@ env:
     --patch-path scripts/go-third-party-notices.sh --patch-path scripts/assemble-third-party-notices.sh
     --patch-path .github/go-release-targets.json
     -- packages/daemon/ packages/daemon/internal/prompts/roles/ packages/daemon/internal/prompts/go/
-    packages/envoy/brokerclient/ packages/envoy/dispatchbody/ packages/envoy/githubread/
-    packages/envoy/listenfd/ packages/envoy/migrationid/ packages/envoy/natsversion/
-    packages/envoy/roleholder/ packages/envoy/sessiontiming/ packages/envoy/subjectforms/
+    packages/envoy/brokerclient/ packages/envoy/dispatchbody/ packages/envoy/listenfd/
+    packages/envoy/migrationid/ packages/envoy/natsversion/ packages/envoy/roleholder/
+    packages/envoy/sessiontiming/ packages/envoy/subjectforms/
     packages/envoy/internal/broker/oauthwire/ packages/envoy/internal/brokerclient/
     packages/envoy/internal/contracts/ packages/envoy/internal/ctxlock/
     packages/envoy/internal/dispatch/bytelru/ packages/envoy/internal/dispatch/itemblocks/

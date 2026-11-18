@@ -654,7 +654,7 @@ func memoryGuardKillEventID(report shimwire.LauncherMemoryKill) string {
 
 // implementTokens is the workflow's implement App as a sandbox's provisioning token source: every
 // pod's workspace-fetch clones with an installation token minted for the owner of the repository
-// it fetches and narrowed to reading (the read lease's set, which is githubread's read set, each
+// it fetches and narrowed to reading (the read lease's set, appauth's readPermissions, each
 // permission at read: appauth.Tokens.ReadToken), nothing a clone, a fetch or a repository cache
 // could write with. Every refusal is returned as it came, with no second mint: GitHub's trouble
 // (appauth.TransientError, a 5xx or a rate-limited 422), an App with no installation on the
