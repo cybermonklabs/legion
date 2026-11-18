@@ -153,8 +153,8 @@ func TestOnlyTheSettleWritesTheEndOfARun(t *testing.T) {
 //     (noteIssueWrite), which the settle reads; the linger close is named to the fact itself
 //     (closeLinger), which refuses a ctx no fact opened (errOutsideFact);
 //   - each call of those writers is in a package whose writes run in a fact or the boot's
-//     reconcile, both of which settle (workflow, admit), or is listed here: the outbox's two drops
-//     of a fence, each in a transaction that settles as a fact does (its settling).
+//     reconcile, both of which settle (workflow, admit), or is listed here: the outbox's three
+//     drops of a fence, each in a transaction that settles as a fact does (its settling).
 //
 // A writer that stops noting the issue, or a call added anywhere else, fails by name.
 func TestEveryWriterOfTheEndRulesInputsIsSettled(t *testing.T) {
@@ -207,11 +207,13 @@ func TestEveryWriterOfTheEndRulesInputsIsSettled(t *testing.T) {
 			t.Errorf("record's %s writes an input of the end rule and notes no issue (noteIssueWrite): the settle would not read the run it ends", writer)
 		}
 	}
-	// The outbox's two drops of a fence, and the function that runs each in a settling
-	// transaction: handOverRule.refused's drop runs in finishRefused's.
+	// The outbox's three drops of a fence, and the function that runs each in a settling
+	// transaction: handOverRule.refused's drop runs in finishRefused's, and the drop of a cancelled
+	// fence in the transaction of handOverHolds's own read.
 	want := map[string]string{
-		"../daemon/outbox.go:refused:DeleteHandoverAt":      "../daemon/outbox.go:finishRefused",
-		"../daemon/outbox.go:dropHandover:DeleteHandoverAt": "../daemon/outbox.go:dropHandover",
+		"../daemon/outbox.go:refused:DeleteHandoverAt":       "../daemon/outbox.go:finishRefused",
+		"../daemon/outbox.go:dropHandover:DeleteHandoverAt":  "../daemon/outbox.go:dropHandover",
+		"../daemon/outbox.go:handOverHolds:DeleteHandoverAt": "../daemon/outbox.go:handOverHolds",
 	}
 	for site, n := range calls {
 		settled, listed := want[site]

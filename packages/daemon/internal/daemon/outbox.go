@@ -1325,34 +1325,35 @@ func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payl
 
 // handOverHolds is an early check only; the durable fence is enforced again by intake when the
 // PATCH's daemon event arrives. The one transaction confirms this row still owns the child and the
-// linger it names, avoiding a needless write once a root reopen already removed that fence.
+// linger it names, avoiding a needless write once a root reopen already removed that fence. A fence
+// a re-admission cancelled is dropped in that same transaction, which holds the lock every fact
+// applies under and settles as a fact does (settling). DeleteHandoverAt matches the tree and the
+// linger generation, not the cancel, so a fact that put the fence again between a read and a drop
+// of their own would lose it; under the lock, such a fact waits for the drop and stands after it.
 func (r *outbox) handOverHolds(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) (bool, error) {
 	var issue, root *record.Issue
 	var handover *record.Handover
-	var cancelled bool
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+	scoped, settled := r.settling(ctx)
+	if err := settled(func(tx pgx.Tx) error {
 		var err error
-		issue, err = r.records.Issue(ctx, tx, row.Issue)
+		issue, err = r.records.Issue(scoped, tx, row.Issue)
 		if err != nil || issue == nil {
 			return err
 		}
-		handover, err = r.records.Handover(ctx, tx, row.Issue)
+		handover, err = r.records.Handover(scoped, tx, row.Issue)
 		if err != nil || handover == nil {
 			return err
 		}
 		if handover.Cancelled {
-			cancelled = true
+			if err := r.records.DeleteHandoverAt(scoped, tx, row.Issue, payload.HandOverTree, payload.HandOverLinger); err != nil {
+				return fmt.Errorf("drop the cancelled hand-over: %w", err)
+			}
 			return nil
 		}
-		root, err = r.records.Issue(ctx, tx, handover.Tree)
+		root, err = r.records.Issue(scoped, tx, handover.Tree)
 		return err
 	}); err != nil {
 		return false, fmt.Errorf("read hand-over of %s: %w", row.Issue, err)
-	}
-	if cancelled {
-		if err := r.dropHandover(ctx, row.Issue, payload); err != nil {
-			return false, fmt.Errorf("drop the cancelled hand-over of %s: %w", row.Issue, err)
-		}
 	}
 	if issue != nil && handover != nil && !handover.Cancelled && root != nil && issue.Tree == handover.Tree && handover.Tree == payload.HandOverTree &&
 		handover.Generation == payload.HandOverLinger && root.LingersAt(handover.Generation) {
@@ -1363,10 +1364,10 @@ func (r *outbox) handOverHolds(ctx context.Context, row record.OutboxRow, payloa
 	return false, nil
 }
 
-// dropHandover deletes the fence of a hand-over a person's move superseded, or one a re-admission
-// cancelled, but only this row's own: the tree and linger generation the row names. A newer
-// linger's fence on the same child is its own row's to settle. The fence is an input of the end of
-// a merge's run, so the delete settles as a fact does (settling).
+// dropHandover deletes the fence of a hand-over a person's move superseded, but only this row's
+// own: the tree and linger generation the row names. A newer linger's fence on the same child is
+// its own row's to settle. The fence is an input of the end of a merge's run, so the delete
+// settles as a fact does (settling).
 func (r *outbox) dropHandover(ctx context.Context, issue string, payload record.StatusWrite) error {
 	scoped, settled := r.settling(ctx)
 	return settled(func(tx pgx.Tx) error {
