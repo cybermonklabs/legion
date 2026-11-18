@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  Dispatch's live view of an agent session says three things it did not say:
+  - It takes the context ring away when the session sends `context-cleared`, live and after a
+    rebuild from the replay, and closes the ring's panel.
+  - Its header reads **Not answering**, with one line, when the relay hears nobody, when the
+    session list marks the session unresponsive, or when the session leaves the list while the view
+    is open. The line shows above stored messages too, not only in an empty transcript.
+  - The live view, the Inbox thread, the agent card, the mention composer and the default send
+    modes treat a session whose capabilities hold no delivery mode as one that takes no messages,
+    an empty list included, and the warning names the cause for each list.
