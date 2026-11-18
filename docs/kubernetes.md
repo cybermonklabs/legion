@@ -2055,17 +2055,20 @@ The kind check keeps the name after the rollback, and the rollback needs no stat
 
 #### Rolling back the release that reports claims out of reach
 
-This release's four migrations add the daemon's record of which claims Envoy cannot reach, and of what it told and did about them.
+This release's six migrations add the daemon's record of which claims Envoy cannot reach, of what it told and did about them, of which of its fleet alert lines are open, and of when the daemon received each activity report.
 `20261116012459_claim_reach_and_prior_boot_tokens` adds the columns `claims.reach` and `claims.relaunched_at`, the table `claim_boot_tokens` and the trigger `claims_archive_boot_token`.
 `20261116082000_reach_notice_kinds` adds the outbox kinds `reach_notice` and `reach_controller_notice` to the outbox's kind check (`outbox_kind_check`).
 Its list names `role_holders_publish` too, and the list of `20261116165926_role_holders_publish` names both reach kinds, so the check admits every kind whichever of the two a database applies last: a database that recorded `20261116165926` before this release applies `20261116082000` last, over the role-holders publications its outbox holds.
 `20261116092312_reach_records_kept_with_their_acts` adds the columns `outbox.held_at` and `claims.relaunch_generation` and the table `reach_project_notices`.
 `20261116164153_outbox_copy_stored_for_its_session` adds the columns `outbox.stored_for` and `outbox.stored_generation`: the session the listener stored a role message's or hook prompt's publish for (a 504 `receipt_timeout` naming that holder), which reads it from its own consumer, so the row finishes with no new publish once a newer process of the claim says ready on that session.
-A rollback needs no SQL statement.
+`20261118133133_fleet_alert_lines` adds the table `fleet_alert_lines`, one row for each `LEGION FLEET ALERT` line that is open: its project, its case and the claim it names.
+`20261118134019_claim_activity_sent_at` adds the columns `claims.activity_sent_at` and `claims.activity_sent_generation`: the session's own time of its last activity report, and the launch that report was of.
+From this release `claims.activity_at` is the time the daemon received the report, on the daemon's clock, where it was the session's time.
+A rollback needs one SQL statement, the one in **Activity reports go back to the session's time** below.
 
 - **The columns and the tables stay as they stand.**
-  An earlier release names none of `claims.reach`, `claims.relaunched_at`, `claims.relaunch_generation`, `outbox.held_at`, `outbox.stored_for`, `outbox.stored_generation`, `claim_boot_tokens` or `reach_project_notices` in any statement.
-  So its upserts and its outbox retries leave each column as it stands, it writes no row of either table, and a daemon rolled forward again reads all of it back.
+  An earlier release names none of `claims.reach`, `claims.relaunched_at`, `claims.relaunch_generation`, `claims.activity_sent_at`, `claims.activity_sent_generation`, `outbox.held_at`, `outbox.stored_for`, `outbox.stored_generation`, `claim_boot_tokens`, `reach_project_notices` or `fleet_alert_lines` in any statement.
+  So its upserts and its outbox retries leave each column as it stands, no statement of its own writes a row of those tables (the trigger below writes `claim_boot_tokens` for it), and a daemon rolled forward again reads all of it back.
 
 - **A rolled-back daemon's launches are archived too.**
   The trigger `claims_archive_boot_token` keeps, in `claim_boot_tokens`, the boot token hash that a write of `claims.boot_token_hash` replaces, in the statement that replaces it, whatever binary makes that write.
@@ -2078,6 +2081,23 @@ A rollback needs no SQL statement.
 - **A held role message is not held by the earlier release.**
   An earlier release reads no `held_at`: it publishes a role message or a hook prompt that this release held as soon as a session holds its role, and finishes it undelivered while no session does.
   Nor does it read `stored_for`: it publishes such a row again under the same key, and the listener keeps answering 504 `receipt_timeout` for the copy the stream already holds, so the row runs on its backoff until the roll forward finishes it.
+
+- **No fleet alert line is written during the rollback.**
+  The earlier release has no `LEGION FLEET ALERT` line at all and reads no row of `fleet_alert_lines`, so no case of this release reaches a person while it runs.
+  At the roll forward, the first sweep closes every stored line whose case no longer holds: a case the daemon judges that has ended, and a case this configuration does not judge.
+  So a case that ended during the rollback does not silence the next line of the same case and claim.
+  A stored line whose case still holds stays open, and the daemon does not write it again.
+
+- **Activity reports go back to the session's time.**
+  The earlier release keeps a report only where the session's time of it is no earlier than `claims.activity_at`, which this release wrote as the time the daemon received the last report.
+  Without the statement below, a pod whose clock runs X behind the daemon's has its reports dropped for up to X after the rollback, and the idle rule reads that claim's last report until then.
+  Run it with the daemon stopped, before you start the earlier release:
+
+  ```sh
+  psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -c 'update claims set activity_at = activity_sent_at where activity_sent_at is not null'
+  ```
+
+  A daemon rolled forward again orders a claim's reports by `activity_sent_at` from its next report on.
 
 #### Rolling back the release whose update round ends at its bound
 

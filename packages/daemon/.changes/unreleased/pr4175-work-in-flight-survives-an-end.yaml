@@ -43,8 +43,17 @@ body: |-
     where they ran on 2 hours, and the implementer and reviewer on 8 hours, as before.
     An Oh My Pi session whose previous process ended in a turn is told so when it is resumed, and
     a session whose Envoy heartbeat stopped registers again (`@sjawhar/pi-envoy`).
-    Four migrations add the claims' reach record, and a rollback needs no SQL statement
-    (`docs/kubernetes.md`, "Rolling back the release that reports claims out of reach").
+    Six migrations add what this needs: the claims' reach record and the hash of every boot token
+    a launch replaced (`20261116012459_claim_reach_and_prior_boot_tokens`), the two outbox kinds of
+    the reach notices (`20261116082000_reach_notice_kinds`), the records a restart must keep of a
+    held outbox row, of a relaunch's generation and of the notices no claim's reach record holds
+    (`20261116092312_reach_records_kept_with_their_acts`), the session the listener stored a role
+    message's or hook prompt's copy for (`20261116164153_outbox_copy_stored_for_its_session`), the
+    open fleet alert lines (`20261118133133_fleet_alert_lines`), and the session's own time of an
+    activity report and its launch generation (`20261118134019_claim_activity_sent_at`), since
+    `activity_at` is now the time the daemon received the report. A rollback runs one statement,
+    which puts `activity_at` back to the session's time (`docs/kubernetes.md`, "Rolling back the
+    release that reports claims out of reach").
 time: 2026-11-18T13:20:10Z
 custom:
     Issue: pr4175
