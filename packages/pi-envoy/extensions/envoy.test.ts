@@ -23224,6 +23224,30 @@ describe("the watchdog over a heartbeat that stopped", () => {
     }
   });
 
+  test("after two restarts, timers that come back run one registration loop, not one per heartbeat armed", async () => {
+    const session = await bootWatchdog("watchdog-two-restarts");
+    try {
+      const armed = session.intervals.length;
+      // The watchdog finds the stopped heartbeat and arms it again, twice: each restart's own
+      // registration goes stale a window later with no tick of the host's timer in between.
+      await until(
+        () => session.intervals.length >= armed + 2,
+        "the watchdog's second restart",
+        5_000
+      );
+      await settle();
+      // The host's timers come back: every interval armed in this process fires, the stopped
+      // one and both restarts' among them.
+      const before = session.registrations.length;
+      session.tick();
+      await settle();
+      // One heartbeat is live, so one registration goes out for one round of the timers.
+      expect(session.registrations.length - before).toBe(1);
+    } finally {
+      await session.stop();
+    }
+  });
+
   test("a session stopped cleanly does not come back", async () => {
     const session = await bootWatchdog("watchdog-stopped");
     await session.stop();

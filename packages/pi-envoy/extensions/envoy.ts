@@ -841,7 +841,8 @@ export default function envoyExtension(pi: PiApi): void {
   // the transcript path leaves no entry behind for a subagent to resolve (`src/envoy-session.ts`).
   let recordedSessionKey: string | undefined;
   let heartbeatRegistered = false;
-  // How many heartbeats this process has armed: the first is the one the rig's seam stops.
+  // How many heartbeats this process has armed, which numbers each: the first is the one the rig's
+  // seam stops, and only the one armed last runs (`ensureHeartbeat`).
   let heartbeatArmings = 0;
   // When this process armed its first heartbeat, when the live heartbeat's own interval tick
   // last ran, and the tick itself, which the watchdog over a stopped heartbeat reads and runs
@@ -3389,12 +3390,18 @@ export default function envoyExtension(pi: PiApi): void {
     const firstHeartbeat = heartbeatArmings === 0;
     const armedAt = Date.now();
     heartbeatArmings += 1;
+    // The host's interval hands back no handle to clear (`SessionContext.setInterval`), so a
+    // heartbeat the watchdog has armed again since is stopped by its number: each of its calls,
+    // its interval's and its retry's, returns at once, and one heartbeat runs one registration
+    // loop whatever the host's timers do once they fire again.
+    const generation = heartbeatArmings;
     if (heartbeatArmedAt === undefined) heartbeatArmedAt = armedAt;
     /** One pass of the heartbeat. `cause` says who called it: its own interval, the extra call a
      *  failed tick buys (`armRetry`), or the watchdog over a heartbeat that stopped. Only the
      *  interval's own call says the host's timer fired, which is what the watchdog reads: its
      *  own call would otherwise answer its own question. */
     const tick = (cause: "interval" | "retry" | "watchdog"): void => {
+      if (generation !== heartbeatArmings) return;
       const fromRetry = cause === "retry";
       // The end this process's own watchdog exists for, as the rig drives it: this timer stops
       // firing, and nothing of the tick below runs again (`../src/registration-watchdog`).
