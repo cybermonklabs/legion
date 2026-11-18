@@ -1,0 +1,4 @@
+kind: Fixed
+body: |-
+  `legion gh` never runs itself as the real gh. A `LEGION_GH_PATH` that is the wrapper first on PATH, or another `legion gh` wrapper script, is refused with exit 2 before anything runs. A real gh that leads back to `legion gh` when it runs, such as a gh shim that takes the next gh on PATH, is refused there, so its help read fails and nothing runs again. Before, each such read ran `legion gh` again without end.
+  A help read of the real gh that runs past its timeout now stops everything gh started, not gh alone.
