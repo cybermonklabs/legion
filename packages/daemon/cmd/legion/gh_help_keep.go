@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -29,15 +28,18 @@ import (
 // refused is never kept: its refusal is read again on the next call, as it was before there were
 // copies.
 //
-// The copies are under the role's own state directory, $XDG_STATE_HOME/legion-gh/help, as the
-// guard keeps its visibility answers beside them (leakguard's keepVisibility). Each is a file of
-// mode 0600, in a directory of mode 0700, both owned by this process's user. A copy that is not,
-// or whose directory is not, is not read: another user that could write it could change what
-// this wrapper parses, and so which owner's token a command is run with. With no XDG_STATE_HOME,
-// no GH_CONFIG_DIR, or a gh path that is not absolute, nothing is kept and every help is read
-// from gh.
+// The copies are under the role's own state directory, $XDG_STATE_HOME/legion-gh/help, one for
+// each command path and each set of the variables ghHelpEnvDigest reads. They are written as files
+// of mode 0600 in a directory of mode 0700 (ghStateDir, ghReplaceFile), and a copy is read only
+// where neither it nor its directory is a link and the user this process runs as owns both, with
+// no permission for their group or for others (ghOpenPrivate): another user that could write a
+// copy could change what this wrapper parses, and so which owner's token a command is run with.
+// In a pod every role runs as one user, so this keeps out another user and not another role. With
+// no XDG_STATE_HOME, no GH_CONFIG_DIR, or a gh path that is not absolute or whose links end at a
+// file not named gh, nothing is kept and every help is read from gh.
 type ghHelpKeep struct {
-	gh string
+	// fresh is gh's own answer for a path: readGhHelp of the gh the keep is for.
+	fresh func(path []string) (string, error)
 	// dir is where the copies are, "" where nothing is kept.
 	dir string
 	// uid is the user a copy and its directory must belong to: this process's.
@@ -50,9 +52,8 @@ type ghHelpKeep struct {
 // refuses to print any help where config.yml or hosts.yml cannot be read or parsed. It lists the
 // extensions it finds in $XDG_DATA_HOME/gh/extensions ($HOME/.local/share/gh/extensions where
 // XDG_DATA_HOME is unset); an extension's name is the name of its entry there, so adding,
-// removing or renaming one changes that directory's own modification time. Env is a digest of the
-// variables that may change how gh prints (ghHelpEnvDigest): a digest, so no value of them is
-// written into a copy.
+// removing or renaming one changes that directory. Env is a digest of the variables that may
+// change how gh prints (ghHelpEnvDigest): a digest, so no value of them is written into a copy.
 type ghHelpInputs struct {
 	Gh         ghFileState `json:"gh"`
 	Config     ghFileState `json:"config"`
@@ -62,17 +63,19 @@ type ghHelpInputs struct {
 }
 
 // ghFileState is what tells one version of a file apart from another without reading it: its
-// absolute path, and its device, inode, size, modification time and mode, or that it is missing.
-// A gh replaced by another build, in place or by a rename over it, differs in at least one of
-// them, and so does a file gh can no longer read.
+// absolute path, and its device, inode, size, modification time, change time and mode, or that
+// it is missing. A gh replaced by another build, in place or by a rename over it, differs in at
+// least one of them, and so does a file gh can no longer read. A rewrite in place that keeps the
+// size and sets the modification time back still moves the change time, which no user can set.
 type ghFileState struct {
-	Path    string `json:"path"`
-	Missing bool   `json:"missing,omitempty"`
-	Dev     uint64 `json:"dev,omitempty"`
-	Ino     uint64 `json:"ino,omitempty"`
-	Size    int64  `json:"size,omitempty"`
-	ModTime int64  `json:"mtime,omitempty"`
-	Mode    uint32 `json:"mode,omitempty"`
+	Path       string `json:"path"`
+	Missing    bool   `json:"missing,omitempty"`
+	Dev        uint64 `json:"dev,omitempty"`
+	Ino        uint64 `json:"ino,omitempty"`
+	Size       int64  `json:"size,omitempty"`
+	ModTime    int64  `json:"mtime,omitempty"`
+	ChangeTime int64  `json:"ctime,omitempty"`
+	Mode       uint32 `json:"mode,omitempty"`
 }
 
 // ghHelpEntry is one kept copy: the help gh printed for Path under Inputs.
@@ -88,10 +91,20 @@ type ghHelpEntry struct {
 var ghPrintingVariables = map[string]bool{"CLICOLOR": true, "CLICOLOR_FORCE": true, "NO_COLOR": true, "TERM": true, "COLORTERM": true}
 
 // newGhHelpKeep is the keep of the gh at the path gh for a call run under env.
+//
+// The gh binary is the file gh's links end at, and only a file named gh is taken for one. A
+// compiled multiplexer, such as mise's shim, is a link to the multiplexer itself, which picks the
+// gh it runs on each run (from the working directory's mise.toml), so its own file says nothing
+// of the gh that prints the help, and nothing is kept for it. A multiplexer copied or hard-linked
+// under the name gh is not told apart.
 func newGhHelpKeep(gh string, env map[string]string) *ghHelpKeep {
-	keep := &ghHelpKeep{gh: gh, uid: os.Getuid()}
+	keep := &ghHelpKeep{fresh: func(path []string) (string, error) { return readGhHelp(gh, path) }, uid: os.Getuid()}
 	state, config := env["XDG_STATE_HOME"], env["GH_CONFIG_DIR"]
 	if state == "" || config == "" || !filepath.IsAbs(gh) {
+		return keep
+	}
+	binary, err := filepath.EvalSymlinks(gh)
+	if err != nil || filepath.Base(binary) != "gh" {
 		return keep
 	}
 	data := filepath.Join(env["HOME"], ".local", "share", "gh")
@@ -99,8 +112,7 @@ func newGhHelpKeep(gh string, env map[string]string) *ghHelpKeep {
 		data = filepath.Join(xdg, "gh")
 	}
 	var inputs ghHelpInputs
-	var err error
-	if inputs.Gh, err = ghFileStateOf(gh); err != nil || inputs.Gh.Missing {
+	if inputs.Gh, err = ghFileStateOf(binary); err != nil || inputs.Gh.Missing {
 		return keep
 	}
 	if inputs.Config, err = ghFileStateOf(filepath.Join(config, "config.yml")); err != nil {
@@ -125,18 +137,18 @@ func ghFileStateOf(path string) (ghFileState, error) {
 	if err != nil {
 		return ghFileState{}, err
 	}
-	info, err := os.Stat(abs)
+	var st unix.Stat_t
+	err = unix.Stat(abs, &st)
 	if errors.Is(err, fs.ErrNotExist) {
 		return ghFileState{Path: abs, Missing: true}, nil
 	}
 	if err != nil {
 		return ghFileState{}, err
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return ghFileState{}, errors.New("no device and inode for " + abs)
-	}
-	return ghFileState{Path: abs, Dev: uint64(stat.Dev), Ino: uint64(stat.Ino), Size: info.Size(), ModTime: info.ModTime().UnixNano(), Mode: uint32(info.Mode())}, nil
+	return ghFileState{
+		Path: abs, Dev: uint64(st.Dev), Ino: st.Ino, Size: st.Size,
+		ModTime: st.Mtim.Nano(), ChangeTime: st.Ctim.Nano(), Mode: uint32(st.Mode),
+	}, nil
 }
 
 // ghHelpEnvDigest is the sha256 of every GH_* variable of env and every one ghPrintingVariables
@@ -155,16 +167,16 @@ func ghHelpEnvDigest(env map[string]string) string {
 }
 
 // read is gh's help of path: the kept copy where one answers, and otherwise gh's own answer
-// (readGhHelp), which is kept when gh printed it.
+// (fresh), which is kept when gh printed it.
 func (k *ghHelpKeep) read(path []string) (string, error) {
 	if k.dir == "" {
-		return readGhHelp(k.gh, path)
+		return k.fresh(path)
 	}
 	name := k.fileName(path)
 	if help, ok := k.kept(name, path); ok {
 		return help, nil
 	}
-	help, err := readGhHelp(k.gh, path)
+	help, err := k.fresh(path)
 	if err == nil {
 		k.keep(name, path, help)
 	}
@@ -173,7 +185,8 @@ func (k *ghHelpKeep) read(path []string) (string, error) {
 
 // fileName is the name of path's copy: the sha256 of the places its inputs are read from, the
 // variables' digest and the path. A new gh at the same place writes over the copy the old one
-// left, so the directory holds one copy per path a role reads.
+// left. Each set of the variables the digest reads (another GH_REPO, another GH_PAGER) has copies
+// of its own, which nothing removes.
 func (k *ghHelpKeep) fileName(path []string) string {
 	named, err := json.Marshal([]any{k.inputs.Gh.Path, k.inputs.Config.Path, k.inputs.Extensions.Path, k.inputs.Env, append([]string{}, path...)})
 	if err != nil {
@@ -184,27 +197,14 @@ func (k *ghHelpKeep) fileName(path []string) string {
 	return hex.EncodeToString(sum[:]) + ".json"
 }
 
-// kept is the help the copy name holds for path, and whether it answers: a regular file, not a
-// link, in a directory that is not a link, both private to k.uid (private), holding path's help
-// under exactly k's inputs.
+// kept is the help the copy name holds for path, and whether it answers: a file ghOpenPrivate
+// opens for k.uid, holding path's help under exactly k's inputs.
 func (k *ghHelpKeep) kept(name string, path []string) (string, bool) {
-	dir, err := os.OpenFile(k.dir, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
-	if err != nil {
+	file, ok := ghOpenPrivate(k.dir, name, k.uid)
+	if !ok {
 		return "", false
 	}
-	defer dir.Close()
-	if info, err := dir.Stat(); err != nil || !info.IsDir() || !k.private(info) {
-		return "", false
-	}
-	fd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return "", false
-	}
-	file := os.NewFile(uintptr(fd), filepath.Join(k.dir, name))
 	defer file.Close()
-	if info, err := file.Stat(); err != nil || !info.Mode().IsRegular() || !k.private(info) {
-		return "", false
-	}
 	content, err := io.ReadAll(file)
 	if err != nil {
 		return "", false
@@ -216,46 +216,16 @@ func (k *ghHelpKeep) kept(name string, path []string) (string, bool) {
 	return entry.Help, true
 }
 
-// keep writes help as path's copy name: into a file of mode 0600 made beside it and renamed over
-// it, so a reader finds the old copy or the new one whole. Nothing is written where the directory
-// cannot be made private to k.uid. A copy that cannot be written is not an error: the next call
-// reads the help from gh, as this one did.
+// keep writes help as path's copy name (ghReplaceFile), in a directory ghStateDir makes for k.uid.
+// A copy that cannot be written is not an error: the next call reads the help from gh, as this one
+// did.
 func (k *ghHelpKeep) keep(name string, path []string, help string) {
-	if err := os.MkdirAll(k.dir, 0o700); err != nil {
-		return
-	}
-	if err := os.Chmod(k.dir, 0o700); err != nil {
-		return
-	}
-	if info, err := os.Lstat(k.dir); err != nil || !info.IsDir() || !k.private(info) {
+	if !ghStateDir(k.dir, k.uid) {
 		return
 	}
 	encoded, err := json.Marshal(ghHelpEntry{Inputs: k.inputs, Path: path, Help: help})
 	if err != nil {
 		return
 	}
-	tmp, err := os.CreateTemp(k.dir, ".help-")
-	if err != nil {
-		return
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return
-	}
-	if _, err := tmp.Write(encoded); err != nil {
-		tmp.Close()
-		return
-	}
-	if err := tmp.Close(); err != nil {
-		return
-	}
-	_ = os.Rename(tmp.Name(), filepath.Join(k.dir, name))
-}
-
-// private says whether info is k.uid's and no one else's: owned by that user, with no permission
-// for the file's group or for others.
-func (k *ghHelpKeep) private(info os.FileInfo) bool {
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	return ok && int(stat.Uid) == k.uid && info.Mode().Perm()&0o077 == 0
+	ghReplaceFile(filepath.Join(k.dir, name), ".help-", encoded)
 }
