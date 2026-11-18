@@ -1110,6 +1110,63 @@ test("a document built afresh from a rebuilt room reconnects after its socket dr
   });
 });
 
+// What document-refusals.e2e.ts's row of a browser holding the history someone else's rebuild
+// replaced reads off the page. The page typed while its socket was down, and its reconnect meets
+// the rebuilt room, which answers the typed frame not applied, since it parks behind the history
+// the rebuild replaced, and refuses the SyncStep2 that hands that history back. The refusal drops
+// no saved row, so the document the host reads afresh from the rebuilt room (ProofDocument's
+// `onEditRefused`) drops them as rows typed against a rebuilt history, and its connection dot,
+// once connected, says when they were saved.
+test("edits a page typed against the history someone else's rebuild replaced are named as dropped by the document read afresh", async () => {
+  const artifact = artifactId();
+  const history = serverWith("before the rebuild", 100);
+  const rebuilt = rebuiltRoom(history, "after the rebuild", 300);
+  await withProvider(artifact, async ({ connection, refusals, socket, synced }) => {
+    const first = await socket(0);
+    serveInYgoOrder(first, history, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+
+    first.drop();
+    typeInto(connection.doc, " typed offline");
+    const clientId = connection.doc.clientID;
+    await waitFor(async () => expect(await rowsOf(artifact)).toEqual([[artifact, clientId, 1]]));
+    const second = await socket(1);
+    second.receive(syncStep1Frame(Y.encodeStateVector(rebuilt), artifact));
+    // The frame the provider held while no socket was open goes out as the socket first answers.
+    expect(syncPayloads(second, artifact, 2)).toHaveLength(1);
+    second.receive(authenticatedFrame("read-write", artifact));
+    second.receive(syncStep2Frame(Y.encodeStateAsUpdate(rebuilt), artifact));
+    // The typed frame parks behind the replaced history and is answered not applied, and the
+    // SyncStep2 that hands that history back is refused.
+    second.receive(syncStatusFrame(false, artifact));
+    second.receive(syncStatusFrame(false, artifact));
+    second.dispatchEvent(
+      new CloseEvent("close", {
+        code: DOCUMENT_TOO_LARGE_CLOSE_CODE,
+        reason: DOCUMENT_REBUILT_CLOSE_REASON,
+      })
+    );
+    await waitFor(() => expect(refusals).toEqual([DOCUMENT_REBUILT_CLOSE_REASON]));
+    expect(await rowsOf(artifact)).toEqual([[artifact, clientId, 1]]);
+  });
+
+  await withProvider(artifact, async ({ pending, socket, synced }) => {
+    serveInYgoOrder(await socket(0), rebuilt, "read-write", artifact);
+    await waitFor(() => expect(synced()).toBe(true));
+    expect(await rowsOf(artifact)).toEqual([]);
+    const reported = pending.at(-1);
+    if (reported?.rebuiltAt === undefined) {
+      throw new Error(
+        "the document read afresh names no edit it dropped as typed before the rebuild"
+      );
+    }
+    expect(reported.count).toBe(0);
+    expect(connectionLabel("connected", pendingNotice("connected", reported))).toBe(
+      `connected · Edits saved in this browser at ${new Date(reported.rebuiltAt).toLocaleString()} could not be applied: the document was rebuilt since.`
+    );
+  });
+});
+
 test("a real provider closed as busy reconnects, keeps the edit, and says when it is taken", async () => {
   const artifact = artifactId();
   await withProvider(artifact, async (harness) => {

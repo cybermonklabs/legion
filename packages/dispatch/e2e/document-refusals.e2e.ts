@@ -841,7 +841,14 @@ test("a browser holding the history someone else's rebuild replaced is told the 
     await transport.release();
     await expect(page.getByText(REBUILT_ELSEWHERE)).toBeVisible();
     await expect(page.getByRole("button", { name: "Rebuild this document" })).toHaveCount(0);
-    await expect(connectedDot(page)).toHaveText("connected");
+    // The room answered each frame she typed offline not applied, since it parks behind the
+    // history the rebuild replaced, so her saved rows outlive the refusal. The document read
+    // afresh drops them as rows typed against a rebuilt history, and its connection dot says when
+    // they were saved (pending-sync.ts `addsParking`, connection.ts `pendingNotice`): the dot
+    // reads "connected" alone only from the new socket's first frame until that restore reports.
+    await expect(connectedDot(page)).toHaveAccessibleName(
+      /^connected · Edits saved in this browser at .+ could not be applied: the document was rebuilt since\.$/u
+    );
     await expect(documentEditor(page)).toContainText(MEETING_POINT);
     await expect(documentEditor(page)).not.toContainText("typed before the rebuild");
     await expect.poll(() => pendingEditCount(page, artifactId)).toBe(0);
