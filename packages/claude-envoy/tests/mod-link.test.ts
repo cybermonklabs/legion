@@ -241,16 +241,21 @@ test("a request still unanswered when the link closes rejects", async () => {
 
 // The hold is wall-clock behaviour of the running server: the point of the test is that a real
 // poll over a real socket comes back on its own, so the clock here is the one under test.
-test("a poll with nothing to do answers an empty list once the hold is up, rather than hanging", async () => {
-  const dir = await directory()
-  const link = await start(dir, "s7")
-  const startedAt = Date.now()
-  const answer = await call(link.socketPath, "POST", MOD_ROUTE_REQUESTS, {})
-  const held = Date.now() - startedAt
-  expect(answer).toEqual({ status: 200, body: { requests: [] } })
-  expect(held).toBeGreaterThanOrEqual(MOD_POLL_HOLD_MS - 250)
-  expect(held).toBeLessThan(MOD_POLL_HOLD_MS * 2)
-})
+test(
+  "a poll with nothing to do answers an empty list once the hold is up, rather than hanging",
+  async () => {
+    const dir = await directory()
+    const link = await start(dir, "s7")
+    const startedAt = Date.now()
+    const answer = await call(link.socketPath, "POST", MOD_ROUTE_REQUESTS, {})
+    const held = Date.now() - startedAt
+    expect(answer).toEqual({ status: 200, body: { requests: [] } })
+    expect(held).toBeGreaterThanOrEqual(MOD_POLL_HOLD_MS - 250)
+    expect(held).toBeLessThan(MOD_POLL_HOLD_MS * 2)
+  },
+  // The row holds a poll for MOD_POLL_HOLD_MS by design, which is bun's default per-test timeout.
+  MOD_POLL_HOLD_MS * 3,
+)
 
 test("a request made while a poll is held is answered at once, not after the hold", async () => {
   const dir = await directory()
@@ -270,18 +275,23 @@ test("a request made while a poll is held is answered at once, not after the hol
   expect(await answered).toEqual([])
 })
 
-test("the liveness probe is answered while a poll is held", async () => {
-  const dir = await directory()
-  const link = await start(dir, "s9")
-  const poll = call(link.socketPath, "POST", MOD_ROUTE_REQUESTS, {})
-  await untilPolled(link)
-  expect(await call(link.socketPath, "GET", MOD_ROUTE_HEALTH)).toEqual({
-    status: 200,
-    body: { link: MOD_HEALTH_MARKER },
-  })
-  expect(link.connected()).toBe(true)
-  expect(polled(await poll)).toEqual([])
-})
+test(
+  "the liveness probe is answered while a poll is held",
+  async () => {
+    const dir = await directory()
+    const link = await start(dir, "s9")
+    const poll = call(link.socketPath, "POST", MOD_ROUTE_REQUESTS, {})
+    await untilPolled(link)
+    expect(await call(link.socketPath, "GET", MOD_ROUTE_HEALTH)).toEqual({
+      status: 200,
+      body: { link: MOD_HEALTH_MARKER },
+    })
+    expect(link.connected()).toBe(true)
+    expect(polled(await poll)).toEqual([])
+  },
+  // The row holds a poll for MOD_POLL_HOLD_MS by design, which is bun's default per-test timeout.
+  MOD_POLL_HOLD_MS * 3,
+)
 
 test("events reach the owner in the order the mod posted them", async () => {
   const dir = await directory()
