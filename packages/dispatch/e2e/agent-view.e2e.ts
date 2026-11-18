@@ -1,19 +1,33 @@
 import { AGENT_STREAM_LIMITS, capAgentStreamText } from "@legion/contracts";
 
-import { agentRow, type FakeSession, getSentMessages, setLiveSessions } from "./agents";
+import { AGENT_REGISTRY_POLL_MS } from "../web/src/features/refs/agent-registry";
+import {
+  agentRow,
+  type FakeSession,
+  getSentMessages,
+  openAgents,
+  setLiveSessions,
+  setSessionState,
+  setSessionStopped,
+} from "./agents";
 import {
   createAgentMessage,
   createIssue,
   createProject,
   dropAgentStreamViewers,
+  listAgentMessages,
   publishAgentStreamFrame,
   replyToMessageDelivery,
   setAgentStreamResponder,
 } from "./api";
+import { inboxPane, selectRow } from "./inbox-pane";
+import { agentRowId, newestDeliveryOf, seedAgentThread } from "./inbox-threads";
 import { expectConsecutiveLinksClear, expectUncovered } from "./layout";
+import { watchLiveSockets } from "./live-socket-watch";
 import { FRONT_LIVE_VIEW, frontLiveView } from "./live-views";
+import { selectMention } from "./mention";
 import { MESSAGE_REFUSED, navigateInApp, refusePosts } from "./sends";
-import { expect, type Page, test } from "./test";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -873,9 +887,16 @@ test("a session nobody answers for is told so, and recovers when a responder app
 });
 
 /** The live view's own text for a session that answers nothing, word for word as a reader meets
- *  it: `emptyText` in `web/src/features/agent-view/AgentConversationPage.tsx`. */
+ *  it: `NOT_ANSWERING_EMPTY_TEXT` in `web/src/features/agent-view/AgentConversationPage.tsx`. */
 const NOT_ANSWERING =
   "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running. Nothing appears here until it answers.";
+
+/** The line the live view puts above a transcript that holds turns while the session answers
+ *  nothing, word for word: `NOT_ANSWERING_NOTICE` in
+ *  `web/src/features/agent-view/AgentConversationPage.tsx`. A transcript with no turn says
+ *  `NOT_ANSWERING` in its empty slot instead. */
+const NOT_ANSWERING_ABOVE_TURNS =
+  "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running. Only the messages Dispatch keeps show here until it answers.";
 
 /** What this page said about Claude Code until INFRA-1026, in the empty transcript ("Claude Code
  *  sessions don't" stream) and beside the composer (a session "takes messages only when it was
@@ -925,6 +946,246 @@ test("a session that answers nothing is told what is true of the session, and th
     for (const excuse of CLIENT_EXCUSES) {
       expect(shown).not.toMatch(excuse);
     }
+  } finally {
+    await context.close();
+  }
+});
+
+/** What the header says of the view's connection to the session, in the title a reader points at
+ *  it to read: `STATUS` in `web/src/features/agent-view/AgentConversationPage.tsx`. */
+const CONNECTION_LIVE = "Connection to the session's conversation: Live";
+const CONNECTION_NOT_ANSWERING = "Connection to the session's conversation: Not answering";
+
+/** The header's word on the connection, in the view the reader is looking at. */
+function connection(page: Page): Locator {
+  return frontLiveView(page).getByTitle(/^Connection to the session's conversation: /);
+}
+
+/** A change of the registry reaches an open live view on the shell's next poll of the agent list
+ *  (`AGENT_REGISTRY_POLL_MS`, `web/src/features/refs/agent-registry.ts`); this is that poll twice
+ *  over. The row below waits for the poll in real time rather than jumping the page's clock to it
+ *  as other rows do: its three changes would take three 15 s jumps, which leave the live socket
+ *  more than 45 s without a frame unless one arrives between them. That is past the page's
+ *  silence limit (`LIVE_SOCKET_SILENT_MS`, read by `replaceIfSilent` in
+ *  `web/src/api/live-socket.ts`), so the page would replace the socket, and the new one sends
+ *  again the subscribe the row asserts is sent once. */
+const REGISTRY_POLL_TIMEOUT = 2 * AGENT_REGISTRY_POLL_MS;
+
+/** A session of a row's own, listed beside the planner. `last_seen` is taken when the row seeds,
+ *  never at this module's scope, which a worker evaluates once and every later spec of that worker
+ *  ages. */
+function listedSession(
+  sessionID: string,
+  title: string,
+  capabilities = planner.capabilities
+): FakeSession {
+  return { ...planner, capabilities, last_seen: Date.now() - 5_000, session_id: sessionID, title };
+}
+
+// R2 (INFRA-4325). A session that does not answer the live view says so in the header, as Not
+// answering, and in one line: above the messages Dispatch keeps when the transcript holds any, and
+// in the empty transcript's place when it holds none. Either of two sources says a session is
+// silent: the relay, which hears nobody on the session's control subject, and the registry, whose
+// list holds the session as unresponsive or no longer holds it. The registry's word moves the view
+// on its next poll, both ways, over the subscription the page already holds: the page asks the
+// session for nothing again.
+// SLOW(>=2s): three live views, and three changes of the registry each waited on through the
+// shell's 15 s poll of the agent list.
+test("a silent session reads Not answering in the header and says why above its messages, by the relay's word or the registry's", async ({
+  browser,
+}) => {
+  // Three changes of the registry, each given `REGISTRY_POLL_TIMEOUT`, beside three page loads.
+  test.setTimeout(120_000);
+  const stored = listedSession("01a0e0c1-0000-7000-8000-0000000043a1", "Stored");
+  const empty = listedSession("01a0e0c1-0000-7000-8000-0000000043a2", "Empty");
+  const answering = listedSession("01a0e0c1-0000-7000-8000-0000000043a3", "Answering");
+  await setLiveSessions([planner, stored, empty, answering]);
+  // A message Dispatch keeps for the first, which the session answered through Dispatch: its view
+  // holds turns while the session streams none.
+  const asked = await createAgentMessage(stored.session_id, {
+    body: "Did the backfill finish?",
+    delivery: "aside",
+  });
+  await replyToMessageDelivery(
+    asked.id,
+    { attempt: 1, body: "Yes, at noon." },
+    { id: stored.session_id, kind: "session" }
+  );
+  await setAgentStreamResponder(stored.session_id, false);
+  await setAgentStreamResponder(empty.session_id, false);
+  await publishAgentStreamFrame(
+    answering.session_id,
+    {
+      frames: [assistantFrame(1, "Reading the backfill log.", false)],
+      session_id: answering.session_id,
+      v: 1,
+    },
+    "replay"
+  );
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const sockets = watchLiveSockets(page);
+  const view = frontLiveView(page);
+  try {
+    // The relay hears nobody for the first two. Over the messages Dispatch keeps, the line says
+    // why nothing else arrives; with none, the empty transcript says it.
+    await page.goto(`/agents/${stored.session_id}/live`);
+    await expect(view.getByTestId("agent-dispatch-reply")).toContainText("Yes, at noon.");
+    await expect(view.getByText(NOT_ANSWERING_ABOVE_TURNS)).toBeVisible();
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
+
+    await page.goto(`/agents/${empty.session_id}/live`);
+    await expect(view.getByTestId("agent-thread-empty")).toHaveText(NOT_ANSWERING);
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING);
+
+    // The third answers, and the page subscribes to its conversation once.
+    await page.goto(`/agents/${answering.session_id}/live`);
+    await expect(view.getByTestId("agent-message-assistant")).toContainText(
+      "Reading the backfill log."
+    );
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_LIVE);
+    await expect(view.getByText(/not answering the live view/)).toHaveCount(0);
+    const subscribed = () =>
+      sockets.sent.filter(
+        (frame) =>
+          frame.type === "subscribe" &&
+          frame.view.kind === "agent" &&
+          frame.view.session_id === answering.session_id
+      ).length;
+    await expect.poll(subscribed).toBe(1);
+
+    // The registry holds it as unresponsive: it is silent, though the relay still has its replay.
+    await setSessionState(answering.session_id, "unresponsive");
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING, {
+      timeout: REGISTRY_POLL_TIMEOUT,
+    });
+    await expect(view.getByTestId("agent-not-answering")).toHaveText(NOT_ANSWERING_ABOVE_TURNS);
+    expect(subscribed()).toBe(1);
+
+    // Its heartbeats are back.
+    await setSessionState(answering.session_id, "live");
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_LIVE, {
+      timeout: REGISTRY_POLL_TIMEOUT,
+    });
+    await expect(view.getByText(/not answering the live view/)).toHaveCount(0);
+    expect(subscribed()).toBe(1);
+
+    // It stops. A stopped session holds no registry entry, so the list the view reads no longer
+    // holds it: it has ended, however long the relay keeps its replay.
+    await setSessionStopped(answering.session_id, true);
+    await expect(connection(page)).toHaveAttribute("title", CONNECTION_NOT_ANSWERING, {
+      timeout: REGISTRY_POLL_TIMEOUT,
+    });
+    await expect(view.getByTestId("agent-not-answering")).toHaveText(NOT_ANSWERING_ABOVE_TURNS);
+    expect(subscribed()).toBe(1);
+  } finally {
+    await context.close();
+  }
+});
+
+/** What the live view and the Inbox say of a listed session whose capabilities hold no delivery
+ *  mode, before they say why: `noDeliveryLine` in `web/src/features/conversation/delivery.ts`. */
+const NO_DELIVERY_MODE =
+  "This session advertises no delivery mode, so a message sent here records a failed attempt.";
+
+/** The newest attempt Dispatch recorded for the message of a session's conversation that reads
+ *  `body`, as its state and its error; undefined until that message is stored. */
+async function attemptOf(
+  sessionID: string,
+  body: string
+): Promise<{ error: string | null; state: string } | undefined> {
+  const sent = (await listAgentMessages(sessionID))
+    .flatMap((read) => [read.message, ...(read.replies ?? [])])
+    .find((message) => message.body === body);
+  const attempt = newestDeliveryOf(sent === undefined ? [] : [sent]);
+  return attempt === undefined ? undefined : { error: attempt.error, state: attempt.state };
+}
+
+// R3 (INFRA-4325). Whether a session takes messages is whether its capabilities hold a delivery
+// mode, not whether it lists any: a list of only a capability this Dispatch knows no mode for - a
+// newer plugin's - takes none, as an empty list does. Every surface that offers to send such a
+// session something says so: its live view, its thread in the Inbox, its card on the Agents page
+// and a mention of it in an issue's composer, each with the reason, which differs between the two
+// lists. A message sent to either records a failed attempt, and the live view's warning stays,
+// since it is the page's and not the send's. A session that lists its modes is warned of nowhere.
+// SLOW(>=2s): two sessions each read on four pages - the live view with a send, the Inbox, the
+// Agents page and an issue's conversation - and a third session's live view.
+test("a session whose capabilities hold no delivery mode is warned of in its live view, the Inbox, the Agents page and a mention, and a send to it fails", async ({
+  browser,
+}) => {
+  const unknown = listedSession("01a0e0c1-0000-7000-8000-0000000043b1", "Newer plugin", [
+    "future-capability",
+  ]);
+  const none = listedSession("01a0e0c1-0000-7000-8000-0000000043b2", "Unreachable", []);
+  const taking = listedSession("01a0e0c1-0000-7000-8000-0000000043b3", "Fluent");
+  await setLiveSessions([planner, unknown, none, taking]);
+  await createProject({ key: "CORE", name: "Core" });
+
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const view = frontLiveView(page);
+  try {
+    for (const [session, reason] of [
+      [unknown, "None of the capabilities it lists is a delivery mode this Dispatch knows."],
+      [none, "A session advertises none while its plugin cannot reach its conversation."],
+    ] as const) {
+      // An exchange the reader had with the session: Dispatch recorded its attempt as failed, the
+      // session advertising no Aside, and the session answered it all the same.
+      const thread = await seedAgentThread({
+        body: `What is the status, ${session.title}?`,
+        delivery: "aside",
+        replies: [`${session.title}: all green.`],
+        session,
+      });
+      const issue = await createIssue({ project: "CORE", title: `Mentions of ${session.title}` });
+
+      // Its live view warns, and a message sent from it records a failed attempt.
+      await page.goto(`/agents/${session.session_id}/live`);
+      const warning = view.getByTestId("agent-takes-no-messages");
+      await expect(warning).toHaveText(`${NO_DELIVERY_MODE} ${reason}`);
+      const composer = view.getByTestId("agent-composer");
+      const body = `Are you there, ${session.title}?`;
+      await composer.locator("textarea").fill(body);
+      await composer.getByRole("button", { exact: true, name: "Send" }).click();
+      await expect
+        .poll(() => attemptOf(session.session_id, body))
+        .toEqual({ error: expect.stringContaining("does not advertise aside"), state: "failed" });
+      await expect(warning).toHaveText(`${NO_DELIVERY_MODE} ${reason}`);
+
+      // Its thread in the Inbox.
+      await page.goto("/");
+      await selectRow(page, agentRowId(thread));
+      const pane = inboxPane(page);
+      await expect(pane.getByText("Takes no messages", { exact: true })).toBeVisible();
+      await expect(pane.getByTestId("agent-takes-no-messages")).toHaveText(
+        `${NO_DELIVERY_MODE} ${reason}`
+      );
+
+      // Its card on the Agents page, which names no capability that is not a mode.
+      await openAgents(page);
+      const card = agentRow(page, session.session_id);
+      const toggle = card.locator("[data-agent-toggle]");
+      await expect(toggle).toHaveAttribute("aria-expanded", "false");
+      await toggle.click();
+      await expect(card.getByText("Takes no messages", { exact: true })).toBeVisible();
+      await expect(card).not.toContainText("future-capability");
+
+      // A mention of it in an issue's composer.
+      await page.goto(`/issues/${issue.key}/conversation`);
+      await selectMention(page, "/aside @", session.title);
+      await expect(
+        page.getByText(
+          `${session.title} advertises no delivery mode, so sending it records a failed attempt. ${reason}`,
+          { exact: true }
+        )
+      ).toBeVisible();
+    }
+
+    // A session that lists its modes: once the list holds it, its view warns of nothing.
+    await page.goto(`/agents/${taking.session_id}/live`);
+    await expect(view.getByTestId("agent-footer-machine")).toBeVisible();
+    await expect(view.getByText(/advertises no delivery mode/)).toHaveCount(0);
   } finally {
     await context.close();
   }

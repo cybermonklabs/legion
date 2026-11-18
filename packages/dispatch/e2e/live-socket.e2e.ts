@@ -1,4 +1,3 @@
-import type { LiveClientFrame, LiveServerFrame } from "../web/src/api/types";
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
   createComment,
@@ -10,15 +9,9 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
+import { isLiveSocket, type LiveSockets, watchLiveSockets } from "./live-socket-watch";
 import { navigateInApp } from "./sends";
-import {
-  type WebSocket as BrowserWebSocket,
-  expect,
-  type Page,
-  type Request,
-  test,
-  type WebSocketRoute,
-} from "./test";
+import { expect, type Page, type Request, test, type WebSocketRoute } from "./test";
 import { asUser } from "./users";
 
 const agent: FakeSession = {
@@ -31,10 +24,6 @@ const agent: FakeSession = {
 };
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
 
-function isLiveSocket(socket: BrowserWebSocket): boolean {
-  return new URL(socket.url()).pathname === "/ws/live";
-}
-
 /** Lets the routed socket use Dispatch's own messages and preserves its close code. */
 function connect(route: WebSocketRoute): void {
   const server = route.connectToServer();
@@ -44,34 +33,6 @@ function connect(route: WebSocketRoute): void {
       ...(reason === undefined ? {} : { reason }),
     })
   );
-}
-
-/** What a page's live sockets did: those open now, every one it opened, every frame it sent, and
- *  the type of every frame it received, in order. */
-interface LiveSockets {
-  readonly open: Set<BrowserWebSocket>;
-  readonly opened: BrowserWebSocket[];
-  readonly sent: LiveClientFrame[];
-  readonly received: LiveServerFrame["type"][];
-}
-
-function watchLiveSockets(page: Page): LiveSockets {
-  const sockets: LiveSockets = { open: new Set(), opened: [], received: [], sent: [] };
-  page.on("websocket", (socket) => {
-    if (!isLiveSocket(socket)) return;
-    sockets.open.add(socket);
-    sockets.opened.push(socket);
-    socket.on("close", () => sockets.open.delete(socket));
-    // The page sends only the contract's client frames and Dispatch only its server frames, each
-    // one JSON object.
-    socket.on("framesent", ({ payload }) => {
-      sockets.sent.push(JSON.parse(String(payload)) as LiveClientFrame);
-    });
-    socket.on("framereceived", ({ payload }) => {
-      sockets.received.push((JSON.parse(String(payload)) as LiveServerFrame).type);
-    });
-  });
-  return sockets;
 }
 
 /** Waits until the page holds one open live socket and its event feed has started on it. */

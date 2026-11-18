@@ -33,6 +33,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
 import { liveSocketFor } from "../../api/live-socket";
 import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
+import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import { Sidebar } from "../sidebar/Sidebar";
 import {
@@ -41,7 +42,12 @@ import {
   SendExpiredError,
   SendStoppedError,
 } from "../writes/keyed-write";
-import { AgentConversationPage } from "./AgentConversationPage";
+import {
+  AgentConversationPage,
+  NOT_ANSWERING_EMPTY_TEXT,
+  NOT_ANSWERING_NOTICE,
+  NOTHING_YET_TEXT,
+} from "./AgentConversationPage";
 
 /** What each attempt of the live view's send is held to, beside the message it carries: its own
  *  deadline, nothing that would cut it short once it is out, and the key that names the press. */
@@ -281,6 +287,7 @@ function renderLiveView({
         open.receive({ type: "agent", sub: subscribed.sub, event: "frame", data: frame });
       });
     },
+    respond: (responding: boolean) => answer(socket ?? sockets.latest(), [], SESSION, responding),
     storeThread: async (next: MessageRead[]) => {
       thread = next;
       await act(async () => {
@@ -293,7 +300,23 @@ function renderLiveView({
 /** What a test does to a rendered live view after it opened. */
 interface LiveView {
   frame: (frame: AgentStreamFrame) => void;
+  /** The relay's next answer to whether the session answers on its control subject. */
+  respond: (responding: boolean) => void;
   storeThread: (messages: MessageRead[]) => Promise<void>;
+}
+
+/** The agent registry's next read, as the shell's poller makes it every 15 s: `agents` the live
+ *  sessions it lists, or the Error it fails with. */
+async function nextRegistryRead(queryClient: QueryClient, agents: Agent[] | Error): Promise<void> {
+  const listAgents = api.listAgents as Mock<typeof api.listAgents>;
+  if (agents instanceof Error) {
+    listAgents.mockRejectedValue(agents);
+  } else {
+    listAgents.mockResolvedValue(agents);
+  }
+  await act(async () => {
+    await queryClient.refetchQueries({ exact: true, queryKey: ["agents"] });
+  });
 }
 
 /** In-app links to SESSION and OTHER: following one keeps the live view's route mounted and
@@ -312,17 +335,19 @@ function agentsLink(): HTMLElement {
   return screen.getByRole("link", { name: /^Agents/ });
 }
 
-/** Every way the live view's header names the relay. */
-const RELAY_LABELS = [
+/** Every way the live view's header names its connection to the session's conversation: the
+ *  stream's own state, or `Not answering` from the relay or the registry. */
+const CONNECTION_LABELS = [
   "Connecting to the session",
   "Live",
+  "Not answering",
   "Reconnecting",
   "This session's conversation is unavailable",
 ];
 
-/** The relay labels `view`'s header shows; exactly one in any coherent state. */
-function relayStatus(view: HTMLElement = screen.getByTestId("agent-conversation")): string[] {
-  return RELAY_LABELS.filter((label) => within(view).queryByText(label) !== null);
+/** The labels `view`'s header shows; exactly one in any coherent state. */
+function connectionStatus(view: HTMLElement = screen.getByTestId("agent-conversation")): string[] {
+  return CONNECTION_LABELS.filter((label) => within(view).queryByText(label) !== null);
 }
 
 // A human's direct message and the session's replies to it are stored in Dispatch, not in the
@@ -1109,8 +1134,9 @@ test("Stop trying ends a late live view send, and its Retry goes under the same 
   expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
 });
 
-// A session whose plugin cannot reach its conversation advertises no mode: the live view says a
-// message sent here records a failed attempt, before the person sends one.
+// A session whose plugin cannot reach its conversation advertises no mode, and one that lists only
+// capabilities that are no mode takes none either: the live view says a message sent here records
+// a failed attempt, before the person sends one, and names which of the two the session is.
 test("the live view says a session advertising no delivery mode takes no messages", async () => {
   renderLiveView({
     agentState: {},
@@ -1119,9 +1145,24 @@ test("the live view says a session advertising no delivery mode takes no message
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
 
-  expect(await screen.findByTestId("agent-takes-no-messages")).toHaveTextContent(
-    "advertises no delivery mode"
+  expect((await screen.findByTestId("agent-takes-no-messages")).textContent).toBe(
+    "This session advertises no delivery mode, so a message sent here records a failed attempt. A session advertises none while its plugin cannot reach its conversation."
   );
+
+  cleanup();
+  for (const spy of spies.splice(0)) spy.mockRestore();
+  renderLiveView({
+    agentState: {},
+    capabilities: ["future-capability"],
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+
+  expect((await screen.findByTestId("agent-takes-no-messages")).textContent).toBe(
+    "This session advertises no delivery mode, so a message sent here records a failed attempt. None of the capabilities it lists is a delivery mode this Dispatch knows."
+  );
+  // The capability is no mode, so the composer offers what it offers a session listing none.
+  await modeSettled("aside");
 
   cleanup();
   for (const spy of spies.splice(0)) spy.mockRestore();
@@ -1245,24 +1286,24 @@ test("the live view connects, goes live on the session's answer, and reconnects 
     messages: [],
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
-  expect(relayStatus()).toEqual(["Connecting to the session"]);
+  expect(connectionStatus()).toEqual(["Connecting to the session"]);
 
   // An open socket is not yet an answer: the view goes live on its first frame.
   const first = sockets.latest();
   act(() => first.open());
   expect(first.subscribed("agent").view).toEqual({ kind: "agent", session_id: SESSION });
-  expect(relayStatus()).toEqual(["Connecting to the session"]);
+  expect(connectionStatus()).toEqual(["Connecting to the session"]);
   answer(first, [assistantFrame(1, Date.parse("2026-09-27T21:16:16Z"), "Before the restart.")]);
   await within(screen.getByTestId("agent-thread")).findByText("Before the restart.");
-  expect(relayStatus()).toEqual(["Live"]);
+  expect(connectionStatus()).toEqual(["Live"]);
 
   // Dispatch restarting (1012) is a gap the page shows until the next socket opens.
   act(() => first.restart());
-  expect(relayStatus()).toEqual(["Reconnecting"]);
+  expect(connectionStatus()).toEqual(["Reconnecting"]);
   await waitFor(() => expect(sockets.latest()).not.toBe(first));
   const second = sockets.latest();
   act(() => second.open());
-  expect(relayStatus()).toEqual(["Live"]);
+  expect(connectionStatus()).toEqual(["Live"]);
   expect(agentSubscription(second)).toBe(agentSubscription(first));
 });
 
@@ -1279,23 +1320,23 @@ test("a rotation rebuilds from the replay and keeps status live", async () => {
   });
   const thread = await screen.findByTestId("agent-thread");
   await within(thread).findByText("Before the rotation.");
-  expect(relayStatus()).toEqual(["Live"]);
+  expect(connectionStatus()).toEqual(["Live"]);
 
   const first = sockets.latest();
   act(() => first.drop(LIVE_SOCKET_MAX_AGE_CLOSE));
   expect(sockets.sockets).toHaveLength(2);
-  expect(relayStatus()).toEqual(["Live"]);
+  expect(connectionStatus()).toEqual(["Live"]);
   const second = sockets.latest();
   act(() => second.open());
   expect(agentSubscription(second)).toBe(agentSubscription(first));
-  expect(relayStatus()).toEqual(["Live"]);
+  expect(connectionStatus()).toEqual(["Live"]);
 
   answer(second, [assistantFrame(2, Date.parse("2026-09-27T21:17:16Z"), "After the rotation.")]);
   await within(thread).findByText("After the rotation.");
   await waitFor(() =>
     expect(within(thread).queryByText("Before the rotation.")).not.toBeInTheDocument()
   );
-  expect(relayStatus()).toEqual(["Live"]);
+  expect(connectionStatus()).toEqual(["Live"]);
 });
 
 // Dispatch relays a session's conversation only to a credential holding the `person` scope, which
@@ -1328,15 +1369,15 @@ test("a missing-scope refusal shows the view unavailable", async () => {
   expect((await screen.findByTestId("agent-stream-unavailable")).textContent).toBe(
     "This Dispatch cannot reach the session's conversation."
   );
-  expect(relayStatus()).toEqual(["This session's conversation is unavailable"]);
+  expect(connectionStatus()).toEqual(["This session's conversation is unavailable"]);
 
   act(() => first.restart());
-  expect(relayStatus()).toEqual(["This session's conversation is unavailable"]);
+  expect(connectionStatus()).toEqual(["This session's conversation is unavailable"]);
   await waitFor(() => expect(sockets.latest()).not.toBe(first));
   const second = sockets.latest();
   act(() => second.open());
   expect(second.subscribes().map((frame) => frame.view.kind)).toEqual(["events"]);
-  expect(relayStatus()).toEqual(["This session's conversation is unavailable"]);
+  expect(connectionStatus()).toEqual(["This session's conversation is unavailable"]);
   expect(screen.getByTestId("agent-stream-unavailable")).toBeTruthy();
 });
 
@@ -1369,8 +1410,8 @@ test("two agent views share the tab's socket", async () => {
   await within(reviewer.container).findByText("Reviewing the change.");
   expect(within(planner.container).queryByText("Reviewing the change.")).not.toBeInTheDocument();
   expect(within(reviewer.container).queryByText("Planning the change.")).not.toBeInTheDocument();
-  expect(relayStatus(planner.container)).toEqual(["Live"]);
-  expect(relayStatus(reviewer.container)).toEqual(["Live"]);
+  expect(connectionStatus(planner.container)).toEqual(["Live"]);
+  expect(connectionStatus(reviewer.container)).toEqual(["Live"]);
 
   const plannerSub = agentSubscription(socket, SESSION);
   planner.unmount();
@@ -1799,7 +1840,7 @@ test("the header shows the model and thinking level each settings frame reports,
 });
 
 // A session that does not answer the live view at all gets no settings notice: the empty
-// transcript's own explanation says why.
+// transcript's own explanation says why, and the header says it is not answering rather than live.
 test("a session not answering the live view keeps the empty transcript's explanation, no settings notice", async () => {
   renderLiveView({
     agentState: {},
@@ -1810,7 +1851,153 @@ test("a session not answering the live view keeps the empty transcript's explana
   expect(await screen.findByTestId("agent-thread-empty")).toHaveTextContent(
     "This session is not answering the live view"
   );
+  expect(screen.getByTestId("agent-thread-empty")).toHaveTextContent(NOT_ANSWERING_EMPTY_TEXT);
+  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
   expect(screen.queryByTestId("agent-settings-notice")).not.toBeInTheDocument();
+  expect(connectionStatus()).toEqual(["Not answering"]);
+  expect(screen.getByTitle("Connection to the session's conversation: Not answering")).toBeTruthy();
+});
+
+// INFRA-4325, R2. A session that does not answer the live view while Dispatch keeps messages
+// with it shows those messages, with one line above them, outside the scroller, saying why
+// nothing streams in; the empty slot's text is not drawn as well. Its answering again takes the
+// header back to live and the line away, without a reload.
+test("a session not answering the live view shows Dispatch's messages under a line that says so", async () => {
+  const view = renderLiveView({
+    agentState: {},
+    messages: conversation,
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    responding: false,
+  });
+  const thread = await screen.findByTestId("agent-thread");
+  await within(thread).findByText("Where is the dashboard?");
+  expect(within(thread).getAllByTestId("agent-dispatch-reply")).toHaveLength(2);
+  const line = screen.getByTestId("agent-not-answering");
+  expect(line.textContent).toBe(NOT_ANSWERING_NOTICE);
+  expect(within(thread).queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
+  expect(connectionStatus()).toEqual(["Not answering"]);
+  expect(screen.getByTitle("Connection to the session's conversation: Not answering")).toBeTruthy();
+
+  view.respond(true);
+  expect(connectionStatus()).toEqual(["Live"]);
+  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
+});
+
+// A session that answers shows neither line, with turns or without, and reads live.
+test("a session answering the live view shows no not-answering line and reads live", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: conversation,
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    responding: true,
+  });
+  await screen.findByTestId("agent-footer-machine");
+  await within(screen.getByTestId("agent-thread")).findByText("Where is the dashboard?");
+  expect(connectionStatus()).toEqual(["Live"]);
+  expect(screen.getByTitle("Connection to the session's conversation: Live")).toBeTruthy();
+  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
+});
+
+// R2. A session can stop answering its heartbeats before the relay says it is silent, so the
+// registry's poll tells the open view too: a session it next lists as unresponsive reads as not
+// answering, with the line above the turns it streamed, until a read lists it live again.
+test("a listed session the registry next holds as unresponsive reads not answering until it is live again", async () => {
+  const at = Date.parse("2026-09-27T21:16:16Z");
+  const view = renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    replay: [assistantFrame(1, at, "Planning the change.")],
+  });
+  await screen.findByTestId("agent-footer-machine");
+  await within(screen.getByTestId("agent-thread")).findByText("Planning the change.");
+  expect(connectionStatus()).toEqual(["Live"]);
+  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+
+  await nextRegistryRead(view, [{ ...agent, state: "unresponsive" }]);
+  await waitFor(() => expect(connectionStatus()).toEqual(["Not answering"]));
+  expect(screen.getByTestId("agent-not-answering").textContent).toBe(NOT_ANSWERING_NOTICE);
+  expect(screen.queryByTestId("agent-thread-empty")).not.toBeInTheDocument();
+  expect(screen.getByText("Planning the change.")).toBeTruthy();
+
+  await nextRegistryRead(view, [agent]);
+  await waitFor(() => expect(connectionStatus()).toEqual(["Live"]));
+  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+});
+
+// R2. A session the view has seen listed and the registry's next read no longer holds has left
+// it: the view reads not answering, the empty transcript says why, and a read that lists it again
+// takes both back.
+test("a listed session the registry next leaves out reads not answering until it is listed again", async () => {
+  const view = renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    responding: true,
+  });
+  await screen.findByTestId("agent-footer-machine");
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOTHING_YET_TEXT);
+  expect(connectionStatus()).toEqual(["Live"]);
+
+  await nextRegistryRead(view, []);
+  await waitFor(() => expect(connectionStatus()).toEqual(["Not answering"]));
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOT_ANSWERING_EMPTY_TEXT);
+  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+
+  await nextRegistryRead(view, [agent]);
+  await waitFor(() => expect(connectionStatus()).toEqual(["Live"]));
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOTHING_YET_TEXT);
+});
+
+// R2. Only a session the view has seen listed can leave the list: one the registry never held
+// whose relay answers is no silent session, and its next turn still appears as it happens.
+test("a session the registry never listed whose relay answers reads live", async () => {
+  renderLiveView({
+    agentState: {},
+    agents: [],
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    responding: true,
+  });
+  await screen.findByTestId("agent-not-listed");
+  expect(connectionStatus()).toEqual(["Live"]);
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOTHING_YET_TEXT);
+  expect(screen.queryByTestId("agent-not-answering")).not.toBeInTheDocument();
+});
+
+// R2. Only a current list judges the session: one that is refilling or unreachable says nothing
+// of it, whatever the last good read held, and the header reads what the relay says.
+test("a registry list that is not current judges nothing of a session it held", async () => {
+  const view = renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    responding: true,
+  });
+  await screen.findByTestId("agent-footer-machine");
+  await nextRegistryRead(view, [{ ...agent, state: "unresponsive" }]);
+  await waitFor(() => expect(connectionStatus()).toEqual(["Not answering"]));
+
+  await nextRegistryRead(
+    view,
+    new ApiError(503, { code: "ENVOY_REFILLING", error: AGENT_LIST_REFILLING })
+  );
+  await screen.findByTestId("agent-list-refilling");
+  expect(connectionStatus()).toEqual(["Live"]);
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOTHING_YET_TEXT);
+
+  await nextRegistryRead(view, []);
+  await waitFor(() => expect(connectionStatus()).toEqual(["Not answering"]));
+  await nextRegistryRead(
+    view,
+    new ApiError(503, { code: "ENVOY_UNAVAILABLE", error: "Envoy listener unreachable" })
+  );
+  await screen.findByTestId("agent-list-unreachable");
+  expect(connectionStatus()).toEqual(["Live"]);
+  expect(screen.getByTestId("agent-thread-empty").textContent).toBe(NOTHING_YET_TEXT);
 });
 
 // A pick is the person's own Send of what they would type at the session's terminal: always a
@@ -2435,34 +2622,60 @@ test("a pending switch holds its own session's Send, and a send out on another h
 
 // A session advertising no delivery mode keeps today's behaviour mid-turn too: Send is
 // pressable, the message goes as an aside, and the warning that it records a failed attempt
-// stays up.
-test("a session advertising no delivery mode still takes a mid-turn send as an aside", async () => {
-  const user = userEvent.setup();
-  const createAgentMessage = acceptSends();
-  renderLiveView({
-    agentState: {},
-    capabilities: [],
-    messages: [],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
-    replay: MID_TURN,
-  });
-  await screen.findByTestId("agent-takes-no-messages");
-  await midTurnShown();
+// stays up once Dispatch has recorded that failed attempt. A list holding only capabilities that
+// are no mode is the same case as an empty one.
+for (const capabilities of [[], ["future-capability"]]) {
+  test(`a session listing ${JSON.stringify(capabilities)} still takes a mid-turn send as an aside`, async () => {
+    const user = userEvent.setup();
+    // What Dispatch answers for a session that takes no mode: the message stored, its one attempt
+    // failed.
+    const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
+      async (_session, input) =>
+        message("sent", input.body, {
+          deliveries: [
+            {
+              ...messageDeliveryFields(),
+              attempt: 1,
+              created_at: "2026-09-27T21:16:15Z",
+              delivery: input.delivery,
+              envelope_id: null,
+              error: `session ${SESSION} does not advertise ${input.delivery}`,
+              message_id: "sent",
+              reply_id: null,
+              session_id: SESSION,
+              state: "failed",
+            },
+          ],
+        })
+    );
+    spies.push(createAgentMessage);
+    renderLiveView({
+      agentState: {},
+      capabilities: [...capabilities],
+      messages: [],
+      putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+      replay: MID_TURN,
+    });
+    await screen.findByTestId("agent-takes-no-messages");
+    await midTurnShown();
 
-  await type(user, composerInput(), "are you there?");
-  const send = sendButton();
-  expect(send).not.toHaveAttribute("disabled");
-  expect(send).not.toHaveAttribute("aria-disabled");
-  await user.click(send);
-  await waitFor(() =>
-    expect(createAgentMessage).toHaveBeenCalledWith(
-      SESSION,
-      { body: "are you there?", delivery: "aside" },
-      keyedAttempt
-    )
-  );
-  expect(screen.getByTestId("agent-takes-no-messages")).toBeTruthy();
-});
+    await type(user, composerInput(), "are you there?");
+    const send = sendButton();
+    expect(send).not.toHaveAttribute("disabled");
+    expect(send).not.toHaveAttribute("aria-disabled");
+    await user.click(send);
+    await waitFor(() =>
+      expect(createAgentMessage).toHaveBeenCalledWith(
+        SESSION,
+        { body: "are you there?", delivery: "aside" },
+        keyedAttempt
+      )
+    );
+    // The send has landed, its failed attempt recorded, and the warning is still the page's.
+    await waitFor(() => expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument());
+    expect(screen.getByTestId("agent-takes-no-messages")).toBeTruthy();
+  });
+}
 
 /** Dispatch's answer to a pin write: the session's whole state, with the time it took the pin
  *  and none once the viewer unpinned it. */
@@ -2531,6 +2744,11 @@ test("the live view's header unpins the session, and the rail's row goes", async
 /** A `context` frame (INFRA-812): the two figures a session publishes about its window. */
 function contextFrame(seq: number, tokens: number, contextWindow: number): AgentStreamFrame {
   return { contextWindow, kind: "context", seq, tokens, v: 1 };
+}
+
+/** A `context-cleared` frame (INFRA-4325): the session reports no window now. */
+function clearedFrame(seq: number): AgentStreamFrame {
+  return { kind: "context-cleared", seq, v: 1 };
 }
 
 /** The seven parts the one row under the message box carries (INFRA-812, R6), in the order a
@@ -2613,6 +2831,76 @@ test("the row has no context ring until the session publishes its context figure
     expect(screen.getByTestId("agent-context-share").textContent).toBe("60% of the window")
   );
   expect(footerParts()).toEqual(FOOTER_PARTS);
+});
+
+// INFRA-4325, R1. A session that stops reporting a window - a switch to a model that has none -
+// sends a clearing frame, and the ring goes with every figure it showed, rather than standing at
+// the last reading.
+test("a clearing frame takes the ring and its figures out of the row", async () => {
+  const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
+  view.frame(contextFrame(3, 8_192, 32_768));
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-context-share").textContent).toBe("25% of the window")
+  );
+
+  view.frame(clearedFrame(4));
+
+  await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
+  expect(within(screen.getByTestId("agent-composer-footer")).queryByText(/%/)).toBeNull();
+  expect(footerParts()).toEqual(FOOTER_PARTS.filter((id) => id !== "agent-context-ring"));
+});
+
+// R1. A rebuild draws the ring from the replay alone, so a replay whose clearing frame came after
+// its reading draws none, whatever the view drew before.
+test("a rebuild from a replay that cleared the window after its reading draws no ring", async () => {
+  const at = Date.parse("2026-09-27T21:16:16Z");
+  renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    replay: [assistantFrame(1, at, "Before the rotation."), contextFrame(2, 8_192, 32_768)],
+  });
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-context-share").textContent).toBe("25% of the window")
+  );
+
+  const first = sockets.latest();
+  act(() => first.drop(LIVE_SOCKET_MAX_AGE_CLOSE));
+  const second = sockets.latest();
+  act(() => second.open());
+  answer(second, [
+    assistantFrame(1, at, "Before the rotation."),
+    contextFrame(2, 8_192, 32_768),
+    clearedFrame(3),
+  ]);
+
+  await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
+  expect(within(screen.getByTestId("agent-composer-footer")).queryByText(/%/)).toBeNull();
+  expect(within(screen.getByTestId("agent-thread")).getByText("Before the rotation.")).toBeTruthy();
+});
+
+// R1. The ring's panel goes with the ring, and the next reading draws the ring closed: a panel the
+// person opened on one reading does not open again by itself on a later one.
+test("a clearing frame closes the ring's open panel, and the next reading draws the ring closed", async () => {
+  const user = userEvent.setup();
+  const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
+  view.frame(contextFrame(3, 8_192, 32_768));
+  await waitFor(() => expect(screen.getByTestId("agent-context-ring")).toBeTruthy());
+  await user.click(screen.getByTestId("agent-context-ring"));
+  expect(screen.getByTestId("agent-context-popover")).toBeTruthy();
+
+  view.frame(clearedFrame(4));
+
+  await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
+  expect(screen.queryByTestId("agent-context-popover")).not.toBeInTheDocument();
+
+  view.frame(contextFrame(5, 16_384, 32_768));
+
+  await waitFor(() =>
+    expect(screen.getByTestId("agent-context-share").textContent).toBe("50% of the window")
+  );
+  expect(screen.getByTestId("agent-context-ring")).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByTestId("agent-context-popover")).not.toBeInTheDocument();
 });
 
 // R6. The page prints no rule, so the question mark is where a person reads what `!` does, where
