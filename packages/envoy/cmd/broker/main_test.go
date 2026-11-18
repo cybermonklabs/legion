@@ -1039,16 +1039,19 @@ func airlockEnv(t *testing.T) []string {
 
 // TestMainRefusesAnAirlockRulesFileItCannotServe drives the real binary with each kind of rules
 // file it must refuse — one whose entry the airlock will not validate, one whose entry names a
-// secret by a name no session can ask for, one that is not JSON, and a path that is not there —
-// and asserts it exits non-zero naming the file and what is wrong with it, without ever
-// binding. The database it is given is unreachable, so a broker that read the file after
-// opening the store would fail on the host instead of on the file.
+// secret by a name no session can ask for, one whose host is an IP address the proxy never
+// compares in the form it is written, one that is not JSON, and a path that is not there — and
+// asserts it exits non-zero naming the file and what is wrong with it, without ever binding. The
+// database it is given is unreachable, so a broker that read the file after opening the store
+// would fail on the host instead of on the file.
 func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 	binary := buildBroker(t)
 	missing := filepath.Join(t.TempDir(), "absent.json")
 	for name, c := range map[string]struct {
 		path string
 		want []string
+		// absent is what the refusal must not repeat: a host as the file writes it.
+		absent []string
 	}{
 		// The broker logs a refusal as a JSON string in its error field, so a quotation mark
 		// inside it comes out escaped; these rows look for the parts around it.
@@ -1065,6 +1068,20 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		"an entry name written with hyphens": {
 			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL-API-KEY", "hosts": ["api.deel.com"]}]}`),
 			want: []string{"secrets[0]", "DEEL-API-KEY", "not an agent secret name", "holds nothing back"},
+		},
+		// The proxy compares a request's address in netaddr.Host's form, so a host written in
+		// another form binds nothing: the entry would read as covering an address whose
+		// CONNECT the proxy tunnels unread. The refusal names the form to write and repeats
+		// only that parsed address, never the host as written.
+		"an IPv6 address not written in its canonical form": {
+			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "2001:db8:7:0::1"]}]}`),
+			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[1]", "canonical form", "binds nothing", "write it as 2001:db8:7::1"},
+			absent: []string{"2001:db8:7:0::1"},
+		},
+		"an IPv4-mapped IPv6 address": {
+			path:   airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": ["::ffff:93.184.216.34"]}]}`),
+			want:   []string{"secrets[0]", "DEEL_API_KEY", "hosts[0]", "canonical form", "binds nothing", "write it as 93.184.216.34"},
+			absent: []string{"::ffff:"},
 		},
 		"a file that is not JSON": {
 			path: airlockRulesFile(t, "these are not the rules you are looking for\n"),
@@ -1089,6 +1106,11 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 					t.Fatalf("broker refused, but its output does not say %q: %s", want, out)
 				}
 			}
+			for _, absent := range c.absent {
+				if strings.Contains(out, absent) {
+					t.Fatalf("broker refused, but its output repeats %q as the file writes it: %s", absent, out)
+				}
+			}
 		})
 	}
 }
@@ -1107,6 +1129,27 @@ func TestMainStartsWithAnAirlockRulesFile(t *testing.T) {
 		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
 		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, `{"secrets": [
 			{"name": "DEEL_API_KEY", "hosts": ["api.deel.com"], "allow": [{"method": "GET", "pathPrefix": "/rest/"}]}
+		]}`),
+	)})
+	requireHealthy(t, broker.Addr)
+}
+
+// TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt is the control of the two address rows
+// above: hosts written in netaddr.Host's form, an IPv6 address, an IPv4 address and an IPv6
+// address in upper case, which fold.ASCII alone changes and airlock.HostBound folds, are no
+// obstacle to the boot, and the broker goes on to serve.
+func TestMainStartsWithAnAirlockHostWrittenAsTheProxyReadsIt(t *testing.T) {
+	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
+	if err := os.WriteFile(fakeSecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	broker := startBroker(t, brokerOptions{Env: append(airlockEnv(t),
+		"BROKER_DATABASE_URL="+storetest.URL(t),
+		"BROKER_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
+		"BROKER_FAKE_SECRETS_FILE="+fakeSecretsFile,
+		"BROKER_AIRLOCK_RULES_FILE="+airlockRulesFile(t, `{"secrets": [
+			{"name": "DEEL_API_KEY", "hosts": ["api.deel.com", "2001:db8:7::1", "93.184.216.34", "2001:DB8:8::1"]}
 		]}`),
 	)})
 	requireHealthy(t, broker.Addr)
