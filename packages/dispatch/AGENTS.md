@@ -1995,10 +1995,12 @@ Write a project as `--project=<name>` and never `--project <name>`. The option i
 the run ends `Project(s) "e2e/heavy-bodies.e2e.ts" not found`. The second command is the one
 that carries a file name after its project, so it is the one that meets this.
 
-An issue pod measures the wall-clock rows in `chromium-alone`: WebKit does not launch in such a
-pod, whose image lacks that engine's host libraries (dispatch://INFRA-1396). Firefox and WebKit
-are measured by CI, where the `alone` job of `.github/workflows/dispatch-browser.yaml` gives
-each engine a machine of its own.
+An issue pod on a worker image from before dispatch://INFRA-3257 measures the wall-clock rows in
+`chromium-alone`: WebKit does not launch in such a pod, whose image lacks that engine's host
+libraries (dispatch://INFRA-1396). An image from that change on carries those libraries, and its
+build launches the locked Playwright's WebKit once as the runtime user
+(`packages/daemon/docker/webkit-launch.mjs`). Firefox and WebKit are measured by CI, where the
+`alone` job of `.github/workflows/dispatch-browser.yaml` gives each engine a machine of its own.
 
 Playwright's UI mode starts this suite's stacks itself. The UI server runs no
 `globalSetup` when it begins listening; it runs one when a client connects
