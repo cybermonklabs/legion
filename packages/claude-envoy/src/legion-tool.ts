@@ -40,7 +40,9 @@ export interface LegionToolRuntime {
    * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
    * implementer's record names no head, the commit its workspace stands on is not pushed, or its
    * record's head is not that pushed commit. `signal` is the `handoff_complete` attempt's, which
-   * stops the read's jj and ends its Dispatch request once that attempt is given up on. */
+   * stops the read's jj and ends its Dispatch request once the agent aborts the call. The read is
+   * no request to the daemon, so the attempt's limit does not run while it does
+   * (`OutsideTheDaemon` in `@legion/pi-shared/daemon-client`). */
   readonly handoffReport: (
     phase: LegionPhase,
     role: LegionRole,

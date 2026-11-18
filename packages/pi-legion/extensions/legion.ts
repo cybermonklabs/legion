@@ -1026,7 +1026,8 @@ export default function legionExtension(pi: PiApi): void {
         // The pane's own environment: its workspace and issue; PATH's jj, the one its shell runs;
         // and the Dispatch pi-envoy's session reads (Oh My Pi's rule, in the same process), which
         // the pane's `dispatch handoff-write` wrote the record to. The read carries the attempt's
-        // signal, so an attempt given up on stops its jj and ends its Dispatch request.
+        // signal, so the agent's abort of the call stops its jj and ends its Dispatch request; the
+        // read is no request to the daemon, so the attempt's limit does not run while it does.
         handoffReport: (phase, role, signal) =>
           paneHandoffReport(
             sessionConfigFile("omp", process.env),
