@@ -343,15 +343,25 @@ func New(o Options) *Server {
 		MaxIdleConnsPerHost: upstreamIdleConns,
 		IdleConnTimeout:     upstreamIdleTimeout,
 	}
-	// The transport a plain-HTTP request is forwarded on: upstream's own, dialled by
-	// dialForwarded, which writes the line of each socket it opens, and keeping no connection
-	// for a later request. A kept connection would carry the next request to its host with no
-	// dial and so with no line, a request of another caller's among them; so each request opens
-	// a socket of its own, and its line names its own caller. Plain HTTP is rare beside the TLS a
-	// command speaks, and a socket per request is a small price for a line per request.
-	s.forward = s.upstream.Clone()
-	s.forward.DialContext = s.dialForwarded
-	s.forward.DisableKeepAlives = true
+	// The transport an absolute-URL request is forwarded on, built here rather than cloned from
+	// upstream so that nothing of upstream's can make it speak HTTP/2: dialled by dialForwarded,
+	// which writes the line of each socket it opens, with upstream's TLS configuration, keeping
+	// no connection for a later request, and speaking HTTP/1.1 alone. A kept connection would
+	// carry the next request to its host with no dial and so with no line, a request of another
+	// caller's among them, so each request opens a socket of its own and its line names its own
+	// caller. HTTP/2 would undo that: with keep-alives off an h2 connection still carries every
+	// request the transport hands it while it is open, and a request of another caller can be
+	// handed one a first request dialled. TLSNextProto is an empty map, never nil, since net/http
+	// negotiates h2 over TLS only when it is nil, and Protocols names HTTP/1 alone.
+	var forwardProtocols http.Protocols
+	forwardProtocols.SetHTTP1(true)
+	s.forward = &http.Transport{
+		DialContext:       s.dialForwarded,
+		TLSClientConfig:   s.upstream.TLSClientConfig.Clone(),
+		DisableKeepAlives: true,
+		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+		Protocols:         &forwardProtocols,
+	}
 	// net/http writes a line of its own through ErrorLog: for example for a connection that fails
 	// before a handler sees it, for a handler's panic it recovers, or for an accept that failed;
 	// routing it through the broker's logger keeps it out of a bare stderr write.

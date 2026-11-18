@@ -25,10 +25,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/requests"
 )
 
 // TestATunnelWritesOneLineNamingItsCallerAndAddress: a tunnel carries bytes the proxy never reads, so the
@@ -39,7 +41,9 @@ import (
 // is the number the command asked for, whatever spelling it wrote that number in. A plain-HTTP
 // request the proxy forwards is carried the same way, nothing decided and nothing put into it, so
 // the socket each one opens writes the same line, and so does a plain-HTTP upgrade, whose bytes
-// cross both ways once the service has answered 101.
+// cross both ways once the service has answered 101. A forwarded request gets a socket of its
+// own, so its socket's line names its own caller, even when two callers' requests go to one
+// service at once and that service speaks HTTP/2, whose one connection would carry many requests.
 func TestATunnelWritesOneLineNamingItsCallerAndAddress(t *testing.T) {
 	// names fails t unless line names the rig's caller, the host and port asked for, and the
 	// address the socket was opened to.
@@ -152,6 +156,132 @@ func TestATunnelWritesOneLineNamingItsCallerAndAddress(t *testing.T) {
 			t.Fatalf("the proxy wrote %d tunnel lines for one upgrade; want one", len(lines))
 		}
 		names(t, lines[0], upgradeHost, "80", "93.184.216.38:80")
+	})
+
+	// Two callers' requests, sent at once as absolute https URLs to a service that offers HTTP/2:
+	// every request reaches the service on a socket of its own, over HTTP/1.1, and each socket
+	// was dialled for the caller whose request it carried, so its line names that caller.
+	t.Run("forwards from two callers at once to a service that speaks HTTP/2", func(t *testing.T) {
+		const (
+			h2Host    = "h2.example.net"
+			perCaller = 60
+		)
+		r := newRig(t, Options{})
+		other := testConnection()
+		other.GrantID, other.EnrollmentID = "grant-11111111", "enrollment-11111111"
+		other.SessionID, other.RuntimeID = "session-11111111", "runtime-11111111"
+		otherPlaceholder := requests.PlaceholderPrefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
+		r.grants.setConnection(otherPlaceholder, other)
+		placeholders := map[string]string{testGrantID: workerPlaceholder, other.GrantID: otherPlaceholder}
+
+		// The service, with a certificate the proxy trusts upstream, offering h2 before
+		// http/1.1 as a service that speaks HTTP/2 does. It holds each request a moment, so the
+		// requests overlap, and records the socket each arrived on, the caller that sent it and
+		// the protocol it came in.
+		leaf, _, err := r.service.Authority().Leaf([]string{h2Host})
+		if err != nil {
+			t.Fatalf("the h2 service's certificate: %v", err)
+		}
+		type arrival struct {
+			socket, caller string
+			major          int
+		}
+		var arrivedMu sync.Mutex
+		var arrived []arrival
+		service := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+			arrivedMu.Lock()
+			arrived = append(arrived, arrival{request.RemoteAddr, request.Header.Get("X-Caller"), request.ProtoMajor})
+			arrivedMu.Unlock()
+			time.Sleep(20 * time.Millisecond)
+			io.WriteString(w, "the h2 service answered")
+		}))
+		service.EnableHTTP2 = true
+		service.TLS = &tls.Config{Certificates: []tls.Certificate{*leaf}, NextProtos: []string{"h2", "http/1.1"}}
+		service.StartTLS()
+		t.Cleanup(service.Close)
+		r.addresses[h2Host] = []netip.Addr{netip.MustParseAddr("93.184.216.39")}
+		r.dialTo[net.JoinHostPort(h2Host, "443")] = service.Listener.Addr().String()
+
+		// send is one command's request on a connection of its own, written as no HTTP client
+		// writes an https URL to a proxy but any command can. It answers rather than fails the
+		// row, since it runs beside the others.
+		send := func(grant string) error {
+			conn, err := net.Dial("tcp", r.addr)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			conn.SetDeadline(time.Now().Add(20 * time.Second))
+			request := "GET https://" + h2Host + "/x HTTP/1.1\r\nHost: " + h2Host + "\r\n" + basic(placeholders[grant]) +
+				"X-Caller: " + grant + "\r\nConnection: close\r\n\r\n"
+			if _, err := conn.Write([]byte(request)); err != nil {
+				return err
+			}
+			answer, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
+			if err != nil {
+				return err
+			}
+			defer answer.Body.Close()
+			if _, err := io.ReadAll(answer.Body); err != nil {
+				return err
+			}
+			if answer.StatusCode != http.StatusOK {
+				return fmt.Errorf("answered %d", answer.StatusCode)
+			}
+			return nil
+		}
+		var sent sync.WaitGroup
+		failed := make(chan error, 2*perCaller)
+		for grant := range placeholders {
+			for range perCaller {
+				sent.Go(func() {
+					if err := send(grant); err != nil {
+						failed <- fmt.Errorf("%s: %w", grant, err)
+					}
+				})
+			}
+		}
+		sent.Wait()
+		close(failed)
+		for err := range failed {
+			t.Errorf("a forwarded request failed: %v", err)
+		}
+
+		arrivedMu.Lock()
+		got := slices.Clone(arrived)
+		arrivedMu.Unlock()
+		if len(got) != 2*perCaller {
+			t.Fatalf("the service was sent %d requests; want %d", len(got), 2*perCaller)
+		}
+		perSocket := map[string]int{}
+		crossed, overHTTP2 := 0, 0
+		for _, each := range got {
+			perSocket[each.socket]++
+			if dialledFor := r.socketCaller(each.socket); dialledFor != each.caller {
+				crossed++
+			}
+			if each.major != 1 {
+				overHTTP2++
+			}
+		}
+		shared := 0
+		for _, requests := range perSocket {
+			if requests > 1 {
+				shared++
+			}
+		}
+		if crossed != 0 || shared != 0 || overHTTP2 != 0 || r.dials.Load() != int64(len(got)) {
+			t.Errorf("of %d requests, %d went on a socket dialled for the other caller, %d sockets carried more than one, %d went over HTTP/2, and the proxy dialled %d sockets; want none, none, none and one each",
+				len(got), crossed, shared, overHTTP2, r.dials.Load())
+		}
+		lines := r.logs.tunnels()
+		named := map[any]int{}
+		for _, line := range lines {
+			named[line.fields["grant"]]++
+		}
+		if len(lines) != 2*perCaller || named[testGrantID] != perCaller || named[other.GrantID] != perCaller {
+			t.Errorf("the proxy wrote %d tunnel lines, naming the callers %v; want %d for each caller", len(lines), named, perCaller)
+		}
 	})
 }
 
@@ -400,10 +530,12 @@ func TestAFailedDialWritesOneLineNamingItsClass(t *testing.T) {
 // X-Correlation-Id of every request it sends, the host of a CONNECT's authority and of a CONNECT
 // whose authority is its Host header, the port of such a Host header, the host and the zone of a
 // plain-HTTP URL, the Host header of a plain-HTTP request and of a request on a bound connection,
-// the path of a refused call, and the method of a request that is no proxy request. Between them
-// they write every line the proxy writes about a request: a tunnel's, a forwarded plain-HTTP
-// request's, each class of failed dial, a refusal of the outer server and of a bound call, and a
-// carried call's. It reads every record the proxy wrote, its message and each of its fields, and
+// the path of a refused call and of a carried one, the method of a request that is no proxy
+// request, and the name a forwarded https service's certificate holds, which the upstream line's
+// error quotes in its own case. Between them they write every line the proxy writes about a
+// request: a tunnel's, a forwarded plain-HTTP request's, each class of failed dial, an upstream
+// failure's, a refusal of the outer server and of a bound call, and a carried call's. It reads
+// every record the proxy wrote, its message and each of its fields, and
 // no line may hold the placeholder in any case: the host is written lowercased, and lowercasing
 // is no redaction, so every line writes placeholderMark where its text held one (maskedHandler).
 func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
@@ -412,6 +544,7 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 		plantedBody   = "planted-body-value-nothing-may-log"
 		zoned         = "2001:db8::1"
 		plainHost     = "plain.example.net"
+		certHost      = "cert.example.net"
 	)
 	r := newRig(t, Options{})
 	unwired := netip.MustParseAddr("93.184.216.44")
@@ -459,6 +592,8 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 		"Authorization", "Bearer "+workerPlaceholder, "Host", placeholderHost, "X-Correlation-Id", workerPlaceholder)
 	r.do(client, http.MethodGet, "https://"+boundHost+"/v2/"+workerPlaceholder, "",
 		"Authorization", "Bearer "+workerPlaceholder, "X-Correlation-Id", workerPlaceholder)
+	r.do(client, http.MethodGet, "https://"+boundHost+"/v1/"+workerPlaceholder, "",
+		"Authorization", "Bearer "+workerPlaceholder, "X-Correlation-Id", workerPlaceholder)
 	// The placeholder as a plain-HTTP host, in its own case, as the zone of a plain-HTTP
 	// address literal, and as the Host header of a plain-HTTP request the proxy forwards.
 	r.plainRaw(placeholderHost, "/x", basic(workerPlaceholder), correlation)
@@ -466,11 +601,29 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 	if answer, body := r.requestRaw(http.MethodGet, "http://"+plainHost+"/status", placeholderHost, basic(workerPlaceholder), correlation); answer.StatusCode != http.StatusOK {
 		t.Fatalf("the forwarded plain-HTTP request answered %d %q; want 200", answer.StatusCode, body)
 	}
+	// A forwarded https request to a service whose certificate names the placeholder's host in
+	// its own case: the proxy's transport refuses the certificate, and the error the upstream
+	// line writes quotes the names it holds.
+	certLeaf, _, err := r.service.Authority().Leaf([]string{placeholderHost})
+	if err != nil {
+		t.Fatalf("the certificate naming the placeholder: %v", err)
+	}
+	certService := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "the service whose certificate names another host answered")
+	}))
+	certService.TLS = &tls.Config{Certificates: []tls.Certificate{*certLeaf}}
+	certService.StartTLS()
+	t.Cleanup(certService.Close)
+	r.addresses[certHost] = []netip.Addr{netip.MustParseAddr("93.184.216.40")}
+	r.dialTo[net.JoinHostPort(certHost, "443")] = certService.Listener.Addr().String()
+	if answer, body := r.requestRaw(http.MethodGet, "https://"+certHost+"/x", certHost, basic(workerPlaceholder), correlation); answer.StatusCode != http.StatusBadGateway {
+		t.Fatalf("the forward to a service whose certificate names another host answered %d %q; want 502", answer.StatusCode, body)
+	}
 	// The placeholder as the method of a request that is no proxy request at all.
 	r.requestRaw(workerPlaceholder, "/x", "proxy.example.net", correlation)
 	r.logs.tunnelsAtLeast(t, 2)
 	failures := r.logs.dialFailuresAtLeast(t, 7)
-	r.logs.callsAtLeast(t, 1)
+	r.logs.callsAtLeast(t, 2)
 
 	never := []string{workerPlaceholder, workerValue, plantedHeader, plantedBody}
 	lowered := strings.ToLower(workerPlaceholder)
@@ -501,23 +654,31 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 		{"a refusal's correlation id", "correlation_id", placeholderMark, refusals},
 		{"a refusal's method", "method", placeholderMark, refusals},
 		{"a refusal's path", "path", "/v2/" + placeholderMark, refusals},
+		{"a carried call's path", "path", "/v1/" + placeholderMark, r.logs.calls()},
 	} {
 		if !slices.ContainsFunc(control.lines, func(line logLine) bool { return line.fields[control.field] == control.want }) {
 			t.Errorf("no line names %s %q: %v", control.what, control.want, control.lines)
 		}
+	}
+	upstream := r.logs.lines(upstreamMessage)
+	if !slices.ContainsFunc(upstream, func(line logLine) bool {
+		return line.fields["host"] == certHost && strings.Contains(fmt.Sprint(line.fields["error"]), placeholderMark+".example.net")
+	}) {
+		t.Errorf("no upstream line for %s quotes the certificate's name as %q: %v", certHost, placeholderMark+".example.net", upstream)
 	}
 
 	// The control: the planted values really were sent, so a line that held one would have had
 	// it to hold. The service saw the body and the header, and the swap put the real value in
 	// the request it forwarded.
 	seen := r.requests()
-	if len(seen) != 1 {
-		t.Fatalf("the service was sent %d requests; want one", len(seen))
+	posted := slices.IndexFunc(seen, func(request seenRequest) bool { return request.Body == plantedBody })
+	if posted < 0 {
+		t.Fatalf("the service never saw the call carrying the planted body: %v", seen)
 	}
-	if seen[0].Header.Get("X-Planted") != plantedHeader || seen[0].Body != plantedBody {
-		t.Fatalf("the service saw X-Planted %q and body %q; want the planted header and body", seen[0].Header.Get("X-Planted"), seen[0].Body)
+	if seen[posted].Header.Get("X-Planted") != plantedHeader {
+		t.Fatalf("the service saw X-Planted %q; want the planted header", seen[posted].Header.Get("X-Planted"))
 	}
-	if got, want := seen[0].Header.Get("Authorization"), "Bearer "+workerValue; got != want {
+	if got, want := seen[posted].Header.Get("Authorization"), "Bearer "+workerValue; got != want {
 		t.Fatalf("the service saw Authorization %q; want %q, the real value the swap put in", got, want)
 	}
 }
@@ -525,9 +686,10 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 // TestADialWhoseCommandLeftWritesOneLine: a command can give up while the proxy is still looking
 // its host up or dialling it - it resets its socket, and the request's context ends. A lookup or a
 // dial given up that way says nothing about the service or the resolver, so its line is classed
-// cancelled, not unreachable or unresolved. A dial that opened all the same, because it won that
-// race, is a socket the proxy opened for the caller, so it writes the tunnel's line although the
-// command is gone before its 200 could reach it.
+// cancelled, not unreachable or unresolved. A dial one of whose addresses failed on its own before
+// the command left keeps that failure's class. A dial that opened all the same, because it won
+// that race, is a socket the proxy opened for the caller, so it writes the tunnel's line although
+// the command is gone before its 200 could reach it.
 func TestADialWhoseCommandLeftWritesOneLine(t *testing.T) {
 	target := net.JoinHostPort(echoHost, "443")
 	// until is a hold: it tells the row once that the proxy has reached it, and then waits for
@@ -542,9 +704,10 @@ func TestADialWhoseCommandLeftWritesOneLine(t *testing.T) {
 			}
 		}
 	}
-	// leave writes a CONNECT to echoHost on a socket of its own, waits until the proxy is inside
-	// the lookup or dial the row holds, and resets the socket, as a command that gives up does.
-	leave := func(t *testing.T, r *rig, held <-chan struct{}) {
+	// leaveFor writes a CONNECT to target on a socket of its own, waits until the proxy is inside
+	// the lookup or dial the row holds, and resets the socket, as a command that gives up does;
+	// leave is that for echoHost.
+	leaveFor := func(t *testing.T, r *rig, held <-chan struct{}, target string) {
 		t.Helper()
 		conn, err := net.Dial("tcp", r.addr)
 		if err != nil {
@@ -563,6 +726,10 @@ func TestADialWhoseCommandLeftWritesOneLine(t *testing.T) {
 			t.Fatalf("set the socket to reset on close: %v", err)
 		}
 		conn.Close()
+	}
+	leave := func(t *testing.T, r *rig, held <-chan struct{}) {
+		t.Helper()
+		leaveFor(t, r, held, target)
 	}
 	// names fails t unless line names the rig's caller, echoHost and its port, and address.
 	names := func(t *testing.T, line logLine, address string) {
@@ -635,6 +802,39 @@ func TestADialWhoseCommandLeftWritesOneLine(t *testing.T) {
 		}
 		if r.dials.Load() != 0 {
 			t.Fatalf("the proxy dialled %v for a lookup its command abandoned; want nothing", r.dialedAddresses())
+		}
+	})
+
+	// A host with two addresses, the first of which fails its dial before the command leaves,
+	// and the command leaves while the second is being dialled. The first failure is the
+	// service's own and says it could not be reached, so the line keeps that class rather than
+	// cancelled, which is for a dial whose every attempt was given up.
+	t.Run("a dial whose first address failed before its command left", func(t *testing.T) {
+		const twiceHost = "twice.example.net"
+		r := newRig(t, Options{})
+		r.addresses[twiceHost] = []netip.Addr{netip.MustParseAddr("93.184.216.44"), r.addresses[echoHost][0]}
+		held := make(chan struct{})
+		wait := until(held)
+		var dials atomic.Int64
+		r.holdDial = func(ctx context.Context) context.Context {
+			// The first address is wired to nothing and fails at once; the second is held.
+			if dials.Add(1) == 2 {
+				wait(ctx)
+			}
+			return ctx
+		}
+		leaveFor(t, r, held, net.JoinHostPort(twiceHost, "443"))
+		lines := r.logs.dialFailuresAtLeast(t, 1)
+		if len(lines) != 1 {
+			t.Fatalf("the proxy wrote %d failed-dial lines for one dial; want one: %v", len(lines), lines)
+		}
+		for field, want := range map[string]any{
+			"host": twiceHost, "failure": dialUnreachable, "resolved": int64(2),
+			"address": "93.184.216.44:443 " + net.JoinHostPort(r.addresses[echoHost][0].String(), "443"),
+		} {
+			if got := lines[0].fields[field]; got != want {
+				t.Errorf("the dial's line's %s = %v; want %v (whole line: %v)", field, got, want, lines[0].fields)
+			}
 		}
 	})
 }
@@ -726,6 +926,62 @@ func TestAnAzureExchangeNamesTheGrantItsRequestRead(t *testing.T) {
 	} {
 		if got := lines[0].fields[field]; got != want {
 			t.Errorf("the exchange's failed dial's %s = %v; want %v (whole line: %v)", field, got, want, lines[0].fields)
+		}
+	}
+}
+
+// TestAnAzureAccessExchangeNamesTheGrantItsRequestRead: the other dial an Azure name makes for a
+// request. A call carrying an access placeholder reaches a pod that holds no token for it, and
+// that pod exchanges for itself (azureAccess) before it forwards the call. When the grant has
+// moved since the CONNECT, that exchange's failed dial names the grant the call read too.
+func TestAnAzureAccessExchangeNamesTheGrantItsRequestRead(t *testing.T) {
+	r, _ := newAzureRig(t, Options{})
+	_, body := tokenRequest(t, r, r.client(azureFederatedPlaceholder), azureFederatedPlaceholder)
+	access := placeholderTokenOf(t, body)
+	second := secondPod(t, r)
+	// The second pod's CONNECT check reads the address wired to the service; its exchange's
+	// dial reads a public address wired to nothing, so the exchange fails at its dial.
+	r.answersMu.Lock()
+	r.answers[boundHost] = [][]netip.Addr{r.addresses[boundHost], {netip.MustParseAddr("93.184.216.44")}}
+	r.answersMu.Unlock()
+	conn, err := net.Dial("tcp", second)
+	if err != nil {
+		t.Fatalf("dial the second pod: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(20 * time.Second))
+	target := net.JoinHostPort(boundHost, "443")
+	if _, err := conn.Write([]byte("CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n" + basic(azureFederatedPlaceholder) + "\r\n")); err != nil {
+		t.Fatalf("write the CONNECT: %v", err)
+	}
+	reader := bufio.NewReader(conn)
+	if answer, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect}); err != nil || answer.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT %s on the second pod answered %v, %v; want 200", target, answer, err)
+	}
+	r.grants.mu.Lock()
+	moved := r.grants.connections[azureFederatedPlaceholder]
+	r.grants.mu.Unlock()
+	moved.EnrollmentID, moved.SessionID, moved.RuntimeID = "enrollment-moved", "session-moved", "runtime-moved"
+	r.grants.setConnection(azureFederatedPlaceholder, moved)
+	client := tls.Client(conn, &tls.Config{RootCAs: r.trust, ServerName: boundHost})
+	request := "GET /v1/subscriptions HTTP/1.1\r\nHost: " + boundHost + "\r\nAuthorization: Bearer " + access + "\r\nConnection: close\r\n\r\n"
+	if _, err := client.Write([]byte(request)); err != nil {
+		t.Fatalf("write the call on the decrypted connection: %v", err)
+	}
+	served, err := http.ReadResponse(bufio.NewReader(client), &http.Request{Method: http.MethodGet})
+	if err != nil || served.StatusCode == http.StatusOK {
+		t.Fatalf("the call whose exchange cannot be dialled answered %v, %v; want a refusal", served, err)
+	}
+	lines := r.logs.dialFailures()
+	if len(lines) != 1 {
+		t.Fatalf("the proxy wrote %d failed-dial lines for one exchange; want one: %v", len(lines), lines)
+	}
+	for field, want := range map[string]any{
+		"grant": testGrantID, "enrollment": moved.EnrollmentID, "session": moved.SessionID, "runtime": moved.RuntimeID,
+		"host": boundHost, "failure": dialUnreachable,
+	} {
+		if got := lines[0].fields[field]; got != want {
+			t.Errorf("the access exchange's failed dial's %s = %v; want %v (whole line: %v)", field, got, want, lines[0].fields)
 		}
 	}
 }

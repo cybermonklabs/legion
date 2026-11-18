@@ -457,6 +457,12 @@ type rig struct {
 	// open as one that won that race does.
 	holdResolve func(ctx context.Context)
 	holdDial    func(ctx context.Context) context.Context
+	// dialledFor is the grant each socket the proxy opened was dialled for, as the lines of that
+	// dial name it (callerOfContext), by the socket's own local address, which is the remote
+	// address the service it reached reads each request on it as: how a row reads which caller a
+	// socket was opened for beside the request it carried.
+	dialledForMu sync.Mutex
+	dialledFor   map[string]string
 
 	service *airlocktest.Service
 
@@ -584,7 +590,25 @@ func (r *rig) dial(ctx context.Context, network, addr string) (net.Conn, error) 
 		return nil, fmt.Errorf("this test dials no %s", addr)
 	}
 	var dialer net.Dialer
-	return dialer.DialContext(ctx, network, to)
+	conn, err := dialer.DialContext(ctx, network, to)
+	if err != nil {
+		return nil, err
+	}
+	r.dialledForMu.Lock()
+	defer r.dialledForMu.Unlock()
+	if r.dialledFor == nil {
+		r.dialledFor = map[string]string{}
+	}
+	r.dialledFor[conn.LocalAddr().String()] = callerOfContext(ctx).GrantID
+	return conn, nil
+}
+
+// socketCaller is the grant the socket whose local address is local was dialled for, and "" for
+// an address no socket of the proxy's had.
+func (r *rig) socketCaller(local string) string {
+	r.dialledForMu.Lock()
+	defer r.dialledForMu.Unlock()
+	return r.dialledFor[local]
 }
 
 // nameOf is the authority a row wrote dialTo under for an address and port: the name whose

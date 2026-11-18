@@ -67,7 +67,7 @@ func (s *Server) checkedAddresses(ctx context.Context, host, port string) ([]net
 	addrs, err := s.resolve(ctx, host)
 	if err != nil {
 		refused := fmt.Errorf("cannot resolve %s: %w", host, err)
-		s.logDialFailure(ctx, host, port, "", 0, failedClass(ctx, dialUnresolved), refused.Error())
+		s.logDialFailure(ctx, host, port, "", 0, failedClass(ctx, err, dialUnresolved), refused.Error())
 		return nil, refused
 	}
 	if len(addrs) == 0 {
@@ -112,8 +112,8 @@ func (s *Server) dialChecked(ctx context.Context, network, addr string) (net.Con
 // one line each socket it opens writes, a tunnel's (logTunnel): the proxy decides nothing of a
 // plain-HTTP request and puts nothing into it, as it decides nothing of a tunnel, so the line
 // is the whole of what the broker records about where the request went. That transport keeps no
-// idle connection (Server.forward), so each request opens a socket of its own and writes its
-// own line, and no socket opened for one caller carries another's request.
+// idle connection and speaks HTTP/1.1 alone (Server.forward), so each request opens a socket of
+// its own and writes its own line, and no socket opened for one caller carries another's request.
 func (s *Server) dialForwarded(ctx context.Context, network, addr string) (net.Conn, error) {
 	return s.dialName(ctx, network, addr, true)
 }
@@ -121,7 +121,9 @@ func (s *Server) dialForwarded(ctx context.Context, network, addr string) (net.C
 // dialName is the dial behind dialChecked and dialForwarded: addr split into the host and port a
 // transport asks for, checked (checkedAddresses) and dialled (dialAddrs), with the line of a dial
 // that failed, and a tunnel's line for a socket it opened when tunnel is set. A bound host's
-// socket writes no line of its own: each request on it writes its call line.
+// socket writes no line of its own: the requests on it are read, and each writes its call line or
+// its refusal line, but for a call whose command goes away while its answer streams, which writes
+// neither, since ReverseProxy aborts the handler that was copying it.
 func (s *Server) dialName(ctx context.Context, network, addr string, tunnel bool) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -188,19 +190,31 @@ func addressList(addrs []netip.Addr, port string) string {
 // logUnreachable writes the line of a dial no address of which answered: every address the name
 // had was dialled in turn (dialAddrs), and err is what each dial answered.
 func (s *Server) logUnreachable(ctx context.Context, host, port string, addrs []netip.Addr, err error) {
-	s.logDialFailure(ctx, host, port, addressList(addrs, port), len(addrs), failedClass(ctx, dialUnreachable), err.Error())
+	s.logDialFailure(ctx, host, port, addressList(addrs, port), len(addrs), failedClass(ctx, err, dialUnreachable), err.Error())
 }
 
-// failedClass is the class of a lookup or a dial that failed: dialCancelled when the request it
-// was made for had already ended - its command closed its connection, which ends the request's
-// context, and the lookup or dial was given up for it - and class otherwise. A dial a transport
-// makes runs under a context its request's end does not cancel, so only a CONNECT's dial and the
-// check of a CONNECT or a plain-HTTP request can be given up this way.
-func failedClass(ctx context.Context, class string) string {
-	if ctx.Err() != nil {
-		return dialCancelled
+// failedClass is the class of a lookup or a dial that failed with err: dialCancelled when the
+// request it was made for had ended - its command closed its connection, which ends the request's
+// context - and every error err joins is that context's own, so the whole of the failure was the
+// lookup or dial given up for it; and class otherwise. A dial of several addresses joins one
+// error for each, and an address that refused or timed out before the command went away is a
+// failure of the service, which keeps its class. A dial a transport makes runs under a context
+// its request's end does not cancel, so only a CONNECT's dial and the check of a CONNECT or a
+// plain-HTTP request can be given up this way.
+func failedClass(ctx context.Context, err error, class string) string {
+	if ctx.Err() == nil {
+		return class
 	}
-	return class
+	errs := []error{err}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		errs = joined.Unwrap()
+	}
+	for _, each := range errs {
+		if !errors.Is(each, context.Canceled) && !errors.Is(each, context.DeadlineExceeded) {
+			return class
+		}
+	}
+	return dialCancelled
 }
 
 // tunnelMessage is the message of the one line each socket the proxy opens for a tunnel or for a
@@ -225,8 +239,9 @@ const (
 	// dialUnreachable: every address of the host was dialled and none answered.
 	dialUnreachable = "unreachable"
 	// dialCancelled: the request the lookup or the dial was made for ended first - the command
-	// closed its connection - so it was given up, and its error says nothing about the service
-	// or the resolver (failedClass).
+	// closed its connection - and every attempt was given up for that, so its error says nothing
+	// about the service or the resolver. An address that failed on its own first keeps the
+	// dial's class (failedClass).
 	dialCancelled = "cancelled"
 )
 

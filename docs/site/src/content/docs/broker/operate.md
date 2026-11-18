@@ -1149,7 +1149,8 @@ Its fields:
 - `secrets_count`: how many secret names the request named, the ones `secrets` left out included.
 - `secrets_omitted`: how many names `secrets` left out, and only when it left any out.
 - `correlation_id`: the request's `X-Correlation-Id`, at most 256 bytes of its printable ASCII,
-  and only when the request sent one.
+  and only when the request sent one. On the airlock's proxy port a placeholder in it is written
+  as `[placeholder]`, as it is in every other field of that port's lines (below).
 
 A refusal of the airlock's proxy port has more fields:
 
@@ -1159,6 +1160,9 @@ A refusal of the airlock's proxy port has more fields:
 - `path`: the request's path, without its query, at most its first 256 bytes.
 - `issue`: the issue key the grant's reason named, once a grant is proved.
 - `slot`: which of the secret's values the call used, where the line names one.
+
+The proxy port's `method`, `path`, `host`, `reason` and `correlation_id` are the command's own
+text, and each has a placeholder in it written as `[placeholder]` (below).
 
 A refused call to a bound host writes this line in place of its call line,
 `airlock proxy: a call to a bound host`, so each such call still writes one line
@@ -1175,30 +1179,32 @@ either.
 
 - `airlock proxy: a tunnel`, at INFO, as soon as the socket is open and before the command is
   answered, so a command that goes away before its `200` still leaves the line. A `CONNECT`
-  tunnel writes it, and so does each plain-HTTP request the proxy forwards, an upgrade among
-  them: the proxy keeps no connection for a plain-HTTP request, so each one opens a socket of its
-  own and writes its own line. It names the caller — `enrollment`, `grant`, and `session` and
-  `runtime`, the session the grant belongs to and the runtime it runs as, which is the
-  enrollment's runtime id — the `issue` the grant's reason named, the `host` and `port` asked
-  for, and the `address` the broker opened the socket to, as `ip:port`, which is the address its
-  own check read rather than a second lookup's.
+  tunnel writes it, and so does each plain-HTTP request the proxy forwards, an upgrade and an
+  absolute `https` URL sent to the proxy as it is among them: the proxy keeps no connection for
+  such a request and speaks HTTP/1.1 to its service, even one that offers HTTP/2, so each request
+  opens a socket of its own, carries nothing of another caller's, and writes its own line. It
+  names the caller — `enrollment`, `grant`, and `session` and `runtime`, the session the grant
+  belongs to and the runtime it runs as, which is the enrollment's runtime id — the `issue` the
+  grant's reason named, the `host` and `port` asked for, and the `address` the broker opened the
+  socket to, as `ip:port`, which is the address its own check read rather than a second lookup's.
 - `airlock proxy: a dial that did not happen`, at WARNING, for a dial the proxy refused or could
   not make, on a `CONNECT`, a bound host's request and a plain-HTTP request alike. It names the
   same fields and three more. `resolved` is how many addresses the host resolved to. `failure`
   is `refused` (an address this proxy never dials, a private one or one inside
   `BROKER_AIRLOCK_CLUSTER_RANGES`), `unresolved` (a host the resolver answered no address or an
   error for), `unreachable` (every address was dialled and none answered), or `cancelled` (the
-  command closed its connection while the proxy looked its host up or dialled it, so the lookup
-  or the dial was given up, and its error says nothing about the service). `reason` is the
-  broker's own words. The `address` is the one refused, as `ip:port`, for `refused`; empty for
-  `unresolved` and for a lookup that was `cancelled`; and for `unreachable` and a dial that was
-  `cancelled`, the addresses dialled, as `ip:port` each, separated by spaces, in the order they
-  were dialled, as many whole addresses as fit in the field — `resolved` says how many there
-  were in all. A `CONNECT` or a plain-HTTP request the proxy's own check stops — a refused
-  address, a host that resolved to nothing, a lookup given up — writes this line beside its
-  refusal line, the first saying where the command asked to go and the second how it was
-  answered. A bound host's request, and a plain-HTTP request whose check passed, are dialled by
-  the proxy's transport, which checks the name again: when that check or that dial fails, the
+  command closed its connection while the proxy looked its host up or dialled it, and every
+  attempt was given up for that, so its error says nothing about the service; a dial one of
+  whose addresses failed on its own before the command left keeps that failure's class).
+  `reason` is the broker's own words. The `address` is the one refused, as `ip:port`, for
+  `refused`; empty for `unresolved` and for a lookup that was `cancelled`; and for `unreachable`
+  and a dial that was `cancelled`, the addresses dialled, as `ip:port` each, separated by spaces,
+  in the order they were dialled, as many whole addresses as fit in the field — `resolved` says
+  how many there were in all. A `CONNECT` or a plain-HTTP request the proxy's own check stops —
+  a refused address, a host that resolved to nothing, a lookup given up — writes this line
+  beside its refusal line, the first saying where the command asked to go and the second how it
+  was answered. A bound host's request, and a plain-HTTP request whose check passed, are dialled
+  by the proxy's transport, which checks the name again: when that check or that dial fails, the
   line beside this one is `airlock proxy: upstream`, the `502` the command was answered, and no
   refusal line.
 
@@ -1223,19 +1229,26 @@ Many fields of these lines are the command's own text. From its request's header
 `correlation_id`, which is the `X-Correlation-Id` header, and the host of a `CONNECT` whose target
 is a path, which is its `Host` header. From the rest of its request: the method, the path, the
 host and the port it asked for, the address that host resolved to, and a `reason` or `error` that
-quotes them. A cut to 256 bytes keeps a line small, and lowercasing a host keeps it one spelling;
-neither is redaction. What keeps a placeholder off every line the airlock's proxy port writes,
-a refusal line among them, is that each text the line holds has each placeholder written whole
-— `agent-secrets-placeholder-` and the letters and digits after it, in any case — replaced by
-`[placeholder]` before the line is written. A command that writes its placeholder into its
-request's path, its `X-Correlation-Id` or the host it asks for has `[placeholder]` written
-there; the 32 characters after the prefix written without it are text the proxy cannot tell from
-any other, and are written as they came. No line holds a secret's value: no field is read from a
-request's body or from a header the swap puts a value in. The API port's refusal line takes its
-`correlation_id` from the caller's `X-Correlation-Id` too, and masks no placeholder; its line
-holds no message text, and names the code. Each answer, a refusal or not, also counts in
-`broker_answers_total` ([Metrics](#metrics)), which is the one record of the API port's `429`
-and of a device grant's poll answers.
+quotes them — an upstream failure's `error` can quote the names a service's certificate holds,
+which the service chose. A host is written as the command sent it, lowercased: a client that
+sends a Unicode name as its punycode (`xn--…`) form, as Go's and curl's do, has the punycode
+written, and the proxy converts no name of its own. A cut to 256 bytes keeps a line small, and
+lowercasing a host keeps it one spelling; neither is redaction. What keeps a placeholder off
+every line the airlock's proxy port writes, a refusal line among them, is that each text the
+line holds has each placeholder written whole — `agent-secrets-placeholder-` and the letters and
+digits after it, in any case — replaced by `[placeholder]` before the line is written. So no line
+holds a placeholder as it was minted or lowercased: a command that writes its placeholder into
+its request's path, its `X-Correlation-Id` or the host it asks for, or a service that names it in
+its certificate, has `[placeholder]` written there. A placeholder encoded on purpose — its
+characters percent-escaped, written in fullwidth letters, or its 32 characters after the prefix
+written without it — is text the proxy cannot tell from any other, and is written as it came;
+that is out of the mask's scope, since a command that wants its placeholder sent somewhere can
+send it through a tunnel, and the mask is for a placeholder written as it is. No line holds a
+secret's value: no field is read from a request's body or from a header the swap puts a value
+in. The API port's refusal line takes its `correlation_id` from the caller's `X-Correlation-Id`
+too, and masks no placeholder; its line holds no message text, and names the code. Each answer,
+a refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is the one
+record of the API port's `429` and of a device grant's poll answers.
 
 On the API port, an answer that no refusal line records names its id in no line: a `429`, the two
 answers of a device login's poll, and every answer of 500 and above. `agent-secrets` prints the id
