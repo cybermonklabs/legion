@@ -6211,7 +6211,9 @@ These rules pass over it:
   The round waits and tells nobody, and no round opens over a held pod.
   The round's bound moves later by the time the pod was held, and a hold that ended at the resume or at a role's ready counts on until the wake pacing lets out the last launch that the pause held for a role of the pod, a held delivery's wake after the resume included (`roundBound` and `heldUntil`, `internal/daemon/podupdate.go`).
   So a round replaces no pod while a role of it whose launch the pause held still waits its turn in the pacing, and the roles get what was left of the round's grace from that let-out.
-  The round's own ask (`update_ask`) brings back no stopped role, so a role of the pod that nothing else wakes takes no turn before the round's bound.
+  The round's own ask (`update_ask`) is queued only for a role that is ready (`askRound`, `internal/daemon/podupdate.go`), so it brings back no role that the pause stopped before the ask was queued.
+  An ask that was queued before the pause and that the pause held is published after the resume, and where the pause stopped its role, the Envoy listener's report of that publish wakes the role as that pause's wake, through the wake pacing (`wakeReleased`, `internal/workflow/wake.go`).
+  A role of the pod that nothing wakes takes no turn before the round's bound.
 
 An idle release that was under way when the pause began is decided at its save step (`store.IssueReleaseSave`).
 A release that had not saved its workspace by then is cancelled and keeps its pod, whatever had reached its roles first.

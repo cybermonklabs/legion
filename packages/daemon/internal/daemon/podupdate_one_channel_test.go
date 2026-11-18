@@ -244,7 +244,8 @@ func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T)
 // is recorded and runs on. The daemon's records are wrapped as the daemon wraps them
 // (projectRecords), whose refusal of such a key is a writer's defect. Before the fix the ask
 // reached that refusal, which logged its Warn at every sweep's ask, and the sweep then logged the
-// ask enqueued and marked the claim asked.
+// ask enqueued; the no-Warn check below is what fails without the fix, since #4337 left the ask's
+// mark to the outbox's delivery (supervise's Machine.PublishUpdateAsk).
 func TestAnUpdateRoundOverASpawnOfAnotherProjectsIssueAsksItNothing(t *testing.T) {
 	const (
 		other    = "OTHERPROJECT-9"

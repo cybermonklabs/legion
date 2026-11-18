@@ -1430,9 +1430,9 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // A deployment with no outbox (enqueue nil) publishes nothing. The round still runs: it records
 // itself on the claims, and its roles can answer it all the same. Nor does a round over the pod of
 // a claim of another project's issue, which the operator's spawn makes: its ask would be a row
-// keyed by that issue, which only that project's daemon runs, so enqueue writes none and the
-// claim is not marked asked, since nothing asked it. Each tick then passes over it as it passes
-// over a deployment with no outbox, at Debug, writing nothing.
+// keyed by that issue, which only that project's daemon runs, so enqueue writes none. With no row
+// queued, no Machine.PublishUpdateAsk marks the claim asked, so each tick reads the queued asks
+// again, finds none, and logs at Debug that the ask is published to no role, writing nothing.
 func (s *supervision) askRound(ctx context.Context, issue string, group []supervise.Claim, round, pod string, clock roundClock) {
 	var asking []supervise.Claim
 	for _, c := range unaskedClaims(group, round) {
