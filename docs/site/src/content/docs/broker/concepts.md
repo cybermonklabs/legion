@@ -765,9 +765,12 @@ A request is wider than its session: it belongs to the principal that made it, w
 records on every enrollment when it is made, from what the enrolling box proved and, for a pod, the
 claim its launcher states (`enroll.go`, `ownerKey`).
 That owner is the person, for a box of theirs and for their sign-in on a machine; the Legion claim
-within the launcher's service, for a pod the Legion daemon enrols, which states the role's claim
-token (`legion-<project>-<issue>-<role>`) for every generation and every replacement pod of the
-role; and the machine itself, by the subject its credential proved, for a machine's own session.
+under the account the launcher's own login proved, for a pod the Legion daemon enrols, which states
+the role's claim token (`legion-<project>-<issue>-<role>`) for every generation and every
+replacement pod of the role; and the machine itself, by the subject its credential proved, for a
+machine's own session.
+Every project's daemon logs in as the same service under an account of its own, so a daemon whose
+pod states another project's claim token is another owner and takes nothing of that claim's.
 A pod that states no claim is its own pod's, and each slot of it, one role process of an issue pod,
 is its own slot's, so the roles of one pod read none of each other's requests.
 Any enrollment of the same owner reads the request (`agent-secrets status`) and cancels it

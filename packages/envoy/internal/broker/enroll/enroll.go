@@ -824,9 +824,15 @@ const claimOwnerPrefix = "claim:"
 //   - an enrollment under a credential that carries an operator — a person's own box, and that
 //     person's sign-in on a machine — is that person's (exchange.PersonPrincipal), whichever box
 //     or session it is;
-//   - a pod its launcher states a claim for is that claim's within the launcher's own service,
-//     claim:<service>/<claim>, so a claim token is one owner however many generations and pods
-//     it runs in, and the same token stated by another service's launcher is another owner;
+//   - a pod its launcher states a claim for is that claim's under the account the launcher's own
+//     token login proved, claim:<login subject>/<claim>, so a claim token is one owner however
+//     many generations and pods it runs in, and the same token stated by another login is another
+//     owner. The login's account and not its service: every project's Legion daemon logs in as
+//     the one service legion-daemon, each under an account of its own, so a key on the service
+//     would make one project's daemon that states another project's claim that claim's owner,
+//     taking what its dormant pods left (adopt). A claim comes only from a login whose own token
+//     proved its subject (ErrInvalidClaim), and a claim holds no slash, so no two pairs of a
+//     login and a claim spell one owner;
 //   - a machine's own session is that machine's, machine:<service>/<subject>, the subject its
 //     credential proved naming one machine and its key (exchange.MachineSubject), so two machines
 //     of one fleet are two owners;
@@ -847,8 +853,8 @@ func ownerKey(cred Credential, in Enrollment) *string {
 		return nullable(exchange.PersonPrincipal(*cred.Operator))
 	case cred.Service == nil:
 		return nil
-	case in.Kind == "pod" && in.Claim != "":
-		return new(claimOwnerPrefix + *cred.Service + "/" + in.Claim)
+	case in.Kind == "pod" && in.Claim != "" && cred.Subject != nil:
+		return new(claimOwnerPrefix + *cred.Subject + "/" + in.Claim)
 	case in.Kind == "pod" && in.Slot != "":
 		return new("machine:" + *cred.Service + "/" + in.RuntimeID + "/" + in.Slot)
 	case in.Kind == "pod":
