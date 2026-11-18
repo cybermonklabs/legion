@@ -210,16 +210,30 @@ function inboxThreadLine(row: MyReplyRow, now: number): string {
   ].join(" · ");
 }
 
-/** One pending credential request: what it asks for, when, the sessions it names and the page
- *  where it is decided. A row that names no session leaves that field out rather than printing
- *  two dashes, and a machine login, which is decided with `dispatch` rather than on a broker
- *  page, carries no url to print. */
+/** Whether a credential request still waits on a decision: the page's `awaitsDecision`
+ *  (`packages/dispatch/web/src/features/credentials/pending.ts`). An expired request is listed
+ *  until somebody dismisses it, but the broker refuses every decision of it, so it waits on
+ *  nobody. A row with no `state` comes from a broker older than the mark, and is pending. */
+function credentialAwaitsDecision(request: CredentialPendingRow): boolean {
+  return request.state !== "expired";
+}
+
+/** One credential request: what it asks for, when, whether its deadline passed before anybody
+ *  decided it, the sessions it names and the page where it is decided. An expired row is marked
+ *  `expired` and its deadline as the broker wrote it, the same mark the Inbox page gives it, or
+ *  `expired` alone from a broker that names no deadline; a pending row carries no mark. A row
+ *  that names no session leaves that field out rather than printing two dashes, and a machine
+ *  login, which is decided with `dispatch` rather than on a broker page, carries no url to
+ *  print. */
 function credentialRequestLine(request: CredentialPendingRow): string {
   const session = request.session ?? null;
   return [
     `- ${request.kind}`,
     (request.identifiers ?? []).join(", "),
     request.requested_at,
+    ...(credentialAwaitsDecision(request)
+      ? []
+      : [request.expires_at === undefined ? "expired" : `expired ${request.expires_at}`]),
     ...(session === null
       ? []
       : [`session request=${session.request ?? "-"}, enrollment=${session.enrollment ?? "-"}`]),
@@ -269,15 +283,20 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  *
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
  * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
- * plus every credential request, which is the viewer's by construction because the list is read
- * as `?approver=me`. Here that is the band's own rows and nothing narrower, since `?assignee=me`
- * keeps only the asks that wait on the caller, as the page's default view does; counting
- * the rows it prints is therefore the page's rule, and it is the one count that cannot disagree
- * with the lines under it.
+ * plus every credential request still waiting on a decision, which is the viewer's by
+ * construction because the list is read as `?approver=me`. Here that is the band's own rows and
+ * nothing narrower, since `?assignee=me` keeps only the asks that wait on the caller, as the
+ * page's default view does; counting the rows it prints is therefore the page's rule, and it is
+ * the one count that cannot disagree with the lines under it. An expired credential request
+ * waits on nobody (`credentialAwaitsDecision`), so it is not counted here, as the page does not
+ * count it, though `Credential requests` lists and counts it until somebody dismisses it.
  *
  * `Unread threads` is the page's thread list (`GET /api/v1/me/replies?kind=reply,agent`): the
  * threads the person is reading that somebody else has written in since, and the messages they
  * sent an agent session that it answered, newest reply first.
+ *
+ * `Credential requests` is the broker's list as Dispatch relays it, in its order: the pending
+ * requests first, then the expired ones nobody has dismissed.
  */
 function formatInboxSummary(
   rows: readonly InboxRow[],
@@ -291,7 +310,7 @@ function formatInboxSummary(
     if (section !== undefined) sections[section].push(row);
   }
   return [
-    `Needs you ${sections.human.length + requests.length}`,
+    `Needs you ${sections.human.length + requests.filter(credentialAwaitsDecision).length}`,
     ...sections.human.map(inboxAskLine),
     "",
     `Waiting on agents ${sections.agent.length}`,
