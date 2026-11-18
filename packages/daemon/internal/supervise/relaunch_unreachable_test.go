@@ -545,6 +545,72 @@ func TestARelaunchRefusedAfterItsStopLeavesNoClaimRecordingAStoppedProcess(t *te
 	})
 }
 
+// Once the stop has ended the process, nothing the relaunch does after it may leave the claim
+// recording that process: the take-back of the task the cut turn ran writes its delivery, and a
+// store that refuses that write is the case a stop that waits minutes on the runtime meets first.
+// Left recording the stopped process, the claim was found dead by the next sweep, charged a death
+// and relaunched as one, under the death's cause rather than the relaunch's, which R5 says
+// charges nothing. So the process is let go first, the task taken back in memory, and the write
+// tried again before the launch: the launch waits at the probe interval for the take-back's write,
+// so no launch is written while the store still holds the task confirmed.
+func TestARelaunchWhoseTakeBackTheStoreRefusesLetsItsProcessGoAndLaunchesOnceItIsWritten(t *testing.T) {
+	h := newHarness(t)
+	sent := h.waitingSilently()
+	generation := h.generation()
+	stopped := h.locator()
+	h.store.fail("PutDelivery", errors.New("the store is down"))
+
+	err := h.handle(h.relaunchOf(false))
+
+	h.wantCalls("Suspend", 1)
+	h.wantCalls("Resume", 0)
+	c := h.claim()
+	if c.Locator != nil || c.State != StateLaunching || c.Generation != generation {
+		t.Errorf("after a take-back the store refused the claim is %s at generation %d on %+v; want it launching at %d recording no process, since the stop ended that one",
+			c.State, c.Generation, c.Locator, generation)
+	}
+	if p := c.Pending; p == nil || p.ID == sent || !p.Interrupted || !p.ConfirmedAt.IsZero() {
+		t.Errorf("pending after the refused take-back = %+v, want the task taken back from the cut turn, interrupted under a new id", p)
+	}
+	if c.EndedWork.Cause != relaunchCause {
+		t.Errorf("the claim records the stop's end as caused by %q, want the relaunch's %q", c.EndedWork.Cause, relaunchCause)
+	}
+	if err != nil {
+		t.Errorf("relaunch whose take-back the store refused = %v, want it answered as a relaunch made, its launch still to come", err)
+	}
+	// While the store refuses the write, the launch waits for it.
+	h.advance(testProbe)
+	if resumes := len(h.calls("Resume")); resumes != 0 {
+		t.Errorf("the relaunch launched %d times while the store still refused its take-back, want it waiting", resumes)
+	}
+	// The store answers again, and the sweep's next report finds the stopped process gone: it
+	// charges nothing, since the claim no longer records that process.
+	h.store.fail("PutDelivery", nil)
+	_ = h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: stopped, Kind: runtime.Gone, At: h.clock.Now()}})
+	if b := h.budgets(); b != (Budgets{}) {
+		t.Errorf("after the sweep found the stopped process gone the claim is charged %+v, want nothing", b)
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+
+	h.advance(testProbe)
+
+	resumed := h.wantCalls("Resume", 1)[0]
+	if c := h.claim(); c.Generation != generation+1 || resumed.Spec.ResumeSessionFile != sessionFile {
+		t.Fatalf("once the store answers the claim is at generation %d resuming %q; want the same session launching at %d",
+			c.Generation, resumed.Spec.ResumeSessionFile, generation+1)
+	}
+	if stored, ok := h.store.delivery(h.token); !ok || stored.ID == sent || !stored.Interrupted || !stored.ConfirmedAt.IsZero() {
+		t.Fatalf("the store holds the delivery %+v, want the task taken back, written before the launch", stored)
+	}
+	h.wantBudgets(Budgets{})
+	h.relaunched()
+	if resent := h.wantPrompts(2)[1]; !strings.Contains(resent.Message, relaunchCause) {
+		t.Fatalf("the task came back as %q, want the daemon's cut-turn note naming the relaunch", resent.Message)
+	}
+}
+
 func TestARelaunchWhoseProcessOutlivesItsStopDoesNothingMore(t *testing.T) {
 	h := newBareHarness(t)
 	rt := &inPlaceRuntime{Runtime: h.rt, stopErr: runtime.ErrProcessOutlivedStop}

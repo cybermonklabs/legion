@@ -1571,34 +1571,64 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // write, as queue writes it: the claim goes with the delivery when either changed, and a write
 // that fails leaves the handshake as the store holds it, for the take-back made again to read.
 func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool) error {
+	back, taking := m.decideTakeBack(why, outOfMemory)
+	if !taking {
+		return nil
+	}
+	stored := m.stored()
+	stored.Handshake = back.handshake
+	var err error
+	if back.claimToo {
+		err = m.putClaimAndDelivery(ctx, stored, back.next)
+	} else {
+		err = m.putDelivery(ctx, back.next)
+	}
+	if err != nil {
+		return err
+	}
+	m.tookBack(back)
+	return nil
+}
+
+// takeBack is a let-go's take-back of the pending task as interrupted decides it, before the write
+// that records it: the task as it goes back to waiting, the claim's handshake with it, and whether
+// that write must carry the claim, because a telling or the handshake moved.
+type takeBack struct {
+	next      Delivery
+	handshake EntryHandshake
+	claimToo  bool
+}
+
+// decideTakeBack is interrupted's decision, made before anything forgets the send or the prompts
+// outstanding that the doubt is read from (confirmationInDoubt): the take-back of a confirmed
+// task, and false where the claim holds none. The untelling is made here, in memory, as interrupted
+// states; nothing else of the claim moves until tookBack.
+func (m *Machine) decideTakeBack(why string, outOfMemory bool) (takeBack, bool) {
 	p := m.claim.Pending
 	if p == nil || p.ConfirmedAt.IsZero() {
-		return nil
+		return takeBack{}, false
 	}
 	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "delivery", p.ID)
 	next := *p
 	next.ID, next.ConfirmedAt, next.Interrupted, next.OutOfMemory = rotateTaskID(p.ID), time.Time{}, true, outOfMemory
 	doubt := m.confirmationInDoubt()
-	untold := m.untellInFlight()
-	stored := m.stored()
-	var handshakeMoved bool
+	back := takeBack{next: next, handshake: m.claim.Handshake, claimToo: m.untellInFlight()}
 	if doubt {
-		stored.Handshake, handshakeMoved = m.claim.Handshake.unconfirmed(*p)
+		var moved bool
+		back.handshake, moved = m.claim.Handshake.unconfirmed(*p)
+		back.claimToo = back.claimToo || moved
 	}
-	var err error
-	if untold || handshakeMoved {
-		err = m.putClaimAndDelivery(ctx, stored, next)
-	} else {
-		err = m.putDelivery(ctx, next)
-	}
-	if err != nil {
-		return err
-	}
-	*p = next
-	m.claim.Handshake = stored.Handshake
+	return back, true
+}
+
+// tookBack puts a decided take-back on the claim: the task under its new id, the handshake, the
+// end of the wait for the prompts' results, and the mark that the task was taken from a turn of
+// the process the claim records (Machine.cutTurnOf).
+func (m *Machine) tookBack(back takeBack) {
+	*m.claim.Pending = back.next
+	m.claim.Handshake = back.handshake
 	m.outstanding = nil
-	m.cutTurnOf = next.ID
-	return nil
+	m.cutTurnOf = back.next.ID
 }
 
 // taskRead and taskUnread say whether the agent may have read a task being taken back: the task
@@ -1843,12 +1873,14 @@ func (m *Machine) confirmationInDoubt() bool {
 // the pending id. recordEnd and interrupted both call it, and whichever of them a let-go runs first
 // untells. recordEnd calls it before anything else, in memory only, since the let-go's own write
 // carries the claim: a death and a displacement record the end before they take the task back
-// (died, displaced). interrupted calls it before the id moves and writes the claim with the
-// delivery when it reports true, for every path that takes the task back before the let-go records
-// the end: the held suspension's deadline (suspendAtTimeout), a paced launch whose turn has come
-// (runWake), a suspension over a dead process (suspendOverADeadProcess), and the replacement of a
-// process still running (replaceProcess, replaceNow) for a stale address (repoint), a stale plugin
-// (relaunchMarked) and the stall backstop (backstopStalledTurn).
+// (died, displaced). interrupted calls it, through decideTakeBack, before the id moves and writes
+// the claim with the delivery when it reports true, for every path that takes the task back before
+// the let-go records the end: the held suspension's deadline (suspendAtTimeout), a paced launch
+// whose turn has come (runWake), a suspension over a dead process (suspendOverADeadProcess), and
+// the replacement of a process still running (replaceProcess, replaceNow) for a stale address
+// (repoint), a stale plugin (relaunchMarked) and the stall backstop (backstopStalledTurn). The
+// relaunch of a claim Envoy cannot reach calls decideTakeBack itself, and writes the take-back
+// once its process is let go (relaunchUnreachable).
 func (m *Machine) untellInFlight() bool {
 	if !m.confirmationInDoubt() {
 		return false

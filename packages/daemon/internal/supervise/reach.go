@@ -228,13 +228,23 @@ type RequestRelaunch struct {
 // the replacement every daemon-made relaunch makes (replaceProcess's steps): the task the turn ran
 // goes back to waiting and comes back behind the cause, and the recorded session is resumed.
 //
-// The stop has ended the process, so the process is let go there, before the launch, as a
-// retirement's stop lets its process go (suspendProcess), and what it ended is recorded under the
-// relaunch's cause (letGo, recordEnd); the launch lets nothing more go. So a refusal the launch's
-// own recheck still meets — the tree's cleanup reserved, or a store that did not answer, while the
-// stop waited on the runtime — finds a claim that records no process, which is suspended for the
-// tree's close or launched again at the probe interval (relaunchRefused), rather than a claim left
-// recording a process that is gone with nothing to launch it.
+// The stop has ended the process, so the process is let go there, before the launch and before
+// any write that can fail, as a retirement's stop lets its process go (suspendProcess), and what
+// it ended is recorded under the relaunch's cause (letGo, recordEnd); the launch lets nothing more
+// go. Nothing after the stop returns with the stopped process still recorded: the sweep's next
+// report of it would find it gone, charge a death and relaunch it under the death's cause. So a
+// refusal the launch's own recheck still meets — the tree's cleanup reserved, or a store that did
+// not answer, while the stop waited on the runtime — finds a claim that records no process, which
+// is suspended for the tree's close or launched again at the probe interval (relaunchRefused).
+//
+// The task the cut turn ran goes back to waiting in memory at the stop, decided before the let-go
+// forgets the send and the prompts outstanding it reads (decideTakeBack, tookBack), and the claim
+// is then written launching, with no process and the task taken back, in one write
+// (putClaimAndPending): the shape a relaunch waiting for its launch is stored in, which a restart
+// launches again. A store that refuses that write leaves the take-back unsaved and the launch
+// waiting for it at the probe interval (relaunchLater, launchOnceTakenBack), since a launch
+// written while the store still holds the task confirmed would have a restart read the cut turn
+// as a finished one and retire its task.
 //
 // A refusal before the stop is a refusal of the claim, as the guard's and the runtime's are
 // (RefusedError): the tree lifecycle's is ErrTreeRefusesLaunch, which says nothing was stopped. A
@@ -328,8 +338,12 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 	// A timestamp column holds microseconds, so the moment is recorded as the store reads it back.
 	// Its launch is still to be made, so no generation is recorded beside it yet.
 	m.claim.LastRelaunch, m.claim.LastRelaunchGeneration = at.UTC().Truncate(time.Microsecond), 0
-	if err := m.interrupted(ctx, "the claim was relaunched because "+ev.Cause, false); err != nil {
-		return err
+	back, taking := m.decideTakeBack("the claim was relaunched because "+ev.Cause, false)
+	if taking {
+		// In memory only: the write comes once the process is let go, and settle writes it with
+		// the claim at the claim's next decision if this one's does not land.
+		m.tookBack(back)
+		m.unsaved = true
 	}
 	if m.held != nil {
 		// The relaunch's stop keeps the session's Envoy registration for the launch it makes, so
@@ -337,8 +351,29 @@ func (m *Machine) relaunchUnreachable(ctx context.Context, ev RequestRelaunch) e
 		return m.endHeld(ctx, stopOwed)
 	}
 	m.letGo(ctx, letGoCause{cause: ev.Cause, relaunch: true})
-	// The launch that starts writes the generation it left the claim at beside the relaunch, in
-	// its own write (launchNow), whether it runs now or is tried again at the probe interval.
+	if !taking {
+		// The launch that starts writes the generation it left the claim at beside the relaunch,
+		// in its own write (launchNow), whether it runs now or is tried again at the probe interval.
+		return m.launchOrWait(ctx)
+	}
+	m.claim.State = StateLaunching
+	return m.launchOnceTakenBack(ctx)
+}
+
+// launchOnceTakenBack is the relaunch's launch where its stop took the cut turn's task back: the
+// take-back is written first, with the claim launching and recording no process, and the launch
+// follows once that write has landed (relaunchUnreachable). A write the store refuses is tried
+// again at the probe interval, and the launch with it; the relaunch is made meanwhile, as one
+// whose launch waits for the store is (launchOrWait), and nothing more is charged.
+func (m *Machine) launchOnceTakenBack(ctx context.Context) error {
+	if m.unsaved {
+		if err := m.saved(m.putClaimAndPending(ctx)); err != nil {
+			m.log.Warn("supervise: the relaunch's take-back of its task was not written; its launch waits for it at the probe interval",
+				"delivery", pendingID(m.claim.Pending), "error", err)
+			m.relaunchLater(m.deps.Timeouts.Probe, m.launchOnceTakenBack)
+			return nil
+		}
+	}
 	return m.launchOrWait(ctx)
 }
 
