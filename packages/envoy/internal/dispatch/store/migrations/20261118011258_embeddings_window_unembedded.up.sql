@@ -9,11 +9,14 @@
 -- the statement before them took 10 to 30 s in production) and not, this index. A row of this
 -- half has no vector of its current text, so it is never current, and the statement reads its
 -- kind, whether it is dead and its pending_since alone: kind is the key, and dead and
--- pending_since are included, so the planner answers this half by an index-only scan. No
--- window's text is read, and no heap page is read where the visibility map marks the page
--- all-visible. It holds the rows still waiting for a vector of their current text, the dead ones
--- among them, a small share of the table: at 0.3 x production's size it was 144 kB against a
--- 405 MB heap.
+-- pending_since are included, so the statement reads this half from this index and the rows it
+-- points to, testing no window's text: by an index-only scan while most of embeddings' pages are
+-- all-visible, which reads no heap page the visibility map marks all-visible, and otherwise, with
+-- the other half, by one bitmap heap scan over a BitmapOr of both indexes, which reads each heap
+-- page holding window rows once (embedqueue's planCoverage chooses, since the planner cannot
+-- estimate the half). It holds the rows still waiting for a vector of their current text, the
+-- dead ones among them, a small share of the table: at 0.3 x production's size it was 144 kB
+-- against a 405 MB heap.
 --
 -- The predicate must stay the coverage statement's word for word. The statement repeats it
 -- (embedqueue's windowUnembedded, built from windowCoverageKinds and somethingToEmbed, the

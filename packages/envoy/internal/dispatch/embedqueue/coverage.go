@@ -96,13 +96,17 @@ var windowCoverageKinds = []string{"document_block", "comment_block", "message_b
 //
 // Each half is, word for word, the predicate of the index the report reads that half from
 // (migrations 20261118011208_embeddings_window_embedded and
-// 20261118011258_embeddings_window_unembedded), and coverageQuery repeats it as that half's
-// WHERE, so the planner proves the index applies, drops those conditions and reads kind, model,
-// dead and pending_since from the index alone: no window's text is read, and no heap page the
-// visibility map marks all-visible. The columns are named bare, as an index predicate names them.
-// A change to the kinds, the regex or either half is a change to those indexes too, and owes a
-// migration that builds them again with it; without one the answer stays right and the statement
-// reads every window's text again.
+// 20261118011258_embeddings_window_unembedded). The report's index-only text repeats each as its
+// half's WHERE (coverageWindowHalves), and its bitmap text ORs the two as one WHERE
+// (coverageWindowsAtOnce), so the planner proves the indexes apply and leaves those conditions to
+// them: the statement tests no window's text. Each index carries every column the statement reads
+// of a row of its half (kind, dead and pending_since, and model for the embedded half), so an
+// index-only scan reads no heap page the visibility map marks all-visible; a bitmap heap scan over
+// a BitmapOr of the two reads each heap page holding window rows once and keeps the regex to its
+// recheck. planCoverage says which text runs. The columns are named bare, as an index predicate
+// names them. A change to the kinds, the regex or either half is a change to those indexes too,
+// and owes a migration that builds them again with it; without one the answer stays right and the
+// statement reads every window's text again.
 var (
 	windowItems      = "kind in ('" + strings.Join(windowCoverageKinds, "', '") + "') and " + somethingToEmbed("text_snapshot")
 	windowEmbedded   = windowItems + " and embedding is not null and embedded_hash = content_hash"
@@ -686,21 +690,23 @@ var notIndexedPositions = func() map[string]int {
 	return positions
 }()
 
-// coverageQuery counts, per covered kind, its items and how many of them carry a current vector,
-// are dead or lack one, and per uncovered kind (notIndexedKinds) the items of it the database
-// holds, in one statement so every count reads one snapshot. $1 is the configured identity, the
-// empty string when there is none, and then no item is current. greatest ignores a null, so an
-// item with no row ages from when it was written; the oldest age is null when nothing of the kind
-// lacks. The second column says which half a row came from: an uncovered kind carries its count
-// alone, with no current, failed or oldest age, none of which is defined for a kind nothing
-// indexes.
+// coverageQuery is the coverage statement with windows as the arm or arms of judged that count
+// the window kinds (coverageWindowHalves, coverageWindowsAtOnce): it counts, per covered kind, its
+// items and how many of them carry a current vector, are dead or lack one, and per uncovered kind
+// (notIndexedKinds) the items of it the database holds, in one statement so every count reads one
+// snapshot. $1 is the configured identity, the empty string when there is none, and then no item
+// is current. greatest ignores a null, so an item with no row ages from when it was written; the
+// oldest age is null when nothing of the kind lacks. The second column says which half a row came
+// from: an uncovered kind carries its count alone, with no current, failed or oldest age, none of
+// which is defined for a kind nothing indexes. Its two texts, coverageIndexOnlyQuery and
+// coverageBitmapQuery, differ in the window arms alone, and planCoverage says which one runs.
 //
-// A window kind's items are its own rows whose text has something to embed, read in two halves
-// from the two indexes whose predicates the halves repeat (windowEmbedded, windowUnembedded): a
-// row embedded at its current text is current exactly when its model is the identity, and any
-// other row is never current. A window is its own item, so its written_at is its own
-// pending_since, and its dead and pending_since are read from the row itself; no window's text is
-// read and no row is joined back to itself.
+// A window kind's items are its own rows whose text has something to embed, read from the two
+// indexes whose predicates the window arms repeat (windowEmbedded, windowUnembedded): a row
+// embedded at its current text is current exactly when its model is the identity, and any other
+// row is never current. A window is its own item, so its written_at is its own pending_since, and
+// its dead and pending_since are read from the row itself; no window's text is tested and no row
+// is joined back to itself.
 //
 // The issue's items are the issues whose text has something to embed (issueHasText), each with
 // its embeddings row (issueSourceFrom), current when that row holds a vector from the identity of
@@ -711,7 +717,15 @@ var notIndexedPositions = func() map[string]int {
 // created_at. So the counts are the ones issueItems left-joined to their rows would give: an
 // issue whose inputs changed is slower to count, never counted from a stale text (but for the one
 // theoretical false match issueSource names).
-var coverageQuery = func() string {
+//
+// Each arm counts its own rows by kind (coverageCounts) before the arms meet, and the outer select
+// adds those counts up per kind and takes the earliest of their earliest waits: the answer one
+// count over every arm's rows gives, since counts add up and the earliest of the arms' earliest
+// is the earliest of all. So no row of an arm passes one by one through the union and a second
+// aggregate. On the scale test's corpus at 0.3 x production's size, on a test Postgres, that took
+// about 15% less time than one count over the arms' rows, with the table in each state of the
+// visibility map planCoverage tells apart, and answered the same rows in one snapshot.
+func coverageQuery(windows string) string {
 	uncovered := make([]string, 0, len(notIndexedKinds))
 	for _, kind := range notIndexedKinds {
 		uncovered = append(uncovered, fmt.Sprintf(
@@ -719,26 +733,68 @@ var coverageQuery = func() string {
 	}
 	return `
 		with judged as (
-			select kind, pending_since as written_at, pending_since, dead,
-			       coalesce($1::text <> '' and model = $1::text, false) as current
-			from embeddings
-			where ` + windowEmbedded + `
+			` + windows + `
 			union all
-			select kind, pending_since, pending_since, dead, false
-			from embeddings
-			where ` + windowUnembedded + `
-			union all
-			select '` + issueKind + `'::text, i.created_at, e.pending_since, coalesce(e.dead, false),
-			       coalesce($1::text <> '' and e.embedding is not null and e.model = $1::text and e.embedded_hash = ` + issueHash + `, false)
-			from ` + issueSourceFrom + `
-			where ` + issueHasText + `
+			select kind, ` + coverageCounts + `
+			from (select '` + issueKind + `'::text as kind, i.created_at as written_at, e.pending_since, coalesce(e.dead, false) as dead,
+			             coalesce($1::text <> '' and e.embedding is not null and e.model = $1::text and e.embedded_hash = ` + issueHash + `, false) as current
+			      from ` + issueSourceFrom + `
+			      where ` + issueHasText + `) issue_items
+			group by kind
 		)
-		select kind, true, count(*), count(*) filter (where current), count(*) filter (where dead and not current),
-		       floor(extract(epoch from now() - min(greatest(pending_since, written_at)) filter (where not current and not dead)))::bigint
+		select kind, true, sum(items)::bigint, sum(current)::bigint, sum(failed)::bigint,
+		       floor(extract(epoch from now() - min(waited_since)))::bigint
 		from judged
 		group by kind
 		union all ` + strings.Join(uncovered, "\n union all ")
-}()
+}
+
+// coverageCounts is what each arm of coverageQuery counts of its rows, grouped by kind: its items,
+// how many are current, how many are dead and not current (failed), and when the longest-waiting
+// lacking one, neither current nor dead, started waiting, the later of its row's pending_since and
+// its written_at. Every arm names its rows' columns kind, written_at, pending_since, dead and
+// current, so every arm counts alike.
+const coverageCounts = `count(*) as items, count(*) filter (where current) as current,
+			       count(*) filter (where dead and not current) as failed,
+			       min(greatest(pending_since, written_at)) filter (where not current and not dead) as waited_since`
+
+// coverageWindowHalves is the window arms of coverageIndexOnlyQuery: one arm per half, each
+// whose WHERE is its half's index predicate alone (windowEmbedded, windowUnembedded), so that each
+// half can be read by an index-only scan of its own index. A row of the embedded half is current
+// exactly when its model is the identity; a row of the other half never is.
+var coverageWindowHalves = `select kind, ` + coverageCounts + `
+			from (select kind, pending_since as written_at, pending_since, dead,
+			             coalesce($1::text <> '' and model = $1::text, false) as current
+			      from embeddings
+			      where ` + windowEmbedded + `) embedded
+			group by kind
+			union all
+			select kind, ` + coverageCounts + `
+			from (select kind, pending_since as written_at, pending_since, dead, false as current
+			      from embeddings
+			      where ` + windowUnembedded + `) unembedded
+			group by kind`
+
+// coverageWindowsAtOnce is the window arm of coverageBitmapQuery: both halves in one arm, whose
+// WHERE is the two index predicates ORed, each word for word, so that the planner can read the arm
+// through a BitmapOr of the two indexes (planCoverage says why it does). A row is current when it
+// is of the embedded half and its model is the identity, which is the halves' own two tests
+// together; coalesce makes a null in either a row that is not current, as each half's arm counts
+// it.
+var coverageWindowsAtOnce = `select kind, ` + coverageCounts + `
+			from (select kind, pending_since as written_at, pending_since, dead,
+			             coalesce(embedding is not null and embedded_hash = content_hash and $1::text <> '' and model = $1::text, false) as current
+			      from embeddings
+			      where (` + windowEmbedded + `) or (` + windowUnembedded + `)) windows
+			group by kind`
+
+// coverageIndexOnlyQuery and coverageBitmapQuery are the coverage statement's two texts
+// (coverageQuery), for the two plans planCoverage chooses between (coverageIndexOnly,
+// coverageBitmap). Both answer the same rows from the same snapshot.
+var (
+	coverageIndexOnlyQuery = coverageQuery(coverageWindowHalves)
+	coverageBitmapQuery    = coverageQuery(coverageWindowsAtOnce)
+)
 
 // coverageStatementTimeout is the statement_timeout Coverage holds its statement to: Postgres ends
 // a statement that runs past it, and Coverage answers that as ErrCoverageTimedOut, which the
@@ -770,17 +826,134 @@ func CoverageStatementTimeout() string {
 	return coverageStatementTimeout
 }
 
-// coverageFailed wraps err, an error of the coverage statement, as Coverage answers it: as
-// ErrCoverageTimedOut as well when Postgres ended the statement itself (SQLSTATE 57014,
-// query_canceled) while ctx is still live - coverageStatementTimeout's doing, or an operator's
-// pg_cancel_backend, which counted nothing either. A caller whose own context ended gets the
-// error of that, not a timeout of the server's.
+// coverageFailed wraps err, an error of the coverage statement or of the two planCoverage runs
+// under its bound, as Coverage answers it: as ErrCoverageTimedOut as well when Postgres ended the
+// statement itself (SQLSTATE 57014, query_canceled) while ctx is still live -
+// coverageStatementTimeout's doing, or an operator's pg_cancel_backend, which counted nothing
+// either. A caller whose own context ended gets the error of that, not a timeout of the server's.
 func coverageFailed(ctx context.Context, err error) error {
 	var pgErr *pgconn.PgError
 	if ctx.Err() == nil && errors.As(err, &pgErr) && pgErr.Code == "57014" {
 		return fmt.Errorf("search coverage: %w: %w", ErrCoverageTimedOut, err)
 	}
 	return fmt.Errorf("search coverage: %w", err)
+}
+
+// coveragePlan is one way planCoverage sets Coverage's transaction to read the window kinds: the
+// settings it runs there and the text of the coverage statement the transaction then runs. The
+// settings are set local, in one Exec: they carry no argument, so pgx sends them over the simple
+// protocol, which takes a statement list, as beginMeaningScan's settings go (api/search.go).
+type coveragePlan struct {
+	// name names the plan, for a measurement's log.
+	name     string
+	settings string
+	query    string
+}
+
+var (
+	// coverageIndexOnly reads each window half by an index-only scan of its own index.
+	coverageIndexOnly = coveragePlan{
+		name:     "index-only",
+		settings: `set local enable_seqscan = off; set local enable_bitmapscan = off`,
+		query:    coverageIndexOnlyQuery,
+	}
+	// coverageBitmap reads the window rows by one bitmap heap scan over a BitmapOr of both
+	// window indexes.
+	coverageBitmap = coveragePlan{
+		name:     "bitmap",
+		settings: `set local enable_seqscan = off; set local work_mem = '128MB'`,
+		query:    coverageBitmapQuery,
+	}
+)
+
+// coverageIndexOnlyShare is the share of embeddings' pages the statistics must record as
+// all-visible for planCoverage to choose coverageIndexOnly; below it, it chooses coverageBitmap.
+// The bitmap plan reads every heap page that holds a window whatever the visibility map holds, so
+// it takes about the same time in every state, while the index-only plan slows as fewer pages are
+// all-visible; 0.3 is about where it reached the bitmap plan's time on a test Postgres, over the
+// scale test's corpus at 0.3 x production's size. With every page all-visible the index-only plan
+// took 177 to 198 ms and the bitmap plan 1,034 to 1,225 ms; with 63%, 256 to 323 against 1,066 to
+// 1,289; with none, 1,593 to 1,735 against 1,025 to 1,217; and with 29%, in a run of its own, the
+// index-only plan took 1,104 to 1,406 ms. It is an estimate from one shared machine at one size,
+// to be read against what the scale measurement's Job (scripts/coverage-scale.sh) times with the
+// table in each of those states.
+const coverageIndexOnlyShare = 0.3
+
+// coverageVisibleShare reads the share of embeddings' pages the statistics record as all-visible:
+// pg_class.relallvisible over relpages, which VACUUM and ANALYZE set and the planner prices an
+// index-only scan's heap fetches by. A table with no page recorded counts as all-visible.
+const coverageVisibleShare = `select case when relpages > 0 then relallvisible::float8 / relpages else 1 end
+	from pg_class where oid = 'embeddings'::regclass`
+
+// planCoverage reads how much of embeddings the statistics record as all-visible
+// (coverageVisibleShare), chooses coverageIndexOnly at coverageIndexOnlyShare or above and
+// coverageBitmap below it, runs the chosen plan's settings in Coverage's transaction tx, and
+// answers the plan, whose query is the text tx is then to run. Every setting is set local, so none
+// outlives tx and the connection goes back to the pool with none of them. Coverage calls it once
+// it has bounded the statement, so both of its statements run under coverageStatementTimeout too.
+// It is a function of its own so that a measurement of the statement can call it as well, and
+// time the statement as the route plans it.
+//
+// The planner is not left to choose, because it cannot estimate either half: both predicates
+// compare embedded_hash with content_hash, two columns of one row, which it prices at its default
+// equality selectivity, half a percent. So it takes the embedded half, about 99% of the window
+// rows, for half a percent of them, and the unembedded half, about 1%, for nearly all (at
+// production's size, 4,868 rows estimated against 974,072 read, and 977,422 against 9,840).
+// While the statistics record nearly every page of embeddings as all-visible that costs nothing,
+// since an index-only scan is then priced with almost no heap fetch. Once an ANALYZE records many
+// pages as not all-visible, as it does between two vacuums of a table the queue keeps writing, an
+// index-only scan of "nearly all" the rows is priced with a heap fetch for each, and the planner
+// reads the unembedded half by a sequential scan of embeddings instead, running the blank test's
+// regex over every window's text: 5 to 7.7 s on a test Postgres at 0.3 x production's size, where
+// either plan below took 1.8 s or less.
+//
+// Sequential scans are off under both plans, which differ in how they read the window rows:
+//
+//   - coverageIndexOnly reads each half by an index-only scan of its own index
+//     (coverageWindowHalves), with bitmap scans off too, so that both halves are read index-only,
+//     the plan whose times coverageIndexOnlyShare rests on. An index-only scan reads no heap page
+//     the visibility map marks all-visible, but fetches each row of a page that is not, one page
+//     visit for each row, which is why it slows as fewer pages are all-visible.
+//   - coverageBitmap reads both halves in one arm whose WHERE is the two predicates ORed
+//     (coverageWindowsAtOnce). A plain or index-only scan of one window index cannot answer that
+//     OR, since neither predicate alone holds every row it selects, so the half the planner
+//     underestimates cannot be read by a plain index scan of its index, as it is when that half is
+//     read alone with index-only scans off (1.8 to 1.9 s with no page all-visible). The planner
+//     reads the two indexes through a BitmapOr instead, feeding one bitmap heap scan that visits
+//     each heap page holding window rows once, in the table's order, and keeps the regex in its
+//     recheck alone, which an exact bitmap never runs. So index and index-only scans stay on, and
+//     the issue arm keeps its index scans: 65 to 140 ms of the statement at 0.3 x, where with index
+//     scans off its lookups were bitmap heap scans and an issue's latest spec version was found by
+//     reading every version of its document (issueSourceFrom), about 410 ms. An index on the
+//     window kinds alone (embeddings_pkey by its kind, embeddings_window_owner) could answer the OR
+//     as well, with the regex as a filter over every window; the planner takes the BitmapOr while
+//     it prices the read of embeddings_window_embedded at the half percent it takes that half for,
+//     and TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes and
+//     TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible hold it to that plan.
+//     work_mem is raised to 128MB so the bitmap stays exact: an exact bitmap takes about 64 to 96
+//     bytes a heap page, so 128MB holds about eight times production's 171,000 pages of
+//     embeddings, and a page a bitmap held only lossily would be rechecked against the indexes'
+//     predicates - the regex over its windows' text. A bitmap takes only what its pages need, so
+//     the setting is a ceiling, not an allocation.
+//
+// Statistics on the expression (CREATE STATISTICS on embedded_hash = content_hash) would let the
+// planner estimate the halves itself, but they are not used: they need a migration that names
+// embeddings, a table past CensusTableLimit, and the census refuses such a migration unless every
+// statement of it is of a catalog-only kind, a list that holds no CREATE STATISTICS
+// (pgmigrate/exempt.go, catalogOnlyStatements).
+func planCoverage(ctx context.Context, tx pgx.Tx) (coveragePlan, error) {
+	var visible float64
+	if err := tx.QueryRow(ctx, coverageVisibleShare).Scan(&visible); err != nil {
+		return coveragePlan{}, coverageFailed(ctx, fmt.Errorf("read how much of embeddings is all-visible: %w", err))
+	}
+	plan := coverageBitmap
+	if visible >= coverageIndexOnlyShare {
+		plan = coverageIndexOnly
+	}
+	if _, err := tx.Exec(ctx, plan.settings); err != nil {
+		return coveragePlan{}, coverageFailed(ctx, fmt.Errorf("plan the statement: %w", err))
+	}
+	return plan, nil
 }
 
 // Coverage reports how much of what meaning search covers (coverageKinds) has a current vector
@@ -791,16 +964,18 @@ func coverageFailed(ctx context.Context, err error) error {
 //
 // It reads in a read-only transaction whose statement runs under coverageStatementTimeout, and a
 // statement Postgres ends at that bound while ctx is live answers ErrCoverageTimedOut
-// (coverageFailed). The bound is the server's own because nothing else frees the backend: pgx
-// v5.13's default context watcher (pgconn.DeadlineContextWatcherHandler, which nothing here
-// overrides) answers a context that ends mid-statement by setting a deadline on the client's
-// connection, which fails the read in flight and closes the connection, and it sends Postgres no
-// cancel request. With no bound, the statement of a caller that has gone - the probe
-// disconnecting at its 30 s - runs on in the database for as long as the corpus makes it take.
-// The boot pass reads the report through here too (coverPass), so it is bounded the same way.
-// The rollback runs on a context the caller's cancellation does not end, so a caller that leaves
-// once the rows are read still hands its connection back to the pool rather than pgx destroying
-// it over a rollback it refused to send.
+// (coverageFailed). The bound is the server's own so that it ends the statement while its caller
+// still waits: the search coverage probe waits 30 s, and a statement ended at 10 s answers it 503
+// SEARCH_COVERAGE_TIMEOUT, which says why, where a statement still running when the probe gave up
+// would leave it a cut connection and the route a 500. It also holds where the caller's own
+// cancel cannot arrive: pgx v5.13 answers a context that ends mid-statement by sending Postgres a
+// CancelRequest before it closes the connection (pgconn's asyncClose), but a CancelRequest needs
+// a connection of its own, which a saturated server may refuse (the reason api/search.go's
+// searchMeaningScan bounds search's statements). The boot pass reads the report through here too
+// (coverPass), so it is bounded the same way. planCoverage then chooses, under the bound, the
+// statement's text and the settings it runs under. The rollback runs on a context the caller's
+// cancellation does not end, so a caller that leaves once the rows are read still hands its
+// connection back to the pool rather than pgx destroying it over a rollback it refused to send.
 func Coverage(ctx context.Context, database *store.Store, identity string) (model.SearchCoverage, error) {
 	var report model.SearchCoverage
 	if identity != "" {
@@ -830,7 +1005,11 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+coverageStatementTimeout+"'"); err != nil {
 		return model.SearchCoverage{}, fmt.Errorf("search coverage: bound the statement: %w", err)
 	}
-	rows, err := tx.Query(ctx, coverageQuery, identity)
+	plan, err := planCoverage(ctx, tx)
+	if err != nil {
+		return model.SearchCoverage{}, err
+	}
+	rows, err := tx.Query(ctx, plan.query, identity)
 	if err != nil {
 		return model.SearchCoverage{}, coverageFailed(ctx, err)
 	}

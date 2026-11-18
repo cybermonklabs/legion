@@ -89,10 +89,10 @@ type coverageScalePoint struct {
 	head, base time.Duration
 }
 
-// TestCoverageStatementScale measures the search coverage statement (coverageQuery, the head)
-// against the statement it replaced (mainCoverageQuery, the base) on a synthetic corpus at each
-// scale DISPATCH_COVERAGE_SCALES names, and states the corpus size at which the head would reach
-// its bound (coverageStatementTimeout), as a multiple of production's: R2 of
+// TestCoverageStatementScale measures the search coverage statement (coverageIndexOnlyQuery, the
+// head) against the statement it replaced (mainCoverageQuery, the base) on a synthetic corpus at
+// each scale DISPATCH_COVERAGE_SCALES names, and states the corpus size at which the head would
+// reach its bound (coverageStatementTimeout), as a multiple of production's: R2 of
 // dispatch://INFRA-4241, which fails below 4. scripts/coverage-scale.sh runs it in a Job of its
 // own, with a Postgres of its own; a pod's test server is too small and too shared for corpora of
 // production's size, and CI never sets the URL that runs it.
@@ -100,9 +100,12 @@ type coverageScalePoint struct {
 // Each scale gets a database of its own, migrated by the store's own path (store.Migrate), the
 // corpus loaded (testdata/coverage_corpus.sql over this repository's prose), the record step run
 // to completion (recordSources) as the boot pass leaves a database, and the tables vacuumed, so
-// the head's index-only scans find the visibility map a quiet production table has. The database
-// is dropped before the next scale is built. The two statements' answers are compared in one
-// snapshot (requireMainsAnswer), so the time read is the time of the same answer.
+// the head finds the visibility map a quiet production table has: the head is the text
+// planCoverage chooses while most of embeddings' pages are all-visible, read by index-only scans,
+// timed here with the planner free. The text it chooses below that share (coverageBitmapQuery),
+// for a table many of whose pages a write changed since its last vacuum, is not timed here. The
+// database is dropped before the next scale is built. The base's answer is compared with both
+// texts' in one snapshot (requireMainsAnswer), so the time read is the time of the same answer.
 //
 // The times are read on one connection, each statement once before the timed runs and then
 // alternately five times under EXPLAIN (ANALYZE, BUFFERS), each run's time its planning plus
@@ -239,7 +242,7 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 		t.Fatalf("random database name: %v", err)
 	}
 	name := "coverage_scale_" + strings.ReplaceAll(scale.text, ".", "_") + "_" + hex.EncodeToString(suffix[:])
-	if _, err := admin.Exec(ctx, "create database "+name); err != nil {
+	if _, err := admin.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create the database of scale %s: %v", scale.text, err)
 	}
 	t.Cleanup(func() { dropScaleDatabase(t, admin, name) })
@@ -405,11 +408,11 @@ func checkCoverageCorpus(t *testing.T, database *store.Store, scale coverageScal
 		scale.text, issues, outsideASCII, versions, strings.Join(windows, ", "), specs-wrong, visible, pages)
 }
 
-// timeCoverageStatements times the head (coverageQuery) and the base (mainCoverageQuery) for the
-// corpus's identity on one connection with no statement_timeout: one warm-up run of each, then
-// coverageScaleRuns runs of each, alternately, under EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON),
-// each run's time its planning plus execution. It logs one plan of each in text form, from an
-// EXPLAIN (ANALYZE, BUFFERS) of its own after the timed runs.
+// timeCoverageStatements times the head (coverageIndexOnlyQuery) and the base (mainCoverageQuery)
+// for the corpus's identity on one connection with no statement_timeout: one warm-up run of each,
+// then coverageScaleRuns runs of each, alternately, under EXPLAIN (ANALYZE, BUFFERS, FORMAT
+// JSON), each run's time its planning plus execution. It logs one plan of each in text form, from
+// an EXPLAIN (ANALYZE, BUFFERS) of its own after the timed runs.
 func timeCoverageStatements(t *testing.T, databaseURL string, scale coverageScale) (head, base []time.Duration) {
 	t.Helper()
 	ctx := context.Background()
@@ -429,7 +432,7 @@ func timeCoverageStatements(t *testing.T, databaseURL string, scale coverageScal
 		runs      *[]time.Duration
 	}{
 		{"base (mainCoverageQuery)", mainCoverageQuery, &base},
-		{"head (coverageQuery)", coverageQuery, &head},
+		{"head (coverageIndexOnlyQuery)", coverageIndexOnlyQuery, &head},
 	}
 	for _, statement := range statements {
 		mustExec(t, conn, statement.sql, configuredIdentity)

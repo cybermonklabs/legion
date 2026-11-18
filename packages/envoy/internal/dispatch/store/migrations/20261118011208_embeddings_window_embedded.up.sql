@@ -13,9 +13,12 @@
 -- and the two predicates are each other's negation over those rows, content_hash being NOT NULL.
 -- A row of this half is current exactly when its model is the configured identity, so model is
 -- a key beside kind, and dead and pending_since are included: that is every column the
--- statement reads of such a row, so the planner answers this half by an index-only scan. No
--- window's text is read, and no heap page is read where the visibility map marks the page
--- all-visible.
+-- statement reads of such a row, so the statement reads this half from this index and the rows
+-- it points to, testing no window's text: by an index-only scan while most of embeddings' pages
+-- are all-visible, which reads no heap page the visibility map marks all-visible, and otherwise,
+-- with the other half, by one bitmap heap scan over a BitmapOr of both indexes, which reads each
+-- heap page holding window rows once. The planner cannot estimate the half (its predicate
+-- compares two columns), so embedqueue's planCoverage chooses between the two.
 --
 -- The predicate must stay the coverage statement's word for word. The statement repeats it
 -- (embedqueue's windowEmbedded, built from windowCoverageKinds and somethingToEmbed, the negation
