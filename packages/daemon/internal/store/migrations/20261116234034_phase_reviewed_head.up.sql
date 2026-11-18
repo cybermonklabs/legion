@@ -50,6 +50,9 @@
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
+--   update phases set entry_task = regexp_replace(entry_task, ' Last reviewed commit: ([0-9a-f]{40}|none)\. Review entry: ([0-9]+|none)\.$', '') where role = 'reviewer';
+--   update pending_task_deliveries set task = regexp_replace(task, ' Last reviewed commit: ([0-9a-f]{40}|none)\. Review entry: ([0-9]+|none)\.$', '') where round_named;
+--   update outbox set payload = jsonb_set(payload, '{task}', to_jsonb(regexp_replace(payload->>'task', ' Last reviewed commit: ([0-9a-f]{40}|none)\. Review entry: ([0-9]+|none)\.$', ''))) where kind = 'supervise' and payload ? 'roundNamed' and payload ? 'task';
 --   update outbox set payload = payload - 'roundNamed' where kind = 'supervise' and payload ? 'roundNamed';
 --   alter table pending_task_deliveries drop column if exists round_named;
 --   alter table phases drop column if exists reviewed_head;
@@ -57,26 +60,27 @@
 --   commit;
 --   SQL
 --
--- The release before this one needs the first statement: it decodes an outbox row strictly
--- (DisallowUnknownFields), so a start row that still carried `roundNamed` would be a row it retries
--- for ever. It needs neither column dropped: its phases read and write and its claims read and
--- delivery write name each column they touch (record's Phases and PutPhase, the claim store's
--- claimSelect and putDelivery), so the columns would stand there unread, and every row that
--- release inserts would take their defaults. The two drops and the delete are owed to the
--- roll-forward: with the columns dropped and the row deleted, store.apply finds no row of this
--- version and runs this file again, which adds the columns again at their defaults. The drops are
--- also what let this file run again at all, since an add of a column that stands fails, and the
--- delivery's drop is what keeps a stale fact from surviving: the release before replaces a claim's
--- delivery by an upsert that does not name round_named, so a column left in place would say
--- `true` of the task that release wrote. What the way back costs is the commit each reviewer's row
--- held and the fact on each start row and delivery, so the next round of each issue then in review
--- reads the whole change, and each task this release queued is sent after the roll-forward with
--- the daemon's sentences naming no commit and no entry after its own two: its reviewer reads the
--- whole change. The way back leaves the sentences in the stored tasks: the release before sends a
--- stored task as text and reads nothing in it. The roll-forward appends them again to each
--- reviewer's task stored at the rollback that the release before did not write again, a task this
--- release stored with a commit among them, so each such task ends with them twice, and still ends
--- with the daemon's two sentences.
+-- The first three statements take the daemon's last two sentences off each task this release
+-- stored with them: a reviewer's row, a pending delivery that carries the fact, and a supervise
+-- start that carries it. Each then holds the text the release before would have written, and the
+-- roll-forward, which appends one pair again to each task a reviewer's row stores, leaves it with
+-- exactly one pair. Each match is anchored at the end of the text, so a sentence of the same words
+-- earlier in a task, which a retry's reason can quote, stays. The release before needs the fourth
+-- statement: it decodes an outbox row strictly (DisallowUnknownFields), so a start row that still
+-- carried `roundNamed` would be a row it retries for ever. It needs neither column dropped: its
+-- phases read and write and its claims read and delivery write name each column they touch
+-- (record's Phases and PutPhase, the claim store's claimSelect and putDelivery), so the columns
+-- would stand there unread, and every row that release inserts would take their defaults. The two
+-- drops and the delete are owed to the roll-forward: with the columns dropped and the row deleted,
+-- store.apply finds no row of this version and runs this file again, which adds the columns again
+-- at their defaults. The drops are also what let this file run again at all, since an add of a
+-- column that stands fails, and the delivery's drop is what keeps a stale fact from surviving: the
+-- release before replaces a claim's delivery by an upsert that does not name round_named, so a
+-- column left in place would say `true` of the task that release wrote. What the way back costs is
+-- the commit each reviewer's row held and the fact on each start row and delivery, so the next
+-- round of each issue then in review reads the whole change, and each task this release queued is
+-- sent after the roll-forward ending with the daemon's sentences naming no commit and no entry:
+-- its reviewer reads the whole change.
 alter table phases add column reviewed_head text not null default '';
 
 update phases set entry_task = entry_task || ' Last reviewed commit: none. Review entry: ' || entry || '.'

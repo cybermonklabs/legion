@@ -741,12 +741,13 @@ const phaseReviewedHeadVersion = 20261116234034
 // fail; without the delete of the version row, Migrate finds the version recorded and never adds
 // them again, and every phases read and every claims read, which name the columns, fail; without
 // the key's delete, the earlier release, which decodes an outbox row strictly, retries the row for
-// ever. The rest of the start row is left as it was. The way back leaves the round's sentences in
-// the task the row stores, which the earlier release sends as text, and the roll-forward appends
-// them again, the commit `none` and the row's entry: the task still ends with the daemon's two
-// sentences, its own two before them. The test is in this package because headerWayBack, the
-// reader of a header's way back, is a test helper here, which internal/store's own tests cannot
-// import.
+// ever. The rest of the start row is left as it was. The way back takes the daemon's last two
+// sentences off each task this release stored with them - the reviewer's row, the start row and
+// the claim's pending delivery - so each holds the text the earlier release would have written,
+// and the roll-forward appends one pair again, the commit `none` and the row's entry: the task
+// ends with exactly one pair of the daemon's sentences, never two. The test is in this package
+// because headerWayBack, the reader of a header's way back, is a test helper here, which
+// internal/store's own tests cannot import.
 func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
@@ -754,8 +755,9 @@ func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *te
 	sentences := func(commit string) string {
 		return " " + reviewround.CommitLabel + ": " + commit + ". " + reviewround.EntryLabel + ": 2."
 	}
+	base := "Continue " + key + ". Issue: " + key + ". Phase: reviewing."
 	held := record.PhaseRow{Issue: key, Role: claim.RoleReviewer, Claim: "reviewer-claim", Entry: 2,
-		EntryTask: "Continue " + key + ". Issue: " + key + ". Phase: reviewing." + sentences(reviewed), ReviewedHead: reviewed}
+		EntryTask: base + sentences(reviewed), ReviewedHead: reviewed}
 	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
 		Title: key, Tree: key, Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "A", HandedOver: true})
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -769,6 +771,15 @@ func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *te
 	start := `{"op":"start","tree":"` + key + `","role":"reviewer","task":"Continue.` + sentences(reviewed) + `","generation":1,"phase":"reviewing","entry":2,"roundNamed":true}`
 	if _, err := pool.Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error) values ('supervise', $1, $2::jsonb, 0, now(), '')`, key, start); err != nil {
 		t.Fatalf("queue the reviewer's start as this release writes it: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ('reviewer-claim', $1, $2, $2, 'reviewer', 1, 'ses-reviewer', '', 'working', 0, 0, 0, 0)`, testProject, key); err != nil {
+		t.Fatalf("record the reviewer's claim: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, round_named)
+		values ('reviewer-claim', 'outbox:1', $1, now(), true)`, base+sentences(reviewed)); err != nil {
+		t.Fatalf("record the reviewer's pending delivery as this release writes it: %v", err)
 	}
 
 	if _, err := pool.Exec(ctx, headerWayBack(t, phaseReviewedHeadVersion), pgx.QueryExecModeSimpleProtocol); err != nil {
@@ -797,9 +808,23 @@ func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *te
 	if err := pool.QueryRow(ctx, `select payload ? 'roundNamed', payload->>'task' from outbox where kind = 'supervise' and issue = $1`, key).Scan(&keyed, &task); err != nil {
 		t.Fatalf("read the reviewer's start after the way back: %v", err)
 	}
-	if keyed || task != "Continue."+sentences(reviewed) {
-		t.Fatalf("after the way back the reviewer's start carries roundNamed: %v and the task %q; want no such key and the task as queued, "+
-			"which the earlier release decodes", keyed, task)
+	if keyed || task != "Continue." {
+		t.Fatalf("after the way back the reviewer's start carries roundNamed: %v and the task %q; want no such key and the task "+
+			"without the daemon's last two sentences, as the earlier release queues it", keyed, task)
+	}
+	var stored string
+	if err := pool.QueryRow(ctx, `select entry_task from phases where issue = $1 and role = 'reviewer'`, key).Scan(&stored); err != nil {
+		t.Fatalf("read the reviewer's stored task after the way back: %v", err)
+	}
+	if stored != base {
+		t.Fatalf("after the way back the reviewer's row stores the task %q, want %q, without the daemon's last two sentences", stored, base)
+	}
+	var delivered string
+	if err := pool.QueryRow(ctx, `select task from pending_task_deliveries where claim_token = 'reviewer-claim'`).Scan(&delivered); err != nil {
+		t.Fatalf("read the reviewer's pending delivery after the way back: %v", err)
+	}
+	if delivered != base {
+		t.Fatalf("after the way back the reviewer's pending delivery holds %q, want %q, without the daemon's last two sentences", delivered, base)
 	}
 
 	st, err := store.Open(ctx, pool.Config().ConnString())
@@ -815,9 +840,9 @@ func TestTheReviewedCommitsWayBackDropsItAndTheRollForwardAddsItAgainEmpty(t *te
 		t.Fatalf("the roll-forward applied %d migrations, want 1: the way back re-arms its own migration and no other", applied)
 	}
 	got := phaseRow(t, pool, key, claim.RoleReviewer)
-	if want := held.EntryTask + sentences("none"); got.Claim != held.Claim || got.Entry != held.Entry || got.EntryTask != want || got.ReviewedHead != "" {
+	if want := base + sentences("none"); got.Claim != held.Claim || got.Entry != held.Entry || got.EntryTask != want || got.ReviewedHead != "" {
 		t.Fatalf("the reviewer's row after the roll-forward = claim %q, entry %d, task %q, reviewed commit %q; want the row as it was "+
-			"with no reviewed commit, the column's default, and the task ending with the daemon's two sentences again: %q",
+			"with no reviewed commit, the column's default, and the task ending with exactly one pair of the daemon's sentences: %q",
 			got.Claim, got.Entry, got.EntryTask, got.ReviewedHead, want)
 	}
 	if !columnStands("pending_task_deliveries", "round_named") {
