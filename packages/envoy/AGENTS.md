@@ -3016,10 +3016,6 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A `comment.created` or `comment.answered` payload that replies to an open ask carries the resulting `ask_waiting_on`, and every route that writes a comment (`POST /api/v1/issues/{key}/comments`, `POST /api/v1/artifacts/{id}/comments`, and the delivery callback `POST /api/v1/comments/{id}/reply`) answers the same `ask_waiting_on` beside the comment row (`commentWriteResponse`, `api/comment_projection.go`;
   `model.Comment` is the stored row and carries no derived turn), so a stream consumer or the writing agent reports the value every ask read has without a refetch.
   A replayed delivery callback, which writes nothing, answers the stored reply alone.
-  A `comment.created` payload in an ask's thread also carries `ask_sessions`, the sessions that own the ask once the reply is in:
-  the ask's author when a session wrote it, then each follower in the order `asks.Followers` reads them, each once, read in the comment's own transaction after the reply's author follows the ask (`askSessions`, `api/comment_create.go`).
-  It is `[]` when no session owns the ask, and no other comment event carries it, `comment.answered` included.
-  Every copy of an event carries the same bytes, so this field, not the topic a copy came on, tells a reader that knows its own session whether the reply is on that session's own ask.
 
 - Every ask read also carries `referenced_by_count`:
   how many edges point at that ask from a node kind this build reads (`refs.BacklinkCounts` unions only the arms of `graph_edges` that can point at a node of the kind asked for — the view's own `to_kind` is a parameter, so reading the view itself makes a custom plan plan every arm on every call — and reads each of those arms through its own index;
