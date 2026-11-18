@@ -679,10 +679,12 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 // claim's machine published (supervise.Machine.View) and the model that answered last in that
 // session (supervise.Machine.LastAnswer). It reaches the supervisor through the outbox attach
 // stored, so a fact the boot applies before attach reads nothing, as does a claim this daemon does
-// not supervise. Neither read waits on a decision in flight, so the engine's transaction may make
-// them. The session is read on both sides of the model, and a model read while the session changed
-// is left out, so the pair never names a model with a session it did not serve; the end is the
-// record's one write of either, so that record then names no model.
+// not supervise. It finds the machine without the supervisor's lock (supervisedMachine), since the
+// engine reads here inside a fact's transaction, which holds the fact lock that a Create holding
+// that lock waits on. Neither read of the machine waits on a decision in flight, so the engine's
+// transaction may make them. The session is read on both sides of the model, and a model read while
+// the session changed is left out, so the pair never names a model with a session it did not serve;
+// the end is the record's one write of either, so that record then names no model.
 //
 // Both come from the agent's own frames, so each is held here to the form Dispatch holds a step's
 // agent text to (steptext.Holds), and one outside it is left out of the record rather than sent:
@@ -693,7 +695,7 @@ func (w *workflowRuntime) stepAgent(token claim.Token) workflow.StepAgent {
 	if r == nil || r.supervisor == nil {
 		return workflow.StepAgent{}
 	}
-	machine, ok := r.supervisor.Machine(token)
+	machine, ok := r.supervisor.supervisedMachine(token)
 	if !ok {
 		return workflow.StepAgent{}
 	}
