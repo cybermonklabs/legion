@@ -918,8 +918,9 @@ What the airlock does not stop is as much of the design as what it does:
 
 A person approves a secret request on the broker's own approval page, never in Dispatch. The
 broker writes nothing in Dispatch: Dispatch's server reads the broker's pending list
-for the person signed in, and its Inbox lists each secret request as a link to that request's page
-on the broker, `<broker>/approve/<record>`, which the broker's answers name as `approve_url`. The
+for the person signed in, and its Inbox lists each pending secret request as a link to that
+request's page on the broker, `<broker>/approve/<record>`, which the broker's answers name as
+`approve_url` (an expired one is listed with no link, below). The
 page signs the person in to the broker itself, with OpenID Connect and the broker's own client (the
 deployment's Google Workspace, `BROKER_SIGNIN_*` in
 [Operate](/legion/broker/operate/#approval-sign-in)), only when they hold no live sign-in there,
