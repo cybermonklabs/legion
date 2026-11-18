@@ -12,14 +12,20 @@ body: |-
     on `PATH`, and reports it `absent` where it is not. It also holds GNU `wget`, `git`, `go`,
     `kubectl` and `redis-cli` to the chains on every image. Of the pod's variables, every probed
     client keeps only those the image declares, `PATH` among them, and the pod's trust and
-    verification settings, such as `SSL_CERT_FILE` and `NODE_TLS_REJECT_UNAUTHORIZED`, so a pod env
-    that sets one to make the roles accept a compromised chain fails the probe; it runs with a home
-    of its own in the probe's state directory, `curl` runs with `-q` first so it reads no curlrc,
-    not even the one in its user's passwd home, and no trust setting holds a credential, so no
-    credential variable or file of the pod's reaches a test site. Because the image sets `USER`,
-    `runtime.kubernetes.pod.env` may no longer set it: `legion start`, `legion config check` and the
-    daemon's boot refuse a configuration that does, whatever digest it pins. The daemon's image
-    probe pod now reserves 500m CPU (was 250m), because the image's longer TLS probe needs it.
+    verification variables, such as `SSL_CERT_FILE` and `NODE_TLS_REJECT_UNAUTHORIZED`, so a pod env
+    that sets one of those to make the roles accept a compromised chain fails the probe. The probe
+    no longer tests a trust override that reaches the roles another way: a file a dropped variable
+    names (a `CURL_HOME` curlrc, `UV_CONFIG_FILE`), the `GIT_CONFIG_*` variables, a `NODE_OPTIONS`
+    preload, a `PYTHONPATH` `sitecustomize`, a dotfile of the pod's home, a proxy, or a
+    configuration file of a role's working directory. Each client runs with a home of its own and
+    with the probe's state directory as its working directory; `curl` takes `-q` first, `mise`
+    and `uv` take `--no-config`, `git` takes `GIT_CEILING_DIRECTORIES`, and `go` reads a `go.mod`
+    of the probe's own, so none reads a configuration file of the pod's home, working directory or
+    their parents, and no credential variable or file of the pod's reaches a test site. Because
+    the image sets `USER`, `runtime.kubernetes.pod.env` may no longer set it: `legion start`,
+    `legion config check` and the daemon's boot refuse a configuration that does, whatever digest
+    it pins. The daemon's image probe pod now reserves 500m CPU (was 250m), because the image's
+    longer TLS probe needs it.
 time: 2026-11-18T03:35:00Z
 custom:
     Issue: pr4377
