@@ -309,6 +309,36 @@ test(
 );
 
 test(
+  "a row that throws an error with no message is reported with the error and the line that threw it",
+  async () => {
+    // The lie: Bun writes no message for an error that has none, and writes its text and stack
+    // only as the failure's body. A report that reads only the message names the row and says
+    // nothing of what failed or where.
+    const report = summarise(
+      await laneRun(
+        {
+          "no-message.test.ts": `import { test } from "bun:test";\n\ntest("throws an error with no message", () => {\n  throw new Error("");\n});\n`,
+        },
+        1
+      )
+    );
+    expect(report.failingRows).toEqual([
+      {
+        file: "no-message.test.ts",
+        name: "throws an error with no message",
+        fails: 1,
+        runs: 1,
+        firstFailedRun: 1,
+        message: expect.stringMatching(/^Error\n\s+at no-message\.test\.ts:4:\d+$/),
+        reproduce: `bun run test:harness no-message.test.ts --seed=${SEED}`,
+      },
+    ]);
+    expect(report.rowlessFailures).toEqual([]);
+  },
+  rowLimit("short")
+);
+
+test(
   "the annotation of a row escapes the newline and the percent sign of its message",
   async () => {
     // The lie: GitHub cuts an annotation at its first raw newline, and reads a raw % as the start

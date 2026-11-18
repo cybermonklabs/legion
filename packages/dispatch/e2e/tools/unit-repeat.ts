@@ -37,7 +37,11 @@
  *    so the reader knows a row by its describe names, not by the element;
  *  - every rerun of a file in that file's one top-level suite, after the run before it, so the
  *    runs of a row are its `<testcase>`s in document order;
- *  - `<failure message=...>` or `<skipped/>` in a `<testcase>` (a todo row is skipped too);
+ *  - `<failure>` or `<skipped/>` in a `<testcase>` (a todo row is skipped too). A failure's
+ *    message is its `message`. Bun writes none for an error with no message, such as
+ *    `new Error("")` or a thrown string, and writes the error's text and stack only as the
+ *    failure's body. Where `message` is missing or empty, the reader takes the body instead.
+ *    Bun writes no other text between its tags;
  *  - `<properties>` in each suite under GitHub Actions, which the reader passes over;
  *  - no junit file at all when no testcase ran.
  *
@@ -192,7 +196,8 @@ export interface Testcase {
   readonly describe: readonly string[];
   readonly name: string;
   readonly outcome: Outcome;
-  /** The failure's message. It is empty unless the testcase failed. */
+  /** The failure's message or, where Bun wrote none, the failure's body: the error's text and
+   *  stack. It is empty unless the testcase failed. */
   readonly message: string;
 }
 
@@ -211,6 +216,12 @@ interface Tag {
   readonly kind: "open" | "close" | "empty";
 }
 
+/** The text between two tags of the junit file, with its entities decoded. */
+interface TextBetween {
+  readonly kind: "text";
+  readonly text: string;
+}
+
 const entities: Readonly<Record<string, string>> = {
   amp: "&",
   apos: "'",
@@ -219,8 +230,8 @@ const entities: Readonly<Record<string, string>> = {
   quot: '"',
 };
 
-/** An attribute value with its five named entities and its numeric references decoded. A `&`
- *  that starts none of them is refused. */
+/** An attribute value or a text with its five named entities and its numeric references decoded.
+ *  A `&` that starts none of them is refused. */
 function decodeEntities(text: string): string {
   return text.replace(
     /&(?:#x([0-9A-Fa-f]+);|#([0-9]+);|(amp|apos|gt|lt|quot);)?/g,
@@ -228,22 +239,25 @@ function decodeEntities(text: string): string {
       if (named !== undefined) return entities[named];
       if (hex !== undefined) return String.fromCodePoint(Number.parseInt(hex, 16));
       if (decimal !== undefined) return String.fromCodePoint(Number(decimal));
-      throw new Error(`an attribute value holds a bare &: ${JSON.stringify(text)}`);
+      throw new Error(`a value holds a bare &: ${JSON.stringify(text)}`);
     }
   );
 }
 
 const NAME = "[A-Za-z_][-A-Za-z0-9_.:]*";
 
-/** Every tag of `xml`, in order. It skips the XML declaration and comments, and the text between
- *  tags, which Bun writes only as a failure's body. Bun quotes every attribute value with `"`. */
-function* tags(xml: string): Generator<Tag> {
+/** Every tag of `xml`, and every text between two tags that is not white space alone, in order.
+ *  It skips the XML declaration and comments. Bun writes such text only as a failure's body, and
+ *  quotes every attribute value with `"`. */
+function* tags(xml: string): Generator<Tag | TextBetween> {
   const opening = new RegExp(`<(/?)(${NAME})`, "y");
   const attribute = new RegExp(`\\s+(${NAME})="([^"<]*)"`, "y");
   const ending = /\s*(\/?)>/y;
   let at = 0;
   for (;;) {
     const start = xml.indexOf("<", at);
+    const text = xml.slice(at, start === -1 ? xml.length : start);
+    if (/\S/.test(text)) yield { kind: "text", text: decodeEntities(text) };
     if (start === -1) return;
     const skip = xml.startsWith("<?", start) ? "?>" : xml.startsWith("<!--", start) ? "-->" : "";
     if (skip !== "") {
@@ -288,8 +302,8 @@ function attributeOf(tag: Tag, name: string): string {
 
 type OpenTestcase = { -readonly [K in keyof Testcase]: Testcase[K] };
 
-/** The files and testcases of a junit file Bun 1.4.4 wrote. It throws on anything else: a tag in
- *  a place Bun puts none, a tag left open, or a file with no `<testsuites>`. */
+/** The files and testcases of a junit file Bun 1.4.4 wrote. It throws on anything else: a tag or
+ *  a text in a place Bun puts none, a tag left open, or a file with no `<testsuites>`. */
 function readJunit(xml: string): Junit {
   const files = new Set<string>();
   const testcases: Testcase[] = [];
@@ -297,6 +311,9 @@ function readJunit(xml: string): Junit {
   const describe: string[] = [];
   let file: string | undefined;
   let testcase: OpenTestcase | undefined;
+  // Whether the text of the open `<failure>` is its testcase's message: the failure is the
+  // testcase's first, and has no message of its own.
+  let bodyIsMessage = false;
   let rooted = false;
 
   const enter = (tag: Tag) => {
@@ -335,6 +352,9 @@ function readJunit(xml: string): Junit {
         } else if (testcase.outcome !== "failed") {
           testcase.outcome = "failed";
           testcase.message = tag.attributes.get("message") ?? "";
+          // Bun writes no `message` for an error with no message, and writes the error's text and
+          // stack only as the failure's body.
+          bodyIsMessage = testcase.message === "";
         }
         break;
       default:
@@ -347,7 +367,9 @@ function readJunit(xml: string): Junit {
   const leave = (name: string) => {
     const expected = open.pop();
     if (expected !== name) throw new Error(`a </${name}> closes <${expected ?? "nothing"}>`);
-    if (name === "testcase" && testcase !== undefined) {
+    if (name === "failure") {
+      bodyIsMessage = false;
+    } else if (name === "testcase" && testcase !== undefined) {
       testcases.push(testcase);
       testcase = undefined;
     } else if (name === "testsuite") {
@@ -356,13 +378,25 @@ function readJunit(xml: string): Junit {
     }
   };
 
-  for (const tag of tags(xml)) {
-    if (tag.kind === "close") {
-      leave(tag.name);
+  const read = (text: string) => {
+    const parent = open.at(-1);
+    if (parent !== "failure") {
+      throw new Error(`a text inside <${parent ?? "nothing"}>: ${JSON.stringify(text)}`);
+    }
+    if (bodyIsMessage && testcase !== undefined) testcase.message += text;
+  };
+
+  for (const token of tags(xml)) {
+    if (token.kind === "text") {
+      read(token.text);
       continue;
     }
-    enter(tag);
-    if (tag.kind === "empty") leave(tag.name);
+    if (token.kind === "close") {
+      leave(token.name);
+      continue;
+    }
+    enter(token);
+    if (token.kind === "empty") leave(token.name);
   }
   if (open.length > 0) throw new Error(`the <${open.at(-1)}> is never closed`);
   if (!rooted) throw new Error("the file holds no <testsuites>");
