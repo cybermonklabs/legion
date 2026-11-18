@@ -3050,12 +3050,14 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // is stopped as before (R9): with names this machine has admitted already (Machine.heldNames) it
 // asks nothing of the store, and with names it has not, as after a restart, which NewMachine
 // starts with none of, it asks the store once, and a store that does not answer then sends no
-// stop for it either.
+// stop for it either. That ask runs on a context the decision's end does not cancel, bounded by
+// the store write's own timeout (Machine.write): the daemon's stop must not cut a clean stop
+// short (sessionStop.send says why), and a hold cancelled mid-ask would send none.
 func (m *Machine) sessionGone(ctx context.Context) {
 	if m.deps.SessionGone == nil || m.claim.Session == "" {
 		return
 	}
-	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+	if err := m.holdRecorded(context.WithoutCancel(ctx), m.claim.Session, m.claim.SessionFile); err != nil {
 		m.log.Info("supervise: no clean stop of the Envoy session of a claim that does not hold it",
 			"claim", m.claim.Token, "session", m.claim.Session, "error", err)
 		return
