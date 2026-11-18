@@ -13,7 +13,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 
 /** A model as the host names it: the provider and the id a model selector resolves to
  * (`ExtensionModelQuery`, `packages/coding-agent/src/extensibility/extensions/types.ts:541-560` in
- * Oh My Pi at the pinned tag `v18.16.0-sami.20261104-021732`). */
+ * Oh My Pi at tag `v18.16.0-sami.20261104-021732`, read on that build). */
 export interface HostModel {
   readonly provider: string;
   readonly id: string;
@@ -199,8 +199,8 @@ export interface ThinkingLevelChangeEntry {
  * ones that have just ended, with the manager's delivery queue for the results it still owes the
  * conversation.
  *
- * Measured on Oh My Pi 18.12.2, the pin this repository runs (`.omp-pin`), by reading the
- * snapshot from an extension while a backgrounded `bash` job ran. Running:
+ * Measured on Oh My Pi 18.12.2 on 2026-11-01, by reading the snapshot from an extension while a
+ * backgrounded `bash` job ran. Running:
  * `{"running":[{"id":"bg_1","type":"bash","status":"running","label":"sleep 8",
  * "command":"sleep 8","startTime":1793568518094,"ownerId":"Main"}],"recent":[],
  * "delivery":{"queued":0,"delivering":false,"pendingJobIds":[]}}`; once it had ended, the same
@@ -249,9 +249,8 @@ export interface AsyncJobDelivery {
  * `ctx.getContextUsage()`'s answer: the context tokens the session's conversation holds now and
  * the window they are measured against.
  *
- * Read out of the pinned binary (`.omp-pin`,
- * `github:sjawhar/oh-my-pi@18.16.0-sami.20261105-032528`), which builds the extension context
- * with `getContextUsage: () => this.#d()` over a session method answering
+ * Read out of Oh My Pi 18.16.0-sami.20261105-032528 (the fork's build of 2026-11-05), which builds
+ * the extension context with `getContextUsage: () => this.#d()` over a session method answering
  * `{tokens: usedTokens, contextWindow, percent: usedTokens / contextWindow * 100}`, and nothing
  * at all when it holds no context breakdown. `percent` is nullable because the same build
  * carries a second wiring of this shape, the status line's startup session, which answers

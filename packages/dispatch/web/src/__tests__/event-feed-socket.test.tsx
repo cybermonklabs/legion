@@ -16,6 +16,7 @@ import { liveSocketFor } from "../api/live-socket";
 import { DispatchQueryClient } from "../api/query-client";
 import type { AuthenticatedUser, DispatchEvent, LiveServerFrame } from "../api/types";
 import { credentialPendingQuery } from "../features/credentials/pending";
+import { quietConsoleError } from "./act-warnings";
 import { realClock, tick } from "./fake-clock";
 import {
   type FakeLiveSocket,
@@ -359,7 +360,7 @@ test("an unknown event type refreshes everything, at most once per window", asyn
 test("an event this page cannot read is skipped and refreshes everything", async () => {
   const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
   const wholeCache = countWholeCacheRefreshes(queryClient);
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
   try {
     const { socket, sub } = openFeed();

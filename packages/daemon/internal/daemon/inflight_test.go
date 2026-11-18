@@ -712,7 +712,7 @@ func TestRunWaitsForTheCleanStopOfASuspensionDecidedBeforeTheHalt(t *testing.T) 
 	// the halt cancel it.
 	machines := make(chan context.Context, 1)
 	build := o.runtime
-	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
+	o.runtime = func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Source,
 		repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		machines <- ctx
 		return build(ctx, listener, address, tokens, repository, st, mapped)

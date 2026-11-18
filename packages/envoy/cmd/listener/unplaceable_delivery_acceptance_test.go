@@ -557,7 +557,7 @@ func agentWakesFor(t *testing.T, subscription *natsgo.Subscription, sessionID st
 		if err != nil {
 			t.Fatalf("read %s: %v", bus.LegionWakeTopic, err)
 		}
-		if wakeReportSession(t, message) == sessionID {
+		if wakeNamed(wakeReportIn(t, message), wakeKindAgent, sessionID) {
 			count++
 			wait = quiet
 		}

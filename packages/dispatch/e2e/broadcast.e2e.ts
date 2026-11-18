@@ -284,7 +284,10 @@ test("a Broadcasts row keeps its sender above its link and fits the screen @phon
     const rowLink = row.getByRole("link", { name: /answered/ });
     const sender = row.getByText("alice", { exact: true });
     await expect(sender).toBeVisible();
+    await expect(rowLink).toBeVisible();
+    // The waits above drew the sender, and a drawn element has a box, so its box is there.
     const senderBox = await sender.boundingBox();
+    // The row's link was waited for above too, so its box is there as the sender's is.
     const rowLinkBox = await rowLink.boundingBox();
     if (senderBox === null || rowLinkBox === null) throw new Error("the broadcast row is hidden");
     expect(senderBox.y + senderBox.height).toBeLessThanOrEqual(rowLinkBox.y + 0.5);

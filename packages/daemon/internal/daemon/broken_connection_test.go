@@ -7,7 +7,6 @@ import (
 	"context"
 	"log/slog"
 	"net/url"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -89,13 +88,16 @@ func TestATurnStartSurvivesABrokenDatabaseConnection(t *testing.T) {
 
 	// The claim's next decision makes the write the database did not take. A second agent_start is
 	// a turn already in flight, which the table ignores — the repair at the head of the decision is
-	// the whole of what this drives. The repair logs that it made the write only once the write has
-	// landed (settleOwedWrite), so the row can read working before the line is in the log.
+	// the whole of what this drives.
 	sh.send(shimwire.AgentStart{})
 	testwait.Eventually(t, "the claim to read working in the database", func() bool {
 		return storedClaimState(t, pool, token) == supervise.StateWorking
 	})
-	testwait.Eventually(t, "the daemon to log "+strconv.Quote(owedWriteMadeLine), func() bool {
+	// The line is waited for rather than read once: the row and the line are written by the one
+	// decision but not in one step, so a loaded machine can serve the working row to the wait
+	// above before the line reaches the log (measured on 2026-11-14, under another Go suite of
+	// this pod, where this read failed at 0.59s and the line stood in the log it printed).
+	testwait.Eventually(t, "the daemon to log the claim write it made for the broken connection", func() bool {
 		return strings.Contains(logs.String(), loggedMessage(owedWriteMadeLine))
 	})
 
