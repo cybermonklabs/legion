@@ -64,9 +64,10 @@ is `todo`, on any repository, no notice is sent then: the recovery records the c
 chain is not `todo`) the architect gets a
 `child-release-stalled` notice at once naming the parent to release first; a child the wave would
 write `todo` under such a child is not written, and its notice says to release it again once that
-child is recorded. When the repository is recovered, each tree's architect gets one more
-`child-release-stalled` notice, listing every child the release left to the recovery that is
-still not recorded, with what to release. That notice waits while the recovery's listing is held
+child is recorded. When the repository is recovered, every child the release left to the recovery
+that is still not recorded is named in one more `child-release-stalled` notice, with what to
+release: a notice to the architect that owns the child's parent, or to the tree's architect when
+that parent is not recorded in the tree. That notice waits while the recovery's listing is held
 for the Dispatch consumer, but for five minutes at most from the first held read (the daemon times
 its next read of the mapping for it), however often the hold is released and made again
 meanwhile: a hold that lasts or keeps coming back (an event that fails at every delivery, say) gets
@@ -363,9 +364,11 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the tester the check's first look in its live session, and the
-  other five claims of the issue are retired. With `off`, no check opens at all: the close
-  retires every claim of the issue and releases its pod. The loader refuses any other value,
+  With `tester`, the merge hands the tester the check's first look in its session. A child's
+  other five claims are retired. A root's are suspended with the rest of its tree for the linger,
+  and retired when the linger ends. With `off`, no check opens at all: a child's close retires
+  every claim of the child and releases its pod, and a root's close suspends every claim of its
+  tree for the linger. The loader refuses any other value,
   naming the key and the value it read. The check's record carries the role, written when the
   check opened, so moving the key leaves an open check with the role it started under and a check
   opened before this release keeps the implementer.
@@ -671,7 +674,7 @@ What each part is for:
   at work, or an issue of the line that waits on no other issue can start — nor, whether or not
   the line can move, one whose only quiet issues gave their slot back to wait on work outside
   their tree: a `blocked_by` link to an unfinished issue of any project, or an open child the
-  daemon has released. A wait on a child its architect has not released is no such wait. Where
+  daemon has released. A wait on a child an architect has not released is no such wait. Where
   the issue waited on is in this project and its own tree has stopped, that tree is told; a
   wait on a blocker no tree runs (parked, never admitted, in `icebox`) brings no stall notice,
   and the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`,
@@ -769,9 +772,10 @@ What each part is for:
   claim whose record holds neither is judged from nothing and left alone, as is a claim in no turn
   and a claim in an open pod-update round, whose replacement that round owns. The stop re-reads
   the claim's own record before it acts, and charges nothing — neither a launch failure nor a
-  death with work outstanding — so a worker it ends keeps its supervision budgets. The issue's
-  architect is told what the record held: how long the agent was silent, the bound it passed, when
-  the turn began, and the call the record names, if any. A tree architect's own stall is told to
+  death with work outstanding — so a worker it ends keeps its supervision budgets. The architect
+  that owns the issue is told what the record held: how long the agent was silent, the bound it
+  passed, when the turn began, and the call the record names, if any. The stall of a child's own
+  architect is told to the architect above that child. A root architect's own stall is told to
   the controller as well.
 
   A role the file leaves out runs on twice its own worker's bound for a tool call no deadline
@@ -1184,37 +1188,47 @@ Closing the terminal leaves the project without one, and the daemon logs
    and anything the old pod held unpushed is gone. Let the agent push before you suspend it.
 
    **An operator's suspension holds until the operator resumes the claim.** The daemon keeps every
-   role of an open issue live and idle between phases, while the root waits on a person, and when a
-   child re-enters. It suspends or ends claims only when an issue leaves the workflow, when a claim
-   moves to another tree, or for a production check after the issue is done. A phase start gives
-   its task to that live claim. At boot the daemon resumes by rule a suspended worker that still
-   owns its issue's phase, but never a claim an operator suspended; a start for an
-   operator-suspended claim waits instead. A notice for an operator-suspended architect waits until
-   the operator resumes it. A drain therefore ends with the operator resuming every claim they
-   suspended, one `legion claims resume` each; `legion claims list --json` names each one's
-   `suspendedBy` (`operator`, `daemon`, `exit`, or `unknown` for one suspended before this
-   release). A daemon suspension of a claim whose issue left the workflow waits for its current turn
-   to finish, with no stop timeout: a child parked in Dispatch (`backlog` or `icebox`) stops its
-   worker only once the worker's current turn ends, and a lingering tree's claims stay suspended
-   until the tree is re-admitted.
+   role of an open issue live and idle between phases and while the root waits on a person. A child
+   that left the workflow and is set back to `todo` gets its own architect and its planner back,
+   on their kept sessions, at its next first phase start, and each other role at the start of its
+   phase. A claim whose session supervise's `forgetSession` has dropped comes back in a new
+   session instead. The daemon suspends or ends claims only when an issue leaves the workflow,
+   when a claim moves to another tree, or for a production check after the issue is done. A phase
+   start gives its task to that live claim. At boot the daemon
+   resumes by rule a suspended worker that still owns its issue's phase, but never a claim an
+   operator suspended; a start for an operator-suspended claim waits instead. A notice for a root's
+   operator-suspended architect waits until the operator resumes it. A notice for a child whose
+   own architect an operator suspended goes to the architect above that child. A drain therefore
+   ends with the operator resuming every claim they suspended, one `legion claims resume` each;
+   `legion claims list --json` names each one's `suspendedBy` (`operator`, `daemon`, `exit`, or
+   `unknown` for one suspended before this release). A daemon suspension of a claim whose issue
+   left the workflow waits for its current turn to finish, with no stop timeout: a child parked
+   in Dispatch (`backlog` or `icebox`) stops its worker only once the worker's current turn ends,
+   and a lingering tree's claims stay suspended until the tree is re-admitted.
 
    **After the first upgrade to a release that records `suspendedBy`,** every claim already
-   suspended reads `unknown`. The next phase start, re-admission and the controller keeper resume
-   those as before. The boot's own sweep does not, but a start already queued before the upgrade
-   still resumes one at the first boot, as the earlier release would have. To keep a claim you
-   drained before the upgrade held against every trigger, run `legion claims suspend` on it once
-   the new daemon is up: that records the suspension as yours. Act only on the claims the state
-   names as nothing will wake (`legion state`'s `claims nothing will wake` line, or
+   suspended reads `unknown`. The next phase start, re-admission and the controller keeper
+   resume those as before. The boot's own sweep does not, but a start already queued before the
+   upgrade still resumes one at the first boot, as the earlier release would have. To keep a
+   claim you drained before the upgrade held against every trigger, run `legion claims suspend`
+   on it once the new daemon is up: that records the suspension as yours. Act only on the claims
+   the state names as nothing will wake (`legion state`'s `claims nothing will wake` line, or
    `strandedClaims` in `--json`), and skip those you drained on purpose: resume a suspended
    architect, retry a failed one (`legion claims retry --claim <token>`, which relaunches its
-   session with fresh budgets; `legion claims retry --failed` retries every failed claim, and a
-   failed phase worker whose issue is held for its own role retries that phase), and bring a suspended phase worker back as
-   [A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)
-   shows for its `suspendedBy`. A claim the state names `retired` takes neither resume nor retry —
-   `legion claims retry` refuses a claim that has not failed — and comes back only on a workflow
-   start of the phase it owns, as that page's `needsWorkflowStart` shows.
-   Never resume or retry by hand a claim of a lingering tree or of an issue parked out of the
-   workflow: re-admission or the issue's return to `todo` starts it.
+   session with fresh budgets, or a new one once supervise's `forgetSession` has dropped it;
+   `legion claims retry --failed` retries every failed claim, and a
+   failed phase worker whose issue is held for its own role retries that phase), and bring a
+   suspended phase worker back as [A tree does not move after a
+   restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart) shows for its
+   `suspendedBy`. A claim the state names `retired` takes no resume. `legion claims retry --claim
+   <token>` starts it again, because the retry reaches a retired claim as well as a failed one:
+   an architect is relaunched on its kept session, as above, and a phase worker whose
+   issue stands in its phase has that phase started again (`--failed` passes over a retired
+   claim). Otherwise it comes back on a workflow start, for example a start of the phase it owns
+   or, for an architect, a start of its issue's run (its tree's admission for a root's, its child's
+   first phase start for a child's own), as that page's `needsWorkflowStart` shows. Never resume
+   or retry by hand a claim of a lingering tree or of an issue parked out of the workflow:
+   re-admission or the issue's return to `todo` starts it.
 
    **Rolling back across this release.** The earlier daemon boots on this schema but never writes
    `suspendedBy`, so a value this release wrote survives the earlier daemon's own suspends and
