@@ -1733,10 +1733,13 @@ a report of the rows that failed.
 `bun run test:web:cold` is `test:web` with `web/src/__tests__/hold-lazy-loads.ts` preloaded
 first, before `register-dom.ts`, so its plugin is registered before any module loads; it imports
 nothing that reads the DOM, so `register-dom.ts` still comes before every module that does.
-It holds back each load, once the test file's rows have begun, of every module the web app loads
-by `import()` or `lazy()` (the Markdown engine, each `lazy()` page) for `DISPATCH_COLD_HOLD_MS`
-milliseconds of real time, 1000 when unset: every row that runs while such a module is held finds
-it unloaded, not only the row that random order puts first in its file.
+It holds back each load, once the test file's rows have begun, of every script module that the
+sources of `web/src`, tests aside, load with `import("<literal>")`, `lazy()` pages and the Markdown
+engine among them, for `DISPATCH_COLD_HOLD_MS` milliseconds of real time, 1000 when unset: every
+row that runs while such a module is held finds it unloaded, not only the row that random order
+puts first in its file.
+A load written another way, such as an `import()` of a computed specifier, and a style sheet are
+not held (the head of `hold-lazy-loads.ts` says how it lists them).
 A module a test file imports itself is loaded before its rows begin, unheld, since no row can find
 it unloaded; a lazy load the file's own `beforeAll` starts is held.
 Run a file under it when a row of it reads lazily rendered text:
@@ -1796,8 +1799,13 @@ A row that reads a Markdown body or a lazily loaded part in the commit that moun
 for it (`warmMarkdownRenderer()` from `features/refs/markdown-engine.ts`, or a `findBy*` query),
 because the earlier row that loaded it may run after it in random order.
 A lazily loaded part is anything that renders from a module `import()` or `lazy()` loads: every
-such module, not the Markdown engine alone, and `test:web:cold` holds each of them back once a
-file's rows begin.
+such module, not the Markdown engine alone, and `test:web:cold` holds each one its sources load
+with `import("<literal>")` once a file's rows begin.
+A test file whose rows mount a lazily loaded part that no row reads, such as the shell's margin,
+imports that module at its top: a load a row starts and ends before it arrives can land between
+two `act` scopes of that row or in a later row, where React reports a suspended resource outside
+`act` (`app-sign-out.test.tsx`, `app.test.tsx`, `__tests__/responsive-shell.test.tsx` and
+`features/agents/AgentsPage.test.tsx` do).
 
 The preload's act rule fails a row in which React printed one of its five act messages: an update
 outside `act`, an `act(async () => ...)` left unawaited, overlapping `act` calls, a component

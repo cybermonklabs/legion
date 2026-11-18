@@ -7,14 +7,14 @@
  *    bun run test:repeat --lane harness --reruns 5 --seed 1234 --out /tmp/repeat-harness
  *
  *  The web lane is `bun run test:web web/src`. The web-cold lane is
- *  `bun run test:web:cold web/src`: the web lane with every module the web app loads lazily held
- *  back on each load once a file's rows begin (web/src/__tests__/hold-lazy-loads.ts). A rerun of a
- *  file keeps the modules its first run loaded, so only the first run of each file is cold: run
- *  that lane with `--reruns 1`. The harness lane is `bun run test:harness e2e/__tests__`. The tool
- *  runs the lane from this package's directory, whatever directory it starts in. It adds `--seed`,
- *  `--rerun-each` and Bun's junit reporter. It prints the seed before the run starts, so a run
- *  killed midway still names its seed. During the run it prints only Bun's summary lines. Bun's
- *  whole output goes to `<out>/bun.log`.
+ *  `bun run test:web:cold web/src`: the web lane with each module the web app loads lazily held
+ *  back on each load once a file's rows begin, as web/src/__tests__/hold-lazy-loads.ts lists
+ *  them. A rerun of a file keeps the modules its first run loaded, so only the first run of each
+ *  file is cold: run that lane with `--reruns 1`. The harness lane is
+ *  `bun run test:harness e2e/__tests__`. The tool runs the lane from this package's directory,
+ *  whatever directory it starts in. It adds `--seed`, `--rerun-each` and Bun's junit reporter. It
+ *  prints the seed before the run starts, so a run killed midway still names its seed. During the
+ *  run it prints only Bun's summary lines. Bun's whole output goes to `<out>/bun.log`.
  *
  *  `<out>` then holds `junit.xml`, `bun.log`, `report.json` and `report.md`. Where
  *  `GITHUB_STEP_SUMMARY` is set, `report.md` is also appended to the file it names. Under GitHub
