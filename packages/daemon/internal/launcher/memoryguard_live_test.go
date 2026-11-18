@@ -1455,12 +1455,12 @@ func (r *controllerLiveRun) printTrace() (stop func()) {
 // Then the order after a kill: each kill that follows a kill of the same rise (controllerLiveRise),
 // made at a reading controllerLiveGrowerStep or more above that kill's while a grower lived
 // (controllerLiveGrowerAt, at the kill), ended a grower, since a grower has grown since the
-// previous kill and the guard ranks growth since that kill before size. A first kill of a rise is
-// not judged here by what it ended: before it no process has grown since a kill, and where no
-// grower grew over the guard's window and none started since its reading before, its order puts
-// the largest first, a sleeping fork or the parent under gVisor; what a run's first kill ended
-// fails no run (printFirstKill). A kill after one, at a reading less than that above the kill's,
-// is not judged either, since the reading may have fallen and no grower need have grown.
+// previous kill, and so since the stay's first kill, by which the guard's order ranks before size.
+// A first kill of a rise is not judged here by what it ended: where no grower grew over the guard's
+// window, none is new to the stay with memory of its own and none grew since the stay's first kill,
+// its order puts the largest first, a sleeping fork or the parent under gVisor; what a run's first
+// kill ended fails no run (printFirstKill). A kill after one, at a reading less than that above the
+// kill's, is not judged either, since the reading may have fallen and no grower need have grown.
 func (r *controllerLiveRun) judgeTrace(names map[int]string) (wentOn int, fail string) {
 	t := r.watch.traceCopy()
 	for i, k := range t.kills {
