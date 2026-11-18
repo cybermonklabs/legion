@@ -1,7 +1,7 @@
 ---
 title: Event broker and outbound Envoy client
 parent: dispatch-server
-depends_on: [dispatch-model, dispatch-store]
+depends_on: [contracts, dispatch-model, dispatch-store]
 paths: [packages/envoy/internal/dispatch/events, packages/envoy/internal/dispatch/envoy]
 ---
 The append-only event log every Dispatch write lands in.
