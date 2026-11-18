@@ -177,9 +177,10 @@ func consumerCarries(topic string) bool {
 // Only a topic every form of which a session consumer's filter carries (consumerCarries) covers
 // another: an earlier build filters a session's consumer on the carried topics of its row alone, so
 // a wildcard that filter leaves out - one the stream does not store, or one with a `>` before its
-// last token - covering the topics under it would leave the consumer filtering on none of them. A
-// role lane (contracts.RoleTopicPrefix) always stays, since a reader of the row weighs a role lane
-// by its name as well as by what it matches.
+// last token - covering the topics under it would leave the consumer filtering on none of them.
+// That rule also keeps every role lane (contracts.RoleTopicPrefix), which a reader of the row
+// weighs by its name as well as by what it matches: no subject the stream stores contains a role
+// lane, so no carried topic covers one (TestNoStreamSubjectContainsARoleLane).
 func CoveringTopics(topics []string) []string {
 	unique := slices.Compact(slices.Sorted(slices.Values(topics)))
 	forms := make([][]string, len(unique))
@@ -202,12 +203,10 @@ func CoveringTopics(topics []string) []string {
 	kept := make([]string, 0, len(unique))
 	for i, topic := range unique {
 		covered := false
-		if !strings.HasPrefix(topic, contracts.RoleTopicPrefix) {
-			for j := range unique {
-				if j != i && covers(j, i) && (j < i || !covers(i, j)) {
-					covered = true
-					break
-				}
+		for j := range unique {
+			if j != i && covers(j, i) && (j < i || !covers(i, j)) {
+				covered = true
+				break
 			}
 		}
 		if !covered {

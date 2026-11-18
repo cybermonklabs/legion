@@ -246,3 +246,29 @@ func TestTheReductionFallbackReducesOnlyWhatTheConsumerFilterCarries(t *testing.
 		}
 	}
 }
+
+// A role lane is never covered in a view, because no topic a session consumer's filter carries can
+// contain one: a carried topic extends the literal prefix of a subject the stream stores
+// (bus.StreamCaptures), so it contains nothing that subject does not, and no subject the stream
+// stores contains a role lane in either form of its name. CoveringTopics relies on this to keep
+// every role lane, which a reader of a row weighs by its name and not only by what it matches. A
+// build that gives the stream a subject over the role lanes fails here, and CoveringTopics must
+// then keep role lanes by name.
+func TestNoStreamSubjectContainsARoleLane(t *testing.T) {
+	lanes := []string{contracts.RoleTopicPrefix + "legion-controller", contracts.RoleTopicPrefix + "INFRA.legion-controller"}
+	for _, subject := range bus.StreamCarriedSubjects() {
+		for _, lane := range lanes {
+			for _, form := range contracts.TopicForms(lane) {
+				if bus.SubjectContains(subject, form) {
+					t.Fatalf("the stream stores %s, which contains the role lane %s: a carried wildcard could then cover a role lane in a view", subject, form)
+				}
+			}
+		}
+	}
+	view := CoveringTopics(append([]string{"notifications.team.>"}, lanes...))
+	for _, lane := range lanes {
+		if !slices.Contains(view, lane) {
+			t.Fatalf("CoveringTopics answered %v, without the role lane %s", view, lane)
+		}
+	}
+}
