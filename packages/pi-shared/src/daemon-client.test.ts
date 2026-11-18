@@ -119,7 +119,8 @@ test("a refusal whose body is not the daemon's refusal shape keeps its status an
   const refused = await client.register(registration).catch((error: unknown) => error);
   expect(refused).toBeInstanceOf(LegionDaemonApiError);
   expect(refused).toMatchObject({ status: 504 });
-  expect((refused as LegionDaemonApiError).detail).toContain("upstream timed out");
+  expect((refused as LegionDaemonApiError).detail).toContain("a body of 18 bytes");
+  expect((refused as LegionDaemonApiError).detail).not.toContain("upstream timed out");
   expect((refused as LegionDaemonApiError).detail).toContain("not the daemon's refusal");
 });
 
@@ -791,10 +792,10 @@ test("a refusal of an answer carrying no contract says the daemon stated none", 
   expect(refused.message).not.toContain(BODY_SECRET);
 });
 
-test("a non-success answer that is not the daemon's refusal names both contracts and quotes no more than its first bytes", async () => {
-  // A proxy's page in front of the daemon, longer than the start the refusal quotes, with a value
-  // only its end carries. `state` is not wrapped in the restart retry, so its 503 comes straight
-  // back.
+test("a non-success answer that is not the daemon's refusal names both contracts and the body's length and quotes no part of it", async () => {
+  // A proxy's page in front of the daemon, with a value only its end carries: the refusal names
+  // the page by its length in bytes and quotes none of it. `state` is not wrapped in the restart
+  // retry, so its 503 comes straight back.
   const page = `<html>503 Service Unavailable</html>${"x".repeat(4000)}${BODY_SECRET}`;
   const proxied = (daemonContract: number, body = page): LegionDaemonClient =>
     createLegionDaemonClient("http://daemon.test", {
@@ -821,10 +822,11 @@ test("a non-success answer that is not the daemon's refusal names both contracts
   expect(detail).toContain(`The daemon speaks ${CONTRACT + 1}.`);
   expect(detail).toContain("This process is behind the daemon and waits for its replacement.");
   expect(detail).toContain(`${new TextEncoder().encode(page).length} bytes`);
-  expect(detail).toContain('"<html>503 Service Unavailable</html>x');
   expect(detail).toContain("not the daemon's refusal shape");
+  expect(detail).not.toContain("<html>");
+  expect(detail).not.toContain("Service Unavailable");
+  expect(detail).not.toContain("x".repeat(8));
   expect(detail).not.toContain(BODY_SECRET);
-  expect(detail).not.toContain("x".repeat(64));
 
   const ahead = await proxied(CONTRACT - 1)
     .state()
@@ -836,13 +838,17 @@ test("a non-success answer that is not the daemon's refusal names both contracts
   expect((ahead as LegionDaemonApiError).detail).not.toContain("waits for its replacement");
   expect((ahead as LegionDaemonApiError).detail).not.toContain(BODY_SECRET);
 
-  // One bare word, which a JSON parser's own message quotes far past the start the refusal shows.
-  const word = await proxied(CONTRACT + 1, `${"a".repeat(180)}${BODY_SECRET}`)
+  // One bare word, which a JSON parser's own message quotes up to about 200 characters of: the
+  // refusal names its length in bytes and quotes none of it.
+  const bare = `${"a".repeat(180)}${BODY_SECRET}`;
+  const word = await proxied(CONTRACT + 1, bare)
     .state()
     .catch((error: unknown) => error);
   expect(word).toBeInstanceOf(LegionDaemonApiError);
-  expect((word as LegionDaemonApiError).detail).not.toContain(BODY_SECRET);
-  expect((word as LegionDaemonApiError).detail).not.toContain("a".repeat(65));
+  const wordDetail = (word as LegionDaemonApiError).detail;
+  expect(wordDetail).toContain(`a body of ${new TextEncoder().encode(bare).length} bytes`);
+  expect(wordDetail).not.toContain("a".repeat(8));
+  expect(wordDetail).not.toContain(BODY_SECRET);
 });
 
 test("a refusal raised on the retry of a dropped attempt says the earlier attempt may have been applied", async () => {

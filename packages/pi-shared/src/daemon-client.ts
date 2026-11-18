@@ -197,8 +197,8 @@ export interface LegionDaemonClient {
 /** The daemon answered with a status that is not success. `detail` is the sentence it put
  * under `error`; workflow refusals also carry their stable `code`. A refusal the daemon wrote
  * says what it refused. A non-success answer this build cannot read as a refusal carries no code,
- * and its `detail` names the body by its length and its first characters, the contract this
- * build speaks, the contract the daemon stated and which side is behind, as
+ * and its `detail` names the body's length in bytes, the contract this build speaks, the contract
+ * the daemon stated and which side is behind, and quotes no part of the body, as
  * `LegionDaemonContractError` does for a success this build cannot read. */
 export class LegionDaemonApiError extends Error {
   constructor(
@@ -239,22 +239,11 @@ function contractStanding(mine: number, daemon: number | undefined): string {
   return `This build speaks daemon API contract ${mine}. The daemon speaks ${daemon}. Neither side is behind.`;
 }
 
-/** How much of a non-success body that is not the daemon's refusal shape the refusal quotes:
- * enough to tell a proxy's page from a daemon's answer, and never the whole of a body that may
- * be a page of any length. Characters are UTF-16 code units, as `String.prototype.slice` counts
- * them. */
-const QUOTED_BODY_CHARACTERS = 64;
-
-/** A non-success body that is not the daemon's refusal shape, as the refusal names it: its length
- * in bytes of UTF-8 and at most its first `QUOTED_BODY_CHARACTERS` characters, with the cut
- * marked where the body is longer. */
+/** A non-success body that is not the daemon's refusal shape, as the refusal names it: by its
+ * length in bytes of UTF-8, quoting no part of it. A proxy's page, or a body carrying a value,
+ * must not reach the model. */
 function unreadableBody(text: string): string {
-  const bytes = new TextEncoder().encode(text).length;
-  if (text.length <= QUOTED_BODY_CHARACTERS) {
-    return `a body of ${bytes} bytes, ${JSON.stringify(text)},`;
-  }
-  const start = JSON.stringify(text.slice(0, QUOTED_BODY_CHARACTERS));
-  return `a body of ${bytes} bytes starting ${start} (cut at ${QUOTED_BODY_CHARACTERS} characters)`;
+  return `a body of ${new TextEncoder().encode(text).length} bytes`;
 }
 
 /** A success the daemon API contract does not describe: the path of each field that is wrong,
@@ -454,7 +443,7 @@ export async function retryWhileDaemonRestarts<T>(
  * JSON, a missing required field, and a field of a type the schema does not describe. A body that
  * is not JSON is said to be so and no more: the parser's own message quotes the body (Bun's names
  * up to about 200 characters of a bare word), and `LegionDaemonContractError` quotes none of it,
- * while a non-success answer's refusal shows only what `unreadableBody` chose to. */
+ * while a non-success answer's refusal shows only the body's length (`unreadableBody`). */
 function parseBody<T>(
   schema: z.ZodType<T>,
   body: string
