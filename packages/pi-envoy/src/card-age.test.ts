@@ -713,8 +713,9 @@ describe("a card's delivery the session records", () => {
       clockOffset: () => offset,
       record: files.record,
     });
-    const prompt = card("evt-measured-later", SENT, SENT);
     clock = SENT + 1_000 + AHEAD;
+    // Handed when it is written, as the host stamps the card's entry with the time it was handed.
+    const prompt = card("evt-measured-later", SENT, clock);
     file.push(cardEntry(prompt, clock));
     ages.written(prompt, SESSION, () => file);
     const unmeasured = textOf(
