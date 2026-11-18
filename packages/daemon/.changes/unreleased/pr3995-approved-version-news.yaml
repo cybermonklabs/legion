@@ -92,3 +92,8 @@ body: |-
   turn's result had not come holds its credit in its own row, so these statements give that credit
   back, and this release tells that news again after the roll forward. That section also says why
   each statement is needed.
+
+  A reviewer's task that carries news still ends with the daemon's two sentences of its review
+  round (`Last reviewed commit: …. Review entry: ….`): the news goes before them, and a task of news
+  alone names the round the record holds, the reviewed commit and the entry, so the reviewer reads
+  what changed since the commit it last reviewed, and a review it then submits moves that commit.

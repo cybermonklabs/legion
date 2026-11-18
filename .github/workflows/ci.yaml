@@ -1178,6 +1178,7 @@ jobs:
               - '!packages/daemon/internal/record/**/*_test.go'
               - '!packages/daemon/internal/registry/**/*_test.go'
               - '!packages/daemon/internal/repocache/**/*_test.go'
+              - '!packages/daemon/internal/reviewround/**/*_test.go'
               - '!packages/daemon/internal/runtime/**/*_test.go'
               - '!packages/daemon/internal/sessionproxy/**/*_test.go'
               - '!packages/daemon/internal/shim/**/*_test.go'

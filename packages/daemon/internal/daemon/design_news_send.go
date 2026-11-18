@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -108,7 +109,7 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 	var sent renderedNews
 	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
-		sent, err = renderNews(ctx, tx, w.records, w.gatedSteps, c.Token, carried, d.News, time.Now)
+		sent, err = renderNews(ctx, tx, w.records, w.gatedSteps, c.Token, carried, d.News, d.RoundNamed, time.Now)
 		return err
 	}); err != nil {
 		return "", nil, fmt.Errorf("read what the news the task held for %s carries says now: %w", c.Token, err)
@@ -146,13 +147,26 @@ type renderedNews struct {
 // encoded again otherwise. A start has no bytes to keep, and passes nil. A narrowing passes the
 // news it encoded again under the narrowed text (narrowedNews, through designNews), so news it
 // keeps as it was is answered as those bytes, under that text.
+//
+// A reviewer's task that ends with the daemon's two sentences of its review round says so by a
+// fact (roundNamed: record.SuperviseRequest.RoundNamed at a start, supervise.Delivery.RoundNamed at
+// a send), and those two stay the last two of the text the reviewer is sent, which is where its
+// prompt reads them: the text is carried's Task cut before them (reviewround.Split), a blank line,
+// the news, and then the two sentences. A task that does not end with them as Sentences writes
+// them is rendered whole, as any other.
 func renderNews(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, reader claim.Token,
-	carried record.DeliveryNews, encoded []byte, now func() time.Time) (renderedNews, error) {
+	carried record.DeliveryNews, encoded []byte, roundNamed bool, now func() time.Time) (renderedNews, error) {
 	sent, err := readNewsAtSend(ctx, tx, records, steps, reader, carried, now)
 	if err != nil {
 		return renderedNews{}, err
 	}
-	rendered := renderedNews{task: paragraphs(carried.Task, sent.text), says: sent.says, dropped: sent.dropped}
+	body, round := carried.Task, ""
+	if roundNamed {
+		if cut, sentences, named := reviewround.Split(carried.Task); named {
+			body, round = cut, sentences
+		}
+	}
+	rendered := renderedNews{task: paragraphs(body, sent.text) + round, says: sent.says, dropped: sent.dropped}
 	switch {
 	case sent.kept.Empty():
 	case encoded != nil && !sent.rewritten && len(sent.kept.Items) == len(carried.Items) &&

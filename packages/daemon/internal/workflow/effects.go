@@ -205,9 +205,24 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 	if !ok || start.Op != "start" || start.Task == "" || start.Role != claim.RoleReviewer || start.RoundNamed {
 		return record.NewOutboxRow(issue, payload, at)
 	}
-	standing, err := store.Issue(ctx, tx, issue)
+	named, err := ReviewerTask(ctx, tx, store, issue, start.Task)
 	if err != nil {
 		return record.OutboxRow{}, err
+	}
+	start.Task, start.RoundNamed = named, true
+	return record.NewOutboxRow(issue, start, at)
+}
+
+// ReviewerTask is task as the reviewer of issue is given it now: task followed by the daemon's two
+// sentences of its review round (namingTheReviewRound), read from the phase the issue stands in and
+// the reviewer's phases row as tx holds them. The queue names each reviewer's start it queues
+// through it (queuedRow), and the daemon's start executor names a start of the reviewer queued for
+// news alone through it, which carries no task for the queue to name and is composed only when it
+// runs (the daemon's newsForStart).
+func ReviewerTask(ctx context.Context, tx pgx.Tx, store record.Store, issue, task string) (string, error) {
+	standing, err := store.Issue(ctx, tx, issue)
+	if err != nil {
+		return "", err
 	}
 	// An issue the record does not hold stands in no phase and holds no row, so its reviewer's
 	// task names neither a commit nor an entry.
@@ -216,13 +231,11 @@ func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string,
 	if standing != nil {
 		rows, err := store.Phases(ctx, tx, issue)
 		if err != nil {
-			return record.OutboxRow{}, err
+			return "", err
 		}
-		standsIn, row = standing.Phase, record.PhaseRowOf(rows, start.Role)
+		standsIn, row = standing.Phase, record.PhaseRowOf(rows, claim.RoleReviewer)
 	}
-	start.Task = namingTheReviewRound(start.Task, start.Role, standsIn, row)
-	start.RoundNamed = true
-	return record.NewOutboxRow(issue, start, at)
+	return namingTheReviewRound(task, claim.RoleReviewer, standsIn, row), nil
 }
 
 // status queues the Dispatch write for a status the workflow has just given issue. reason is the

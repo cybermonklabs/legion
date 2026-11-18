@@ -2118,12 +2118,14 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// under that claim and delivery id, and the write recording the turn's confirmation
 		// tells them (the claim store's putDelivery, 20261101163106_parked_decisions). So does the
 		// fact that a reviewer's task ends with the daemon's two sentences of its review round
-		// (record.SuperviseRequest.RoundNamed): the one place each prompt is composed reads it
-		// there, and gives a reviewer's task of a row that lacks it, which only a row of the
+		// (record.SuperviseRequest.RoundNamed, or the round newsForStart names on a reviewer's start
+		// queued for news alone: startNews.roundNamed): the one place each prompt is composed reads
+		// it there, and gives a reviewer's task of a row that lacks it, which only a row of the
 		// release before this one can be, those sentences naming no commit and no entry
-		// (supervise's Delivery.message). The news
-		// the task carries travels the same way (supervise.Delivery.News): the task is the
-		// start's own text and the news after it, the send renders that news again from the
+		// (supervise's Delivery.message). The news the task carries travels the same way
+		// (supervise.Delivery.News): the task is the start's own text and the news after it, the
+		// round's two sentences after the news where the task names them (renderNews), the send
+		// renders that news again from the
 		// record (the daemon's designNews), and the write recording the turn's confirmation
 		// makes what the prompt of that turn carried the delivery's credit, which the write
 		// recording the turn's result folds into the told rows (supervise.Delivery.Carried, the
@@ -2141,7 +2143,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				return err
 			}
 			task = &supervise.RequestDeliver{Claim: token, Task: news.task, Phase: payload.Phase, Generation: payload.Generation,
-				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: payload.RoundNamed,
+				Entry: payload.Entry, ResendEntry: payload.ResendEntry, RoundNamed: news.roundNamed,
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
 				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, News: news.news, NewsOnly: payload.News}
 		}
@@ -3149,7 +3151,7 @@ func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue re
 		return startNews{}, false, err
 	}
 	if !payload.News && payload.Entry == 0 {
-		return startNews{task: payload.Task}, false, nil
+		return startNews{task: payload.Task, roundNamed: payload.RoundNamed}, false, nil
 	}
 	if news, err = r.newsForStart(ctx, issue, payload, token); err != nil {
 		return startNews{}, false, err

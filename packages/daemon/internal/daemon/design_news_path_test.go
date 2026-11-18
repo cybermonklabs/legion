@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -606,8 +607,14 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 	if len(prompted) != 1 || prompted[0].DeliveryID != sent.ID {
 		t.Fatalf("the reviewer's prompts = %+v, want its phase task, once", prompted)
 	}
+	// The start's own text ends with the daemon's two sentences of the reviewer's round, which stay
+	// the prompt's last two, after the news (renderNews).
+	own, round, named := reviewround.Split(starts[0].payload.(record.SuperviseRequest).Task)
+	if !named || !strings.HasSuffix(prompted[0].Message, round) {
+		t.Fatalf("the reviewer's prompt = %q, want it to end with the two sentences of its round its start names", prompted[0].Message)
+	}
 	for _, want := range []string{
-		starts[0].payload.(record.SuperviseRequest).Task,
+		own,
 		"The design gate of LEGION-800 opened: a person approved version 5 of its spec document (artifact-800)",
 		"The approved design of LEGION-800 changed for LEGION-800, which you hold in reviewing:",
 		"version 5, since version 4, which your phase last took",

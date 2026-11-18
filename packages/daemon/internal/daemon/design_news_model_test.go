@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -1479,9 +1480,11 @@ func (m *newsModel) observeAgent(a *newsModelAgent) {
 }
 
 // namesExactly is "" where encoded, the news a delivery records for the prompt p, is the news p
-// carried: the start's own text it names is in the prompt, it carries exactly the version pairs
-// the prompt's text names and the opening it said opened, each to row, and each marked with the run
-// the prompt was sent in. Otherwise it says what differs.
+// carried: the start's own text it names is in the prompt (for a reviewer's task that ends with the
+// daemon's two sentences of its round, the text before them is, and the prompt ends with them,
+// after the news: renderNews), it carries exactly the version pairs the prompt's text names and
+// the opening it said opened, each to row, and each marked with the run the prompt was sent in.
+// Otherwise it says what differs.
 func (m *newsModel) namesExactly(row *newsModelRow, p *newsModelPrompt, encoded []byte) string {
 	var news record.DeliveryNews
 	if len(encoded) > 0 {
@@ -1489,8 +1492,10 @@ func (m *newsModel) namesExactly(row *newsModelRow, p *newsModelPrompt, encoded 
 			return fmt.Sprintf("its news %s does not decode: %v", encoded, err)
 		}
 	}
-	if !strings.Contains(p.text, news.Task) {
-		return fmt.Sprintf("it says the prompt opened with the start's own text %q, which the prompt %q does not carry", news.Task, p.text)
+	own, round, _ := reviewround.Split(news.Task)
+	if !strings.Contains(p.text, own) || !strings.HasSuffix(p.text, round) {
+		return fmt.Sprintf("it says the prompt opened with the start's own text %q, which the prompt %q does not carry, its round's sentences last",
+			news.Task, p.text)
 	}
 	var pairs []newsModelLink
 	for _, item := range news.Items {

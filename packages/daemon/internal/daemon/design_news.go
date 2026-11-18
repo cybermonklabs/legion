@@ -579,12 +579,15 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 
 // startNews is what a start carries of news of the approved design (newsForStart): the task it
 // delivers — the start's own text, a blank line, then the news — the news itself as the delivery
-// carries it (record.DeliveryNews, encoded; nil where nothing is attached), and whether the news
-// says anything a task of its own is worth (newsAtSend.says).
+// carries it (record.DeliveryNews, encoded; nil where nothing is attached), whether the news says
+// anything a task of its own is worth (newsAtSend.says), and whether the task ends with the
+// daemon's two sentences of a reviewer's review round (roundNamed, which the delivery carries as
+// supervise.RequestDeliver.RoundNamed).
 type startNews struct {
-	task string
-	news []byte
-	says bool
+	task       string
+	news       []byte
+	says       bool
+	roundNamed bool
 }
 
 // newsForStart is the news a start of role on issue carries, read from the record in one read
@@ -600,9 +603,17 @@ type startNews struct {
 // whatever a reconcile does before then (carriedChange). The task is the start's own text
 // (record.DeliveryNews.Task), a blank line, then the news; a start that carries nothing delivers
 // its own text.
+//
+// A start of the reviewer queued for news alone carries no task, so the workflow's queue named
+// no round on it. Where it carries news, its task is named here, in the same read: the daemon's
+// two sentences of the round, read from the phase the issue stands in and the reviewer's row
+// (workflow.ReviewerTask), which the news goes before and which the delivery then carries as
+// named, so the claim's send adds no second pair (supervise's Delivery.message). A record that
+// holds no reviewed commit or no entry's task names `none` for it, as the queue does.
 func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload record.SuperviseRequest, token claim.Token) (startNews, error) {
 	carried := record.DeliveryNews{Task: payload.Task}
 	sent := renderedNews{task: payload.Task}
+	roundNamed := payload.RoundNamed
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		facts, err := record.TreeNewsFacts(ctx, r.records, tx, r.gatedSteps, issue.Tree)
 		if err != nil {
@@ -614,12 +625,18 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 		if carried.Empty() {
 			return nil
 		}
-		sent, err = renderNews(ctx, tx, r.records, r.gatedSteps, token, carried, nil, r.now)
+		if payload.News && payload.Role == claim.RoleReviewer && !roundNamed {
+			if carried.Task, err = workflow.ReviewerTask(ctx, tx, r.records, issue.Key, carried.Task); err != nil {
+				return err
+			}
+			roundNamed = true
+		}
+		sent, err = renderNews(ctx, tx, r.records, r.gatedSteps, token, carried, nil, roundNamed, r.now)
 		return err
 	}); err != nil {
 		return startNews{}, fmt.Errorf("read the news the start of %s's %s carries: %w", issue.Key, payload.Role, err)
 	}
-	return startNews{task: sent.task, news: sent.news, says: sent.says}, nil
+	return startNews{task: sent.task, news: sent.news, says: sent.says, roundNamed: roundNamed}, nil
 }
 
 // owedToClaim is what facts owe the claim token, of role on issue, speaks for, as a delivery
