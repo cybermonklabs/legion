@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -304,5 +305,118 @@ func TestANeverOpenedTreesLingerClosesFinishWithoutRetrying(t *testing.T) {
 	}
 	if failed := strings.Count(logs.String(), `"msg":"outbox row failed"`); failed != 0 {
 		t.Errorf("%d close attempts were logged as failed, want none", failed)
+	}
+}
+
+// A done root's linger suspends every claim of its tree, and the hand-over at the linger's expiry
+// carries an unfinished child into a tree of its own at its next generation, which every row of
+// the old tree then serves an earlier one of. The child's own suspend can run only after the
+// hand-over has moved it, and a child its new tree holds (on a blocker, behind the admission cap)
+// is not started there, so nothing re-points its role, which still runs in the old tree. The old
+// tree's cleanup waits on every claim still running in its tree, and the old root's next run waits
+// on that cleanup. So the old tree's stop rows still stop the role while it stands in the old
+// tree, as the daemon and keeping its session, as the new tree's start would, and the close then
+// confirms the old tree's cleanup itself. A role the new tree has re-pointed and started is that
+// tree's, and the old tree's rows leave it running.
+func TestTheOldTreesStopsReachACarriedRoleItsLingerSuspendMissed(t *testing.T) {
+	const rootKey, childKey = "LEGION-207", "LEGION-208"
+	for _, tc := range []struct {
+		name string
+		// op is the old tree's row of the child's planner that runs after the hand-over: the
+		// linger's suspend, or the close at the linger's expiry.
+		op record.SuperviseOp
+		// repointed is a planner the new tree has already re-pointed and started.
+		repointed bool
+	}{
+		{name: "the linger's suspend", op: "suspend"},
+		{name: "the close at the linger's expiry", op: "tree_close"},
+		{name: "a role its new tree re-pointed", op: "tree_close", repointed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			st := outboxTreeStore(t, pool, rootKey, childKey)
+			records := record.NewStore()
+			until := time.Now().Add(-time.Minute)
+			putOutboxIssue(t, pool, records, record.Issue{Key: rootKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: rootKey, Title: "root", Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", LingerUntil: &until})
+			// The hand-over carried the child: a tree of its own at generation 2, held at admitted.
+			putOutboxIssue(t, pool, records, record.Issue{Key: childKey, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION",
+				Tree: childKey, Title: "child", Phase: phase.Admitted, Generation: 2, Status: "todo", Rank: "B", HandedOver: true})
+			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+			sup.deps.Store = st
+			architect := launchedClaim(t, sup, rootKey, rootKey, claim.RoleArchitect)
+			plannerTree := rootKey
+			if tc.repointed {
+				plannerTree = childKey
+			}
+			planner := launchedClaim(t, sup, plannerTree, childKey, claim.RolePlanner)
+			runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup, trees: st,
+				tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), now: time.Now}
+			cleaned := func() bool {
+				t.Helper()
+				live, err := st.TreeLive(ctx, "legion", rootKey)
+				if err != nil {
+					t.Fatalf("read the lifecycle of %s: %v", rootKey, err)
+				}
+				return !live
+			}
+			stopRow := func(issue string, op record.SuperviseOp, role claim.Role, generation uint64) record.OutboxRow {
+				payload := record.SuperviseRequest{Op: op, Tree: rootKey, Role: role, Generation: generation}
+				if op == "tree_close" {
+					payload.Linger = 1
+				} else {
+					payload.Reason = "the tree of " + rootKey + " lingers"
+				}
+				return mustOutboxRow(t, issue, payload, time.Now())
+			}
+
+			// The root's architect closes first, which reserves the old tree's cleanup and retires it.
+			err := runner.execute(ctx, stopRow(rootKey, "tree_close", claim.RoleArchitect, 1))
+			if machine, _ := sup.Machine(architect); machine.Claim().State != supervise.StateRetired {
+				t.Fatalf("the root's architect after its close = %s, want retired", machine.Claim().State)
+			}
+			if tc.repointed {
+				if err != nil || !cleaned() {
+					t.Fatalf("the root's close with the planner in its new tree = %v, confirmed %t; want the cleanup confirmed", err, cleaned())
+				}
+			} else if !errors.Is(err, wait.ErrWaiting) || !strings.Contains(err.Error(), string(planner)+":ready") || cleaned() {
+				t.Fatalf("the root's close = %v, confirmed %t; want the cleanup waiting on the carried planner, still ready in %s",
+					err, cleaned(), rootKey)
+			}
+
+			// The child's own row of the old tree runs after the hand-over moved it.
+			if err := runner.execute(ctx, stopRow(childKey, tc.op, claim.RolePlanner, 1)); err != nil {
+				t.Fatalf("the old tree's %s of the carried planner: %v", tc.op, err)
+			}
+			machine, _ := sup.Machine(planner)
+			got := machine.Claim()
+			suspends := 0
+			for _, call := range rt.CallsOf("Suspend") {
+				if call.Locator.Claim == planner {
+					suspends++
+				}
+			}
+			if tc.repointed {
+				if got.State != supervise.StateReady || got.Tree != childKey || suspends != 0 {
+					t.Fatalf("the re-pointed planner after the old tree's close = %s in %s, suspended %d times; want it running in %s, untouched",
+						got.State, got.Tree, suspends, childKey)
+				}
+				return
+			}
+			if got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon || got.Tree != rootKey ||
+				got.Session != "ses-planner" || got.SessionFile != "/tmp/planner.jsonl" || suspends != 1 {
+				t.Fatalf("the carried planner after the old tree's %s = %s by %q in %s, session %q at %q, suspended %d times; "+
+					"want it suspended once by the daemon in %s, its session kept", tc.op, got.State, got.SuspendedBy, got.Tree, got.Session,
+					got.SessionFile, suspends, rootKey)
+			}
+			if tc.op == "tree_close" && !cleaned() {
+				t.Fatalf("the old tree's close of the carried planner stopped it but left the cleanup of %s unconfirmed", rootKey)
+			}
+			// A suspend drives no cleanup: the close that waited confirms it at its next attempt.
+			if err := runner.execute(ctx, stopRow(rootKey, "tree_close", claim.RoleArchitect, 1)); err != nil || !cleaned() {
+				t.Fatalf("the root's close once the carried planner stopped = %v, confirmed %t; want the cleanup confirmed", err, cleaned())
+			}
+		})
 	}
 }

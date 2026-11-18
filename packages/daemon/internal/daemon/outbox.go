@@ -1924,11 +1924,17 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	if err != nil {
 		return err
 	}
-	// A close row naming a tree other than its issue's never reserves it; the checks below decide it.
+	// A close row of the issue's own tree runs through that tree's cleanup reservation. A stop row
+	// of a tree the issue has since left still stops the role's claim while that claim runs in the
+	// old tree, and a close drives that tree's cleanup (stopInLeftTree); the checks below decide
+	// every other row.
 	if payload.Op == "tree_close" && payload.Tree == issue.Tree {
 		if handled, err := r.reservedTreeClose(ctx, row, payload); handled || err != nil {
 			return err
 		}
+	}
+	if (payload.Op == "suspend" || payload.Op == "tree_close") && payload.Tree != issue.Tree {
+		return r.stopInLeftTree(ctx, row, payload, issue)
 	}
 	// A check start (CheckLook) runs after the close: its issue holds no phase, its generation may
 	// be a later run's and its tree may linger, so it is fenced on the open check — the instance the
@@ -2452,9 +2458,10 @@ func childArchitectFirstStart(issue record.Issue, payload record.SuperviseReques
 // runs a process in a tree other than the issue's, and is a wait (wait.ErrWaiting) until none
 // does. A claim in a turn holds the suspension for the turn's end and a launching one until its
 // agent is ready (supervise's suspend rows), so the start that asks is what waits, retried on its
-// backoff, charging no claim a launch. No close of the old tree reaches such a claim, since its
-// issue has left that tree, so the suspension names the deadline that close would have had
-// (carriedStopDeadline): a turn still running at the old root's linger expiry is stopped there, and
+// backoff, charging no claim a launch. The old tree's own stop rows reach such a claim only when
+// they run after the issue left that tree (stopInLeftTree), and a start can come first, so the
+// suspension names the deadline that tree's close would have had (carriedStopDeadline, through
+// stopCarried): a turn still running at the old root's linger expiry is stopped there, and
 // the claim keeps its workspace, the issue's branch and its session, which its next start resumes:
 // a phase worker's with its phase's resume task, and the issue's own architect's, now its tree's
 // root architect, with that architect's start task (workflow.ArchitectStartTask). The hold lives
@@ -2475,33 +2482,93 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 		if !found || machine.View().Claim.Tree == issue.Tree {
 			continue
 		}
-		held := machine.Claim()
-		if held.Tree == issue.Tree || held.RunsNothing() {
-			continue
-		}
-		var oldRoot *record.Issue
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-			var err error
-			oldRoot, err = r.records.Issue(ctx, tx, held.Tree)
+		still, err := r.stopCarried(ctx, machine, token, issue)
+		if err != nil {
 			return err
-		}); err != nil {
-			return fmt.Errorf("read the root of tree %s, which claim %s still runs in: %w", held.Tree, token, err)
 		}
-		err = machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon,
-			Deadline: carriedStopDeadline(oldRoot, r.now(), r.supervisor.deps.Timeouts.Stop),
-			Reason:   fmt.Sprintf("%s moved from tree %s to tree %s", issue.Key, held.Tree, issue.Tree)})
-		var refused *supervise.RefusedError
-		if err != nil && !errors.Is(err, supervise.ErrSuspendHeld) && !errors.As(err, &refused) {
-			return fmt.Errorf("suspend claim %s, still running in tree %s: %w", token, held.Tree, err)
-		}
-		if held = machine.Claim(); !held.RunsNothing() {
-			running = append(running, fmt.Sprintf("%s:%s in tree %s", token, held.State, held.Tree))
+		if still != "" {
+			running = append(running, still)
 		}
 	}
 	if len(running) > 0 {
 		return wait.Errorf("start of %s in tree %s waits for %s to stop", issue.Key, issue.Tree, strings.Join(running, ", "))
 	}
 	return nil
+}
+
+// stopCarried suspends token's claim, as the daemon and keeping its session, while it runs a
+// process in a tree other than issue's, its stop bounded where that tree's close would have ended
+// the turn (carriedStopDeadline). It answers the claim as "token:state in tree T" while it still
+// runs there, and "" once it runs nothing or stands in the issue's tree. A suspension the claim
+// holds for its turn or its boot is no error: the caller waits on its backoff and asks again.
+func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, token claim.Token, issue record.Issue) (string, error) {
+	held := machine.Claim()
+	if held.Tree == issue.Tree || held.RunsNothing() {
+		return "", nil
+	}
+	var oldRoot *record.Issue
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		oldRoot, err = r.records.Issue(ctx, tx, held.Tree)
+		return err
+	}); err != nil {
+		return "", fmt.Errorf("read the root of tree %s, which claim %s still runs in: %w", held.Tree, token, err)
+	}
+	err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon,
+		Deadline: carriedStopDeadline(oldRoot, r.now(), r.supervisor.deps.Timeouts.Stop),
+		Reason:   fmt.Sprintf("%s moved from tree %s to tree %s", issue.Key, held.Tree, issue.Tree)})
+	var refused *supervise.RefusedError
+	if err != nil && !errors.Is(err, supervise.ErrSuspendHeld) && !errors.As(err, &refused) {
+		return "", fmt.Errorf("suspend claim %s, still running in tree %s: %w", token, held.Tree, err)
+	}
+	if held = machine.Claim(); !held.RunsNothing() {
+		return fmt.Sprintf("%s:%s in tree %s", token, held.State, held.Tree), nil
+	}
+	return "", nil
+}
+
+// stopInLeftTree runs a stop row (a suspend, or a tree close) of a tree its issue has since left.
+// A hand-over at the old root's linger expiry, or an orphan carry during the linger, made the
+// issue a tree of its own at its next generation, and every row of the old tree serves an earlier
+// one. The role's claim can still run its process in the old tree: the linger's suspend of it races
+// the admission that moves the issue, and only the new tree's start re-points it, which waits for
+// as long as the issue is held (a blocker, the admission cap). The old tree's cleanup waits on every
+// claim still running in it (store.CleanupReservedTree), and the old root's next run waits on the
+// cleanup, so a claim no stop of the old tree reaches holds both until the new tree starts it.
+//
+// So the row stops the claim while it still stands in the old tree, as the new tree's start would
+// (stopCarried), and waits on its backoff until it runs nothing. A close then drives the old tree's
+// cleanup, as every close of the tree does (reservedTreeClose), so the cleanup confirms on the stop
+// itself and not at the next retry of a close that found the claim still running. A claim the new
+// tree has re-pointed is that tree's, and the row leaves it. The row runs on the issue's lifecycle
+// lane, as the new tree's start does, so no start re-points the claim between the read and the
+// suspension.
+func (r *outbox) stopInLeftTree(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
+	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	if err != nil {
+		return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
+	}
+	if machine, found := r.supervisor.Machine(token); found && machine.View().Claim.Tree == payload.Tree {
+		still, err := r.stopCarried(ctx, machine, token, issue)
+		if err != nil {
+			return err
+		}
+		if still != "" {
+			return wait.Errorf("%s of tree %s, which %s has left for tree %s, waits for %s to stop", payload.Op, payload.Tree,
+				issue.Key, issue.Tree, still)
+		}
+	}
+	if payload.Op != "tree_close" {
+		return nil
+	}
+	lifecycle, reserved, err := r.trees.ReserveWorkflowTreeCleanup(ctx, r.project, payload.Tree, payload.Linger)
+	if err != nil {
+		return fmt.Errorf("reserve cleanup of workflow tree %s: %w", payload.Tree, err)
+	}
+	if !reserved {
+		return nil
+	}
+	return r.trees.CleanupReservedTree(ctx, r.project, payload.Tree, lifecycle.Epoch, r.supervisor.deps.Runtime)
 }
 
 // carriedStopDeadline is when a carried child's role still running in its old tree, under oldRoot,

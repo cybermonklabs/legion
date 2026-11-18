@@ -201,7 +201,8 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 // itself, which is recorded under the Dispatch parent and held on the blockers child names
 // (intake.AdoptedChild, the release's own read of Dispatch). Each record is written as every
 // adopted record is (moveIntoTree): it takes its next generation, the fence every row of the old
-// tree already checks (its linger's close, its supervise rows, its issue suspend), with no
+// tree already checks (its linger's close, its supervise rows, its issue suspend; a stop row still
+// stops a claim that stands in the old tree, the daemon outbox's stopInLeftTree), with no
 // linger, hold or Dispatch chain (record.Issue.Ancestry: a member waits in no line), no
 // hand-over fence and its generation's facts cleared. A todo record enters the tree's run
 // admitted, as an unrecorded todo child does (enterChild), so it starts its first phase at the
@@ -238,7 +239,8 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // is written once here, so that the two routes cannot come to record one issue differently.
 //
 // The record takes its next generation, the fence every row of the old tree already checks (its
-// linger's close, its supervise rows, its issue suspend), with its hand-over fence deleted and
+// linger's close, its supervise rows, its issue suspend; a stop row still stops a claim that stands
+// in the old tree, the daemon outbox's stopInLeftTree), with its hand-over fence deleted and
 // its generation's facts cleared. A todo record enters the tree admitted on the repository it
 // was first recorded with (enterChild, RecordedFact, recordedResolution), as an unrecorded todo
 // child does, so it starts its first phase at the slot the waiting line gives it, or is held at

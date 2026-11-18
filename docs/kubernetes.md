@@ -1448,10 +1448,12 @@ Its old tree's cleanup does not wait on a claim of it that runs nothing;
 each of its claims is re-pointed to its new tree before its first start there, and binds that tree's epoch;
 and its root launch takes over the Sandbox its old tree left, if the cleanup has not reached it yet:
 the Sandbox is relabelled for the new tree (`ensureSandbox`, `internal/runtime/sandbox/relaunch.go`), and whether it is that Sandbox or one made afresh, the launch brings a new pod with a disk of its own and the roles resume from the session table.
-A role still in a turn when the old tree closed holds that close's suspension until the turn ends, and the carry's new generation finishes the close's own suspend row without acting.
-So no start of the new tree launches anything while a claim of the issue still runs a process in another tree:
-the start suspends that claim itself, as the daemon and keeping its session, and waits on its backoff, charging nothing, until the claim has stopped (`stopElsewhere`, `internal/daemon/outbox.go`).
-No close of the old tree reaches that claim, so its stop is bounded where that close would have ended the turn, at the old root's linger expiry (`linger_hours`):
+A role still in a turn when the old tree closed holds that close's suspension until the turn ends, and the carry's new generation can reach the issue before the close's suspend row of a role has run at all.
+Every row of the old tree then serves an earlier generation, but a stop row of it (the linger's suspend, or the close at the linger's expiry) still stops a claim that stands in the old tree, and a close then drives the old tree's cleanup (`stopInLeftTree`, `internal/daemon/outbox.go`):
+the cleanup waits on every claim still running in its tree, so a claim that no stop reached would hold it, and the old root's next run with it, until the new tree started the issue, which a carried child held on a blocker or behind the admission cap does not do.
+Nor does a start of the new tree launch anything while a claim of the issue still runs a process in another tree:
+the start suspends that claim itself, as the daemon and keeping its session, and waits on its backoff, charging nothing, until the claim has stopped (`stopElsewhere`).
+Either stop is bounded where the old tree's close would have ended the turn, at the old root's linger expiry (`linger_hours`):
 a turn that ends within the linger ends on its own, and one still running at the expiry is stopped there.
 Once the old root no longer lingers (it was reopened, say), there is no close left to wait for, and the stop falls back to the stop timeout (`worker_stop_timeout_seconds`) from then (`carriedStopDeadline`):
 a role still in a turn is stopped that long after, losing only the tool call in flight.
