@@ -3103,6 +3103,55 @@ test("a chip naming a comment whose body holds a bare address names it by the sh
   expect([...targetNames(reads)]).toEqual([[ref, name]]);
 });
 
+// R1 and R21: a stored text read to plain words holds the words the server's reading of the
+// same text holds, since a chip naming an ask, a comment or a message and the name the page
+// publishes for it are those words, and a node with no reading takes its line from them. Each
+// pair below is a stored body and the words of the reading a running build of this head sent
+// for it (`wordsOf` of `body_tree`). An HTML comment, as every agent's comment and every
+// message of the daemon's outbox ends with, is no word of the text; nor is an inline tag, a
+// table's pipes and rule, a thematic break's marks or a single-tilde strike; a link whose URL
+// holds parentheses reads as its words alone; and a list that follows a paragraph with no blank
+// line ends that paragraph, so the paragraph is the first block a line is cut from.
+test("a stored text read to plain words holds the words of the server's reading of it", () => {
+  for (const [stored, reading] of [
+    ["Hold the deploy.\n\n<!-- legion-outbox:11715 -->", "Hold the deploy."],
+    [
+      'Fixed in abc1234.\n\n<!-- legion: {"session":"s-1","phase":"implementing"} -->',
+      "Fixed in abc1234.",
+    ],
+    [
+      "Done. <sub>Posted by the Legion implementer.</sub>",
+      "Done. Posted by the Legion implementer.",
+    ],
+    ["See [the doc](https://example.com/a_(b)) first.", "See the doc first."],
+    ["| Reading | At 1440 px |\n|---|---|\n| one | two |", "Reading At 1440 px one two"],
+    ["~~gone~~ and ~also~ gone.", "gone and also gone."],
+    ["* * *\n\nAfter the rule.", "After the rule."],
+  ] as const) {
+    expect(plainWordsRaw(stored), stored).toBe(reading);
+  }
+  expect(lineWordsRaw({ text: "Intro line:\n- item one\n- item two" })).toBe("Intro line:");
+
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const ref = `dispatch://${KEY}/message/message-9`;
+  const reads = {
+    decisions: decisions([{ ...decision("d1", "Keep it.", []), links: [linkTo(ref, "message")] }]),
+    issue: issueDetails([spec, made]),
+    targets: [
+      {
+        gone: false,
+        kind: "message",
+        name: "Hold the deploy.\n\n<!-- legion-outbox:11715 -->",
+        ref,
+      },
+    ],
+  };
+  const chips = nodeOf(buildIssueTree(reads), blockNodeId("decisions-md", "d1"))?.chips;
+  expect(chips?.map(({ name }) => name)).toEqual(["Hold the deploy."]);
+  expect([...targetNames(reads)]).toEqual([[ref, "Hold the deploy."]]);
+});
+
 // The body draws a node's whole words, the words filter matches them and the batched reference
 // read is asked to name each address they cite (`useIssueTree.ts`), so only a line reads an
 // address short: the node's words (`nodeWords`) keep it as written, from a reading and from
