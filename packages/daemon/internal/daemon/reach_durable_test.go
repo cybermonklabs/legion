@@ -613,12 +613,105 @@ func TestANoLiveSessionNoticeIsToldOnceARunAcrossARestart(t *testing.T) {
 // logged and has read the lines the daemon before it left open, as openSupervision loads it.
 func (d *durableReach) booted(logged *testlog.Buffer) *reachKeeper {
 	d.t.Helper()
-	o := d.options(false, d.st.PutClaimReach)
+	return d.bootedAs(logged, false, true)
+}
+
+// bootedAs is booted in a configuration of its own: whether the daemon runs its controller, and
+// whether it reads Envoy's list at all (a deployment with no Envoy URL reads none).
+func (d *durableReach) bootedAs(logged *testlog.Buffer, daemonController, readsList bool) *reachKeeper {
+	d.t.Helper()
+	o := d.options(daemonController, d.st.PutClaimReach)
+	if !readsList {
+		o.list = nil
+	}
 	o.alerts = fleetalert.New(slog.New(slog.NewTextHandler(logged, nil)), "LEGION")
 	if err := o.alerts.Load(context.Background(), fleetAlertLines{st: d.st, project: "LEGION"}); err != nil {
 		d.t.Fatalf("load the open fleet alert lines: %v", err)
 	}
 	return newReachKeeper(o)
+}
+
+// A line the store holds open is closed by the first sweep of a daemon that boots onto it when its
+// case does not hold now: a case this configuration does not judge (the controller's under an
+// operator's controller, the list's where no list is read), and a case it judges and finds ended
+// (the controller back in reach). So a switch of the controller's mode and back, or a rollback to
+// a release that closed its cases in memory alone and a roll forward, leaves no line open that
+// would silence the next line of its case (R6). A case that still holds keeps its line.
+func TestAStoredLineWhoseCaseNoLongerHoldsIsClosedByTheFirstSweep(t *testing.T) {
+	project, _ := claim.ProjectToken("legion")
+	controller := claim.ControllerToken(project)
+	controllerClaim := func(marked bool) supervise.Claim {
+		c := supervise.Claim{Token: controller, Project: project, Role: claim.RoleController, Generation: 2,
+			State: supervise.StateIdle, Session: "ses_controller", LastReady: reachBoot.Add(-time.Hour),
+			Locator: pluginTestLocator(controller), ActivityAt: reachBoot}
+		if marked {
+			c.LastRelaunch, c.LastRelaunchGeneration = reachBoot.Add(-10*time.Minute), 2
+		}
+		return c
+	}
+	for _, tc := range []struct {
+		name             string
+		stored           []fleetalert.Line
+		daemonController bool
+		readsList        bool
+		claims           []supervise.Claim
+		markedReach      bool
+		open             bool
+	}{
+		{name: "the controller's line under an operator's controller", daemonController: false, readsList: true,
+			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)},
+				{Word: fleetalert.ControllerRelaunchRefused.Word, Claim: string(controller)}}},
+		{name: "the list's lines where no list is read", daemonController: true, readsList: false,
+			stored: []fleetalert.Line{{Word: fleetalert.NoLiveSession.Word}, {Word: fleetalert.SessionListUnreadable.Word}}},
+		{name: "the controller's line of a controller back in reach", daemonController: true, readsList: true,
+			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
+			claims: []supervise.Claim{controllerClaim(false)}},
+		{name: "the controller's line of a controller gone from the claims", daemonController: true, readsList: true,
+			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}}},
+		{name: "the controller's line of a controller still out of reach", daemonController: true, readsList: true,
+			stored: []fleetalert.Line{{Word: fleetalert.ControllerUnreachable.Word, Claim: string(controller)}},
+			claims: []supervise.Claim{controllerClaim(true)}, markedReach: true, open: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDurableReach(t)
+			for _, c := range tc.claims {
+				d.put(c)
+				if tc.markedReach {
+					marked := supervise.Reach{Session: c.Session, FirstReady: c.LastReady, Since: reachBoot.Add(-30 * time.Minute),
+						Generation: 2, Relaunched: true, RelaunchedAt: c.LastRelaunch}
+					if known, err := d.st.PutClaimReach(context.Background(), c.Token, marked); err != nil || !known {
+						t.Fatalf("mark the controller out of reach = %t, %v", known, err)
+					}
+				}
+			}
+			for _, l := range tc.stored {
+				if err := d.st.PutFleetAlertLine(context.Background(), store.FleetAlertLine{Project: "LEGION", Case: l.Word, Claim: l.Claim}); err != nil {
+					t.Fatalf("store the open line %+v: %v", l, err)
+				}
+			}
+			logged := &testlog.Buffer{}
+			k := d.bootedAs(logged, tc.daemonController, tc.readsList)
+			d.at(time.Minute)
+			k.sweep(context.Background(), d.stored())
+			k.wait()
+			open, err := d.st.FleetAlertLines(context.Background(), "LEGION")
+			if err != nil {
+				t.Fatalf("read the open lines: %v", err)
+			}
+			if got := len(open) == len(tc.stored); got != tc.open {
+				t.Fatalf("after the first sweep the store holds the open lines %+v, want them kept %t", open, tc.open)
+			}
+
+			// The next line of that key: written for a case that ended, not for one that holds.
+			next := d.bootedAs(logged, tc.daemonController, tc.readsList)
+			for _, l := range tc.stored {
+				c := fleetalert.Case{Word: l.Word, Sentence: "the next case"}
+				if wrote := next.alerts.Open(c, l.Claim); wrote == tc.open {
+					t.Fatalf("the next daemon's line of %+v written %t, want %t", l, wrote, !tc.open)
+				}
+			}
+		})
+	}
 }
 
 // R6's line is written once until its case ends, and a restart ends no case (R6): a run of lists

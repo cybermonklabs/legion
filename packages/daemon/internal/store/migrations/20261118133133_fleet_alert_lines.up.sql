@@ -9,9 +9,13 @@
 -- when it writes the line, deletes it when the caller ends the case, and reads the project's rows
 -- at its boot.
 --
--- Rolling the image back needs no statement: the release before this one names no such table, so
--- its daemon writes each line again after its boot, as it always has, and a daemon rolled forward
--- again reads the rows back.
+-- Rolling the image back needs no statement: the release before this one names no such table and
+-- writes no fleet alert line at all, so it reads no row and leaves every row as it stands. A row
+-- whose case ended while that release ran is still read back as open by a daemon rolled forward
+-- again, and that daemon's first sweep closes every line whose case does not hold then: a case
+-- its configuration does not judge, and a case it judges and finds ended (internal/daemon's reach
+-- keeper, closeUnjudgedLines and closeEndedControllerLines; the worker stream's lock-out lines at
+-- the lock-out notices' sweep). A case that still holds keeps its line, and writes no second one.
 --
 -- There is no down file: migrations here are forward-only.
 create table fleet_alert_lines (
