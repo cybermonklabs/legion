@@ -149,14 +149,12 @@ versions. Never add the module to the root `go.work`.
   `TestDispatchRefusesAnNKeySeedInAPlainInput`, `azureFederationAudience` among them);
   `tailnetAuthKey`, `signInClientSecret`, `natsSeedSecret`, `databaseWaitsFor`, the Azure
   embedder's Pulumi inputs `azureEmbedEndpoint`, `azureEmbedDeployment`, `azureEmbedKeySecret`,
-  `azureTenantId` and `azureClientId`, the answerer's `azureChatEndpoint`,
-  `azureChatDeployment`, `chatEndpoint` and `chatTokenSecret`, and the IAP door's `iapAudience`
-  are checked for a seed once they resolve, before any child
+  `azureTenantId` and `azureClientId`, and the answerer's `azureChatEndpoint`,
+  `azureChatDeployment`, `chatEndpoint` and `chatTokenSecret` are checked for a seed once they
+  resolve, before any child
   takes them (`gcp.refuseDispatchSeedInSecret`, `gcp.refuseDispatchSeed`,
-  `gcp.dispatchIAPAudience`, which also holds the audience to the form IAP signs for a backend
-  service, `TestConstructRefusesASeedInADispatchInput`, `TestConstructRefusesASeedInAnAzureInput`,
+  `TestConstructRefusesASeedInADispatchInput`, `TestConstructRefusesASeedInAnAzureInput`,
   `TestConstructRefusesASeedInAnAnswererInput`,
-  `TestDispatchRefusesAnIAPAudienceOfAnotherFormOnceItResolves`,
   `TestDispatchRefusesASeedInDatabaseWaitsFor`, whose value reaches no resource and whose
   dependencies alone order the Cloud SQL instance); the two credentials `tailnetAuthKey` and
   `signInClientSecret` are also refused blank or whitespace-only then, through the one rule both
@@ -260,17 +258,6 @@ versions. Never add the module to the root `go.work`.
   `gcp/tailnet_joined_test.go` and `gcp/data_disk_test.go` run the secret fetcher, the listener's
   seed script, the joined script and the data disk's bootcmd entry as the golden holds them, so a
   change to any of them is tested there.
-- **Production's render.** `gcp/production_render_test.go` constructs `gcp:Dispatch`,
-  `gcp:ClusteredNatsHub` (with and without its tailnet entry) and `gcp:NatsHub` from
-  production-shaped inputs, on placeholders, through the plugin's own Construct, and holds every
-  register, read and invoke request and the construct's state to
-  `gcp/testdata/production-render.golden` byte for byte. A change that should leave a running
-  deployment as it is leaves that file alone. A change that moves it rewrites the file with
-  `PRODUCTION_RENDER_OUT="$PWD/gcp/testdata/production-render.golden" go test ./gcp -run
-  '^TestProductionRender$'` (from this directory; go test runs the package in `gcp/`), and its
-  pull request says what a consumer's
-  preview will show. The same file, copied onto an older release tag, renders that release, so two
-  releases can be compared with `cmp`. `TestProductionRenderSeesAOneInputChange` is its control.
 - **Permission sets.** `core/permissions.go` builds the listener, session, host and Dispatch sets
   from names that `packages/envoy/internal/bus` and `internal/contracts` export. Its daemon set maps
   `packages/envoy/daemonpermissions.Grant`, which builds the daemon's shared grant from those same
