@@ -37,29 +37,31 @@
 //
 // Each run seeds its trees where production's trees stand mid-run (sessionsRun.seed). The issues,
 // their pull requests, gates, slots and lifecycles are written through the store, as part one
-// writes them. Each role the run seeds is then started through the daemon's own start path, by
-// the function part one's seed starts its claims with (startRoles): a root's architect as
-// admission's promotion starts it (workflow.Engine.StartArchitect), a child's own architect as the
-// child's first phase start starts it for every child the daemon starts (Engine.StartFirstPhase,
-// which queues the plain start workflow's childArchitectStart builds), and a member's phase worker
-// as the promotion of a mid-phase member starts it (Engine.StartPromotedWorker). Each start of a
-// root's architect or a worker raises its role's entry on the role's phases row; the plain start
-// of a child's own architect raises none and carries no task. A worker's raise also writes its
-// issue's holder row of the told record, from the gate the seed wrote (record.Store.BaselineTold).
-// Each claim is a launch the daemon before the boot began and never recorded, which the boot
-// relaunches. That daemon's outbox ran each start, and every other row a child's first phase start
-// queued (the row that creates its branch, the notices of its move into planning), so the seed
-// takes those rows off the queue and writes the claim as the start leaves it: given the start's
-// entry. A role whose step needs a task of its own (holderStart, reviewerStart, parentStart) holds
-// that task at that entry, in place of the start's own task. Any other root architect took its
-// start's task before the boot, and holds none, and a child's own architect was given none. A
-// root's architect row of the told record comes from its tree's first opening, which the seed
-// does not run, so the seed writes it by hand and checks it against the row that opening writes.
-// Before the boot the seed checks each claim by part one's rule (standAtTheirEntries): it stands
-// at an entry of 1 or more of its role's phases row, given that entry, and it holds its task at
-// that entry; a child's own architect stands at no entry, given none, holding no task, as its
-// plain start leaves it. A seed that differs fails the run's harness before any pane starts, and
-// the failure names the claim or the row, the field and both values.
+// writes them, each issue with the Dispatch status of its phase (sessionsStatus). Each role the
+// run seeds is then started through the daemon's own start path, by the function part one's seed
+// starts its claims with (startRoles): a root's architect as admission's promotion starts it
+// (workflow.Engine.StartArchitect), a child's own architect as the child's first phase start
+// starts it for every child the daemon starts (Engine.StartFirstPhase, which queues the plain
+// start workflow's childArchitectStart builds), and a member's phase worker as the promotion of a
+// mid-phase member starts it (Engine.StartPromotedWorker). Each start of a root's architect or a
+// worker raises its role's entry on the role's phases row; the plain start of a child's own
+// architect raises none and carries no task. A worker's raise also writes its issue's holder row
+// of the told record, from the gate the seed wrote (record.Store.BaselineTold). Each claim is a
+// launch the daemon before the boot began and never recorded, which the boot relaunches. That
+// daemon's outbox ran each start, and every other row a child's first phase start queued (the row
+// that creates its branch, the notices of its move into planning), so the seed takes those rows
+// off the queue and writes the claim as the start leaves it: given the start's entry. A role
+// whose step needs a task of its own (holderStart, parentStart) holds that task at that entry, in
+// place of the start's own task; an answers reviewer holds the start's own stored task with a note
+// of the step's before its review round's two sentences (reviewerNote). Any other root architect
+// took its start's task before the boot, and holds none, and a child's own architect was given
+// none. A root's architect row of the told record comes from its tree's first opening, which the
+// seed does not run, so the seed writes it by hand and checks it against the row that opening
+// writes. Before the boot the seed checks each claim by part one's rule (standAtTheirEntries): it
+// stands at an entry of 1 or more of its role's phases row, given that entry, and it holds its
+// task at that entry; a child's own architect stands at no entry, given none, holding no task, as
+// its plain start leaves it. A seed that differs fails the run's harness before any pane starts,
+// and the failure names the claim or the row, the field and both values.
 //
 // Two arms. The head arm launches each pane on the prompts the daemon snapshots below its state
 // directory at boot (prompts.New). The base arm writes the base commit's prompt files,
@@ -87,10 +89,13 @@
 //     holds an Envoy message naming version 2 and the change, and the root architect's transcript
 //     holds its envoy_publish to that holder's role topic naming the same;
 //   - answers-a-stale-reviewer-moves-back-a-current-one-comments: under root-issues, two roots in
-//     reviewing, each reviewer told what its review rests on; the person approves a version 2 of
-//     each spec, one changing the section the review rests on and one a section it does not touch.
-//     It passes when the first reviewer's request_backward_move names version 2 and moves its
-//     issue back, and the second writes a comment on its issue naming version 2 and stays.
+//     reviewing, each with its own architect live and a live reviewer whose start task is the one
+//     the daemon's start path stores, with a note of what its pull request changes and that its
+//     review read version 1 of the spec; the person approves a version 2 of each spec, written as
+//     its root architect's own session, one changing the `## Design` that pull request implements
+//     and one only the `## Later work`, which it does not touch. It passes when the first
+//     reviewer's request_backward_move names version 2 and moves its issue back, and the second
+//     writes a comment of its own on its issue naming version 2 and stays.
 //
 // a4's base arm is retired. Main's #4203 gives every started child its own architect, and a4
 // drives R4 through it; the base commit's own prompts tell that architect to tell its workers of a
@@ -549,9 +554,11 @@ type sessionsRun struct {
 // sessionsMember is one issue of a run's trees: its key, its tree's root, its parent ("" for a
 // root), its phase, the roles whose claims the run seeds, the root's spec and the issue's
 // Verification document with its one check ("" for none), and the task each role's claim holds at
-// the boot, at the entry the start path raised for it, in place of that start's own task ("" for a
-// role that took its start's task before the boot, and for a child's own architect, whose start
-// carries none: sessionsRun.seedClaim).
+// the boot, at the entry the start path raised for it: a task of the step's own in place of that
+// start's task (tasks), or the start's own stored task with a note of the step's before the
+// review round's two sentences it ends with (notes, a reviewer's alone), or nothing, for a role
+// that took its start's task before the boot and for a child's own architect, whose start carries
+// none (sessionsRun.seedClaim).
 type sessionsMember struct {
 	key, tree, parent string
 	phase             phase.Phase
@@ -560,6 +567,7 @@ type sessionsMember struct {
 	verification      string
 	check             string
 	tasks             map[claim.Role]string
+	notes             map[claim.Role]string
 }
 
 // ownArchitect says whether the run seeds the member's own architect on a child: the claim #4203
@@ -661,9 +669,9 @@ func (s *sessionsLive) newRun(t *testing.T, name, arm string, gates config.Desig
 	return r
 }
 
-// tree makes one tree on Dispatch: its root, carrying spec, and each child under it, each in
-// progress with the legion label, as a running daemon leaves them; a member with a check carries a
-// Verification document of that one check.
+// tree makes one tree on Dispatch: its root, carrying spec, and each child under it, each with the
+// legion label and the status of the phase it stands in (sessionsStatus), as a running daemon
+// leaves them; a member with a check carries a Verification document of that one check.
 func (r *sessionsRun) tree(spec string, members ...*sessionsMember) {
 	r.t.Helper()
 	for i, member := range members {
@@ -682,7 +690,7 @@ func (r *sessionsRun) tree(spec string, members ...*sessionsMember) {
 		if created.Key == "" || (i == 0 && created.Primary == "") {
 			r.t.Fatalf("Dispatch created a member with key %q and spec %q", created.Key, created.Primary)
 		}
-		r.dispatchAs(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": "in_progress", "labels": []string{"legion"}}, nil)
+		r.dispatchAs(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": sessionsStatus(member.phase), "labels": []string{"legion"}}, nil)
 		member.key, member.tree = created.Key, members[0].key
 		if i == 0 {
 			member.spec, member.tree = created.Primary, created.Key
@@ -703,6 +711,17 @@ func (r *sessionsRun) tree(spec string, members ...*sessionsMember) {
 		r.members = append(r.members, member)
 		r.note("%s in %s on Dispatch (tree %s): spec %q, Verification document %q", member.key, member.phase, member.tree, member.spec, member.verification)
 	}
+}
+
+// sessionsStatus is the Dispatch status of an issue that stands in p as the daemon writes it at
+// the move into p (workflow.PhaseStatus), so the boot's status repair, which rewrites every status
+// that differs from its phase's, has nothing to write. A phase the daemon writes no status for,
+// admitted, keeps in_progress, the status of a root its admission took into the workflow.
+func sessionsStatus(p phase.Phase) string {
+	if status := workflow.PhaseStatus(p); status != "" {
+		return status
+	}
+	return "in_progress"
 }
 
 // sessionsSpec is a root spec: a `## Summary`, a `## Design` of design and a `## Later work`
@@ -761,10 +780,11 @@ func (r *sessionsRun) seed() {
 				LastSeq int64  `json:"last_seq"`
 			}
 			r.dispatchAgent(http.MethodGet, "/api/v1/issues/"+member.key, nil, http.StatusOK, &listed)
+			status := sessionsStatus(member.phase)
 			issue := record.Issue{
 				Key: member.key, Repo: r.repo, DefaultBranch: "main", GitHubRepo: r.repo, Tree: member.tree, Project: r.cfg.Project,
-				Title: "Approved version news sessions", Phase: member.phase, Generation: 1, Status: "in_progress",
-				DispatchStatus: "in_progress", Rank: listed.Rank, LastDispatchSeq: listed.LastSeq,
+				Title: "Approved version news sessions", Phase: member.phase, Generation: 1, Status: status,
+				DispatchStatus: status, Rank: listed.Rank, LastDispatchSeq: listed.LastSeq,
 			}
 			if member.parent != "" {
 				parent := member.parent
@@ -983,21 +1003,32 @@ func takeFirstPhase(ctx context.Context, tx pgx.Tx, issue string, after int64) (
 // raised an entry gives the claim that entry, with the handshake the queue writes beside it
 // (supervise.Claim.GivenEntry, Handshake). A role its step gives a task of its own (member.tasks)
 // holds that task as the delivery of that entry, of the start's phase and run, unconfirmed, in
-// place of the start's own task: the daemon sends it once the relaunched pane is ready. A role
-// with none took its start's task before the boot (supervise.Claim.ServedEntry), as a root
-// architect mid-run has, and holds nothing. The plain start of a child's own architect
-// (workflow's childArchitectStart) raises no entry and carries no task, so its claim is given
-// none, holds no handshake and serves no run: its first instruction is the catch-up at its
-// launch's ready, and a step's task reaches it through the operator's route once the run has
-// booted (deliver). The run's runtime launches this claim and the others the run seeds, and no
-// other.
+// place of the start's own task: the daemon sends it once the relaunched pane is ready. A reviewer
+// its step gives a note (member.notes) holds the start's own task instead, as the start path
+// stored it, with the note before the review round's two sentences it ends with, and marked as
+// ending with them (supervise.Delivery.RoundNamed), as the start's own row is
+// (record.SuperviseRequest.RoundNamed): the daemon sends it as it stands, as it sends a news task
+// it put news into. A role with neither took its start's task before the boot
+// (supervise.Claim.ServedEntry), as a root architect mid-run has, and holds nothing. The plain
+// start of a child's own architect (workflow's childArchitectStart) raises no entry and carries no
+// task, so its claim is given none, holds no handshake and serves no run: its first instruction is
+// the catch-up at its launch's ready, and a step's task reaches it through the operator's route
+// once the run has booted (deliver). The run's runtime launches this claim and the others the run
+// seeds, and no other.
 func (r *sessionsRun) seedClaim(ctx context.Context, member *sessionsMember, role claim.Role, start record.SuperviseRequest) {
 	t := r.t
 	t.Helper()
 	token := r.token(member, role)
 	r.launchable[token] = true
 	now := time.Now()
-	task := member.tasks[role]
+	task, roundNamed := member.tasks[role], false
+	if note := member.notes[role]; note != "" {
+		noted, ok := sessionsNoteBeforeRound(start.Task, note)
+		if !ok || !start.RoundNamed {
+			t.Fatalf("setup: the start of the %s of %s carries no review round's two sentences to put the step's note before: %q", role, member.key, start.Task)
+		}
+		task, roundNamed = noted, true
+	}
 	seeded := supervise.Claim{
 		Token: token, Project: r.project, Tree: member.tree, Issue: member.key, Role: role, Generation: 1,
 		State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)),
@@ -1020,6 +1051,7 @@ func (r *sessionsRun) seedClaim(ctx context.Context, member *sessionsMember, rol
 	}
 	if err := r.st.PutDelivery(ctx, token, supervise.Delivery{
 		ID: "seeded-start-" + randomSuffix(t), Task: task, Generation: start.Generation, Phase: start.Phase, Entry: start.Entry, QueuedAt: now,
+		RoundNamed: roundNamed,
 	}); err != nil {
 		t.Fatalf("record the start task of %s: %v", token, err)
 	}
@@ -1442,16 +1474,24 @@ func (r *sessionsRun) approvalAsks(key string) []string {
 	return approvals
 }
 
-// comments is the body of every comment on key.
-func (r *sessionsRun) comments(key string) []string {
+// comments is the body of every comment on key, or, where by is a session, of every comment that
+// session wrote: Dispatch records a comment a session's `dispatch comment` posts as that session's
+// (model.Actor, kind session), and Oh My Pi's session is the one a pane's claim registers.
+func (r *sessionsRun) comments(key, by string) []string {
 	r.t.Helper()
 	var listed []struct {
-		Body string `json:"body"`
+		Body   string `json:"body"`
+		Author struct {
+			Kind string `json:"kind"`
+			ID   string `json:"id"`
+		} `json:"author"`
 	}
 	r.dispatchAgent(http.MethodGet, "/api/v1/issues/"+key+"/comments", nil, http.StatusOK, &listed)
-	bodies := make([]string, len(listed))
-	for i, comment := range listed {
-		bodies[i] = comment.Body
+	var bodies []string
+	for _, comment := range listed {
+		if by == "" || (comment.Author.Kind == "session" && comment.Author.ID == by) {
+			bodies = append(bodies, comment.Body)
+		}
 	}
 	return bodies
 }

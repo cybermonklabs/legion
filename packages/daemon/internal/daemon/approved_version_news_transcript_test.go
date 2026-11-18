@@ -27,6 +27,10 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The three variables that narrow a run of part two to one step, one arm or another count of
@@ -155,6 +159,39 @@ func TestApprovedVersionNewsAFullRunMakesA4InTheHeadArmAloneAndAPickStillMakesIt
 					tc.step, tc.arm, tc.runs, made, pick.runs, tc.want, tc.count)
 			}
 		})
+	}
+}
+
+// sessionsNoteBeforeRound is task, a reviewer's start task as the daemon's start path stores it,
+// ending with its review round's two sentences (reviewround.Sentences), with note put before those
+// two, so that the task still ends with them and a delivery marked as ending with them
+// (supervise.Delivery.RoundNamed) is sent as it stands, as the daemon's render puts news into a
+// task (reviewround.Split). It answers false for a task that does not end with them, which no
+// note can go into that way.
+func sessionsNoteBeforeRound(task, note string) (string, bool) {
+	body, sentences, named := reviewround.Split(task)
+	if !named {
+		return "", false
+	}
+	return body + " " + note + sentences, true
+}
+
+// The answers reviewer's start task is the start path's own, the phase's resume task ending with
+// its round's two sentences, with the step's note before those two: a note put after them, or into
+// a task that does not end with them, would leave a task marked as ending with them that does not,
+// and the reviewer would read no entry for its round, or one the daemon did not give.
+func TestApprovedVersionNewsAReviewersNoteGoesBeforeItsRoundsSentences(t *testing.T) {
+	resume := workflow.ResumePhaseTask(record.Issue{Key: "AS0001-1", Title: "The reader", Phase: phase.Reviewing})
+	const note = "The pull request makes the reader fetch one page on each call."
+	noted, ok := sessionsNoteBeforeRound(resume+reviewround.Sentences("", 1), note)
+	if want := resume + " " + note + reviewround.Sentences("", 1); !ok || noted != want {
+		t.Fatalf("the note in the stored task = %q, %t; want %q", noted, ok, want)
+	}
+	if _, sentences, named := reviewround.Split(noted); !named || sentences != reviewround.Sentences("", 1) {
+		t.Fatalf("the noted task ends with %q (named %t); want the round's own two sentences, entry 1", sentences, named)
+	}
+	if noted, ok := sessionsNoteBeforeRound(resume, note); ok {
+		t.Fatalf("a task that ends with no round's sentences took the note as %q", noted)
 	}
 }
 

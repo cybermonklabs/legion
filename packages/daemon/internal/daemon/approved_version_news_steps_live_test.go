@@ -198,7 +198,7 @@ func (r *sessionsRun) reviewAsParent(child, root *sessionsMember) string {
 	r.dispatchAgent(http.MethodPost, "/api/v1/issues/"+child.key+"/comments", map[string]any{
 		"body": body, "actor": map[string]string{"kind": "session", "id": session},
 	}, 0, &posted)
-	if posted.ID == "" || sessionsApprovedReview(child.key, root.key, r.comments(child.key)) == "" {
+	if posted.ID == "" || sessionsApprovedReview(child.key, root.key, r.comments(child.key, "")) == "" {
 		t.Fatalf("the review the proof posted on %s as %s's architect (comment %q) does not read back as an approval of version 2", child.key, root.key, posted.ID)
 	}
 	topic := notify.RoleTopicPrefix + string(r.token(child, claim.RoleArchitect))
@@ -312,46 +312,56 @@ func holderStart(issue string, p phase.Phase) string {
 		"work now: reply with one line that starts with WAITING, and end your turn.", issue, issue, p)
 }
 
-// reviewerStart is the start task a reviewer of the answers step holds at the boot, at the entry
-// the daemon's start path raised for it, in place of that start's own task, the phase's resume
-// task: what its review has read so far and what it rests on, since this proof runs no pull
-// request a review could read, and an order to wait. The resume task names neither, and the step
-// needs both: the news of version 2 is stale or current against the section the review rests on.
-func reviewerStart(issue, spec string) string {
-	return fmt.Sprintf("This proof runs no GitHub: %s has no pull request to read and you have no GitHub access, so run no `gh` and no `git`. "+
-		"You hold the review of %s, and it stands as follows. You read version 1 of its spec (document %s), and you checked the change "+
-		"against its `## Design` section, which reads %q. The change makes the reader fetch one page on each call, which is what that "+
-		"section asks. Your review rests on that section and on nothing else of the spec. Start no other work now: reply with one line "+
-		"that starts with WAITING, and end your turn.", issue, issue, spec, sessionsDesign)
+// reviewerNote is the note a reviewer of the answers step holds at the boot in its start's own
+// task, the phase's resume task with the review round's two sentences that the daemon's start path
+// stores and sends (workflow.Engine.StartPromotedWorker, ResumePhaseTask), before those two
+// sentences (sessionsRun.seedClaim). It says what the proof stands in for and what a review of the
+// pull request holds as fact: the proof runs no GitHub, so the pull request is the one this note
+// names; what that pull request changes, and that the review read it against version 1 of the
+// spec. It does not say which part of the spec the review rests on, so whether a new version
+// makes the review stale is the reviewer's own judgment of the change against the version, not a
+// match of the section the news names against words of this note. It ends with the order to wait
+// that every holder of this proof gets, since nothing of the pull request is left to read.
+func reviewerNote(issue, spec string) string {
+	return fmt.Sprintf("This proof runs no GitHub and no repository, and you have no GitHub access, so run no `gh`, `git` or `jj`. The "+
+		"pull request of %s stands in for one you have read whole: its change makes the reader fetch one page on each call, and you "+
+		"reviewed that change against version 1 of the spec of %s (document %s). Nothing of it is left for you to read now: reply with "+
+		"one line that starts with WAITING, and end your turn.", issue, issue, spec)
 }
 
-// Step answers. Two roots stand in reviewing, each under a live reviewer whose start task says its
-// review rests on the spec's `## Design`. Version 2 of the first root's spec changes that section,
-// and version 2 of the second's changes its `## Later work` alone; the person approves both, and
-// the daemon sends each reviewer the news. The stale reviewer must move its issue back with a
-// reason naming the version; the current one must comment on its issue naming the version, and
-// stay.
+// Step answers. Two roots stand in reviewing, each with its own architect, as admission's
+// promotion starts every root's (workflow.Engine.StartArchitect), and a live reviewer, whose start
+// task is the one the daemon's start path stores, with a note of what its pull request changes
+// (reviewerNote). Version 2 of the first root's spec changes its `## Design` and version 2 of the
+// second's its `## Later work` alone, each written as its root architect's own session; the person
+// approves both, and the daemon sends each reviewer the news and each architect its summary. The
+// stale reviewer must move its issue back with a reason naming the version; the current one must
+// write a comment of its own on its issue naming the version, and stay.
 func (r *sessionsRun) answers() (sessionsOutcome, string) {
-	stale := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleReviewer}, tasks: map[claim.Role]string{}}
-	current := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleReviewer}, tasks: map[claim.Role]string{}}
+	stale := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleArchitect, claim.RoleReviewer}, notes: map[claim.Role]string{}}
+	current := &sessionsMember{phase: phase.Reviewing, roles: []claim.Role{claim.RoleArchitect, claim.RoleReviewer}, notes: map[claim.Role]string{}}
 	r.tree(sessionsSpec("A reader that pages.", sessionsDesign, sessionsLater), stale)
 	r.tree(sessionsSpec("A reader that pages.", sessionsDesign, sessionsLater), current)
 	for _, member := range []*sessionsMember{stale, current} {
-		member.tasks[claim.RoleReviewer] = reviewerStart(member.key, member.spec)
+		member.notes[claim.RoleReviewer] = reviewerNote(member.key, member.spec)
 	}
 	r.boot()
 	for _, member := range []*sessionsMember{stale, current} {
+		r.checkArm(member, claim.RoleArchitect, sessionsArchitectMark)
 		r.checkArm(member, claim.RoleReviewer, sessionsWorkerMark)
-		if !r.settled(member, claim.RoleReviewer) {
-			return sessionsSetup, fmt.Sprintf("the reviewer of %s did not end its start turn within the run's bound", member.key)
+		for _, role := range member.roles {
+			if !r.settled(member, role) {
+				return sessionsSetup, fmt.Sprintf("the %s of %s did not end its start turn within the run's bound", role, member.key)
+			}
 		}
 	}
-	r.note("both reviewers ended their start turns")
-	r.edit(stale.spec, "ses_architect_"+strings.ToLower(stale.key), sessionsDesign, sessionsDesignAgain, 2)
-	r.edit(current.spec, "ses_architect_"+strings.ToLower(current.key), sessionsLater, sessionsLaterAgain, 2)
+	r.note("both architects and both reviewers ended their start turns")
+	r.edit(stale.spec, r.claim(r.token(stale, claim.RoleArchitect)).Session, sessionsDesign, sessionsDesignAgain, 2)
+	r.edit(current.spec, r.claim(r.token(current, claim.RoleArchitect)).Session, sessionsLater, sessionsLaterAgain, 2)
 	r.approve(stale.spec, 2)
 	r.approve(current.spec, 2)
-	r.note("version 2 of %s's spec changes `## Design`, version 2 of %s's changes `## Later work`; %s approved both", stale.key, current.key, versionNewsPerson)
+	r.note("version 2 of %s's spec changes `## Design`, version 2 of %s's changes `## Later work`, each written as its architect's session; "+
+		"%s approved both", stale.key, current.key, versionNewsPerson)
 	for _, member := range []*sessionsMember{stale, current} {
 		news := ""
 		if !r.until(r.deadline, func() bool {
@@ -367,8 +377,11 @@ func (r *sessionsRun) answers() (sessionsOutcome, string) {
 		}
 		r.evidence("the reviewer of %s was given the news %s", member.key, sessionsExcerpt(news))
 	}
+	// The current reviewer's own comment: its architect, told of the same version, may write one
+	// of its own on the issue too.
+	currentReviewer := r.claim(r.token(current, claim.RoleReviewer)).Session
 	commented := func() string {
-		for _, body := range r.comments(current.key) {
+		for _, body := range r.comments(current.key, currentReviewer) {
 			if sessionsVersion2.MatchString(body) {
 				return body
 			}
@@ -379,9 +392,14 @@ func (r *sessionsRun) answers() (sessionsOutcome, string) {
 		return r.stateIssue(stale.key).Phase != phase.Reviewing && commented() != ""
 	})
 	for _, member := range []*sessionsMember{stale, current} {
-		if !r.settled(member, claim.RoleReviewer) {
-			r.evidence("the reviewer of %s was still in a turn or held a task at the run's bound, so what follows is what it did by then", member.key)
+		for _, role := range member.roles {
+			if !r.settled(member, role) {
+				r.evidence("the %s of %s was still in a turn or held a task at the run's bound, so what follows is what it did by then", role, member.key)
+			}
 		}
+		architect := r.transcript(member, claim.RoleArchitect)
+		r.printCalls(member, claim.RoleArchitect, architect.calling("envoy_publish"), "called")
+		r.printCalls(member, claim.RoleArchitect, architect.bash("dispatch comment"), "ran")
 	}
 	staleRead, currentRead := r.transcript(stale, claim.RoleReviewer), r.transcript(current, claim.RoleReviewer)
 	moves := func(read sessionsTranscript) []sessionsCall {
