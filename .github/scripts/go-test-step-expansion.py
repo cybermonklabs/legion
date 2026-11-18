@@ -102,11 +102,13 @@ How it reads a step:
     it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
-  * a step whose run: is one line holding nothing but the path of a script AUDITED_SCRIPTS names
+  * a step whose run: is nothing but the path of a script AUDITED_SCRIPTS names
     (`packages/envoy/scripts/database-skips.sh`) is read as the `go test` command that entry
-    gives, in the module it names. A step that names such a script in any other form - with an
-    argument, an operator (`;`, `&&`, a redirection), another command, or over more lines - is
-    refused, since each entry reads its script alone and called with nothing. This script reads no shell script itself: what a script runs
+    gives, in the module it names. A step whose run: holds that script's file name anywhere else
+    is refused, since each entry reads its script alone and called with nothing; the test is on
+    the run's raw text, so no quoting, substitution or comment hides the script from it. A
+    name the shell builds at run time (from a variable, or quoted in pieces) is not in the text,
+    and no reading of the text sees it; This script reads no shell script itself: what a script runs
     depends on its control flow, which a line-by-line reading cannot see (a `go test` under
     `if false`, a `cd` in a branch, a test run inside `$(…)`), so each entry is a person's reading
     of the script, pinned by the script's SHA-256. An edit to the script makes the entry stale,
@@ -455,32 +457,23 @@ def steps_of(found: dict) -> list[Step]:
 
 
 def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
-    """The step a run: that is exactly one line naming an AUDITED_SCRIPTS script makes, read as
-    that entry's command in its module, or None where the run names no such script. A run that
-    names one in any other form - with an argument, an operator, another command, or over more
-    lines than one - is refused rather than skipped, and so is a script whose text no longer has
-    its entry's SHA-256."""
+    """The step a run: that is exactly the path of an AUDITED_SCRIPTS script makes, read as that
+    entry's command in its module, or None where the run's text holds no such script's file name.
+    A run whose text holds one anywhere else - an argument, an operator, another command, a
+    `$(…)`, a comment, another line - is refused rather than read or skipped: the test is on the
+    raw text, before any shell reading, so no quoting or substitution hides the script from it.
+    So is a script whose text no longer has its entry's SHA-256."""
     label = f"{workflow}'s {job} / {name}"
-    lines = script_lines(script)
-    named = []
-    for line in lines:
-        try:
-            lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
-            lexer.whitespace_split = True
-            words = list(lexer)
-        except ValueError:
-            words = line.split()
-        for word in words:
-            path = (Path(workdir) / word).as_posix().removeprefix("./")
-            if path in AUDITED_SCRIPTS:
-                named.append((path, words))
+    named = [path for path in AUDITED_SCRIPTS if Path(path).name in script]
     if not named:
         return None
-    path, words = named[0]
-    if len(lines) != 1 or len(named) != 1 or len(words) != 1:
-        raise Refused(f"{label}: runs {path} in a form its AUDITED_SCRIPTS entry does not read: "
-                      "the entry reads a run: that is that one path alone, with no argument, "
-                      "operator or other command")
+    alone = script.strip()
+    matches = [path for path in named
+               if (Path(workdir) / alone).as_posix().removeprefix("./") == path]
+    if len(named) != 1 or len(matches) != 1 or any(c.isspace() for c in alone):
+        raise Refused(f"{label}: names {', '.join(named)} in a form no AUDITED_SCRIPTS entry "
+                      "reads: an entry reads a run: that is that one path alone")
+    path = matches[0]
     entry = AUDITED_SCRIPTS[path]
     digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
     if digest != entry.sha256:
