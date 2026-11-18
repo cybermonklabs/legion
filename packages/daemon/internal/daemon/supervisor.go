@@ -611,15 +611,11 @@ func (b *inbox) put(ev supervise.Event) {
 	b.signal()
 }
 
-// mark puts done behind every event put before it. An inbox already closed hands its machine
-// nothing more, so done is closed at once.
+// mark puts done behind every event put before it. Its one caller (supervisor.drained) holds the
+// supervisor's read lock and has seen supervision not stopped, and only halt closes an inbox, under
+// the write lock after it sets stopped, so the inbox is open here; close closes a mark it holds.
 func (b *inbox) mark(done chan<- struct{}) {
 	b.mu.Lock()
-	if b.closed {
-		b.mu.Unlock()
-		close(done)
-		return
-	}
 	b.items = append(b.items, inboxItem{drained: done})
 	b.mu.Unlock()
 	b.signal()
