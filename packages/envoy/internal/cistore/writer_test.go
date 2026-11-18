@@ -22,7 +22,7 @@ import (
 // watcher a writer has not got, and waits for its cache.
 func openListener(t *testing.T, conn *natsgo.Conn) *cistore.Store {
 	t.Helper()
-	store, err := cistore.Open(conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	store, err := cistore.Open(t.Context(), conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("open the listener's cistore: %v", err)
 	}
