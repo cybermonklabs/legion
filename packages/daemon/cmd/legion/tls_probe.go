@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 const (
@@ -161,7 +163,7 @@ type tlsCommandClient struct {
 	workDir    string
 	timeout    time.Duration
 	// command gives the program the client runs at a site, its arguments, and the variables it
-	// sets, each NAME=value, on top of env (commandLine).
+	// sets, each NAME=value, on top of the variables of env it keeps (commandLine).
 	command         func(tlsSite) (program string, args, set []string)
 	applicationSeen func(string) bool
 	// readStdout classifies stdout with stderr, for a program that writes its errors to stdout
@@ -189,11 +191,11 @@ func (c tlsCommandClient) probe(ctx context.Context, site tlsSite) tlsOutcome {
 }
 
 // commandLine is the program c runs at site, its arguments, and the environment it runs under:
-// env with every tlsCredentialVariables name unset, then the variables the command sets and
-// LEGION_TLS_URL naming the site.
+// the tlsKeptVariables of env, then the variables the command sets and LEGION_TLS_URL naming the
+// site.
 func (c tlsCommandClient) commandLine(site tlsSite) (program string, args, env []string) {
 	program, args, set := c.command(site)
-	return program, args, tlsEnvironment(c.env, append(set, "LEGION_TLS_URL="+site.url), tlsCredentialVariables)
+	return program, args, tlsEnvironment(c.env, tlsKeptVariables, append(set, "LEGION_TLS_URL="+site.url))
 }
 
 // run returns the command's stderr, with its stdout interleaved when the client reads stdout.
@@ -270,81 +272,55 @@ func chromiumNavigationFailure(stderr string) string {
 	return ""
 }
 
-// tlsCredentialVariables is every variable through which a probed client could carry a credential
-// of the pod's to a site, each group under the clients that read it. Every command client runs
-// with all of them unset (tlsCommandClient.commandLine), and a client that needs a dummy credential
-// sets its own again after: gh's GH_TOKEN, gcloud's and bq's CLOUDSDK_AUTH_ACCESS_TOKEN_FILE,
-// kubectl's KUBECONFIG, and go's GOAUTH=off.
-var tlsCredentialVariables = []string{
-	// gcloud and bq. The SDK reads CLOUDSDK_AUTH_ACCESS_TOKEN before auth/access_token_file (_Load
-	// in lib/googlecloudsdk/core/credentials/store.py, lines 948-955 of SDK 589); the others name a
-	// token file, a credential file, an account to impersonate or sign in as, or a configuration.
-	// bq reads flags, credential flags among them, from the file BIGQUERYRC names.
-	"CLOUDSDK_AUTH_ACCESS_TOKEN", "CLOUDSDK_AUTH_ACCESS_TOKEN_FILE", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE",
-	"CLOUDSDK_AUTH_IMPERSONATE_SERVICE_ACCOUNT", "CLOUDSDK_CORE_ACCOUNT", "CLOUDSDK_ACTIVE_CONFIG_NAME",
-	"GOOGLE_APPLICATION_CREDENTIALS", "BIGQUERYRC",
-	// gh. Measured on 2026-11-18, gh 2.98.0: `gh auth token --hostname example.com` prints the
-	// value of GH_ENTERPRISE_TOKEN or GITHUB_ENTERPRISE_TOKEN when either is set, so `gh api
-	// https://example.com/` would send it to the site.
-	"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-	// mise, which reads GITHUB_TOKEN too.
-	"MISE_GITHUB_TOKEN", "GITHUB_API_TOKEN",
-	// git. GIT_CONFIG_COUNT, with its GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n>, and
-	// GIT_CONFIG_PARAMETERS give git configuration: measured on 2026-11-18 against a local HTTP
-	// listener, an http.extraHeader of "Authorization: Bearer …" given through either made `git
-	// ls-remote` send that header to the host. GIT_ASKPASS and SSH_ASKPASS answer git's https
-	// credential prompts.
-	"GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_ASKPASS", "SSH_ASKPASS",
-	// go: GOAUTH names the authentication commands that add headers to go's module fetches. NETRC
-	// names the netrc file go and uv read credentials from, and git through a libcurl of 8.16 or
-	// later (leakguard's visibility_lsremote_test.go). GNU wget 1.25.0 ignores it, and curl reads
-	// no netrc without --netrc (both measured on 2026-11-18).
-	"GOAUTH", "NETRC",
-	// kubectl: with KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT unset, client-go never takes
-	// the in-cluster configuration, which would send the pod's service-account token. KUBECONFIG
-	// names the configuration kubectl reads its credentials from.
-	"KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT", "KUBECONFIG",
-	// redis-cli sends REDISCLI_AUTH as AUTH to the server it reaches (measured on 2026-11-18).
-	"REDISCLI_AUTH",
-	// aws. The probe's --no-sign-request already loads no credential (measured on 2026-11-18
-	// against a local listener: no Authorization header with these set, an AWS4-HMAC-SHA256 one
-	// without the flag); the list drops them as well.
-	"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_ROLE_ARN",
-	"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-	"AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
-	// Configuration files a client reads a credential from, besides the netrc above: curl's
-	// .curlrc (in CURL_HOME), wget's wgetrc (WGETRC), uv's uv.toml (UV_CONFIG_FILE), and git's user
-	// configuration (GIT_CONFIG_GLOBAL), each of which can carry a header or a password to every
-	// host. curl, wget, git and uv also run with a home and XDG_CONFIG_HOME of their own in the
-	// state directory (tlsClientHome), so no ~/.netrc, ~/.curlrc, ~/.wgetrc, ~/.gitconfig or
-	// ~/.config file of the pod's is read; git reads its user configuration from /dev/null.
-	"CURL_HOME", "WGETRC", "UV_CONFIG_FILE", "GIT_CONFIG_GLOBAL",
-	// No other variable or file gives a credential for a request to node, bun, omp, CodeGraph's
-	// node, uv (its --index-url names the site with no credential; UV_INDEX_USERNAME and
-	// UV_INDEX_PASSWORD sent nothing, measured), curl, python3, wget, socat, az (`az rest
-	// --skip-authorization-header` sends no Authorization header, from a new configuration
-	// directory in the state directory) or Chromium.
-}
+// tlsKeptVariables are the only variables of the probe's environment a client runs with
+// (tlsCommandClient.commandLine); every other variable of the pod's is dropped. It is a list of
+// what to keep because a list of what to remove cannot be complete: the list of credential
+// variables the probe used to unset missed SYSTEM_WGETRC, GIT_CONFIG_SYSTEM,
+// CLOUDSDK_AUTH_AUTHORIZATION_TOKEN_FILE and MISE_NETRC_FILE, each measured making its client send
+// a credential to the server it reached (TestImageTLSClientsReadNoSystemConfigurationOfThePods).
+// Any client may read a variable nobody has found yet; a list of what to keep names all a client gets.
+//
+// What a client keeps is the variables the worker image declares, PATH among them:
+// sandbox.ImageEnv, which TestImageEnvIsWhatTheWorkerImageSets holds to the final stage's ENV in
+// worker.Dockerfile. So the probe tests the trust store the image itself sets: AWS_CA_BUNDLE
+// points the AWS CLI at Debian's bundle, and gcloud's and az's CA settings are no variable at all
+// but the SDK's installation properties and az's wrapper. On top of those, each client runs with
+// the probe's own values: a HOME of its own in the state directory, which replaces the image's
+// (tlsClientSpec.build), the settings its command gives, and LEGION_TLS_URL naming the site. So no
+// credential variable of the pod's reaches a client, and no credential file one names or the pod's
+// home holds.
+//
+// A proxy variable of the pod's reaches no client either. That changes no verdict: Chromium already
+// fails every load behind a proxy, so the probe cannot pass behind one (chromiumTLSArgs says why).
+var tlsKeptVariables = sandbox.ImageEnv
 
-// tlsEnvironment is base without each variable unset names and each variable set gives a value,
-// followed by set. Every entry of set is NAME=value: an entry without "=" is a mistake of this
-// file's, which would set or drop a variable nobody named, so tlsEnvironment panics on it rather
-// than run the client. The tests compute every client's environment at every site
-// (TestImageTLSClientsCarryNoCredentialOfThePods), so such an entry fails them first.
-func tlsEnvironment(base, set, unset []string) []string {
-	for _, pair := range set {
-		if !strings.Contains(pair, "=") {
+// tlsEnvironment is the entries of base whose name keep holds and set gives no value, followed by
+// set, where a later entry of set replaces an earlier one of its name (so a client's own HOME
+// replaces the one build gives every client). Every entry of set is NAME=value: an entry without
+// "=" is a mistake of this file's, which would set a variable nobody named, so tlsEnvironment
+// panics on it rather than run the client. The tests compute every client's environment at every
+// site (TestImageTLSClientsCarryNoCredentialOfThePods), so such an entry fails them first.
+func tlsEnvironment(base, keep, set []string) []string {
+	names := make([]string, len(set))
+	for index, pair := range set {
+		name, _, ok := strings.Cut(pair, "=")
+		if !ok {
 			panic(fmt.Sprintf("tlsEnvironment: set entry %q is not NAME=value", pair))
 		}
+		names[index] = name
 	}
-	out := make([]string, 0, len(base)+len(set))
+	out := make([]string, 0, len(keep)+len(set))
 	for _, pair := range base {
-		name := tlsVariableName(pair)
-		if !slices.Contains(unset, name) && !slices.ContainsFunc(set, func(entry string) bool { return tlsVariableName(entry) == name }) {
+		if name := tlsVariableName(pair); slices.Contains(keep, name) && !slices.Contains(names, name) {
 			out = append(out, pair)
 		}
 	}
-	return append(out, set...)
+	for index, pair := range set {
+		if !slices.Contains(names[index+1:], names[index]) {
+			out = append(out, pair)
+		}
+	}
+	return out
 }
 
 // tlsVariableName is the name of an environment entry, the text before its first "=".
@@ -423,14 +399,16 @@ type tlsClientSpec struct {
 	command func(site tlsSite, stateDir, invocation string) (args, set []string)
 }
 
-// build makes the client spec names, under env and in workDir.
+// build makes the client spec names, under env and in workDir. Every client gets a HOME of its own,
+// <stateDir>/<name>, before the variables its command sets, so a client's own HOME replaces it.
 func (spec tlsClientSpec) build(invocation string, env []string, workDir, stateDir string) tlsClient {
+	home := "HOME=" + filepath.Join(stateDir, spec.name)
 	client := tlsCommandClient{
 		clientName: spec.name, env: env, workDir: workDir, timeout: spec.timeout,
 		applicationSeen: spec.applicationSeen, readStdout: spec.readStdout,
 		command: func(site tlsSite) (string, []string, []string) {
 			args, set := spec.command(site, stateDir, invocation)
-			return spec.program, args, set
+			return spec.program, args, append([]string{home}, set...)
 		},
 	}
 	switch {
@@ -452,12 +430,11 @@ const (
 	tlsAccessTokenFile = "access-token"
 )
 
-// newTLSStateDir makes the directory the TLS probe's gcloud, bq, az, mise, go and kubectl keep
-// their state in (go also changes to it, -C), and curl, wget, git and uv their homes in
-// (tlsClientHome), so none of it lands in the runtime user's home (the image build's final step
-// requires that) and none of them reads a credential file of that home, and writes into it the
-// access-token file gcloud and bq sign in with. remove deletes the directory with everything the
-// clients wrote there.
+// newTLSStateDir makes the directory every client of the TLS probe keeps its home in
+// (tlsClientSpec.build), and gcloud, bq, az, mise, go and kubectl their state (go also changes to
+// it, -C), so none of it lands in the runtime user's home (the image build's final step requires
+// that) and no client reads a file of that home, and writes into it the access-token file gcloud
+// and bq sign in with. remove deletes the directory with everything the clients wrote there.
 func newTLSStateDir() (dir string, remove func(), err error) {
 	dir, err = os.MkdirTemp("", "legion-tls-probe-")
 	if err != nil {
@@ -471,33 +448,23 @@ func newTLSStateDir() (dir string, remove func(), err error) {
 	return dir, remove, nil
 }
 
-// googleCloudTLSEnvironment is the environment gcloud and bq run under, client naming the home and
-// configuration directory each keeps under stateDir. The SDK signs in with the dummy token of the
-// state directory's access-token file, which it reads because every variable it would take a
-// credential from first is unset (tlsCredentialVariables), so it needs neither an account nor a
-// metadata server, and core/check_gce_metadata=false and a set metrics/environment are the two
-// settings that stop it asking a metadata server whether it runs on GCE: measured on 2026-11-18
-// with the metadata server blackholed, each of those checks cost about 18 s of waiting, and with
-// both set a call took 2 s. An image build has no metadata server and a cluster pod has one, so
-// the outcome must not depend on it.
+// googleCloudTLSEnvironment is the environment gcloud and bq run under, client naming the home
+// build gives each under stateDir, which holds its configuration directory. The SDK signs in with
+// the dummy token of the state directory's access-token file, which it reads because no variable
+// of the pod's it would take a credential from first reaches it (tlsKeptVariables), so it needs
+// neither an account nor a metadata server, and core/check_gce_metadata=false and a set
+// metrics/environment are the two settings that stop it asking a metadata server whether it runs
+// on GCE: measured on 2026-11-18 with the metadata server blackholed, each of those checks cost
+// about 18 s of waiting, and with both set a call took 2 s. An image build has no metadata server
+// and a cluster pod has one, so the outcome must not depend on it.
 func googleCloudTLSEnvironment(stateDir, client string) []string {
-	home := filepath.Join(stateDir, client)
 	return []string{
-		"HOME=" + home,
-		"CLOUDSDK_CONFIG=" + filepath.Join(home, "config"),
+		"CLOUDSDK_CONFIG=" + filepath.Join(stateDir, client, "config"),
 		"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE=" + filepath.Join(stateDir, tlsAccessTokenFile),
 		"CLOUDSDK_CORE_CHECK_GCE_METADATA=false",
 		"CLOUDSDK_METRICS_ENVIRONMENT=legion-tls-probe",
 		"CLOUDSDK_CORE_DISABLE_PROMPTS=1",
 	}
-}
-
-// tlsClientHome is the home and configuration directory client keeps under stateDir, for a
-// client that would otherwise read a credential from a file of the pod's home: a netrc, a .curlrc,
-// a wgetrc, a git configuration or a uv.toml.
-func tlsClientHome(stateDir, client string) []string {
-	home := filepath.Join(stateDir, client)
-	return []string{"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, "config")}
 }
 
 // workerTLSClients is the worker image's TLS client inventory. It is complete by trust path, not
@@ -577,8 +544,10 @@ func tlsClientHome(stateDir, client string) []string {
 // the system roots, and socat because its OPENSSL: address verifies its peer against OpenSSL's
 // default store.
 //
-// No client carries a credential of the pod's to a site: every client runs with each variable of
-// tlsCredentialVariables unset, and that list names each variable and the client that reads it.
+// No client carries a credential of the pod's to a site: of the pod's variables, each keeps only
+// those the image declares (tlsKeptVariables, which says why it is a list of what to keep), and it
+// runs with a HOME of its own in the state directory, so neither a credential variable of the pod's
+// nor a credential file of the pod's home reaches it.
 //
 // Deliberately not here, each with what was measured:
 //
@@ -638,8 +607,8 @@ var workerTLSClients = []tlsClientSpec{
 	},
 	{
 		name: "uv", program: "uv", timeout: tlsDefaultProbeTimeout, applicationSeen: uvResponseSeen,
-		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
-			return []string{"pip", "install", "--system", "--break-system-packages", "--dry-run", "--no-deps", "--no-cache", "--index-url", site.url, "legion-tls-probe-not-a-package"}, tlsClientHome(stateDir, "uv")
+		command: func(site tlsSite, _, _ string) ([]string, []string) {
+			return []string{"pip", "install", "--system", "--break-system-packages", "--dry-run", "--no-deps", "--no-cache", "--index-url", site.url, "legion-tls-probe-not-a-package"}, nil
 		},
 	},
 	{
@@ -650,8 +619,8 @@ var workerTLSClients = []tlsClientSpec{
 	},
 	{
 		name: "curl", program: "curl", timeout: tlsDefaultProbeTimeout,
-		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
-			return []string{"--fail", "--silent", "--show-error", site.url}, tlsClientHome(stateDir, "curl")
+		command: func(site tlsSite, _, _ string) ([]string, []string) {
+			return []string{"--fail", "--silent", "--show-error", site.url}, nil
 		},
 	},
 	{
@@ -670,20 +639,21 @@ var workerTLSClients = []tlsClientSpec{
 	// the control's page, so, as curl, it needs no response marker.
 	{
 		name: "wget", program: "wget", timeout: tlsDefaultProbeTimeout,
-		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
-			return []string{"--no-verbose", "--no-hsts", "--tries=1", "--output-document=/dev/null", site.url}, tlsClientHome(stateDir, "wget")
+		command: func(site tlsSite, _, _ string) ([]string, []string) {
+			return []string{"--no-verbose", "--no-hsts", "--tries=1", "--output-document=/dev/null", site.url}, nil
 		},
 	},
 	// The PATH's git: in a pod, the /opt/legion/bin/git wrapper, which hands ls-remote to
-	// /usr/bin/git unchanged. GIT_TERMINAL_PROMPT=0 keeps it from waiting on a credential prompt,
-	// and GIT_CONFIG_GLOBAL=/dev/null keeps it from reading a user configuration, whose
-	// http.extraHeader git sends to every host; the image's system configuration still applies.
+	// /usr/bin/git unchanged. GIT_TERMINAL_PROMPT=0 keeps it from waiting on a credential prompt.
+	// Its user configuration, whose http.extraHeader git sends to every host, is under its own empty
+	// HOME, and no GIT_CONFIG_* variable of the pod's reaches it (tlsKeptVariables), so outside a
+	// repository git reads the image's system configuration, /etc/gitconfig, and no other.
 	// No site is a git repository, so git fails ls-remote at the control too, after the handshake;
 	// gitSiteAnswer reads that answer.
 	{
 		name: "git", program: "git", timeout: tlsDefaultProbeTimeout, applicationSeen: gitSiteAnswer.MatchString,
-		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
-			return []string{"ls-remote", site.url}, append(tlsClientHome(stateDir, "git"), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null")
+		command: func(site tlsSite, _, _ string) ([]string, []string) {
+			return []string{"ls-remote", site.url}, []string{"GIT_TERMINAL_PROMPT=0"}
 		},
 	},
 	// go's fetch of a module path at the site's host, the fetch `go install` and `go get` make with
@@ -698,7 +668,6 @@ var workerTLSClients = []tlsClientSpec{
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
 			home := filepath.Join(stateDir, "go")
 			return []string{"mod", "download", "-C", stateDir, tlsSiteURL(site).Hostname() + "/legion-tls-probe@latest"}, []string{
-				"HOME=" + home,
 				"XDG_CONFIG_HOME=" + filepath.Join(home, "config"),
 				"GOPATH=" + filepath.Join(home, "path"),
 				"GOMODCACHE=" + filepath.Join(home, "mod"),
@@ -712,19 +681,16 @@ var workerTLSClients = []tlsClientSpec{
 		},
 	},
 	// kubectl at the site as its API server. Without a credential kubectl asks for a user name
-	// before it connects at all, so it signs in with the dummy token. KUBERNETES_SERVICE_HOST and
-	// KUBERNETES_SERVICE_PORT are unset (tlsCredentialVariables), so client-go never takes the
-	// in-cluster configuration, which would send the pod's service-account token to a test site;
-	// KUBECONFIG, unset there too, is set again to a file that does not exist, which kubectl reads
-	// as empty. kubectl exits 0 on the control's page, so, as curl, it needs no response marker.
+	// before it connects at all, so it signs in with the dummy token. No variable of the pod's but
+	// the kept ones reaches it (tlsKeptVariables): with no KUBERNETES_SERVICE_HOST and
+	// KUBERNETES_SERVICE_PORT, client-go never takes the in-cluster configuration, which would send
+	// the pod's service-account token to a test site, and with no KUBECONFIG kubectl reads its
+	// default, $HOME/.kube/config, a file its own empty HOME does not hold, which it reads as empty.
+	// kubectl exits 0 on the control's page, so, as curl, it needs no response marker.
 	{
 		name: "kubectl", program: "kubectl", timeout: tlsDefaultProbeTimeout,
-		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
-			home := filepath.Join(stateDir, "kubectl")
-			return []string{"--server=" + site.url, "--token=" + tlsProbeSignIn, "get", "--raw", "/"}, []string{
-				"HOME=" + home,
-				"KUBECONFIG=" + filepath.Join(home, "config"),
-			}
+		command: func(site tlsSite, _, _ string) ([]string, []string) {
+			return []string{"--server=" + site.url, "--token=" + tlsProbeSignIn, "get", "--raw", "/"}, nil
 		},
 	},
 	// redis-cli's TLS connection to the site's host and port, with the host as its SNI name, the
@@ -732,7 +698,8 @@ var workerTLSClients = []tlsClientSpec{
 	// Redis, so redis-cli fails at the control too, past the handshake; redisResponseSeen reads
 	// that answer. redis-cli sends REDISCLI_AUTH as AUTH to the server it reaches, here a test site
 	// (measured on 2026-11-18 at example.com with a dummy value set, redis-cli 8.0.2 printed "I/O
-	// error" for the AUTH before its protocol error), so the variable is in tlsCredentialVariables.
+	// error" for the AUTH before its protocol error), and no kept variable is REDISCLI_AUTH, so the
+	// pod's never reaches it.
 	{
 		name: "redis-cli", program: "redis-cli", timeout: tlsDefaultProbeTimeout, applicationSeen: redisResponseSeen,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
@@ -766,8 +733,7 @@ var workerTLSClients = []tlsClientSpec{
 	{
 		name: "az", program: "az", timeout: tlsDefaultProbeTimeout, optional: true,
 		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
-			home := filepath.Join(stateDir, "az")
-			return []string{"rest", "--method", "get", "--url", site.url, "--skip-authorization-header"}, []string{"HOME=" + home, "AZURE_CONFIG_DIR=" + filepath.Join(home, "config")}
+			return []string{"rest", "--method", "get", "--url", site.url, "--skip-authorization-header"}, []string{"AZURE_CONFIG_DIR=" + filepath.Join(stateDir, "az", "config")}
 		},
 	},
 	// mise's http: backend, downloading the site as a tool, in a directory of its own per site so
@@ -842,7 +808,8 @@ func tlsSiteHostPort(site tlsSite) (host, port string) {
 
 // imageTLSClients returns the image's TLS-capable programs. The gh wrapper manages worker tokens,
 // so the probe runs the real gh binary it wraps; no probe uses an operator token. stateDir is where
-// the clients that keep state keep it, and the directory go changes to (newTLSStateDir).
+// every client has its home and the clients that keep state keep it, and the directory go changes
+// to (newTLSStateDir).
 func imageTLSClients(invocation string, env []string, workDir, stateDir string) []tlsClient {
 	clients := make([]tlsClient, 0, len(workerTLSClients))
 	for _, spec := range workerTLSClients {

@@ -256,7 +256,7 @@ azure-cli 2.93.0 has no setting that stops its version check:
 It runs as user `legion` (uid 1000, declared numerically so `runAsNonRoot` can verify it from the image alone) with `HOME=/home/legion`, which must be writable (OMP writes logs and `models.db` under `~/.omp/profiles/legion`;
 every session is a row in the session database).
 The image sets `USER=legion` too, so a process that reads `USER` finds the runtime user's name there (the skill-scenario rig's scripts run under `set -u`).
-Like every variable the image's `ENV` sets, `runtime.kubernetes.pod.env` may not set `USER`: `legion start`, `--check-config` and the daemon's boot refuse it, whatever digest the deployment pins (`imageEnv`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
+Like every variable the image's `ENV` sets, `runtime.kubernetes.pod.env` may not set `USER`: `legion start`, `--check-config` and the daemon's boot refuse it, whatever digest the deployment pins (`ImageEnv`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
 Mount writable volumes below the profile directory, never at `/home/legion` itself:
 everything the image-time probe proved lives under `HOME` — the CodeGraph plugin's link and the lock at `~/.omp/profiles/legion/plugins`, the natives at `~/.omp/natives`, the warm Go module cache at `~/go/pkg/mod/cache/download` — and a volume at `HOME` (an `emptyDir`, or a `HOME` volume under `readOnlyRootFilesystem`) shadows all of it silently.
 It is `linux/amd64` only: the OMP fork release has no linux/arm64 build.

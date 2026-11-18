@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 type fakeTLSClient struct {
@@ -316,10 +319,11 @@ func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 // go changes to the probe's state directory (-C) before it reads anything, so no go.mod of the
 // probe's working directory, where go and every other client run, is read, and every path go
 // writes is under the state directory; it fetches the module path from the site's host itself,
-// never downloads a toolchain and runs no authentication command. kubectl keeps its home and
-// configuration in the state directory too, and with the in-cluster variables absent client-go
-// never takes the in-cluster configuration, which would send the pod's service-account token to a
-// test site. The pod's values below are ones each client's own environment must override or drop.
+// never downloads a toolchain and runs no authentication command. kubectl keeps its home in the
+// state directory too, and no KUBECONFIG, KUBERNETES_SERVICE_HOST or KUBERNETES_SERVICE_PORT of the
+// pod's reaches it: it reads its default configuration under that empty home, and client-go never
+// takes the in-cluster configuration, which would send the pod's service-account token to a test
+// site. The pod's values below are ones each client's own environment must override or drop.
 func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 	stateDir, remove, err := newTLSStateDir()
 	if err != nil {
@@ -361,44 +365,70 @@ func TestImageGoAndKubectlTLSClientsKeepToTheStateDirectory(t *testing.T) {
 		if want := []string{"--server=" + site.url, "--token=" + tlsProbeSignIn, "get", "--raw", "/"}; program != "kubectl" || !slices.Equal(args, want) {
 			t.Errorf("kubectl command for %s = %s %q, want kubectl %q", site.name, program, args, want)
 		}
-		for _, name := range []string{"HOME", "KUBECONFIG"} {
-			if value := envValue(env, name); !inStateDir(value) {
-				t.Errorf("kubectl at %s has %s %q, want a path under %s", site.name, name, value, stateDir)
-			}
+		if value := envValue(env, "HOME"); !inStateDir(value) {
+			t.Errorf("kubectl at %s has HOME %q, want a path under %s", site.name, value, stateDir)
 		}
-		for _, name := range []string{"KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT"} {
+		for _, name := range []string{"KUBECONFIG", "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT"} {
 			if slices.ContainsFunc(env, func(pair string) bool { return tlsVariableName(pair) == name }) {
-				t.Errorf("kubectl at %s has %s=%q, want it absent so client-go never takes the in-cluster configuration", site.name, name, envValue(env, name))
+				t.Errorf("kubectl at %s has %s=%q, want it absent so kubectl reads its default configuration under its own home and client-go never takes the in-cluster configuration", site.name, name, envValue(env, name))
 			}
 		}
 	}
 }
 
 // redis-cli connects to the site's host, names that host in its SNI, and uses the https port,
-// since no site's URL names another; it sends PING, which no site answers as Redis. Every
-// variable of the pod's but the credential it would send as AUTH reaches it.
+// since no site's URL names another; it sends PING, which no site answers as Redis. Of the pod's
+// variables only the kept PATH reaches it: its HOME is its own in the state directory, and
+// REDISCLI_AUTH, the credential it would send as AUTH, is dropped with every other.
 func TestImageRedisCLITLSClientTargetsTheSitesHost(t *testing.T) {
-	client := imageTLSClientsOf[tlsCommandClient](t, "", t.TempDir(), "redis-cli")["redis-cli"]
+	stateDir := t.TempDir()
+	client := imageTLSClientsOf[tlsCommandClient](t, "", stateDir, "redis-cli")["redis-cli"]
 	client.env = []string{"HOME=/home/legion", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin"}
 	for site, host := range tlsSiteHosts {
 		program, args, env := client.commandLine(site)
 		if want := []string{"--tls", "--sni", host, "-h", host, "-p", "443", "PING"}; program != "redis-cli" || !slices.Equal(args, want) {
 			t.Errorf("redis-cli command for %s = %s %q, want redis-cli %q", site.name, program, args, want)
 		}
-		if want := []string{"HOME=/home/legion", "PATH=/usr/bin", "LEGION_TLS_URL=" + site.url}; !slices.Equal(env, want) {
-			t.Errorf("redis-cli environment at %s = %q, want %q: REDISCLI_AUTH dropped and nothing else", site.name, env, want)
+		if want := []string{"PATH=/usr/bin", "HOME=" + filepath.Join(stateDir, "redis-cli"), "LEGION_TLS_URL=" + site.url}; !slices.Equal(env, want) {
+			t.Errorf("redis-cli environment at %s = %q, want %q: the kept PATH, its own HOME and the site", site.name, env, want)
 		}
 	}
 }
 
+// tlsCommandLine is a client that runs a command, whose environment at a site a test reads.
+type tlsCommandLine interface {
+	tlsClient
+	commandLine(tlsSite) (string, []string, []string)
+}
+
+// imageTLSCommandLines returns the image's clients built under env, failing t unless each runs a
+// command.
+func imageTLSCommandLines(t *testing.T, env []string, stateDir string) []tlsCommandLine {
+	t.Helper()
+	var commands []tlsCommandLine
+	for _, client := range imageTLSClients("omp", env, t.TempDir(), stateDir) {
+		command, ok := client.(tlsCommandLine)
+		if !ok {
+			t.Fatalf("%s is a %T, which runs no command", client.name(), client)
+		}
+		commands = append(commands, command)
+	}
+	return commands
+}
+
 // No client carries a credential of the pod's to a site. The pod below holds, with a value of the
-// shape a real one has, every variable a probed client reads a credential from, or reads the file
-// of one from; at every site, each client's environment holds none of those names and none of
-// those values, but for a name the client sets again to a dummy value of its own. The names are
-// written out here rather than read from tlsCredentialVariables, so a name dropped from that list
-// fails this test. Each value is one no client sets of its own. curl, wget, git and uv, which read
-// a netrc, an rc file or a user configuration from their home, run with a home of their own in the
-// state directory, never the pod's.
+// shape a real one has, every variable the probe once unset because a probed client reads a
+// credential from it or from the file it names. Among them, measured on 2026-11-18: gh 2.98.0's
+// `gh auth token --hostname <host>` printed GH_ENTERPRISE_TOKEN or GITHUB_ENTERPRISE_TOKEN, which
+// `gh api https://<host>/` would send; git sent an http.extraHeader given through
+// GIT_CONFIG_PARAMETERS or GIT_CONFIG_COUNT; and redis-cli sent REDISCLI_AUTH as AUTH. client-go
+// takes the in-cluster configuration, with the pod's service-account token, from
+// KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT, and the SDK reads CLOUDSDK_AUTH_ACCESS_TOKEN
+// before its token file (credentials/store.py of SDK 589). The pod also holds a sentinel no list
+// names, with a value made at run time, which stands for a variable nobody has found yet. At every
+// site, each client's environment holds none of those names and none of those values, but for a
+// name the client sets itself to a value of its own, and its HOME is in the state directory, so no
+// netrc, rc file or configuration of the pod's home is read.
 func TestImageTLSClientsCarryNoCredentialOfThePods(t *testing.T) {
 	githubToken := func(seed string) string { return "ghp_" + strings.Repeat(seed, 9) }
 	pod := map[string]string{
@@ -440,17 +470,15 @@ func TestImageTLSClientsCarryNoCredentialOfThePods(t *testing.T) {
 		"WGETRC":                                    "/home/legion/.wgetrc",
 		"UV_CONFIG_FILE":                            "/home/legion/.config/uv/uv.toml",
 		"GIT_CONFIG_GLOBAL":                         "/home/legion/.gitconfig-credentials",
+		"LEGION_TLS_PROBE_SENTINEL":                 "sentinel-" + rand.Text(),
 	}
-	// setAgain is each name a client sets again, to a dummy value of its own.
-	setAgain := map[string][]string{
-		"gh":      {"GH_TOKEN"},
-		"git":     {"GIT_CONFIG_GLOBAL"},
-		"go":      {"GOAUTH"},
-		"kubectl": {"KUBECONFIG"},
-		"gcloud":  {"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"},
-		"bq":      {"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"},
+	// setItself is each name a client sets itself, to a value of its own.
+	setItself := map[string][]string{
+		"gh":     {"GH_TOKEN"},
+		"go":     {"GOAUTH"},
+		"gcloud": {"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"},
+		"bq":     {"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"},
 	}
-	homeOfTheirOwn := []string{"curl", "wget", "git", "uv"}
 	env := []string{"HOME=/home/legion", "PATH=/usr/bin:/bin"}
 	for name, value := range pod {
 		env = append(env, name+"="+value)
@@ -461,18 +489,12 @@ func TestImageTLSClientsCarryNoCredentialOfThePods(t *testing.T) {
 	}
 	t.Cleanup(remove)
 
-	for _, client := range imageTLSClients("omp", env, t.TempDir(), stateDir) {
-		command, ok := client.(interface {
-			commandLine(tlsSite) (string, []string, []string)
-		})
-		if !ok {
-			t.Fatalf("%s is a %T, which runs no command", client.name(), client)
-		}
+	for _, client := range imageTLSCommandLines(t, env, stateDir) {
 		for _, site := range tlsSites {
-			_, _, environment := command.commandLine(site)
+			_, _, environment := client.commandLine(site)
 			for _, pair := range environment {
 				name, value, _ := strings.Cut(pair, "=")
-				if _, credential := pod[name]; credential && !slices.Contains(setAgain[client.name()], name) {
+				if _, credential := pod[name]; credential && !slices.Contains(setItself[client.name()], name) {
 					t.Errorf("%s at %s carries the pod's %s", client.name(), site.name, name)
 				}
 				for credentialName, credential := range pod {
@@ -481,11 +503,40 @@ func TestImageTLSClientsCarryNoCredentialOfThePods(t *testing.T) {
 					}
 				}
 			}
-			if slices.Contains(homeOfTheirOwn, client.name()) {
-				for _, name := range []string{"HOME", "XDG_CONFIG_HOME"} {
-					if value := envValue(environment, name); !strings.HasPrefix(value, stateDir+string(os.PathSeparator)) {
-						t.Errorf("%s at %s has %s %q, want a directory under the state directory %s", client.name(), site.name, name, value, stateDir)
+			if home := envValue(environment, "HOME"); !strings.HasPrefix(home, stateDir+string(os.PathSeparator)) {
+				t.Errorf("%s at %s has HOME %q, want a directory under the state directory %s", client.name(), site.name, home, stateDir)
+			}
+		}
+	}
+}
+
+// Every client keeps every variable the worker image declares, with the value the probe's
+// environment gives it, but for HOME, which every client has of its own in the state directory.
+// So the probe cannot drop a variable of the image's that may set the trust store, as AWS_CA_BUNDLE
+// does, and with TestImageEnvIsWhatTheWorkerImageSets a new ENV of the image's final stage is kept
+// too.
+func TestImageTLSClientsKeepEveryVariableTheImageDeclares(t *testing.T) {
+	declared := map[string]string{}
+	env := make([]string, 0, len(sandbox.ImageEnv))
+	for index, name := range sandbox.ImageEnv {
+		declared[name] = fmt.Sprintf("legion-tls-probe-image-%d", index)
+		env = append(env, name+"="+declared[name])
+	}
+	stateDir := t.TempDir()
+
+	for _, client := range imageTLSCommandLines(t, env, stateDir) {
+		for _, site := range tlsSites {
+			_, _, environment := client.commandLine(site)
+			for name, want := range declared {
+				got := envValue(environment, name)
+				if name == "HOME" {
+					if !strings.HasPrefix(got, stateDir+string(os.PathSeparator)) {
+						t.Errorf("%s at %s has HOME %q, want a directory under the state directory %s", client.name(), site.name, got, stateDir)
 					}
+					continue
+				}
+				if got != want {
+					t.Errorf("%s at %s has %s=%q, want the image's %q", client.name(), site.name, name, got, want)
 				}
 			}
 		}
@@ -533,23 +584,26 @@ func TestImageTLSClientsReadNoSystemConfigurationOfThePods(t *testing.T) {
 	}
 }
 
-// tlsEnvironment takes explicit lists: an entry of set replaces base's value of its name, a name in
-// unset is removed, and an entry of set that is not NAME=value is refused, never read as either.
-func TestTLSEnvironmentSetsAndUnsetsByExplicitLists(t *testing.T) {
+// tlsEnvironment takes explicit lists: an entry of base whose name keep holds stays, every other
+// entry of base goes, an entry of set replaces base's value of its name, a later entry of set
+// replaces an earlier one of its name, and an entry of set that is not NAME=value is refused,
+// never read as anything.
+func TestTLSEnvironmentKeepsAndSetsByExplicitLists(t *testing.T) {
 	base := []string{"HOME=/home/legion", "GOFLAGS=-mod=mod", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin"}
+	kept := []string{"HOME", "PATH", "USER"}
 	for _, testCase := range []struct {
-		name             string
-		set, unset, want []string
+		name            string
+		keep, set, want []string
 	}{
-		{name: "set replaces", set: []string{"HOME=/state/go"}, want: []string{"GOFLAGS=-mod=mod", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin", "HOME=/state/go"}},
-		{name: "set to empty keeps the name", set: []string{"GOFLAGS="}, want: []string{"HOME=/home/legion", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin", "GOFLAGS="}},
-		{name: "unset removes", unset: []string{"REDISCLI_AUTH"}, want: []string{"HOME=/home/legion", "GOFLAGS=-mod=mod", "PATH=/usr/bin"}},
-		{name: "set after unset sets", set: []string{"GOFLAGS=-mod=readonly"}, unset: []string{"GOFLAGS"}, want: []string{"HOME=/home/legion", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin", "GOFLAGS=-mod=readonly"}},
-		{name: "names base lacks", set: []string{"GOWORK=off"}, unset: []string{"KUBECONFIG"}, want: []string{"HOME=/home/legion", "GOFLAGS=-mod=mod", "REDISCLI_AUTH=pod-credential", "PATH=/usr/bin", "GOWORK=off"}},
+		{name: "kept names stay and others go", keep: kept, want: []string{"HOME=/home/legion", "PATH=/usr/bin"}},
+		{name: "nothing kept", want: []string{}},
+		{name: "set replaces a kept name", keep: kept, set: []string{"HOME=/state/go"}, want: []string{"PATH=/usr/bin", "HOME=/state/go"}},
+		{name: "set gives a name keep lacks", keep: kept, set: []string{"GOFLAGS="}, want: []string{"HOME=/home/legion", "PATH=/usr/bin", "GOFLAGS="}},
+		{name: "a later set entry replaces an earlier one", keep: kept, set: []string{"HOME=/state/curl", "GIT_TERMINAL_PROMPT=0", "HOME=/state/go"}, want: []string{"PATH=/usr/bin", "GIT_TERMINAL_PROMPT=0", "HOME=/state/go"}},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			if got := tlsEnvironment(base, testCase.set, testCase.unset); !slices.Equal(got, testCase.want) {
-				t.Fatalf("tlsEnvironment(%q, %q, %q) = %q, want %q", base, testCase.set, testCase.unset, got, testCase.want)
+			if got := tlsEnvironment(base, testCase.keep, testCase.set); !slices.Equal(got, testCase.want) {
+				t.Fatalf("tlsEnvironment(%q, %q, %q) = %q, want %q", base, testCase.keep, testCase.set, got, testCase.want)
 			}
 		})
 	}
@@ -559,7 +613,7 @@ func TestTLSEnvironmentSetsAndUnsetsByExplicitLists(t *testing.T) {
 				t.Fatalf("tlsEnvironment with the set entry REDISCLI_AUTH recovered %v, want a panic naming the entry", recovered)
 			}
 		}()
-		tlsEnvironment(base, []string{"REDISCLI_AUTH"}, nil)
+		tlsEnvironment(base, kept, []string{"REDISCLI_AUTH"})
 	})
 }
 
@@ -679,10 +733,10 @@ func TestOptionalTLSClientIsAbsentOffPATHAndHeldToTheChainsOnIt(t *testing.T) {
 }
 
 // gcloud reaches each site as its compute endpoint with its configuration in the probe's state
-// directory, which holds the token it signs in with; every optional client but socat, which keeps
-// no state, keeps its home there, so nothing lands in the runtime user's. mise names the site
-// inside its one tool argument, and keeps each site's download apart. socat names the site's host
-// and https port in its OPENSSL: address.
+// directory, which holds the token it signs in with; every optional client keeps its home there,
+// as every client does, so nothing lands in the runtime user's. mise names the site inside its one
+// tool argument, and keeps each site's download apart. socat names the site's host and https port
+// in its OPENSSL: address.
 func TestImageOptionalTLSClientsTargetTheSiteFromTheStateDirectory(t *testing.T) {
 	stateDir, remove, err := newTLSStateDir()
 	if err != nil {
@@ -695,7 +749,7 @@ func TestImageOptionalTLSClientsTargetTheSiteFromTheStateDirectory(t *testing.T)
 
 	for _, site := range tlsSites {
 		for name, client := range clients {
-			if _, _, env := client.commandLine(site); name != "socat" && !inStateDir(envValue(env, "HOME")) {
+			if _, _, env := client.commandLine(site); !inStateDir(envValue(env, "HOME")) {
 				t.Errorf("%s at %s has HOME %q, want a directory under %s", name, site.name, envValue(env, "HOME"), stateDir)
 			}
 		}

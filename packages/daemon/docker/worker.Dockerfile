@@ -524,7 +524,7 @@ RUN test -n "$LEGION_REVISION" \
 # volume is empty in a fresh pod and dies with it (docs/kubernetes.md, "The disk dies with its
 # pod"), so the image's cache reaches a role as a proxy and not as its GOMODCACHE. Second, a
 # variable the final stage's ENV sets is one `runtime.kubernetes.pod.env` may not set
-# (sandbox/operatorpod.go imageEnv). A go.env default leaves GOPROXY to an operator, a role or a
+# (sandbox/operatorpod.go ImageEnv). A go.env default leaves GOPROXY to an operator, a role or a
 # command that names its own. The process environment outranks go.env, so each of those wins.
 # ghcr.io/cybermonklabs/legion/ci, the copy of debian:trixie-slim (.github/ci-images.yaml)
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4 AS toolchain
@@ -1147,7 +1147,7 @@ COPY --from=plugin /opt/omp-plugins /opt/omp-plugins
 # because OMP's DirResolver derives the profile root from it. USER=legion: the runtime user is uid
 # 1000, `legion` (created in runtime-base), and a process that reads USER finds it there (the
 # skill-scenario rig's scripts run under `set -u`); as image ENV, a deployment's
-# runtime.kubernetes.pod.env may not set it (sandbox/operatorpod.go imageEnv). DO_NOT_TRACK=1:
+# runtime.kubernetes.pod.env may not set it (sandbox/operatorpod.go ImageEnv). DO_NOT_TRACK=1:
 # CodeGraph's telemetry
 # and update-check opt-out (ranked above CODEGRAPH_TELEMETRY, above stored config, above
 # default-on) — every worker's own `codegraph` call, and the warm-up the tmux daemon runs outside
@@ -1157,7 +1157,7 @@ COPY --from=plugin /opt/omp-plugins /opt/omp-plugins
 # neighbours), and downloads Chrome for Testing only with none of those — so the image's chromium on
 # PATH is the one every worker gets with no download, and the capability check runs that same
 # resolution (`browser`, image.go). The variable stays the operator's: every variable this ENV sets
-# is one runtime.kubernetes.pod.env is refused (sandbox/operatorpod.go imageEnv), and an operator
+# is one runtime.kubernetes.pod.env is refused (sandbox/operatorpod.go ImageEnv), and an operator
 # pod naming another browser is exactly what the probe should check, not refuse.
 ENV OMP_PROFILE=legion \
     LEGION_OMP_PATH=/opt/omp/bin/omp \
@@ -1269,7 +1269,7 @@ USER 1000:1000
 # go.env, which lacks the line. A role opts in per command, `CGO_ENABLED=1 go test -race …`;
 # `go env -w CGO_ENABLED=1` does not override it, since Go ranks the environment above its go env file;
 # and as image ENV a deployment's runtime.kubernetes.pod.env may not set it (sandbox/operatorpod.go
-# imageEnv).
+# ImageEnv).
 ENV AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt COREPACK_DEFAULT_TO_LATEST=0 CGO_ENABLED=0
 # The toolchain step: every toolchain command runs as the runtime user from the image PATH, the
 # corepack shims fetching their shipped default pnpm and yarn, with TMPDIR, COREPACK_HOME,
@@ -1423,7 +1423,7 @@ COPY --chmod=0755 packages/daemon/docker/githooks/pre-push /opt/legion/githooks/
 # each role's `legion worker-shim` reads it from its own before it starts a role's agent
 # (packages/daemon/internal/leakguard's TagVariable and Installed). The image is its
 # only setter, so a deployment's `runtime.kubernetes.pod.env` may not move it
-# (sandbox/operatorpod.go imageEnv). It goes in after the toolchain and the probe layer, with the
+# (sandbox/operatorpod.go ImageEnv). It goes in after the toolchain and the probe layer, with the
 # wrappers above, so a tag bump reruns only these last few layers. The check itself is not in the
 # image: it publishes often, and the image build has no credential for the private repository
 # that publishes it. The daemon reads it at this tag and pushes it to each pod's launcher.

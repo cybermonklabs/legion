@@ -10,12 +10,13 @@ body: |-
     that download writes reaches the image. `legion probe-image` holds
     `gcloud`, `bq`, `az`, `mise` and `socat` to the compromised emSign and AAA chains where each is
     on `PATH`, and reports it `absent` where it is not. It also holds GNU `wget`, `git`, `go`,
-    `kubectl` and `redis-cli` to the chains on every image. Every probed client runs with the
-    pod's credential variables unset, and curl, wget, git and uv with a home of their own, so no
-    credential of the pod's reaches a test site. Because the image sets `USER`,
-    `runtime.kubernetes.pod.env` may no longer set it: `legion start`, `--check-config` and the
-    daemon's boot refuse a configuration that does, whatever digest it pins. The daemon's image
-    probe pod now reserves 500m CPU (was 250m), because the image's longer TLS probe needs it.
+    `kubectl` and `redis-cli` to the chains on every image. Of the pod's variables, every probed
+    client keeps only those the image declares, `PATH` among them, and it runs with a home of its
+    own in the probe's state directory, so no credential variable or file of the pod's reaches a
+    test site. Because the image sets `USER`, `runtime.kubernetes.pod.env` may no longer set it:
+    `legion start`, `--check-config` and the daemon's boot refuse a configuration that does,
+    whatever digest it pins. The daemon's image probe pod now reserves 500m CPU (was 250m), because
+    the image's longer TLS probe needs it.
 time: 2026-11-18T03:35:00Z
 custom:
     Issue: pr4377
