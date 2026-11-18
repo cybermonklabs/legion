@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  Dispatch tells a session that an ask is its own only when the session asked the ask or follows
+  it. `GET /api/v1/agents/{session_id}/answers` lists a person's reply in an ask's thread as
+  `replied_on_your_ask`, an answer as `answered_your_ask` and a decline as `declined_your_ask` only
+  for the ask's author and followers. Any other session that the issue's route, its claim, a credit
+  on its primary document or a mention reached reads the reason that brought the item: the
+  comment's own relation, `answered_an_ask` or `declined_an_ask`, and its decline item carries no
+  `dispatch_words`. The `comment.created` event of a comment in an ask's thread carries
+  `ask_sessions`, the sessions that own the ask, so a client that renders the event can tell the
+  same.

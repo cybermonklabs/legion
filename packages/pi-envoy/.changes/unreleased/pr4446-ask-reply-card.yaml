@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A session no longer reads a person's reply on another session's ask as a reply on its own ask.
+  The reply's card carries the `--reply-to-ask` reply command and `waiting_on` only for a session
+  that asked the ask or follows it; a session that a mention reached keeps the mention's reply
+  command, and every other session gets the reason that brought the reply and no reply command.
