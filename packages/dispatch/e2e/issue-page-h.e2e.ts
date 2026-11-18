@@ -229,6 +229,7 @@ function describeChromeSymbol(this: Element): Omit<GlyphFonts, "fonts"> | null {
     this.closest("[data-margin-section] > div > div")?.querySelector(
       ":scope > div:first-child > span[data-page-chrome]"
     )?.textContent ?? "";
+  // This runs in the page on an element already drawn, so one read of its name is all it needs.
   const name = this.getAttribute("aria-label");
   return { icon: false, row: name === null ? label : `${label} (${name})`, text: own };
 }
