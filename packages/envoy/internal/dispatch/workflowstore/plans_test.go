@@ -451,9 +451,9 @@ func TestProjectPlansListsEachFinishedIssueInOneStatement(t *testing.T) {
 // Two issues of one project that closed at one moment are each listed once and whole: each with
 // its own plan, its own rating, its own time and its own count of failed steps, however the rows of
 // the two come out of the statement. The read is compared by issue, since the contract orders only
-// by the close. The owner's plan of LEG-2 names its document at version 1, the first version, which
-// the write answers and the read lists as the plan's document; each expected plan is written out
-// here, not taken from what the store answered.
+// by the close. The owner's plan of LEG-2 names its document at version 1, the first version, and
+// three tasks in neither order of their ids, which the write answers and the read lists as they were
+// written; each expected plan is written out here, not taken from what the store answered.
 func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closed := t0.Add(5 * time.Hour)
@@ -467,10 +467,10 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 	stepRun(t, pool, "LEG-1", StepKindMerge, "merger", 0, 1, nil, new(minute(15)), ResultPassed)
 
 	ownersPlan := Plan{ID: planTwo, Issue: "LEG-2", Source: PlanSourceOwner, Generation: 2, Document: &PlanDocument{ArtifactID: document, Version: 1},
-		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "tester"}}}}
+		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer", "tester"}}, {ID: "api", Steps: []string{"implementer"}}, {ID: "docs", Steps: []string{"writer", "implementer"}}}}
 	written := putPlan(t, pool, PlanWrite{
 		ID: planTwo, Issue: "LEG-2", Generation: new(int64(2)), Source: new(PlanSourceOwner), Document: &PlanDocument{ArtifactID: document, Version: 1},
-		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "tester"}}},
+		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer", "tester"}}, {ID: "api", Steps: []string{"implementer"}}, {ID: "docs", Steps: []string{"writer", "implementer"}}},
 	}, minute(20))
 	if planText(written) != planText(ownersPlan) {
 		t.Errorf("the owner's plan write answers\n%s\nwant\n%s", planText(written), planText(ownersPlan))
@@ -505,25 +505,37 @@ func TestProjectPlansListsTwoIssuesClosedAtOneMomentWhole(t *testing.T) {
 }
 
 // The plan is the newest node of the issue, the one of the highest generation, whatever order the
-// plans were made in and however their generations sort as text, and every retro's rating is
-// listed, in the order the retros ran: three, whose scores and reasons are each in neither
-// ascending nor descending order that way, so no sort of the ratings by either is the run order.
+// plans were made and written in and however their generations sort as text and their ids sort,
+// and every retro's rating is listed, in the order the retros ran: three, whose scores and reasons
+// are each in neither ascending nor descending order that way, so no sort of the ratings by either
+// is the run order.
 func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	pool := storetest.Open(t).Pool
 	closed := t0.Add(5 * time.Hour)
 	seedIssues(t, pool, "LEG", seededIssue{"LEG-1", "done", &closed})
-	// Generations 2, 9 and 10, made in the order 10, 2, 9 and sorting as text "10", "2", "9",
-	// written in the order 9, 10, 2, each plan of its own source, document, version and tasks.
-	newestID, document := uuid.NewString(), uuid.NewString()
-	putPlan(t, pool, defaultPlan(uuid.NewString(), "LEG-1", 9), minute(100))
+	// Four plans, written in the order of generations 10, 40, 2 and 9. As written, their
+	// generations, their generations as text ("10", "40", "2", "9"), the minutes they were made
+	// (75, 50, 100, 0) and their ids are each in neither ascending nor descending order, and the
+	// newest, generation 40, is the first or the last of none of these orders but its generation's,
+	// so a read that took the plan made first or last, the least or the greatest id, or the first
+	// or the last generation as text lists another plan. Each plan has tasks of its own, and the
+	// newest's three are in neither order of their ids.
+	newestID, document := "50000000-0000-4000-8000-000000000000", uuid.NewString()
 	putPlan(t, pool, PlanWrite{
-		ID: newestID, Issue: "LEG-1", Generation: new(int64(10)), Source: new(PlanSourceOwner), Document: &PlanDocument{ArtifactID: document, Version: 4},
-		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}},
-	}, minute(0))
+		ID: "30000000-0000-4000-8000-000000000000", Issue: "LEG-1", Generation: new(int64(10)), Source: new(PlanSourceOwner),
+		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 3}, Tasks: []PlanTask{{ID: "docs", Steps: []string{"writer"}}},
+	}, minute(75))
 	putPlan(t, pool, PlanWrite{
-		ID: uuid.NewString(), Issue: "LEG-1", Generation: new(int64(2)), Source: new(PlanSourceOwner),
-		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 1}, Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer"}}},
+		ID: newestID, Issue: "LEG-1", Generation: new(int64(40)), Source: new(PlanSourceOwner), Document: &PlanDocument{ArtifactID: document, Version: 4},
+		Tasks: []PlanTask{
+			{ID: "ui", Steps: []string{"implementer", "reviewer"}}, {ID: "api", Steps: []string{"implementer"}}, {ID: "docs", Steps: []string{"writer", "implementer"}},
+		},
 	}, minute(50))
+	putPlan(t, pool, PlanWrite{
+		ID: "90000000-0000-4000-8000-000000000000", Issue: "LEG-1", Generation: new(int64(2)), Source: new(PlanSourceOwner),
+		Document: &PlanDocument{ArtifactID: uuid.NewString(), Version: 1}, Tasks: []PlanTask{{ID: "api", Steps: []string{"implementer"}}},
+	}, minute(100))
+	putPlan(t, pool, defaultPlan("10000000-0000-4000-8000-000000000000", "LEG-1", 9), minute(0))
 	third := ratedRetro(t, pool, "LEG-1", 9, minute(200), minute(201), 4, "Two tasks were one.")
 	second := ratedRetro(t, pool, "LEG-1", 2, minute(120), minute(121), 1, "The plan was late.")
 	first := ratedRetro(t, pool, "LEG-1", 1, minute(20), minute(22), 3, "The review came late.")
@@ -535,10 +547,12 @@ func TestProjectPlansTakesTheNewestPlanAndEveryRating(t *testing.T) {
 	if len(read) != 1 || read[0].Plan == nil {
 		t.Fatalf("the read lists %d issues, want LEG-1 with a plan", len(read))
 	}
-	newest := Plan{ID: newestID, Issue: "LEG-1", Source: PlanSourceOwner, Document: &PlanDocument{ArtifactID: document, Version: 4}, Generation: 10,
-		Tasks: []PlanTask{{ID: "ui", Steps: []string{"implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer"}}}}
+	newest := Plan{ID: newestID, Issue: "LEG-1", Source: PlanSourceOwner, Document: &PlanDocument{ArtifactID: document, Version: 4}, Generation: 40,
+		Tasks: []PlanTask{
+			{ID: "ui", Steps: []string{"implementer", "reviewer"}}, {ID: "api", Steps: []string{"implementer"}}, {ID: "docs", Steps: []string{"writer", "implementer"}},
+		}}
 	if plan := read[0].Plan; planText(*plan) != planText(newest) {
-		t.Fatalf("the plan of LEG-1 is\n%s\nwant the owner's plan of generation 10\n%s", planText(*plan), planText(newest))
+		t.Fatalf("the plan of LEG-1 is\n%s\nwant the owner's plan of generation 40\n%s", planText(*plan), planText(newest))
 	}
 	want := IssuePlan{Issue: "LEG-1", Title: "Title of LEG-1", ClosedAt: closed, Plan: &newest,
 		Ratings: []Rating{
