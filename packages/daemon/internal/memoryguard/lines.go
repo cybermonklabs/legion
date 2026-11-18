@@ -93,10 +93,11 @@ const (
 // once at the readings of the stay before the one decided on (candidate.newToStay), that hold
 // memory of their own: a fork whose parent's size covers its own ranks at nothing and is in the
 // tiers below, and its line names the one that put it first (candidate.inNewTier, INFRA-3531 R1 of
-// spec version 34); ruleGrewSinceKill, none grew or is new, and it grew the most since the rise's
-// first kill (spec version 34; candidate.sinceFirstKill); ruleLargest, none of these applies and it
-// is the largest. ruleKernel is a process the guest kernel killed (Guest), which the kernel chose
-// by rules of its own.
+// spec version 34); ruleGrewSinceKill, none grew or is new, and it grew the most since the first
+// kill of this stay in the band, a stay that a dip below the mark in the band does not end (spec
+// versions 34 and 37; candidate.sinceFirstKill); ruleLargest, none of these applies and it is the
+// largest. ruleKernel is a process the guest kernel killed (Guest), which the kernel chose by rules
+// of its own.
 const (
 	ruleGrew          = "grew"
 	ruleNew           = "new"
