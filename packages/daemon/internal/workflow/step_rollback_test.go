@@ -150,8 +150,14 @@ func TestALateReviewersReportLandsOnItsCountedRecordAcrossARollback(t *testing.T
 	pool := migratedPool(t)
 	seedReview(t, pool, "green")
 	engine := testEngine(config.DesignGateRootIssues, nil)
-	onStored(t, pool, engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		return engine.StartStepRecord(ctx, tx, issue)
+	// The start this release counted is in the store before the daemon boots, so it is written
+	// with no boot pass before it (factTx); the boot then finds the run open and opens nothing.
+	factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+		issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
+		if err != nil {
+			return err
+		}
+		return engine.StartStepRecord(ctx, tx, *issue)
 	})
 	apply := applyFacts(t, pool, engine)
 	apply("review", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne, Author: testReviewApp,
