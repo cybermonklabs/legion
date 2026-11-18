@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A Dispatch refusal or route description that gave a length in characters while it counted UTF-16 code units or bytes now gives its two numbers with no unit, or names the unit it counts: a text past its cap is refused as `title: 1002 of at most 1000` where it read `title is 2 characters over the 1000-character limit (1002/1000)`, a NUL or a byte that is not UTF-8 is named `at position N`, and the route descriptions name UTF-16 code units. No cap and no count changes.'
+time: 2026-11-18T03:17:07.595969203Z
+custom:
+    Issue: pr4376
