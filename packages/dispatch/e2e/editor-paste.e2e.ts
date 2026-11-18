@@ -15,8 +15,14 @@ const table = "| alpha one | beta two |\n| --- | --- |\n| gamma three | delta fo
  * as a person does. */
 async function selectCells(page: Page, from: string, to: string) {
   const editor = documentEditor(page);
-  const start = await editor.getByText(from).boundingBox();
-  const end = await editor.getByText(to).boundingBox();
+  const first = editor.getByText(from);
+  const last = editor.getByText(to);
+  await expect(first).toBeVisible();
+  await expect(last).toBeVisible();
+  // The waits above drew both cells, and a drawn element has a box, so each has one.
+  const start = await first.boundingBox();
+  // The last cell was waited for above too, so its box is there as the first one's is.
+  const end = await last.boundingBox();
   if (!start || !end) throw new Error("the cells have no layout");
   await page.mouse.move(start.x + 5, start.y + start.height / 2);
   await page.mouse.down();

@@ -2269,7 +2269,7 @@
     },
     "/api/v1/artifacts/{id}/versions/{number}": {
       "get": {
-        "description": "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension.",
+        "description": "One version of a document, a file or an image. A named or settled document version answers as JSON; a file or an image version answers its bytes under its own content type, with Content-Disposition: attachment naming the artifact's name, -v\u003cnumber\u003e before the extension for an older version (report-v2.pdf), and Cache-Control: private, max-age=31536000, immutable. With ?download=true every kind answers Content-Disposition: attachment with that name and Cache-Control: private, no-cache, and a document answers its Markdown as text/markdown, its name ending in .md when the stored name has no Markdown extension. A version's author carries proven: true only when the credential of every write that author made to the version proved it.",
         "operationId": "getApiV1ArtifactsByIdVersionsByNumber",
         "parameters": [
           {
@@ -4666,7 +4666,7 @@
     },
     "/api/v1/events/log": {
       "get": {
-        "description": "Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id \u003e after (default 0), oldest first, at most limit (1 to 1000, default 1000).",
+        "description": "Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id \u003e after (default 0), oldest first, at most limit (1 to 1000, default 1000). An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
         "operationId": "getApiV1EventsLog",
         "parameters": [
           {
@@ -6333,7 +6333,7 @@
     },
     "/api/v1/issues/{key}/comments": {
       "get": {
-        "description": "List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304.",
+        "description": "List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
         "operationId": "getApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -6610,7 +6610,7 @@
     },
     "/api/v1/issues/{key}/events": {
       "get": {
-        "description": "Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304.",
+        "description": "Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.",
         "operationId": "getApiV1IssuesByKeyEvents",
         "parameters": [
           {
@@ -7195,6 +7195,109 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CheckResultRecorded"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      }
+    },
+    "/api/v1/issues/{key}/role-holders": {
+      "get": {
+        "description": "The session that holds each Legion role of this issue, as the Legion daemon last published it: {issue, holders}, each {role, session, recorded_at} in workflow order, [] when no session holds a role. A closed issue's read too. An issue Dispatch does not know is 404 ISSUE_NOT_FOUND.",
+        "operationId": "getApiV1IssuesByKeyRoleHolders",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueRoleHolders"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      },
+      "put": {
+        "description": "Publish the session that holds each Legion role of this issue {holders}: each entry {role, session}, role one of architect, planner, implementer, tester, reviewer and merger and session a session id of at most 256 bytes, or [] for an issue where no session holds a role. The actor must be session legion-daemon:\u003cproject\u003e, the key up to its first -, the session the Legion daemon of the issue's project writes as; any other actor is 403 ROLE_HOLDER_FORBIDDEN. Before the airlock a bearer caller names its own session, so any caller whose credential proves no session can name that one. The body is the issue's whole set and replaces the stored set under a lock of the issue row, so a session that it does not name holds no role of the issue, two writes at once store the set of the one that finishes last, and a pair that did not change keeps its recorded_at. The write appends no issue event, notifies nobody and takes a closed issue. Answers 200 {issue, holders} with the set this write stored, in workflow order, each {role, session, recorded_at}. A body without holders, a role that is not one of the six, a session that is not a session id or is over 256 bytes, a role or a session named twice and an empty session are each 400 INVALID_ROLE_HOLDER, and nothing is stored; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. The session of an ended claim keeps its role until the daemon's next publication lands, and its process can still run in that window.",
+        "operationId": "putApiV1IssuesByKeyRoleHolders",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueRoleHoldersInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueRoleHolders"
                 }
               }
             }
@@ -11537,7 +11640,7 @@
         "x-write-scope": "deployment"
       },
       "delete": {
-        "description": "Remove a repository mapping no issue names as its repo.",
+        "description": "Remove a repository mapping, whether or not an issue names the repository as its repo: an issue's own repository needs no mapping, so such an issue keeps it. An issue that resolved to the mapping as its project's default resolves to no repository until the project has another default.",
         "operationId": "deleteApiV1SettingsRepoProjectsByOwnerByRepo",
         "parameters": [
           {
@@ -11731,7 +11834,7 @@
     },
     "/api/v1/whoami": {
       "get": {
-        "description": "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles.",
+        "description": "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none.",
         "operationId": "getApiV1Whoami",
         "parameters": [
           {
@@ -12110,6 +12213,9 @@
           "project": {
             "type": "string"
           },
+          "proven": {
+            "type": "boolean"
+          },
           "service": {
             "type": "string"
           }
@@ -12130,6 +12236,9 @@
           },
           "session": {
             "type": "string"
+          },
+          "session_proven": {
+            "type": "boolean"
           },
           "token_id": {
             "type": "string"
@@ -21983,6 +22092,105 @@
         "required": [
           "members",
           "truncated"
+        ],
+        "type": "object"
+      },
+      "IssueRoleHolder": {
+        "properties": {
+          "role": {
+            "enum": [
+              "architect",
+              "planner",
+              "implementer",
+              "tester",
+              "reviewer",
+              "merger"
+            ],
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "session"
+        ],
+        "type": "object"
+      },
+      "IssueRoleHolderRecord": {
+        "properties": {
+          "recorded_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "architect",
+              "planner",
+              "implementer",
+              "tester",
+              "reviewer",
+              "merger"
+            ],
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "session",
+          "recorded_at"
+        ],
+        "type": "object"
+      },
+      "IssueRoleHolders": {
+        "properties": {
+          "holders": {
+            "items": {
+              "$ref": "#/components/schemas/IssueRoleHolderRecord"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "issue",
+          "holders"
+        ],
+        "type": "object"
+      },
+      "IssueRoleHoldersInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "holders": {
+            "items": {
+              "$ref": "#/components/schemas/IssueRoleHolder"
+            },
+            "type": [
+              "null",
+              "array"
+            ]
+          }
+        },
+        "required": [
+          "holders"
         ],
         "type": "object"
       },

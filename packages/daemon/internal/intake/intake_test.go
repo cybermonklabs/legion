@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -914,6 +915,10 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 				}
 				golden.Payload["head_ref"] = issueBranch
 				decoded = decode()
+			case "sub_issue":
+				if decoded.Fact != nil {
+					t.Fatalf("%s's sub-issue event decoded %#v, want no fact: the workflow reads no sub-issue", repository, decoded.Fact)
+				}
 			}
 			if (kind == "pr" || kind == "review" || kind == "push") && decoded.Fact == nil {
 				t.Fatalf("%s's %s event decoded no fact", repository, kind)
@@ -1132,6 +1137,35 @@ func TestConsumeTermsPoisonMessagesOnce(t *testing.T) {
 		t.Fatalf("poison logs after ack wait = %d, want 2", got)
 	}
 	assertNoAckPending(t, stream, dispatchConsumerName(spec.Project))
+}
+
+// A GitHub envelope with no payload, as an Envoy listener published every commit status on its
+// repository's comment topic (testdata/github/status-no-payload.json is such a message's stored
+// bytes, with this test's repository and ids of its own), is terminated once with its ERROR line,
+// and the GitHub durable goes on: the push stored after it is applied, and nothing waits for an
+// acknowledgement.
+func TestConsumeTermsAGitHubEnvelopeWithNoPayloadAndAppliesTheNext(t *testing.T) {
+	pool := migratedPool(t)
+	createWrites(t, pool)
+	js, stream := testJetStream(t)
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	stop := startConsume(t, js, spec, pool, writeHandler("push", nil))
+	defer stop()
+
+	poison := publish(t, js, "notifications.github.sjawhar.legion.comment", capturedGitHubEnvelope(t, "status-no-payload.json"))
+	last := publish(t, js, "notifications.github.sjawhar.legion.push.branch.main", capturedGitHubEnvelope(t, "push-base.json"))
+	assertAcknowledgedThrough(t, stream, githubConsumerName(spec.Project), last)
+	if got := writeHandlers(t, pool); !slices.Equal(got, []string{"push"}) {
+		t.Fatalf("handler writes = %q, want the push after the poison applied", got)
+	}
+	requireLogLine(t, logs, "level=ERROR", "poison JetStream message", "Envoy envelope payload is not JSON",
+		"subject=notifications.github.sjawhar.legion.comment", "stream_seq="+strconv.FormatUint(poison.Sequence, 10))
+	time.Sleep(3 * spec.AckWait)
+	if got := strings.Count(logs.String(), "poison JetStream message"); got != 1 {
+		t.Fatalf("poison logs after ack wait = %d, want 1: a terminated message is not delivered again", got)
+	}
+	assertNoAckPending(t, stream, githubConsumerName(spec.Project))
 }
 
 // One NATS stream carries every Dispatch project's issue events. A daemon acts only on its own

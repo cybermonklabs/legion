@@ -12,9 +12,12 @@ An issue pod runs no heavy build and no whole test suite. The pod's six roles sh
 limit. Near that limit the launcher's memory guard, where the deployment runs it (it is on by
 default), stops, with SIGKILL, the largest process that is neither Legion's own nor an agent's own,
 which in practice is a command an agent ran: a build, a test binary, a Python or JavaScript kernel.
-It then tells that process's role why, in a message on the role's topic. The command fails and the
-turn goes on. A command that fills the memory faster than the guard can stop it still takes the pod
-past its limit, and that ends every role's turn, not only yours.
+It then tells that process's role why, in a message on the role's topic. In a pod that runs in a
+microVM, the pod's own kernel stops such a command in place of the guard where each of the pod's
+requests equals its limit, and the role is told the same way; in a pod that requests less, it can
+stop an agent instead. The command fails and the turn goes on. In a gVisor pod, a command that
+fills the memory faster than the guard can stop it still takes the pod past its limit, and that
+ends every role's turn, not only yours.
 
 In the pod you compile the packages your change touches, run by name the tests you added or
 changed (`go test -run '<TestName>' ./internal/<package>/`, or `bun test` with their files), build
@@ -412,13 +415,13 @@ the five priced options with their measurements, and what the clients cost the i
 
 ## Before you measure Oh My Pi's binary
 
-Read Oh My Pi's source first, from the fork (`sjawhar/oh-my-pi`) at the tag `.omp-pin` names, not
-from upstream's version tag: the fork's release carries code upstream's does not. `.omp-pin` reads
-`github:sjawhar/oh-my-pi@<version>`, and the git tag adds a `v` in front of that text, so find it
-rather than type it:
+Read Oh My Pi's source first, from the fork (`cybermonklabs/oh-my-pi`) at the tag `.omp-pin` names,
+not from upstream's version tag: the fork's release carries code upstream's does not. `.omp-pin`
+reads `github:cybermonklabs/oh-my-pi@<version>`, and the git tag adds a `v` in front of that text,
+so find it rather than type it:
 
 ```text
-$ git ls-remote --tags https://github.com/sjawhar/oh-my-pi.git 'v<version>'
+$ git ls-remote --tags https://github.com/cybermonklabs/oh-my-pi.git 'v<version>'
 ```
 
 Search that source by the name of a construct or a setting, never by its value: one value is

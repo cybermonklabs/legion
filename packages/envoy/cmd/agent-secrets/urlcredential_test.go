@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,9 +19,10 @@ import (
 )
 
 // TestSelfPrintsNoPartOfTheBrokerURLCredential: `agent-secrets self` on a machine that proves an
-// identity of its own trades it at the broker before anything else, and with the broker
-// unreachable prints that trade's failure on stderr. The line names the failure, and no part of a
-// user name, password, query or fragment AGENT_SECRETS_URL carries. The values are made up.
+// identity of its own (here the metadata server's, a stand-in) trades it at the broker before
+// anything else, and with the broker unreachable prints that trade's failure on stderr. The line
+// names the failure, and no part of a user name, password, query or fragment AGENT_SECRETS_URL
+// carries. The values are made up.
 func TestSelfPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 	for form, address := range map[string]string{
 		"a user name and password": "http://demouser7q:demopass9z-not-a-secret@127.0.0.1:1",
@@ -31,10 +31,7 @@ func TestSelfPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 	} {
 		t.Run(form, func(t *testing.T) {
 			tmp := t.TempDir()
-			projected := filepath.Join(tmp, "projected-token")
-			if err := os.WriteFile(projected, []byte("projected.service.account.token\n"), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 			t.Setenv("HOME", tmp)
 			t.Setenv("XDG_RUNTIME_DIR", filepath.Join(tmp, "run"))
 			t.Setenv("XDG_STATE_HOME", filepath.Join(tmp, "state"))
@@ -43,8 +40,8 @@ func TestSelfPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 			t.Setenv("AGENT_SECRETS_KEY_DIR", filepath.Join(tmp, "keys"))
 			t.Setenv("AGENT_SECRETS_ENROLL_WAIT", "0s")
 			t.Setenv("AGENT_SECRETS_URL", address)
-			t.Setenv("AGENT_SECRETS_MACHINE_IDENTITY", "kubernetes")
-			t.Setenv("AGENT_SECRETS_MACHINE_TOKEN_FILE", projected)
+			t.Setenv("AGENT_SECRETS_MACHINE_IDENTITY", "metadata")
+			t.Setenv("AGENT_SECRETS_MACHINE_AUDIENCE", "demo-audience")
 			var stdout, stderr bytes.Buffer
 			if code := run([]string{"self"}, &stdout, &stderr); code == 0 {
 				t.Fatalf("self against a broker that never answers exited 0\nstdout: %s\nstderr: %s", stdout.String(), stderr.String())
@@ -244,4 +241,41 @@ func TestTheRefusalsToldApartByTheirWordsHoldBesideACredentialedAddress(t *testi
 			}
 		})
 	}
+}
+
+// TestAnAudienceRefusalPrintsNoCredentialItsWordsRepeat: the machine source refuses a Google
+// exchange audience other than the one this machine kept, and both audiences are text a broker's
+// settings answer wrote. Beside an address that carries a credential the refusal prints neither
+// of them, so an answer that repeats the credential prints none of it; beside a clean address it
+// quotes both, as it did before the address was held as a brokeraddr.Address.
+func TestAnAudienceRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
+	const audience = "//iam.googleapis.com/projects/1/demopass9z-not-a-secret"
+	const kept = "//iam.googleapis.com/projects/1/the-kept-one"
+	path := filepath.Join(t.TempDir(), "google-audience")
+	t.Run("an address carrying a credential", func(t *testing.T) {
+		err := sameGoogleAudience(brokeraddr.New("https://demouser7q:demopass9z-not-a-secret@secrets.example"), audience, kept, path)
+		if err == nil {
+			t.Fatal("a changed audience was taken")
+		}
+		printed := err.Error() + "\n" + fmt.Sprintf("%+v %#v", err, err)
+		for _, marker := range []string{"demouser7q", "demopass9z-not-a-secret", "the-kept-one"} {
+			if strings.Contains(printed, marker) {
+				t.Errorf("the refusal printed %q: %s", marker, printed)
+			}
+		}
+		if !strings.Contains(err.Error(), brokeraddr.WordsNotPrinted) {
+			t.Errorf("the refusal = %q; want %q in place of each audience", err, brokeraddr.WordsNotPrinted)
+		}
+	})
+	t.Run("a clean address", func(t *testing.T) {
+		err := sameGoogleAudience(brokeraddr.New("https://secrets.example"), audience, kept, path)
+		if err == nil {
+			t.Fatal("a changed audience was taken")
+		}
+		for _, want := range []string{strconv.Quote(audience), strconv.Quote(kept), "https://secrets.example"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("the refusal = %q; want it to name %s", err, want)
+			}
+		}
+	})
 }

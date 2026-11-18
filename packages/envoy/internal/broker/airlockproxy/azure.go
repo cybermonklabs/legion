@@ -9,7 +9,7 @@
 // The swap: a later request carrying that placeholder is an ordinary header swap of the access
 // token behind it (airlock.Decide and airlock.Rewrite, like every other pair), and a pod that
 // holds no token for the slot does the exchange for itself from what the slot carries, as each
-// pod mints the other kinds for itself.
+// pod mints the other types for itself.
 //
 // Both paths hold the exchange to the token authority's host and to the application and the
 // tenant the name's own document names (azureBound), and build its form from fixed fields

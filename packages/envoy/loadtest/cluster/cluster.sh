@@ -518,7 +518,8 @@ registry_digest() {
     [ -n "$realm" ] || return 1
     token=$(curl -fsS --max-time 30 "$realm?service=$service&scope=repository:$repo:pull" | jq -r '.token // .access_token // empty') || return 1
     [ -n "$token" ] || return 1
-    headers=$(curl -sSI --max-time 30 -H "Authorization: Bearer $token" -H "Accept: $MANIFEST_TYPES" "$url" | tr -d '\r') || return 1
+    # The token reaches curl on standard input from printf, a shell builtin, in no command line.
+    headers=$(printf 'Authorization: Bearer %s' "$token" | curl -sSI --max-time 30 -H @- -H "Accept: $MANIFEST_TYPES" "$url" | tr -d '\r') || return 1
     first=${headers%%$'\n'*}
   fi
   [[ $first =~ ^HTTP/[0-9.]+\ 200 ]] || return 1
@@ -539,7 +540,7 @@ resolve_image() {
     return 1
   fi
   if ! got=$(registry_digest "$registry" "$repo" "${digest:-$tag}"); then
-    note "image '$ref' does not resolve: $registry has no manifest for it"
+    note "image '$ref' does not resolve: $registry answered no manifest for it, or could not be reached"
     return 1
   fi
   if [ -n "$digest" ] && [ "$got" != "$digest" ]; then

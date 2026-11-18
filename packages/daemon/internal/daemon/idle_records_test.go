@@ -93,9 +93,7 @@ func TestAHeldPodRecordsTheRulesOwnReason(t *testing.T) {
 			t.Fatalf("report background work: %v", err)
 		}
 
-		rig.w.releaseIdlePod(ctx, rig.issue.Key)
-
-		if got := rig.rows(t); len(got) != 0 {
+		if got := rig.queuedBy(t, func() { rig.w.releaseIdlePod(ctx, rig.issue.Key) }); len(got) != 0 {
 			t.Fatalf("queued rows = %v, want none: the pod is held", got)
 		}
 		records := rig.records(t)
