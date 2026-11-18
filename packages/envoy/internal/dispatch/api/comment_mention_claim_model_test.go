@@ -442,6 +442,8 @@ type cmRun struct {
 	outages          int
 	rows             [2]cmRow
 	took             []int
+	// sweptFirst is that the delivery sweep has claimed A-1's attempt, whose claim lapsed (owed).
+	sweptFirst bool
 	// gs is the sender's live goroutines in the order they started, and released the one the step
 	// being taken let go on. A step lets one of them go on, or starts at most one - a commit's or a
 	// hand-off's enqueue, a timer's unpark, a period's refresh - and the sender's goroutines start
@@ -651,10 +653,11 @@ func (r *cmRun) commit(c int) {
 }
 
 // deliver is s1 taking comment c, by road; bySweep is that the delivery sweep sent it itself. The
-// sweep sends only an attempt whose claim has lapsed - its sender stopped, or wrote no claim for
+// sweep takes only an attempt whose claim has lapsed - its sender stopped, or wrote no claim for
 // a lease - and sends the attempts it finds owed side by side (resumeOwedDeliveries), so it keeps
-// no order between two comments: an A-2 it sends first is "lapsed", which the spec puts outside
-// this change and the model counts apart.
+// no order between two comments: an A-2 it sends first, and an A-2 the lane sends after the sweep
+// took A-1, are "lapsed", which the spec puts outside this change and the model counts apart.
+// Every other A-2 that s1 takes first is "order".
 func (r *cmRun) deliver(c int, road string, bySweep bool) {
 	r.log("%s sends %s to s1", road, cmComments[c])
 	switch {
@@ -662,6 +665,8 @@ func (r *cmRun) deliver(c int, road string, bySweep bool) {
 		r.fail("twice", "s1 takes %s a second time", cmComments[c])
 	case c == 1 && !slices.Contains(r.took, 0) && bySweep:
 		r.fail("lapsed", "the delivery sweep sends A-2, whose claim lapsed, before A-1")
+	case c == 1 && !slices.Contains(r.took, 0) && r.sweptFirst:
+		r.fail("lapsed", "s1 takes A-2 after the delivery sweep took A-1, whose claim lapsed, and before A-1")
 	case c == 1 && !slices.Contains(r.took, 0):
 		r.fail("order", "s1 takes A-2 before A-1")
 	}
@@ -744,6 +749,9 @@ func (r *cmRun) runTry(try *cmTry) {
 func (r *cmRun) sweepClaims(c int) {
 	row := &r.rows[c]
 	row.claim = r.now()
+	if c == 0 {
+		r.sweptFirst = true
+	}
 	by, waits := r.holder(c)
 	if !waits {
 		r.deliver(c, fmt.Sprintf("the delivery sweep claims %s's owed attempt %s and", cmComments[c], r.name(row.claim)), true)

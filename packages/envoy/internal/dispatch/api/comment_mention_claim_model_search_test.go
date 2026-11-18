@@ -116,8 +116,8 @@ func (r *cmRun) key() string {
 			!s.heldSince.IsZero(), s.warned)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "s%d pub%t/%t took%v broke%v failed%d out%d|", r.slot, r.published, r.publishedBetween, r.took,
-		r.broke, r.readFailures, r.outages)
+	fmt.Fprintf(&b, "s%d pub%t/%t took%v swept%t broke%v failed%d out%d|", r.slot, r.published, r.publishedBetween, r.took,
+		r.sweptFirst, r.broke, r.readFailures, r.outages)
 	for _, row := range r.rows {
 		fmt.Fprintf(&b, "row %t %t %s %s|", row.committed, row.pending, canon(row.created), canon(row.claim))
 	}
@@ -319,8 +319,8 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 // learn nothing of a lost refresh must trust a stale claim, and, in the full run, the refresh and
 // take before this change, under the same failures, must trust a stale claim, drop a send and let
 // A-2 pass A-1. After a claim lapses the delivery sweep keeps no order between two comments, which
-// the spec puts outside this change: the table counts those runs in their own column, and they
-// fail nothing.
+// the spec puts outside this change: an A-2 the sweep sends first, or one the lane sends after the
+// sweep took A-1, is counted in its own column of the table, and fails nothing.
 //
 // CI runs three periods (the envoy-go-claim-model job), which is enough for a refresh to re-read
 // and write a row between a try's answer and its park and for a send to park after a failed read;
@@ -358,7 +358,7 @@ func TestTheMentionSenderClaimModel(t *testing.T) {
 		)
 	}
 	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
-	t.Logf("| sender | periods | states | longest run | stale claims | dropped sends | A-2 before A-1 | sent twice | held behind event 0 | A-2 first by the sweep after its claim lapsed | time |")
+	t.Logf("| sender | periods | states | longest run | stale claims | dropped sends | A-2 before A-1 | sent twice | held behind event 0 | A-2 first after the sweep took a lapsed claim | time |")
 	t.Logf("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
 	for _, run := range runs {
 		result := cmExplore(t, run.v, run.periods)
