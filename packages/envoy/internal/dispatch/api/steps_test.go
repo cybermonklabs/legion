@@ -118,17 +118,6 @@ func stepOf(t *testing.T, handler http.Handler, issue, id string) model.StepReco
 	return steps[index]
 }
 
-// stepJSON is a record as the wire carries it, so two records compare field by field and a
-// difference prints whole.
-func stepJSON(t *testing.T, step model.StepRecord) string {
-	t.Helper()
-	encoded, err := json.Marshal(step)
-	if err != nil {
-		t.Fatalf("encode step %s: %v", step.ID, err)
-	}
-	return string(encoded)
-}
-
 // A start and then an end of one run, as the daemon writes them, read back by a person: one task,
 // one record holding the start's fields and the end's, and its attempt. The end's answer is the
 // record as the read lists it.
@@ -139,7 +128,7 @@ func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 
 	started := putStepOK(t, handler, issue, id, implementerStart(daemonSession("LEG")))
 	if started.StartedAt == nil || !started.StartedAt.Equal(stepStart) || started.Result != "" || started.EndedAt != nil {
-		t.Fatalf("the start's answer is %s, want the run started at %s and not ended", stepJSON(t, started), stepStart)
+		t.Fatalf("the start's answer is %s, want the run started at %s and not ended", asJSON(t, started), stepStart)
 	}
 	ended := putStepOK(t, handler, issue, id, implementerEnd(daemonSession("LEG"), "passed", stepEnd))
 
@@ -152,11 +141,11 @@ func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 		Type: "implementation", Agent: "legion-leg-leg-1-implementer", Model: "anthropic/claude-opus-5",
 		Generation: 1, Attempt: 1, StartedAt: &stepStart, EndedAt: &stepEnd, Result: "passed",
 	}
-	if got := stepJSON(t, read.Tasks[0].Steps[0]); got != stepJSON(t, want) {
-		t.Fatalf("the read lists\n%s\nwant\n%s", got, stepJSON(t, want))
+	if got := asJSON(t, read.Tasks[0].Steps[0]); got != asJSON(t, want) {
+		t.Fatalf("the read lists\n%s\nwant\n%s", got, asJSON(t, want))
 	}
-	if got := stepJSON(t, ended); got != stepJSON(t, want) {
-		t.Fatalf("the end's answer is\n%s\nwant the record as the read lists it\n%s", got, stepJSON(t, want))
+	if got := asJSON(t, ended); got != asJSON(t, want) {
+		t.Fatalf("the end's answer is\n%s\nwant the record as the read lists it\n%s", got, asJSON(t, want))
 	}
 	// A record whose run never reported answers no report and no step it returned to, as null.
 	raw := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue+"/steps", nil, "alice").Body.String()
@@ -181,7 +170,7 @@ func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 		"agent": "legion-leg-leg-1-implementer", "started_at": stepStart,
 	}))
 	if started.Session != "" || started.Model != "" {
-		t.Fatalf("the start answers %s, want no session and no model yet", stepJSON(t, started))
+		t.Fatalf("the start answers %s, want no session and no model yet", asJSON(t, started))
 	}
 	ended := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
 		"result": "failed", "ended_at": stepEnd, "model": "anthropic/claude-opus-5",
@@ -195,17 +184,17 @@ func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 		Model: "anthropic/claude-opus-5", Generation: 2, Attempt: 1, StartedAt: &stepStart,
 		EndedAt: &stepEnd, Result: "failed", ReturnedTo: &returned, Report: &report,
 	}
-	if got := stepJSON(t, ended); got != stepJSON(t, want) {
-		t.Fatalf("the end's answer is\n%s\nwant\n%s", got, stepJSON(t, want))
+	if got := asJSON(t, ended); got != asJSON(t, want) {
+		t.Fatalf("the end's answer is\n%s\nwant\n%s", got, asJSON(t, want))
 	}
 	again := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
 		"result": "failed", "ended_at": stepEnd, "session": "ses_a_later_session",
 	}))
-	if got := stepJSON(t, again); got != stepJSON(t, want) {
-		t.Fatalf("the repeated end's answer is\n%s\nwant the first end's session\n%s", got, stepJSON(t, want))
+	if got := asJSON(t, again); got != asJSON(t, want) {
+		t.Fatalf("the repeated end's answer is\n%s\nwant the first end's session\n%s", got, asJSON(t, want))
 	}
-	if steps := stepsOf(t, handler, issue); len(steps) != 1 || stepJSON(t, steps[0]) != stepJSON(t, want) {
-		t.Fatalf("the read lists %+v, want the one record\n%s", steps, stepJSON(t, want))
+	if steps := stepsOf(t, handler, issue); len(steps) != 1 || asJSON(t, steps[0]) != asJSON(t, want) {
+		t.Fatalf("the read lists %+v, want the one record\n%s", steps, asJSON(t, want))
 	}
 }
 
@@ -222,7 +211,7 @@ func TestASecondRunOfAStepAnswersAttemptTwo(t *testing.T) {
 	againStart, againEnd := stepEnd.Add(time.Minute), stepEnd.Add(time.Hour)
 	started := putStepOK(t, handler, issue, second, withStepFields(implementerStart(daemon), map[string]any{"started_at": againStart}))
 	if started.Attempt != 2 || started.Generation != 1 {
-		t.Fatalf("the second run's start answers %s, want attempt 2 of generation 1", stepJSON(t, started))
+		t.Fatalf("the second run's start answers %s, want attempt 2 of generation 1", asJSON(t, started))
 	}
 	ended := putStepOK(t, handler, issue, second, implementerEnd(daemon, "passed", againEnd))
 	want := model.StepRecord{
@@ -230,12 +219,12 @@ func TestASecondRunOfAStepAnswersAttemptTwo(t *testing.T) {
 		Type: "implementation", Agent: "legion-leg-leg-1-implementer", Model: "anthropic/claude-opus-5",
 		Generation: 1, Attempt: 2, StartedAt: &againStart, EndedAt: &againEnd, Result: "passed",
 	}
-	if got := stepJSON(t, ended); got != stepJSON(t, want) {
-		t.Fatalf("the second run's end answers\n%s\nwant\n%s", got, stepJSON(t, want))
+	if got := asJSON(t, ended); got != asJSON(t, want) {
+		t.Fatalf("the second run's end answers\n%s\nwant\n%s", got, asJSON(t, want))
 	}
 	steps := stepsOf(t, handler, issue)
-	if len(steps) != 2 || steps[0].ID != first || steps[0].Attempt != 1 || stepJSON(t, steps[1]) != stepJSON(t, want) {
-		t.Fatalf("the read lists %+v, want the first run at attempt 1 and then\n%s", steps, stepJSON(t, want))
+	if len(steps) != 2 || steps[0].ID != first || steps[0].Attempt != 1 || asJSON(t, steps[1]) != asJSON(t, want) {
+		t.Fatalf("the read lists %+v, want the first run at attempt 1 and then\n%s", steps, asJSON(t, want))
 	}
 }
 
@@ -308,7 +297,7 @@ func TestAClosedIssueTakesItsMergeRecord(t *testing.T) {
 		"generation": 1, "result": "passed", "ended_at": stepEnd,
 	})
 	if merged.Kind != "merge" || merged.Step != 0 || merged.Agent != "" || merged.Result != "passed" || merged.Attempt != 1 {
-		t.Fatalf("the merge record is %s, want a merge at step 0 with no agent, passed, attempt 1", stepJSON(t, merged))
+		t.Fatalf("the merge record is %s, want a merge at step 0 with no agent, passed, attempt 1", asJSON(t, merged))
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].ID != id {
 		t.Fatalf("the closed issue's read lists %+v, want its merge record", steps)
@@ -461,10 +450,10 @@ func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
 		id := uuid.NewString()
 		written := putStepOK(t, handler, issue, id, withStepFields(implementerStart(daemonSession("LEG")), map[string]any{"started_at": row.input}))
 		if written.StartedAt == nil || written.StartedAt.Format(time.RFC3339Nano) != row.want {
-			t.Fatalf("the write of %s answers %s, want start %s", row.input, stepJSON(t, written), row.want)
+			t.Fatalf("the write of %s answers %s, want start %s", row.input, asJSON(t, written), row.want)
 		}
 		if step := stepOf(t, handler, issue, id); step.StartedAt == nil || step.StartedAt.Format(time.RFC3339Nano) != row.want {
-			t.Fatalf("the read lists %s, want start %s", stepJSON(t, step), row.want)
+			t.Fatalf("the read lists %s, want start %s", asJSON(t, step), row.want)
 		}
 	}
 }
@@ -520,7 +509,7 @@ func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
 		step, listed := byID[id]
 		if !listed || step.StartedAt == nil || !step.StartedAt.Equal(stepStart) || step.Agent == "" ||
 			step.Result != "passed" || step.EndedAt == nil || !step.EndedAt.Equal(stepEnd) || step.Model == "" {
-			t.Fatalf("round %d: the read lists %s, want the start's started_at and agent beside the end's result, ended_at and model", round, stepJSON(t, step))
+			t.Fatalf("round %d: the read lists %s, want the start's started_at and agent beside the end's result, ended_at and model", round, asJSON(t, step))
 		}
 	}
 	if len(steps) != rounds {
@@ -538,7 +527,7 @@ func TestAnEndPutTwiceKeepsItsFirstEnd(t *testing.T) {
 
 	again := putStepOK(t, handler, issue, id, implementerEnd(daemonSession("LEG"), "passed", stepEnd.Add(time.Hour)))
 	if again.Result != "stopped" || again.EndedAt == nil || !again.EndedAt.Equal(stepEnd) {
-		t.Fatalf("the second end answers %s, want the first end, stopped at %s", stepJSON(t, again), stepEnd)
+		t.Fatalf("the second end answers %s, want the first end, stopped at %s", asJSON(t, again), stepEnd)
 	}
 	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].Result != "stopped" || !steps[0].EndedAt.Equal(stepEnd) {
 		t.Fatalf("the read lists %+v, want the one run ended stopped at %s", steps, stepEnd)
@@ -567,17 +556,17 @@ func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
 			}
 			ended := putStepOK(t, handler, issue, id, end)
 			if ended.ReturnedTo == nil || *ended.ReturnedTo != 0 {
-				t.Fatalf("the end answers %s, want returned_to 0, not null", stepJSON(t, ended))
+				t.Fatalf("the end answers %s, want returned_to 0, not null", asJSON(t, ended))
 			}
 			if endFirst {
 				putStepOK(t, handler, issue, id, start)
 			}
 			again := putStepOK(t, handler, issue, id, withStepFields(end, map[string]any{"returned_to": 2}))
 			if again.ReturnedTo == nil || *again.ReturnedTo != 0 {
-				t.Fatalf("the later end answers %s, want the first return to place 0", stepJSON(t, again))
+				t.Fatalf("the later end answers %s, want the first return to place 0", asJSON(t, again))
 			}
 			if step := stepOf(t, handler, issue, id); step.ReturnedTo == nil || *step.ReturnedTo != 0 {
-				t.Fatalf("the read lists %s, want returned_to 0, not null", stepJSON(t, step))
+				t.Fatalf("the read lists %s, want returned_to 0, not null", asJSON(t, step))
 			}
 		})
 	}
