@@ -906,8 +906,8 @@
       "capture": "redact.oauth2-body",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "[]byte(Field(string(re.Body)))",
-        "replacement": "[]byte(string(re.Body))"
+        "preimage": "[]byte(Field(Tokens(string(re.Body), -1, carried...)))",
+        "replacement": "[]byte(Tokens(string(re.Body), -1, carried...))"
       }
     },
     {
