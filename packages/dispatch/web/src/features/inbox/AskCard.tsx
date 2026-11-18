@@ -81,7 +81,6 @@ import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
-import { clearReplyDraft } from "./reply-drafts";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 import { useAskHandOn } from "./useAskHandOn";
 
@@ -482,11 +481,6 @@ export function AskCard({
   // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
   // round-trips down from the parent.
   const currentAsk = completed ?? displayedAsk;
-  // A resolved ask takes no more replies, so an unsent one has nowhere to go.
-  const resolved = displayedAsk.state === "resolved" || currentAsk.state === "resolved";
-  useEffect(() => {
-    if (resolved) clearReplyDraft(displayedAsk.id);
-  }, [displayedAsk.id, resolved]);
   // The count comes from `displayedAsk`, never from `completed`: answering an ask does not move
   // a backlink count, and the answer response is the one ask shape that carries no count.
   const referencedByCount = displayedAsk.referenced_by_count ?? 0;

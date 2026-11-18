@@ -125,7 +125,7 @@ test("the Agents heading folds rows that are exactly the person's pinned agents 
     await expect(railAgentRow(page, BETA).getByTitle(/^New repl/)).toHaveCount(0);
 
     // Below 1280 pixels the rail is the sheet the Menu control opened, and these are its rows.
-    if (await railIsSheet(page)) {
+    if (railIsSheet(page)) {
       await expect(
         page.getByRole("dialog", { name: "Navigation" }).locator(`#${RAIL_AGENTS_ID} > li`)
       ).toHaveCount(2);

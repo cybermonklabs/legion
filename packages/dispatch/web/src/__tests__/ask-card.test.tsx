@@ -1668,7 +1668,7 @@ test("AskCard keeps the thread and reply composer visible after the ask is answe
   }
 });
 
-test("the thread composer only appears after an ask is answered", async () => {
+test("the thread composer appears only once an ask is no longer open", async () => {
   const openAsk = ask();
   const { view: openView } = renderCard(
     <AskCard ask={openAsk} getAskThread={emptyThread(openAsk)} />
@@ -1765,7 +1765,7 @@ test("AskCard surfaces a retryable error when asking back fails", async () => {
   }
 });
 
-test("a resolved ask keeps its question and options and carries a resolution badge", async () => {
+test("a resolved ask keeps its question and options, carries a resolution badge, and still takes a reply", async () => {
   const input = {
     ...ask({
       options: [{ label: "Ship" }, { label: "Hold" }],
@@ -1791,7 +1791,8 @@ test("a resolved ask keeps its question and options and carries a resolution bad
       throw new Error("resolved Ask fixture is missing its resolution");
     }
     await waitFor(() => expect(view.getAllByText(resolution.reason)).toHaveLength(1));
-    expect(view.queryByRole("button", { name: "Reply" })).not.toBeInTheDocument();
+    // The conversation under a settled question goes on: the thread keeps its reply composer.
+    expect(view.getByRole("textbox", { name: "Reply" })).toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -2040,7 +2041,7 @@ test("a link to a folded reply opens the fold and still lets the reader collapse
   }
 });
 
-test("AskCard with no replies offers Write a reply only after an answer, and retries a failed thread fetch", async () => {
+test("AskCard with no replies offers Write a reply only once the ask is not open, and retries a failed thread fetch", async () => {
   const user = userEvent.setup();
   const openInput = ask();
   const { view: open } = renderCard(

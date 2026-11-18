@@ -463,6 +463,49 @@ test("a compact answered ask's Write a reply opens its composer as the next keyb
   }
 });
 
+// The owner's case (INFRA-3677): a question its agent retracted still takes a reply in its
+// thread, and the reply is drawn under the ask.
+test("a retracted ask takes a reply in its thread, drawn under the ask", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Reply after a retraction" });
+  const ask = await createAsk(issue.key, { question: "Ship the retracted ask?" }, agent);
+  await resolveAsk(
+    ask.id,
+    { kind: "retracted", reason: "A newer question supersedes this one." },
+    agent
+  );
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const askTurn = page
+      .getByRole("region", { name: "Conversation" })
+      .locator(`[data-turn="ask:${ask.id}"]`);
+    await expect(askTurn.getByTestId("ask-resolution-badge")).toHaveText("Retracted");
+
+    const writeReply = askTurn.getByRole("button", { exact: true, name: "Write a reply" });
+    await expect(writeReply).toBeVisible();
+    await writeReply.click();
+    await askTurn.getByRole("textbox", { name: "Reply" }).fill("Noted. What replaced it?");
+    await askTurn.getByRole("button", { exact: true, name: "Reply" }).click();
+
+    const replies = askTurn.getByRole("region", { name: "Replies" }).locator("li");
+    await expect(replies).toHaveCount(1);
+    await expect(replies.first()).toContainText("Noted. What replaced it?");
+    // The server holds it under the ask, which stays retracted.
+    await expect
+      .poll(() => getAsk(ask.id))
+      .toMatchObject({
+        ask: { resolution: { kind: "retracted" }, state: "resolved" },
+        replies: [expect.objectContaining({ body: "Noted. What replaced it?" })],
+      });
+    await expect(askTurn.getByTestId("ask-resolution-badge")).toHaveText("Retracted");
+  } finally {
+    await alice.close();
+  }
+});
+
 // @pr: Create through answer to close: the ask is answered where the reader is, with no event row and the cards left mounted.
 test("Conversation answers an ask in place, draws no event row, and keeps its cards mounted across the filter @pr", async ({
   browser,
