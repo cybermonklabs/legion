@@ -1,0 +1,4 @@
+# The per-test bound: a watch beside every `bun test` run here, which names a test that runs past
+# the bound and ends the run (test/per-test-bound.ts says why Bun's own timeout cannot).
+[test]
+preload = ["./test/per-test-bound.ts"]
