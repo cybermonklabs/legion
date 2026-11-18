@@ -33,6 +33,9 @@ package api
 // enumeration (`valueStrips`, which reads answers.go's `EnumeratedFields`). The shape gate in this
 // package's tests (`contract_shapes_test.go`) and `.github/scripts/check-daemon-api-contract.sh`,
 // which keeps each contract's record fixed once the base carries it, refuse a change that does not.
+// Under `settings` the rule covers only the top-level keys a supported reader types (answers.go's
+// `typedSettings`): a settings key no reader types needs no band, no stand-in and no contract
+// number, only a value in the settings fixture, which the field census reads.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.
