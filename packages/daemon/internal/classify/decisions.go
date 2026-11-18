@@ -1023,7 +1023,7 @@ func boundedPushes(pushes []record.ClassifiedPush, head string) ([]record.Classi
 func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	classified := ClassifySettlement(pr, candidate)
 	if classified == SettlementStatusesOnly && candidate.Head == pr.CheckedHead {
-		pr.Statuses = mergedStatuses(pr, candidate, false)
+		pr.Statuses = mergedStatuses(pr, candidate, SettlementStatusesOnly)
 		return pr, true
 	}
 	if classified != SettlementNewer {
@@ -1035,7 +1035,7 @@ func ApplySettlement(pr record.PullRequest, candidate SettlementCandidate) (reco
 	if candidate.Head == pr.CheckedHead {
 		pr.Generation = candidate.Generation
 		pr.Snapshot = candidate.Snapshot
-		pr.Statuses = mergedStatuses(pr, candidate, true)
+		pr.Statuses = mergedStatuses(pr, candidate, SettlementNewer)
 	}
 	pr.Failing = append([]string(nil), outcome.Failing...)
 	pr.Cancelled = append([]string(nil), outcome.Cancelled...)

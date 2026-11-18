@@ -200,6 +200,10 @@ func settledAtH1(t *testing.T, underRun bool) record.PullRequest {
 	return pr
 }
 
+// green is deploy's success created at minute 1, before the failure of deploy settledAtH1 keeps
+// at minute 2, so it is no news of deploy against that pull request.
+var green = []record.CommitStatus{statusOf("deploy", record.CommitStatusSuccess, 1)}
+
 // withAndUnderRun runs check as the subtest name with no head run open, and again as name under
 // an open head run, as settledAtH1 sets each up.
 func withAndUnderRun(t *testing.T, name string, check func(t *testing.T, underRun bool)) {
@@ -213,29 +217,36 @@ func withAndUnderRun(t *testing.T, name string, check func(t *testing.T, underRu
 	}
 }
 
-// A commit status created before the one the pull request keeps for its context changes nothing
-// of the kept statuses where the settlement naming it is applied for its check runs: one newer by
-// its generation or by its check runs is applied at its own generation and snapshot, and the kept
-// status of the context stays as it is. Each is judged with no head run open and with one open,
-// where the settlement is a step of the run.
-func TestAnOlderStatusOfAContextStaysOutOfAnAppliedSettlement(t *testing.T) {
-	// green is deploy's success created before the kept failure, so it is no news of deploy.
-	green := []record.CommitStatus{statusOf("deploy", record.CommitStatusSuccess, 1)}
+// A settlement applied whole, newer by its generation or by its check runs and so applied at its
+// own generation and snapshot, merges the commit statuses it names into the kept ones by
+// created_at: a status created before the kept one of its context leaves the kept one as it is,
+// and one created in the same second takes its state, since the settlement is then the newer
+// view. Each is judged with no head run open and with one open, where the settlement is a step of
+// the run.
+func TestASettlementAppliedWholeMergesItsStatusesByCreatedAt(t *testing.T) {
+	// failedKept is the status settledAtH1 keeps: deploy's failure created at minute 2.
+	failedKept := []record.CommitStatus{keptStatus("deploy", record.CommitStatusFailure, 2, "h1")}
 	for _, tc := range []struct {
 		name      string
 		candidate SettlementCandidate
+		// statuses is what the pull request keeps once the settlement is applied.
+		statuses []record.CommitStatus
 	}{
 		{"a newer generation", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 6,
-			Snapshot: "h1-6", Failing: []string{}, Statuses: green}},
+			Snapshot: "h1-6", Failing: []string{}, Statuses: green}, failedKept},
 		{"a newer run", SettlementCandidate{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 11}}, Generation: 6,
-			Snapshot: "h1-6", Failing: []string{}, Statuses: green}},
+			Snapshot: "h1-6", Failing: []string{}, Statuses: green}, failedKept},
+		{"a newer generation with a status created in the same second as the kept one", SettlementCandidate{Head: "h1",
+			CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 6, Snapshot: "h1-6", Failing: []string{},
+			Statuses: []record.CommitStatus{statusOf("deploy", record.CommitStatusSuccess, 2)}},
+			[]record.CommitStatus{keptStatus("deploy", record.CommitStatusSuccess, 2, "h1")}},
 	} {
 		withAndUnderRun(t, tc.name, func(t *testing.T, underRun bool) {
-			pr := settledAtH1(t, underRun)
-			got, changed := ApplyCheckSettlement(pr, tc.candidate)
+			got, changed := ApplyCheckSettlement(settledAtH1(t, underRun), tc.candidate)
 			got = stored(t, got)
-			if !reflect.DeepEqual(got.Statuses, pr.Statuses) {
-				t.Fatalf("statuses %+v; want %+v kept: no status the settlement names is newer than deploy's kept failure", got.Statuses, pr.Statuses)
+			if !reflect.DeepEqual(got.Statuses, tc.statuses) {
+				t.Fatalf("statuses %+v; want %+v kept: a settlement applied whole takes each status it names that is no older than the kept one of its context",
+					got.Statuses, tc.statuses)
 			}
 			if !changed || got.Generation != tc.candidate.Generation || got.Snapshot != tc.candidate.Snapshot {
 				t.Fatalf("changed %t, generation %d, snapshot %q; want the settlement applied at %d, %q",
@@ -253,8 +264,6 @@ func TestAnOlderStatusOfAContextStaysOutOfAnAppliedSettlement(t *testing.T) {
 // head run open and with one open, where the settlement is a step of the run and the replay with
 // it changes the same and no more.
 func TestAnOlderStatusOfAContextChangesNothing(t *testing.T) {
-	// green is deploy's success created before the kept failure, so it is no news of deploy.
-	green := []record.CommitStatus{statusOf("deploy", record.CommitStatusSuccess, 1)}
 	for _, tc := range []struct {
 		name      string
 		candidate SettlementCandidate

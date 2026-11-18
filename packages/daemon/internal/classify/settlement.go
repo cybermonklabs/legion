@@ -107,22 +107,14 @@ func ClassifySettlement(pr record.PullRequest, in SettlementCandidate) Settlemen
 		return SettlementNewer
 	}
 
-	switch CompareAttemptSets(pr.CheckRuns, in.CheckRuns) {
-	case AttemptSetNewer, AttemptSetMixed:
-		return SettlementNewer
-	case AttemptSetOlder:
-		if statusNews(pr, in) {
-			return SettlementStatusesOnly
-		}
-		return SettlementStale
-	}
-	if in.Generation > pr.Generation {
+	order := CompareAttemptSets(pr.CheckRuns, in.CheckRuns)
+	if order == AttemptSetNewer || order == AttemptSetMixed || (order == AttemptSetEqual && in.Generation > pr.Generation) {
 		return SettlementNewer
 	}
 	if statusNews(pr, in) {
 		return SettlementStatusesOnly
 	}
-	if in.Generation < pr.Generation {
+	if order == AttemptSetOlder || in.Generation < pr.Generation {
 		return SettlementStale
 	}
 	if in.Snapshot == pr.Snapshot {
@@ -223,12 +215,12 @@ func stampedRuns(in SettlementCandidate) []record.AttemptRun {
 // mergedStatuses is the statuses pr keeps for in.Head merged with in's: for each context the
 // entry with the later created_at, each stamped with in.Head, which is how the pull request keeps
 // them (record.PullRequest.Statuses), in context order. On an equal created_at the newer view's
-// entry stands: in's where newer says in is applied whole, and the kept one where in changes its
-// statuses alone (SettlementStatusesOnly), since in is then the older view. A status stamped with
-// another head is dropped, a context in leaves out stays as it is kept, and an older status of a
-// context never puts back a state a newer one replaced. It is an empty list where neither names
-// any.
-func mergedStatuses(pr record.PullRequest, in SettlementCandidate, newer bool) []record.CommitStatus {
+// entry stands: in's where classified says in is applied whole (SettlementNewer), and the kept
+// one where it says in changes its statuses alone (SettlementStatusesOnly), since in is then the
+// older view. A status stamped with another head is dropped, a context in leaves out stays as it
+// is kept, and an older status of a context never puts back a state a newer one replaced. It is
+// an empty list where neither names any.
+func mergedStatuses(pr record.PullRequest, in SettlementCandidate, classified SettlementClassification) []record.CommitStatus {
 	byContext := make(map[string]record.CommitStatus, len(pr.Statuses)+len(in.Statuses))
 	for _, status := range pr.Statuses {
 		if status.StampedWith(in.Head) {
@@ -236,7 +228,8 @@ func mergedStatuses(pr record.PullRequest, in SettlementCandidate, newer bool) [
 		}
 	}
 	for _, status := range in.Statuses {
-		if kept, held := byContext[status.Context]; held && (kept.CreatedAt.After(status.CreatedAt) || !newer && kept.CreatedAt.Equal(status.CreatedAt)) {
+		if kept, held := byContext[status.Context]; held && (kept.CreatedAt.After(status.CreatedAt) ||
+			(classified == SettlementStatusesOnly && kept.CreatedAt.Equal(status.CreatedAt))) {
 			continue
 		}
 		status.Head = in.Head
