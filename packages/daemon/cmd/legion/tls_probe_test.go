@@ -212,6 +212,27 @@ func TestImageTLSClientsCoverTheWorkerInventory(t *testing.T) {
 	}
 }
 
+// workerTLSClients calls itself the complete TLS client inventory of the worker image. GNU wget
+// (the `wget` the capability check's toolchain row requires on PATH, packages/daemon/internal/
+// capabilities/image.go) and git (the PATH's git, which fetches over https with its own TLS
+// library) are TLS clients on that PATH, so each must be probed against both refused chains and
+// the control like every other client. wget is on the floor every deployment's image is held to,
+// so its client must not be one an image may lack and still pass.
+func TestWorkerTLSInventoryHoldsGNUWgetAndGit(t *testing.T) {
+	clients := map[string]tlsClient{}
+	for _, client := range imageTLSClients("omp", nil, "", "") {
+		clients[client.name()] = client
+	}
+	for _, name := range []string{"wget", "git"} {
+		if _, ok := clients[name]; !ok {
+			t.Errorf("the TLS client inventory %q holds no %s client, although %s is a TLS client on the image's PATH", workerTLSClientNames(), name, name)
+		}
+	}
+	if _, optional := clients["wget"].(tlsOptionalClient); optional {
+		t.Errorf("the wget TLS client is optional, but the toolchain capability row requires wget on PATH")
+	}
+}
+
 // imageOptionalTLSClients returns the image's optional clients by name, each of gcloud, bq, az and
 // mise present.
 func imageOptionalTLSClients(t *testing.T, stateDir string) map[string]tlsOptionalClient {
