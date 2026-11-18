@@ -47,8 +47,8 @@ func TestAWayBackThatIsNotThereIsAnError(t *testing.T) {
 }
 
 // The roll forward of a rollback of the release that records each step carries its way back in
-// its header: five statements, from the insert that keeps each issue's witness to the delete of
-// the roll forward's own version row.
+// its header: two statements on five lines, the insert that keeps each issue's witness and the
+// delete of the roll forward's own version row.
 func TestTheStepRecordsRollForwardCarriesItsWayBack(t *testing.T) {
 	block, err := WayBack(20261117064152)
 	if err != nil {
