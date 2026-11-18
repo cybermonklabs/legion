@@ -824,11 +824,11 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: `projects key "demo" must match ^[A-Z][A-Z0-9]*$`,
 		},
 		{
-			// The project's repositories are Dispatch's mapping, so a file that still names one is
-			// refused, naming where they are set.
+			// Dispatch holds the project's repository mapping, so a file that still names a
+			// repository is refused, naming where the mapping is set.
 			name: "a project names its repository",
 			body: strings.Replace(minimalFile, "DEMO: {}", "DEMO: { repo: acme/widgets }", 1),
-			want: `Unknown key "projects.DEMO.repo": the project's repositories are Dispatch's mapping (Settings → Repositories → Projects)`,
+			want: `Unknown key "projects.DEMO.repo": Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`,
 		},
 		{
 			name: "review_workflows is no longer a key",
@@ -1776,7 +1776,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		},
 		{
 			key: "max_recursion_depth", line: "max_recursion_depth: 8", class: tossed,
-			want: "unknown key max_recursion_depth: an architect spawns no worker and no sub-architect (the daemon starts every phase, and only the operator starts any other claim), so there is no spawn recursion to bound",
+			want: "unknown key max_recursion_depth: no agent starts a worker or an architect: the daemon starts every phase worker and every child's architect, one per issue, and the admission cap bounds how many issues run, so there is no spawn recursion to bound",
 		},
 
 		{key: "dispatch_mcp_url", line: "dispatch_mcp_url: https://dispatch.example/mcp", class: migration, want: wantDispatchMcpURLMessage},

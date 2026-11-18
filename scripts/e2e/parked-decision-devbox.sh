@@ -703,8 +703,9 @@ manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-l
 cat >"$work/instructions.md" <<'EOF'
 # Parked decision proof instructions
 
-This is a throwaway workflow proof. A tree's root architect starts its tree from the daemon's
-`catch-up` notice as its role says: it writes the spec in the issue's own primary document,
+This is a throwaway workflow proof. A tree's root architect starts its tree from the task its
+start carries and the daemon's `catch-up` notice, as its role says: it writes the spec in the
+issue's own primary document,
 requests the spec's approval when the design gate policy arms the gate, and registers the gate,
 then waits. Apart from that, do not act until a human Dispatch message targeted at your own session
 gives the next exact proof operation; it arrives in your session as a message to you. A message you
