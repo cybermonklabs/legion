@@ -643,7 +643,7 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 		s.connectBound(w, hijacker, placeholder, grant, target, host, connectPort)
 		return
 	}
-	s.connectTunnel(w, r, hijacker, target, addrs, port)
+	s.connectTunnel(w, r, hijacker, target, host, addrs, port)
 }
 
 // connectPortOf is a CONNECT authority's port as a number, and 0 for a port that is no
@@ -715,11 +715,7 @@ func (s *Server) connectBound(w http.ResponseWriter, hijacker http.Hijacker, pla
 // A tunnel that opened writes one line (logTunnel), and a dial that failed writes one
 // (logDialFailure): no request of a tunnel is read, so these are the whole of what the broker
 // knows about where a command went through it.
-func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker http.Hijacker, target string, addrs []netip.Addr, port string) {
-	host, _, err := net.SplitHostPort(target)
-	if err != nil {
-		host = target
-	}
+func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker http.Hijacker, target, host string, addrs []netip.Addr, port string) {
 	upstream, dialed, err := s.dialAddrs(r.Context(), "tcp", addrs, port)
 	if err != nil {
 		s.logDialFailure(r.Context(), host, port, addressList(addrs, port), dialUnreachable, err.Error())

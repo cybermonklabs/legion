@@ -199,7 +199,7 @@ func callerOfContext(ctx context.Context) requests.AirlockConnection {
 }
 
 // dialFields is who a dial was made for and what it was for: the grant, its enrollment, and the
-// session and runtime of the pod behind it, then the host and port the caller asked for and the
+// session and runtime behind it, then the host and port the caller asked for and the
 // address this process asked the kernel for. Never a placeholder and never a value, as the call
 // line (callFields): what a command sent is its headers and its body, and no field here is read
 // from either. The host is the caller's, so every field passes answer.ClipFields as a call

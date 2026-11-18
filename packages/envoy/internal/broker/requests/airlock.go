@@ -462,10 +462,10 @@ func proxyPassword(names map[string]AirlockName) string {
 type AirlockConnection struct {
 	GrantID, EnrollmentID, RequestID string
 	// SessionID and RuntimeID are the enrollment's: the session the grant belongs to, empty for
-	// an enrollment that names none, and the runtime it runs as, a pod's uid. They are read for
-	// the lines the proxy writes about where it dialled (airlockproxy's tunnel and failed-dial
-	// lines), which must name the caller, and they cost nothing: the read below already joins
-	// the enrollment row.
+	// an enrollment that names none, and the runtime it runs as, the enrollment's runtime id (a
+	// pod's uid for a pod enrollment). They are read for the lines the proxy writes about where
+	// it dialled (airlockproxy's tunnel and failed-dial lines), which must name the caller, and
+	// they cost nothing: the read below already joins the enrollment row.
 	SessionID, RuntimeID string
 	Issue                string // the first Dispatch issue key in the request's own signed reason, "" when it names none
 	Expires              *time.Time

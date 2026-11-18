@@ -366,21 +366,21 @@ func (c *logCapture) dialFailures() []logLine { return c.lines(dialFailedMessage
 // row whose CONNECT has answered can be a few instructions ahead of that write.
 func (c *logCapture) tunnelsAtLeast(t *testing.T, n int) []logLine {
 	t.Helper()
-	return c.linesAtLeast(t, tunnelMessage, c.tunnels, n)
+	return c.linesAtLeast(t, tunnelMessage, n)
 }
 
 func (c *logCapture) dialFailuresAtLeast(t *testing.T, n int) []logLine {
 	t.Helper()
-	return c.linesAtLeast(t, dialFailedMessage, c.dialFailures, n)
+	return c.linesAtLeast(t, dialFailedMessage, n)
 }
 
 // linesAtLeast waits for n lines of one message, and fails t rather than hanging when they never
 // come.
-func (c *logCapture) linesAtLeast(t *testing.T, message string, read func() []logLine, n int) []logLine {
+func (c *logCapture) linesAtLeast(t *testing.T, message string, n int) []logLine {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		lines := read()
+		lines := c.lines(message)
 		if len(lines) >= n {
 			return lines
 		}
@@ -415,7 +415,7 @@ func (c *logCapture) lines(message string) []logLine {
 // to be written. It fails the row rather than hanging when the line never comes.
 func (c *logCapture) callsAtLeast(t *testing.T, n int) []logLine {
 	t.Helper()
-	return c.linesAtLeast(t, callMessage, c.calls, n)
+	return c.linesAtLeast(t, callMessage, n)
 }
 
 // rig is one row's whole world: the proxy, what it dials, what it may resolve, the stand-in
