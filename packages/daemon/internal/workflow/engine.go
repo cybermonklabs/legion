@@ -1623,31 +1623,21 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// issue that arrives there and waits must be told why: the notice its architect got at the
 	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
-	switch {
-	case mergedAlready:
-		// No merger starts: a merge GitHub has already made leaves it nothing to merge. The step
-		// starts all the same, under the agent it names (startNamedStep): nobody, and the merge's
-		// close ends it.
+	if !mergedAlready {
+		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
+			return err
+		}
+	}
+	// Two moves start a step no phase worker's start begins, so it starts here, under the agent it
+	// names (startNamedStep): a merge GitHub has already made, which no merger runs and whose close
+	// ends it, and accepting, whose role is the architect, for which start above starts no worker
+	// and only starts a child's failed architect again (reviveArchitect), as every phase start of a
+	// child does.
+	if mergedAlready || row.To == phase.Accepting {
 		if step, ok := standingStep(issue); ok {
 			if err := e.startNamedStep(ctx, tx, issue, step); err != nil {
 				return err
 			}
-		}
-	case row.To == phase.Accepting:
-		// Accepting's role is the architect, so start starts no worker: it only starts a child's
-		// failed architect again (reviveArchitect), as every phase start of a child does. The step
-		// starts under the agent it names (startNamedStep): the architect that owns the issue now.
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
-			return err
-		}
-		if step, ok := standingStep(issue); ok {
-			if err := e.startNamedStep(ctx, tx, issue, step); err != nil {
-				return err
-			}
-		}
-	default:
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
-			return err
 		}
 	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {

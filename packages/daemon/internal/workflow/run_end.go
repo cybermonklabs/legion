@@ -23,11 +23,12 @@ import (
 //     land in that tree (mergeCanLand).
 //
 // The point is SettleFact, which intake.ApplyFact runs after a fact's last handler, in the fact's
-// own transaction and before its commit, and which the daemon's boot reconcile runs the same way
-// for the admission pass it applies in a transaction of its own (intake.OpenSettlers). It reads the
-// runs of the issues the fact touched — those whose record or pull request it wrote, which the
-// store keeps with each one's record from before the fact (record.WithIssueWrites), and the members
-// of a tree whose root it left lingering or whose linger it closed — and of no other issue, so what
+// own transaction and before its commit, and which two transactions of the daemon's own run the
+// same way (intake.OpenSettlers): the boot reconcile's, for the admission pass it applies, and the
+// outbox's settling, for each drop of a hand-over fence. It reads the runs of the issues the fact
+// touched — those whose record, pull request or hand-over fence it wrote, which the store keeps
+// with each one's record from before the fact (record.WithIssueWrites), and the members of a tree
+// whose root it left lingering or whose linger it closed — and of no other issue, so what
 // a fact reads grows with what it changed, never with the store. A start ends the over runs of its
 // own issue first (startStep), so the end of the run an issue leaves reaches Dispatch before the
 // start of the run it moves into.
