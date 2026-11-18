@@ -53,8 +53,10 @@ func noteIssueWrite(ctx context.Context, key string) {
 }
 
 // IssueStepRun is one place of an issue the store holds a row of starts for: the place, the
-// latest start's count, agent, moment and run, and the generation that start's kept write names
-// (0 where the row keeps none: a row only an end of a run no start counted wrote).
+// latest start's count, agent, moment and run, and the generation that start's kept write names.
+// Each writer of a row keeps the write with the count in its own transaction (RaiseStepStarts,
+// OpenUncountedStep), so a committed row names one; the 0 that a row with none reads as is the
+// read's default alone.
 type IssueStepRun struct {
 	Issue string
 	Place StepPlace

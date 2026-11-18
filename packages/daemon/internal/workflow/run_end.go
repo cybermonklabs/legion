@@ -12,13 +12,13 @@ import (
 )
 
 // The end of a step's run follows from the record, at one point every fact passes, so that no way
-// out of a step has to remember to end it. A run — one the store holds open, or one no start of
-// this release counted at the place an issue stood when the fact began (endStep's uncounted end) —
-// is over when (runOver):
+// out of a step has to remember to end it. A run is one the store holds open: a start opens it,
+// and the daemon's boot opens each run no start of this release counted before any fact applies
+// (OpenUncountedRuns). It is over when (runOver):
 //   - its issue no longer stands there: it has no record, or stands at another place, or in
 //     another generation (standingStep);
-//   - its place starts again (startStep), for a run the store holds open: a new run of the place
-//     begins, as the promotion of a tree admitted again starts a member's merger again; or
+//   - its place starts again (startStep): a new run of the place begins, as the promotion of a
+//     tree admitted again starts a member's merger again; or
 //   - its tree's run is over: the tree's root lingers, and the run is not a merge that can still
 //     land in that tree (mergeCanLand).
 //
@@ -27,11 +27,10 @@ import (
 // same way (intake.OpenSettlers): the boot reconcile's, for the admission pass it applies, and the
 // outbox's settling, for each drop of a hand-over fence. It reads the runs of the issues the fact
 // touched — those whose record, pull request or hand-over fence it wrote, which the store keeps
-// with each one's record from before the fact (record.WithIssueWrites), and the members of a tree
-// whose root it left lingering or whose linger it closed — and of no other issue, so what
-// a fact reads grows with what it changed, never with the store. A start ends the over runs of its
-// own issue first (startStep), so the end of the run an issue leaves reaches Dispatch before the
-// start of the run it moves into.
+// (record.WithIssueWrites), and the members of a tree whose root it left lingering or whose linger
+// it closed — and of no other issue, so what a fact reads grows with what it changed, never with
+// the store. A start ends the over runs of its own issue first (startStep), so the end of the run
+// an issue leaves reaches Dispatch before the start of the run it moves into.
 //
 // What the record does not hold, a fact names: the result of a move of the table and the step its
 // work returns to (nameMoveEnd), and the close of a tree's linger (closeLinger), which writes no
@@ -79,9 +78,9 @@ func (runs *factRuns) endOf(run runAt) StepEnd {
 }
 
 // OpenFact answers ctx carrying what the engine keeps of one fact while its handlers apply it: the
-// ends its moves name, the lingers it closes, and the issues its writes touch with their records
-// from before it (record.WithIssueWrites). A ctx that carries them already, opened by another
-// engine of the same fact, is answered as it is (intake.Settler).
+// ends its moves name, the lingers it closes, and the issues its writes touch
+// (record.WithIssueWrites). A ctx that carries them already, opened by another engine of the same
+// fact, is answered as it is (intake.Settler).
 func (e *Engine) OpenFact(ctx context.Context) context.Context {
 	if _, ok := ctx.Value(factRunsKey{}).(*factRuns); !ok {
 		ctx = context.WithValue(ctx, factRunsKey{}, &factRuns{ends: map[runAt]StepEnd{}, closed: map[string]bool{}})
