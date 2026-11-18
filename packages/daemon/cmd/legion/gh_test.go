@@ -2282,6 +2282,7 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 	}{
 		{"SIGINT", syscall.SIGINT, 130},
 		{"SIGTERM", syscall.SIGTERM, 143},
+		{"SIGHUP", syscall.SIGHUP, 129},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			records := t.TempDir()
