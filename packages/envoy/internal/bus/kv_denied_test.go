@@ -3,6 +3,7 @@ package bus
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A start whose lookup of a bucket the server refuses under the connection's grant ends at that
@@ -175,22 +177,44 @@ func TestAKeyReadWriteAndWatchTheGrantRefusesNameTheRefusal(t *testing.T) {
 // refusingGetLegacy is a legacy handle whose Get earns the server's refusal of subject, a request
 // the Get itself never sends, as a read by revision running beside it does when the grant does not
 // cover a direct get by sequence, and then draws no answer of its own, as a read the server lost
-// does. It waits for the server's report to reach the connection's record before it answers.
+// does. It answers only once owner's record holds that refusal (holdsRefusal), read without taking
+// it out, so the Get's own read of the record, after the answer, is the one that could take it.
 type refusingGetLegacy struct {
 	nats.KeyValue
 	conn    *nats.Conn
+	owner   *Client
 	subject string
+	wait    time.Duration
 }
 
 func (l refusingGetLegacy) Get(key string) (nats.KeyValueEntry, error) {
+	sentAt := time.Now()
 	if err := l.conn.Publish(l.subject, nil); err != nil {
 		return nil, err
 	}
 	if err := l.conn.Flush(); err != nil {
 		return nil, err
 	}
-	time.Sleep(200 * time.Millisecond)
+	for deadline := time.Now().Add(l.wait); !l.owner.holdsRefusal(l.subject, sentAt); {
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("the record held no refusal of %s within %s", l.subject, l.wait)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	return nil, nats.ErrTimeout
+}
+
+// holdsRefusal reports whether c's record holds a refusal of subject recorded at or after sentAt,
+// and leaves it there, unlike deniedPublish, which takes the refusal it reports out.
+func (c *Client) holdsRefusal(subject string, sentAt time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, denial := range c.deniedPublishes[subject] {
+		if !denial.at.Before(sentAt) {
+			return true
+		}
+	}
+	return false
 }
 
 // A read of a key takes only the refusal of a subject it sends: when a Get draws no answer and the
@@ -214,7 +238,7 @@ func TestARefusalOfASubjectAReadDoesNotSendAnswersItNothing(t *testing.T) {
 		t.Fatal("no client owns the connection, so nothing records the server's refusals")
 	}
 	sentAt := time.Now()
-	refusing := NewKeyValue(refusingGetLegacy{KeyValue: kv.Legacy(), conn: conn, subject: bare}, kv.WatchHandle(), kv.Streams())
+	refusing := NewKeyValue(refusingGetLegacy{KeyValue: kv.Legacy(), conn: conn, owner: owner, subject: bare, wait: testwait.Bounded(t, 5*time.Second, time.Second)}, kv.WatchHandle(), kv.Streams())
 	_, err = refusing.Get("key")
 	if errors.Is(err, ErrPublishDenied) || !errors.Is(err, nats.ErrTimeout) {
 		t.Fatalf("a Get that drew no answer beside a refusal of %s, which a Get never sends = %v, want its own nats.ErrTimeout", bare, err)

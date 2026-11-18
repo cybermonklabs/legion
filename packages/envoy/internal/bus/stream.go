@@ -1258,7 +1258,7 @@ func sentAgain[T any](ctx context.Context, request string, send func() (T, error
 const firstReadLimit = 630 * time.Millisecond
 
 // firstReadLimitKey is the context key a test that counts a start's requests sets its first read
-// limit under (withFirstReadLimit, in this package's tests), at the caller's whole wait, so a read
+// limit under (countedReads, in this package's tests), at the caller's whole wait, so a read
 // a loaded machine answers past firstReadLimit is not read again and the count is the requests'
 // own. Nothing outside the tests sets it.
 type firstReadLimitKey struct{}
