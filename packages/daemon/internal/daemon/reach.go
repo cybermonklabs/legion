@@ -495,9 +495,19 @@ func (k *reachKeeper) judge(ctx context.Context, c supervise.Claim, now time.Tim
 // reading is c's record after this minute's read and what it says (reachVerdict): it takes in
 // c's last relaunch (relaunchTakenIn), begins a record anew for a session c records afresh, counts
 // from the session's first ready, and makes the mark, which it logs; it tells nobody, and it ends
-// no episode, which is the role's to decide (judge). The caller holds mu.
+// no episode, which is the role's to decide (judge). The one session change that keeps the record
+// is the daemon's own controller's relaunch launching it on a fresh session (carriesItsEpisode).
+// The caller holds mu.
 func (k *reachKeeper) reading(c supervise.Claim, now time.Time) (supervise.Reach, reachVerdict) {
 	rec := relaunchTakenIn(c, k.recordOf(c))
+	if k.carriesItsEpisode(c, rec) {
+		if c.Session == "" {
+			// The relaunch's own launch has recorded no session yet: the episode goes on.
+			return rec, reachMarked
+		}
+		// The fresh session has said no ready of its own yet, and the mark stands.
+		rec.Session, rec.FirstReady = c.Session, time.Time{}
+	}
 	if c.Session == "" || !holdsEpisode(c.State) {
 		return rec, reachOver
 	}
@@ -505,11 +515,13 @@ func (k *reachKeeper) reading(c supervise.Claim, now time.Time) (supervise.Reach
 		rec = supervise.Reach{Session: c.Session, RelaunchedAt: rec.RelaunchedAt}
 	}
 	if rec.FirstReady.IsZero() {
-		if !supervise.SaidReady(c.State) || c.LastReady.IsZero() {
+		switch {
+		case supervise.SaidReady(c.State) && !c.LastReady.IsZero():
+			rec.FirstReady = c.LastReady
+		case !rec.Unreachable():
 			// This session has not said ready yet: nothing is counted for it.
 			return rec, reachNotDue
 		}
-		rec.FirstReady = c.LastReady
 	}
 	lastSeen := k.seen[c.Session]
 	if !lastSeen.IsZero() && now.Sub(lastSeen) <= supervise.UnreachableAfter {
@@ -696,6 +708,20 @@ func (k *reachKeeper) controllerReachable(c supervise.Claim) {
 func (k *reachKeeper) controllerBack(c supervise.Claim, rec supervise.Reach) bool {
 	return supervise.SaidReady(c.State) && c.LastReady.After(rec.RelaunchedAt) &&
 		k.sessions[c.Session].HoldsRole(string(c.Token))
+}
+
+// carriesItsEpisode is whether c, the daemon's own controller, has left the session rec marks
+// for its relaunch's own launch (R6): a resume that finds no session starts the controller on a
+// fresh one, or has recorded none yet. That launch is the relaunch's while c records the relaunch
+// rec has taken in and the generation it left the claim at, or none yet, and a later launch is
+// not. So the episode, and R6's line 20 minutes after the relaunch, goes on through that change,
+// for a launch that runs, is starting, or has failed; a worker's relaunch keeps its session, and
+// a controller suspended or retired has nothing left to judge.
+func (k *reachKeeper) carriesItsEpisode(c supervise.Claim, rec supervise.Reach) bool {
+	return c.Role == claim.RoleController && rec.Relaunched && rec.Unreachable() && c.Session != rec.Session &&
+		c.LastRelaunch.Equal(rec.RelaunchedAt) &&
+		(c.LastRelaunchGeneration == 0 || c.Generation == c.LastRelaunchGeneration) &&
+		(holdsEpisode(c.State) || c.State == supervise.StateFailed)
 }
 
 // report tells the controller, in one notice, of every claim newly out of reach this minute, and

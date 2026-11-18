@@ -203,12 +203,9 @@ func reachClaim(t *testing.T, tree, issue string, role claim.Role, session strin
 		State: supervise.StateIdle, Session: session, LastReady: reachBoot.Add(-time.Hour), Locator: pluginTestLocator(token)}
 }
 
-// with is c carrying r's last written reach record, as the store reads it back at the next sweep,
-// beside the last relaunch the claim's own row records.
+// with is c carrying r's last written reach record, as the store reads it back at the next sweep.
 func (r *reachRig) with(c supervise.Claim) supervise.Claim {
-	last := c.LastRelaunch
 	c.Reach = r.reach(c.Token)
-	c.LastRelaunch = last
 	return c
 }
 
@@ -866,6 +863,9 @@ func TestARelaunchedControllerThatRegistersButIsNotBackWritesTheLine(t *testing.
 	}{
 		{name: "registered and never ready", state: supervise.StateRegistered, ready: -time.Hour, roles: []string{"legion-legion-controller"}},
 		{name: "ready without its role", state: supervise.StateIdle, ready: 23 * time.Minute, roles: []string{"some-other-role"}},
+		// Its role held and ready, but by a ready from before the relaunch, as a read taken before
+		// the relaunch's launch rewrote the claim shows it: no ready of the relaunched process.
+		{name: "its role held with a ready from before the relaunch", state: supervise.StateIdle, ready: 20 * time.Minute, roles: []string{"legion-legion-controller"}},
 		{name: "ready with its role", state: supervise.StateIdle, ready: 23 * time.Minute, roles: []string{"legion-legion-controller"}, back: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -899,6 +899,67 @@ func TestARelaunchedControllerThatRegistersButIsNotBackWritesTheLine(t *testing.
 			}
 			if got := r.reach(controller.Token); got.Unreachable() == tc.back {
 				t.Fatalf("a relaunched controller %s reads %+v, want its episode over %t", tc.name, got, tc.back)
+			}
+		})
+	}
+}
+
+// A relaunch whose resume finds no session starts its controller on a fresh one, and that launch
+// is the relaunch's own: the episode lasts through the session change, so R6's line is written 20
+// minutes after the relaunch for a controller that never says ready there, that says ready without
+// its Envoy role, or whose launch has recorded no session yet, and not for one that is back.
+func TestARelaunchedControllerOnAFreshSessionWritesTheLine(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		session string
+		state   supervise.ClaimState
+		ready   time.Duration
+		roles   []string
+		back    bool
+	}{
+		{name: "a fresh session that never says ready", session: "ses_fresh", state: supervise.StateRegistered, ready: -time.Hour,
+			roles: []string{"legion-legion-controller"}},
+		{name: "a fresh session ready without its role", session: "ses_fresh", state: supervise.StateIdle, ready: 23 * time.Minute,
+			roles: []string{"some-other-role"}},
+		{name: "no session recorded while its launch runs", session: "", state: supervise.StateLaunching, ready: -time.Hour},
+		{name: "a fresh session ready with its role", session: "ses_fresh", state: supervise.StateIdle, ready: 23 * time.Minute,
+			roles: []string{"legion-legion-controller"}, back: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReachRig(t, true)
+			project, _ := claim.ProjectToken("legion")
+			controller := supervise.Claim{Token: claim.ControllerToken(project), Project: project, Role: claim.RoleController,
+				Generation: 1, State: supervise.StateIdle, Session: "ses_controller", LastReady: reachBoot.Add(-time.Hour),
+				Locator: pluginTestLocator(claim.ControllerToken(project)), ActivityAt: reachBoot}
+			r.at(21 * time.Minute)
+			r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
+			r.sweep(controller)
+			if len(r.relaunched) != 1 {
+				t.Fatalf("the daemon relaunched its controller %d times, want once", len(r.relaunched))
+			}
+
+			// The relaunch's own launch, at generation 2, runs on a fresh session.
+			controller.Generation = 2
+			controller.LastRelaunch, controller.LastRelaunchGeneration = reachBoot.Add(21*time.Minute), 2
+			controller.Session, controller.State, controller.LastReady = tc.session, tc.state, reachBoot.Add(tc.ready)
+			if tc.session != "" {
+				r.roles[tc.session] = tc.roles
+			}
+			for minute := 22; minute <= 50; minute++ {
+				seen := map[string]time.Duration{"ses_other": time.Duration(minute) * time.Minute}
+				if tc.session != "" {
+					seen[tc.session] = time.Duration(minute) * time.Minute
+				}
+				r.at(time.Duration(minute) * time.Minute)
+				r.listing(seen)
+				r.sweep(r.with(controller))
+			}
+			want := 1
+			if tc.back {
+				want = 0
+			}
+			if got := r.lines(fleetalert.ControllerUnreachable.Word); got != want || len(r.relaunched) != 1 {
+				t.Fatalf("a relaunched controller on %s: %d lines and %d relaunches, want %d lines and no second relaunch", tc.name, got, len(r.relaunched), want)
 			}
 		})
 	}
