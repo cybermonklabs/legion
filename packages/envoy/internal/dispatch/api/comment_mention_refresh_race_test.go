@@ -120,7 +120,7 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 					}
 					return served.refreshMentionClaims(ctx, queued)
 				},
-				served.releaseMentionClaims)
+				served.rereadMentionClaims, served.releaseMentionClaims)
 			timers := make(chan func(), 4)
 			sender.mu.Lock()
 			sender.after = func(_ time.Duration, f func()) { timers <- f }

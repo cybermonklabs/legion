@@ -100,6 +100,7 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 			return mentionSend{}, false
 		},
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
+		rereadNone,
 		func(context.Context, []mentionClaim) error { return nil },
 	)
 	parks := countParks(sender, false)
@@ -235,6 +236,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 			return mentionSend{}, false
 		},
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
+		rereadNone,
 		func(_ context.Context, held []mentionClaim) error {
 			mu.Lock()
 			defer mu.Unlock()
@@ -287,6 +289,7 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 	sender := newMentionSender(lifetime, time.Hour,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) { return item, true },
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
+		rereadNone,
 		func(context.Context, []mentionClaim) error { return nil },
 	)
 	parks := countParks(sender, true)

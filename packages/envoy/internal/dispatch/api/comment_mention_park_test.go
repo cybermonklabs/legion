@@ -64,6 +64,7 @@ func newParkRig(t *testing.T, capacity int) *parkRig {
 			}
 			return queued, nil
 		},
+		rereadNone,
 		func(_ context.Context, held []mentionClaim) error {
 			rig.mu.Lock()
 			defer rig.mu.Unlock()

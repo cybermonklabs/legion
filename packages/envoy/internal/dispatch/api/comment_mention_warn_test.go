@@ -26,6 +26,7 @@ func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 	sender := newMentionSender(lifetime, time.Hour,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) { return item, true },
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
+		rereadNone,
 		func(context.Context, []mentionClaim) error { return nil },
 	)
 	sender.mu.Lock()
@@ -83,6 +84,7 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 			return mentionSend{}, false
 		},
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
+		rereadNone,
 		func(context.Context, []mentionClaim) error { return nil },
 	)
 	sender.mu.Lock()
@@ -175,6 +177,7 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 			return mentionSend{}, false
 		},
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
+		rereadNone,
 		func(context.Context, []mentionClaim) error { return nil },
 	)
 	sender.mu.Lock()
@@ -225,6 +228,7 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 			return mentionSend{}, false
 		},
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
+		rereadNone,
 		func(context.Context, []mentionClaim) error { return nil },
 	)
 	var mu sync.Mutex

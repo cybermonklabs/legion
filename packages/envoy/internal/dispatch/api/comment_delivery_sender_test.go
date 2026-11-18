@@ -1010,9 +1010,13 @@ func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
 func withMentionClaimRefresh(t *testing.T, served *server, period time.Duration) {
 	t.Helper()
 	served.mentions.wait()
-	served.mentions = newMentionSender(served.lifetime, period,
-		served.sendCommentMention, served.refreshMentionClaims, served.releaseMentionClaims)
+	served.mentions = newMentionSender(served.lifetime, period, served.sendCommentMention,
+		served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
 }
+
+// rereadNone is the reread of a fake mention sender whose refresh never fails, so the sender never
+// asks it: it answers no row's claim as the sender's.
+func rereadNone(context.Context, []mentionClaim) ([]mentionClaim, error) { return nil, nil }
 
 // queuedAndInFlight is how many sends sender holds on its lanes, not started yet, and how many it
 // holds in flight.
@@ -1324,6 +1328,7 @@ func TestTheMentionDrainGivesBackItsClaimsAfterItsSendContextIsCancelled(t *test
 			return mentionSend{}, false
 		},
 		func(context.Context, []mentionClaim) ([]mentionClaim, error) { return nil, nil },
+		rereadNone,
 		func(ctx context.Context, held []mentionClaim) error {
 			releaseErr = ctx.Err()
 			released = append(released, held...)

@@ -2456,6 +2456,19 @@ func DeliveryClaimMineSQL(param string) string {
 	return `(claimed_at >= ` + param + ` and ` + param + ` > now() - ` + DeliveryClaimLapseInterval + `)`
 }
 
+// DeliveryClaimSinceSQL is true of a delivery attempt whose claim was written by the holder of the
+// claim param names, at or after it: the row was claimed no earlier than param and less than
+// DeliveryClaimLapse after it. Another sender takes a claim only once the one on the row has lapsed
+// (DeliveryClaimFreeSQL), so the claim it writes is more than a lease past every claim the row
+// carried before it, param among them, and a claim inside the lease after param is its holder's
+// own whatever the time now, where DeliveryClaimMineSQL needs param itself still live. The mention
+// sender reads it where a refresh's answer was lost (rereadMentionClaims in internal/dispatch/api)
+// and where it gives claims back, which it does only for attempts with no try in flight, the one
+// other writer of its own a row can have.
+func DeliveryClaimSinceSQL(param string) string {
+	return `(claimed_at >= ` + param + ` and claimed_at < ` + param + ` + ` + DeliveryClaimLapseInterval + `)`
+}
+
 // mentionLaterAttemptSQL is true of the comment_deliveries row named row when a later attempt of
 // its (comment, target) satisfies condition, which names that attempt's row later.
 func mentionLaterAttemptSQL(row, condition string) string {
