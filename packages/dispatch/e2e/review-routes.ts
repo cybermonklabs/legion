@@ -600,6 +600,17 @@ export function railInboxLink(page: Page): Locator {
   return page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name: /^Inbox/ });
 }
 
+/** The compact top bar's Inbox badge, which carries the shell's one Inbox number below the wide
+ *  layout (`web/src/app.tsx`), where the rail is not drawn. From the wide layout up the top bar is
+ *  not drawn and this matches nothing. The settle wait below reads the number through it, and the
+ *  visual review masks it as it masks the rail's entry (e2e/visual.e2e.ts says why). */
+export function topBarInboxBadge(page: Page): Locator {
+  return page
+    .locator("header")
+    .first()
+    .getByText(/^Inbox( \d+)?$/);
+}
+
 /** Waits until the shell's Inbox number has settled: none of the requests that feed it or move it
  *  is still waiting for its answer, and the number has then held one value for
  *  `INBOX_COUNT_QUIET_MS`. The number is drawn on every page, by the sidebar's entry from the wide
@@ -618,12 +629,7 @@ export function railInboxLink(page: Page): Locator {
  *  and the window restarts whenever either fails. The requests come from `page.requests()`, the
  *  page's latest hundred, which holds every request recent enough to still be waiting. */
 async function waitForInboxCountSettled(page: Page): Promise<void> {
-  const count = wideLayout(page)
-    ? railInboxLink(page)
-    : page
-        .locator("header")
-        .first()
-        .getByText(/^Inbox( \d+)?$/);
+  const count = wideLayout(page) ? railInboxLink(page) : topBarInboxBadge(page);
   let held: string | undefined;
   let heldSince = Date.now();
   await expect
