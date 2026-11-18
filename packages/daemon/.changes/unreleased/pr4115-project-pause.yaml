@@ -17,13 +17,13 @@ body: |-
   A claim of another project's issue, which `legion claims spawn` makes under the daemon's own
   project, is paused like any other claim. The architect-stalled wake and the stalled-tree notice
   tell nothing while the project is paused, and count no time that a pause held the project. After
-  the resume, a wake of a session that the pause stopped, and the wake that a notice, a phase's
-  end, a hook's prompt or a merge-queue removal that the pause held takes, is a wake of that pause,
-  which `read_release_records` counts as `heldByPause`. A role message that the pause held for a
-  session that an idle release had released before the pause wakes that session as a wake of that
-  release. An update round over a pod that the pause held counts no time until the wake
-  pacing has let out every launch that the pause held for a session of the pod, those wakes
-  included; the round's own ask brings back no stopped session. A production check's look that
+  the resume, the wake of a session that the pause stopped, and the wake taken for a notice, a
+  phase's end, a hook's prompt or a merge-queue removal that the pause held, are wakes of that
+  pause, which `read_release_records` counts as `heldByPause`. An update round over a pod that the
+  pause held counts no time until the wake pacing has let out every launch that the pause held for
+  a session of the pod, those wakes included; the round's own ask brings back no stopped session.
+  A role message that the pause held for a session that an idle release had released before the
+  pause wakes that session as a wake of that release. A production check's look that
   began before the pause ended counts its two hours from the resume, or from its session's last
   ready after the resume where that is later, and nothing while that session is still starting.
   Six changes apply in every project, also when no pause is ever made. The stuck clock of a
