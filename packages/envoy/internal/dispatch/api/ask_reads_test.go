@@ -299,7 +299,7 @@ func TestListOpenAsksForSession(t *testing.T) {
 		t.Fatalf("closed issue open asks = %#v, want priority and document asks", closed)
 	}
 	for _, id := range []string{issueAsk.ID, otherSessionAsk.ID} {
-		requireWithdrawn(t, handler, issue.Key, id, model.Actor{Kind: "user", ID: "alice"})
+		requireWithdrawn(t, handler, issue.Key, id, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	}
 	if got := readBlockAsk(t, handler, answered.ID); got.State != "answered" {
 		t.Fatalf("answered ask after the close = %s, want answered", got.State)
@@ -402,7 +402,7 @@ func TestListOpenAsksForProject(t *testing.T) {
 	if closed.Count != 1 || len(closed.Asks) != 1 || closed.Asks[0].ID != documentAsk.ID {
 		t.Fatalf("project open asks after close = %#v, want only the document ask", closed)
 	}
-	requireWithdrawn(t, handler, issue.Key, issueAsk.ID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, issueAsk.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 }
 
 func TestListOpenAsksRequiresExactlyOneScope(t *testing.T) {

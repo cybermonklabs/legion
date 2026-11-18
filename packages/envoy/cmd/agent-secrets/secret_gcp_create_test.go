@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -75,6 +76,7 @@ func TestGCPSecretCreateTheStoreRefusesAsksForNoValue(t *testing.T) {
 			fake := newFakeSecretManager()
 			fake.refuseMethods = map[string]codes.Code{"CreateSecret": codes.PermissionDenied}
 			startFakeSecretManager(t, fake)
+			useNoGcloud(t)
 			useGCPIdentity(t, "", machineEmail)
 			broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 			if terminal {
@@ -84,7 +86,7 @@ func TestGCPSecretCreateTheStoreRefusesAsksForNoValue(t *testing.T) {
 			}
 
 			_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "human")
-			if code != 1 || !strings.Contains(stderr, "PermissionDenied") || !strings.Contains(stderr, "the store refused the metadata server's identity") {
+			if code != 1 || !strings.Contains(stderr, "PermissionDenied") || !strings.Contains(stderr, "the store refused the metadata server: "+machineEmail) {
 				t.Fatalf("exit %d, stderr %q; want 1 naming the store's refusal of the metadata server's identity", code, stderr)
 			}
 			if strings.Contains(stderr, "Value for") {
@@ -99,7 +101,7 @@ func TestGCPSecretCreateTheStoreRefusesAsksForNoValue(t *testing.T) {
 }
 
 // TestGCPSecretCreateThatStoresNoValueLeavesNoSecret: once the create has made the secret, a value
-// it then does not store - one it reads empty, one the minter of its kind refuses, one the store
+// it then does not store - one it reads empty, one the minter of its type refuses, one the store
 // refuses outright to add - leaves no secret behind: the create verifies the creation label,
 // lists versions in case another writer added one, and deletes the empty secret it made. It
 // exits as that failure does, says the empty secret it made is deleted and nothing stays, and
@@ -114,7 +116,7 @@ func TestGCPSecretCreateThatStoresNoValueLeavesNoSecret(t *testing.T) {
 		want   string
 	}{
 		{"an empty value", "", "", nil, exitUsageError, "the value is read from standard input, which was empty"},
-		{"a value its kind refuses", "not an App key", "", []string{"--kind", policy.KindGitHubApp, "--github-owners", "acme-org"}, exitUsageError,
+		{"a value its type refuses", "not an App key", "", []string{"--type", policy.TypeGitHubApp, "--github-owners", "acme-org"}, exitUsageError,
 			"the broker refuses this value as a github-app secret's"},
 		{"a value the store refuses", "shh", "AddSecretVersion", nil, 1, "PermissionDenied"},
 	} {
@@ -282,7 +284,7 @@ func TestGCPSecretCreateMakesTheSecretBeforeItReadsTheValue(t *testing.T) {
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	want := map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagShape: policy.ShapeDocument, policy.TagMaxGrant: "1h"}
+	want := map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagMaxGrant: "1h"}
 	var heldAtRead bool
 	var tagsAtRead, labelsAtRead map[string]string
 	var keyAtRead string
@@ -300,7 +302,7 @@ func TestGCPSecretCreateMakesTheSecretBeforeItReadsTheValue(t *testing.T) {
 		}
 	})
 
-	stdout, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "human", "--shape", "document", "--max-grant", "1h")
+	stdout, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "human", "--max-grant", "1h")
 	if code != 0 || !strings.Contains(stdout, "created NEW_TEST in GCP Secret Manager project ") {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and the created line", code, stdout, stderr)
 	}
@@ -493,7 +495,7 @@ func TestCreateInterruptedBeforeBeginNeverDeletesAnExistingSecret(t *testing.T) 
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	s, err := openSession(context.Background(), "")
+	s, err := openSession(context.Background(), io.Discard, "secret create")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,7 +651,7 @@ func TestGCPSecretCreateWithoutTheRightToAddAValueAsksForNone(t *testing.T) {
 		refuseValueReads(t)
 
 		_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
-		if code != 1 || !strings.Contains(stderr, "secretmanager.versions.add") || !strings.Contains(stderr, "Application Default Credentials") {
+		if code != 1 || !strings.Contains(stderr, "secretmanager.versions.add") || !strings.Contains(stderr, "the well-known credentials file") {
 			t.Fatalf("exit %d, stderr %q; want 1 naming the permission withheld and the sign-in", code, stderr)
 		}
 		requireNothingLeft(t, fake, broker, "NEW_TEST")
@@ -707,25 +709,37 @@ func TestGCPSecretCreatesLabelTheirSecretsDifferently(t *testing.T) {
 // TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid: every command a create prints for
 // settling what it left - `agent-secrets secret show` and `set`, and the gcloud command that
 // clears an empty secret - signs in as the create did: the agent-secrets lines carry its sign-in
-// prefix (a key file GOOGLE_APPLICATION_CREDENTIALS names, or the gcloud login
-// CLOUDSDK_CORE_ACCOUNT names), and the gcloud line pins the same identity for gcloud (the key
-// file as CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE, the login as CLOUDSDK_CORE_ACCOUNT) and names
-// it.
+// prefix (a key file GOOGLE_APPLICATION_CREDENTIALS names, the gcloud login CLOUDSDK_CORE_ACCOUNT
+// names, the gcloud configuration CLOUDSDK_ACTIVE_CONFIG_NAME names), and the gcloud line pins the
+// same identity for gcloud (the key file as CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE, the login as
+// CLOUDSDK_CORE_ACCOUNT, the configuration as CLOUDSDK_ACTIVE_CONFIG_NAME) and names it.
 func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 	for _, mode := range []struct {
-		name                   string
-		signIn                 func(t *testing.T)
-		agentPrefix, gcloudPin string
+		name   string
+		signIn func(t *testing.T)
+		// pins is the sign-in prefix of the agent-secrets lines and the pin of the gcloud line,
+		// read once signIn has run.
+		pins func() (agentPrefix, gcloudPin string)
 	}{
 		{"a key file", func(t *testing.T) {
 			useGCPIdentity(t, "service_account", "robot@acme.iam.gserviceaccount.com")
-			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/keys/robot.json")
-		}, "GOOGLE_APPLICATION_CREDENTIALS=/keys/robot.json ", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=/keys/robot.json "},
+		}, func() (string, string) {
+			path := shellWord(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+			return "GOOGLE_APPLICATION_CREDENTIALS=" + path + " ", "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + path + " "
+		}},
 		{"a named gcloud login", func(t *testing.T) {
 			useNoADC(t)
 			useGcloud(t, "ada@example.com", "grace@example.com")
 			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
-		}, "CLOUDSDK_CORE_ACCOUNT=grace@example.com ", "CLOUDSDK_CORE_ACCOUNT=grace@example.com "},
+		}, func() (string, string) {
+			return "CLOUDSDK_CORE_ACCOUNT=grace@example.com ", "CLOUDSDK_CORE_ACCOUNT=grace@example.com "
+		}},
+		{"a gcloud configuration CLOUDSDK_ACTIVE_CONFIG_NAME names", func(t *testing.T) {
+			useGcloudConfigurations(t, "box", orderConfigurations)
+			t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "person")
+		}, func() (string, string) {
+			return "CLOUDSDK_ACTIVE_CONFIG_NAME=person ", "CLOUDSDK_ACTIVE_CONFIG_NAME=person "
+		}},
 	} {
 		for _, scenario := range []struct {
 			name  string
@@ -759,7 +773,8 @@ func TestGCPSecretCreateRecoveryCommandsSignInAsTheCreateDid(t *testing.T) {
 				if code != 1 {
 					t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 				}
-				for _, want := range scenario.want(mode.agentPrefix, mode.gcloudPin) {
+				agentPrefix, gcloudPin := mode.pins()
+				for _, want := range scenario.want(agentPrefix, gcloudPin) {
 					if !strings.Contains(stderr, want) {
 						t.Fatalf("stderr %q; want it to name %s", stderr, want)
 					}
@@ -780,7 +795,7 @@ func TestCreateSignalAfterAFailedBeginPrintsItsFailure(t *testing.T) {
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	s, err := openSession(context.Background(), "")
+	s, err := openSession(context.Background(), io.Discard, "secret create")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,14 +812,16 @@ func TestCreateSignalAfterAFailedBeginPrintsItsFailure(t *testing.T) {
 }
 
 // signalAtFirstWrite is a standard error that runs onSignalDeath, as a signal would, at the form's
-// first write to it, while that is set.
+// first write to it after the line naming the credential it signs in with (afterUsing), while that
+// is set. That line comes before the first store call, when no cleanup can be set yet, so a signal
+// at it would prove nothing about the writes the create's cleanup could race.
 type signalAtFirstWrite struct {
 	strings.Builder
 	fired bool
 }
 
 func (w *signalAtFirstWrite) Write(p []byte) (int, error) {
-	if !w.fired {
+	if !w.fired && !strings.HasPrefix(string(p), "agent-secrets secret create: using ") {
 		w.fired = true
 		if death := onSignalDeath; death != nil {
 			death()
@@ -834,7 +851,7 @@ func TestCreateFailedBeginPrintsItsFailureOnce(t *testing.T) {
 			refuseValueReads(t)
 			stderr := &signalAtFirstWrite{}
 			code := cmdSecret([]string{"create", "NEW_TEST", "--owner", "me", "--tier", "agent"}, io.Discard, stderr)
-			if out := stderr.String(); code != 1 || strings.Count(out, "agent-secrets secret create: ") != 1 || !strings.Contains(out, row.want) {
+			if out := stderr.String(); code != 1 || strings.Count(afterUsing(t, out, "secret create"), "agent-secrets secret create: ") != 1 || !strings.Contains(out, row.want) {
 				t.Fatalf("exit %d, stderr %q; want 1 and the failure, naming %q, printed once", code, out, row.want)
 			}
 		})

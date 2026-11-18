@@ -75,7 +75,7 @@ var (
 	// ErrGrantRequiresLifetime: a request names a secret whose max-grant tag requires a signed
 	// lifetime no longer than that tag. Its returned error names the secret and the limit.
 	ErrGrantRequiresLifetime = errors.New("a requested secret requires a shorter grant lifetime")
-	// ErrMintFailed: a kind secret's minter could not make a token from the stored value, such as
+	// ErrMintFailed: a type secret's minter could not make a token from the stored value, such as
 	// a Google login that needs a new sign-in or a GitHub App GitHub refuses. Its returned error
 	// carries the minter's own message, which never holds the stored value or a token.
 	ErrMintFailed = errors.New("the broker could not mint a token from this secret")
@@ -206,7 +206,7 @@ type Decision struct {
 	Detail string
 }
 
-// Minter makes one release of a kind secret from its stored value and the policy's facts about it
+// Minter makes one release of a type secret from its stored value and the policy's facts about it
 // (secrets.GitHubApp.Mint, secrets.GoogleLogin.Mint): the token, and when it stops working. Its
 // error never holds the stored value or a token.
 type Minter func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, error)
@@ -276,8 +276,8 @@ type Machine struct {
 	// credential's service is that one (requester). It is read on every call, so an account
 	// dropped from the setting stops its machines' service secrets at their next one.
 	VMServicesByAccount map[string]string
-	// Minters maps each policy kind (policy.Kinds) to its Minter. A release never returns the
-	// stored value of a kind secret.
+	// Minters maps each policy type (policy.Types) to its Minter. A release never returns the
+	// stored value of a type secret.
 	Minters map[string]Minter
 	// Airlock is the airlock's rules as the broker read them at boot
 	// (BROKER_AIRLOCK_RULES_FILE), and the zero value for a deployment with no rules file. A

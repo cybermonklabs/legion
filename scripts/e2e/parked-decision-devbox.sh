@@ -339,12 +339,12 @@ claim_session_text() {
 }
 # ---- the controller ---------------------------------------------------------------------------------
 # start_controller WINDOW runs `legion controller start` in WINDOW of the run's own tmux server, with
-# the variables controller-start-tmux.sh unsets (the operator's Oh My Pi session, which runs this
-# script, sets OMP_SESSION_ID) and the run's isolated profile, which holds this checkout's pi-envoy
-# and pi-legion and the model route.
+# the operator's Oh My Pi session's own variables unset (omp_session_unsets, lib/omp-home.sh: that
+# session, which runs this script, sets OMP_SESSION_ID) and the run's isolated profile, which holds
+# this checkout's pi-envoy and pi-legion and the model route.
 start_controller() {
   local window=$1 command
-  command="cd '$work' && env -u OMP_SESSION_ID -u OMPCODE -u PI_CONFIG_FILES -u ENVOY_NATS_URL -u LEGION_OMP_PATH HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/$window.stderr'; echo \$? >'$evidence/logs/$window.exit'; sleep 3600"
+  command="cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/$window.stderr'; echo \$? >'$evidence/logs/$window.exit'; sleep 3600"
   if tm has-session 2>/dev/null; then
     tm new-window -d -n "$window" "$command"
   else
@@ -703,8 +703,9 @@ manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-l
 cat >"$work/instructions.md" <<'EOF'
 # Parked decision proof instructions
 
-This is a throwaway workflow proof. A tree's root architect starts its tree from the daemon's
-`catch-up` notice as its role says: it writes the spec in the issue's own primary document,
+This is a throwaway workflow proof. A tree's root architect starts its tree from the task its
+start carries and the daemon's `catch-up` notice, as its role says: it writes the spec in the
+issue's own primary document,
 requests the spec's approval when the design gate policy arms the gate, and registers the gate,
 then waits. Apart from that, do not act until a human Dispatch message targeted at your own session
 gives the next exact proof operation; it arrives in your session as a message to you. A message you

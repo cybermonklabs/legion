@@ -172,17 +172,30 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/cluster-test.XXXXXX")
 readonly fake=$tmp/fake bin=$tmp/bin
 readonly ns=loadtest-test
 
+# own_steps: each `cluster.sh step` of this suite still running, as "PID COMMAND LINE". The command
+# line alone also names the steps of another copy of this suite running from this checkout at the
+# same time; only FAKE_DIR, which every command of this one inherits, tells them apart.
+own_steps() {
+  local pid
+  while read -r pid; do
+    grep -qzxF -- "FAKE_DIR=$fake" "/proc/$pid/environ" 2>/dev/null || continue
+    printf '%s %s\n' "$pid" "$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
+  done < <(pgrep -f -- "$cluster step --namespace $ns ")
+}
+
 cleanup() {
   local f pid
   for f in "$tmp"/root*/*/heartbeat.pid "$tmp"/root*/*/sampler.pid; do
-    [ -f "$f" ] || continue
-    pid=$(<"$f")
+    # A daemon that stopped since the glob took its pidfile with it.
+    pid=$(cat -- "$f" 2>/dev/null) || continue
     kill -TERM -- "-$pid" 2>/dev/null || true
   done
   # A case that failed before its assertions could see the step end leaves the step shell (w)
   # killed, its disk watcher and its wait on the runner job behind; a cluster.sh that passes (w)
   # ends all three itself.
-  pkill -f "$cluster step --namespace $ns " 2>/dev/null || true
+  while read -r pid _; do
+    kill -TERM -- "$pid" 2>/dev/null || true
+  done < <(own_steps)
   rm -rf -- "$tmp"
 }
 trap cleanup EXIT
@@ -820,13 +833,25 @@ EOF
 # seconds (space-separated: kube_read's 5 s, the daemons' 60 s, runner_wait's 15 s and the disk
 # watcher's 30 s, where a test sets them), are recorded and return at once; every other sleep (the
 # daemons' loops, their start waits) is the real one.
+#
+# FAKE_SLEEP_GATE=FILE holds the daemons' 60 s until FILE exists. A daemon removes its own pidfile
+# when it stops, and with FAKE_FAST_SLEEP's fast periods it stops as soon as the last command of
+# its run has ended -- before the case that ran that command reads the pidfile, or after, as the
+# box schedules them. A command run with the gate leaves its daemons in their first period, alive
+# and with their pidfiles, until the case has read their pids and made FILE. The wait is in real
+# 0.05 s naps, and it ends too once FAKE_DIR is gone, so a daemon the suite's cleanup missed does
+# not wait for ever.
+real_sleep=$(PATH=$real_path command -v sleep)
 cat >"$bin/sleep" <<EOF
 #!/usr/bin/env bash
+if [ "\$*" = 60 ] && [ -n "\${FAKE_SLEEP_GATE:-}" ]; then
+  until [ -e "\$FAKE_SLEEP_GATE" ] || [ ! -d "\$FAKE_DIR" ]; do $real_sleep 0.05; done
+fi
 if [ "\$*" = 3 ] || [[ " \${FAKE_FAST_SLEEP:-none} " == *" \$* "* ]]; then
   printf '%s\n' "\$*" >>"\$FAKE_DIR/sleep.log"
   exit 0
 fi
-exec $(PATH=$real_path command -v sleep) "\$@"
+exec $real_sleep "\$@"
 EOF
 chmod +x "$bin"/*
 
@@ -838,7 +863,7 @@ unset FAKE_EXEC_FAIL FAKE_SAMPLE FAKE_PROD_MAJOR FAKE_LOADGEN_FAIL FAKE_APPLY_FA
   FAKE_EXEC_ERRORS FAKE_FAST_SLEEP FAKE_TYPING_RC FAKE_DISPATCH_BUILD_ERROR FAKE_COPY_BACK_FAIL \
   FAKE_PG_DF_SEQ FAKE_PG_DF_DELAY FAKE_RC_UNTIL_STOP FAKE_RC_UNTIL_KILL FAKE_HEAP_COPY_FAIL FAKE_HEAP_EXISTS_FAIL FAKE_HEAP_KEEP_REMOVE_FAIL \
   FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_FAIL_TIMES FAKE_LOCK_GET_OK_TIMES FAKE_LOCK_GET_DELAY \
-  FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL
+  FAKE_RUNNER_EXEC_FAIL FAKE_RUNNER_EXEC_FAIL_AT_STOP FAKE_RUNNER_EXEC_FAIL_AT_KILL FAKE_SLEEP_GATE
 export DISPATCH_URL=http://dispatch.invalid DISPATCH_TOKEN_FILE=$fake/token
 # The manifest names no issue: the operator does, and replay-prepare refuses without it.
 export LOADTEST_REPLAY_ISSUE=INFRA-639
@@ -2346,10 +2371,15 @@ pass "a read-only kubectl exec is retried once 5 s after a dial timeout or a ref
 # full-size copy runs on with nothing driving it.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-orphan FAKE_FAST_SLEEP=60
-run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+# The daemons stay in their first period until the heartbeat's pid is read (FAKE_SLEEP_GATE): with
+# fast periods the heartbeat could otherwise stop, and take its pidfile with it, before that read.
+FAKE_SLEEP_GATE=$fake/root-orphan.gate run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 0)) || fail "up exited $RC"
 orphan_dir=$(find "$LOADTEST_CLUSTER_ROOT" -mindepth 1 -maxdepth 1 -type d)
 orphan_hb=$(<"$orphan_dir/heartbeat.pid")
+kill -0 "$orphan_hb" 2>/dev/null ||
+  fail "the heartbeat up started (pid $orphan_hb) is not running, though the gate holds it in its first period: $(cat "$orphan_dir/logs/heartbeat.log")"
+: >"$fake/root-orphan.gate"
 # up has returned, so no cluster.sh command of this run is alive any more.
 for ((i = 0; i < 50; i++)); do
   kill -0 "$orphan_hb" 2>/dev/null || break
@@ -2375,6 +2405,7 @@ pass "the heartbeat stops once no command of its run is alive, so an abandoned r
 (
   so_checker=$(jq -nc --arg c "$commit_ok" '{dispatch_commit: $c, built_from: $c, overlay_source: null,
     overlay_files: [], registration: null, renderer_matches: true, sha256: "f00d"}')
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
   source "$cluster"
   printf 'stored-order: documents=5 clean=2 mismatched=1 refused=0 failed=0 unchecked=2\n' >"$tmp/so-unchecked.txt"
   stored_order_summary "$tmp/so-unchecked.txt" "$so_checker" 1 2026-10-29T00:00:00Z >"$tmp/so-unchecked.json"
@@ -2426,10 +2457,14 @@ pass "a step whose copy-back from the runner failed is marked failed with kind c
 # each to cgroup.jsonl every 5 s with nothing left to read.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-sampler-stop FAKE_FAST_SLEEP=60
-run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+# Gated as in (o), so the sampler cannot stop, and take its pidfile with it, before its pid is read.
+FAKE_SLEEP_GATE=$fake/root-sampler-stop.gate run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 0)) || fail "up exited $RC"
 sampler_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
 sampler_pid=$(<"$sampler_dir/sampler.pid")
+kill -0 "$sampler_pid" 2>/dev/null ||
+  fail "the sampler up started (pid $sampler_pid) is not running, though the gate holds it in its first period: $(cat "$sampler_dir/logs/sampler.log")"
+: >"$fake/root-sampler-stop.gate"
 # up has returned, so no command of this run is alive: its heartbeat stops, and the sampler with it.
 sampler_alive=yes
 for ((i = 0; i < 200; i++)); do
@@ -2543,7 +2578,9 @@ pass "up's refusal of a stale lock names the holder pod and issue and says to co
 # run. Only status and down, which register no command, run from another namespace.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-pidns
-run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+# Gated as in (o), and never opened: the daemons are killed below, still in their first period,
+# however long up took after it started them.
+FAKE_SLEEP_GATE=$fake/root-pidns.gate run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC == 0)) || fail "up exited $RC"
 pidns_run=$(jq -r .data.run "$fake/lock.json")
 pidns_dir=$LOADTEST_CLUSTER_ROOT/$pidns_run
@@ -2738,10 +2775,10 @@ kill_dfs=$(grep -c -- 'df -B1 --output' "$fake/kubectl.log" || true)
 # step's deadline, TERMs the pid that job's .pid file names in whatever pod is named runner --
 # which a later run's step of that name would be. Given the step shell's pid and start time it
 # ends at its next poll instead, as the watcher does, so the kill leaves nothing of the step
-# running here and no job is stopped. Nothing but cluster.sh ends them: the cleanup's pkill runs
-# long after this.
+# running here and no job is stopped. Nothing but cluster.sh ends them: the cleanup's kill of
+# this suite's steps runs long after this.
 await_gone "${kill_kids[@]}" ||
-  fail "the step's disk watcher and its wait on the runner job ($(pgrep -af "$cluster step --namespace $ns " | tr '\n' ';')) still run after the step shell was killed: they poll on, so the watcher records pg_disk in a dead step's directory and the wait stops the job step-pgkill at the step's deadline, which a later run's step of that name would be"
+  fail "the step's disk watcher and its wait on the runner job ($(own_steps | tr '\n' ';')) still run after the step shell was killed: they poll on, so the watcher records pg_disk in a dead step's directory and the wait stops the job step-pgkill at the step's deadline, which a later run's step of that name would be"
 kill_dfs_after=$(grep -c -- 'df -B1 --output' "$fake/kubectl.log" || true)
 ! grep -qx 'step-pgkill' "$fake/runner-stops" 2>/dev/null ||
   fail "the disk watcher of a killed step stopped the runner job step-pgkill after the kill: $(cat "$fake/runner-stops")"
@@ -2751,8 +2788,8 @@ kill_dfs_after=$(grep -c -- 'df -B1 --output' "$fake/kubectl.log" || true)
   fail "the killed step's disk watcher made $((kill_dfs_after - kill_dfs)) more reads of the volume before it ended: it reads on under the threshold"
 ! grep -qx 30 "$fake/sleep.log" ||
   fail "the killed step's disk watcher took $(grep -cx 30 "$fake/sleep.log") more 30 s naps after it was reaped: it polls on for ever"
-! pgrep -f "$cluster step --namespace $ns " >/dev/null 2>&1 ||
-  fail "the step still runs here although its disk watcher and its wait on the runner job ended: $(pgrep -af "$cluster step --namespace $ns " | tr '\n' ';')"
+[ -z "$(own_steps)" ] ||
+  fail "the step still runs here although its disk watcher and its wait on the runner job ended: $(own_steps | tr '\n' ';')"
 ! grep -qx 'step-pgkill' "$fake/runner-stops" 2>/dev/null ||
   fail "the killed step's wait on its runner job stopped step-pgkill: $(cat "$fake/runner-stops")"
 unset FAKE_FAST_SLEEP
@@ -3037,7 +3074,10 @@ pass "with the lock naming another run, runner_stop, runner_step_remove and typi
 # still proved written with no lock read of their own.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-lockread
-FAKE_LOCK_GET_FAIL=1 FAKE_FAST_SLEEP=2 run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
+# Gated as in (o), and never opened: down below stops both daemons, and until then they stay in
+# their first period. Past it the heartbeat, with no command of the run alive, would stop and take
+# its pidfile with it, so the checks below would depend on coming within 60 s of its start.
+FAKE_LOCK_GET_FAIL=1 FAKE_FAST_SLEEP=2 FAKE_SLEEP_GATE=$fake/root-lockread.gate run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok"
 ((RC != 0)) ||
   fail "up ran through although no read of the lock answered after it took one: the guard before a write into the copy fails closed: $(cat "$tmp/out")"
 grep -qF "could not read the lock dispatch-loadtest-lock in $ns after 3 tries" "$tmp/out" ||
@@ -3049,7 +3089,7 @@ lockread_dir=$LOADTEST_CLUSTER_ROOT/$(jq -r .data.run "$fake/lock.json")
   source "$cluster"
   NS=$ns
   set_run "${lockread_dir##*/}"
-  export FAKE_LOCK_GET_FAIL=1
+  export FAKE_LOCK_GET_FAIL=1 FAKE_SLEEP_GATE=$fake/root-lockread.gate
   start_daemon sampler
 ) || fail "the sampler did not start while every read of the lock fails: $(cat "$lockread_dir/logs/sampler.log" 2>/dev/null)"
 for daemon in heartbeat sampler; do
@@ -3264,11 +3304,16 @@ rc_reads() { grep -c -- "exec runner -c runner -- cat /work/logs/$1.rc" "$fake/k
 # stop_watchdog SECONDS PID, stop_watchdog_end: a guard that kills the disk watcher PID after
 # SECONDS (a real nap: never one of FAKE_FAST_SLEEP's) and leaves $fake/stop-late behind. A
 # pg_disk_watch_stop that waits for ever on a watcher whose TERM was lost then fails this case
-# instead of hanging the suite, as the fakes' own caps do.
+# instead of hanging the suite, as the fakes' own caps do. The nap is a child the guard waits on
+# and kills when stop_watchdog_end TERMs the guard: a TERM to the subshell alone left its `sleep`
+# running, up to 240 s past the suite's own exit.
 stop_watchdog() {
   rm -f -- "$fake/stop-late"
   (
-    sleep "$1"
+    sleep "$1" &
+    nap=$!
+    trap 'kill "$nap" 2>/dev/null; exit 0' TERM
+    wait "$nap"
     kill -KILL "$2" 2>/dev/null || true
     : >"$fake/stop-late"
   ) &
@@ -3430,7 +3475,9 @@ pass "each poll of the disk watcher and of the runner-job wait reads the lock on
 # naming the pod it could not reach, which ends the step command and lets the lock age.
 reset_fake
 export LOADTEST_CLUSTER_ROOT=$tmp/root-unreach
-run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok" --pg-volume 150Gi
+# Gated as in (o), and never opened: up's daemons stay in their first period until the heartbeat
+# is killed below and down stops the sampler, however long the checks in between take.
+FAKE_SLEEP_GATE=$fake/root-unreach.gate run_cluster up "${up_args[@]}" --dispatch-commit "$commit_ok" --pg-volume 150Gi
 ((RC == 0)) || fail "up exited $RC: $(cat "$tmp/out")"
 unreach_run=$(jq -r .data.run "$fake/lock.json")
 unreach_dir=$LOADTEST_CLUSTER_ROOT/$unreach_run/steps/pgterm
@@ -3647,8 +3694,8 @@ rm -f -- "$unreach_fail"
 # non-zero within its bound, and nothing of that run renews the lock after it has.
 run_cluster seed --namespace "$ns"
 ((RC == 0)) || fail "seed exited $RC: $(cat "$tmp/out")"
-# The heartbeat up started sleeps a real 60 s; the step below starts one whose 60 s is a fast
-# sleep, so the periods this case waits out cost it no clock.
+# The heartbeat up started is held in its first period; the step below starts one whose 60 s is a
+# fast sleep, so the periods this case waits out cost it no clock.
 unreach_hb=$(<"$LOADTEST_CLUSTER_ROOT/$unreach_run/heartbeat.pid")
 kill -TERM -- "-$unreach_hb" 2>/dev/null || true
 until ! kill -0 "$unreach_hb" 2>/dev/null; do sleep 0.05; done
@@ -3664,7 +3711,9 @@ main "\$@"
 EOF
 rm -f -- "$fake/runner-starts" "$fake/runner-stops" "$fake/rc-polls"
 step_at=$EPOCHSECONDS
-FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_FAST_SLEEP=60 \
+# The step's heartbeat is gated as in (o) until its pid is read below: with fast periods it could
+# otherwise stop, and take its pidfile with it, as soon as the step command has ended.
+FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_FAST_SLEEP=60 FAKE_SLEEP_GATE=$fake/root-unreach-step.gate \
   bash "$tmp/step-bounded.sh" step --namespace "$ns" unreach 1 --duration 1s >"$unreach_step" 2>&1 &
 unreach_pid=$!
 # The pod goes away once the load runs in it, which is when a step has nothing but this wait left.
@@ -3686,6 +3735,9 @@ step_took=$((EPOCHSECONDS - step_at))
 # The heartbeat ends with the command, as (o) has it for a run whose command is gone: the lock
 # it renewed every 60 s is renewed no more, so it ages and up calls it stale.
 unreach_hb=$(<"$LOADTEST_CLUSTER_ROOT/$unreach_run/heartbeat.pid")
+kill -0 "$unreach_hb" 2>/dev/null ||
+  fail "the heartbeat the step started (pid $unreach_hb) is not running, though the gate holds it in its first period: $(cat "$LOADTEST_CLUSTER_ROOT/$unreach_run/logs/heartbeat.log")"
+: >"$fake/root-unreach-step.gate"
 for ((i = 0; i < 50; i++)); do
   kill -0 "$unreach_hb" 2>/dev/null || break
   sleep 0.1

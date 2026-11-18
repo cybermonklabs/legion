@@ -57,6 +57,8 @@ var placeholderValues = map[string]string{
 	"database":         "sessions",
 	"user":             "legion-sessions@acme.iam",
 	"account":          "legion-sessions@acme.iam.gserviceaccount.com",
+	"workloadPool":     "acme.svc.id.goog",
+	"identityProvider": "https://container.googleapis.com/v1/projects/acme/locations/region/clusters/legion",
 	"contract":         "1",
 	"budget":           "1m",
 	"roleReferences":   "x",

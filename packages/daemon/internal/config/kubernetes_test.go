@@ -74,6 +74,14 @@ func TestLoadForValidationSettlesEveryMemberOfTheKubernetesBlock(t *testing.T) {
     setup: [/bin/sh, -c, 'omp plugin marketplace add acme/agent-skills']
     skills_repository: acme/agent-skills
     idle_release: {idle_minutes: 20, backstop_minutes: 120}
+    sandbox:
+      type: microvm
+      canary_issues: [LEGSMOKE-7]
+      microvm:
+        compute_class: example-microvm
+        metadata:
+          workload_pool: `+testWorkloadPool+`
+          identity_provider: `+testIdentityProvider+`
     repository_cache:
       volume: 50Gi
       refresh_minutes: 5
@@ -183,6 +191,12 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 			Resources: Reservation{CPU: "2", CPURequest: "2", Memory: "4Gi", MemoryRequest: "4Gi", EphemeralStorage: "2Gi", EphemeralStorageRequest: "1Gi"},
 		},
 		IdleRelease: IdleReleaseConfig{IdleMinutes: 20, BackstopMinutes: 120},
+		// A microVM project whose one canary runs in gVisor. The microvm block names no storage
+		// class, so its pods' is runtime.kubernetes.storage_class.
+		Sandbox: SandboxConfig{Type: SandboxMicroVM, CanaryIssues: []string{"LEGSMOKE-7"}, MicroVM: &MicroVMConfig{
+			ComputeClass: "example-microvm", StorageClass: "gp2",
+			Metadata: &MetadataConfig{WorkloadPool: testWorkloadPool, IdentityProvider: testIdentityProvider},
+		}},
 		// The file sets no memory_guard block, so the guard settles on at the wire's defaults.
 		MemoryGuard: DefaultMemoryGuard(),
 	}}

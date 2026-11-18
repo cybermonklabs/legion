@@ -380,7 +380,7 @@ func TestARegisterThatFailsLeavesTheIdentityWhereItWas(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp := r.srv.register(context.Background(), peer, victim.Process.Pid, testSessionID, 0)
+		resp := r.srv.register(context.Background(), peer, victim.Process.Pid, testSessionID, false, 0, 0)
 		if resp.OK || resp.Code != CodeUnidentified {
 			t.Fatalf("a peer no longer naming the admitted pid got %+v, want UNIDENTIFIED", resp)
 		}
@@ -619,7 +619,7 @@ func TestTheAncestryWinnerIsRefusedToAPeerWhosePIDChanged(t *testing.T) {
 		return procParent(pid)
 	}
 	r.parentOf.Store(&hidden)
-	resp := r.srv.register(context.Background(), peer, victim.Process.Pid, testSessionID, 0)
+	resp := r.srv.register(context.Background(), peer, victim.Process.Pid, testSessionID, false, 0, 0)
 	r.parentOf.Store(nil)
 	if resp.OK || resp.Code != CodeUnidentified {
 		t.Fatalf("a peer no longer naming the pid the admission's walk resolved got %+v, want UNIDENTIFIED", resp)

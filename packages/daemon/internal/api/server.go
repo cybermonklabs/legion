@@ -214,8 +214,9 @@ type Options struct {
 	// architect at once when the recovery will not record it (enterTodoChild). Nil leaves none out.
 	RepositoryUnread func(resolved string) bool
 	// AwaitRecovery leaves a child release_children left unrecorded on an unread repository to that
-	// repository's recovery (the daemon's awaitRecovery), which tells the tree's architect of each
-	// such child it did not record. Nil leaves none.
+	// repository's recovery (the daemon's awaitRecovery), which tells the architect of each such
+	// child it did not record: the one that owns the child's parent when the record holds that
+	// parent in tree, else the tree's. Nil leaves none.
 	AwaitRecovery func(repo, tree, child, parent string)
 	// RoleFor is the role that works a phase (phase.RoleFor). The operator's retry of a failed
 	// phase worker applies its issue's held phase only when that phase's role is the claim's
@@ -251,6 +252,14 @@ type Options struct {
 	// store — on a context that outlives the agent's connection, and the route answers the agent
 	// once it has returned.
 	CapabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
+	// RoleHoldersChanged is told, before the claim takes a ready that carries no capability report
+	// — a boot's ready, or a role-regain's — of the claim as it stands, when it has an issue and is
+	// not the controller: the daemon queues the publication of that issue's role sessions to
+	// Dispatch, which reads the live set from the store when it runs. The ready is what sends the
+	// claim its first task, so the publication is queued before any task goes. An error refuses
+	// the ready with 503: the machine has not taken it, no task goes, and the plugin tries the
+	// ready again. Nil queues nothing.
+	RoleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	// ReleaseRecords is the store's record of what the idle release has done (store.Store), which
 	// the claim route `POST /legion/v1/claims/release-records` serves a pod. Nil answers that route
 	// 500 and changes nothing else.
@@ -353,6 +362,8 @@ type server struct {
 	// releaseRecordStore Options.ReleaseRecords and claimActivity Options.ClaimActivity.
 	promptAgents       []string
 	capabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
+	// roleHoldersChanged is Options.RoleHoldersChanged.
+	roleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
@@ -420,6 +431,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		handoffCompleted:   opts.HandoffCompleted,
 		promptAgents:       opts.PromptAgents,
 		capabilityReported: opts.CapabilityReported,
+		roleHoldersChanged: opts.RoleHoldersChanged,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
 		readiness:          opts.Ready,
