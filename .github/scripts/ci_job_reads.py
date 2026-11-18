@@ -2094,7 +2094,7 @@ SCRIPT_TEST_GATES = [
         ("AGENTS.md", "check-ci-filters.test.sh:2695-2717 holds the guide's slow-suite list to the jobs the full-ci label gates"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
-        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:49-50)"),
+        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:66-67)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
     ]),
