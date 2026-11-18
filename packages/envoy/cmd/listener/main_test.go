@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2793,21 +2792,14 @@ func TestBindListenerDurablePassesARefusalThrough(t *testing.T) {
 	}
 }
 
-// deniedDurableClient is a client of a server whose one user, the listener's, may publish anything
-// but deny, and the stream that server holds, created by the configuration's no_auth_user. It is
-// the listener's own client (bus.Connect), so the server's refusal of a request reaches it as
+// deniedDurableClient is a client of a server whose listener user may publish anything but deny
+// (testnats.StartNkeyDenied), and the stream that server holds, created by the server's admin. It
+// is the listener's own client (bus.Connect), so the server's refusal of a request reaches it as
 // bus.ErrPublishDenied.
 func deniedDurableClient(t *testing.T, deny ...string) *bus.Client {
 	t.Helper()
 	seed, public := testnats.User(t)
-	_, admin := testnats.User(t)
-	quoted := make([]string, len(deny))
-	for i, subject := range deny {
-		quoted[i] = strconv.Quote(subject)
-	}
-	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ {nkey: %q, permissions: { publish: { deny: [%s] } } }, {nkey: %q} ]\n}\nno_auth_user: %q\n",
-		public, strings.Join(quoted, ", "), admin, admin)
-	_, uri := testnats.StartConfig(t, config, []string{"-js"}, true)
+	uri := testnats.StartNkeyDenied(t, public, deny...)
 	owner, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("the admin creates the stream: %v", err)

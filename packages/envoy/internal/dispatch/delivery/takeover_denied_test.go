@@ -2,7 +2,6 @@ package delivery
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,20 +10,13 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// deniedIntakeServer is a server whose one user, the intake's, may publish anything but deny, with
-// the stream created by the configuration's no_auth_user (the returned client, the admin's), and
-// the intake user's seed set for the process the row starts.
+// deniedIntakeServer is a server whose intake user may publish anything but deny
+// (testnats.StartNkeyDenied), with the stream created by the server's admin (the returned client),
+// and the intake user's seed set for the process the row starts.
 func deniedIntakeServer(t *testing.T, deny ...string) (string, *bus.Client) {
 	t.Helper()
 	seed, public := testnats.User(t)
-	_, admin := testnats.User(t)
-	quoted := make([]string, len(deny))
-	for i, subject := range deny {
-		quoted[i] = strconv.Quote(subject)
-	}
-	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ {nkey: %q, permissions: { publish: { deny: [%s] } } }, {nkey: %q} ]\n}\nno_auth_user: %q\n",
-		public, strings.Join(quoted, ", "), admin, admin)
-	_, uri := testnats.StartConfig(t, config, []string{"-js"}, true)
+	uri := testnats.StartNkeyDenied(t, public, deny...)
 	owner, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
 		t.Fatalf("the admin creates the stream: %v", err)
