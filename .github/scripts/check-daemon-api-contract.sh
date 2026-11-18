@@ -50,8 +50,6 @@
 # packages/contracts/fixtures/daemon-api/state.json at both contract.daemon and contract.caller,
 # and the manifests packages/pi-legion/package.json and packages/claude-envoy/package.json at
 # legion.daemonApiVersion. A file this check cannot read there is refused as a read that failed.
-# The two record files beside those fixtures, contract-shapes.json and request-shapes.json, hold
-# the number too, and the refusals name them; RECORDS says why this check does not read them.
 # This rule runs before the pass for a number above the base's, because a bump is where a file
 # is left behind: INFRA-3621's bump forgot state.json, and that pass would have let it through.
 # It reads only this checkout, so its refusal reads no open pull request and names no free
@@ -96,22 +94,10 @@ FIELDS = {
     "packages/pi-legion/package.json": ("legion.daemonApiVersion",),
     "packages/claude-envoy/package.json": ("legion.daemonApiVersion",),
 }
-# The two record files hold what the daemon serves and reads: contract-shapes.json a record of
-# each answer at each contract the daemon supports, and request-shapes.json a record of each
-# route's request at each contract from the one that wrote the file on. Each record names its
-# contract, so the number stands in every record of the daemon's own contract and in no one field
-# of either, and held_in does not read them: `go test ./internal/api/`, run in packages/daemon,
-# refuses a record set with no record at the declared contract or one at a contract the daemon
-# does not support (TestTheRecordSetIsOneRecordPerAnswerPerContract,
-# TestEveryRecordedRequestFieldIsReadByName), and `-update` there writes the daemon's own records.
-RECORDS = (
-    "packages/contracts/fixtures/daemon-api/contract-shapes.json",
-    "packages/contracts/fixtures/daemon-api/request-shapes.json",
-)
-# Every file that holds the number: version.go, the files of FIELDS in their order, then the
-# record files. They move together, so a refusal names all of them; each file of FIELDS must hold
-# the number version.go declares, and the Go suite holds the record files to it.
-SITES = (DECLARATION, *FIELDS, *RECORDS)
+# Every file that holds the number: version.go, then the files of FIELDS in their order. They move
+# together, so a refusal names all of them, and each file after version.go must hold the number
+# version.go declares.
+SITES = (DECLARATION, *FIELDS)
 DECLARED = re.compile(r"^const\s+DaemonAPIVersion\s*=\s*(\d+)\s*$", re.M)
 # version.go's first history entry: the first line that starts `// <number>:`.
 HISTORY = re.compile(r"^// \d+:", re.M)

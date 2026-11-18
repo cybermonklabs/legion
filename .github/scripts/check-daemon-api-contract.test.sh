@@ -197,13 +197,7 @@ run_check() {
   queries=$(wc -l < "$root/stub/pr-queries" | tr -d ' ')
 }
 
-# The record files, which the check names after other_sites as files that hold the number: the
-# Go suite holds them to it (the script's RECORDS).
-record_sites=(
-  packages/contracts/fixtures/daemon-api/contract-shapes.json
-  packages/contracts/fixtures/daemon-api/request-shapes.json
-)
-all_files="packages/daemon/internal/api/version.go$(printf ', %s' "${other_sites[@]}" "${record_sites[@]}")"
+all_files="packages/daemon/internal/api/version.go$(printf ', %s' "${other_sites[@]}")"
 
 # How a refusal for files that disagree says to write the number: the golden tests write the
 # fixtures, and the manifests take it by hand. A pattern for contains, so `.` stands for the
