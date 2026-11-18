@@ -19,14 +19,16 @@ import (
 )
 
 // The class of every Verify failure. A caller logs the class and answers 401;
-// no error carries the token.
+// no error carries the token. ErrNotYetValid is IAPVerifier's alone: an
+// assertion issued further ahead of this process's clock than the skew allows.
 var (
-	ErrMalformed = errors.New("oidc: malformed token")
-	ErrIssuer    = errors.New("oidc: token from another issuer")
-	ErrAudience  = errors.New("oidc: token for another audience")
-	ErrExpired   = errors.New("oidc: token expired")
-	ErrCancelled = errors.New("oidc: verification context ended")
-	ErrSignature = errors.New("oidc: token signature not verified")
+	ErrMalformed   = errors.New("oidc: malformed token")
+	ErrIssuer      = errors.New("oidc: token from another issuer")
+	ErrAudience    = errors.New("oidc: token for another audience")
+	ErrExpired     = errors.New("oidc: token expired")
+	ErrNotYetValid = errors.New("oidc: token issued in the future")
+	ErrCancelled   = errors.New("oidc: verification context ended")
+	ErrSignature   = errors.New("oidc: token signature not verified")
 )
 
 // Reason names the class of a Verify failure in one word, for the log line and
@@ -55,6 +57,8 @@ func Reason(err error) string {
 		return "audience"
 	case errors.Is(err, ErrExpired):
 		return "expired"
+	case errors.Is(err, ErrNotYetValid):
+		return "not-yet-valid"
 	case errors.Is(err, ErrCancelled):
 		return "cancelled"
 	case errors.Is(err, ErrIssuerUnavailable):

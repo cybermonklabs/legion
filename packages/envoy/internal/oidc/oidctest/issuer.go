@@ -15,6 +15,9 @@
 package oidctest
 
 import (
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -41,25 +44,38 @@ type TB interface {
 	Cleanup(func())
 }
 
-// Key is one RSA signing key of the issuer. A key exists as soon as it is
-// generated; it is only verifiable once Publish puts it in the served set.
+// Key is one signing key of the issuer: an RSA key it signs with RS256 (NewKey), or a P-256 key it
+// signs with ES256 (NewES256Key). A key exists as soon as it is generated; it is only verifiable
+// once Publish puts it in the served set.
 type Key struct {
 	kid  string
-	priv *rsa.PrivateKey
+	alg  jose.SignatureAlgorithm
+	priv crypto.Signer
 }
 
 // KeyID is the key's `kid`, which a test needs to mint a foreign key under the
 // same id — the one shape where the key set resolves and only the signature fails.
 func (k *Key) KeyID() string { return k.kid }
 
-// NewKey generates a signing key the issuer does not serve until Publish.
+// NewKey generates an RS256 signing key the issuer does not serve until Publish.
 func NewKey(t TB, kid string) *Key {
 	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate key %s: %v", kid, err)
 	}
-	return &Key{kid: kid, priv: priv}
+	return &Key{kid: kid, alg: jose.RS256, priv: priv}
+}
+
+// NewES256Key generates a P-256 signing key the issuer signs with ES256, as Identity-Aware Proxy
+// signs its assertions, and does not serve until Publish.
+func NewES256Key(t TB, kid string) *Key {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key %s: %v", kid, err)
+	}
+	return &Key{kid: kid, alg: jose.ES256, priv: priv}
 }
 
 // Issuer serves a discovery document and a key set, both under the test's control.
@@ -235,7 +251,7 @@ func (i *Issuer) Publish(key *Key) {
 	i.served = append(i.served, jose.JSONWebKey{
 		Key:       key.priv.Public(),
 		KeyID:     key.kid,
-		Algorithm: string(jose.RS256),
+		Algorithm: string(key.alg),
 		Use:       "sig",
 	})
 }
@@ -582,7 +598,7 @@ func sign(key *Key, claims map[string]any) (string, error) {
 		return "", fmt.Errorf("marshal claims: %w", err)
 	}
 	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.RS256, Key: jose.JSONWebKey{Key: key.priv, KeyID: key.kid}},
+		jose.SigningKey{Algorithm: key.alg, Key: jose.JSONWebKey{Key: key.priv, KeyID: key.kid}},
 		(&jose.SignerOptions{}).WithType("JWT"),
 	)
 	if err != nil {

@@ -107,13 +107,20 @@ func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 	if discovery.JWKSURI == "" {
 		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", issuer)
 	}
+	return NewKeysAt(discovery.JWKSURI), nil
+}
+
+// NewKeysAt returns the key source for the key set published at jwksURI, for an issuer that
+// publishes no discovery document to name it: Identity-Aware Proxy, whose set is at a fixed
+// address (IAPKeySetURL). It reads nothing: the first Key reads the set.
+func NewKeysAt(jwksURI string) *Keys {
 	return &Keys{
 		Lifetime:     DefaultKeysLifetime,
 		MinRefresh:   DefaultKeysMinRefresh,
 		FetchTimeout: DefaultKeysFetchTimeout,
 		HTTPClient:   &http.Client{},
-		jwksURI:      discovery.JWKSURI,
-	}, nil
+		jwksURI:      jwksURI,
+	}
 }
 
 // Key answers the public key a token naming kid and signed with alg is to be checked against. An

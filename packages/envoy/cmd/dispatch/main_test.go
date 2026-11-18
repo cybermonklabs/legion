@@ -69,6 +69,127 @@ func headerIdentityEnvironment(overrides map[string]string) map[string]string {
 	return values
 }
 
+// testIAPAudience is the audience IAP signs for the test's load balancer backend service.
+const testIAPAudience = "/projects/123456789012/global/backendServices/9876543210"
+
+// iapIdentityEnvironment is an IAP-identity boot environment admitting the people of example.com:
+// the identity, its audience and the domain, and no other sign-in setting.
+func iapIdentityEnvironment(overrides map[string]string) map[string]string {
+	values := map[string]string{
+		"DATABASE_URL":           "postgres://dispatch",
+		"DISPATCH_AGENT_TOKEN":   "agent-token",
+		"DISPATCH_IDENTITY":      "iap",
+		"DISPATCH_IAP_AUDIENCE":  testIAPAudience,
+		"DISPATCH_SIGNIN_DOMAIN": "example.com",
+	}
+	for name, value := range overrides {
+		values[name] = value
+	}
+	return values
+}
+
+// iapKeySet is a key set served on this machine in IAP's place, so no test calls Google, with the
+// ES256 key it publishes; iapBoot is boot pointed at it, as no setting can point a server.
+func iapKeySet(t *testing.T) (*oidctest.Issuer, *oidctest.Key) {
+	t.Helper()
+	keys := oidctest.New(t)
+	signing := oidctest.NewES256Key(t, "iap-key")
+	keys.Publish(signing)
+	return keys, signing
+}
+
+func iapBoot(t *testing.T, keys *oidctest.Issuer, overrides map[string]string) bootConfig {
+	t.Helper()
+	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(overrides)))
+	if err != nil {
+		t.Fatalf("resolve an IAP boot: %v", err)
+	}
+	boot.IAPKeySetURL = keys.URL() + "/keys"
+	return boot
+}
+
+// iapAssertion is the assertion IAP signs with key for a Google account of hd, A.Person@<hd>,
+// to audience.
+func iapAssertion(t *testing.T, keys *oidctest.Issuer, key *oidctest.Key, audience, hd string) string {
+	t.Helper()
+	now := time.Now()
+	return keys.Mint(t, key, map[string]any{
+		"iss": oidc.IAPIssuer, "aud": audience, "sub": "accounts.google.com:118000000000000000001",
+		"email": "A.Person@" + hd, "hd": hd, "iat": now.Add(-time.Minute).Unix(), "exp": now.Add(9 * time.Minute).Unix(),
+	})
+}
+
+// iapWhoami answers GET /auth/whoami from handler carrying assertion, when it is not empty, and
+// headers.
+func iapWhoami(handler http.Handler, assertion string, headers map[string]string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodGet, "/auth/whoami", nil)
+	if assertion != "" {
+		request.Header.Set("X-Goog-IAP-JWT-Assertion", assertion)
+	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
+func TestResolveBootConfigReadsIAPIdentity(t *testing.T) {
+	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IDENTITY": " iap "})))
+	if err != nil {
+		t.Fatalf("resolve boot config: %v", err)
+	}
+	if boot.IAPAudience != testIAPAudience || boot.IAPKeySetURL != oidc.IAPKeySetURL || boot.SignInDomain != "example.com" ||
+		boot.IdentityHeader != "" || boot.SignInIssuer != "" {
+		t.Fatalf("boot = %#v, want IAP identity for %s over IAP's own key set, admitting example.com", boot, testIAPAudience)
+	}
+}
+
+// IAP signs people in, so an IAP server takes the domain it admits and no other sign-in setting,
+// an audience of the shape IAP signs for, and no dev sign-in; the audience is refused under any
+// other identity, which would leave it unread.
+func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
+	for name, value := range map[string]string{
+		"DISPATCH_SIGNIN_ISSUER":        "https://accounts.google.com",
+		"DISPATCH_SIGNIN_CLIENT_ID":     "dispatch-client",
+		"DISPATCH_SIGNIN_CLIENT_SECRET": "client-secret",
+		"DISPATCH_SIGNIN_GROUP":         "dispatch-members",
+	} {
+		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{name: value}))); err == nil ||
+			!strings.Contains(err.Error(), name+" must be unset under DISPATCH_IDENTITY=iap") {
+			t.Errorf("IAP identity with %s: err = %v, want a refusal naming it", name, err)
+		}
+	}
+	for _, tc := range []struct {
+		overrides map[string]string
+		naming    string
+	}{
+		{map[string]string{"DISPATCH_SIGNIN_DOMAIN": ""}, "DISPATCH_IDENTITY=iap needs DISPATCH_SIGNIN_DOMAIN"},
+		{map[string]string{"DISPATCH_SIGNIN_DOMAIN": "Example.com"}, "DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name"},
+		{map[string]string{"DISPATCH_IAP_AUDIENCE": ""}, "DISPATCH_IAP_AUDIENCE required"},
+		{map[string]string{"DISPATCH_IAP_AUDIENCE": "123456789012-client.apps.googleusercontent.com"}, "DISPATCH_IAP_AUDIENCE=\"123456789012-client.apps.googleusercontent.com\" must be the audience IAP signs"},
+		{map[string]string{"DISPATCH_IAP_AUDIENCE": "/projects/example-project/global/backendServices/1"}, "begins /projects/<project number>/"},
+	} {
+		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(tc.overrides))); err == nil || !strings.Contains(err.Error(), tc.naming) {
+			t.Errorf("IAP identity with %v: err = %v, want a refusal naming %q", tc.overrides, err, tc.naming)
+		}
+	}
+	for name, environment := range map[string]map[string]string{
+		"cookie identity": signInEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}),
+		"header identity": headerIdentityEnvironment(map[string]string{"DISPATCH_IAP_AUDIENCE": testIAPAudience}),
+	} {
+		if _, err := resolveBootConfig(envGetter(environment)); err == nil || !strings.Contains(err.Error(), "DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap") {
+			t.Errorf("%s with DISPATCH_IAP_AUDIENCE: err = %v, want a refusal naming it", name, err)
+		}
+	}
+	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{
+		"DISPATCH_IDENTITY": "iap", "DISPATCH_IAP_AUDIENCE": testIAPAudience, "DISPATCH_SIGNIN_DOMAIN": "example.com",
+	}))
+	if err == nil || !strings.Contains(err.Error(), "DISPATCH_IDENTITY must be cookie") {
+		t.Errorf("dev sign-in with IAP identity: err = %v, want a refusal naming DISPATCH_IDENTITY", err)
+	}
+}
+
 // noSignInEnvironment is a cookie-identity boot environment with no sign-in setting: the sandbox
 // deployment, which has no sign-in client and asks nobody to sign in. What is left is what every
 // boot takes, the database and the agent token.

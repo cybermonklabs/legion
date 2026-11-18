@@ -454,6 +454,26 @@ write identity errors with `identity.WriteError`.
   revoke at the pool (`oidc.CodeFlow.Revoke`), then compare-and-clear;
   `SignIn` retires the plain-text token it replaces through the same
   `retire`. A sealed value is never sent to the pool.
+- `DISPATCH_IDENTITY=iap` is for a Dispatch behind Google Cloud's
+  Identity-Aware Proxy. `identity.IAPIdentity` names the person from the
+  assertion IAP signs on each request (`X-Goog-IAP-JWT-Assertion`) and never
+  from IAP's unsigned `X-Goog-Authenticated-User-*` headers.
+  `oidc.IAPVerifier` (`internal/oidc/iap.go`) checks it: ES256 alone, against
+  IAP's key set at the fixed `oidc.IAPKeySetURL` (`oidc.NewKeysAt`, since IAP
+  publishes no discovery document; `bootConfig.IAPKeySetURL`, which no setting
+  changes, is how a test points it at a key set it serves), the issuer
+  `https://cloud.google.com/iap`, the audience `DISPATCH_IAP_AUDIENCE`, and
+  `exp` and `iat` each with `oidc.IAPClockSkew` (an `iat` ahead of it is
+  `oidc.ErrNotYetValid`). It reads `email`, `hd` and `sub` from the verified
+  payload (`readWorkspaceClaims`), and `EmailVerified` is true only for a
+  Google account's `sub` (`accounts.google.com:`). The membership rule is
+  `identity.DomainRule` from `DISPATCH_SIGNIN_DOMAIN`, which
+  `checkIAPSignInSettings` requires, refusing the issuer, client ID, client
+  secret and group by name. Each request is decided on its own: no session,
+  refresh token or `Membership`; an admitted person is `Record`ed; a refusal
+  is `ErrNoIdentity` (401) and an unreadable key set `ErrSignInUnavailable`
+  (503). `routes.enforceCookieOrigin` holds an unsafe request that carries an
+  assertion to Dispatch's origin, as it holds one with a session cookie.
 - `DISPATCH_IDENTITY=header:<Header-Name>` is for tests and local harnesses
   only, never for a production Dispatch deployment. It accepts the named
   header's value lowercased and records it in `people`; it requires
