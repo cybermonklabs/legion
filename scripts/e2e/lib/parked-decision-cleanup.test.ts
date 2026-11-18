@@ -7,9 +7,11 @@ import { scriptFunctions } from "./script-functions";
 // wait_for_run_processes, the cleanup-is-complete checkpoint's wait for every process of the run to
 // end (parked-decision-devbox.sh). Each case takes the function from the script by name and runs it
 // under the script's own `set` line, with stubs for the helpers it calls: run_processes, which
-// counts its calls in a file, and note, fail and since.
+// counts its calls in a file, and note, fail and since. proc_describe, which names each survivor
+// in the failure, is lib/process-tree.sh's own, which the script sources through lib/rig.sh.
 const scriptPath = join(import.meta.dir, "..", "parked-decision-devbox.sh");
 const fn = scriptFunctions(scriptPath);
+const tree = scriptFunctions(join(import.meta.dir, "process-tree.sh"));
 const set = readFileSync(scriptPath, "utf8").match(/^set -.*$/m)?.[0];
 if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`);
 const dir = temporaryDirectory("parked-decision-cleanup-test");
@@ -30,12 +32,14 @@ run_processes() {
   call=$(wc -l <"$CALLS")
   ${runProcesses}
 }
+${tree("proc_describe")}
 ${fn("wait_for_run_processes")}
 wait_for_run_processes ${args}`;
   const result = Bun.spawnSync(["bash", "-c", script], {
     env: { PATH: process.env.PATH, CALLS: calls },
   });
   return {
+    pid: result.pid,
     code: result.exitCode,
     stdout: result.stdout.toString(),
     stderr: result.stderr.toString(),
@@ -53,11 +57,17 @@ describe("wait_for_run_processes", () => {
   });
 
   test("a process of the run that never ends fails the wait once the poll floor is reached", () => {
-    const r = wait("printf '%s\\n' 4242 4343", "0 3");
+    // Three survivors: the harness's own shell ($$) and this test process ($PPID), which run, and
+    // a process that has ended. The failure names all three, and its note names each one that
+    // runs, its command line included, and none that has ended.
+    const ended = Bun.spawnSync(["true"]).pid;
+    const r = wait(`printf '%s\\n' "$$" "$PPID" ${ended}`, "0 3");
     expect(r.code).not.toBe(0);
     expect(r.calls).toBe(3);
-    expect(r.stderr).toContain("4242");
-    expect(r.stderr).toContain("4343");
+    expect(r.stderr).toContain(`still running: ${r.pid} ${process.pid} ${ended}`);
+    expect(r.stdout).toMatch(new RegExp(`^ +${r.pid} .*bash -c set `, "m"));
+    expect(r.stdout).toMatch(new RegExp(`^ +${process.pid} .*bun`, "m"));
+    expect(r.stdout).not.toMatch(new RegExp(`^ +${ended} `, "m"));
   });
 
   // Catches a wait that gives up on the poll floor alone, the wall-clock half dropped: it would
