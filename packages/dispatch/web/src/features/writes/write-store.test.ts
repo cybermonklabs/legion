@@ -396,6 +396,31 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
   });
 });
 
+// A write pressed in this page before the app takes up what a reload kept is kept in the tab from
+// its press, so the take-up finds it there too: it is this page's write, already in its line, and
+// is not taken up a second time beside itself. The app's resume runs in the shell's effect, which
+// React runs after every effect of the shell's children, so a child's write on mount comes first.
+test("a write pressed before the take-up of a reload's writes is not taken up beside itself", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const writes = new Writes(signedIn(), tab.page(), memoryFiles());
+    try {
+      const hang = () => Promise.withResolvers<never>().promise;
+      void statusWrite(writes, hang).catch(() => {});
+      await settle();
+      const key = row(writes)?.key ?? "";
+      expect(tab.kept(key)).toMatchObject({ login: "alice", state: { status: "sending" } });
+
+      writes.resume("alice");
+      await settle();
+      expect(writes.rows().map((write) => write.key)).toEqual([key]);
+      expect(tab.kept(key)).toMatchObject({ login: "alice" });
+    } finally {
+      tab.close();
+    }
+  });
+});
+
 // W24. An upload's file is kept apart from its request, under the write's key, so a reload makes
 // the upload again with the same file; it goes once the upload lands.
 test("an upload's file survives a reload and the upload resumes with it", async () => {

@@ -14,12 +14,19 @@
  * | The same person's sign-in from another tab                 | cell     |
  * | Another person's sign-in from another tab                  | (2)      |
  * | A reload, the composer's reads cached as the shell draws   | cell     |
+ * | A lapse, then the same person's sign-in                    | cell     |
  *
  * The last row is the shell's first sign-in after a reload. The tab keeps what the reader typed
  * (`draft-store.ts`), and the draft stores take it up when `AuthGate` tells them who is signed
  * in, so the shell is drawn only in the commit after that, the first sign-in's too: a composer
  * whose reads the query client already holds mounts in the shell's first commit and opens on the
  * kept draft (the docked composer, on CORE-1's issue page).
+ *
+ * A lapse takes the shell away and draws the sign-in page, which lists the writes the lapsed
+ * person pressed and Dispatch has not confirmed (`KeptWrites.tsx`). A draft typed and never sent
+ * is no write: the page does not list it, the draft store keeps it through the lapse
+ * (`DraftStore.signedIn`), and the same person's sign-in draws the shell again with the composer
+ * open on it.
  *
  * 1. Run under each client: TanStack's own, which the other app-shell rows use, and
  *    `DispatchQueryClient`, built as `main.tsx` builds it. While the check holds no answer the
@@ -59,7 +66,7 @@ import { realClock, settle, tick } from "./__tests__/fake-clock";
 import { answerRequests } from "./__tests__/network";
 import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
-import { api } from "./api/client";
+import { ApiError, api } from "./api/client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
 import { renderApp } from "./app-sign-out-fixture";
 import { issue } from "./features/margin/margin-fixture";
@@ -318,6 +325,48 @@ test("after a reload, a composer whose reads the query client holds as the shell
     const before = app.queryClient;
     endAsAReload(() => app.teardown());
     app = renderApp({ at, queryClient: holdingTheReadsOf(before), whoAmI });
+    const back = await screen.findByRole("form", { name: "Comment composer" });
+    expect(within(back).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).value).toBe(
+      typed
+    );
+  } finally {
+    app.teardown();
+    restoreReads();
+  }
+});
+
+// A lapse draws the sign-in page in the shell's place, so the docked composer goes with it. The
+// page lists the lapsed person's writes, and a typed draft is none, so it lists nothing; the
+// draft store keeps the draft through the lapse, and the same person's sign-in opens the
+// composer on it again.
+test("a lapse, then the same person's sign-in, opens the composer on the words typed before the lapse", async () => {
+  const user = userEvent.setup();
+  const restoreReads = answerIssueReads();
+  const at = buildIssuePath({ key: issue.key, kind: "conversation" });
+  let lapsed = false;
+  const app = renderApp({
+    at,
+    whoAmI: async () => {
+      if (lapsed) throw new ApiError(401, { error: "unauthorized" });
+      return named("alice");
+    },
+  });
+  const typed = "Alice's comment, typed before the lapse";
+  try {
+    const composer = await screen.findByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(field);
+    await user.paste(typed);
+
+    lapsed = true;
+    await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
+    await screen.findByRole("link", { name: "Sign in with Google" });
+    expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Kept changes" })).toBeNull();
+    expect(screen.queryByText(typed)).toBeNull();
+
+    lapsed = false;
+    await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
     const back = await screen.findByRole("form", { name: "Comment composer" });
     expect(within(back).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).value).toBe(
       typed

@@ -774,7 +774,13 @@ export class Writes {
     if (this.#resumed) return;
     this.#resumed = true;
     const now = Date.now();
+    // A write pressed in this page before this take-up is kept in the tab from its press, so the
+    // tab holds it too: it is already in its line here, and is not taken up beside itself. The app
+    // resumes in the shell's effect, which React runs after every effect of the shell's children,
+    // so a write a child makes as it mounts is pressed first.
+    const held = new Set([...this.#entries.values()].map((entry) => entry.write.key));
     for (const kept of this.#kept.load(login)) {
+      if (held.has(kept.key)) continue;
       // What the key has carried is the entry's own record of it (`KeptWrite.carried`): the
       // store wrote it from this map as the write was kept, so a write re-pressed under the key
       // of the one it replaced - kept with nothing sent and no request of its own - still says

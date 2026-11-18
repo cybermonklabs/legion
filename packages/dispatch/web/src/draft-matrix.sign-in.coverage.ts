@@ -26,6 +26,9 @@ export const coverage: readonly CoverageEntry[] = [
     {
       row: "after a reload, a composer whose reads the query client holds as the shell is drawn opens on the draft the tab kept",
     },
+    {
+      row: "a lapse, then the same person's sign-in, opens the composer on the words typed before the lapse",
+    },
     { reason: REASONS[1] },
     { reason: REASONS[2] }
   ),
@@ -38,9 +41,13 @@ export const coverage: readonly CoverageEntry[] = [
       row: "an older check answering after another person's sign-in draws no shell for the person before (DispatchQueryClient)",
     }
   ),
-  ...answers("AuthGate | AuthenticatedApp | early return | if (signedOut) return …", {
-    reason: REASONS[3],
-  }),
+  ...answers(
+    "AuthGate | AuthenticatedApp | early return | if (signedOut) return …",
+    {
+      row: "a lapse, then the same person's sign-in, opens the composer on the words typed before the lapse",
+    },
+    { reason: REASONS[3] }
+  ),
   ...answers(
     "AuthGate | AuthenticatedApp | conditional | if (whoAmI.data !== undefined)",
     {
