@@ -84,7 +84,7 @@ func (m GoogleLogin) Mint(ctx context.Context, req MintRequest) (Minted, error) 
 		now = m.Now
 	}
 	asked := now()
-	payload, err := mintCall(m.Retry.start(req.Type), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit)
+	payload, err := mintCall(m.Retry.start(req.Type), m.HTTP, request, what, "Google", http.StatusOK, mintResponseLimit, true, nil)
 	if status := (*mintStatusError)(nil); errors.As(err, &status) {
 		var tokenError googleTokenError
 		if json.Unmarshal(payload, &tokenError) == nil && tokenError.Code == "invalid_grant" {

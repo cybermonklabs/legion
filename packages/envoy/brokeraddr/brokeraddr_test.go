@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/redact"
@@ -283,6 +284,44 @@ func TestAnAnswersWordsPrintOnlyBesideACleanAddress(t *testing.T) {
 		words := "the request object names " + raw
 		if got := brokeraddr.New(raw).Words(words); got != brokeraddr.WordsNotPrinted || leaked(got) != "" {
 			t.Errorf("New(%q).Words(%q) = %q, want %q", raw, words, got, brokeraddr.WordsNotPrinted)
+		}
+	}
+}
+
+// TestAnAnswersWordsPrintOnOneLineBesideACleanAddress: beside a clean address Words prints words
+// with no control character as they came, and words that hold one - a line feed, a carriage
+// return, an escape sequence, a DEL, a C1 next line, bytes that are not UTF-8 - Go-quoted, on one
+// line with every such character escaped, so no answer starts a line of its own or moves the
+// cursor in the message that prints it. Beside an address that is not clean they still print as
+// WordsNotPrinted.
+func TestAnAnswersWordsPrintOnOneLineBesideACleanAddress(t *testing.T) {
+	clean := brokeraddr.New("http://127.0.0.1:1")
+	for _, words := range []string{"the request object names another broker", "naïve — café, 東京: ok", ""} {
+		if got := clean.Words(words); got != words {
+			t.Errorf("Words(%q) = %q, want the words as they came", words, got)
+		}
+	}
+	for _, words := range []string{
+		"refused\nagent-secrets: FORGED from the broker",
+		"refused\r\nagent-secrets: FORGED",
+		"refused\ragent-secrets: FORGED",
+		"refused\x1b[2Kagent-secrets: FORGED",
+		"refused\x7f",
+		"refused\u0085agent-secrets: FORGED",
+		"refused \xff\xfe",
+	} {
+		got := clean.Words(words)
+		if got != strconv.Quote(words) {
+			t.Errorf("Words(%q) = %q, want it Go-quoted, %q", words, got, strconv.Quote(words))
+		}
+		if strings.ContainsAny(got, "\n\r\x1b\x7f\u0085") || !utf8.ValidString(got) {
+			t.Errorf("Words(%q) = %q, which still holds a control character or bytes that are not UTF-8", words, got)
+		}
+		if again := clean.Words(got); again != got {
+			t.Errorf("Words of its own answer %q = %q, want it unchanged", got, again)
+		}
+		if dirty := brokeraddr.New(credentialed[0]).Words(words); dirty != brokeraddr.WordsNotPrinted {
+			t.Errorf("Words(%q) beside a credential = %q, want %q", words, dirty, brokeraddr.WordsNotPrinted)
 		}
 	}
 }
