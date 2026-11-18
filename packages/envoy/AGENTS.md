@@ -5841,13 +5841,20 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   lower is stale; equal is a duplicate when the `snapshot` matches and otherwise a conflict (an equal pair with a different snapshot cannot occur within one record's lifetime;
   a recreated record may reuse one and is dropped).
 
+- The listener publishes a GitHub webhook event only when it normalizes it: an event `githubEventKinds` names, carrying the JSON object `githubPayload` writes (`GithubEnvelopes` publishes no envelope whose payload is empty).
+  Every other event a webhook delivers (a commit status, a branch or tag created or deleted, a label, a review thread resolved, a webhook's ping, and the rest of GitHub's list) is answered `200` and published nowhere.
+  Such an event was once published on the repository's own `comment` topic with no `payload`, which every Legion daemon that hears the repository terminates as poison (`Envoy envelope payload is not JSON`), one ERROR line per delivery.
+  GitHub delivers a sub-issue added or removed to each issue's repository (`sub_issue_*` to the parent's, `parent_issue_*` to the child's), and each delivery is published on `issue.<n>.sub_issue` of the issue in the webhook's own repository: the parent for `sub_issue_*`, the child for `parent_issue_*`.
+  Its payload of kind `sub_issue` carries that `number`, the parent (`parent_number`, `parent_title`, `parent_url`, `parent_repo`), the sub-issue (`sub_issue_number`, `sub_issue_title`, `sub_issue_url`, `sub_issue_repo`) and the `sender`; each repository is the one GitHub names for that issue, else the webhook's own.
+  `TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload` publishes every event the table names from a body of its own, and fails for one added without a normalizer.
+
 - A live settlement is a possibly incomplete view of the head (a missed webhook, a record recreated after the KV TTL):
   it decides the outcome of every name it reports
   — at any id the ordering accepted, including the same run observed in place
   — and says nothing about the rest: a known failure among them stands (the consumer keeps failure names, not a per-name status map), and the head is red while any failure remains.
   A consumer that reconciles a verdict from GitHub's rollup compares the rollup's attempt set the same way, but GitHub's read is complete:
   its failing check runs and failing commit statuses replace the stored ones wholesale.
-  Statuses have no check run and the listener never sees them, so a consumer keeps them apart from check-run failures:
+  Statuses have no check run and the listener records and publishes none of them (a `status` webhook is published nowhere, above), so a consumer keeps them apart from check-run failures:
   a check run that shares a status's name cannot retire it — only GitHub does (likewise a deleted check's failure).
   A newer rollup set merges into the fence and takes the identity (no listener generation);
   the same set applies GitHub's verdict and keeps the listener identity for duplicate detection; an older, mixed, or empty-over-fenced set is ignored.
