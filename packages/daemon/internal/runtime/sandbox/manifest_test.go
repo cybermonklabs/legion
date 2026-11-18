@@ -2123,6 +2123,9 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 			carry(podOf(t, r, stamping), workerOf(t, r, stamping))
 			probe := r.probeManifest("legion-probe", ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec
 			carry(probe, containerNamed(t, probe, probeContainer))
+			// The one path no container mounts: role-init binds the pod's test server log there in
+			// every role's namespace, over the file the worker image makes.
+			mounts[TestPGLogFile] = true
 			exchange := agentSecrets.ExchangeAudience != ""
 			for _, list := range []struct {
 				name    string
