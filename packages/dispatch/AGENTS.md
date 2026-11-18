@@ -1791,9 +1791,12 @@ lists as `(fail) (unnamed)` under the file; the hook order this rests on, and wh
 charged to the next row or to the file rather than to the row that printed it, are in the comment
 above the last block of `web/src/__tests__/setup.ts`.
 `__tests__/act-warnings.test.ts` proves the rule through the `test:web` command: it runs each of
-the five `__tests__/act-rule*.fixture.tsx` files in a child of its own and reads each failure by
-its row; four draw React's act messages, and `act-rule-quiet-restore.fixture.tsx` proves that the
-preload puts back a spy of `quietConsoleError()` that a row leaves in place.
+the six `__tests__/act-rule*.fixture.tsx` files in a child of its own and reads each failure by
+its row; four draw React's act messages, `act-rule-quiet-restore.fixture.tsx` proves that the
+preload puts back a spy of `quietConsoleError()` that a row leaves in place, and
+`act-rule-final-hook.fixture.tsx` proves that a row the network report and the act check both fail
+fails with one report naming both, and that every reset and restore of the preload still runs
+after it, so the next row starts with nothing that row left.
 The failure names each message's kind, its component when React names one, and up to three
 frames when the stack holds them, the test's own first (a `*.test.*` file or one under
 `web/src/__tests__/`) and then the product code under `web/src/`, as
