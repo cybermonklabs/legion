@@ -12,14 +12,8 @@ import (
 )
 
 // ghPinnedCheckPortSHA256 is the sha256 of the public_leak_check.py ghPinnedCheckReads was ported
-// from, leak-check-v18's. From leak-check-v15, which the port was first written from, to v18,
-// is_read, READ_ALL and READ_TWO are the same byte for byte, gh_guard returns before a lookup where
-// it did, and collect reads the endpoint, the method, the field mark, the input and the host as it
-// did. api_read changed in one line: it asks graphql_endpoint whether the endpoint is GitHub's
-// GraphQL one, which cuts the endpoint at its first `?` or `#` before it compares it with
-// `graphql`, so ghPinnedAPIRead cuts it there too. TestGhReadsAreProvenAgainstThePinnedCheck fails
-// while it is not ghReadsProvenCheck's sha256, so a bump of the pin fails until this port moves
-// with it.
+// from, leak-check-v18's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
+// ghReadsProvenCheck's sha256, so a bump of the pin fails until this port moves with it.
 const ghPinnedCheckPortSHA256 = "9c8aa217e9bade9e1f82ae59120f0a86b97be208375f1dde592b6c9da9fd61d7"
 
 // ghPinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is
@@ -336,7 +330,8 @@ func ghGeneratedSpellings() []ghSpelling {
 //
 // And end to end, against ghCheckReadingLikeThePinnedCheck, a call outside the read grammar is
 // guarded whole. Where the check reads it as no read — a listed leaf by its alias `pr ls`, a gh
-// api endpoint written as a whole URL, `-i=` with a false value, which collect reads as `-f`, `--`
+// api endpoint written as a whole URL, GitHub's GraphQL endpoint with a query or a fragment after
+// it (`graphql?x=1`, `/graphql#x`), `-i=` with a false value, which collect reads as `-f`, `--`
 // before a word collect reads as a method, an empty value before a second option collect then
 // takes as that value, so that the word after it is the method or the endpoint, a method other
 // than GET, a field and an input — the check looks up its target's visibility, and the guard reads
@@ -379,6 +374,8 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 	}{
 		{[]string{"pr", "ls", "-R", "acme/widgets"}, true, true},
 		{[]string{"api", "https://api.github.com/repos/acme/widgets/pulls"}, true, true},
+		{[]string{"api", "graphql?x=1"}, true, false},
+		{[]string{"api", "/graphql#x"}, true, false},
 		{[]string{"api", "-i=false", "repos/acme/widgets/pulls"}, true, true},
 		{[]string{"api", "repos/acme/widgets/pulls", "-i=f"}, true, true},
 		{[]string{"api", "-i=F", "repos/acme/widgets/pulls"}, true, true},

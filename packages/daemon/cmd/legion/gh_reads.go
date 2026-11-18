@@ -21,10 +21,12 @@ const ghCheckedOnlyVisibility = "checked-only"
 // the check it resolved hashes to this (leakguard.GhRequest.ProvenCheck), so a pod under another
 // pin, a tmux pane's check of another version, and a check edited under the same tag get the
 // whole guard. A bump of the pin fails that test until the tag, the sha256 and the tests' port of
-// the check all move: port the new check's gh_guard, is_read, READ_ALL, READ_TWO, collect and
-// api_read into ghPinnedCheckReads and its sha256 into ghPinnedCheckPortSHA256 (both in
-// gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness against it with 0 mismatching
-// rows, then write its tag here and the sha256 of its public_leak_check.py, `git show
+// the check all move: read the new check's gh_guard, is_read, READ_ALL, READ_TWO, collect and
+// api_read, and every definition they reach (graphql_endpoint, API_VALUE_OPTS and FIELD_ARGS among
+// them), against the old tag's; port each change to what they read as a read into
+// ghPinnedCheckReads and the new sha256 into ghPinnedCheckPortSHA256 (both in
+// gh_pinned_check_test.go); run INFRA-3562's xcheck4069 harness against it with 0 mismatching
+// rows; then write its tag here and the sha256 of its public_leak_check.py, `git show
 // <tag>:leak-check/public_leak_check.py | sha256sum` in the shared check's own repository.
 var ghReadsProvenCheck = struct{ tag, sha256 string }{
 	tag:    "leak-check-v18",
