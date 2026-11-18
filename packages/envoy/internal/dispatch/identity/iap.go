@@ -36,8 +36,14 @@ type IAPIdentity struct {
 
 // Login returns the lowercased email of the person a valid assertion names, when Rule admits
 // them; ErrNoIdentity for a request with no assertion, one that does not verify, or a person Rule
-// refuses; an error matching ErrSignInUnavailable when IAP's key set could not be read, so no
-// verdict was reached; or the people store's own error.
+// refuses; ErrCredentialExpired, which is ErrNoIdentity too, for an assertion past its exp; an
+// error matching ErrSignInUnavailable when IAP's key set could not be read, so no verdict was
+// reached; or the people store's own error.
+//
+// An expired assertion is logged at DEBUG, not WARN: IAP signs a fresh one for every request it
+// passes, so the one request that carries an old assertion is a websocket's heartbeat, which
+// re-checks the upgrade's assertion every few seconds and finds it expired once its ten minutes
+// are up (api.whileCallerResolves), at every socket of every person.
 func (i IAPIdentity) Login(r *http.Request) (string, error) {
 	raw := r.Header.Get(IAPAssertionHeader)
 	if raw == "" {
@@ -47,6 +53,9 @@ func (i IAPIdentity) Login(r *http.Request) (string, error) {
 	switch {
 	case errors.Is(err, oidc.ErrIssuerUnavailable):
 		return "", fmt.Errorf("%w: %w", ErrSignInUnavailable, err)
+	case errors.Is(err, oidc.ErrExpired):
+		slog.Debug("dispatch: IAP assertion expired", "error", err)
+		return "", ErrCredentialExpired
 	case err != nil:
 		slog.Warn("dispatch: IAP assertion refused", "reason", oidc.Reason(err), "error", err)
 		return "", ErrNoIdentity

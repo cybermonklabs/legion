@@ -213,7 +213,7 @@ Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TO
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
-The document socket's heartbeat re-checks the sign-in cookie it was admitted with and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
+The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`.
 
 A credential that names one project may write that project and nothing else.
@@ -605,14 +605,20 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   An assertion carries no `email_verified`; its `email` is the address of the Google account IAP signed in, which Google tells an app to take as the person.
   `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET` and `DISPATCH_SIGNIN_GROUP` are refused beside it, and so are dev sign-in and `DISPATCH_IAP_AUDIENCE` under any other identity.
 
-  IAP signs a fresh assertion for every request, so each request is decided on its own:
+- Under `iap`, IAP signs a fresh assertion for every request, so each request is decided on its own:
   Dispatch keeps no session cookie, refresh token or hourly confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
   Each person admitted is recorded in `people`.
   A request with no assertion, one that fails a check, or one whose person the rule refuses is `401 NO_IDENTITY`;
-  a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and a refused person `msg="dispatch: IAP person refused" email=<email> hd=<hd> reason=<reason>`, at WARN.
+  a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and a refused person `msg="dispatch: IAP person refused" email=<email> hd=<hd> reason=<reason>`, at WARN, and an expired assertion logs `msg="dispatch: IAP assertion expired"` at DEBUG alone (below).
   A key set that cannot be read reaches no verdict, and the request is `503 SIGNIN_UNAVAILABLE`.
   An unsafe request that carries an assertion is held to Dispatch's origin as one with a session cookie is (`enforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
   Dispatch runs no sign-in of its own, so `/auth/start` answers `503 SIGNIN_UNCONFIGURED`, and `POST /auth/logout` signs nobody out of IAP: the next request carries IAP's next assertion.
+
+- Under `iap`, a websocket is the one request whose assertion ages: the live socket and the document socket re-check the assertion their upgrade carried on every heartbeat (15 seconds, `api.whileCallerResolves`), and Google gives an assertion at most ten minutes and the skew.
+  Once that assertion has expired, the heartbeat rotates the socket rather than cutting it (`identity.ErrCredentialExpired`):
+  the live socket closes with `4001` (reason `credential expired`), on which the page reopens it at once and shows nothing, and the document socket with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects.
+  The reopened socket's upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past its assertion, and an IAP user's sockets each reopen about every ten minutes.
+  Any other refusal on a heartbeat closes the socket as before: `1008` on the live socket, and no close frame (`1006`) on the document socket.
 
 - `header:<Header-Name>` is for tests and local harnesses only, never for a production Dispatch deployment.
   It accepts a header value, lowercases it and records the person.
@@ -1261,6 +1267,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   Every 15 seconds (the registry's live window) each process checks its open document sockets again and closes each writable one the fleet no longer admits with `4412` (reason `DOC_ADMISSION_REVOKED`; `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE` and `DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON` in `packages/contracts`);
   the close frame goes out once the message the server has in flight on that socket is out, which it waits at most a second for, so a peer too slow to take it in that second gets no close frame at all and reads the end as `1006`;
   the provider reconnects on either, the new socket is admitted again, and the reconnect's sync restores what was in flight, so the second is a bound on the close code a page reads and on nothing else.
+  The same close ends a document socket whose upgrade's IAP assertion has expired (Identity, above), with the same reconnect.
   A change of ygo's own update encoding is the one stored-document change no build can answer and no test here proves: a build that meets history written with an encoding it does not know cannot decode it, and the build that cannot is already serving when the new encoding arrives, so the reader-first rule above has nothing to act on.
   An upgrade of that dependency that changes the encoding is therefore a release deployed with no server of the earlier release running, like the migrations that took that exception, rather than a roll.
   What this build does answer is an element it does not know (`DOC_NEWER_CONTENT`, above) and the encodings two deployed builds already speak, which the two-build documents test drives; neither is the upgrade.
@@ -3737,7 +3744,7 @@ Each item below names a path with its method and identity, then its purpose.
   A page that stops reading meets the socket's own bounds first (#2449):
   the writer's 10 s write deadline (`liveSocketWriteWait`) ends the socket, which holds at most 16 of the hub's frames (`liveSocketQueue`) and 64 stream frames (`liveSocketStream`);
   the agent view's 8 MiB bounds only what it buffers while the socket writes slower than the session produces.
-  A socket rotates with 4001 at a random age from 30 to 60 minutes;
+  A socket rotates with 4001 at a random age from 30 to 60 minutes, and under `DISPATCH_IDENTITY=iap` also once the IAP assertion its upgrade carried expires (reason `credential expired`, Identity, above);
   it closes with 1012 on restart, 1008 when its caller stops resolving, and 1013 when the hub queue fills.
 
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)

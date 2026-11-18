@@ -471,8 +471,15 @@ write identity errors with `identity.WriteError`.
   `checkIAPSignInSettings` requires, refusing the issuer, client ID, client
   secret and group by name. Each request is decided on its own: no session,
   refresh token or `Membership`; an admitted person is `Record`ed; a refusal
-  is `ErrNoIdentity` (401) and an unreadable key set `ErrSignInUnavailable`
-  (503). `routes.enforceCookieOrigin` holds an unsafe request that carries an
+  is `ErrNoIdentity` (401), an expired assertion `ErrCredentialExpired`
+  (still `ErrNoIdentity`, 401), and an unreadable key set
+  `ErrSignInUnavailable` (503). A websocket's heartbeat re-checks the
+  assertion its upgrade carried, which IAP gives ten minutes, so
+  `api.whileCallerResolves` reads `ErrCredentialExpired` as a rotation: it
+  cancels with `errCredentialExpired`, and the live socket closes `4001`
+  (`credential expired`) and the document socket `4412` (the cause's
+  `CloseCode`, which ygo sends); the page reopens on a fresh assertion.
+  `routes.enforceCookieOrigin` holds an unsafe request that carries an
   assertion to Dispatch's origin, as it holds one with a session cookie.
 - `DISPATCH_IDENTITY=header:<Header-Name>` is for tests and local harnesses
   only, never for a production Dispatch deployment. It accepts the named

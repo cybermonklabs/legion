@@ -433,7 +433,9 @@ export const DOCUMENT_NEWER_CONTENT_CLOSE_REASON = "DOC_NEWER_CONTENT";
  * reconnecting only on 4401, 4403 and 1009 (`HocuspocusProviderWebsocket.ts` `onClose`), so the
  * page reconnects on this code, presents its numbers again and is admitted again: read-only,
  * unless a live process admits it. 412 is HTTP's "Precondition Failed", which the admission the
- * fleet withdrew is. Generated into Go as `contracts.DocumentAdmissionRevokedCloseCode`.
+ * fleet withdrew is. The socket closes with it too once the Identity-Aware Proxy assertion its
+ * upgrade carried expires (`DISPATCH_IDENTITY=iap`): the reconnect carries a fresh assertion, which
+ * is judged again. Generated into Go as `contracts.DocumentAdmissionRevokedCloseCode`.
  */
 export const DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE = 4412;
 
@@ -442,9 +444,10 @@ export const DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE = 4412;
 export const DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON = "DOC_ADMISSION_REVOKED";
 
 /** The close code Dispatch ends a live socket with once the socket reaches its age, a random point
- *  in [LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS). It is in the private 4000-4999 range, apart
- *  from the 4000 a page closes a silent socket with: the page reopens at once and resumes every
- *  subscription, showing no pill and refreshing nothing. */
+ *  in [LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS), or once the Identity-Aware Proxy assertion
+ *  its upgrade carried expires (`DISPATCH_IDENTITY=iap`). It is in the private 4000-4999 range,
+ *  apart from the 4000 a page closes a silent socket with: the page reopens at once and resumes
+ *  every subscription, showing no pill and refreshing nothing. */
 export const LIVE_SOCKET_MAX_AGE_CLOSE = 4001;
 /** The youngest age at which Dispatch ends a live socket: 30 minutes. */
 export const LIVE_SOCKET_MIN_AGE_MS = 1_800_000;

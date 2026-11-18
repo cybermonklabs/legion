@@ -196,6 +196,14 @@ answered `401 NO_IDENTITY`; one that finds IAP's key set unreadable is answered
 page of another origin is refused, as it is for a session cookie, since a browser sends IAP's own
 cookie with it.
 
+A page's live connections, its live socket and each open document's socket, are the one place an
+assertion ages: they re-check the assertion they opened with every 15 seconds, and IAP gives an
+assertion about ten minutes. When it expires, Dispatch closes the socket with a code on which the
+page reopens it at once (`4001` for the live socket, `4412` for a document's), and the reopened
+socket carries IAP's next assertion, which is checked again. So each of an IAP user's sockets
+reopens about every ten minutes: the live socket shows nothing of it, and a document reconnects
+as it does after any close the server makes, its sync restoring whatever was in flight.
+
 ## Changing the session key
 
 `DISPATCH_SIGNING_KEY` takes the new key beside the old one, so the key changes without signing

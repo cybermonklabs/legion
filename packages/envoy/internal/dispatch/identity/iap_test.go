@@ -83,6 +83,8 @@ func TestIAPIdentityAdmitsAMemberAndRecordsThem(t *testing.T) {
 // Every request IAP did not vouch for a member of the domain is refused as no identity, and records
 // nobody: no assertion (the unsigned email header alone included), one signed by another key, one
 // for another audience, an expired one, and a verified assertion of an account outside the domain.
+// Only the expired one is ErrCredentialExpired, which a socket's heartbeat reads as a rotation
+// rather than as its person gone; every other refusal is not.
 func TestIAPIdentityRefusesAllButAVerifiedMember(t *testing.T) {
 	rig := newIAPRig(t)
 	forger := oidctest.NewES256Key(t, rig.signing.KeyID())
@@ -90,26 +92,31 @@ func TestIAPIdentityRefusesAllButAVerifiedMember(t *testing.T) {
 		name      string
 		assertion string
 		headers   map[string]string
+		expired   bool
 	}{
-		{"no assertion", "", nil},
+		{"no assertion", "", nil, false},
 		{"the unsigned email header alone", "", map[string]string{
 			"X-Goog-Authenticated-User-Email": "accounts.google.com:a.person@example.com",
 			"X-Goog-Authenticated-User-Id":    "accounts.google.com:118000000000000000001",
-		}},
-		{"an assertion signed by another key under IAP's key id", rig.assertion(t, forger, "example.com", nil), nil},
+		}, false},
+		{"an assertion signed by another key under IAP's key id", rig.assertion(t, forger, "example.com", nil), nil, false},
 		{"an assertion for another audience", rig.assertion(t, rig.signing, "example.com", func(c map[string]any) {
 			c["aud"] = "/projects/123456789012/global/backendServices/1"
-		}), nil},
+		}), nil, false},
 		{"an expired assertion", rig.assertion(t, rig.signing, "example.com", func(c map[string]any) {
 			c["iat"], c["exp"] = time.Now().Add(-20*time.Minute).Unix(), time.Now().Add(-10*time.Minute).Unix()
-		}), nil},
-		{"a verified assertion of an account outside the domain", rig.assertion(t, rig.signing, "other.example", nil), nil},
+		}), nil, true},
+		{"a verified assertion of an account outside the domain", rig.assertion(t, rig.signing, "other.example", nil), nil, false},
 		{"a verified assertion of a personal account at the domain's address", rig.assertion(t, rig.signing, "example.com", func(c map[string]any) {
 			delete(c, "hd")
-		}), nil},
+		}), nil, false},
 	} {
-		if email, err := rig.login(tc.assertion, tc.headers); !errors.Is(err, ErrNoIdentity) {
+		email, err := rig.login(tc.assertion, tc.headers)
+		if !errors.Is(err, ErrNoIdentity) {
 			t.Errorf("%s: Login = %q, %v; want ErrNoIdentity", tc.name, email, err)
+		}
+		if errors.Is(err, ErrCredentialExpired) != tc.expired {
+			t.Errorf("%s: Login = %v; ErrCredentialExpired %t, want %t", tc.name, err, !tc.expired, tc.expired)
 		}
 	}
 	if len(rig.people.people) != 0 {
