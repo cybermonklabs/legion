@@ -178,7 +178,10 @@ session, 1 otherwise) and asks nothing of the network. `agent-secrets identity -
 chain without registering anything and prints the source a command would use — `key-dir: <dir>`,
 `sign-in: <person>`, `helper: <socket>`, `machine: the cached enrollment in <dir>`, or `machine:`
 and the identity it would trade — then `helper: <socket>` whenever the helper answered and is not
-that source; with none, stdout is empty, the refusal above is on stderr, and it exits 1.
+that source; with none, stdout is empty, the refusal above is on stderr, and it exits 1. A
+`helper: <socket>` line ends with the release the running helper reports for itself,
+`(agent-secrets-helper <release>)`; a helper from before that report answers `unknown op version`,
+and the line ends `(a helper from before this release; its binary is /proc/<pid>/exe)` instead.
 
 A Kubernetes pod an operator launches by hand needs no credential a person installs and no machine
 login a person approves: it logs in and enrols itself with the projected ServiceAccount token its

@@ -45,7 +45,8 @@ type roleForReader struct {
 // worker, or names the role an admitted root's entry numbers are of, or answers the issue's own
 // phase for the architect's completion there, as its reader took the issue's phase while RoleFor
 // named no role (phase.Of), or never reads admitted at all because a check before it refuses that
-// phase, which is what each named test holds it to.
+// phase, which is what each named test holds it to. The owner walk reads no role: where it starts
+// is its caller's to say (record.NoticeStartsAtParent, for a notice).
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.

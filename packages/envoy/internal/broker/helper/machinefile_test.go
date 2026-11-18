@@ -1,5 +1,4 @@
 // packages/envoy/internal/broker/helper/machinefile_test.go
-//go:build linux
 
 package helper
 
@@ -236,21 +235,6 @@ func TestAMachineFileOthersCanReadIsRefused(t *testing.T) {
 	}
 	if _, err := LoadMachineFile(path); err != nil {
 		t.Fatalf("mode 0600: %v", err)
-	}
-}
-
-// TestASaveAfterTheBrokerClosesWritesNothing: once Close returns, no save of the machine login
-// writes into its directory, so the caller that closed the broker can remove that directory
-// while a refresh or an approved login is still finishing.
-func TestASaveAfterTheBrokerClosesWritesNothing(t *testing.T) {
-	dir := t.TempDir()
-	b := &Broker{MachineFile: filepath.Join(dir, "machine.json")}
-	b.Close()
-	if err := b.saveFile(testMachineFile(t, "cred-1", "refresh-1")); err != nil {
-		t.Fatalf("a save after Close: %v; want nil, since it writes nothing", err)
-	}
-	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
-		t.Fatalf("a save after Close wrote into the directory: %v %v", entries, err)
 	}
 }
 

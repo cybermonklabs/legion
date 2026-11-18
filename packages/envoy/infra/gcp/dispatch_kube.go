@@ -276,10 +276,10 @@ func refuseDispatchSeedInSecret(value pulumi.StringInput, dispatch, input string
 // the URL names a local server, which the pod's NATS clients can never reach through the tailnet
 // proxy. With natsInCluster there is no proxy, and core refuses a local URL only beside one, so a
 // local URL is refused here instead, before the config is built, and both call sites refuse alike:
-// the pods dial the URL themselves, and a loopback URL has them dial themselves. natsReplicas and
-// streamMaxBytes reach no refusal of core's own, since newDispatchSettings bounds them more
-// tightly (1 to bus.MaxReplicas, and at least 1) before anything registers, which is why every
-// refusal that is not socks5Proxy's is natsUrl's.
+// the pods dial the URL themselves, and a loopback URL has them dial themselves. natsReplicas,
+// streamMaxBytes and the sender limit reach no refusal of core's own, since newDispatchSettings
+// bounds them more tightly (1 to bus.MaxReplicas, at least 1, and core.CheckSenderLimit) before
+// anything registers, which is why every refusal that is not socks5Proxy's is natsUrl's.
 // The listener serves on every address of its pod, and its API refuses to start on a non-loopback
 // listen host without a bearer (packages/envoy/cmd/listener/apiauth.go), so the environment names
 // the bearer in Secret listenerSecret.
@@ -288,12 +288,14 @@ func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1
 		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
 	}
 	env, err := (core.ListenerConfig{
-		MachineID:      s.hostname,
-		Port:           core.DefaultListenerPort,
-		ListenHost:     "0.0.0.0",
-		SOCKS5Proxy:    s.socks5Proxy(),
-		NATSReplicas:   s.natsReplicas,
-		StreamMaxBytes: s.streamMaxBytes,
+		MachineID:               s.hostname,
+		Port:                    core.DefaultListenerPort,
+		ListenHost:              "0.0.0.0",
+		SOCKS5Proxy:             s.socks5Proxy(),
+		NATSReplicas:            s.natsReplicas,
+		StreamMaxBytes:          s.streamMaxBytes,
+		SenderMessagesPerMinute: s.senderMessagesPerMinute,
+		SenderMessageBurst:      s.senderMessageBurst,
 	}).Env([]string{url})
 	if err != nil {
 		var input *core.InputError

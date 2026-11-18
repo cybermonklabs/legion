@@ -7,8 +7,10 @@ import (
 	"strings"
 )
 
+// Github verifies a GitHub webhook's sha256= HMAC signature. An empty secret checks nothing, so it
+// answers false for every signature.
 func Github(secret string, body []byte, signature string) bool {
-	if !strings.HasPrefix(signature, "sha256=") {
+	if secret == "" || !strings.HasPrefix(signature, "sha256=") {
 		return false
 	}
 	expected := sha256mac(secret, body)

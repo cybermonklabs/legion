@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, test as bunTest, expect, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -157,9 +157,25 @@ beforeEach(() => {
   sockets = installFakeLiveSockets();
 });
 afterEach(() => {
-  cleanup();
   sockets.restore();
 });
+
+/**
+ * A row of this file: `bun:test`'s own, but its body ends by unmounting the page inside act
+ * (`cleanup`), not in `afterEach`. DeliveryPage's search debounce (`useSettled`, 250 ms from
+ * mount) and SourceFreshness's 1 s tick are real timers, and Bun gives the event loop a turn
+ * between a row's body and its `afterEach`: a timer due then fires with the act environment on
+ * and no act scope open, and React reports its setState as an update outside act. The unmount
+ * clears both timers before that turn.
+ */
+const test = (name: string, body: () => Promise<void>): void =>
+  bunTest(name, async () => {
+    try {
+      await body();
+    } finally {
+      cleanup();
+    }
+  });
 
 /** The page's live socket, once the page has opened one, as Dispatch accepts it. */
 async function openSocket(): Promise<FakeLiveSocket> {
@@ -500,7 +516,10 @@ test("while a facet pick waits for its snapshot, the header and freshness keep t
   expect(row.querySelector('[data-source="dispatch"]')?.textContent).toMatch(
     /^Dispatch \d+ s ago$/
   );
-  serve(socket, snapshotFrame(picked.sub, { ...emptyTimeline, prs: [listedPR] }));
+  // The snapshot's answer lands a few microtasks after the frame: inside `act`, before the row ends.
+  await act(async () => {
+    serve(socket, snapshotFrame(picked.sub, { ...emptyTimeline, prs: [listedPR] }));
+  });
 });
 
 test("the list sorts by its headers and a row opens the PR's details", async () => {
