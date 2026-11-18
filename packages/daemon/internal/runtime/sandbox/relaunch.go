@@ -189,11 +189,10 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		// The suspension's own copy of the Sandbox carries the annotation naming the replaced pod:
 		// a migrating launch reads it from there onto the Sandbox it creates
 		// (replaceSupersededSandbox).
-		suspended, old, err := r.suspendReplaced(bounded, s, pod, decided.displacesRoles)
-		if suspended == nil {
+		if s, err = r.suspendReplaced(bounded, s, pod, decided.displacesRoles); err != nil {
 			return fail("suspend its sandbox", err)
 		}
-		s = suspended
+		old, err := r.awaitPodGone(bounded, s)
 		if err != nil {
 			return fail("wait out its previous pod", err)
 		}
@@ -1258,31 +1257,25 @@ const (
 	roundReplacement  replacementKind = true
 )
 
-// suspendReplaced sets the Sandbox read as s Suspended to replace pod, its pod, and waits the pod
-// out (awaitPodGone): the one way each act that ends a pod for a launch ends it, a launch that
-// replaces its pod (relaunch) and the stop of a controller whose launcher is not connected
-// (endPod). A replacement that ends roles running in the pod (displacesRoles, from runsNoRole)
-// names the pod on the Sandbox in the same write (suspendDisplacing, launchReplacement), so each
-// of those roles' end is read as the daemon's own act and not a death; any other only suspends
-// the Sandbox, where it is not Suspended already. It returns the Sandbox as the suspension left
-// it, the one copy that carries that name, and every uid the wait saw holding the Sandbox's name.
-// A suspension the API server refused ended nothing, and returns no Sandbox with its error; a pod
-// still there when the wait ends returns the suspended Sandbox with the wait's.
-func (r *Runtime) suspendReplaced(ctx context.Context, s *sandbox, pod *corev1.Pod, displacesRoles bool) (*sandbox, map[types.UID]bool, error) {
+// suspendReplaced sets the Sandbox read as s Suspended to replace pod, its pod: the one way each
+// act that ends a pod for a launch suspends it, a launch that replaces its pod (relaunch) and the
+// stop of a controller whose launcher is not connected (endPod), each of which then waits the pod
+// out itself (awaitPodGone). A replacement that ends roles running in the pod (displacesRoles,
+// from runsNoRole) names the pod on the Sandbox in the same write (suspendDisplacing,
+// launchReplacement), so each of those roles' end is read as the daemon's own act and not a death;
+// any other only suspends the Sandbox, where it is not Suspended already. It returns the Sandbox as
+// the suspension left it, the one copy that carries that name. An error is a suspension the API
+// server refused, which ended nothing.
+func (r *Runtime) suspendReplaced(ctx context.Context, s *sandbox, pod *corev1.Pod, displacesRoles bool) (*sandbox, error) {
 	switch {
 	case displacesRoles:
-		suspended, err := r.suspendDisplacing(ctx, s, pod.UID, launchReplacement)
-		if err != nil {
-			return nil, nil, err
-		}
-		s = suspended
+		return r.suspendDisplacing(ctx, s, pod.UID, launchReplacement)
 	case s.mode() != modeSuspended:
 		if err := r.setMode(ctx, s, modeSuspended); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
-	old, err := r.awaitPodGone(ctx, s)
-	return s, old, err
+	return s, nil
 }
 
 // suspendDisplacing sets the Sandbox read as s Suspended and names uid on it as the live pod that
