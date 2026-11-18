@@ -1136,87 +1136,160 @@ every request as a session without it, plus the skill's own tokens. `src/dispatc
 holds the insertion rules, and `extensions/dispatch-first-omp.test.ts` checks turn 1, turn 2, after
 a compaction, and without Dispatch on the real binary.
 
-The same `context` handler adds to each main-loop request what
-people wrote to the session in the last 72 hours: `readSessionAnswers`
-from `@legion/envoy-client/session-answers` over `GET /api/v1/agents/{session_id}/answers`, as a
-separate user message (`src/session-answers-context.ts`), never merged into a message of the
-conversation and never at the head. The session is the one `replyAddress` names: the top-level one's
-`getSessionId()`, and for a `task` subagent its parent's, resolved through `resolveEnvoySession`,
-which is also the session it writes to Dispatch as (`DISPATCH_SESSION_ID`); a subagent this
-process cannot place carries no list. Dispatch is resolved per request with `commands: "kept"`,
-so no `!` token command runs on the request path, and `readSessionAnswers` works out the cache's
-directory from `process.env`. Position: the list goes after the request's last message only when
-it shows something the session's list before it did not (`sessionAnswersChanged` over the two
-reads' `SessionAnswersRead.words`, from `sessionAnswersWords` over every item Dispatch sent inside
-the read's 72-hour window, the ones the character cap left out of the list included: each item's
-kind, id, author, times, options chosen and words, so an issue title, an ask's question or a
-cached list's header does not count): an item, or an answer or comment a person changed, even one
-the cap leaves out (a newest item longer than the cap, a comment an edit made too long to fit), so
-the model reads the new list with its left-out line rather than the person's old words as
-current; or an item gone from the read while its time is still inside the read's window
-(`SessionAnswersRead.since`), which a person retracted (an answer set back to none) or Dispatch
-removed. An item gone because the window left it behind is no change. `readSessionAnswers` asks
-Dispatch for the window by this host's clock (`since`), the clock the render filters by, so an
-item Dispatch would drop by a clock ahead of the host's is still sent while the host's window
-holds it, and is not taken for a retracted one. On the requests after that the list stays right
-after that message, found by role, timestamp and a tool result's call id, with the bytes it was
-placed with, so the request ends with its own last message and the model does not read a list
-with nothing new in it as a new turn and answer it on every turn. A list that only lost items to
-the window, or whose text names a different read of the same items
-(`As read at …; this read failed: …`), keeps its place and those same bytes, since a changed byte
-inside the conversation costs a prompt-cache miss for every byte behind it. The exception is
-a list an older copy of the extension placed, which carries no `words`: it keeps its place only
-when its text differs in nothing but that read line, and any other difference, a lost item
-included, re-renders it after the last message, since reading that text more closely took a
-person's words for the renderer's (`showsNew`). The failure line, which a read gives when it has
-no list to give, is no list: where a list is placed it counts as a change and goes after the last
-message, so the model reads that the read failed rather than a list's kept bytes that look like a
-read that answered, and a list after a placed failure line goes after the last message the same
-way; a failure line after a placed one keeps that one's place and bytes, its reason included. A
-read that fails but gives the cached list is a list: with the same items it keeps the placed
-bytes, which do not name this read's failure; the extension logs that read's reason with
-`logger.warn` instead (`unshownFailure`), on the session's first such request and not again until
-one of its reads has answered, so a lasting failure, such as a Dispatch with no answers route, is
-one line beside that Dispatch's own notice. Nothing is logged when the placed bytes are this
-read's own text, which names its failure. A list an older copy rendered from its cache, placed
-after the last message, names its failed read on its second line (`As read at …; this read
-failed: …`); where it keeps the placed bytes, that line leaves the request, and `placedLegacy`
-hands its failure on as the reason (`failedRead`), the sentence as that copy wrote it. An older
-copy's list with no such line comes only from a read Dispatch answered, so it counts as an
-answered read, and that path is logged under the same rule. The state is each session's, by
-`sessionManager` and session id as the placements are (on `globalThis` under
-`Symbol.for("legion.pi-envoy.session-answers-unshown.v1")`). The extension logs no newer list,
-no retraction and no read that answers, since those reach the model. A read that gives no text
-leaves a placed list where it is rather than taking it out, and takes a placed failure line out
-together with its place, since that read did not fail. A read whose window holds no item still
-gives its
-`words` (`carriedAnswers`, which `sessionAnswersText` and `src/session-answers-read.test.ts`
-call): when they show an item of the placed list gone inside the window, as when a person
-retracts the only answer the window held, the list leaves the request together with its place,
-and a list whose items only aged out stays. A read with no words (a Dispatch with no answers
-route and nothing cached, Dispatch off) compares nothing and keeps the list. So a placed list can
-name a read older than the request carrying it, and can hold an item that has since aged out of
-the window, until a read shows something new or gives the failure line, and the list or the
-failure line goes after the last message, or a read with no text shows an item of it retracted,
-and the list leaves. A move empties
-the old place, so the request first differs there. A session with no list
-placed yet in this process, or whose list's message is no longer in the request (a compaction
-summarized it, the branch moved), gets it after the last message again. Each session's place and
-the list as it was placed (its bytes, its `words` and its `since`) live in a process-wide
-`WeakMap` by `sessionManager` and then session id, since Oh My Pi
-keeps one `sessionManager` across a session switch (on `globalThis` under
-`Symbol.for("legion.pi-envoy.session-answers-placements.v1")`). While the session compacts
-(`compacting`) or right after a cut, the list goes after the last message and no place moves, so
-a main-loop request between a speculative compaction's cut and its whole conversion leaves the
-compaction the messages it counts. Oh My Pi marks every message a
-`context` handler adds as per-call, and its Anthropic placement puts no `cache_control` on a
-per-call message and keeps the rolling tail anchor on the conversation's last message, so a list
-that keeps its place and its bytes is inside the cached prefix of the next request, and a change
-in it re-reads only the bytes after it; at the head, every change would invalidate everything after it.
+The same `context` handler adds to each main-loop request what people wrote to the session
+in the last 72 hours: `readSessionAnswers` from `@legion/envoy-client/session-answers` over
+`GET /api/v1/agents/{session_id}/answers`, in answers messages, user messages of their own
+(`src/session-answers-context.ts`), never merged into a message of the conversation and never
+at the head. The session is the one `replyAddress` names: the top-level one's `getSessionId()`,
+and for a `task` subagent its parent's, resolved through `resolveEnvoySession`, which is also
+the session it writes to Dispatch as (`DISPATCH_SESSION_ID`); a subagent this process cannot
+place carries no list. Dispatch is resolved per request with `commands: "kept"`, so no `!` token
+command runs on the request path, and `readSessionAnswers` works out the cache's directory from
+`process.env`.
+
+Every answers message a main-loop request appends after its last message (a list, the "no item"
+list or the failure line) is written to the session when the handler appends it, by the copy
+of the extension that decided the request (`SessionAnswersRequest.record`, which the extension
+writes with `pi.appendEntry`). Every later main-loop request carries it again at its place with
+its bytes, since a changed byte inside the conversation costs a prompt-cache miss for every
+byte behind it: outside the compaction path and a write that did not happen (below), a later
+request changes no byte an earlier one sent. The entry is a custom entry `envoy-answers-sent`
+(`ANSWERS_SENT_ENTRY`) whose data (`AnswersSent`) is `{ after, blocks, words? }`: `after` is
+the `messageKey` of the request's last message (its role and timestamp, and a tool result's
+call id, since the tool results of one round can share a timestamp), `blocks` the exact text
+of each text block sent, and `words` the read's words when it gave them. Every later main-loop
+request of the session, in this process or in one that resumed the session, reads the branch
+twice (`request.branch()`): before its read, to find where the request ends (`branchPosition`),
+and again once the read has come back and every earlier request of the session has decided, to
+rebuild each entry whose `after` it holds right after the last message with that key
+(`rebuilt`), from its recorded blocks only and never from a constant read again, so a later
+release that rewords the sentence still rebuilds the old bytes. Two entries
+with one anchor, as a retried request records them, keep their branch order. The entries are
+read with `customEntries` (`src/custom-entries.ts`), the helper `src/missed-messages.ts` reads
+the replay ledger's records with. An entry whose data does not read as one (`isAnswersSent`)
+is passed over with no log, since a change of the data's shape takes a new custom type. Oh My
+Pi builds no context message from a `custom` entry, so the model reads an answers message only
+as a request carries it. A message's kind is its first block's: a list, the "no item" list
+included, starts with `SESSION_ANSWERS_MARKER`, and the failure line with its own marker. A
+list is two text blocks: first the list as `renderSessionAnswers` rendered it, so its text
+stays the renderer's capped output and an older copy's check of the first block still finds the
+marker, then `SESSION_ANSWERS_REPLACES`, "This list replaces every earlier list of people's
+answers in this conversation, and every earlier line saying the list could not be read: read
+only the newest one as current." The failure line is one block with no sentence. The rule is
+`withAnswersSent`, which `decide` calls for every request that `withSessionAnswers` or
+`placedLegacy` decides outside a compaction (inside one it calls `whileCompacting`), and
+`addedBlocks` decides the one message a request appends.
+
+The requests of one session decide one after another, in the order they started
+(`decidedInTurn`, with each session's newest decision kept on `globalThis` under
+`Symbol.for("legion.pi-envoy.session-answers-deciding.v1")`, by `sessionManager`): a request
+starts its read at once, and decides once its read has come back and the request before it has
+decided, reading the branch again then. Oh My Pi does not wait for the `context` handler of a
+run that was stopped, and the handler goes on to its read and its record, so without that order a
+stopped request and the request after it, started while the first read was still open, could
+each append the same change, one after each request's own last message, and the request after
+them would differ from the second right after the first one's last message. With it, the second
+finds the first one's entry and rebuilds it, and appends only what the first did not show,
+whichever of their reads comes back first. A read waits on Dispatch at most its 800 ms deadline,
+and the reads of the requests before it started first, so a request waits on them about as long
+as on its own read. The second read of the branch takes the session the request was built from:
+`request.branch()` gives undefined once the host is on another session, and the request then
+decides from the branch as it began, and records nothing. `placedLegacy` awaits nothing, so
+nothing comes between its branch read and its record, and it takes no place in that order.
+
+A request appends at most one answers message, after its last message, and the earlier ones stay
+where they went. A read with text, a list or the failure line, appends it when the request holds
+none of them, or when it shows something the newest of them did not (`showsNew`). Between two
+lists the two reads' words answer it (`sessionAnswersChanged` over `SessionAnswersRead.words`,
+from `sessionAnswersWords` over every item Dispatch sent inside the read's 72-hour window,
+the ones the character cap left out of the list included: each item's kind, id, author, times,
+options chosen and words, so an issue title, an ask's question or a cached list's header does
+not count). A change is an item new to the read, or an answer or comment a person changed,
+even one the cap leaves out (a newest item longer than the cap, a comment an edit made too
+long to fit), so the model reads the new list with its left-out line rather than the person's
+old words as current. An item gone from the read while its time is still inside the read's
+window (`SessionAnswersRead.since`), which a person retracted (an answer set back to none)
+or Dispatch removed, is a change too. An item gone because the window left it behind is no
+change. `readSessionAnswers` asks Dispatch for the window by this host's clock (`since`),
+the clock the render filters by, so an item Dispatch would drop by a clock ahead of the host's
+is still sent while the host's window holds it, and is not taken for a retracted one. A list
+that only lost items to the window, or whose text names a different read of the same items
+(`As read at …; this read failed: …`), appends nothing, so the request carries the
+newest list sent, which can name a read older than the request carrying it and hold an item
+that has since aged out of the window. A list an older copy of the extension placed carries no
+`words`, and neither does its entry: against it only the text is compared, and any difference
+but that read line counts as new, since reading that text more closely took a person's words
+for the renderer's (`showsNew`). The failure line, which a read gives when it has no list to
+give, is no list: after a list it is a change, so the model reads that the read failed rather
+than bytes sent before that look like a read that answered, and a list after a failure line is
+a change too. A failure line after a failure line is none, so a run of failed reads that give
+it appends it once, and the one sent keeps its own reason.
+
+A read whose window holds no item gives no text but still gives its `words` (`carriedAnswers`,
+which `sessionAnswersText` and `src/session-answers-read.test.ts` call). When they show an
+item of the newest list sent withdrawn while its time is inside the window, as when a person
+retracts the only answer the window held, or the newest list sent is an older copy's, which has
+no words, the request appends the "no item" list: its first block is `SESSION_ANSWERS_NO_ITEM`,
+the marker and then "No item: every item an earlier list showed was withdrawn or is now older
+than 72 hours.", and its second the sentence. Its entry records the read's words (`[]`), so a
+later read with no text compares equal and appends nothing. An item that only aged out appends
+nothing, and so does a read with no text when nothing was listed before. After a failure line
+such a read is a recovery to an empty window: it appends nothing, and the failure line stays
+the newest answers message, unless the newest list sent shows an item withdrawn as above, when
+it appends the "no item" list. A read with neither text nor words (Dispatch off, or no answers
+route and nothing cached) appends nothing and keeps every message sent.
+
+A read that fails but gives the cached list is a list: with the same items it appends nothing,
+and the request keeps the bytes sent, which do not name this read's failure. A failure episode
+runs from a session's first failed read (`CarriedAnswers.reason`) to the next read Dispatch
+answers (`CarriedAnswers.answered`, or an older copy's list with no read line), and a read that
+misses the 800 ms deadline is a failed read. `tellFailure` tells `readFailed(reason, shown)`
+on an episode's first read and not again inside it, whether the request appends a message for it
+(`shown`: the failure line, or the cached list when it shows something new) or keeps the messages
+sent. The extension logs it with `logger.warn`, ending "the request tells the model after its
+last message" when shown and "the request keeps the answers messages sent, which do not name this
+read's failure" when not, so a lasting failure, such as a Dispatch that misses the deadline on
+every request, is one line. The reason is this copy's read's own (`carriedAnswers` hands it on
+for `source: "cache"` and `source: "failure"`), or, for a list an older copy rendered from its
+cache, the sentence its read line names (`readLineFailure`), as that copy wrote it. A read that
+throws gives the failure line with the error's message as its reason (`sessionAnswersText`), and
+is logged only through this rule. The episodes are each session's, by `sessionManager` and then
+session id, since Oh My Pi keeps one `sessionManager` across a session switch, in a process-wide
+`WeakMap` (on `globalThis` under `Symbol.for("legion.pi-envoy.session-answers-episodes.v1")`). The
+extension logs no newer list, no retraction and no read that answers, since those reach the model.
+
+The write is guarded as `recordNotice` is. The handler takes the session id as the request
+began, and when the host moved to another session while the read waited, it writes nothing,
+since the entry would land in that session's file, and the log says the answers message "was not
+recorded: the host moved to another session while the request waited on the read". A write that
+throws logs that it "could not be recorded in the session file", with the error. Either way the
+request carries the message. The session's next request finds no entry for it, so it appends
+that list or failure line again after its last message when its read still shows it. The
+handler's `compacting` and `branch` ask about the session the request began on in the same way,
+since both are read again after the read.
+
+An answers message whose anchor a compaction summarized, or that the branch moved away from,
+leaves the request and the comparison; when none is left, the next read with text goes after the
+last message. While the session compacts (`compacting`: the live `AgentSession`'s `isCompacting`,
+or its `compactionSpeculation` reading `"running"`), and on the request right after a remote
+compaction's cut, a request carries none of the messages sent, and the read's text goes after
+the last message and is not recorded (`whileCompacting`). A remote compaction keeps only as
+many messages of its whole conversion as its cut's conversion holds, so a message before the
+cut would push one out, and a main-loop request between a speculative compaction's cut and
+its whole conversion leaves the compaction the messages it counts. A main-loop request beside
+a running speculative compaction therefore carries none of the messages sent where they went,
+and its bytes differ from the request before it from the first of them on: the known limit of
+this path. The next request made with no compaction running rebuilds every message sent whose
+anchor it holds and compares its read with the newest of them, so a change this path showed
+is appended again. Oh My Pi marks every message a `context` handler adds as per-call, and its
+Anthropic placement puts no `cache_control` on a per-call message and keeps the rolling tail
+anchor on the conversation's last message, so every byte before the message a change appends,
+the messages sent before it included, is the cached prefix of the request before it. At the head,
+every change would invalidate everything after it.
 
 The pinned host (18.12.2) runs a `context` handler on every conversion of messages for a model,
-not only on the main loop's requests, and `withSessionAnswers` adds no list, and starts no read,
-on the others, each recognized by what the binary builds: a side turn
+not only on the main loop's requests, and `withSessionAnswers` adds no answers message, records
+none and starts no read on the others, each recognized by what the binary builds: a side turn
 (`AgentSession.runEphemeralTurn`: a Dispatch BTW, the stop-time self-check, `/btw`, the idle
 recap) converts `[...conversation, developer notice, .../btw history, user prompt]`, the notice
 and the prompt `attribution: "agent"`, the notice the host's `side-channel-no-tools.md`; the
@@ -1232,8 +1305,9 @@ message, a `custom_message` entry as role `custom` (every Envoy delivery with `t
 one, and the cut can fall right after it) and a `branch_summary` entry as role `branchSummary`,
 each timestamped `new Date(entry.timestamp).getTime()`, matched by role and timestamp; a
 `compaction` entry becomes none there, since the earlier summary heads the conversion. The whole
-conversation's conversion carries the list after its last message, past the cut, and moves no
-session's place, since a list before the cut would push a message out of what the compaction
+conversation's conversion goes through the compaction path (`whileCompacting`): it carries none
+of the answers messages sent, only the read's text after its last message, past the cut, and
+records nothing, since a message before the cut would push a message out of what the compaction
 keeps. A compaction that keeps no
 tail converts the same messages twice, both ending at the branch's last message, so nothing on
 the branch tells either from a main-loop request: the second is a repeat of the conversion
@@ -1241,15 +1315,24 @@ before it in the same session (`sessionManager`), ending at the same branch tip 
 messages' roles and timestamps, while the live `AgentSession` reads `isCompacting` (an automatic
 or manual compaction, the main loop paused) or `compactionSpeculation === "running"`, and it gets
 no list, so the compaction keeps none whatever the first carried. A repeat right after a cut
-keeps its list: that is the main loop's next request beside a speculative compaction with a tail,
-matching its whole conversion. Each session's last conversion lives in a process-wide `WeakMap`
-(on `globalThis` under `Symbol.for("legion.pi-envoy.session-answers-conversions.v1")`). Left
+carries the read's list, on the compaction path: that is the main loop's next request beside a
+speculative compaction with a tail, matching its whole conversion. Each session's last conversion
+lives in a process-wide `WeakMap` (on `globalThis` under
+`Symbol.for("legion.pi-envoy.session-answers-conversions.v1")`). Left
 open: a speculative compaction that keeps no tail (its kept turn right after a failed reply the
 branch still holds) beside the main loop's request matching it, which can lose that request's
-list. The dispatch-first skill goes on all of them as before. Not
-covered: OpenAI live steering (`providers.openaiLiveSteering`, a Codex WebSocket stream) converts
-the queued steers alone through the same handler, which no message tells apart from a first
-turn, so the skill and the list go out with a live steer there.
+list. The dispatch-first skill goes on all of them as before. Not covered: two conversions no
+message tells apart from a main-loop request. OpenAI live steering
+(`providers.openaiLiveSteering`, a Codex WebSocket stream) converts the queued steers alone
+through the same handler, so the skill and a list go out with a live steer there, and Oh My
+Pi's LLM-request dump runs the handler too. Either can record a list after the last message of
+its conversion: the next main-loop request then carries that one extra list after that message,
+and no byte already sent changes. So can a main-loop request the host never sends after the
+handlers ran (a stop or an abort), or sends without this handler's messages because the handler
+ran past the host's 30-second handler timeout: its message is recorded, and the next request
+carries it after the same message, also when that next request started while the first one's
+read was still open, since the requests of one session decide in the order they started
+(above).
 
 Two copies of the extension run their handlers in turn on one request. Each copy records the
 messages array it decided, and the array it returned with the list, in a process-wide `WeakSet`
@@ -1259,18 +1342,21 @@ nothing, so the second copy neither reads, waits nor adds a second list. A copy 
 version puts the list after the last message of every request and records no returned array, so a
 request whose last message is a user message stamped 0 (as `userTextMessage` stamps the list)
 starting with the list's first line (`SESSION_ANSWERS_MARKER`, the failure line has its own) is
-decided too: this copy reads nothing for it and moves that list where its own would go. A
-person's own message quoting the marker is never moved, and a list quoted anywhere else is
+decided too (`placedLegacy`): this copy reads nothing for it, and takes that list for its own
+read under the same rule, on the request without it. So the messages sent are rebuilt where they
+went, and that list is appended, and recorded as this copy's with the sentence, only when the
+request holds none of them or the list shows something the newest of them did not. A person's
+own message quoting the marker is never taken for that list, and a list quoted anywhere else is
 conversation and never switches the list off.
 Bounds, all in the shared module: under 8,000 characters (at most 7,999) for the whole message, items newest first as a
 strict prefix with a left-out line naming `dispatch answers`; one read in flight per session and
 Dispatch URL for the whole process, the parent's and every subagent's requests joining it; each
 read waits at most `SESSION_ANSWERS_DEADLINE_MS` (800 ms), then gives the last list read from
 that Dispatch (memory, then `answers.json` in the session's state directory) with its read time
-and why this read failed, or, when that renders nothing, the failure line naming why. What a
-request sends is that read's text only where the list or the failure line goes after the last
-message; where the placed list keeps its place, the request sends the bytes it was placed with,
-an older read time and reason included, and a failure line moves past a placed list (above). A
+and why this read failed, or, when that renders nothing, the failure line naming why. A request
+sends that read's text only in the answers message it appends after its last message, and every
+answers message sent before with the bytes it was sent with, an older read time and reason
+included (above). A
 Dispatch that answers its own `404 NOT_FOUND` "no route for …" (`isNoAnswersRoute`; a proxy's 404
 page or a 200 with no answers list is a failed read like any other) gives no line then
 (`source: "unavailable"`), since the failure line's `dispatch answers` fails there too, gives a
@@ -1280,22 +1366,38 @@ read that already passed its deadline is not waited on again. The pinned host ha
 handler no abort signal: it races the handler against the run's own and drops an aborted
 handler's result. A handler that throws loses
 everything it returns, the skill included, so a read that throws rather than answering gives the
-failure line naming the error, which goes where any failure line goes, and `sessionAnswersText`
-logs the error with `logger.warn`. `src/session-answers-context.test.ts` holds the insertion
-and placement rules on scripted reads, the requests that carry no list and the two-copy cases,
-two copies with an empty list making one HTTP read among them,
-`src/session-answers-read.test.ts` the placement rules on reads through the real
-`readSessionAnswers` and `carriedAnswers` (the cap, a retraction, the window),
-`extensions/envoy.test.ts` the
-handler, a subagent reading its parent's id, a Dispatch that answers no list (the failure line),
-one with no answers route (no line, one warning for two requests), and a failed read whose cached
-list keeps the placed bytes (one warning for three such reads, none for a read that answers, one
-for the next such read after it), and
+failure line with the error as its reason, which is appended as any failure line is and logged
+once per failure episode as any failed read is (above). `src/session-answers-context.test.ts`
+holds the rule on scripted reads (the prefix cases, five changes and the restart, each checking
+that a request starts with every byte of the one before it; two overlapping requests, on one read
+and on reads that come back out of order, the earlier deciding first; a host that moved during
+the read; the "no item" list; the failure line once; the episode rule, its own for each session id
+on one `sessionManager`; the entry recorded; a guarded write; an older copy's list), the compaction
+path, the requests that carry no list and the two-copy cases, two copies with an empty list making
+one HTTP read among them, `src/session-answers-read.test.ts` the rule on reads through the real
+`readSessionAnswers` and `carriedAnswers` (the cap, a retraction, the "no item" list, the
+window), `extensions/envoy.test.ts` the handler, a subagent reading its parent's id, a Dispatch
+that answers no list (the failure line), one with no answers route (no line, one warning for two
+requests), a failed read whose cached list keeps the bytes sent (one warning for three such
+reads, none for a read that answers, one for the next such read after it), a Dispatch answering
+503 with nothing cached (the failure line appended and recorded once, one warning per failure
+episode, shown and then kept), and the entry an appended list writes (the next request rebuilds
+it from the branch, and a request whose host moved to another session during the read writes
+nothing), and
 `extensions/session-answers-omp.test.ts` the real binary: a new answer in the next turn, after a
 compaction and in a subagent's first request; every kind of item word for word; the cap; a route
-that never answers costing a request under one second, by the median of three readings; a route that answers 404 (no line); the cache
-prefix byte for byte with no `cache_control` on the list; a list with nothing new staying after
-the first turn's prompt while later requests end with their own and cache through it; a `/btw` side turn and the handoff
+that never answers costing a request under one second, by the median of three readings; a route
+that answers 404 (no line); a change appending a second list while the first stays at its place,
+the cache prefix byte for byte, with no `cache_control` on either list; a list with nothing new
+staying after the first turn's prompt while later requests end with their own and cache through
+it; after a compaction, a new answer, an edit and two retractions each appending a list after the
+last message (the last retraction the "no item" list), and a 503 appending the failure line once,
+a second 503 and a recovery to an empty window nothing and the next list after the last message,
+each request beginning with every message of the one before it; a failed read whose cached list
+keeps the list sent where it went; a restart (`--resume`) whose first request rebuilds the list
+at its old place with its bytes; an Envoy card whose `delivered:` line stays the same after a
+restart in which the resumed process writes the same card again before its first request (case
+(s), the one card case this file holds, for its harness); a `/btw` side turn and the handoff
 ending with their own prompts, with no list and no read; a remote compaction request ending at
 its cut, after a question and after a delivered message, and one that keeps no tail carrying no
 list (the stand-in model claims `supportsServerCompaction` and `bedrockMessagesApi`, which the
@@ -1444,7 +1546,7 @@ and arms nothing — an unknown ask state never nudges.
 
 - Register every schema through the injected `pi.zod`. Every field counts, not just the outer object: OMP's converter reads internals (`.ir`) only its own Zod produces, and a field from another Zod instance fails the whole extension load (`undefined is not an object (evaluating 'e.ir.desc')`). `envoy.test.ts` proves every registered field came from the injected instance. |
 - Keep the relay subscription's lifecycle and Pi delivery adapter-local. Register `["aside", "btw", "steer"]` when the host has a side turn (`ctx.runEphemeralTurn`, Oh My Pi 18.3 on; pi-envoy wraps the question in the /btw prompt itself, since the host sends the prompt as given) and `["aside", "steer"]` otherwise — both built from the contracts' `DELIVERY_CAPABILITIES`, never spelled here; an advertised `btw` frame never falls back to steering. Deliver every card but an inert one (a late BTW and its failure notices, which start no turn: `CardDelivery` in `src/unwritten-frames.ts`) with `triggerTurn: true`, first delivery and handed again alike (`handCard`), as an aside whether a turn runs or not, never a steer, so no card waits in the steering queue a person's Send waits in (this needs Oh My Pi v18.13.2-sami.20261027-235348 or later, "Overview" says why); in the startup phase of a session whose `ctx.mode` is "rpc", and in any mode while the start-turn mark (`EnvoyPluginInterface.startupTurn`) names this session within its cap, a card that finds the host idle goes as a `followUp` with no `triggerTurn` instead, so no card's turn runs inside the host's startup drain or ahead of the Legion controller's start turn. A card the host folds with no turn gets one wake (`nextTurn` with `triggerTurn`, `LOCAL_ENVOY_NOTICE`) unless an interrupt is in effect, decided by the branch's order and never by the order of events, and a startup card seen while the start-turn mark held gets it after the start turn whatever the branch shows (the rules and limits are under "Overview"; the code is `src/card-wake.ts`). `extensions/card-delivery-omp.test.ts` proves all of it on the pinned Oh My Pi in RPC mode with a real NATS server: `LEGION_TEST_OMP=<omp> LEGION_TEST_NATS_URL=nats://127.0.0.1:<port> bun test extensions/card-delivery-omp.test.ts`, where a pod without Docker runs `GOBIN="$TMPDIR/gobin" go install github.com/nats-io/nats-server/v2@<the version packages/envoy/go.mod pins>` and `"$TMPDIR/gobin/nats-server" -a 127.0.0.1 -p <port>`; it skips without either variable and refuses on GitHub Actions, whose pi-envoy job runs NATS as a service container. The start-turn mark's own real-binary cases are `packages/pi-legion/extensions/controller-start-omp.test.ts`'s, which run the controller with both plugins. Reject an unparsed targeted frame without primary-turn injection, log it, and post its error to Dispatch whenever it has a reply address. Once the host wrote a frame to the transcript (the `message_end` of its card or user turn), record it in the delivery ledger (`recordDelivered`) before its claim settles, never sooner, and drop a frame the ledger already holds; a frame the stream stored while the session's connection was down is a card and runs nothing, whatever it carries ("Each frame shown once").
-- Show every card in every model request with the time it reached the session beside its send time (`src/card-age.ts`, `CardAges`, from the `context` handler, registered whenever Dispatch or inbound delivery is on): `delivered:` after the line that dates the send — `at:` on a rendered frame, `published_at:` on the notice shown in place of a frame the host refused (`failureNoticeFields`) — and `waited:` in words when the two are 15 minutes or more apart (`MATERIAL_WAIT_MS`), so a reader whose inbox ran behind does not take a late card's stamp for the present time. The two times cross two clocks and only two: the server that accepted the message sets `at:` (the listener the sender sent through, or Dispatch's server), never the sending agent, and `delivered:` is this machine's. The client's fetch reads each listener reply's `Date` (`src/server-clock.ts`, `ServerClock`); when this machine's clock runs 15 minutes or more from the listener's, either way, the card says so in `clocks:` and `waited:` is the gap less that difference, and a `delivered:` still 15 minutes or more before the send time once that difference is taken off adds to `clocks:` which clock that leaves ahead — this machine's behind the sending server's with nothing measured, else the sending server's ahead of the listener's, the one case a third clock shows in. A smaller difference is not shown and stays in the stated wait. The persisted card is unchanged. A card's delivery time is its `message_end` in this process, else its replay ledger record's time, else (a card written whose record a process that ended in between never appended) the newest entry time up to the card's own entry, an estimate of the write bounded by it and never later than it, else its first request's time when this instance was handed it; it is fixed at first use with the clock difference measured then, so the card's bytes repeat in every request and the provider's prompt cache reads them again (a card fixed before any reply carried the listener's time takes the first one measured, once). Every one of those times is held under the session it belongs to as well as the event, since one process serves one session at a time and moves between them: a session the host switches to that followed the same topic is shown the same event again and takes its own write, its own ledger record or its own branch estimate, never the time the session before it read it, while a session returned to reads what it was already told.
+- Show every card in every model request with the time it reached the session beside its send time (`src/card-age.ts`, `CardAges`, from the `context` handler, registered whenever Dispatch or inbound delivery is on): `delivered:` after the line that dates the send — `at:` on a rendered frame, `published_at:` on the notice shown in place of a frame the host refused (`failureNoticeFields`) — and `waited:` in words when the two are 15 minutes or more apart (`MATERIAL_WAIT_MS`), so a reader whose inbox ran behind does not take a late card's stamp for the present time. The two times cross two clocks and only two: the server that accepted the message sets `at:` (the listener the sender sent through, or Dispatch's server), never the sending agent, and `delivered:` is this machine's. The client's fetch reads each listener reply's `Date` (`src/server-clock.ts`, `ServerClock`); when this machine's clock runs 15 minutes or more from the listener's, either way, the card says so in `clocks:` and `waited:` is the gap less that difference, and a `delivered:` still 15 minutes or more before the send time once that difference is taken off adds to `clocks:` which clock that leaves ahead — this machine's behind the sending server's with nothing measured, else the sending server's ahead of the listener's, the one case a third clock shows in. A smaller difference is not shown and stays in the stated wait. The persisted card is unchanged. The delivery a session first gives a card is recorded in that session (`CARD_DELIVERED_ENTRY`, a custom entry `envoy-card-delivered` with `{ event_id, at, clock_offset? }`, written through `CardAgesDeps.record` with `pi.appendEntry`, which `CardAges` calls synchronously while a request or the card's `message_end` is handled, so into the session the host is on; a write that throws is logged), and recorded again with the same time when a delivery fixed with no clock difference first takes one. A card's delivery, which its `message_end` (`written`) and a request (`annotate`) both read through one method in one order (`#fromSession`, so the two cannot differ), is that record, the newest for its event, read before any other source, also by a process that resumed the session; else its replay ledger record's time; else (a card written whose record a process that ended in between never appended) the newest time of a `message` or `custom_message` entry up to the first entry of the card's event, an estimate no later than the time the session first showed the card (Oh My Pi writes those entries through one queue in `message_end` order, while it appends a `custom` entry such as `date-cwd-reminder` as it prepares a request, after the `context` hooks have shown the card, so such an entry can stand before the card's entry with a later stamp and is not read); else, at its `message_end` in this process, the time of that write; else its first request's time when this instance was handed it. A card's `message_end` reads the session's entries when this process holds no delivery for the card, so a card the host writes again takes the old card's delivery from them, while a card's first write finds no older entry of its event and takes the time of the write, or the newest message time up to its own entry when the host wrote that entry first. Each of those last four is recorded when it is fixed, with the clock difference measured then, so the card's bytes repeat in every request of the session and the provider's prompt cache reads them again, in this process and after a resume: a resumed process that writes the same card again before its first request, or whose ledger stamped the card seconds after its first `message_end`, still shows the time the session first gave it (requirement R4 of INFRA-4354; the S12 run of INFRA-4227 measured a resumed process moving an old card's `delivered:` by two seconds). A card fixed before any reply carried the listener's time takes the first one measured, once, and records it. In a session no `envoy-card-delivered` entry was written in (by a release before it, or because the write threw), a resumed process takes an old card's time from its ledger record or its entry estimate, also when it writes the card again before its first request; that can differ from the time the process before it showed by seconds: when the ledger stamped the card late, and when the card has no ledger record and the host stamped its entry with the time it was handed the card, seconds before that process's `message_end` when the card arrived while that process was still starting. Every one of those times is held under the session it belongs to as well as the event, since one process serves one session at a time and moves between them: a session the host switches to that followed the same topic is shown the same event again and takes its own record, its own write, its own ledger record or its own branch estimate, never the time the session before it read it, while a session returned to reads what it was already told.
 - Render every inbound envelope through `renderInbound`. Keep its bounded 50-item `envoy_inbox` metadata-only; use the shared `envoy_role_get` transport operation for current role holders.
 - Session state converges in one serialized pass (`reconcile`), which every session event (`session_start`, `session_switch`, `session_branch`, `session_tree`), every registration heartbeat tick (`ensureHeartbeat`, `ENVOY_HEARTBEAT_MS`, default 90 s, `SESSION_HEARTBEAT_MS` in `@legion/contracts`) and every bridge call for a session not yet established runs. Both serial queues (`passes` and `roleMoves`) give each task a deadline (`passDeadlineMs`, `ENVOY_PASS_DEADLINE_MS`, default `max(heartbeatMs, 30 s)` and never shorter than `heartbeatMs`, since a deadline under one tick abandons every pass before the next and so disables the registration backstop, which runs inside the heartbeat's `healing` latch; an explicit value below the heartbeat is raised to it): past it the caller's promise rejects with `AbandonedTaskError`, the queue starts the next task, and the abandoned task is fenced, so its late continuation writes nothing. The heartbeat tick also re-posts the registration itself, outside both queues, when a pass is still running and the last accepted registration is a whole refresh interval old; a stall counts as a failed registration, so the next healthy tick re-asserts the role and fires the regain hook with reason `"reregistered"`, and it is said once per episode — one `context.ui.notify` and one `logger.warn`. A pass reads what is true now: the host's session id (`sessionManager.getSessionId()`, which Oh My Pi moves before it dispatches a switch's event), that session's own records (the last `envoy-role-claim` entry on its branch that this process acts on: one this process wrote, or one from a build before the entry named its writer, while a record another process wrote is read only when this process holds no role, so a release a second process wrote on a copy of the transcript ends no role here), and the one hold this process owns at the listener (`claimedRoleTopic` under `claimedRoleSessionID`). It converges to them idempotently: the host session's relay subject open and registered and Dispatch bound to it (refreshing the shell's environment when no event did), every other session's relay subject this process opened closed, and, in its turn of the role moves (`roleMoves`, `settleRole`), the role that session should hold held for it — the role its records name; else, for the one session the launch named, the role a session pod's launch named (`ENVOY_SESSION_ROLE`, below); else the role this process holds when its hold is under that session or one it continues; else, until a pass has decided for it, the listener's rows for it and for the sessions it continues; none of them while the listener has refused that role to that session (`refusedRoles`, below) — with any other role handed back at the listener. Only opening the relay subject needs NATS: the registration and the role go over HTTP, so an outage of the plugin's own NATS connection stops neither, a Legion claim through the bridge included; the pass throws `InboundError` once both are settled, the session's start or switch warns of the outage, and the next pass opens the subject again, after which the listener's relay sends what the session's consumer holds, including everything stored while it was closed ("Each frame shown once"). What a session continues is how it was born (`continues`, `noteMove`): a fork or branch continues the session it left, learned from `session_before_switch` or `session_before_branch` or else the switch's event; a `/new` or resume continues nothing; a move with no word to an id never seen here carries the session on, as the drift heal always has; a move back to a session seen before (a resume Oh My Pi rolled back) changes nothing. An announcement lasts until a pass sees the host move, the next session event wherever it lands (a `/reload` lands on its own session), or the end, with a reply not aborted, of a run that started under it on the session it announced leaving: a switch that goes ahead aborts a run still going, and one another extension cancelled does not (a run that starts and ends while another extension's announcement handler still runs reads the same, and no host event tells the two apart). Every automatic claim but the launch role's is soft, naming the hold it may supersede — this process's own, wherever the listener names it, or whichever session the claimant continues the listener names — and every claim and every release states this instance's client instance id, so the listener weighs each on the process making it rather than on the session id alone, and the listener decides. The launch role (`sessionRole`: agent-infra's sessions workload sets `ENVOY_SESSION_ROLE` on a session pod, and `ENVOY_SESSION_ROLE_SESSION` to the id it starts the agent with, once t-e-32 lands, and sets `AGENT_SESSION_ROLE` today; each extension instance reads both when it is created, an empty value as none, and nothing takes them out of the environment) is the named session's alone, compared with the session open at each pass: `sessionRoleRefusal` refuses it, the name read as the listener reads a claim's, with Go's white space trimmed (`listenerRoleName`), to every other session id — a process the agent starts in the pod (an `omp -p` review, however it was spawned), an ACP host's other session, an id a `/new`, a `/fork` or a tree branch mints, and every session when the launch names none (a `task` subagent's instance registers nothing at all, so it never claims) — on every path, the pass's launch claim, the record of the claim a fork's or a branch's transcript copies, the held and listener-row paths, `envoy_role_set` and the Legion claim (`requireSessionRoleFor`), so a session the process moves to from the named one hands the role back and a resume of the named one claims it again; the first time it refuses, the process logs `envoy: ENVOY_SESSION_ROLE <role> belongs to session <id or "none">; this session <id> claims nothing` once (`SESSION_ROLE_LOGGED` on `globalThis`, since an instance may come from a later load of the entry), and each session it refuses shows the person one notice on screen, at level `warning`, saying where the role stays and that `/resume <id>` takes it back, or, when the launch names no session, that no session claims it. For the named session it is claimed outright, last-claim-wins, at every pass that registered the session, and never read as held between two registrations: the launch named this session its holder, so a holder that is another session is stale or wrong (an evicted pod's session the registry still lists as live for minutes), and the claim, which the listener holds to the credential's own session, takes the role back at the next registration. After the first, each such claim is one the newest record on the branch already names (that role, that session, this instance), so it appends no transcript entry; a move the model makes with `envoy_role_set` is a record of its own, which comes before the launch role, so no pass undoes it. A pass that finds the host moved after any await stops, and the pass the move queues converges, so the order of host events never matters; a claim the move outran stays this process's hold for that pass to keep or hand back. A switch's event also ends at once a role the new session's records rule out, and the launch role when the launch did not name the new session (a fork's or a branch's transcript carries the named session's record of it), so neither a `/new` nor a fork takes the old role's notices while an earlier pass, or its own first registration, is still waiting; the next pass hands that hold back whether or not its registration succeeds (`pendingHandBacks`), unless the hold is under the session open here, read at that moment (`sessionOpen`), and that session wants its role, whose hold it is again (a resume Oh My Pi rolled back) — unconfirmed until a soft claim naming it checks it at the listener (`holdUnconfirmed`) — and a claim of the role drops such a hand-back. A hold under a session this process has left is never its own again, since another process may run that session now. One the listener does not take back is abandoned (`abandonedHolds`), whatever session it is under and whichever hand-back met the failure, the pass's own release of a role it no longer wants included, and waits for the listener's reaping until this process registers that session again; a claim the listener refuses naming it records no refusal while the listener's `last_seen` for that session stands still, so a pass claims again once the listener has reaped it. That is also how a release the listener failed outright is sent again: the route fails rather than report a release its own holder's renewal beat under each of its three conditional deletes, and swallowing it would leave the role standing while this process's own registrations went on renewing its claim. A `last_seen` that moved means another process registers that session, which is then the newer holder; any registration of that session by this process, in a pass or not and answered or not, first takes the hold back as its own, a pending hand-back under that id (`registerSession`). A heartbeat pass whose session already holds a role other than the launch's reads `GET /v1/roles/<role>` and claims softly only when the listener does not name this session under this process, or names it under a claim it has marked handed back — a holder naming no process at all is read as this one's, since an older listener, and a claim an earlier build wrote, name none — so a healthy tick writes nothing and appends no transcript entry, while a lane whose role a continuation took under this very session's id claims again rather than reading "holder is me" for ever and never handing the role back. The mark (`handed_back` on the lookup) is what a client built before a release stated its process leaves behind when it hands this session's role lane back: such a release frees no claim that names a process, so the listener marks the claim instead, and no registration renews a marked claim. Reading that mark as a hold would leave the role to the role claim reaper, a live window and up to one reap interval later; reading it as no hold claims the role again on that same pass, and the grant, a fresh record, carries no mark. That reading of a lookup, and the reading of a role record another process may have written, are the client contract's two rules rather than this module's: `roleHeldBy` and `mayActOnRoleRecord` in `@legion/envoy-client/transport`, which `packages/claude-envoy` calls too and which read an empty instance id as none, the lookup leaving `client_instance_id` out where the claim names no process. That re-assertion's own refusal is weighed on the session the listener names in it: one naming a different session ends the role here and records the refusal, as any other refused claim does, while one naming this very session's id is the standing claim of another process under this id, which the listener grants the moment that process stops renewing it — so the role stays held here, no refusal is latched, the pane is told nothing, and the next heartbeat asks again. A 409 to any automatic claim, that re-assertion's refusal by a different session included, drops the local claim, since the holder the listener names is the correct one, and no pass claims that role for that session again — each session's refusal its own — until a session event lands on it, the model or a plugin claims a role for it, or the process restarts and reads its records afresh. The one refusal that is never written at all is the one a claim for a role this process does not hold meets because the role is held under this very session's id by another process: nothing is latched and nothing is said, exactly as the re-assertion above does for the same state, so the next heartbeat pass claims again and the role comes back on the first pass after that process stops renewing its claim, while a refusal naming a genuinely different session stays latched as before. The two keep one rule because a role held under this session's own id by another process is never given up for good, whether this process holds the role while it asks or not: a latch there would make the next pass want no role and hand this one back, the opposite of what the re-assertion keeps, and the line it wrote would be written out again on every heartbeat for as long as that other process lived. A regain — or the first pass that decides after a failed registration, when a surviving claim may still have been unresolvable — fires `onEnvoyRoleRegained` detached from the heartbeat chain (a slow daemon never blocks the next re-registration), which re-runs a claim's `claims/ready` with bounded retries; a pass the host overtook keeps that regain for the next. A role end after a move no session event announced is one no plugin heard: it warns, naming the role and who claims it again (the plugin that opened its notices, on its next session switch or restart, or the model with `envoy_role_set`), and a pass that claims or takes back a role whose plugin notices are still closed says they stay closed. A carried switch tells the agent its id changed once, from the pass that converges to it, in the session the notice names. The controller re-runs nothing, since the daemon holds nothing for it. `packages/pi-legion/src/claim-session.ts` registers that listener on the shared interface's `roleClaim.regained` slot (`@legion/pi-shared/interface`, `packages/pi-shared/AGENTS.md`) only once it holds a Legion identity, since a `task` subagent's re-bound instance shares the process and would otherwise replace it.
 - The two queues, the deadlines, the fence and the registration and role state the queued tasks write live in `src/registration-state.ts`, not in `extensions/envoy.ts`. The entry keeps the host's own identity (`sessionID`, `sessionDirectory`, `sessionOpen`), the NATS connection and the heartbeat timer, and reaches the rest through the module. A queued task acts through a handle, and the handle refuses every step — a state write, a listener request, a NATS subscribe, the acquisition of the NATS connection — past that task's deadline, or once its session is no longer the open session. The first refusal latches: a session that closes and opens again does not revive the task. A refused step changes nothing, a dial it opened is closed, and the task decides nothing. The module also mints this extension instance's client instance id (one per instance, since an ACP host runs several top-level sessions in one process) and sends it on every registration, on every claim, on every topic hand-back and on the shutdown deregistration. That id is what the listener weighs a soft claim by: a claim naming a predecessor takes the role from that predecessor only when the predecessor has no live registry entry, when its live entry carries this instance's own instance id, or when either side carries no instance id. A predecessor still live under another client instance keeps the role, and the claim gets the 409 the rule above covers, so a refused session keeps running and stays registered without the role. A claim of a role already held under the claimant's own session id is weighed on the standing claim instead of on the session record: granted where that claim names this very instance, granted where nobody renewed it inside the listener's live window, and otherwise 409 naming this session, which nothing here records. Each registration renews the claims this session holds that name this instance, so a heartbeat is how this process answers for the roles it holds, and it renews every such claim the listener has not marked handed back, whatever topics that registration carries: what says a role was given up is that mark, since a hand-back that could free no claim marks the claim instead and no registration renews a marked claim. A hand-back frees only the claims naming this instance, so a second process that resumed this session's id ends none of this one's roles; one that states no instance, the shape a client built before this change sends, frees no claim and marks the claim of each role lane it names, whether that claim names a process or none, and the listener keeps that role's lane topic in the session's interest record, answering in `removed` only the topics that left it. The transcript entry the module writes when a claim lands (`envoy-role-claim`) names the session claimed for and this instance beside the role, which is what lets a reader tell this process's record from one another process wrote on the same transcript. The shutdown deregistration carries the id too, so the listener removes the entry only while it carries the same id or none, and a successor instance's registration under that session id is left alone.
