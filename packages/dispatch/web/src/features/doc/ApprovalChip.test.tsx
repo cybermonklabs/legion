@@ -1,6 +1,6 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
@@ -218,8 +218,9 @@ test("approving again after a stopped approval and a change request goes under i
     const stoppedKey = createArtifactReview.mock.calls[0]?.[2]?.key;
     const stopped = createArtifactReview.mock.calls.length;
 
-    // The change request lands.
-    createArtifactReview.mockResolvedValue({
+    // The change request lands. Its answer is held, as the next Approve's is, and given inside
+    // `act` after its press, as packages/dispatch/AGENTS.md's act rule says.
+    const review: ArtifactReview = {
       actor: { id: "alice", kind: "user" },
       artifact_id: "artifact-1",
       ask_id: null,
@@ -231,17 +232,27 @@ test("approving again after a stopped approval and a change request goes under i
       reason: "Needs another pass",
       state: "changes_requested",
       version: 3,
-    });
+    };
+    const changesAnswer = Promise.withResolvers<ArtifactReview>();
+    createArtifactReview.mockReturnValue(changesAnswer.promise);
     await user.click(screen.getByRole("button", { name: "Request changes" }));
     const dialog = screen.getByRole("dialog", { name: "Request changes" });
     await user.click(within(dialog).getByLabelText("Reason"));
     await user.paste("Needs another pass");
     await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
+    await act(async () => {
+      changesAnswer.resolve(review);
+    });
     await tick(1_000);
     expect(createArtifactReview).toHaveBeenCalledTimes(stopped + 1);
 
     // Approve again: the same values the stopped press carried, and a press of its own.
+    const approvalAnswer = Promise.withResolvers<ArtifactReview>();
+    createArtifactReview.mockReturnValue(approvalAnswer.promise);
     await user.click(screen.getByRole("button", { name: "Approve" }));
+    await act(async () => {
+      approvalAnswer.resolve(review);
+    });
     await tick(1_000);
 
     expect(createArtifactReview).toHaveBeenCalledTimes(stopped + 2);

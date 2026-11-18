@@ -1,6 +1,6 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { realClock } from "../../__tests__/fake-clock";
@@ -277,7 +277,10 @@ test("a mapping removal the reader stopped says Retry makes it again, not that i
 
   try {
     const queryClient = renderPage();
-    queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+    // The identity reaches a page already drawn, which it updates at once, so inside `act`.
+    act(() => {
+      queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+    });
     await user.click(await screen.findByRole("button", { name: "Delete mapping for acme/api" }));
     await stopTheLateWrite(queryClient);
 
@@ -331,7 +334,10 @@ test("a mapping save the reader stopped says Retry sends it again, not that it f
 
   try {
     const queryClient = renderPage();
-    queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+    // The identity reaches a page already drawn, which it updates at once, so inside `act`.
+    act(() => {
+      queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+    });
     await user.click(
       await screen.findByRole("radio", { name: "Default repository of CORE: acme/api" })
     );

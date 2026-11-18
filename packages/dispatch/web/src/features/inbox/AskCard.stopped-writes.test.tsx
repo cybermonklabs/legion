@@ -82,6 +82,12 @@ async function answerOpenQuestion(
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const card = within(rendered.view.container);
+  // The who-am-I read settles here, in a wait that moves the held clock inside `act`. The radio
+  // below is found at once, and the wait for it ends before the read's answer lands, which would
+  // then update the card outside `act`.
+  await waitFor(() =>
+    expect(rendered.queryClient.getQueryState(["whoami"])?.status).toBe("success")
+  );
   await user.click(await card.findByRole("radio", { name: "Ship" }));
   await user.click(card.getByRole("button", { name: "Answer" }));
   return { ...rendered, card, open };
@@ -314,7 +320,7 @@ test("an answer that lands after the card moves to another ask leaves that ask's
   const lands = answersOnTheClock<Ask>({ ...open, answer: firstAnswer, state: "answered" });
   const answerAsk = mock((_id: string, _input: AnswerAskInput, _bounds: WriteBounds) => lands());
   const onAnswered = mock((_id: string) => {});
-  const { rerender, view } = renderCard(
+  const { queryClient, rerender, view } = renderCard(
     <AskCard
       answerAsk={answerAsk}
       ask={open}
@@ -325,6 +331,8 @@ test("an answer that lands after the card moves to another ask leaves that ask's
   try {
     jest.useFakeTimers();
     const user = userOnFakeClock();
+    // The who-am-I read settles here, as in `answerOpenQuestion`.
+    await waitFor(() => expect(queryClient.getQueryState(["whoami"])?.status).toBe("success"));
     await user.click(await screen.findByRole("radio", { name: "Ship" }));
     await user.click(screen.getByRole("button", { name: "Answer" }));
 

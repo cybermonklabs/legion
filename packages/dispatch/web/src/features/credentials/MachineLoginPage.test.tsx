@@ -1,6 +1,6 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { realClock } from "../../__tests__/fake-clock";
@@ -180,8 +180,13 @@ test("a pending service login from before token logins offers Deny alone, which 
  *  stop. */
 const dropped = () => new NetworkError("/api/v1/credential-requests", new TypeError("Failed"));
 
-/** The page over `queryClient`, on the held clock, with the code looked up when `lookedUp`. */
-async function stoppedPage(queryClient: QueryClient, lookedUp: boolean) {
+/** The page over `queryClient`, on the held clock, with the code looked up when `answerLookup`
+ *  is given: it answers the lookup the press of Look up sent, inside `act` once that press is
+ *  out, as packages/dispatch/AGENTS.md's act rule says. */
+async function stoppedPage(
+  queryClient: QueryClient,
+  answerLookup?: (record: RecordResponse) => void
+) {
   const user = userOnFakeClock();
   render(
     <MemoryRouter initialEntries={["/credentials/machine"]}>
@@ -193,7 +198,12 @@ async function stoppedPage(queryClient: QueryClient, lookedUp: boolean) {
   await user.click(screen.getByLabelText("Code shown on the machine"));
   await user.paste("abcd1234");
   await user.click(screen.getByRole("button", { name: "Look up" }));
-  if (lookedUp) await screen.findByText("worker-7.example.com");
+  if (answerLookup !== undefined) {
+    await act(async () => {
+      answerLookup(machineRecord());
+    });
+    await screen.findByText("worker-7.example.com");
+  }
   return user;
 }
 
@@ -205,7 +215,7 @@ test("a lookup the reader stopped says it may have been made, not that it failed
   const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
-    await stoppedPage(queryClient, false);
+    await stoppedPage(queryClient);
     await stopTheLateWrite(queryClient);
     expect(
       screen.getByText(
@@ -225,12 +235,13 @@ test("a lookup the reader stopped says it may have been made, not that it failed
 
 test("an approval the reader stopped says it may have been made, not that it failed", async () => {
   jest.useFakeTimers();
-  const lookup = spyOn(api, "lookupMachineCredential").mockResolvedValue(machineRecord());
+  const lookedUp = Promise.withResolvers<RecordResponse>();
+  const lookup = spyOn(api, "lookupMachineCredential").mockReturnValue(lookedUp.promise);
   const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
   const approve = spyOn(api, "approveCredentialRecord").mockRejectedValue(dropped());
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
-    const user = await stoppedPage(queryClient, true);
+    const user = await stoppedPage(queryClient, lookedUp.resolve);
     await user.click(screen.getByRole("button", { name: "Approve" }));
     await stopTheLateWrite(queryClient);
     expect(
@@ -252,12 +263,13 @@ test("an approval the reader stopped says it may have been made, not that it fai
 
 test("a denial the reader stopped says it may have been made, not that it failed", async () => {
   jest.useFakeTimers();
-  const lookup = spyOn(api, "lookupMachineCredential").mockResolvedValue(machineRecord());
+  const lookedUp = Promise.withResolvers<RecordResponse>();
+  const lookup = spyOn(api, "lookupMachineCredential").mockReturnValue(lookedUp.promise);
   const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
   const deny = spyOn(api, "denyCredentialRecord").mockRejectedValue(dropped());
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   try {
-    const user = await stoppedPage(queryClient, true);
+    const user = await stoppedPage(queryClient, lookedUp.resolve);
     await user.click(screen.getByRole("button", { name: "Deny" }));
     await stopTheLateWrite(queryClient);
     expect(

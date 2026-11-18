@@ -9,7 +9,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import type { Artifact } from "../../api/types";
+import type { Artifact, ArtifactUploadResponse } from "../../api/types";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { DocumentList } from "./DocumentList";
 
@@ -314,8 +314,13 @@ test("Create pressed again with the title a stopped create carried goes under a 
     const stoppedKey = uploadArtifact.mock.calls[0]?.[2]?.key;
     const stopped = uploadArtifact.mock.calls.length;
 
-    uploadArtifact.mockResolvedValue(uploadResponse());
+    // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+    const made = Promise.withResolvers<ArtifactUploadResponse>();
+    uploadArtifact.mockReturnValue(made.promise);
     await user.click(screen.getByRole("button", { name: "Create" }));
+    await act(async () => {
+      made.resolve(uploadResponse());
+    });
     await tick(1_000);
 
     expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);

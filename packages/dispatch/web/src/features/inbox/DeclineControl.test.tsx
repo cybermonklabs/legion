@@ -352,6 +352,10 @@ test("a decline the reader stopped says it may have been made, not that it faile
   );
   const card = within(view.container);
   try {
+    // The who-am-I read settles here, in a wait that moves the held clock inside `act`. The
+    // button below is found at once, and the wait for it ends before the read's answer lands,
+    // which would then update the card outside `act`.
+    await waitFor(() => expect(queryClient.getQueryState(["whoami"])?.status).toBe("success"));
     await user.click(await card.findByRole("button", { name: "Decline to answer" }));
     const dialog = card.getByRole("dialog", { name: "Decline to answer" });
     await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));

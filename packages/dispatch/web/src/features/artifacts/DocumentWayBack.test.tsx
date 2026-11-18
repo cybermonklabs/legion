@@ -172,6 +172,30 @@ async function saveTitle(user: UserEvent, title: string): Promise<void> {
   await user.click(screen.getByRole("button", { name: "Save" }));
 }
 
+/**
+ * Dispatch's answers, held until the case gives them: a mocked write returns `answer(reply)`,
+ * whose `reply` returns the answer or throws the refusal, and `give()` gives every answer held
+ * since its last call inside `act`, once the press that sent it is out, as
+ * packages/dispatch/AGENTS.md's act rule says. On the held clock a press's own wait ends a few
+ * turns after its last event, so an answer given at once lands after that wait and updates the
+ * page outside `act`.
+ */
+function heldAnswers() {
+  let held = Promise.withResolvers<void>();
+  return {
+    answer<T>(reply: () => T): Promise<T> {
+      return held.promise.then(reply);
+    },
+    async give(): Promise<void> {
+      const given = held;
+      held = Promise.withResolvers<void>();
+      await act(async () => {
+        given.resolve();
+      });
+    },
+  };
+}
+
 // A correction the reader stopped belongs to the press that made it, never to the title it
 // carried. Here the stopped correction to "Launch notes" had reached Dispatch, a correction to
 // "Launch plan" landed after it, and the person corrects the title back to "Launch notes". Sent
@@ -188,8 +212,10 @@ test("correcting the title back to one a stopped correction carried goes under i
   );
   // Dispatch as it keeps a key (`api/request_keys.go`): the first request under a key makes the
   // correction, and each later one under it is answered with that answer, nothing made again.
-  // While the line is down no answer comes back, though the correction was made.
+  // While the line is down no answer comes back, though the correction was made; once it is up,
+  // each answer is held for the case to give (`heldAnswers`).
   const answers = new Map<string, Artifact>();
+  const held = heldAnswers();
   let answering = false;
   const renameArtifact = spyOn(api, "renameArtifact").mockImplementation((_id, input, bounds) => {
     const key = bounds?.key ?? "";
@@ -200,7 +226,7 @@ test("correcting the title back to one a stopped correction carried goes under i
       answers.set(key, answer);
     }
     return answering
-      ? Promise.resolve(answer)
+      ? held.answer(() => answer)
       : Promise.reject(
           new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
         );
@@ -217,10 +243,12 @@ test("correcting the title back to one a stopped correction carried goes under i
 
     answering = true;
     await saveTitle(user, "Launch plan");
+    await held.give();
     expect(await screen.findByRole("heading", { name: "Launch plan" })).not.toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Correct title" }));
     await saveTitle(user, "Launch notes");
+    await held.give();
     await tick(1_000);
 
     const back = renameArtifact.mock.calls.at(-1);
@@ -381,7 +409,9 @@ test("Remove after a stopped removal that landed takes the not-found as done", a
   );
   // Dispatch as it answers a `DELETE`, whatever key the page hands the call: one that finds the
   // document removes it, and one after it finds none. While the line is down no answer comes
-  // back, though the first removal reached Dispatch and was made.
+  // back, though the first removal reached Dispatch and was made; once it is up, each answer is
+  // held for the case to give (`heldAnswers`).
+  const held = heldAnswers();
   let answering = false;
   const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
     if (!answering) {
@@ -391,12 +421,12 @@ test("Remove after a stopped removal that landed takes the not-found as done", a
       );
     }
     if (stored.length === 0) {
-      return Promise.reject(
-        new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
-      );
+      return held.answer(() => {
+        throw new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" });
+      });
     }
     stored = [];
-    return Promise.resolve();
+    return held.answer(() => undefined);
   });
   const view = renderPage(documentPath);
   view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
@@ -413,6 +443,7 @@ test("Remove after a stopped removal that landed takes the not-found as done", a
 
     answering = true;
     await user.click(screen.getByRole("button", { name: "Remove" }));
+    await held.give();
     await tick(1_000);
 
     expect(deleteArtifact).toHaveBeenCalledTimes(stopped + 1);
@@ -525,6 +556,8 @@ test("after a stopped correction, the next document's page shows none of it and 
   const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
     Promise.resolve(stored)
   );
+  // Once the line is up, each answer is held for the case to give (`heldAnswers`).
+  const held = heldAnswers();
   let answering = false;
   const renameArtifact = spyOn(api, "renameArtifact").mockImplementation((id, input) => {
     if (!answering) {
@@ -533,7 +566,8 @@ test("after a stopped correction, the next document's page shows none of it and 
       );
     }
     stored = stored.map((each) => (each.id === id ? { ...each, name: input.name } : each));
-    return Promise.resolve(stored.find((each) => each.id === id) ?? releaseNotes);
+    const renamed = stored.find((each) => each.id === id) ?? releaseNotes;
+    return held.answer(() => renamed);
   });
   const view = renderPage(documentPath);
   view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
@@ -556,6 +590,7 @@ test("after a stopped correction, the next document's page shows none of it and 
     await user.click(screen.getByRole("button", { name: "Correct title" }));
     expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Release notes");
     await saveTitle(user, "Release plan");
+    await held.give();
     await tick(1_000);
 
     expect(renameArtifact).toHaveBeenLastCalledWith(
