@@ -903,13 +903,15 @@ const upstreamMessage = "airlock proxy: upstream"
 // request, so nothing of the grant is in it, but it can quote what the service sent - a status
 // line it could not read, which a bound service may write with the real value the swap sent it -
 // so each run of the service's bytes it quotes with %q is written as peerBytesShown
-// (hidePeerBytes). The path, and on a plain request the host, are the caller's, and the error may
-// quote the host, so the line passes answer.ClipFields as a call's line does, and stays one Cloud
-// Logging entry whatever the caller sent.
+// (hidePeerBytes), in the line and in the answer the command is given alike. The path, and on a
+// plain request the host, are the caller's, and the error may quote the host, so the line passes
+// answer.ClipFields as a call's line does, and stays one Cloud Logging entry whatever the caller
+// sent.
 func (s *Server) badGateway(host, path string) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, _ *http.Request, err error) {
-		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", hidePeerBytes(err.Error())})...)
-		fail(w, http.StatusBadGateway, codeUpstream, host+": "+err.Error())
+		reason := hidePeerBytes(err.Error())
+		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", reason})...)
+		fail(w, http.StatusBadGateway, codeUpstream, host+": "+reason)
 	}
 }
 

@@ -14,19 +14,61 @@ import (
 	"time"
 
 	smithylogging "github.com/aws/smithy-go/logging"
+	"go.opentelemetry.io/otel"
+	"google.golang.org/grpc/grpclog"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
+// brokerLogLines is each line of the broker's log, decoded, failing t on a line that is no JSON
+// object of its own.
+func brokerLogLines(t *testing.T, written string) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for _, text := range strings.Split(strings.TrimSpace(written), "\n") {
+		var line map[string]any
+		if err := json.Unmarshal([]byte(text), &line); err != nil {
+			t.Fatalf("a line of the broker's log is no JSON object: %q: %v", text, err)
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// lineWhere is the first line for which holds says true, and false when no line does.
+func lineWhere(lines []map[string]any, holds func(map[string]any) bool) (map[string]any, bool) {
+	for _, line := range lines {
+		if holds(line) {
+			return line, true
+		}
+	}
+	return nil, false
+}
+
+// isolateAWS points the AWS SDK at no file and no instance of AWS's own for the rest of t, so the
+// configuration it loads reads nothing of the machine's.
+func isolateAWS(t *testing.T) {
+	t.Helper()
+	none := filepath.Join(t.TempDir(), "none")
+	t.Setenv("AWS_CONFIG_FILE", none)
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", none)
+	t.Setenv("AWS_REGION", "us-east-1")
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+}
+
 // TestTheBrokersLogMasksWhatALibraryWrites: the broker's own logging (setUpLogging), which main
-// sets up first, is what every line of slog, the log package and the AWS SDK goes through. A
-// placeholder written through any of them is written masked; a library's line has no date of its
-// own, its first line is cut to 256 bytes as its message and the rest is its stack; a run of bytes
-// net/http's transport quotes from a service - here an answer's bytes on an idle connection, the
-// line no ErrorLog reaches - is written as a fixed phrase; and the AWS SDK's line is a WARNING of
-// the broker's own shape.
+// sets up first, is what every line of slog, the log package, the AWS SDK, grpc and
+// OpenTelemetry goes through. A placeholder written through any of them is written masked; a
+// library's line has no date of its own, its first line is cut to 256 bytes as its message and
+// the rest is its stack; a run of bytes net/http's transport quotes from a service - here an
+// answer's bytes on an idle connection, the line no ErrorLog reaches - is written as a fixed
+// phrase; the AWS SDK's line is a WARNING of the broker's own shape, cut as a call line's fields
+// are, and its debug line is not written; grpc's error is an ERROR and its info is not written;
+// and OpenTelemetry's error is an ERROR.
 func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 	placeholder := requests.PlaceholderPrefix + "ZzYyXxWwVvUuTtSsRrQqPpOoNnMmLlKk"
 	const mark, shown = "[placeholder]", `"[service bytes not shown]"`
@@ -40,13 +82,14 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 	log.Print(first + "\nsecond line " + placeholder)
 
 	// A service that answers two bytes and sends the placeholder after them in the same write:
-	// net/http's transport reads the answer, finds the rest on the idle connection, and logs it
-	// with log.Printf.
+	// net/http's transport reads the answer, finds the rest on the idle connection, logs it with
+	// log.Printf and then closes the connection, which is when the service hears from it.
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("bind the service: %v", err)
 	}
 	t.Cleanup(func() { listener.Close() })
+	closed := make(chan struct{})
 	go func() {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -59,6 +102,7 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 		}
 		io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"+placeholder)
 		io.Copy(io.Discard, conn)
+		close(closed)
 	}()
 	transport := &http.Transport{}
 	t.Cleanup(transport.CloseIdleConnections)
@@ -68,53 +112,87 @@ func TestTheBrokersLogMasksWhatALibraryWrites(t *testing.T) {
 	}
 	io.Copy(io.Discard, response.Body)
 	response.Body.Close()
-	for deadline := time.Now().Add(10 * time.Second); !strings.Contains(out.String(), "Unsolicited response"); time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("net/http's transport logged no unsolicited response: %q", out.String())
-		}
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Minute):
+		t.Fatalf("net/http's transport never closed the connection whose answer ended in bytes after it: %q", out.String())
 	}
 
-	// The AWS SDK, through the configuration the broker loads, with no file or instance of
-	// AWS's own to read.
-	none := filepath.Join(t.TempDir(), "none")
-	t.Setenv("AWS_CONFIG_FILE", none)
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", none)
-	t.Setenv("AWS_REGION", "us-east-1")
-	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	// The AWS SDK, through the configuration the broker loads: a warning holding the
+	// placeholder, a warning past the cut, and a debug line.
+	isolateAWS(t)
 	awsCfg, err := loadAWSConfig(t.Context())
 	if err != nil {
 		t.Fatalf("load the AWS configuration: %v", err)
 	}
 	awsCfg.Logger.Logf(smithylogging.Warn, "falling back to IMDSv1: %v", errors.New("token "+placeholder))
+	awsCfg.Logger.Logf(smithylogging.Warn, "%s", strings.Repeat("y", 300))
+	awsCfg.Logger.Logf(smithylogging.Debug, "a debug line of the SDK's")
+
+	// grpc, an error and an info; and OpenTelemetry, whose global state logs an error when its
+	// tracer provider is set to the one it already holds.
+	grpclog.Errorf("a grpc error of %s", placeholder)
+	grpclog.Infof("a grpc info line")
+	otel.SetTracerProvider(otel.GetTracerProvider())
 
 	written := out.String()
 	if strings.Contains(strings.ToLower(written), strings.ToLower(placeholder)) {
 		t.Fatalf("the broker's log holds the placeholder: %q", written)
 	}
-	lines := map[string]map[string]any{}
-	for _, text := range strings.Split(strings.TrimSpace(written), "\n") {
-		var line map[string]any
-		if err := json.Unmarshal([]byte(text), &line); err != nil {
-			t.Fatalf("a line of the broker's log is no JSON object: %q: %v", text, err)
-		}
-		message, _ := line["message"].(string)
-		lines[message] = line
+	lines := brokerLogLines(t, written)
+	message := func(want string) func(map[string]any) bool {
+		return func(line map[string]any) bool { return line["message"] == want }
 	}
-	planted, ok := lines["broker: a planted line"]
-	if !ok || planted["severity"] != "INFO" || planted["planted"] != mark {
+	if planted, ok := lineWhere(lines, message("broker: a planted line")); !ok || planted["severity"] != "INFO" || planted["planted"] != mark {
 		t.Errorf("the default logger's line = %v; want its own message, at INFO, with the attribute masked (log: %q)", planted, written)
 	}
 	cut := mark + answer.Clip(first)[len(placeholder):]
-	library, ok := lines[cut]
-	if !ok || library["stack"] != "second line "+mark {
+	if library, ok := lineWhere(lines, message(cut)); !ok || library["stack"] != "second line "+mark {
 		t.Errorf("no line of the log package is its first line cut to %d bytes and masked, with no date before it, and the rest as its stack: %q", answer.FieldBytes, written)
 	}
 	unsolicited := "Unsolicited response received on idle HTTP channel starting with " + shown + "; err=<nil>"
-	if _, ok := lines[unsolicited]; !ok {
+	if _, ok := lineWhere(lines, message(unsolicited)); !ok {
 		t.Errorf("no line of net/http's transport is %q: %q", unsolicited, written)
 	}
-	aws, ok := lines[awsSDKMessage]
-	if !ok || aws["severity"] != "WARNING" || aws["text"] != "falling back to IMDSv1: token "+mark {
-		t.Errorf("the AWS SDK's line = %v; want %q at WARNING, its text masked (log: %q)", aws, awsSDKMessage, written)
+	aws := func(text string) func(map[string]any) bool {
+		return func(line map[string]any) bool { return line["message"] == awsSDKMessage && line["text"] == text }
+	}
+	if imds, ok := lineWhere(lines, aws("falling back to IMDSv1: token "+mark)); !ok || imds["severity"] != "WARNING" {
+		t.Errorf("the AWS SDK's warning = %v; want %q at WARNING, its text masked (log: %q)", imds, awsSDKMessage, written)
+	}
+	if _, ok := lineWhere(lines, aws(strings.Repeat("y", answer.FieldBytes))); !ok {
+		t.Errorf("no line of the AWS SDK is its long warning cut to %d bytes: %q", answer.FieldBytes, written)
+	}
+	if strings.Contains(written, "a debug line of the SDK's") || strings.Contains(written, "a grpc info line") {
+		t.Errorf("the broker's log holds a debug or info line of a library's, which its INFO handler drops: %q", written)
+	}
+	if grpc, ok := lineWhere(lines, message(grpcMessage)); !ok || grpc["severity"] != "ERROR" || grpc["text"] != "a grpc error of "+mark {
+		t.Errorf("grpc's error line = %v; want %q at ERROR, its text masked (log: %q)", grpc, grpcMessage, written)
+	}
+	if _, ok := lineWhere(lines, func(line map[string]any) bool {
+		return line["severity"] == "ERROR" && strings.Contains(stringOf(line["message"]), "tracer provider")
+	}); !ok {
+		t.Errorf("no ERROR line of OpenTelemetry's says its tracer provider was set to its current value: %q", written)
+	}
+}
+
+// stringOf is v when it is a string, and "" otherwise.
+func stringOf(v any) string {
+	text, _ := v.(string)
+	return text
+}
+
+// TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger: the AWS configuration openStore
+// loads for the AWS store, or an IAM database, is the one with awsLog as its logger, whose lines
+// are the broker's own rather than the SDK's own log.Logger on stderr.
+func TestOpenStoreLoadsTheAWSConfigurationWithTheBrokersLogger(t *testing.T) {
+	isolateAWS(t)
+	st, awsCfg, err := openStore(t.Context(), config.Config{DatabaseURL: storetest.URL(t)}, true)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if _, ok := awsCfg.Logger.(awsLog); !ok {
+		t.Fatalf("openStore's AWS configuration logs through %T; want awsLog, the broker's own", awsCfg.Logger)
 	}
 }

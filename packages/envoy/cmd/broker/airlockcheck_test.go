@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 )
@@ -204,8 +205,11 @@ var ruleHostRows = func() []ruleHostRow {
 		// spelling of the same host.
 		{"a host name in mixed case", "API.GitHub.com", formed("is not in lower case", "api.github.com"), "GitHub"},
 		{"a host name with a trailing dot", "api.github.com.", formed("sni mismatch", "api.github.com"), "github.com."},
-		{"a host name in mixed case with a trailing dot", "API.GitHub.com.", formed("ends in a dot", "api.github.com"), "GitHub"},
-		{"a wildcard with a trailing dot", "*.googleapis.com.", formed("ends in a dot", "*.googleapis.com"), "googleapis.com."},
+		// In mixed case and with a trailing dot the host binds, since airlock.HostBound folds
+		// case, and so it is decrypted and refused as the same name in lower case is.
+		{"a host name in mixed case with a trailing dot", "API.GitHub.com.", append(formed("ends in a dot", "api.github.com"), "sni mismatch"), "GitHub"},
+		{"a wildcard with a trailing dot", "*.googleapis.com.", append(formed("ends in a dot", "*.googleapis.com"), "sni mismatch"), "googleapis.com."},
+		{"a wildcard in mixed case with a trailing dot", "*.GoogleAPIs.com.", append(formed("ends in a dot", "*.googleapis.com"), "sni mismatch"), "GoogleAPIs"},
 		{"a name of 253 characters with a trailing dot", longestRuleHost + ".", formed("ends in a dot", longestRuleHost), longestRuleHost + "."},
 		{"a Unicode internationalized name", "bücher.example", formed("punycode", "xn--bcher-kva.example"), "bücher"},
 		{"a Unicode internationalized name under a wildcard", "*.bücher.example", formed("punycode", "*.xn--bcher-kva.example"), "bücher"},
@@ -287,6 +291,23 @@ func rulesWithHosts(t *testing.T, name string, hosts ...string) string {
 		t.Fatal(err)
 	}
 	return string(body)
+}
+
+// TestARulesHostOfManyDotsIsReadInLinearTime: the grammar takes every trailing dot off at once and
+// reads the rest once, so a host of 100,000 dots, or a name followed by them, is refused as no
+// host name in well under a second, and its reason says it binds nothing. Reading one dot at a
+// time, as the grammar did until this row, took 2.76 s for such a host.
+func TestARulesHostOfManyDotsIsReadInLinearTime(t *testing.T) {
+	for _, host := range []string{strings.Repeat(".", 100000), "api.github.com" + strings.Repeat(".", 100000)} {
+		start := time.Now()
+		why := ruleHostRefusal(host)
+		if took := time.Since(start); took > time.Second {
+			t.Errorf("reading a host of %d characters took %v; want well under a second", len(host), took)
+		}
+		if !strings.Contains(why, "ends in a dot") || !strings.Contains(why, "binds nothing") {
+			t.Errorf("a host of %d characters that end in dots is refused %q; want that it ends in a dot and binds nothing", len(host), why)
+		}
+	}
 }
 
 // TestAirlockCheckRefusesAHostTheProxyNeverCompares: a rules host is served only in the one

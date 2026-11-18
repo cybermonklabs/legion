@@ -144,9 +144,9 @@ func (h maskedHandler) WithGroup(name string) slog.Handler {
 // maskAttr is a, written as its text with each placeholder replaced (maskedHandler), and nil for
 // an attribute whose text holds none. The text is a string's, each attribute's of a group, and
 // for a value of kind any each form a handler may write it in (anyForms): an attribute one of
-// whose forms holds a placeholder is written as its first form, masked, so the form that is
-// written holds none. A number, a time and a duration are no text a caller wrote and are never
-// read.
+// whose forms holds a placeholder is written as the first form that holds one, masked, so the
+// form that is written holds none. A number, a time and a duration are no text a caller wrote and
+// are never read.
 func maskAttr(a slog.Attr) *slog.Attr {
 	value := a.Value.Resolve()
 	var text string
@@ -155,10 +155,11 @@ func maskAttr(a slog.Attr) *slog.Attr {
 		text = value.String()
 	case slog.KindAny:
 		forms := anyForms(value.Any())
-		if !slices.ContainsFunc(forms, placeholderPattern.MatchString) {
+		holds := slices.IndexFunc(forms, placeholderPattern.MatchString)
+		if holds < 0 {
 			return nil
 		}
-		text = forms[0]
+		text = forms[holds]
 	case slog.KindGroup:
 		group := value.Group()
 		var masked []slog.Attr
@@ -185,35 +186,63 @@ func maskAttr(a slog.Attr) *slog.Attr {
 	return &replaced
 }
 
-// anyForms is each text a handler may write a value of kind any as, and the first is the one
-// maskAttr writes it as, masked. An error that does not marshal itself is written as its text by
-// every handler. Any other value is written as its JSON by the JSON handler, which follows a
-// pointer and calls a MarshalJSON method, where fmt prints a pointer's address and calls a String
-// method instead, so the two can hold different text, and as fmt writes it, or its MarshalText,
-// by the text handler; a []byte is its bytes as text, which the text handler writes and the JSON
-// handler writes in base64.
+// anyForms is each text a handler may write a value of kind any as. An error that does not
+// marshal itself is written as its text by every handler. Any other value is written as its JSON
+// by the JSON handler, which follows a pointer and calls a MarshalJSON method, where fmt prints a
+// pointer's address and calls a String method instead, so the two can hold different text, and
+// as fmt writes it, or its MarshalText, by the text handler; a []byte is its bytes as text, which
+// the text handler writes and the JSON handler writes in base64.
+//
+// Each form is computed under a recover of its own (formOf), and a form whose method panicked is
+// dropped: a method of a nil receiver - an Error, a MarshalText - may dereference it, and
+// encoding/json re-panics the panic of a MarshalJSON, while a panic in a handler would be the
+// whole process's (SetDefaultLog). No handler writes such a form either, since slog writes the
+// value as "<nil>" or "!PANIC: …", which holds none of its text. So a value no remaining form of
+// which holds a placeholder is handed to the handler as it is, and written as slog writes it.
+// A nil value has no form of its own: a nil receiver's String may show text all the same, which
+// the text handler would write, so its forms are read as any value's are.
 func anyForms(v any) []string {
+	var forms []string
+	add := func(form func() (string, error)) {
+		if text, ok := formOf(form); ok {
+			forms = append(forms, text)
+		}
+	}
 	err, isError := v.(error)
 	if _, marshals := v.(json.Marshaler); isError && !marshals {
-		return []string{err.Error()}
+		add(func() (string, error) { return err.Error(), nil })
+		return forms
 	}
-	var forms []string
 	if b, ok := v.([]byte); ok {
 		forms = append(forms, string(b))
 	}
-	if encoded, err := json.Marshal(v); err == nil {
-		forms = append(forms, string(encoded))
-	}
+	add(func() (string, error) {
+		encoded, err := json.Marshal(v)
+		return string(encoded), err
+	})
 	if isError {
-		forms = append(forms, err.Error())
+		add(func() (string, error) { return err.Error(), nil })
 	}
 	forms = append(forms, fmt.Sprint(v))
 	if marshaler, ok := v.(encoding.TextMarshaler); ok {
-		if text, err := marshaler.MarshalText(); err == nil {
-			forms = append(forms, string(text))
-		}
+		add(func() (string, error) {
+			text, err := marshaler.MarshalText()
+			return string(text), err
+		})
 	}
 	return forms
+}
+
+// formOf is form's text, and false where form failed or panicked: encoding/json re-panics the
+// panic of a MarshalJSON method, and a method of a value can panic of its own.
+func formOf(form func() (string, error)) (text string, ok bool) {
+	defer func() {
+		if recover() != nil {
+			text, ok = "", false
+		}
+	}()
+	text, err := form()
+	return text, err == nil
 }
 
 // The codes the proxy port's own answers name: the refusal line and the count read them, one for

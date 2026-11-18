@@ -683,19 +683,20 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 	r.logs.callsAtLeast(t, 2)
 
 	// A second proxy, whose bound host is a service of the row's own, speaking HTTP/1.1 over TLS
-	// with the certificate the proxy trusts, that answers five ways. Its trailer answer ends in
+	// with the certificate the proxy trusts, that answers six ways. Its trailer answer ends in
 	// a trailer line that is the placeholder, which httputil logs serveBound's copy of failing
-	// (its ErrorLog, Server.errorLog). Its three answers that end in bytes after a whole answer -
-	// the placeholder in the same write as a two-byte answer, the request's own path, which holds
-	// the placeholder, written after it, and the Authorization header it was sent, which holds the
-	// real value the swap put in - leave those bytes on a connection the transport keeps for the
-	// next request, and net/http's transport quotes them with log.Printf, which no ErrorLog
+	// (its ErrorLog, Server.errorLog). Its four answers that end in bytes after a whole answer, in
+	// the same write - the placeholder, the request's own path, which holds the placeholder, the
+	// Authorization header it was sent, which holds the real value the swap put in, and that
+	// header inside a JSON fragment - leave those bytes on a connection the transport keeps for
+	// the next request, and net/http's transport quotes them with log.Printf, which no ErrorLog
 	// reaches and the masked standard logger does (SetDefaultLog). Its last answer is a status
 	// line made of that real value, which the transport refuses quoting it, and the upstream line
-	// logs that error (badGateway). Every run of bytes a library quotes from a peer is written as
-	// peerBytesShown (hidePeerBytes), since the placeholder mask cannot see a real value. A
-	// forwarded plain-HTTP service that writes before it reads the request can leave the same
-	// bytes on Server.forward's connection by a race, which the same standard logger covers.
+	// logs that error and the 502 the command is answered holds it (badGateway). Every run of
+	// bytes a library quotes from a peer is written as peerBytesShown (hidePeerBytes), since the
+	// placeholder mask cannot see a real value. A forwarded plain-HTTP service that writes before
+	// it reads the request can leave the same bytes on Server.forward's connection by a race,
+	// which the same standard logger covers.
 	bound := newRig(t, Options{})
 	leaf, _, err := bound.service.Authority().Leaf([]string{boundHost})
 	if err != nil {
@@ -715,6 +716,13 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 			conn.Close()
 		}
 	})
+	// unsolicitedClosed hears once from each connection whose answer ended in bytes after it, when
+	// the proxy's transport closes that connection: net/http's transport writes the unsolicited
+	// line before it closes the connection (readLoopPeekFailLocked), so a row that has heard from
+	// every such connection reads every such line. Each of those answers is one write, so its
+	// bytes after the answer are on the connection when the transport reads the answer's end,
+	// before the next request could take the connection up.
+	unsolicitedClosed := make(chan string, 8)
 	go func() {
 		for {
 			conn, err := answers.Accept()
@@ -726,28 +734,40 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 			heldMu.Unlock()
 			go func() {
 				reader := bufio.NewReader(conn)
+				unsolicited := ""
 				for {
 					request, err := http.ReadRequest(reader)
 					if err != nil {
 						conn.Close()
+						if unsolicited != "" {
+							unsolicitedClosed <- unsolicited
+						}
 						return
 					}
 					io.Copy(io.Discard, request.Body)
-					switch request.URL.Path {
+					const two = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+					switch path := request.URL.Path; path {
 					case "/v1/trailer":
 						io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n"+workerPlaceholder+"\r\n\r\n")
 					case "/v1/unsolicited":
-						io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"+workerPlaceholder)
+						io.WriteString(conn, two+workerPlaceholder)
+						unsolicited = path
 					case "/v1/echo-value":
-						io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
-						io.WriteString(conn, "echo "+request.Header.Get("Authorization")+"\r\n")
+						io.WriteString(conn, two+"echo "+request.Header.Get("Authorization")+"\r\n")
+						unsolicited = path
+					case "/v1/echo-json":
+						// The value inside a JSON fragment, whose quotation marks the transport's
+						// %q writes escaped: a reading of the quoted run that stopped at the first
+						// escaped quotation mark would show the value after it.
+						io.WriteString(conn, two+`{"authorization":"`+request.Header.Get("Authorization")+`"}`+"\r\n")
+						unsolicited = path
 					case "/v1/echo-status":
 						io.WriteString(conn, "echo-"+strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")+"\r\n\r\n")
 						conn.Close()
 						return
 					default:
-						io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
-						io.WriteString(conn, "echo "+request.URL.Path+"\r\n")
+						io.WriteString(conn, two+"echo "+path+"\r\n")
+						unsolicited = path
 					}
 				}
 			}()
@@ -755,7 +775,9 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 	}()
 	bound.dialTo[net.JoinHostPort(boundHost, "443")] = answers.Addr().String()
 	boundClient := bound.client(workerPlaceholder)
-	for _, path := range []string{"/v1/trailer", "/v1/unsolicited", "/v1/" + workerPlaceholder, "/v1/echo-value", "/v1/echo-status"} {
+	paths := []string{"/v1/trailer", "/v1/unsolicited", "/v1/" + workerPlaceholder, "/v1/echo-value", "/v1/echo-json", "/v1/echo-status"}
+	answered := map[string]string{}
+	for _, path := range paths {
 		request, err := http.NewRequest(http.MethodGet, "https://"+boundHost+path, nil)
 		if err != nil {
 			t.Fatalf("build the request for %s: %v", path, err)
@@ -764,8 +786,19 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 		// The trailer answer is cut short when the copy fails, so an answer is read to its end
 		// and not parsed.
 		if answer, err := boundClient.Do(request); err == nil {
-			io.Copy(io.Discard, answer.Body)
+			body, _ := io.ReadAll(answer.Body)
 			answer.Body.Close()
+			answered[path] = string(body)
+		}
+	}
+	// The four answers that end in bytes after them, each heard from as its connection closes;
+	// the deadline only bounds a run that would otherwise hang.
+	for heard := map[string]bool{}; len(heard) < 4; {
+		select {
+		case path := <-unsolicitedClosed:
+			heard[path] = true
+		case <-time.After(2 * time.Minute):
+			t.Fatalf("the proxy's transport closed %d of the four connections whose answers ended in bytes after them: %v (standard logger: %q)", len(heard), heard, stdlog.String())
 		}
 	}
 	written := func(record slog.Record) string {
@@ -777,18 +810,18 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 		return text
 	}
 	// The bound copy's failure is on the bound proxy's own log, or - with no ErrorLog on
-	// serveBound's ReverseProxy - on the standard logger, where the control below finds it absent.
-	boundCopyFailed := func() bool {
-		return strings.Contains(stdlog.String(), "during body copy") ||
-			slices.ContainsFunc(bound.logs.lines(netHTTPMessage), func(line logLine) bool {
-				return strings.Contains(fmt.Sprint(line.fields["error"]), "during body copy")
-			})
+	// serveBound's ReverseProxy - on the standard logger, where the control below finds it
+	// absent. httputil logs it before the handler returns, so it is written by the time the
+	// command's answer has ended.
+	if !strings.Contains(stdlog.String(), "during body copy") && !slices.ContainsFunc(bound.logs.lines(netHTTPMessage), func(line logLine) bool {
+		return strings.Contains(fmt.Sprint(line.fields["error"]), "during body copy")
+	}) {
+		t.Fatalf("no line says the copy of the bound service's trailer answer failed (standard logger: %q)", stdlog.String())
 	}
-	for deadline := time.Now().Add(10 * time.Second); strings.Count(stdlog.String(), "Unsolicited response") < 3 || !boundCopyFailed(); time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the bound service's answers wrote %d unsolicited-response lines and the copy of its trailer answer failed: %v; want three lines and a failed copy (standard logger: %q)",
-				strings.Count(stdlog.String(), "Unsolicited response"), boundCopyFailed(), stdlog.String())
-		}
+	// The 502 the command was answered for the status line made of the real value holds the
+	// fixed phrase where the service's bytes were, and none of the value.
+	if status := answered["/v1/echo-status"]; !strings.Contains(status, peerBytesShown) {
+		t.Errorf("the answer to the status line made of the real value is %q; want %s where the service's bytes were", status, peerBytesShown)
 	}
 
 	never := []string{workerPlaceholder, workerValue, plantedHeader, plantedBody}
@@ -856,9 +889,10 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 	if strings.Contains(strings.ToLower(stdText), lowered) {
 		t.Errorf("the standard logger was written the placeholder, in some case: %q", stdText)
 	}
-	// No byte of the real value the echo answer sent back reaches any sink: no run of eight of
-	// its bytes is in a line of either proxy or on the standard logger.
-	sinks := []string{stdText}
+	// No byte of the real value the echo answers sent back reaches any sink: no run of eight of
+	// its bytes is in a line of either proxy, on the standard logger, or in an answer the
+	// command was given by the proxy itself (badGateway's 502).
+	sinks := []string{stdText, answered["/v1/echo-status"]}
 	for _, record := range append(r.logs.Records(), bound.logs.Records()...) {
 		sinks = append(sinks, written(record))
 	}
@@ -870,11 +904,11 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 			}
 		}
 	}
-	// The control for the standard logger: the transport did write the three unsolicited
+	// The control for the standard logger: the transport did write the four unsolicited
 	// answers to it, each with the fixed phrase where the service's bytes were; the text handler
 	// writes the quotation marks escaped.
-	if shown := strings.Count(stdText, `starting with \"[service bytes not shown]\"`); shown < 3 {
-		t.Errorf("the standard logger writes %d unsolicited answers as %s; want three: %q", shown, peerBytesShown, stdText)
+	if shown := strings.Count(stdText, `starting with \"[service bytes not shown]\"`); shown < 4 {
+		t.Errorf("the standard logger writes %d unsolicited answers as %s; want four: %q", shown, peerBytesShown, stdText)
 	}
 
 	// The control: the planted values really were sent, so a line that held one would have had

@@ -1072,8 +1072,13 @@ func ruleHostGrammar(h string) string {
 		return "is not ASCII, and a client sends an internationalized name as its punycode, so no request names this spelling and the host binds nothing"
 	case strings.HasSuffix(h, "."):
 		// Before the length: a 253-character name with a trailing dot is a name DNS carries,
-		// written with the dot no client sends, and the dot is what is wrong with it.
-		if ruleHostGrammar(strings.TrimSuffix(h, ".")) != "" {
+		// written with the dot no client sends, and the dot is what is wrong with it. Every
+		// trailing dot is taken off at once and the rest read once, in lower case, as
+		// airlock.HostBound compares it: so a name in upper case with one trailing dot binds and
+		// is decrypted as the same name in lower case does, and the reading is linear however
+		// many dots the file writes.
+		name := strings.TrimRight(h, ".")
+		if len(h)-len(name) > 1 || ruleHostGrammar(fold.ASCII(name)) != "" {
 			return "ends in a dot, and without it is no host name either, so no request is bound to it and the host binds nothing"
 		}
 		return "ends in a dot, which a client drops from the TLS server name it sends, so the proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there"

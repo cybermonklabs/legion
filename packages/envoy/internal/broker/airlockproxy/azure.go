@@ -207,7 +207,10 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 	form.Set("client_assertion", federated)
 	status, answer, err := s.exchangeAt(r.Context(), x.Endpoint, form)
 	if err != nil {
-		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "the exchange of this grant's federated token could not be made at "+x.Endpoint+": "+err.Error())
+		// The transport's error can quote what the endpoint sent, and the endpoint was sent the
+		// real federated token: each run it quotes is written as peerBytesShown (hidePeerBytes),
+		// in the refusal line and in the answer alike.
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "the exchange of this grant's federated token could not be made at "+x.Endpoint+": "+hidePeerBytes(err.Error()))
 		return
 	}
 	if status != http.StatusOK {
@@ -218,7 +221,7 @@ func (s *Server) exchangeToken(w http.ResponseWriter, info connInfo, r *http.Req
 	}
 	fields, err := azureAnswerOf(answer)
 	if err != nil {
-		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "the token endpoint's answer to this exchange "+err.Error())
+		s.refuse(w, r, info.callFor(chosen), http.StatusBadGateway, codeExchangeFailed, "the token endpoint's answer to this exchange "+hidePeerBytes(err.Error()))
 		return
 	}
 	token, expires := accessTokenOf(fields, s.now())
@@ -287,14 +290,16 @@ func (s *Server) azureAccess(ctx context.Context, info connInfo, chosen pair, se
 		"client_assertion":      {federated},
 	})
 	if err != nil {
-		return "", errors.New("the exchange of this grant's federated token could not be made at " + x.Endpoint + ": " + err.Error())
+		// As exchangeToken's: the endpoint was sent the real federated token, and the
+		// transport's error can quote what it sent back (hidePeerBytes).
+		return "", errors.New("the exchange of this grant's federated token could not be made at " + x.Endpoint + ": " + hidePeerBytes(err.Error()))
 	}
 	if status != http.StatusOK {
 		return "", fmt.Errorf("the token endpoint refused the exchange of this grant's federated token (%d)", status)
 	}
 	fields, err := azureAnswerOf(answer)
 	if err != nil {
-		return "", errors.New("the token endpoint's answer to this exchange " + err.Error())
+		return "", errors.New("the token endpoint's answer to this exchange " + hidePeerBytes(err.Error()))
 	}
 	token, expires := accessTokenOf(fields, s.now())
 	held.keep(token, expires)
