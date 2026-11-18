@@ -486,13 +486,13 @@ export function reachFixtures() {
     runs: Record<string, string>[],
     options: { path?: string; together?: number } = {}
   ): Promise<Run[]> {
-    const out = join(scratch, `each-${randomUUID()}`);
-    mkdirSync(out);
     for (const name of runs.flatMap(Object.keys)) {
       if (!/^[A-Z][A-Z0-9_]*$/.test(name) || Object.hasOwn(runnerOwnNames, name)) {
         throw new Error(`driveEach cannot pass ${name} to a run whole: give it through drive`);
       }
     }
+    const out = join(scratch, `each-${randomUUID()}`);
+    mkdirSync(out);
     const child = Bun.spawn(
       [
         bash,
