@@ -3,15 +3,14 @@
  *
  * Every composer host is held to one rule (packages/dispatch/AGENTS.md, "Who moved the
  * composer's address"): the reader's own move with the composer's own control takes the draft
- * with it, and a move of the host's carries nothing, so the text stays with the address it was
- * written for and is there when the reader comes back to it (AGENTS.md:116-119). A refused or
- * stopped send's note stays at its own address. A margin thread's reply has no other composer for
- * its own controls to carry the draft to, so its Cancel reply and Escape end the reply and keep
- * the draft for the thread, which the closed card says (`keptReply`); an anchored composer's
- * Close asks `Discard draft?` first, and only Discard drops what the reader wrote. Each cell
- * writes a draft in one state, typed and never sent, refused by Dispatch, or stopped by the
- * reader, makes one move, and asserts where the text ends. A cell that fails at the code it was
- * written against is a hole in the rule, kept red on purpose until the code is fixed.
+ * with it, and "a move of the host's ... carries nothing: the text stays with the address it was
+ * written for, and is there when the reader comes back to it." A refused or stopped send's note
+ * stays at its own address. A margin thread's reply has no other composer for its own controls to
+ * carry the draft to, so its Cancel reply and Escape end the reply and keep the draft for the
+ * thread, which the closed card says (`keptReply`); an anchored composer's Close asks `Discard
+ * draft?` first, and only Discard drops what the reader wrote. Each cell writes a draft in one
+ * state, typed and never sent, refused by Dispatch, or stopped by the reader, makes one move, and
+ * asserts where the text ends.
  *
  * Host: the issue's margin (`Margin`, `useMarginSheet`, `CommentsTab`): a thread's reply in the
  * desktop list, where opening one thread closes the other, and in the phone's full-screen thread
@@ -45,18 +44,19 @@
  * (off) marks a host move that takes the composer off the screen: Back hides the thread view,
  * opening another thread collapses this one and unmounts its reply, and leaving the document
  * takes the margin to another document's composes. Every host move of this row is one, so none
- * needs a line while away. Opening a compose on another document does what leaving does and more:
- * the margin holds one open compose, so the newer one takes its place (`composeForMark`), and the
- * first document's text must come back in its compose with its note, or a line must say where it
- * is kept, and must never fill a compose at another quote: the next compose on the first document,
- * at another selection, starts without it.
+ * needs a line while away. Opening a compose on another document does what leaving does: the
+ * margin holds one open compose per document (`composeForMark` replaces only the compose on its
+ * own document), so the first document's compose stays open for it and comes back with its text
+ * and its note, and that text never fills a compose at another quote: the next compose on the
+ * first document, at another selection, starts without it.
  *
  * The moves this host cannot make:
  * 1. A thread's reply always answers its own thread's root, so no move of the host's changes its
  *    address, and it is never elsewhere.
  * 2. The margin's card draws no collapse of its own: the desktop list closes it only by opening
  *    another thread (the second row), and the phone only by Back (the first row).
- * 3. The margin draws no issue picker (asserted absent below).
+ * 3. The issue picker is an Agents row's (`AgentMessageComposer`), and the margin draws no Agents
+ *    row's composer.
  *
  * The moves the composer census found that the rows above do not make:
  * 4. The Pinned tab, a phone margin thread, and the rail the margin collapses to hide the compose
@@ -77,52 +77,40 @@
  *    `ThreadCard`) is read when the card is drawn and again only when who is signed in changes
  *    (`useUserPreference`), so it never moves a reply that is on screen.
  */
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
-import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { expect, type Mock, spyOn, test } from "bun:test";
+import type { MutationKey } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect } from "react";
-import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
-import { ApiError, api } from "../../api/client";
-import type { Comment, IssueDetails } from "../../api/types";
-import { heldSends } from "../conversation/held-sends";
+import {
+  BODY,
+  expectedBack,
+  HELD,
+  type Held,
+  keptInSight,
+  marginCard,
+  marginClient,
+  marginPage,
+  noteIn,
+  openMarginThread,
+  REFUSAL,
+  REFUSED_NOTE,
+  RegisterDocument,
+  STOPPED_NOTE,
+  threadA,
+  threadB,
+} from "../../__tests__/draft-matrix-fixture";
+import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
+import { api } from "../../api/client";
+import type { IssueDetails } from "../../api/types";
 import type { SentRequest } from "../conversation/send-request";
 import { buildIssuePath } from "../refs/routes";
-import { SendStoppedError } from "../writes/keyed-write";
-import { Margin } from "./Margin";
-import {
-  MarginProvider,
-  marginComposeSendKey,
-  marginReplySendKey,
-  useMargin,
-} from "./margin-context";
-import { comment, issue, specArtifact, stubDocumentBridge, stubMatchMedia } from "./margin-fixture";
+import { marginComposeSendKey, marginReplySendKey, useMargin } from "./margin-context";
+import { issue, specArtifact, stubDocumentBridge, stubMatchMedia } from "./margin-fixture";
 
 const HOST = "margin thread";
-
-/** Dispatch refusing the send outright, as a 400 does: no attempt follows under its key. */
-const REFUSAL = new ApiError(400, { code: "INPUT_REFUSED", error: "Dispatch refused the message" });
-
-/** What each note says in a composer: the refusal, and a stopped send at its own address. */
-const REFUSED_NOTE = "Couldn't send — Dispatch refused the message";
-const STOPPED_NOTE = new SendStoppedError().message;
-
-const BODY = "Draft the reader wrote";
-
-type Held = "typed" | "refused" | "stopped";
-const HELD: readonly Held[] = ["typed", "refused", "stopped"];
-
-/** The fixture's thread, and a second one on another mark of the same document. */
-const threadA: Comment = comment;
-const threadB: Comment = {
-  ...comment,
-  anchor: comment.anchor === null ? null : { ...comment.anchor, mark_id: "m-2", quote: "fox" },
-  body: "and how?",
-  id: "comment-2",
-};
 
 /** Another issue, whose spec is another document: going there leaves CORE-1's spec. */
 const secondIssue: IssueDetails = {
@@ -160,30 +148,14 @@ const ANOTHER_ANCHOR = {
 
 /** A send of `BODY` from the margin: thread A's reply, or the compose on `MARK_ANCHOR`. */
 function request(kind: "reply" | "compose"): SentRequest {
-  return {
-    anchor: kind === "compose" ? MARK_ANCHOR : undefined,
-    ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body: BODY, mentions: [], replacement: "" },
-    edit: undefined,
-    kind: "comment",
-    owner: { issueKey: issue.key, kind: "issue" },
-    plainDelivery: "steer",
-    replyTo:
-      kind === "reply"
-        ? { actor: threadA.author, excerpt: "", id: threadA.id, parentKind: "comment" }
-        : null,
-    sendKey: "stopped-send",
-  };
-}
-
-/** The document the margin's compose is on, registered as the document page registers it. */
-function RegisterDocument(): ReactNode {
-  const { registerDocument } = useMargin();
-  useEffect(() => {
-    registerDocument(stubDocumentBridge(specArtifact.id));
-    return () => registerDocument(undefined);
-  }, [registerDocument]);
-  return null;
+  return kind === "reply"
+    ? sentRequest(BODY, {
+        actor: threadA.author,
+        excerpt: "",
+        id: threadA.id,
+        parentKind: "comment",
+      })
+    : sentRequest(BODY, null, { anchor: MARK_ANCHOR });
 }
 
 /** The document the page on the route shows, registered as each document page registers its
@@ -264,17 +236,7 @@ async function openMargin(
   documents: "spec" | "route" = "spec"
 ): Promise<Page> {
   const user = userEvent.setup();
-  const queryClient = new QueryClient({
-    defaultOptions: {
-      mutations: { retry: false },
-      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
-    },
-  });
-  queryClient.setQueryData(["issue", issue.key], issue);
-  queryClient.setQueryData(["inbox"], []);
-  queryClient.setQueryData(["asks", issue.key], []);
-  queryClient.setQueryData(["user-state"], {});
-  queryClient.setQueryData(["comments", issue.key], [threadA, threadB]);
+  const queryClient = marginClient([threadA, threadB]);
   queryClient.setQueryData(["issue", secondIssue.key], secondIssue);
   queryClient.setQueryData(["asks", secondIssue.key], []);
   queryClient.setQueryData(["comments", secondIssue.key], []);
@@ -289,32 +251,19 @@ async function openMargin(
   ];
   const createComment = spyOn(api, "createComment");
   if (stopped !== undefined) {
-    createComment.mockRejectedValue(
-      new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
-    );
-    jest.useFakeTimers();
-    try {
-      act(() => {
-        heldSends(queryClient).send(stopped.key, stopped.request);
-      });
-      await stopTheLateWrite(queryClient);
-    } finally {
-      realClock();
-    }
+    await stopSend(queryClient, stopped.key, stopped.request, [createComment]);
   }
   createComment.mockRejectedValue(REFUSAL);
   const restoreViewport = stubMatchMedia(phone);
   const view = render(
-    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
-      <QueryClientProvider client={queryClient}>
-        <MarginProvider>
-          {documents === "spec" ? <RegisterDocument /> : <RegisterRouteDocument />}
-          <ComposeOnMark />
-          <Travel />
-          <Margin />
-        </MarginProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
+    marginPage(
+      queryClient,
+      <>
+        {documents === "spec" ? <RegisterDocument /> : <RegisterRouteDocument />}
+        <ComposeOnMark />
+        <Travel />
+      </>
+    )
   );
   // A phone that arrives at a held reply opens its thread in place of the list, so any card of
   // the margin's will do.
@@ -333,35 +282,8 @@ async function openMargin(
   };
 }
 
-/** Thread `id`'s card in the list. Expanding a thread draws its card again, so it is looked up
- *  afresh each time. */
-const card = (id: string) => screen.getByTestId(`margin-comment-${id}`);
-
-/** Opens thread `id` from its collapsed card, as a click on it does. */
-async function open(user: UserEvent, id: string): Promise<void> {
-  await user.click(within(card(id)).getByRole("button", { expanded: false }));
-}
-
 const replyField = (place: HTMLElement) =>
   within(place).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
-
-/** Which note `place` shows about a send it holds. */
-function note(place: HTMLElement): Held | "none" {
-  const shown = within(place);
-  if (shown.queryByText(REFUSED_NOTE) !== null) return "refused";
-  return shown.queryByText(STOPPED_NOTE) === null ? "none" : "stopped";
-}
-
-/** Whether the reader can see that `draft` is kept: a line on screen says so, or the draft is
- *  still in a field on screen, as it is where the list shows the thread open. A status or a field
- *  inside something hidden is no role the query finds, so one under a covered or folded part of
- *  the page does not count. */
-function keptInSight(draft: string): boolean {
-  return (
-    screen.queryAllByRole("status").some((line) => /\bkept\b/.test(line.textContent ?? "")) ||
-    screen.queryAllByRole<HTMLTextAreaElement>("textbox").some((box) => box.value === draft)
-  );
-}
 
 /** Writes `BODY` in the reply field of `place` and, for a refused draft, sends it. */
 async function writeReply(page: Page, place: HTMLElement, held: Held): Promise<void> {
@@ -379,13 +301,15 @@ async function writeReply(page: Page, place: HTMLElement, held: Held): Promise<v
 /** Thread A open in the desktop list with `BODY` in its reply, in the state `held` names. A
  *  stopped reply is the one `openMargin` seeded, whose thread the margin opens on arrival. */
 async function holdInCardA(page: Page, held: Held): Promise<void> {
-  await waitFor(() => expect(card(threadA.id)).toBeInTheDocument());
-  if (card(threadA.id).getAttribute("aria-expanded") !== "true") await open(page.user, threadA.id);
+  await waitFor(() => expect(marginCard(threadA.id)).toBeInTheDocument());
+  if (marginCard(threadA.id).getAttribute("aria-expanded") !== "true") {
+    await openMarginThread(page.user, threadA.id);
+  }
   if (held === "stopped") {
-    expect(note(card(threadA.id))).toBe("stopped");
+    expect(noteIn(marginCard(threadA.id))).toBe("stopped");
     return;
   }
-  await writeReply(page, card(threadA.id), held);
+  await writeReply(page, marginCard(threadA.id), held);
 }
 
 /** Thread A in the phone's thread view with `BODY` in its reply. Answers the thread view. */
@@ -393,10 +317,10 @@ async function holdInPhoneThreadA(page: Page, held: Held): Promise<HTMLElement> 
   if (held === "stopped") {
     // Coming to a document whose thread holds a reply opens that thread.
     const dialog = await screen.findByRole("dialog", { name: "Thread" });
-    expect(note(dialog)).toBe("stopped");
+    expect(noteIn(dialog)).toBe("stopped");
     return dialog;
   }
-  await open(page.user, threadA.id);
+  await openMarginThread(page.user, threadA.id);
   const dialog = await screen.findByRole("dialog", { name: "Thread" });
   await writeReply(page, dialog, held);
   return dialog;
@@ -404,13 +328,8 @@ async function holdInPhoneThreadA(page: Page, held: Held): Promise<HTMLElement> 
 
 /** Thread A's reply as it shows again in `place`. */
 function heldIn(place: HTMLElement): { note: Held | "none"; text: string } {
-  return { note: note(place), text: replyField(place).value };
+  return { note: noteIn(place), text: replyField(place).value };
 }
-
-const expectedBack = (held: Held): { note: Held | "none"; text: string } => ({
-  note: held === "typed" ? "none" : held,
-  text: BODY,
-});
 
 const stoppedReply = (held: Held) =>
   held === "stopped"
@@ -428,9 +347,9 @@ for (const held of HELD) {
       await waitFor(() => expect(screen.queryByRole("dialog", { name: "Thread" })).toBe(null));
       // The thread view a tap on the card opens, or the card itself where the list shows it
       // open already.
-      let place = card(threadA.id);
+      let place = marginCard(threadA.id);
       if (place.getAttribute("aria-expanded") !== "true") {
-        await open(page.user, threadA.id);
+        await openMarginThread(page.user, threadA.id);
         place = await screen.findByRole("dialog", { name: "Thread" });
       }
       expect(heldIn(place)).toEqual(expectedBack(held));
@@ -447,10 +366,10 @@ for (const held of HELD) {
     const page = await openMargin(false, stoppedReply(held));
     try {
       await holdInCardA(page, held);
-      await open(page.user, threadB.id);
-      const aOpen = card(threadA.id).getAttribute("aria-expanded");
-      await open(page.user, threadA.id);
-      expect({ aOpen, back: heldIn(card(threadA.id)) }).toEqual({
+      await openMarginThread(page.user, threadB.id);
+      const aOpen = marginCard(threadA.id).getAttribute("aria-expanded");
+      await openMarginThread(page.user, threadA.id);
+      expect({ aOpen, back: heldIn(marginCard(threadA.id)) }).toEqual({
         aOpen: "false",
         back: expectedBack(held),
       });
@@ -468,10 +387,12 @@ for (const held of HELD) {
     const page = await openMargin(false, stoppedReply(held));
     try {
       await holdInCardA(page, held);
-      await page.user.click(within(card(threadA.id)).getByRole("button", { name: "Cancel reply" }));
+      await page.user.click(
+        within(marginCard(threadA.id)).getByRole("button", { name: "Cancel reply" })
+      );
       const kept = keptInSight(BODY);
-      await open(page.user, threadA.id);
-      expect({ back: heldIn(card(threadA.id)), kept }).toEqual({
+      await openMarginThread(page.user, threadA.id);
+      expect({ back: heldIn(marginCard(threadA.id)), kept }).toEqual({
         back: expectedBack(held),
         kept: true,
       });
@@ -486,11 +407,11 @@ for (const held of HELD) {
     const page = await openMargin(false, stoppedReply(held));
     try {
       await holdInCardA(page, held);
-      await page.user.click(replyField(card(threadA.id)));
+      await page.user.click(replyField(marginCard(threadA.id)));
       await page.user.keyboard("{Escape}");
       const kept = keptInSight(BODY);
-      await open(page.user, threadA.id);
-      expect({ back: heldIn(card(threadA.id)), kept }).toEqual({
+      await openMarginThread(page.user, threadA.id);
+      expect({ back: heldIn(marginCard(threadA.id)), kept }).toEqual({
         back: expectedBack(held),
         kept: true,
       });
@@ -528,15 +449,14 @@ async function holdInCompose(page: Page, held: Held): Promise<HTMLElement> {
     if (found === null) throw new Error("expected the compose form");
     return found;
   });
-  expect(note(form)).toBe(held === "typed" ? "none" : held);
+  expect(noteIn(form)).toBe(held === "typed" ? "none" : held);
   return form;
 }
 
 // Leaving the document is the host's move, and the compose is off the screen while the reader is
-// on another issue: coming back to the document should find the draft with its note. An unsent
-// compose is cancelled when the margin no longer shows its document (`useMarginSheet`'s effect
-// on `pendingCompose`), and a sent one is the held-send store's, which the margin shows again on
-// arrival.
+// on another issue. The margin keeps an unsent compose open for its document (`pendingComposes`,
+// one per document), and a sent one is the held-send store's; coming back to the document shows
+// either again (`revealCompose` in `useMarginSheet`), its draft in the field with its note.
 for (const held of HELD) {
   test(`${HOST} · document left, then back (the margin's compose) · ${held}`, async () => {
     const page = await openMargin(false, stoppedCompose(held));
@@ -551,7 +471,7 @@ for (const held of HELD) {
         .findByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }, { timeout: 1_000 })
         .catch(() => null);
       expect({
-        note: field === null ? "none" : note(field.closest("form") ?? field),
+        note: field === null ? "none" : noteIn(field.closest("form") ?? field),
         text: field === null ? "(no compose on screen)" : field.value,
       }).toEqual(expectedBack(held));
     } finally {
@@ -565,7 +485,7 @@ function composesOnScreen(): { note: Held | "none"; quote: string; text: string 
   return screen.queryAllByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).map((field) => {
     const form = field.closest("form") ?? field;
     return {
-      note: note(form),
+      note: noteIn(form),
       quote: form.querySelector("blockquote")?.textContent ?? "",
       text: field.value,
     };
@@ -584,11 +504,13 @@ function keptLineNamingTheFirstCompose(): boolean {
 /** What a cell asserts the reader finds back on CORE-1's spec. */
 const FOUND = "the draft in its compose with its note, or a line saying where it is kept";
 
-// Review hole (v): a compose opened on another document is the host's move for the first one,
-// which carries nothing; the margin holds one open compose, so the newer one takes the first's
-// place (`composeForMark`). Back on CORE-1's spec, the first compose's text should be there with
-// its note, or a line should say where it is kept; and it should never fill a compose at another
-// quote, so the next compose the reader opens on CORE-1's spec, at other words, starts without it.
+// A compose opened on another document is the host's move for the first one, which carries
+// nothing. The margin holds one open compose per document (`composeForMark` replaces only the
+// compose on its own document), so the first stays open for CORE-1's spec and, back there, shows
+// again with its text and its note. The cell holds the margin to the rule rather than to that
+// way of keeping it: back on CORE-1's spec the text is in its compose with its note, or a line
+// says where it is kept; and it never fills a compose at another quote, so the next compose the
+// reader opens on CORE-1's spec, at other words, starts without it.
 for (const held of HELD) {
   test(`${HOST} · a compose opened on another document, then back (the margin's compose) · ${held}`, async () => {
     const page = await openMargin(false, stoppedCompose(held), "route");
@@ -655,13 +577,3 @@ for (const held of HELD) {
     }
   });
 }
-
-test(`${HOST} · Agents pick · cannot make: the margin draws no issue picker`, async () => {
-  const page = await openMargin(false);
-  try {
-    await holdInCardA(page, "typed");
-    expect(screen.queryAllByRole("button", { name: "Choose issue" }).length).toBe(0);
-  } finally {
-    page.restore();
-  }
-});

@@ -3,12 +3,11 @@
  *
  * Every composer host is held to one rule (packages/dispatch/AGENTS.md, "Who moved the
  * composer's address"): the reader's own move with the composer's own control takes the draft
- * with it, and a move of the host's carries nothing, so the text stays with the address it was
- * written for and is there when the reader comes back to it (AGENTS.md:116-119). A refused or
- * stopped send's note stays at its own address. Each cell writes a draft in one state - typed and
- * never sent, refused by Dispatch, or stopped by the reader - makes one move, and asserts where
- * the text ends. A cell that fails at the code it was written against is a hole in the rule, kept
- * red on purpose until the code is fixed.
+ * with it, and "a move of the host's ... carries nothing: the text stays with the address it was
+ * written for, and is there when the reader comes back to it." A refused or stopped send's note
+ * stays at its own address. Each cell writes a draft in one state - typed and never sent,
+ * refused by Dispatch, or stopped by the reader - makes one move, and asserts where the text
+ * ends.
  *
  * Host: on a phone, a comment's Reply answers in the comment's full-screen thread, by the thread
  * view's own composer (`usePhoneThread`, `ConversationTab`'s thread dialog).
@@ -46,7 +45,8 @@
  * 2. The thread view draws its comment forced open with no Collapse thread (`forceExpanded`), so
  *    Back, the first row, is its one way out.
  * 3. The thread composer has no anchor, so it draws no Close (asserted absent below).
- * 4. The thread composer draws no issue picker (asserted absent below).
+ * 4. The issue picker is an Agents row's (`AgentMessageComposer`), and the thread view draws no
+ *    Agents row's composer.
  *
  * The moves the composer census found above `ConversationTab`, and in it:
  * 5. `draft-matrix.issue-page.test.tsx` makes these cells, with the issue page drawn around the
@@ -61,85 +61,49 @@
  *    does, and the composer drawn when they land again is the one the issue-left row draws on
  *    return.
  */
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
-import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { expect, type Mock, spyOn, test } from "bun:test";
+import type { MutationKey } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
 
-import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { realClock } from "../../__tests__/fake-clock";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
-import { ApiError, api } from "../../api/client";
-import type { Actor, Comment } from "../../api/types";
+import {
+  alice,
+  BODY,
+  commentA,
+  commentB,
+  HELD,
+  type Held,
+  keptLineNaming,
+  listTurn,
+  movedNote,
+  NOTHING_READ,
+  newQueryClient,
+  noteIn,
+  REFUSAL,
+  REFUSED_NOTE,
+  stubLists,
+  tab,
+} from "../../__tests__/draft-matrix-fixture";
+import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
+import { api } from "../../api/client";
 import { stubMatchMedia } from "../margin/margin-fixture";
-import { KeymapProvider } from "../shell/KeymapProvider";
-import { SendStoppedError } from "../writes/keyed-write";
-import { ConversationTab } from "./ConversationTab";
-import { heldSends } from "./held-sends";
-import type { SentRequest } from "./send-request";
+import type { ReplyTarget } from "./composer-model";
 
 const HOST = "phone thread";
-
-const alice: Actor = { id: "alice", kind: "user" };
 
 /** The phone thread composer's send name (`usePhoneThread`'s `composerKey`). */
 const THREAD_KEY: MutationKey = ["conversation-composer", "CORE-1", "phone-thread"];
 
-/** Dispatch refusing the send outright, as a 400 does: no attempt follows under its key. */
-const REFUSAL = new ApiError(400, { code: "INPUT_REFUSED", error: "Dispatch refused the message" });
+/** What a composer says of a stopped reply the reader took off its comment with the composer's
+ *  own control. */
+const MOVED_NOTE = movedNote("as a reply");
 
-/** What each note says in a composer: the refusal, a stopped send at its own address, and a
- *  stopped reply the reader took off its comment with the composer's own control. */
-const REFUSED_NOTE = "Couldn't send — Dispatch refused the message";
-const STOPPED_NOTE = new SendStoppedError().message;
-const MOVED_NOTE =
-  "Dispatch has not confirmed this message, sent as a reply: it may have been delivered there. " +
-  "Sending it from here is a new message, which can be delivered a second time if the first one was.";
-
-const BODY = "Draft the reader wrote";
-
-type Held = "typed" | "refused" | "stopped";
-const HELD: readonly Held[] = ["typed", "refused", "stopped"];
-
-function comment(id: string, body: string, createdAt: string, author: Actor): Comment {
-  return {
-    ...commentDeliveryFields(),
-    anchor: null,
-    ask_id: null,
-    author,
-    body,
-    created_at: createdAt,
-    edited_at: null,
-    id,
-    issue_key: "CORE-1",
-    reply_to: null,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
-  };
-}
-
-/** Two comments by two people, so a line naming the first comment's author names it alone. */
-const commentA = comment("comment-a", "Comment A", "2026-09-20T00:00:00Z", alice);
-const commentB = comment("comment-b", "Comment B", "2026-09-20T00:01:00Z", {
-  id: "bob",
-  kind: "user",
-});
-
-/** A reply of `BODY` to Comment A from the thread composer, as its Send makes it. */
-const replyToA: SentRequest = {
-  anchor: undefined,
-  ask: { multiple: false, options: [], urgency: "med" },
-  draft: { body: BODY, mentions: [], replacement: "" },
-  edit: undefined,
-  kind: "comment",
-  owner: { issueKey: "CORE-1", kind: "issue" },
-  plainDelivery: "steer",
-  replyTo: { actor: alice, excerpt: "Comment A", id: commentA.id, parentKind: "comment" },
-  sendKey: "stopped-send",
+/** Comment A as the thread composer answers it, the reply a stopped send below was sent as. */
+const replyToA: ReplyTarget = {
+  actor: alice,
+  excerpt: "Comment A",
+  id: commentA.id,
+  parentKind: "comment",
 };
 
 interface Page {
@@ -150,55 +114,21 @@ interface Page {
 
 /**
  * The Conversation of CORE-1 on a phone, over Comment A and Comment B. Every comment the page
- * writes is refused, so a send pressed here comes back refused; with `stopped`, a reply to
- * Comment A is sent through the held-send store under the thread composer's name before the page
- * is drawn and stopped once late, as the reader's Stop trying does.
+ * writes is refused, so a send pressed here comes back refused; with `stopped`, a reply of `BODY`
+ * to Comment A is sent through the held-send store under the thread composer's name before the
+ * page is drawn and stopped once late, as the reader's Stop trying does.
  */
 async function openPhone(stopped: boolean): Promise<Page> {
   const user = userEvent.setup();
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  const reads = [
-    spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
-    spyOn(api, "listComments").mockResolvedValue([commentA, commentB]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "listHandoffs").mockResolvedValue([]),
-    spyOn(api, "listAgents").mockResolvedValue([]),
-    spyOn(api, "getIssueEvents").mockResolvedValue([]),
-  ];
+  const queryClient = newQueryClient();
+  const reads = stubLists({ comments: [commentA, commentB] });
   const createComment = spyOn(api, "createComment");
   if (stopped) {
-    createComment.mockRejectedValue(
-      new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
-    );
-    jest.useFakeTimers();
-    try {
-      act(() => {
-        heldSends(queryClient).send(THREAD_KEY, replyToA);
-      });
-      await stopTheLateWrite(queryClient);
-    } finally {
-      realClock();
-    }
+    await stopSend(queryClient, THREAD_KEY, sentRequest(BODY, replyToA), [createComment]);
   }
   createComment.mockRejectedValue(REFUSAL);
   const restoreViewport = stubMatchMedia(true);
-  const view = render(
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <KeymapProvider>
-        <QueryClientProvider client={queryClient}>
-          <ConversationTab
-            issueArtifacts={new Map()}
-            isClosed={false}
-            issueKey="CORE-1"
-            state={{ "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 } }}
-            visible
-          />
-        </QueryClientProvider>
-      </KeymapProvider>
-    </MemoryRouter>
-  );
+  const view = render(tab(NOTHING_READ, true, queryClient));
   await waitFor(() =>
     expect(document.querySelector('[data-turn="comment:comment-b"]')).not.toBe(null)
   );
@@ -208,24 +138,15 @@ async function openPhone(stopped: boolean): Promise<Page> {
       view.unmount();
       restoreViewport();
       createComment.mockRestore();
-      for (const read of reads) read.mockRestore();
+      reads.restore();
     },
     user,
   };
 }
 
-/** The list's turn of comment `id`, outside the thread view. */
-function turn(id: string): HTMLElement {
-  const found = [...document.querySelectorAll<HTMLElement>(`[data-turn="comment:${id}"]`)].find(
-    (element) => element.closest('[role="dialog"]') === null
-  );
-  if (found === undefined) throw new Error(`expected ${id}'s turn`);
-  return found;
-}
-
 /** Presses a comment's Reply in the list and answers the thread view it opens. */
 async function reply(user: UserEvent, id: string): Promise<HTMLElement> {
-  await user.click(within(turn(id)).getByRole("button", { name: "Reply" }));
+  await user.click(within(listTurn(id)).getByRole("button", { name: "Reply" }));
   return screen.findByRole("dialog", { name: "Thread" });
 }
 
@@ -244,20 +165,9 @@ function threadOf(dialog: HTMLElement): string {
 
 /** Which note `place` shows about a send it holds. */
 function note(place: HTMLElement): Held | "moved" | "none" {
-  const shown = within(place);
-  if (shown.queryByText(REFUSED_NOTE) !== null) return "refused";
-  if (shown.queryByText(STOPPED_NOTE) !== null) return "stopped";
-  return shown.queryByText(MOVED_NOTE) === null ? "none" : "moved";
-}
-
-/** Whether a line the reader can see says the earlier draft is kept and names where it was
- *  written - one of `names`, its comment's author or words - so the reader can find it again. A
- *  status inside something hidden is no role the query finds. */
-function keptLineNaming(...names: string[]): boolean {
-  return screen.queryAllByRole("status").some((line) => {
-    const text = line.textContent ?? "";
-    return /\bkept\b/.test(text) && names.some((name) => text.includes(name));
-  });
+  const held = noteIn(place);
+  if (held !== "none") return held;
+  return within(place).queryByText(MOVED_NOTE) === null ? "none" : "moved";
 }
 
 /** Opens Comment A's thread with its Reply and puts `BODY` in the thread composer, in the state
@@ -297,12 +207,11 @@ for (const held of HELD) {
   });
 }
 
-// Review finding 1: type a reply, press Back, press Reply on another comment. That Reply is the
-// host's move, which carries nothing, and the same thread composer is on screen at Comment B's
-// address, so the reply typed for Comment A should wait for it and a line should say so, naming
-// A. The new reply's prefill (`MentionComposer`'s reply effect) writes over the field instead,
-// and nothing keeps what was there.
-test(`${HOST} · Reply on another comment, then back · typed · review finding 1: Back, then another comment's Reply writes over the reply and nothing keeps it`, async () => {
+// A reply typed, then Back, then Reply on another comment: that Reply is the host's move, which
+// carries nothing, and the same thread composer is on screen at Comment B's address. The reply
+// typed for Comment A is kept for A (`awayName` in `useKeptDrafts`), a line says so and names A
+// (`keptAwayLine`), and A's Reply puts it back in the field in place of a new reply's prefill.
+test(`${HOST} · Reply on another comment, then back · typed`, async () => {
   const page = await openPhone(false);
   try {
     await back(page.user, await holdInThreadA(page, "typed"));
@@ -398,16 +307,6 @@ test(`${HOST} · Close, then Discard draft? · cannot make: the thread composer 
   try {
     const dialog = await holdInThreadA(page, "typed");
     expect(within(dialog).queryAllByRole("button", { name: "Close" }).length).toBe(0);
-  } finally {
-    page.restore();
-  }
-});
-
-test(`${HOST} · Agents pick · cannot make: the thread composer draws no issue picker`, async () => {
-  const page = await openPhone(false);
-  try {
-    const dialog = await holdInThreadA(page, "typed");
-    expect(within(dialog).queryAllByRole("button", { name: "Choose issue" }).length).toBe(0);
   } finally {
     page.restore();
   }

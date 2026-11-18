@@ -3,12 +3,11 @@
  *
  * Every composer host is held to one rule (packages/dispatch/AGENTS.md, "Who moved the
  * composer's address"): the reader's own move with the composer's own control takes the draft
- * with it, and a move of the host's carries nothing, so the text stays with the address it was
- * written for and is there when the reader comes back to it (AGENTS.md:116-119). A refused or
- * stopped send's note stays at its own address. Each cell below writes a draft in one state -
- * typed and never sent, refused by Dispatch, or stopped by the reader - makes one move, and
- * asserts where the text ends. A cell that fails at the code it was written against is a hole in
- * the rule, kept red on purpose until the code is fixed.
+ * with it, and "a move of the host's ... carries nothing: the text stays with the address it was
+ * written for, and is there when the reader comes back to it." A refused or stopped send's note
+ * stays at its own address. Each cell below writes a draft in one state - typed and never sent,
+ * refused by Dispatch, or stopped by the reader - makes one move, and asserts where the text
+ * ends.
  *
  * Host: the Conversation's docked composer above the phone layout, one box for the issue whose
  * reply a message's Reply moves (`ConversationTab`'s `beginReply`).
@@ -45,7 +44,8 @@
  * 2. Elsewhere needs a held refusal; the typed version is the unmount row.
  * 3. The docked composer sits outside every thread card, so no Collapse thread moves it.
  * 4. The docked composer has no anchor, so it draws no Close (asserted absent below).
- * 5. The docked composer draws no issue picker (asserted absent below).
+ * 5. The issue picker is an Agents row's (`AgentMessageComposer`), and the Conversation draws no
+ *    Agents row's composer.
  *
  * The moves the composer census found above `ConversationTab`, and in it:
  * 6. `draft-matrix.issue-page.test.tsx` makes these cells, with the issue page drawn around the
@@ -57,49 +57,44 @@
  *    does, and the composer drawn when they land again is the one the issue-left row draws on
  *    return.
  */
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
-import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { expect, type Mock, spyOn, test } from "bun:test";
+import type { MutationKey } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
-import { ApiError, api } from "../../api/client";
+import {
+  alice,
+  BODY,
+  HELD,
+  type Held,
+  keptLineNaming,
+  movedNote,
+  NOTHING_READ,
+  newQueryClient,
+  noteIn,
+  REFUSAL,
+  REFUSED_NOTE,
+  stubLists,
+  tab,
+} from "../../__tests__/draft-matrix-fixture";
+import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
+import { api } from "../../api/client";
 import type { Actor, Message } from "../../api/types";
-import { KeymapProvider } from "../shell/KeymapProvider";
-import { SendStoppedError } from "../writes/keyed-write";
-import { ConversationTab } from "./ConversationTab";
 import type { ReplyTarget } from "./composer-model";
-import { heldSends } from "./held-sends";
 import type { SentRequest } from "./send-request";
 
 const HOST = "docked composer";
 
-const alice: Actor = { id: "alice", kind: "user" };
-
 /** The docked composer's send name (`ConversationTab`'s `sendKey`). */
 const DOCKED_KEY: MutationKey = ["conversation-composer", "CORE-1"];
 
-/** Dispatch refusing the send outright, as a 400 does: no attempt follows under its key. */
-const REFUSAL = new ApiError(400, { code: "INPUT_REFUSED", error: "Dispatch refused the message" });
-
-/** What each note says in the composer: the refusal, a stopped send at its own address, and a
- *  stopped reply the reader took off its message with the composer's own control. */
-const REFUSED_NOTE = "Couldn't send — Dispatch refused the message";
-const STOPPED_NOTE = new SendStoppedError().message;
-const MOVED_NOTE =
-  "Dispatch has not confirmed this message, sent as a reply: it may have been delivered there. " +
-  "Sending it from here is a new message, which can be delivered a second time if the first one was.";
+/** What the composer says of a stopped reply the reader took off its message with the
+ *  composer's own control. */
+const MOVED_NOTE = movedNote("as a reply");
 
 /** What Send says while the host has the composer away from the issue its refused comment is for. */
 const WRITTEN_FOR_ISSUE =
   "This message was written for CORE-1. Go back to it to send it, or discard it.";
-
-const BODY = "Draft the reader wrote";
-
-type Held = "typed" | "refused" | "stopped";
-const HELD: readonly Held[] = ["typed", "refused", "stopped"];
 
 function message(id: string, body: string, createdAt: string, author: Actor): Message {
   return {
@@ -131,28 +126,13 @@ const replyToA: ReplyTarget = {
   parentKind: "message",
 };
 
-/** A send of `BODY` from the docked composer, to the issue or as a reply. */
-function request(replyTo: ReplyTarget | null): SentRequest {
-  return {
-    anchor: undefined,
-    ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body: BODY, mentions: [], replacement: "" },
-    edit: undefined,
-    kind: "comment",
-    owner: { issueKey: "CORE-1", kind: "issue" },
-    plainDelivery: "steer",
-    replyTo,
-    sendKey: "stopped-send",
-  };
-}
-
 interface Page {
   readonly createComment: Mock<typeof api.createComment>;
   readonly createMessage: Mock<typeof api.createMessage>;
-  /** Draws the Conversation again over the same client, as a reader coming back to the tab. */
+  /** Draws the Conversation again over the same client, as a reader coming back to the issue. */
   readonly mount: () => void;
   readonly restore: () => void;
-  /** Takes the Conversation off the page, as a reader leaving the tab does. */
+  /** Takes the Conversation off the page, as a reader leaving the issue does. */
   readonly unmount: () => void;
   readonly user: UserEvent;
 }
@@ -165,55 +145,23 @@ interface Page {
  */
 async function openDocked(stopped?: SentRequest): Promise<Page> {
   const user = userEvent.setup();
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-  const reads = [
-    spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
-    spyOn(api, "listComments").mockResolvedValue([]),
-    spyOn(api, "listIssueMessages").mockResolvedValue([
+  const queryClient = newQueryClient();
+  const reads = stubLists({
+    messages: [
       { message: messageA, replies: [] },
       { message: messageB, replies: [] },
-    ]),
-    spyOn(api, "listHandoffs").mockResolvedValue([]),
-    spyOn(api, "listAgents").mockResolvedValue([]),
-    spyOn(api, "getIssueEvents").mockResolvedValue([]),
-  ];
+    ],
+  });
   const createComment = spyOn(api, "createComment");
   const createMessage = spyOn(api, "createMessage");
   if (stopped !== undefined) {
-    const down = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
-    createComment.mockRejectedValue(down);
-    createMessage.mockRejectedValue(down);
-    jest.useFakeTimers();
-    try {
-      act(() => {
-        heldSends(queryClient).send(DOCKED_KEY, stopped);
-      });
-      await stopTheLateWrite(queryClient);
-    } finally {
-      realClock();
-    }
+    await stopSend(queryClient, DOCKED_KEY, stopped, [createComment, createMessage]);
   }
   createComment.mockRejectedValue(REFUSAL);
   createMessage.mockRejectedValue(REFUSAL);
   let unmount = () => {};
   const mount = () => {
-    const view = render(
-      <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-        <KeymapProvider>
-          <QueryClientProvider client={queryClient}>
-            <ConversationTab
-              issueArtifacts={new Map()}
-              isClosed={false}
-              issueKey="CORE-1"
-              state={{ "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 } }}
-              visible
-            />
-          </QueryClientProvider>
-        </KeymapProvider>
-      </MemoryRouter>
-    );
+    const view = render(tab(NOTHING_READ, true, queryClient));
     unmount = () => view.unmount();
   };
   mount();
@@ -226,7 +174,7 @@ async function openDocked(stopped?: SentRequest): Promise<Page> {
       unmount();
       createComment.mockRestore();
       createMessage.mockRestore();
-      for (const read of reads) read.mockRestore();
+      reads.restore();
     },
     unmount: () => unmount(),
     user,
@@ -275,23 +223,13 @@ function quoted(): "A" | "B" | "none" {
 
 /** Which note the composer shows about a send it holds. */
 function note(): Held | "moved" | "none" {
-  const shown = within(composer());
-  if (shown.queryByText(REFUSED_NOTE) !== null) return "refused";
-  if (shown.queryByText(STOPPED_NOTE) !== null) return "stopped";
-  return shown.queryByText(MOVED_NOTE) === null ? "none" : "moved";
+  const held = noteIn(composer());
+  if (held !== "none") return held;
+  return within(composer()).queryByText(MOVED_NOTE) === null ? "none" : "moved";
 }
 
 function retryOffered(): boolean {
   return within(composer()).queryByRole("button", { name: "Retry" }) !== null;
-}
-
-/** Whether a line the reader can see says the earlier draft is kept and names where it was
- *  written - one of `names`, its message's author or words - so the reader can find it again. */
-function keptLineNaming(...names: string[]): boolean {
-  return screen.queryAllByRole("status").some((line) => {
-    const text = line.textContent ?? "";
-    return /\bkept\b/.test(text) && names.some((name) => text.includes(name));
-  });
 }
 
 /** Puts `BODY` in the docked composer as a reply to Message A, in the state `held` names. A
@@ -316,12 +254,11 @@ async function holdAtIssue(page: Page, held: Held): Promise<void> {
   if (held === "refused") await sendRefused(page.user);
 }
 
-// Review finding 1, at a desktop width: a message's Reply is the host's move, which carries
-// nothing, and the same composer stays on screen at Message B's address, so the reply typed for
-// Message A should wait for A and a line should say so, naming A. The prefill of the new reply
-// (`MentionComposer`'s reply effect, reached through `beginReply`) writes over the field instead,
-// and nothing keeps what was there.
-test(`${HOST} · Reply on another message, then back · typed · review finding 1: the prefill writes over the reply and nothing keeps it`, async () => {
+// At a desktop width a message's Reply is the host's move, which carries nothing, and the same
+// composer stays on screen at Message B's address. The reply typed for Message A is kept for A
+// (`awayName` in `useKeptDrafts`), a line says so and names A (`keptAwayLine`), and A's Reply
+// puts it back in the field in place of a new reply's prefill.
+test(`${HOST} · Reply on another message, then back · typed`, async () => {
   const page = await openDocked();
   try {
     await holdAtReplyA(page, "typed");
@@ -342,7 +279,7 @@ test(`${HOST} · Reply on another message, then back · typed · review finding 
 // redirected onto it (`redirectedReplyTarget`), so the draft and its note never leave.
 for (const held of ["refused", "stopped"] as const) {
   test(`${HOST} · Reply on another message, then back · ${held}`, async () => {
-    const page = await openDocked(held === "stopped" ? request(replyToA) : undefined);
+    const page = await openDocked(held === "stopped" ? sentRequest(BODY, replyToA) : undefined);
     try {
       await holdAtReplyA(page, held);
       await reply(page.user, messageB.id);
@@ -364,7 +301,7 @@ for (const held of ["refused", "stopped"] as const) {
 // Cancel reply takes the composer back to the issue, where the note and its Retry are again.
 for (const held of ["refused", "stopped"] as const) {
   test(`${HOST} · host moves it over a refusal (elsewhere), then back · ${held}`, async () => {
-    const page = await openDocked(held === "stopped" ? request(null) : undefined);
+    const page = await openDocked(held === "stopped" ? sentRequest(BODY, null) : undefined);
     try {
       await holdAtIssue(page, held);
       await reply(page.user, messageB.id);
@@ -386,12 +323,12 @@ for (const held of ["refused", "stopped"] as const) {
   });
 }
 
-// Review hole (b): while the composer is elsewhere nothing typed is written into the refusal's
-// draft (`keepDraft` returns early), and the docked composer keeps no unsent draft of its own, so
-// what the reader types for Message B over a refusal for the issue is kept nowhere once the
-// composer unmounts. The unmount takes the composer off the screen, so the cell checks the return
-// alone: coming back to Message B should find it.
-test(`${HOST} · typed while a refusal is held elsewhere, then the composer unmounts · refused · kept nowhere`, async () => {
+// While the host has the composer away from the issue its refused comment is for, nothing typed
+// is written into the refusal's draft: what the reader types for Message B is that reply's, and
+// it is kept for it as the composer unmounts (`keepAway` in `useKeptDrafts`). The unmount takes
+// the composer off the screen, so the cell checks the return alone: coming back to Message B
+// finds it, and the refusal comes back with the issue as well.
+test(`${HOST} · typed while a refusal is held elsewhere, then the composer unmounts · refused`, async () => {
   const page = await openDocked();
   const typed = "Reply meant for Message B";
   try {
@@ -405,7 +342,6 @@ test(`${HOST} · typed while a refusal is held elsewhere, then the composer unmo
     const back = screen
       .getAllByRole<HTMLTextAreaElement>("textbox")
       .some((box) => box.value.includes(typed));
-    // The refusal comes back with the tab, so what is missing is the typed text alone.
     expect({ back, refusal: note() }).toEqual({ back: true, refusal: "refused" });
   } finally {
     page.restore();
@@ -422,7 +358,7 @@ const ownMoveOffReply: Record<Held, { note: Held | "moved" | "none"; retry: bool
 
 for (const held of HELD) {
   test(`${HOST} · Cancel reply · ${held}`, async () => {
-    const page = await openDocked(held === "stopped" ? request(replyToA) : undefined);
+    const page = await openDocked(held === "stopped" ? sentRequest(BODY, replyToA) : undefined);
     try {
       await holdAtReplyA(page, held);
       const sent = page.createMessage.mock.calls.length;
@@ -443,7 +379,7 @@ for (const held of HELD) {
 // Escape over a reply ends the reply as Cancel reply does, so the draft goes along the same way.
 for (const held of HELD) {
   test(`${HOST} · Escape over a reply · ${held}`, async () => {
-    const page = await openDocked(held === "stopped" ? request(replyToA) : undefined);
+    const page = await openDocked(held === "stopped" ? sentRequest(BODY, replyToA) : undefined);
     try {
       await holdAtReplyA(page, held);
       await page.user.click(field());
@@ -464,7 +400,7 @@ for (const held of HELD) {
 // note with it.
 for (const held of HELD) {
   test(`${HOST} · Escape over a comment, then Discard · ${held}`, async () => {
-    const page = await openDocked(held === "stopped" ? request(null) : undefined);
+    const page = await openDocked(held === "stopped" ? sentRequest(BODY, null) : undefined);
     try {
       await holdAtIssue(page, held);
       await page.user.click(field());
@@ -489,15 +425,6 @@ test(`${HOST} · Close, then Discard draft? · cannot make: the composer draws n
   const page = await openDocked();
   try {
     expect(within(composer()).queryAllByRole("button", { name: "Close" }).length).toBe(0);
-  } finally {
-    page.restore();
-  }
-});
-
-test(`${HOST} · Agents pick · cannot make: the composer draws no issue picker`, async () => {
-  const page = await openDocked();
-  try {
-    expect(screen.queryAllByRole("button", { name: "Choose issue" }).length).toBe(0);
   } finally {
     page.restore();
   }

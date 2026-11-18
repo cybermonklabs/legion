@@ -1,13 +1,11 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { MutationKey } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import type { ReactNode } from "react";
-import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { type Lists, newQueryClient, stubLists, tab } from "../../__tests__/draft-matrix-fixture";
 import { jump } from "../../__tests__/fake-clock";
-import { graphNode } from "../../__tests__/graph-fixture";
 import {
   dwellOn,
   type IntersectionControl,
@@ -39,12 +37,10 @@ import type {
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
 import { stubMatchMedia } from "../margin/margin-fixture";
-import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
 import { SendStoppedError } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
-import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
 import { threadReplySendKey } from "./usePhoneThread";
 
@@ -226,86 +222,6 @@ const secondaryDocument: Artifact = {
   primary: false,
   slug: "supporting-document",
 };
-
-interface Lists {
-  agents?: Agent[];
-  asks?: IssueAskThreadRow[];
-  comments?: Comment[];
-  /** The issue's handoffs with their bodies: the list answers them as they are (a body is extra
-   *  to a summary), and `getHandoff` answers one by id. */
-  handoffs?: Handoff[];
-  /** The issue's newest event, which a dwell on the newest card marks read through. */
-  head?: DispatchEvent[];
-  messages?: MessageRead[];
-  /** The first event the reader has not read: its moment is the unread boundary. */
-  unread?: DispatchEvent[];
-}
-
-/** The four reads the Conversation builds its list from, plus the two one-row event reads that
- *  carry the unread boundary and the issue's head, the read of one handoff's body, and the blocks
- *  read an opened comment editor makes, answered with no block ids. The returned `lists` is live:
- *  a test that changes it changes what the next refetch answers. */
-function stubLists(initial: Lists = {}): { lists: Lists; restore: () => void } {
-  const lists: Lists = { ...initial };
-  const spies = [
-    spyOn(api, "listIssueAskThreads").mockImplementation(async () => lists.asks ?? []),
-    spyOn(api, "listComments").mockImplementation(async () => lists.comments ?? []),
-    spyOn(api, "listIssueMessages").mockImplementation(async () => lists.messages ?? []),
-    spyOn(api, "listHandoffs").mockImplementation(async () => lists.handoffs ?? []),
-    spyOn(api, "getHandoff").mockImplementation(async (id) => {
-      const found = lists.handoffs?.find((row) => row.id === id);
-      if (found === undefined) throw new ApiError(404, { error: `no handoff ${id}` });
-      return found;
-    }),
-    spyOn(api, "listAgents").mockImplementation(async () => lists.agents ?? []),
-    spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
-      blocks: [],
-      indexed: false,
-      item: graphNode({ id, issue_key: "CORE-1", kind: "comment" }),
-    })),
-    spyOn(api, "getIssueEvents").mockImplementation(async (_key, options = {}) =>
-      options.order === "desc" ? (lists.head ?? []) : (lists.unread ?? [])
-    ),
-  ];
-  return {
-    lists,
-    restore: () => {
-      for (const spy of spies) spy.mockRestore();
-    },
-  };
-}
-
-function newQueryClient(): QueryClient {
-  return new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
-}
-
-function tab(
-  state: UserState,
-  visible: boolean,
-  queryClient: QueryClient,
-  isClosed = false,
-  issueArtifacts: ReadonlyMap<string, Artifact> = new Map(),
-  focusItemId?: string
-): ReactNode {
-  return (
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <KeymapProvider>
-        <QueryClientProvider client={queryClient}>
-          <ConversationTab
-            focusItemId={focusItemId}
-            issueArtifacts={issueArtifacts}
-            isClosed={isClosed}
-            issueKey="CORE-1"
-            state={state}
-            visible={visible}
-          />
-        </QueryClientProvider>
-      </KeymapProvider>
-    </MemoryRouter>
-  );
-}
 
 // The sticky composer sits at document top 0 and the newest card below it. `useFollowLatest`
 // reads their bounding rectangles only to place the newest card beneath the composer, so these

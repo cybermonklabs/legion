@@ -33,28 +33,13 @@ import { QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
+import { planner } from "./__tests__/draft-matrix-fixture";
 import { realClock, settle, tick } from "./__tests__/fake-clock";
 import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
 import { api } from "./api/client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
-import type { Agent } from "./api/types";
 import { renderApp } from "./app-sign-out-fixture";
-
-/** A running session the Agents page draws a row for, whose composer each cell types into. */
-const planner: Agent = {
-  capabilities: ["aside", "btw"],
-  dir: "/workspaces/planner",
-  host: "build-host",
-  last_activity: new Date(Date.now() - 60_000).toISOString(),
-  last_seen: Date.now() - 30_000,
-  machine_id: "build-host",
-  open_asks: 0,
-  roles: ["planner"],
-  session_id: "planner-session",
-  state: "running",
-  title: "Planner",
-};
 
 /** When the page's first sign-in check answers, on the held clock. It is later than every wait
  *  before bob types moves that clock (a `findBy` moves it 50 ms a step), and within the 10 s a

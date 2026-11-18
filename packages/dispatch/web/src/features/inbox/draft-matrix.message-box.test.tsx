@@ -3,12 +3,10 @@
  *
  * Every composer host is held to one rule (packages/dispatch/AGENTS.md, "Who moved the
  * composer's address"): the reader's own move with the composer's own control takes the draft
- * with it, and a move of the host's carries nothing, so the text stays with the address it was
- * written for and is there when the reader comes back to it (AGENTS.md:116-119). A refused or
- * stopped send's note stays at its own address. Each cell writes a draft in one state, typed and
- * never sent, refused by Dispatch, or stopped by the reader, makes one move, and asserts where
- * the text ends. A cell that fails at the code it was written against is a hole in the rule, kept
- * red on purpose until the code is fixed.
+ * with it, and "a move of the host's ... carries nothing: the text stays with the address it was
+ * written for, and is there when the reader comes back to it." A refused or stopped send's note
+ * stays at its own address. Each cell writes a draft in one state, typed and never sent, refused
+ * by Dispatch, or stopped by the reader, makes one move, and asserts where the text ends.
  *
  * Host: the Inbox reading column's box on an issue message thread (`MessageThreadBody` in
  * `features/inbox/ThreadBody.tsx`), a standing box: the thread's own reply to its root message,
@@ -45,7 +43,8 @@
  * 3. The column draws no collapse of the thread; leaving it is the move to another row.
  * 4. A standing box's reply is its own address, so it draws no Cancel reply (asserted absent).
  * 5. The box has no anchor, so it draws no Close (asserted absent below).
- * 6. The box answers an issue message, so it draws no issue picker (asserted absent below).
+ * 6. The issue picker is an Agents row's (`AgentMessageComposer`), and an issue message thread's
+ *    box is a `MentionComposer` of its own, no Agents row's composer.
  * 7. `MessageThreadBody` draws a loading line or an error in place of the thread while the
  *    issue's messages are read or their read fails, which unmounts the box as the move to
  *    another row does, and the box drawn when the read lands again is the one that row draws.
@@ -64,16 +63,24 @@
  *    and a read that holds it again draws the box at the same thread, as the move to another row
  *    and back does.
  */
-import { expect, jest, spyOn, test } from "bun:test";
-import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { expect, spyOn, test } from "bun:test";
+import { type MutationKey, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { realClock } from "../../__tests__/fake-clock";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
-import { ApiError, api } from "../../api/client";
+import {
+  BODY,
+  HELD,
+  type Held,
+  newQueryClient,
+  noteIn,
+  REFUSAL,
+  REFUSED_NOTE,
+} from "../../__tests__/draft-matrix-fixture";
+import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
+import { api } from "../../api/client";
 import type {
   IssueDetails,
   Message,
@@ -81,29 +88,14 @@ import type {
   MyReplyRow,
   MyReplyThreadRow,
 } from "../../api/types";
-import { heldSends } from "../conversation/held-sends";
-import type { SentRequest } from "../conversation/send-request";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
-import { SendStoppedError } from "../writes/keyed-write";
 import { installInboxApiMocks } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
 
 installInboxApiMocks();
 
 const HOST = "Inbox message box";
-
-/** Dispatch refusing the send outright, as a 400 does: no attempt follows under its key. */
-const REFUSAL = new ApiError(400, { code: "INPUT_REFUSED", error: "Dispatch refused the message" });
-
-/** What each note says in the box: the refusal, and a stopped send at its own address. */
-const REFUSED_NOTE = "Couldn't send — Dispatch refused the message";
-const STOPPED_NOTE = new SendStoppedError().message;
-
-const BODY = "Draft the reader wrote";
-
-type Held = "typed" | "refused" | "stopped";
-const HELD: readonly Held[] = ["typed", "refused", "stopped"];
 
 const bob = { id: "bob", kind: "user" } as const;
 
@@ -162,17 +154,12 @@ const otherRow = messageRow({
 const boxKey = (threadId: string): MutationKey => ["inbox-thread-reply", threadId];
 
 /** A reply of `BODY` from the first thread's box to its root message. */
-const messageReply: SentRequest = {
-  anchor: undefined,
-  ask: { multiple: false, options: [], urgency: "med" },
-  draft: { body: BODY, mentions: [], replacement: "" },
-  edit: undefined,
-  kind: "comment",
-  owner: { issueKey: "CORE-1", kind: "issue" },
-  plainDelivery: "steer",
-  replyTo: { actor: bob, excerpt: "", id: "message-1", parentKind: "message" },
-  sendKey: "stopped-send",
-};
+const messageReply = sentRequest(BODY, {
+  actor: bob,
+  excerpt: "",
+  id: "message-1",
+  parentKind: "message",
+});
 
 interface Column {
   /** The column moved to another row, as the Inbox moves it: the same column, drawn again. */
@@ -189,9 +176,7 @@ interface Column {
  */
 async function openColumn(row: MyReplyRow, stopped: boolean): Promise<Column> {
   const user = userEvent.setup();
-  const client = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
+  const client = newQueryClient();
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const reads = [
     // The box reads one field of the issue: whether it is closed.
@@ -204,18 +189,7 @@ async function openColumn(row: MyReplyRow, stopped: boolean): Promise<Column> {
   const createComment = spyOn(api, "createComment");
   const createMessage = spyOn(api, "createMessage");
   if (stopped) {
-    const down = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
-    createComment.mockRejectedValue(down);
-    createMessage.mockRejectedValue(down);
-    jest.useFakeTimers();
-    try {
-      act(() => {
-        heldSends(client).send(boxKey("message-1"), messageReply);
-      });
-      await stopTheLateWrite(client);
-    } finally {
-      realClock();
-    }
+    await stopSend(client, boxKey("message-1"), messageReply, [createComment, createMessage]);
   }
   createComment.mockRejectedValue(REFUSAL);
   createMessage.mockRejectedValue(REFUSAL);
@@ -254,11 +228,7 @@ const pane = () => screen.getByTestId("inbox-pane");
 const boxField = () => within(pane()).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
 
 /** Which note the column shows about a send its box holds. */
-function note(): Held | "none" {
-  const shown = within(pane());
-  if (shown.queryByText(REFUSED_NOTE) !== null) return "refused";
-  return shown.queryByText(STOPPED_NOTE) === null ? "none" : "stopped";
-}
+const note = () => noteIn(pane());
 
 /** Puts `BODY` in the first thread's box, in the state `held` names; a stopped reply is the one
  *  `openColumn` seeded. */
@@ -339,16 +309,6 @@ test(`${HOST} · Close, then Discard draft? · cannot make: the box draws no Clo
   try {
     await holdInBox(column, "typed");
     expect(within(pane()).queryAllByRole("button", { name: "Close" }).length).toBe(0);
-  } finally {
-    column.restore();
-  }
-});
-
-test(`${HOST} · Agents pick · cannot make: the box draws no issue picker`, async () => {
-  const column = await openColumn(firstRow, false);
-  try {
-    await holdInBox(column, "typed");
-    expect(within(pane()).queryAllByRole("button", { name: "Choose issue" }).length).toBe(0);
   } finally {
     column.restore();
   }

@@ -3,12 +3,10 @@
  *
  * Every composer host is held to one rule (packages/dispatch/AGENTS.md, "Who moved the
  * composer's address"): the reader's own move with the composer's own control takes the draft
- * with it, and a move of the host's carries nothing, so the text stays with the address it was
- * written for and is there when the reader comes back to it (AGENTS.md:116-119). A refused or
- * stopped send's note stays at its own address. Each cell writes a draft in one state, typed and
- * never sent, refused by Dispatch, or stopped by the reader, makes one move, and asserts where
- * the text ends. A cell that fails at the code it was written against is a hole in the rule, kept
- * red on purpose until the code is fixed.
+ * with it, and "a move of the host's ... carries nothing: the text stays with the address it was
+ * written for, and is there when the reader comes back to it." A refused or stopped send's note
+ * stays at its own address. Each cell writes a draft in one state, typed and never sent, refused
+ * by Dispatch, or stopped by the reader, makes one move, and asserts where the text ends.
  *
  * Host: an Agents row's composer (`AgentMessageComposer` in `AgentsPage`'s row), one box for the
  * session, whose reply the row's Reply buttons move, whose issue picker is the reader's own
@@ -63,41 +61,40 @@
  *    kind `row` (`renderItem`), and each item's kind is fixed where `items` builds it under a key
  *    of its own (`group:<name>` or the session), so no row is ever drawn as a heading in its place.
  */
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { expect, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import {
+  BODY,
+  HELD,
+  type Held,
+  keptLineNaming,
+  movedNote,
+  noteIn,
+  planner,
+  REFUSAL,
+  REFUSED_NOTE,
+} from "../../__tests__/draft-matrix-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
-import { ApiError, api } from "../../api/client";
-import type { Agent, IssueSummary, Message } from "../../api/types";
+import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
+import { api } from "../../api/client";
+import type { IssueSummary, Message } from "../../api/types";
 import { AuthGate } from "../../app";
 import type { ReplyTarget } from "../conversation/composer-model";
-import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
-import { SendStoppedError } from "../writes/keyed-write";
 
 const HOST = "Agents row";
 
 /** The row's send name (`agentSendKey`). */
 const ROW_KEY: MutationKey = ["agent-composer", "planner-session"];
 
-/** Dispatch refusing the send outright, as a 400 does: no attempt follows under its key. */
-const REFUSAL = new ApiError(400, { code: "INPUT_REFUSED", error: "Dispatch refused the message" });
-
-/** What each note says in the composer: the refusal, a stopped send at its own address, and a
- *  stopped send the reader took elsewhere with the composer's own control, off a reply or off
- *  the direct message. */
-const REFUSED_NOTE = "Couldn't send — Dispatch refused the message";
-const STOPPED_NOTE = new SendStoppedError().message;
-const moved = (sent: string) =>
-  `Dispatch has not confirmed this message, sent ${sent}: it may have been delivered there. ` +
-  "Sending it from here is a new message, which can be delivered a second time if the first one was.";
-const MOVED_REPLY_NOTE = moved("as a reply");
-const MOVED_MESSAGE_NOTE = moved("as a direct message");
+/** What the composer says of a stopped send the reader took elsewhere with the composer's own
+ *  control, off a reply or off the direct message. */
+const MOVED_REPLY_NOTE = movedNote("as a reply");
+const MOVED_MESSAGE_NOTE = movedNote("as a direct message");
 
 /** What Send says while the host has the composer away from where its refused draft lives. */
 const WRITTEN_AS_REPLY =
@@ -105,25 +102,7 @@ const WRITTEN_AS_REPLY =
 const WRITTEN_AS_MESSAGE =
   "This message was written as a direct message. Go back to it to send it, or discard it.";
 
-const BODY = "Draft the reader wrote";
-
-type Held = "typed" | "refused" | "stopped";
 type Note = Held | "moved reply" | "moved message" | "none";
-const HELD: readonly Held[] = ["typed", "refused", "stopped"];
-
-const planner: Agent = {
-  capabilities: ["aside", "btw"],
-  dir: "/workspaces/planner",
-  host: "build-host",
-  last_activity: new Date(Date.now() - 60_000).toISOString(),
-  last_seen: Date.now() - 30_000,
-  machine_id: "build-host",
-  open_asks: 0,
-  roles: ["planner"],
-  session_id: "planner-session",
-  state: "running",
-  title: "Planner",
-};
 
 const coreIssue: IssueSummary = {
   advances: [],
@@ -185,17 +164,10 @@ const replyToA: ReplyTarget = {
 
 /** A send of `BODY` from the row's composer, to the session or as a reply. */
 function request(replyTo: ReplyTarget | null): SentRequest {
-  return {
-    anchor: undefined,
-    ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body: BODY, mentions: [], replacement: "" },
-    edit: undefined,
-    kind: "comment",
+  return sentRequest(BODY, replyTo, {
     owner: { kind: "session", sessionId: "planner-session" },
     plainDelivery: "aside",
-    replyTo,
-    sendKey: "stopped-send",
-  };
+  });
 }
 
 interface Page {
@@ -267,18 +239,7 @@ async function openAgents(): Promise<Page> {
  * write made before that is not the row's to show.
  */
 async function stopHere(page: Page, sent: SentRequest): Promise<void> {
-  page.createAgentMessage.mockRejectedValue(
-    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
-  );
-  jest.useFakeTimers();
-  try {
-    act(() => {
-      heldSends(page.queryClient).send(ROW_KEY, sent);
-    });
-    await stopTheLateWrite(page.queryClient);
-  } finally {
-    realClock();
-  }
+  await stopSend(page.queryClient, ROW_KEY, sent, [page.createAgentMessage]);
   page.createAgentMessage.mockRejectedValue(REFUSAL);
   await waitFor(() => expect(note()).toBe("stopped"));
 }
@@ -332,24 +293,15 @@ function quoted(): "A" | "B" | "none" {
 }
 
 function note(): Note {
+  const held = noteIn(composer());
+  if (held !== "none") return held;
   const shown = within(composer());
-  if (shown.queryByText(REFUSED_NOTE) !== null) return "refused";
-  if (shown.queryByText(STOPPED_NOTE) !== null) return "stopped";
   if (shown.queryByText(MOVED_REPLY_NOTE) !== null) return "moved reply";
   return shown.queryByText(MOVED_MESSAGE_NOTE) === null ? "none" : "moved message";
 }
 
 function retryOffered(): boolean {
   return within(composer()).queryByRole("button", { name: "Retry" }) !== null;
-}
-
-/** Whether a line the reader can see says the earlier draft is kept and names where it was
- *  written - one of `names`, its message's author or words - so the reader can find it again. */
-function keptLineNaming(...names: string[]): boolean {
-  return screen.queryAllByRole("status").some((line) => {
-    const text = line.textContent ?? "";
-    return /\bkept\b/.test(text) && names.some((name) => text.includes(name));
-  });
 }
 
 /** Puts `BODY` in the row's composer as a reply to Message A, in the state `held` names. A
@@ -375,11 +327,11 @@ async function holdAtSession(page: Page, held: Held): Promise<void> {
   if (held === "refused") await sendRefused(page.user);
 }
 
-// The same hole as review finding 1, on an Agents row: another message's Reply is the host's
-// move, which carries nothing, and the same composer stays on screen at Message B's address, so
-// the reply typed for Message A should wait for it and a line should say so, naming A. The new
-// reply's prefill writes over the field instead, and nothing keeps it.
-test(`${HOST} · Reply on another message, then back · typed · as review finding 1: the prefill writes over the reply and nothing keeps it`, async () => {
+// Another message's Reply is the host's move, which carries nothing, and the same composer stays
+// on screen at Message B's address. The reply typed for Message A is kept for A (`awayName` in
+// `useKeptDrafts`), a line says so and names A (`keptAwayLine`), and A's Reply puts it back in
+// the field in place of a new reply's prefill.
+test(`${HOST} · Reply on another message, then back · typed`, async () => {
   const page = await openAgents();
   try {
     await holdAtReplyA(page, "typed");
@@ -449,12 +401,12 @@ for (const held of ["refused", "stopped"] as const) {
   });
 }
 
-// Review hole (b), on an Agents row: while the composer is elsewhere nothing typed is written into
-// the refusal's draft (`keepDraft` returns early), and the row's composer keeps no unsent draft of
-// its own, so what the reader types for Message B over a refused direct message is kept nowhere
-// once the page unmounts. The unmount takes the composer off the screen, so the cell checks the
-// return alone: coming back to Message B should find it.
-test(`${HOST} · typed while a refusal is held elsewhere, then the composer unmounts · refused · kept nowhere`, async () => {
+// While the host has the composer away from the session its refused direct message is for,
+// nothing typed is written into the refusal's draft: what the reader types for Message B is that
+// reply's, and it is kept for it as the page unmounts (`keepAway` in `useKeptDrafts`). The unmount
+// takes the composer off the screen, so the cell checks the return alone: coming back to Message B
+// finds it, and the refusal comes back with the page as well.
+test(`${HOST} · typed while a refusal is held elsewhere, then the composer unmounts · refused`, async () => {
   const page = await openAgents();
   const typed = "Reply meant for Status B";
   try {
@@ -468,7 +420,6 @@ test(`${HOST} · typed while a refusal is held elsewhere, then the composer unmo
     const back = screen
       .getAllByRole<HTMLTextAreaElement>("textbox")
       .some((box) => box.value.includes(typed));
-    // The refusal comes back with the page, so what is missing is the typed text alone.
     expect({ back, refusal: note() }).toEqual({ back: true, refusal: "refused" });
   } finally {
     page.restore();
@@ -506,8 +457,9 @@ async function leaveTheAgentsPageAndComeBack(user: UserEvent): Promise<void> {
 }
 
 // The Agents page is the route element of `/agents` (`app.tsx`), so leaving it for another page
-// unmounts the page, its rows and the composer, and the reader's way back opens the row again:
-// what the composer held waits for the composer drawn at that address next (AGENTS.md:126-127).
+// unmounts the page, its rows and the composer, and the reader's way back opens the row again.
+// AGENTS.md holds it to "what it holds when its host takes it off the page ... waits the same way
+// for the composer drawn at that address next."
 for (const held of HELD) {
   test(`${HOST} · the Agents page left, then back · ${held}`, async () => {
     const page = await openAgents();

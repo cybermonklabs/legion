@@ -1,8 +1,8 @@
-import { expect, type Mock } from "bun:test";
+import { expect } from "bun:test";
 import type { MutationKey, QueryClient } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 
-import { ApiError, type api } from "../api/client";
+import { ApiError } from "../api/client";
 import type { ReplyTarget } from "../features/conversation/composer-model";
 import { heldSends } from "../features/conversation/held-sends";
 import type { SentRequest } from "../features/conversation/send-request";
@@ -32,22 +32,15 @@ export const heldDraftWords = {
   typed: "never sent",
 } as const;
 
-/** Sends `body` as a reply to `replyTo` on CORE-1 under `mutationKey` through the held-send
- *  store, as that composer's Send does, to a server that is down, and stops it once it is late,
- *  as the reader's Stop trying does (`stopTheLateWrite`): the write may have been delivered, and
- *  the store holds it stopped under its key, `stopped-send`. `createComment` answers its
- *  attempts. It runs on the fake clock, and gives the real one back however it ends. */
-export async function stopReplySend(
-  queryClient: QueryClient,
-  createComment: Mock<typeof api.createComment>,
-  mutationKey: MutationKey,
+/** A send of `body` on CORE-1 as a comment composer's Send makes it, answering `replyTo`, under
+ *  the key `stopped-send`. `fields` names what a host's send has other than that: an anchor, an
+ *  edit, another owner or delivery. */
+export function sentRequest(
   body: string,
-  replyTo: ReplyTarget
-): Promise<void> {
-  createComment.mockRejectedValue(
-    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
-  );
-  const request: SentRequest = {
+  replyTo: ReplyTarget | null,
+  fields: Partial<Omit<SentRequest, "draft" | "replyTo">> = {}
+): SentRequest {
+  return {
     anchor: undefined,
     ask: { multiple: false, options: [], urgency: "med" },
     draft: { body, mentions: [], replacement: "" },
@@ -57,11 +50,44 @@ export async function stopReplySend(
     plainDelivery: "steer",
     replyTo,
     sendKey: "stopped-send",
+    ...fields,
   };
+}
+
+/** A mocked write of the API's, whose attempts a test answers. */
+interface MockedWrite {
+  mockRejectedValue(value: unknown): unknown;
+}
+
+/** Sends `request` under `mutationKey` through the held-send store, as that composer's Send does,
+ *  to a server that is down - each of `writes` answers its attempts `503` - and stops it once it
+ *  is late, as the reader's Stop trying does (`stopTheLateWrite`): the write may have been
+ *  delivered, and the store holds it stopped under its key. It runs on the fake clock, and gives
+ *  the real one back however it ends. */
+export async function stopSend(
+  queryClient: QueryClient,
+  mutationKey: MutationKey,
+  request: SentRequest,
+  writes: readonly MockedWrite[]
+): Promise<void> {
+  const down = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
+  for (const write of writes) write.mockRejectedValue(down);
   await onFakeClock(async () => {
     act(() => {
       heldSends(queryClient).send(mutationKey, request);
     });
     await stopTheLateWrite(queryClient);
   });
+}
+
+/** Sends `body` as a reply to `replyTo` on CORE-1 under `mutationKey`, and stops it once it is
+ *  late (`stopSend`), `createComment` answering its attempts. */
+export async function stopReplySend(
+  queryClient: QueryClient,
+  createComment: MockedWrite,
+  mutationKey: MutationKey,
+  body: string,
+  replyTo: ReplyTarget
+): Promise<void> {
+  await stopSend(queryClient, mutationKey, sentRequest(body, replyTo), [createComment]);
 }

@@ -3,14 +3,12 @@
  * issue page draws them (INFRA-1503).
  *
  * Every composer host is held to one rule (packages/dispatch/AGENTS.md, "Who moved the
- * composer's address"): a move of the host's carries nothing, so the text stays with the address
- * it was written for and is there when the reader comes back to it (AGENTS.md:116-119), and what
- * a composer holds when its host takes it off the page waits for the composer drawn at that
- * address next (AGENTS.md:126-127). A refused or stopped send's note stays at its own address.
- * Each cell writes a draft in one state - typed and never sent, refused by Dispatch, or stopped
- * by the reader - makes one move of the issue page's, comes back, and asserts what the composer
- * holds. A cell that fails at the code it was written against is a hole in the rule, kept red on
- * purpose until the code is fixed.
+ * composer's address"): "a move of the host's ... carries nothing: the text stays with the
+ * address it was written for, and is there when the reader comes back to it", and "what it holds
+ * when its host takes it off the page ... waits the same way for the composer drawn at that
+ * address next." A refused or stopped send's note stays at its own address. Each cell writes a
+ * draft in one state - typed and never sent, refused by Dispatch, or stopped by the reader -
+ * makes one move of the issue page's, comes back, and asserts what the composer holds.
  *
  * Hosts: the issue page (`IssuePage` in `features/issue-page/IssuePage.tsx`, the route element
  * of `/issues/:key/*`), which draws today's page (`features/issue/IssuePage.tsx`) and in it the
@@ -56,49 +54,45 @@
  *    `IssueDetail` (`route === undefined`), so no composer is drawn there, and going there from
  *    an issue is leaving the issue, the issue-left row.
  */
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
-import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { expect, type Mock, spyOn, test } from "bun:test";
+import { type MutationKey, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 
-import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { realClock } from "../../__tests__/fake-clock";
+import {
+  alice,
+  BODY,
+  commentA,
+  commentB,
+  expectedBack,
+  HELD,
+  type Held,
+  listTurn,
+  newQueryClient,
+  noteIn,
+  REFUSAL,
+  REFUSED_NOTE,
+} from "../../__tests__/draft-matrix-fixture";
 import { answerRequests } from "../../__tests__/network";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
-import { ApiError, api } from "../../api/client";
-import type { Actor, Comment, IssueDetails } from "../../api/types";
+import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
+import { api } from "../../api/client";
+import type { IssueDetails } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { IssuePage } from "../issue-page/IssuePage";
 import { MarginProvider } from "../margin/margin-context";
 import { issue, specArtifact, stubMatchMedia } from "../margin/margin-fixture";
 import { buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { SendStoppedError } from "../writes/keyed-write";
-import { heldSends } from "./held-sends";
 import type { SentRequest } from "./send-request";
-
-/** Dispatch refusing the send outright, as a 400 does: no attempt follows under its key. */
-const REFUSAL = new ApiError(400, { code: "INPUT_REFUSED", error: "Dispatch refused the message" });
-
-/** What each note says in a composer: the refusal, and a stopped send at its own address. */
-const REFUSED_NOTE = "Couldn't send — Dispatch refused the message";
-const STOPPED_NOTE = new SendStoppedError().message;
-
-const BODY = "Draft the reader wrote";
-
-type Held = "typed" | "refused" | "stopped";
-const HELD: readonly Held[] = ["typed", "refused", "stopped"];
 
 /** The docked composer's send name (`ConversationTab`'s `sendKey`), and the phone thread
  *  composer's (`usePhoneThread`'s `composerKey`). */
 const DOCKED_KEY: MutationKey = ["conversation-composer", "CORE-1"];
 const THREAD_KEY: MutationKey = ["conversation-composer", "CORE-1", "phone-thread"];
-
-const alice: Actor = { id: "alice", kind: "user" };
 
 /** Another issue, whose page the reader goes to and comes back from. */
 const otherIssue: IssueDetails = {
@@ -110,49 +104,13 @@ const otherIssue: IssueDetails = {
   title: "Second issue",
 };
 
-function comment(id: string, body: string, createdAt: string, author: Actor): Comment {
-  return {
-    ...commentDeliveryFields(),
-    anchor: null,
-    ask_id: null,
-    author,
-    body,
-    created_at: createdAt,
-    edited_at: null,
-    id,
-    issue_key: "CORE-1",
-    reply_to: null,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
-  };
-}
-
-/** Two comments on CORE-1, by two people; the phone cells answer the first. */
-const commentA = comment("comment-a", "Comment A", "2026-09-20T00:00:00Z", alice);
-const commentB = comment("comment-b", "Comment B", "2026-09-20T00:01:00Z", {
-  id: "bob",
-  kind: "user",
-});
-
 /** A send of `BODY` on CORE-1: a comment on the issue from the docked composer, or the thread
- *  composer's reply to Comment A. */
+ *  composer's reply to Comment A, the comment the phone cells answer. */
 function request(replyToA: boolean): SentRequest {
-  return {
-    anchor: undefined,
-    ask: { multiple: false, options: [], urgency: "med" },
-    draft: { body: BODY, mentions: [], replacement: "" },
-    edit: undefined,
-    kind: "comment",
-    owner: { issueKey: "CORE-1", kind: "issue" },
-    plainDelivery: "steer",
-    replyTo: replyToA
-      ? { actor: alice, excerpt: "Comment A", id: commentA.id, parentKind: "comment" }
-      : null,
-    sendKey: "stopped-send",
-  };
+  return sentRequest(
+    BODY,
+    replyToA ? { actor: alice, excerpt: "Comment A", id: commentA.id, parentKind: "comment" } : null
+  );
 }
 
 const conversationOf = (key: string) => buildIssuePath({ key, kind: "conversation" });
@@ -196,9 +154,7 @@ async function openIssuePage(
   stopped?: { readonly key: MutationKey; readonly request: SentRequest }
 ): Promise<Page> {
   const user = userEvent.setup();
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  });
+  const queryClient = newQueryClient();
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   const state = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
   const reads = [
@@ -226,18 +182,7 @@ async function openIssuePage(
   );
   const createComment = spyOn(api, "createComment");
   if (stopped !== undefined) {
-    createComment.mockRejectedValue(
-      new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
-    );
-    jest.useFakeTimers();
-    try {
-      act(() => {
-        heldSends(queryClient).send(stopped.key, stopped.request);
-      });
-      await stopTheLateWrite(queryClient);
-    } finally {
-      realClock();
-    }
+    await stopSend(queryClient, stopped.key, stopped.request, [createComment]);
   }
   createComment.mockRejectedValue(REFUSAL);
   const restoreViewport = stubMatchMedia(phone);
@@ -302,18 +247,6 @@ async function openAnotherTabAndComeBack(user: UserEvent): Promise<void> {
   );
 }
 
-/** Which note `place` shows about a send it holds. */
-function note(place: HTMLElement): Held | "none" {
-  const shown = within(place);
-  if (shown.queryByText(REFUSED_NOTE) !== null) return "refused";
-  return shown.queryByText(STOPPED_NOTE) === null ? "none" : "stopped";
-}
-
-const expectedBack = (held: Held): { note: Held | "none"; text: string } => ({
-  note: held === "typed" ? "none" : held,
-  text: BODY,
-});
-
 // ---------------------------------------------------------------------------------------------
 // The docked composer, above the phone layout.
 
@@ -325,7 +258,7 @@ const dockedField = () =>
  *  stopped comment is the one `openIssuePage` seeded, which the composer mounted with. */
 async function holdInDocked(page: Page, held: Held): Promise<void> {
   if (held === "stopped") {
-    await waitFor(() => expect(note(docked())).toBe("stopped"));
+    await waitFor(() => expect(noteIn(docked())).toBe("stopped"));
     return;
   }
   await page.user.click(dockedField());
@@ -351,7 +284,7 @@ for (const { move, name } of DOCKED_MOVES) {
       try {
         await holdInDocked(page, held);
         await move(page.user);
-        expect({ note: note(docked()), text: dockedField().value }).toEqual(expectedBack(held));
+        expect({ note: noteIn(docked()), text: dockedField().value }).toEqual(expectedBack(held));
       } finally {
         page.restore();
       }
@@ -362,18 +295,9 @@ for (const { move, name } of DOCKED_MOVES) {
 // ---------------------------------------------------------------------------------------------
 // The phone thread composer.
 
-/** The list's turn of comment `id`, outside the thread view. */
-function turn(id: string): HTMLElement {
-  const found = [...document.querySelectorAll<HTMLElement>(`[data-turn="comment:${id}"]`)].find(
-    (element) => element.closest('[role="dialog"]') === null
-  );
-  if (found === undefined) throw new Error(`expected ${id}'s turn`);
-  return found;
-}
-
 /** Presses Comment A's Reply in the list and answers the thread view it opens. */
 async function replyToA(user: UserEvent): Promise<HTMLElement> {
-  await user.click(within(turn(commentA.id)).getByRole("button", { name: "Reply" }));
+  await user.click(within(listTurn(commentA.id)).getByRole("button", { name: "Reply" }));
   return screen.findByRole("dialog", { name: "Thread" });
 }
 
@@ -385,7 +309,7 @@ const threadField = (dialog: HTMLElement) =>
 async function holdInThreadA(page: Page, held: Held): Promise<void> {
   const dialog = await replyToA(page.user);
   if (held === "stopped") {
-    expect(note(dialog)).toBe("stopped");
+    expect(noteIn(dialog)).toBe("stopped");
     return;
   }
   await page.user.click(threadField(dialog));
@@ -413,7 +337,9 @@ for (const { move, name } of DOCKED_MOVES) {
         await holdInThreadA(page, held);
         await move(page.user);
         const dialog = await threadAOnReturn(page.user);
-        expect({ note: note(dialog), text: threadField(dialog).value }).toEqual(expectedBack(held));
+        expect({ note: noteIn(dialog), text: threadField(dialog).value }).toEqual(
+          expectedBack(held)
+        );
       } finally {
         page.restore();
       }

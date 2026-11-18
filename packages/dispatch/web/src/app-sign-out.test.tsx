@@ -10,11 +10,11 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { planner } from "./__tests__/draft-matrix-fixture";
 import { realClock, tick } from "./__tests__/fake-clock";
 import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
 import { ApiError, api, NetworkError } from "./api/client";
-import type { Agent } from "./api/types";
 import { aliceWrite, keptWrites, type OtherTab, otherTab, renderApp } from "./app-sign-out-fixture";
 import { unsentDraftsOf } from "./features/conversation/unsent-drafts";
 import { answerDraft, setAnswerDraft } from "./features/inbox/answer-drafts";
@@ -205,21 +205,6 @@ test("another person signed in from another tab finds none of the drafts the per
     app.teardown();
   }
 });
-
-/** A running session the Agents page draws a row for, whose composer a test types into. */
-const planner: Agent = {
-  capabilities: ["aside", "btw"],
-  dir: "/workspaces/planner",
-  host: "build-host",
-  last_activity: new Date(Date.now() - 60_000).toISOString(),
-  last_seen: Date.now() - 30_000,
-  machine_id: "build-host",
-  open_asks: 0,
-  roles: ["planner"],
-  session_id: "planner-session",
-  state: "running",
-  title: "Planner",
-};
 
 // What the reader typed and has not sent is theirs alone. A field on screen holds it in the shell
 // itself, so another person signed in from another tab is drawn a shell of their own, once every

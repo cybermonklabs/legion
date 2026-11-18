@@ -102,6 +102,7 @@ import {
 } from "./composer-model";
 import { MODE_LABELS, plainDelivery } from "./delivery";
 import { type HeldSend, useHeldSend, useHeldSends } from "./held-sends";
+import { KeptDraftOffers } from "./KeptDraftOffers";
 import { keptAwayLine } from "./KeptReply";
 import { ReplyQuote } from "./ReplyQuote";
 import {
@@ -113,7 +114,6 @@ import {
   mentionText,
   requestFor,
   type SaveCommentEdit,
-  SendMovedError,
   type SentDraft,
   type SentRequest,
   saveCommentEdit,
@@ -144,11 +144,6 @@ interface MentionOption {
    *  the session's name as `useAgentText` gives it. */
   readonly title: string;
 }
-
-/** How long after the last keystroke what the reader wrote over a refusal is written back to the
- *  held send, which is what a reload restores (`write-storage.ts`). Short enough that a reader who
- *  stops typing and reloads keeps their words, long enough that a burst of typing writes once. */
-const KEEP_DRAFT_MS = 300;
 
 function roleOptions(
   agents: readonly Agent[],
@@ -370,13 +365,6 @@ function askOptionRows(ask: SentRequest["ask"] | undefined): AskOptionDraft[] {
         label: option.label,
       }));
 }
-
-/** Each kind as an offered draft names the one it was written as, beside a compose of another. */
-const KIND_WORDS: Record<ComposerKind, string> = {
-  ask: "an ask",
-  comment: "a comment",
-  suggestion: "a suggestion",
-};
 
 interface MentionComposerProps {
   readonly agents?: readonly Agent[];
@@ -768,43 +756,6 @@ export function MentionComposer({
   // The Escape listener below reads it as it stands, so it is not re-bound each render for it.
   const cancelReplyNow = useRef(cancelReply);
   cancelReplyNow.current = cancelReply;
-  // What the reader wrote over a refusal goes back to the held send (`keep`, which a send still
-  // out ignores), so the composer that mounts next shows it - and so a reload does: a refusal's
-  // draft is the only copy of that message, and the entry it is kept in is what survives the
-  // page (`write-storage.ts`). It is written as this composer unmounts, a short wait after each
-  // keystroke, and as the page goes, which no unmount follows. A refusal the host has moved the
-  // composer off (`elsewhere` in `useKeptDrafts`) keeps the draft it was written with: what is
-  // typed over it there is for that other address. So does an edit's refusal while it waits
-  // beside a newer body (`changed`): the field shows that body, not the reader's edit.
-  const keepDraft = useRef(() => {});
-  keepDraft.current = () => {
-    if (elsewhere !== undefined || changed !== undefined) return;
-    outgoing.keep({
-      ask: { multiple, options: submittedAskOptions(askOptions), urgency },
-      draft: { body, mentions, replacement },
-    });
-  };
-  useEffect(() => () => keepDraft.current(), []);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the draft's own fields are the trigger; the write reads them as they stand
-  useEffect(() => {
-    const write = window.setTimeout(() => keepDraft.current(), KEEP_DRAFT_MS);
-    return () => window.clearTimeout(write);
-  }, [askOptions, body, mentions, multiple, replacement, urgency]);
-  useEffect(() => {
-    const keepNow = () => keepDraft.current();
-    window.addEventListener("pagehide", keepNow);
-    return () => window.removeEventListener("pagehide", keepNow);
-  }, []);
-  // The margin sends a refused margin compose again itself, once it has written the mark it is
-  // anchored to again (`reanchor` in margin-context.tsx), and that retry carries the draft the
-  // store holds. The writes above are a keystroke's wait behind what the reader has typed, so
-  // the margin asks for it first: this is what answers. A composer with no name of its own
-  // holds no send another surface can send again, so it registers nothing.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the name's hash is its identity; the key array itself is rebuilt by some hosts on every render
-  useEffect(() => {
-    if (mutationKey === undefined) return;
-    return registerComposer({ keepDraft: () => keepDraft.current(), mutationKey });
-  }, [composerName, registerComposer]);
   /** An anchored composer's Close, and Escape once no suggestion list, picker or reply takes it:
    *  over a draft the reader has not sent - typed, or handed back by a refusal - it raises
    *  `Discard draft?` rather than dropping what they wrote with nothing said, and it closes at once
@@ -881,6 +832,7 @@ export function MentionComposer({
     dropOffered,
     elsewhere,
     forgetUnsent,
+    keepDraft,
     keepNothing,
     keptAway,
     offered,
@@ -907,7 +859,6 @@ export function MentionComposer({
     initial,
     inline,
     intake,
-    keepDraft,
     kind,
     mountedHeld,
     moves: ownMoves + cancels,
@@ -920,12 +871,17 @@ export function MentionComposer({
     standing,
     unsent,
   });
-  // What a stopped send says once its draft is away from the address it went to
-  // (`SendMovedError`): taken into this compose, it goes as a new message under a key of its own.
-  const offeredStopped = useMemo(
-    () => (offered?.stopped === true ? new SendMovedError(offered).message : undefined),
-    [offered]
-  );
+  // The margin sends a refused margin compose again itself, once it has written the mark it is
+  // anchored to again (`reanchor` in margin-context.tsx), and that retry carries the draft the
+  // store holds. The composer's own writes of it are a keystroke's wait behind what the reader has
+  // typed (`keepDraft` in `useKeptDrafts`), so the margin asks for it first: this is what answers.
+  // A composer with no name of its own holds no send another surface can send again, so it
+  // registers nothing.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the name's hash is its identity; the key array itself is rebuilt by some hosts on every render
+  useEffect(() => {
+    if (mutationKey === undefined) return;
+    return registerComposer({ keepDraft, mutationKey });
+  }, [composerName, registerComposer]);
 
   const addMention = (option: MentionOption) => {
     const current = textarea.current?.value ?? body;
@@ -1396,88 +1352,15 @@ export function MentionComposer({
           value={body}
         />
       </label>
-      {/* An edit written over a body the comment no longer holds: the field shows the comment as
-          it reads now, and the edit waits beside it with the words that say why, until the reader
-          takes it back into the field or drops it. Nothing is saved meanwhile. */}
-      {changed === undefined ? null : (
-        <div className="space-y-2">
-          <div className={`space-y-1 text-sm ${textMutedOnSurfaceMuted}`} role="status">
-            <p>
-              This comment changed since you wrote your edit. The field shows the comment as it
-              reads now. Your edit is kept here:
-            </p>
-            <blockquote
-              className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
-            >
-              {changed.body}
-            </blockquote>
-          </div>
-          <div className="flex flex-wrap gap-3">
-            <button
-              className={`text-sm font-medium ${linkText} ${linkHoverText}`}
-              onClick={takeChanged}
-              type="button"
-            >
-              Use my edit
-            </button>
-            <button
-              className={`text-sm font-medium underline ${dangerText}`}
-              onClick={discard}
-              type="button"
-            >
-              Discard my edit
-            </button>
-          </div>
-        </div>
-      )}
-      {/* A draft the margin's compose kept for other words of the document: a newer compose there
-          carried nothing, so it waits beside this one, naming the words it was written for, and
-          the kind it was written as where this compose is another, since what it brings back -
-          an ask's options, a suggestion's replacement - shows only under that kind. Only the
-          reader's own press puts it in this field, and nothing is sent meanwhile. A draft whose
-          send the reader stopped may have been delivered there, and taken here it goes as a new
-          message, so the offer says so before that press, as the stopped send's note did. */}
-      {offered === undefined ? null : (
-        <div className="space-y-2">
-          <div className={`space-y-1 text-sm ${textMutedOnSurfaceMuted}`} role="status">
-            <p>
-              {`You wrote this draft${offered.kind === undefined || offered.kind === kind ? "" : ` as ${KIND_WORDS[offered.kind]},`} for other words: “${offered.anchor.quote}”. It is kept here:`}
-            </p>
-            <blockquote
-              className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
-            >
-              {offered.draft.body}
-            </blockquote>
-            {offered.draft.replacement === "" ? null : (
-              <>
-                <p>Replace with:</p>
-                <blockquote
-                  className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
-                >
-                  {offered.draft.replacement}
-                </blockquote>
-              </>
-            )}
-            {offeredStopped === undefined ? null : <p className={dangerText}>{offeredStopped}</p>}
-          </div>
-          <div className="flex flex-wrap gap-3">
-            <button
-              className={`text-sm font-medium ${linkText} ${linkHoverText}`}
-              onClick={takeOffered}
-              type="button"
-            >
-              Use my draft
-            </button>
-            <button
-              className={`text-sm font-medium underline ${dangerText}`}
-              onClick={dropOffered}
-              type="button"
-            >
-              Discard my draft
-            </button>
-          </div>
-        </div>
-      )}
+      <KeptDraftOffers
+        changed={changed}
+        kind={kind}
+        offered={offered}
+        onDiscardChanged={discard}
+        onDropOffered={dropOffered}
+        onTakeChanged={takeChanged}
+        onTakeOffered={takeOffered}
+      />
       {activeMentions.length === 0 ? null : (
         <ul
           aria-label="Mention targets"
