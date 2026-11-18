@@ -701,7 +701,8 @@ func (k *reachKeeper) judgeController(ctx context.Context, c supervise.Claim, re
 	case rec.Relaunched:
 		if now.Sub(rec.RelaunchedAt) >= notBackAfter {
 			k.alerts.Open(fleetalert.ControllerUnreachable, string(c.Token), "relaunchedAt", rec.RelaunchedAt,
-				"reason", "the daemon's relaunch did not bring it back: it has not registered with Envoy in the "+timewords.Words(notBackAfter)+" since")
+				"reason", "the daemon's relaunch did not bring it back: in the "+timewords.Words(notBackAfter)+
+					" since, it has not said ready with the controller's Envoy role held by its session")
 		}
 	case !rec.RelaunchedAt.IsZero() && now.Sub(rec.RelaunchedAt) < supervise.RelaunchAgainAfter:
 		k.alerts.Open(fleetalert.ControllerUnreachable, string(c.Token), "relaunchedAt", rec.RelaunchedAt,
