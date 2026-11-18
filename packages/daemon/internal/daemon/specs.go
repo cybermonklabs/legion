@@ -471,9 +471,10 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 
 // AddressingFragment is addressingFragment for a claim whose owner is its tree's architect, a pane
 // on its tree's root: it names the tree's architect, spelled from project and c.Tree. It is
-// exported for the rigs under packages/pi-legion/scripts, which tell a worker what a pane is told,
-// and keeps the form those rigs call, since they run one program against each label's checkout
-// of this module, an older one among them.
+// exported for the rigs under packages/pi-legion/scripts, which tell a worker what a pane is told.
+// Its last parameter became the owners the role's App reaches with INFRA-2543, where it was the
+// project's mapping view before, so a label checked out before that change does not build against
+// a rig that passes owners.
 func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repository, defaultBranch string, owners []string) (string, error) {
 	architect, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {
