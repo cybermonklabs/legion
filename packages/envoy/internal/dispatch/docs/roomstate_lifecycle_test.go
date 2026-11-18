@@ -52,6 +52,10 @@ func TestEveryRoomStateHolderKeepsADetachedState(t *testing.T) {
 			hold: func(_ *Service, state *roomState) { state.connected[1] = model.Actor{Kind: "user", ID: "alice"} },
 		},
 		{
+			name: "document socket's admission",
+			hold: func(_ *Service, state *roomState) { state.admitting = 1 },
+		},
+		{
 			name: "persistence update",
 			hold: func(_ *Service, state *roomState) { state.pendingUpdates = 1 },
 		},
@@ -64,6 +68,10 @@ func TestEveryRoomStateHolderKeepsADetachedState(t *testing.T) {
 			name:    "in-flight credit",
 			hold:    func(_ *Service, state *roomState) { state.inflight[1] = &inflightCredit{seq: 1} },
 			release: func(state *roomState) { delete(state.inflight, 1) },
+		},
+		{
+			name: "retirement's reservation",
+			hold: func(_ *Service, state *roomState) { state.retiring = make(chan struct{}) },
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
