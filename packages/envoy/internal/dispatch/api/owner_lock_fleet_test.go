@@ -246,43 +246,66 @@ var earlierBuildArrivals = []struct {
 		on conflict (instance) do update set heartbeat_at = now()`},
 }
 
+// pauseLabelWrite holds backend pid's next write of an issue's labels as that statement opens,
+// before it reaches a row, until the transaction it returns ends: a trigger has each UPDATE
+// naming issues.labels on that backend take a shared hold on a key the returned transaction
+// holds. A writer of the issue's row on any other backend passes through.
+func pauseLabelWrite(t *testing.T, database *store.Store, pid uint32) pgx.Tx {
+	t.Helper()
+	ctx := context.Background()
+	const holdLabels = int64(4815162346)
+	for _, statement := range []string{
+		`create function dispatch_test_hold_labels() returns trigger language plpgsql as $$
+		begin
+			perform pg_advisory_xact_lock_shared(tg_argv[0]::bigint);
+			return null;
+		end;
+		$$`,
+		fmt.Sprintf(`create trigger dispatch_test_hold_labels before update of labels on issues for each statement
+			when (pg_backend_pid() = %d) execute function dispatch_test_hold_labels('%d')`, pid, holdLabels),
+	} {
+		if _, err := database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("hold the label write of backend %d: %v", pid, err)
+		}
+	}
+	pause, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pause.Exec(ctx, `select pg_advisory_xact_lock($1)`, holdLabels); err != nil {
+		_ = pause.Rollback(ctx)
+		t.Fatalf("take the hold the label write waits on: %v", err)
+	}
+	return pause
+}
+
 // An earlier build that arrives while a write of this build is between its owner lock and its
 // write phase waits for that write to commit, and a write the earlier build makes once it has
 // arrived lands after it and is kept. The write of this build is a PATCH adding a label, sent with
 // no earlier build in the fleet, so it reads the labels under its owner lock alone and holds the
-// owner lock gate shared; it naming a repository is the test's pause: the test holds the mapping's
-// row, which the PATCH takes `for key share` as its write phase opens (checkIssueRepoMapped), and
-// which no writer of the issue's row takes. The earlier build then arrives on a connection of its
-// own - its dashboard publish, or its registration - and, once arrived, adds its own label as its
-// writers do, the issue's row first. The arrival waits on the gate until the PATCH commits, so the
-// earlier build's label is added to the PATCH's. Without the gate the arrival goes through at once,
-// the earlier build's label is written while the PATCH waits, and the PATCH then writes the labels
-// it read over it. A write of this build after the arrival takes the issue's row in its read phase.
+// owner lock gate shared; the test pauses it as its write phase opens, at its update of the
+// labels and before that update reaches the issue's row (pauseLabelWrite), so no writer of the
+// issue's row waits on the pause. The earlier build then arrives on a connection of its own - its
+// dashboard publish, or its registration - and, once arrived, adds its own label as its writers
+// do, the issue's row first. The arrival waits on the gate until the PATCH commits, so the earlier
+// build's label is added to the PATCH's. Without the gate the arrival goes through at once, the
+// earlier build's label is written while the PATCH waits, and the PATCH then writes the labels it
+// read over it. A write of this build after the arrival takes the issue's row in its read phase.
 func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing.T) {
 	for _, arrival := range earlierBuildArrivals {
 		t.Run(arrival.name, func(t *testing.T) {
 			fixture := newItemRowFixture(t, testServerOptions{}, "Arrived meanwhile", "A spec.\n")
-			if mapped := dispatchRequest(t, fixture.handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo",
-				map[string]string{"project": "LOCK"}, "alice"); mapped.Code != http.StatusOK {
-				t.Fatalf("map the repository: status=%d body=%s", mapped.Code, mapped.Body.String())
-			}
 			ctx := context.Background()
 			handler, pid := oneConnectionHandler(t, fixture.deps)
-			pause, err := fixture.database.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
+			pause := pauseLabelWrite(t, fixture.database, pid)
 			defer pause.Rollback(ctx)
-			if _, err := pause.Exec(ctx, `select 1 from repo_projects where repo = 'owner/repo' for update`); err != nil {
-				t.Fatalf("hold the repository mapping's row: %v", err)
-			}
 			answered := make(chan *httptest.ResponseRecorder, 1)
 			go func() {
 				answered <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+fixture.issueKey,
-					map[string]any{"labels_add": []string{"this-build"}, "repo": "owner/repo"}, "alice")
+					map[string]any{"labels_add": []string{"this-build"}}, "alice")
 			}()
 			if answer, early := storetest.WaitForQueuedBehind(t, pause, pid, answered, 10*time.Second); early {
-				t.Fatalf("the PATCH answered status=%d body=%s before it reached its write phase; want it to wait on the mapping's row there",
+				t.Fatalf("the PATCH answered status=%d body=%s before it reached its write phase; want it to wait at its update of the labels there",
 					answer.Code, answer.Body.String())
 			}
 			if mode, granted := gateHeldBy(t, fixture.database, pid); mode != "ShareLock" || !granted {
@@ -370,7 +393,7 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 					t.Fatalf("the PATCH answered status=%d body=%s", answer.Code, answer.Body.String())
 				}
 			case <-time.After(itemRowOwnerLockFinish):
-				t.Fatalf("the PATCH never answered within %s of the mapping's row being let go", itemRowOwnerLockFinish)
+				t.Fatalf("the PATCH never answered within %s of its update of the labels being let go", itemRowOwnerLockFinish)
 			}
 			if labels := issueLabels(t, fixture.database, fixture.issueKey); !slices.Contains(labels, "earlier-build") || !slices.Contains(labels, "this-build") {
 				t.Errorf("the issue's labels are %v, want both this build's and the earlier build's: the label the earlier build added once it had arrived was lost under the PATCH that read the labels before it", labels)

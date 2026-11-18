@@ -337,7 +337,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// The project's owner lock comes before its row's update: every writer of a projects row
 	// takes it first (an event append, a mapping write, the default assignee's PUT, the gated
 	// steps' publish), so none of them holds the row while it waits on the lock this create
-	// holds, and none closes a cycle with the mapping check below.
+	// holds.
 	//
 	// The create's read phase (INFRA-636): the spec's parse, render and encoding (SeedText), its
 	// task count, its reference index and the advice all run here, before the update of the
@@ -447,14 +447,6 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// its own for it.
 	if assignee == nil {
 		assignee = defaultAssignee(actor, parentAssignee, projectDefaultAssignee)
-	}
-	// The project row is locked from here; the mapping check takes its key-share lock only now, in
-	// the project-then-mapping order every mapping write follows (lockRepoProjectWrite).
-	if repo != nil {
-		if err := checkIssueRepoMapped(r.Context(), tx, *repo, input.Project); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
 	}
 	if err := lockProjectRankAllocation(r.Context(), tx, input.Project); err != nil {
 		s.writeHandlerError(w, err)

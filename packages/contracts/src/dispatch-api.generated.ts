@@ -2884,7 +2884,7 @@ export interface paths {
     /** @description Map a GitHub repository to a project {project, default?, renamed_to?}; default true makes it the project's one default. renamed_to is the owner/name this repository is called today, which every comparison of a repository canonicalises through: absent or null leaves the stored one alone, "" clears it, and a pair naming this repository, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is 400 INVALID_REPO_PROJECT. */
     put: operations["putApiV1SettingsRepoProjectsByOwnerByRepo"];
     post?: never;
-    /** @description Remove a repository mapping no issue names as its repo. */
+    /** @description Remove a repository mapping, whether or not an issue names the repository as its repo: an issue's own repository needs no mapping, so such an issue keeps it. An issue that resolved to the mapping as its project's default resolves to no repository until the project has another default. */
     delete: operations["deleteApiV1SettingsRepoProjectsByOwnerByRepo"];
     options?: never;
     head?: never;

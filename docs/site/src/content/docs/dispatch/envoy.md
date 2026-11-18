@@ -817,9 +817,17 @@ candidates. The 2.15.1 this file pins is past all of them; a machine still on an
    curl http://127.0.0.1:9020/v1/sessions
    ```
 
-   With `ENVOY_API_TOKEN` set, add `-H "Authorization: Bearer <token>"`. The answer lists each live
-   session with its `session_id`. Start a second session, and the two can message each other with
-   `envoy_send`.
+   When `.env` sets `ENVOY_API_TOKEN`, send that token as the bearer on standard input, so it is in
+   no command line. This reads it from `envoy.json` with `jq`, which must be installed: without it
+   the header goes out as `Authorization: Bearer ` and the listener refuses it.
+
+   ```sh
+   printf 'Authorization: Bearer %s' "$(jq -r .envoy.token ~/.config/legion/envoy.json)" |
+     curl -H @- http://127.0.0.1:9020/v1/sessions
+   ```
+
+   The answer lists each live session with its `session_id`. Start a second session, and the two
+   can message each other with `envoy_send`.
 
 NATS keeps the event stream and Envoy's key-value buckets in the `envoy-single-node_nats-data`
 volume. A restart keeps the last 72 hours of events, and the subscriptions and role claims of every

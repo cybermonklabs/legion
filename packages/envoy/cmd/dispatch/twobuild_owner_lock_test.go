@@ -256,36 +256,67 @@ func gateWaiter(t *testing.T, database *store.Store, blocker uint32) (uint32, st
 	return pid, query
 }
 
+// pauseLabelWrites holds each write of an issue's labels by a backend whose connections carry
+// application as that statement opens, before it reaches a row, until the transaction it returns
+// ends: a trigger has each UPDATE naming issues.labels on such a backend take a shared hold on a
+// key the returned transaction holds. A writer of the issue's row on a backend of the other build,
+// or of the test, passes through.
+func pauseLabelWrites(t *testing.T, database *store.Store, application string) pgx.Tx {
+	t.Helper()
+	ctx := context.Background()
+	const holdLabels = int64(4815162346)
+	for _, statement := range []string{
+		`create function dispatch_test_hold_labels() returns trigger language plpgsql as $$
+		begin
+			perform pg_advisory_xact_lock_shared(tg_argv[0]::bigint);
+			return null;
+		end;
+		$$`,
+		fmt.Sprintf(`create trigger dispatch_test_hold_labels before update of labels on issues for each statement
+			when (current_setting('application_name') = '%s') execute function dispatch_test_hold_labels('%d')`, application, holdLabels),
+	} {
+		if _, err := database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("hold the label writes of %s: %v", application, err)
+		}
+	}
+	pause, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pause.Exec(ctx, `select pg_advisory_xact_lock($1)`, holdLabels); err != nil {
+		_ = pause.Rollback(ctx)
+		t.Fatalf("take the hold the label writes wait on: %v", err)
+	}
+	return pause
+}
+
+// currentLabelWrite matches this build's update of an issue's labels, the statement
+// pauseLabelWrites holds.
+var currentLabelWrite = regexp.MustCompile(`update issues set labels`)
+
 // The previous build boots, with its web app as the image ships it, while a write of this build
 // is between its owner lock and its write phase: a PATCH adding a label, sent while no earlier
 // build was in the fleet, so it read the labels under the advisory lock alone and holds the owner
-// lock gate shared. Its naming a repository is the test's pause: the test holds the mapping's row,
-// which the PATCH takes `for key share` as its write phase opens, and which no writer of the issue
-// takes. The previous build's boot publishes its dashboard before it writes anything else, and
-// that publish's insert takes the gate exclusively, so the boot waits there until the PATCH
-// commits; once it serves, a label it adds lands after the PATCH's and both are kept. Without the
-// gate the previous build boots at once, its label is written while the PATCH waits, and the
-// PATCH then writes the labels it read over it.
+// lock gate shared. The test pauses it as its write phase opens, at its update of the labels and
+// before that update reaches the issue's row (pauseLabelWrites), so no writer of the issue's row
+// waits on the pause. The previous build's boot publishes its dashboard before it writes anything
+// else, and that publish's insert takes the gate exclusively, so the boot waits there until the
+// PATCH commits; once it serves, a label it adds lands after the PATCH's and both are kept.
+// Without the gate the previous build boots at once, its label is written while the PATCH waits,
+// and the PATCH then writes the labels it read over it.
 func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing.T) {
 	builds := newTwoBuilds(t)
 	current := builds.startNamed(t, false, currentApplication)
 	project := uniqueProjectKey(t, "GATE")
 	current.createProject(t, project, "Owner lock gate")
 	issue, _ := current.createIssueIn(t, project, "Labelled across a boot", "A spec.\n")
-	current.call(t, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", fmt.Sprintf(`{"project":%q}`, project), http.StatusOK)
 	ctx := context.Background()
 
-	pause, err := builds.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pause := pauseLabelWrites(t, builds.database, currentApplication)
 	defer pause.Rollback(ctx)
-	if _, err := pause.Exec(ctx, `select 1 from repo_projects where repo = 'owner/repo' for update`); err != nil {
-		t.Fatalf("hold the repository mapping's row: %v", err)
-	}
 	patched := crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
-		body: `{"labels_add":["current-build"],"repo":"owner/repo"}`}.send()
-	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, regexp.MustCompile(`repo_projects`), 20*time.Second)
+		body: `{"labels_add":["current-build"]}`}.send()
+	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, currentLabelWrite, 20*time.Second)
 	t.Logf("this build's PATCH waits in %q", waitingOn)
 
 	options := builds.options(nil)
@@ -347,7 +378,7 @@ func TestThePreviousBuildsBootWaitsForAWriteInFlightAndItsWriteIsKept(t *testing
 			t.Fatalf("this build's PATCH answered %s", answer)
 		}
 	case <-time.After(60 * time.Second):
-		t.Fatal("this build's PATCH never answered within 60s of the mapping's row being let go")
+		t.Fatal("this build's PATCH never answered within 60s of its update of the labels being let go")
 	}
 	var labels []string
 	if err := builds.database.Pool.QueryRow(ctx, `select labels from issues where key = $1`, issue).Scan(&labels); err != nil {
@@ -438,21 +469,20 @@ func watchHeartbeat(t *testing.T, database *store.Store, instance string) (stop 
 // The previous build boots with no web app (DISPATCH_WEB_DIST an empty directory), so it publishes
 // no dashboard and its registration is its arrival, while a write of this build is between its
 // owner lock and its write phase for longer than the registration's bound: a PATCH adding a label,
-// held as the boot row above holds it. The registration waits for the gate holding the registry's
-// lock, which every heartbeat takes too, and is refused with 55P03 once registrationGateBound has
-// passed; the previous build then exits, as its main does when its registration fails. This
-// build's process does not lapse meanwhile: its row is never older than the live window
-// (processes.LiveWindow), its heartbeat gaps logged. Once the write has committed with its
-// label, the previous build, started again as its supervisor would, registers and serves, and the
-// label it adds is kept beside this build's. Without the bound the registration waits for the
-// write for as long as it is held, with every heartbeat of this build behind it.
+// held as the boot row above holds it (pauseLabelWrites). The registration waits for the gate
+// holding the registry's lock, which every heartbeat takes too, and is refused with 55P03 once
+// registrationGateBound has passed; the previous build then exits, as its main does when its
+// registration fails. This build's process does not lapse meanwhile: its row is never older than
+// the live window (processes.LiveWindow), its heartbeat gaps logged. Once the write has committed
+// with its label, the previous build, started again as its supervisor would, registers and
+// serves, and the label it adds is kept beside this build's. Without the bound the registration
+// waits for the write for as long as it is held, with every heartbeat of this build behind it.
 func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testing.T) {
 	builds := newTwoBuilds(t)
 	current := builds.startNamed(t, false, currentApplication)
 	project := uniqueProjectKey(t, "BND")
 	current.createProject(t, project, "Registration bound")
 	issue, _ := current.createIssueIn(t, project, "Labelled across a refused registration", "A spec.\n")
-	current.call(t, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", fmt.Sprintf(`{"project":%q}`, project), http.StatusOK)
 	ctx := context.Background()
 	var instance string
 	if err := builds.database.Pool.QueryRow(ctx, `select instance::text from server_processes where owner_lock_protocol = $1`,
@@ -460,17 +490,11 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 		t.Fatalf("read this build's registration: %v", err)
 	}
 
-	pause, err := builds.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pause := pauseLabelWrites(t, builds.database, currentApplication)
 	defer pause.Rollback(ctx)
-	if _, err := pause.Exec(ctx, `select 1 from repo_projects where repo = 'owner/repo' for update`); err != nil {
-		t.Fatalf("hold the repository mapping's row: %v", err)
-	}
 	patched := crossBuildWrite{process: current, method: http.MethodPatch, path: "/api/v1/issues/" + issue,
-		body: `{"labels_add":["current-build"],"repo":"owner/repo"}`}.send()
-	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, regexp.MustCompile(`repo_projects`), 20*time.Second)
+		body: `{"labels_add":["current-build"]}`}.send()
+	patchPID, waitingOn := queuedBackend(t, builds.database, pause, currentApplication, currentLabelWrite, 20*time.Second)
 	t.Logf("this build's PATCH waits in %q", waitingOn)
 	stopWatch := watchHeartbeat(t, builds.database, instance)
 
@@ -532,7 +556,7 @@ func TestThePreviousBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *tes
 			t.Fatalf("this build's PATCH answered %s", answer)
 		}
 	case <-time.After(60 * time.Second):
-		t.Fatal("this build's PATCH never answered within 60s of the mapping's row being let go")
+		t.Fatal("this build's PATCH never answered within 60s of its update of the labels being let go")
 	}
 	watch := stopWatch()
 	t.Logf("this build's heartbeats from the PATCH's hold to its commit, %s after the %s's registration began to wait: %d read, gaps %v, the row at its oldest %s",
