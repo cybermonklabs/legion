@@ -302,7 +302,7 @@ func TestARereadThatConfirmsTheLiveAnswerCostsNoReload(t *testing.T) {
 // tag: a Secret compares equal to itself by value, so a reread that finds it unchanged anchors
 // nothing and the next reload describes nothing.
 func TestARereadThatConfirmsAMaxGrantSecretCostsNoReload(t *testing.T) {
-	limited := policytest.KindSecret("LIMITED_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
+	limited := policytest.TypeSecret("LIMITED_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 	limited.Tags[policy.TagMaxGrant] = "1h"
 	store := secrets.NewLocal(limited)
 	count := &policytest.CountingDescriber{SecretsManagerAPI: store}
@@ -450,8 +450,8 @@ func (s *abandonedRead) GetSecretValue(ctx context.Context, in *secretsmanager.G
 // reload and this test fails.
 func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *testing.T) {
 	local := secrets.NewLocal(
-		kindSecret("FIRST_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)),
-		kindSecret("SECOND_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)),
+		typeSecret("FIRST_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
+		typeSecret("SECOND_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 	)
 	store := &abandonedRead{Local: local}
 	cur, registry, logged := bootThrough(t, local, store)
@@ -462,8 +462,8 @@ func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *
 
 	// A new version of each that no decoder reads. The reload reads them in name order: FIRST_KEY's
 	// answers, and its context ends during SECOND_KEY's.
-	local.Put(kindSecret("FIRST_KEY", policy.KindGitHubApp, undecodable))
-	local.Put(kindSecret("SECOND_KEY", policy.KindGitHubApp, undecodable))
+	local.Put(typeSecret("FIRST_KEY", policy.TypeGitHubApp, undecodable))
+	local.Put(typeSecret("SECOND_KEY", policy.TypeGitHubApp, undecodable))
 	store.hold(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -479,7 +479,7 @@ func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *
 	if _, served := cur.Get().Secrets["SECOND_KEY"]; !served {
 		t.Fatal("the reload refused SECOND_KEY, whose value read its context cut short")
 	}
-	if got, want := gained(), refusedLine(policytest.ID("FIRST_KEY"), policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+	if got, want := gained(), refusedLine(policytest.ID("FIRST_KEY"), policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
 		t.Fatalf("the reload whose context ended during its second value read logged:\n%s\nwant:\n%s", got, want)
 	}
 
@@ -489,13 +489,13 @@ func TestAReloadWhoseContextEndsDuringItsValueReadsRecordsTheReadsItFinished(t *
 	}
 	refusedAs(t, cur.Get(), "FIRST_KEY", policy.ReasonValueMalformed)
 	refusedAs(t, cur.Get(), "SECOND_KEY", policy.ReasonValueMalformed)
-	if got, want := gained(), refusedLine(policytest.ID("SECOND_KEY"), policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+	if got, want := gained(), refusedLine(policytest.ID("SECOND_KEY"), policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
 		t.Fatalf("the next load logged:\n%s\nwant:\n%s", got, want)
 	}
 }
 
 // TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError: a reread that lists a
-// version of a kind secret this pod has not decoded, and whose context ends before it records that
+// version of a type secret this pod has not decoded, and whose context ends before it records that
 // version's value read - while the read is out, or while it waits for the writer lock a reload
 // stuck on its listing holds - has merged what it read and has not finished. It answers
 // ErrValueUnchecked wrapping its context's error, not the Lookup of a reread that did, so the
@@ -527,20 +527,20 @@ func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *t
 			t.Fatalf("the policy has read %d values; want 3, the boot's, the reread's and the next load's read of the same version again", n)
 		}
 		refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
-		if got, want := gained(), refusedLine(policytest.ID("APP_KEY"), policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+		if got, want := gained(), refusedLine(policytest.ID("APP_KEY"), policy.ReasonValueMalformed, typeOwner, false, ""); got != want {
 			t.Fatalf("the load that read the version again logged:\n%s\nwant:\n%s", got, want)
 		}
 	}
 
 	t.Run("while its value read is out", func(t *testing.T) {
-		local := secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+		local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 		store := &abandonedRead{Local: local}
 		cur, registry, logged := bootThrough(t, local, store)
 		gained := logChecker(logged)
 		if got := gained(); got != "" {
 			t.Fatalf("the first load logged:\n%s", got)
 		}
-		local.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable))
+		local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
 		store.hold(0)
 		ctx, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()
@@ -550,14 +550,14 @@ func TestARereadWhoseContextEndsBeforeItRecordsItsValueReadAnswersThatError(t *t
 	})
 
 	t.Run("while it waits for the writer lock", func(t *testing.T) {
-		local := secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+		local := secrets.NewLocal(typeSecret("APP_KEY", policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 		store := &lockedOutRead{Local: local}
 		cur, registry, logged := bootThrough(t, local, store)
 		gained := logChecker(logged)
 		if got := gained(); got != "" {
 			t.Fatalf("the first load logged:\n%s", got)
 		}
-		local.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable))
+		local.Put(typeSecret("APP_KEY", policy.TypeGitHubApp, undecodable))
 		readEntered, readRelease := store.armRead()
 		ctx, cancel := context.WithTimeout(context.Background(), deadline)
 		defer cancel()

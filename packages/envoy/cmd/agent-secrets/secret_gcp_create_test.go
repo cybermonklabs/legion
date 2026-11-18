@@ -101,7 +101,7 @@ func TestGCPSecretCreateTheStoreRefusesAsksForNoValue(t *testing.T) {
 }
 
 // TestGCPSecretCreateThatStoresNoValueLeavesNoSecret: once the create has made the secret, a value
-// it then does not store - one it reads empty, one the minter of its kind refuses, one the store
+// it then does not store - one it reads empty, one the minter of its type refuses, one the store
 // refuses outright to add - leaves no secret behind: the create verifies the creation label,
 // lists versions in case another writer added one, and deletes the empty secret it made. It
 // exits as that failure does, says the empty secret it made is deleted and nothing stays, and
@@ -116,7 +116,7 @@ func TestGCPSecretCreateThatStoresNoValueLeavesNoSecret(t *testing.T) {
 		want   string
 	}{
 		{"an empty value", "", "", nil, exitUsageError, "the value is read from standard input, which was empty"},
-		{"a value its kind refuses", "not an App key", "", []string{"--kind", policy.KindGitHubApp, "--github-owners", "acme-org"}, exitUsageError,
+		{"a value its type refuses", "not an App key", "", []string{"--type", policy.TypeGitHubApp, "--github-owners", "acme-org"}, exitUsageError,
 			"the broker refuses this value as a github-app secret's"},
 		{"a value the store refuses", "shh", "AddSecretVersion", nil, 1, "PermissionDenied"},
 	} {
@@ -284,7 +284,7 @@ func TestGCPSecretCreateMakesTheSecretBeforeItReadsTheValue(t *testing.T) {
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-	want := map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagShape: policy.ShapeDocument, policy.TagMaxGrant: "1h"}
+	want := map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagMaxGrant: "1h"}
 	var heldAtRead bool
 	var tagsAtRead, labelsAtRead map[string]string
 	var keyAtRead string
@@ -302,7 +302,7 @@ func TestGCPSecretCreateMakesTheSecretBeforeItReadsTheValue(t *testing.T) {
 		}
 	})
 
-	stdout, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "human", "--shape", "document", "--max-grant", "1h")
+	stdout, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "human", "--max-grant", "1h")
 	if code != 0 || !strings.Contains(stdout, "created NEW_TEST in GCP Secret Manager project ") {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and the created line", code, stdout, stderr)
 	}

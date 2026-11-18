@@ -151,6 +151,28 @@ func isShutdownLoad(ctx context.Context) bool {
 	return load
 }
 
+type settlementLoadContextKey struct{}
+
+// withSettlementLoad marks the settlement a browser's departure runs (settleLastPeer) and the
+// Apply that retires the room its warm-up loaded (retireSettlementRoom). A departure's
+// settlement loads a room only when the document's room has left ygo's map before it: a close
+// took the room out from under the departing browser, and the load would put back a room no one
+// asked for. A timer's settlement carries no mark, and the room it loads idles out as any room
+// does. ygo runs a room's load hook only on the goroutine whose call created the room, and hands
+// it that call's context (sjawhar/ygo v1.55.1-sami.2, provider/websocket/server.go:1755-1769,
+// 1903-1921): a load whose context carries the mark was made by such a settlement's warm-up or
+// retire, not by a browser or a writer, and the room it publishes is the settlement's
+// (roomState.warmed, recorded by onLoadDocument). A load the injection only waited for, made by
+// another caller, never sees the mark.
+func withSettlementLoad(ctx context.Context) context.Context {
+	return context.WithValue(ctx, settlementLoadContextKey{}, true)
+}
+
+func isSettlementLoad(ctx context.Context) bool {
+	load, _ := ctx.Value(settlementLoadContextKey{}).(bool)
+	return load
+}
+
 // servicePersistenceAdapter observes ygo's otherwise asynchronous persistence
 // callbacks. A failed update evicts its room so the next access reloads durable
 // state instead of retaining unsaved live state.
@@ -711,6 +733,13 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	state := s.lockState(room)
 	state.recordIssueLocked(issue)
 	open := !state.closed
+	// A room a late departure's settlement loaded is that settlement's until a browser or a writer
+	// takes it up (withSettlementLoad, retireSettlementRoom). It is known by this load's token as
+	// well as its document, so an earlier room's unload, which may run before ygo hands this room
+	// to anyone, does not read as this room's end (warmedRoom).
+	if isSettlementLoad(ctx) {
+		state.warmed = &warmedRoom{doc: doc, load: counted}
+	}
 	// The room has counted itself loaded here since roomLoaded, above, and stays counted until its
 	// unload (roomLoadedHere), so a socket's admission offers it no preload from then on
 	// (offerPreload). An offer that checked before that count and has stored its preload is under
@@ -1392,6 +1421,12 @@ func (s *Service) removeConnection(room string, id uint64) {
 // then takes the settlement over (openLiveWrite) rather than ending it with nobody to arm it again.
 // First it marks every browser the room's state names as connected departed: ygo has none left in
 // the room, and their handlers forget them only once this returns (departedPeers).
+// ygo can run this after a close of the room has returned (sjawhar/ygo v1.55.1-sami.2,
+// provider/websocket/inject.go:483-485), so its settlement may load the document into a room of
+// its own, which its mark records as the settlement's (withSettlementLoad). The departing browser
+// still holds the room's record here, registered and admitted, and lets go of it only as its
+// socket ends, which is where that room is retired unless someone took it up meanwhile
+// (ServeHTTP, retireSettlementRoom).
 func (s *Service) settleLastPeer(_ context.Context, room string) {
 	state := s.lockExistingState(room)
 	if state == nil {
@@ -1416,7 +1451,7 @@ func (s *Service) settleLastPeer(_ context.Context, room string) {
 		state.settling--
 		s.unlockState(room, state)
 	}()
-	s.settleRoom(room, generation)
+	s.followUpSettlement(room, s.settleRoomWithin(withSettlementLoad(context.Background()), room, generation, false))
 }
 
 // loadDecoded is LoadDoc's own read of room's stored state and its decode

@@ -1380,7 +1380,7 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 		"no tokens":                 {func(o *Options) { o.Tokens = nil }, "no provisioning token source"},
 		"no gh credential":          {func(o *Options) { o.GitHubCredential = nil }, "no github credential function"},
 		"no gh dirs":                {func(o *Options) { o.GitHubDirs = nil }, "no github directories function"},
-		"no repository mapping":     {func(o *Options) { o.Mapped = nil }, "no repository mapping for the repository caches"},
+		"no repository set":         {func(o *Options) { o.Mapped = nil }, "no repository set for the repository caches"},
 		"no cache volume":           {func(o *Options) { o.RepositoryCache.Volume = resource.Quantity{} }, "repository cache volume 0 is not a positive quantity"},
 		"no cache retention":        {func(o *Options) { o.RepositoryCache.Retain = 0 }, "repository cache retention 0s is not positive"},
 		"an unreserved cache":       {func(o *Options) { o.RepositoryCache.Resources = corev1.ResourceRequirements{} }, "the repository cache reserves no cpu"},
@@ -2176,6 +2176,9 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 			carry(podOf(t, r, stamping), workerOf(t, r, stamping))
 			probe := r.probeManifest("legion-probe", ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec
 			carry(probe, containerNamed(t, probe, probeContainer))
+			// The one path no container mounts: role-init binds the pod's test server log there in
+			// every role's namespace, over the file the worker image makes.
+			mounts[TestPGLogFile] = true
 			exchange := agentSecrets.ExchangeAudience != ""
 			for _, list := range []struct {
 				name    string
@@ -3141,12 +3144,12 @@ func TestARecordedSessionIsHeldToItsHarnesssRule(t *testing.T) {
 
 // Every Oh My Pi launch names the model the pod's overlay puts on the `default` role, resuming or
 // not: @default is Oh My Pi's own name for that role, and without the flag a resumed session runs
-// the model its first launch saved for ever. The flag rides the launch that starts a session too,
-// because a launch under it records no model of its own: the session file keeps the pin its first
-// launch wrote, so a later launch without the flag would read that pin again
-// (TestTheResumedAgentRunsTheConfiguredModel measures both on the real binary). Its place in the
-// argv is fixed here, after the two extension roots and before `--resume`. A Claude role's command
-// is claudelaunch's and names no model at all.
+// the session file's recorded model. From Oh My Pi 18.18.6 of the fork
+// (upstream oh-my-pi #18534), a resumed launch under this role alias appends a replacement
+// `model_change` for its resolved model, which later launches without the flag read.
+// (TestTheResumedAgentRunsTheConfiguredModel measures that durable replacement on the real
+// binary.) Its place in the argv is fixed here, after the two extension roots and before
+// `--resume`. A Claude role's command is claudelaunch's and names no model at all.
 func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {

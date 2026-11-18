@@ -367,6 +367,23 @@ type Service struct {
 	// at 849c00dd - left a load counted for good, and the either-order test held here fails on
 	// that order.
 	beforeUnloadEndsLoad func(room string)
+	// retireEntered runs once a retirement of the room a late departure's settlement loaded is
+	// inside the room (its own Server.Apply), before it takes the room's close gate
+	// (retireSettlementRoom). Nil outside tests; tests use it to hold two retirements inside one
+	// room at once.
+	retireEntered func(room string)
+	// afterRetireReserved runs once a retirement of the room a late departure's settlement loaded
+	// has taken its reservation on the room's record (reserveRetirement), before ygo's close of the
+	// room. Nil outside tests; tests use it to open a write in that window.
+	afterRetireReserved func(room string)
+	// afterRetireLeft runs once a retirement that reserved the room's record has left the room
+	// (its Server.Apply returned), before it ends the reservation (endRetirement). Nil outside
+	// tests; tests use it to hold a second retirement against that reservation.
+	afterRetireLeft func(room string)
+	// awaitingRetirement runs as a writer, a settlement or another retirement finds a retirement's
+	// reservation on the room's record and is about to wait for it (awaitRetirement). Nil outside
+	// tests; tests use it to see the wait.
+	awaitingRetirement func(room string)
 	// bootstrapping runs as a room's load hook decodes state, the stored state its load read, into
 	// the room's document (bootstrapLoadedState). Nil outside tests; tests use it to count the
 	// decodes a room's load makes and to see which state each decodes.
@@ -1025,6 +1042,8 @@ func New(deps Deps) *Service {
 	// browsers are shown the commit as it integrates, as they always were.
 	srv.AnswerOnceStored = true
 	srv.OnLoadDocument = service.onLoadDocument
+	// ygo calls it as a room's first browser joins it, after the browser is in the room.
+	srv.OnFirstPeer = service.takeUpSettlementRoom
 	srv.OnLastPeer = service.settleLastPeer
 	// ygo calls it once for every room it retires, whichever way: the idle sweep, CloseRoom.
 	srv.OnUnloadDocument = service.releaseUnloadedRoom
@@ -1489,10 +1508,12 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 		}
 		defer s.settleWG.Done()
 		// An armed timer holds its state (unusedLocked), so the state can go only once the timer
-		// has left the register.
+		// has left the register, and so can a room a late departure's settlement loaded, which
+		// this settlement may be a retry of (retireSettlementRoom).
 		defer func() {
 			s.unregisterSettleTimer(timerID)
 			s.releaseIfUnused(room)
+			s.retireSettlementRoom(room)
 		}()
 		state := record.Value()
 		if current, _ := s.rooms.Load(room); state == nil || current != state {
@@ -1766,8 +1787,8 @@ func (s *Service) stampBlockIDs(doc *crdt.Doc, origin any, repairs int) (*pmdoc.
 // (settlementAuthors): that editor's text is in an earlier version, so the version itself names
 // SettlementActor (versionActor), while on an open issue the ask events that text causes, and the
 // move of an approval request from a version before the closed issue's versions, still name them.
-// state is the room the capture was taken from (consumeAskAuthors). askSources, copied once the
-// settlement holds the tree it reconciles, names who introduced each new ask block in it.
+// state is the room the capture was taken from (consumeAskAuthorsLocked). askSources, copied once
+// the settlement holds the tree it reconciles, names who introduced each new ask block in it.
 type settlementVersionCredit struct {
 	capture    authorCapture
 	state      *roomState
@@ -1901,19 +1922,15 @@ func settlementAuthors(state *roomState, owed map[string]model.Actor, recorded *
 	return credit
 }
 
-// consumeAskAuthors forgets the room's recorded author of each block a committed settlement indexed
-// or found indexed: its ask row names the author from then on. The settlement's transaction
-// deleted the durable record of the same authors (deleteSettledAskAuthors).
-func (credit settlementVersionCredit) consumeAskAuthors(blockIDs []string) {
-	if len(blockIDs) == 0 {
-		return
-	}
-	state := credit.state
-	state.mu.Lock()
+// consumeAskAuthorsLocked forgets the room's recorded author of each block a committed settlement
+// indexed or found indexed: its ask row names the author from then on. The settlement's transaction
+// deleted the durable record of the same authors (deleteSettledAskAuthors). The caller holds
+// credit.state.mu across the transaction's commit (commitConsuming), so the room never owes the
+// author of a block whose ask row a reader can already find.
+func (credit settlementVersionCredit) consumeAskAuthorsLocked(blockIDs []string) {
 	for _, blockID := range blockIDs {
-		delete(state.askAuthors, blockID)
+		delete(credit.state.askAuthors, blockID)
 	}
-	state.mu.Unlock()
 }
 
 // settleNext names what follows a settlement once settleRoomWithin has returned. The timer's

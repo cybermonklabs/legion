@@ -715,7 +715,8 @@ func roomResident(service *Service, artifactID string) bool {
 // service to hold none: the room's last browser leaving runs the settlement the document owes at
 // once (settleLastPeer), on the closed issue as on an open one, and its warm-up can load the
 // document into a new room before the poll reads the old one gone. That room stays resident until
-// it idles out (roomIdleTimeout), which says nothing about the close.
+// the departing browser's socket ends and retires it, or until it idles out (roomIdleTimeout) when
+// something took it up (retireSettlementRoom), which says nothing about the close.
 func waitForRoomGone(t *testing.T, service *Service, artifactID, issueKey string, room *crdt.Doc) {
 	t.Helper()
 	if room == nil {

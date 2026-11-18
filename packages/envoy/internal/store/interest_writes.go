@@ -483,7 +483,8 @@ func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, to
 // The one thing release decides is which claims are freed, and a release that authorises none
 // frees none - which is a request from a second process that resumed this session's id, or one
 // from a client that cannot say which process it is, and neither may take a role from the
-// process that holds it.
+// process that holds it. A claim that names no process is no exception: it names no process a
+// release could match, so only the administrator's force frees it (RoleReleaseAuthority.frees).
 //
 // What the release freed decides one thing in the interest half too. A role lane topic the
 // caller named whose claim still names this session and which this release did not free stays
@@ -532,7 +533,7 @@ func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, to
 // of no one role, so it marks nothing whatever those topics turn out to be. A release that names
 // a process frees the claims of that process and leaves another process's alone, and the
 // administrator's force frees them all; neither leaves a mark, since a mark is for the hand-back
-// that could free nothing.
+// that could free nothing, whether the claim it marks names a process or none.
 func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) ([]string, error) {
 	if len(topics) == 0 {
 		record, _, err := r.getWithRevision(ctx, sessionID, true)

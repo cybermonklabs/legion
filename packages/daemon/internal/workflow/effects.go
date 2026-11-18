@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/dispatchbody"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -181,14 +183,21 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // status queues the Dispatch write for a status the workflow has just given issue. reason is the
 // text the write posts on the issue before the status lands (record.StatusWrite.Reason), which
 // transition gives only for a move nothing else on Dispatch explains (moveReason), and is empty
-// for every other write. A status that reads as out of the workflow is the daemon's own close — the
+// for every other write. A move that writes no status, since its target phase shares the status
+// the issue already shows (implementing back to planning, both in_progress; accepting back to
+// reviewing; merging back to retro) or has none, still posts its reason, as a message of its own:
+// carried only on a status row, the reason would reach no issue, which would then show nothing of
+// the move at all. A status that reads as out of the workflow is the daemon's own close — the
 // done a merge writes — and it goes as a close row, fenced on the run it ends
 // (record.CloseStatusWrite): the ordinary rule drops a row whose issue has left the workflow, which
 // is every close, so a close judged by it would be lost on its first ISSUE_CHANGED and leave the
 // issue open in Dispatch for good.
 func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status, reason string) error {
 	if status == "" || issue.Status == status {
-		return nil
+		if reason == "" {
+			return nil
+		}
+		return e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: reason})
 	}
 	if record.OutOfWorkflow(status) {
 		return e.enqueue(ctx, tx, issue.Key, record.CloseStatusWrite(status, issue.Status, "", issue.Generation))
@@ -196,17 +205,23 @@ func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, stat
 	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.Status, reason))
 }
 
-// moveReason is what a move's status write posts on the issue, for the one move the daemon makes on
-// its own: a head that conflicts with its base (TriggerConflict). Every other move is a worker's
-// act — a tester's verdict, a review, a hand-off, a backward move a worker asked for — and Dispatch
-// already holds that act, so it posts nothing: transition also carries a review's whole body and a
-// backward move's own reason, and neither goes on the issue a second time. A conflict's reason
-// reached the architect, the role whose phase ended and the implementer's task over Envoy only, and
-// the issue itself showed a bare status change that no person or census could read a cause from.
-// A person reads this text on the issue, so it is built from the pull request, not from the
-// conflict handler's sentence to the implementer.
-func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest) string {
-	if trigger != TriggerConflict {
+// moveReason is what a move's status write posts on the issue, for the two moves that nothing else
+// on Dispatch explains. One is the move the daemon makes on its own, a head that conflicts with its
+// base (TriggerConflict). The other is a worker's backward move (TriggerBackward,
+// request_backward_move): the request reaches the daemon's API and no Dispatch record, so an
+// architect's send-back from accepting showed a bare status change, with its reason only in the
+// notice and the next role's task over Envoy. Every other move is recorded on Dispatch by the act
+// that makes it, a tester's or a reviewer's hand-off, so it posts nothing: transition also carries a
+// review's whole body, which does not go on the issue a second time.
+// A person reads this text on the issue, so a conflict's is built from the pull request, not from
+// the conflict handler's sentence to the implementer, and a backward move's names the role that
+// asked and gives its words.
+func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullRequest, reason string) string {
+	switch trigger {
+	case TriggerConflict:
+	case TriggerBackward:
+		return backwardMoveReason(from, to, reason)
+	default:
 		return ""
 	}
 	what, base := "its pull request", "its base"
@@ -229,6 +244,40 @@ func moveReason(trigger TriggerKind, from, to phase.Phase, pr *record.PullReques
 		from, to, what, base, base)
 }
 
+// backwardMoveReason is a worker's backward move as the issue shows it: the phase it left, the one
+// it went to, the role that asked (the role running the phase left, which backward holds the
+// requester to) and that role's own words, or that it gave none.
+func backwardMoveReason(from, to phase.Phase, reason string) string {
+	asked := fmt.Sprintf("Legion moved this issue from %s back to %s at the %s's request", from, to, phase.RoleFor(from))
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return asked + ", which gave no reason."
+	}
+	if strings.HasSuffix(reason, ".") || strings.HasSuffix(reason, "!") || strings.HasSuffix(reason, "?") {
+		return asked + ": " + reason
+	}
+	return asked + ": " + reason + "."
+}
+
+// backwardReasonRefusal is the refusal code and message for a backward move whose post Dispatch
+// would refuse, and two empty strings for one it takes. The move posts its reason on the issue
+// (moveReason), and Dispatch refuses a body past the bounds it publishes, or one that holds a
+// decision block, on every attempt: refused at the post, the reason would reach no issue and the
+// worker would never learn why. So backward refuses it before anything moves, as closeRoot does a
+// close's reason (api's closeRoot). The text measured is the post the outbox makes, this move's
+// sentence under its marker (record.LongestPost), read by the server's own reader
+// (dispatchbody.Check), so the daemon refuses exactly what Dispatch refuses.
+func backwardReasonRefusal(from, to phase.Phase, reason string) (string, string) {
+	over := dispatchbody.Check(record.LongestPost(backwardMoveReason(from, to, reason)))
+	if over == nil {
+		return "", ""
+	}
+	if dispatchbody.IsDecisionBlock(over) {
+		return "BACKWARD_REASON_DECISION_BLOCK", fmt.Sprintf("the reason holds a decision block, and the move posts the reason on the issue as a message, where nobody can answer one: %s; the move was not applied, so ask again with a reason that states what is wrong rather than asking a question", over)
+	}
+	return "BACKWARD_REASON_TOO_LONG", fmt.Sprintf("the reason makes a message Dispatch refuses: %s; the move was not applied, so ask again with a shorter reason", over)
+}
+
 // notice tells the architect that owns the issue; a notice of no kind (noticeFor's, for a move
 // that tells it nothing) enqueues nothing.
 func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
@@ -242,7 +291,7 @@ func (e *Engine) notice(ctx context.Context, tx pgx.Tx, issue string, notice rec
 // the project's controller: the two publishes retry apart, so a controller topic that keeps failing never sends
 // the architect the same notice again. Every hold is told this way, since the architect answers one
 // with a retry or an escalation to the controller, and so is the tree architect's own failed
-// claim, since every other notice of the tree reaches that architect.
+// claim, since every notice of the tree that no child's own architect takes reaches that architect.
 func (e *Engine) noticeWithController(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice) error {
 	if err := e.notice(ctx, tx, issue, notice); err != nil {
 		return err
@@ -349,10 +398,26 @@ const testerVerdictLabel = "Tester's verdict"
 // never a transition's start. movedBack is whether the move into that phase was a move back to an
 // earlier one, which is written on the row beside the entry and is the transition's to read, not
 // this function's: the issue record already names the phase it moved into by the time a start
-// is made. A phase with no worker, and accepting, whose architect admission started with the
-// tree, start nobody.
+// is made. A phase with no worker starts nobody. Accepting starts no worker either: its role is
+// the architect, which is already started — admission starts a root's with its tree and a child's
+// own starts with the child's first phase (StartFirstPhase).
+//
+// Every phase start of a child, the move into accepting among them, first starts the child's own
+// architect again when its claim has failed (reviveArchitect). The phase starts are the one place
+// in the workflow that does this, since the transitions are the only phase starts. Outside the
+// workflow, a re-admission brings a mid-phase child's failed architect back with the member's
+// other roles (admit's startMidPhaseMembers), and so does an operator's retry. A restart of a held
+// phase (restart), a promoted start (StartPromotedWorker), an owed entry (SendOwedEntry) and a
+// resume task each hand a role the work of a phase the issue already stands in, and the owed-entry
+// sweep runs every minute, so none of them revives the architect.
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) error {
-	if role == "" || role == claim.RoleArchitect {
+	if role == "" {
+		return nil
+	}
+	if err := e.reviveArchitect(ctx, tx, issue); err != nil {
+		return err
+	}
+	if role == claim.RoleArchitect {
 		return nil
 	}
 	entry, err := e.enter(ctx, tx, issue, role, task, movedBack, false)
@@ -360,6 +425,70 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 		return err
 	}
 	return e.started(ctx, tx, issue, role, task, entry, startMarks{})
+}
+
+// reviveArchitect queues the start of the architect of issue, a child, when the store records its
+// claim failed and holds no start of it queued that the outbox will act on: a failed sub-architect
+// starts again at its child's next phase start (dispatch://INFRA-3915 R2), and until then its
+// child's notices go to the architect above it (record.OwningArchitect). The outbox's start
+// retries a failed claim with fresh budgets (supervise.RequestRetry), in the session it recorded,
+// or a new one once supervise's Machine.forgetSession has dropped it. This start asks for no new
+// session itself. A tree root's architect is admission's, started with its tree,
+// so a root revives nothing here.
+//
+// The claim's state is read in the transaction, and no row carries a mark that asks for the
+// revive: an older daemon's strict decoder refuses an outbox row with a field it does not know
+// (record.DecodeOutboxPayload), and a row it refuses fails every read of its role's runs
+// (record.Store.RoleRuns), each admission pass of the issue among them. So the start is the plain
+// one (childArchitectStart), with no phase, task, entry, slot mark or kept decisions. The read is
+// stable: a failed claim stays failed until something starts it, and a start already queued with
+// no phase or with the phase issue now stands in is that start — the one the child's first phase
+// start queues whatever the claim's state (gateOpened), or an earlier phase start's the outbox has
+// not run yet — so no second start is queued beside it. The read is queuedStartActs, the one
+// StartFor, unpromptedPhaseWorker and queuedRowCovers make of a queued start, with no stop weighed
+// against it (a stop of 0): every queued start of no phase or of the issue's phase counts,
+// whatever stop is queued beside it. A queued start of another phase does not count: re-admission
+// brings a mid-phase child's failed architect back with a start that names the phase the child
+// stood in (admit's startMidPhaseMembers), and the outbox finishes, without acting, a start of a
+// phase the issue has left. An issue whose key makes no claim token has no claim to revive.
+func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	if claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return nil
+	}
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return err
+	}
+	token, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
+	if err != nil {
+		return nil
+	}
+	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, claim.RoleArchitect, issue.Generation)
+	if err != nil {
+		return err
+	}
+	if run.Claim == nil || run.Claim.State != supervise.StateFailed {
+		return nil
+	}
+	if queuedStartActs(run, 0, "") || queuedStartActs(run, 0, issue.Phase) {
+		return nil
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a child's phase start starts its failed architect again", "issue", issue.Key, "tree", issue.Tree, "phase", issue.Phase)
+	return nil
+}
+
+// childArchitectStart is the plain start of a child's own architect, issue's, with no phase, task,
+// entry, slot mark or kept decisions: its catch-up at its launch's ready is its first instruction
+// (claimReady). A root architect's start carries the task its record derives and the entry it
+// raises (StartArchitect); a child's architect is handed no entry, and the rule that closes the
+// difference between an architect's owed and held work reaches a tree's root alone
+// (ArchitectAtWork). The child's first phase start queues it (gateOpened), and so does its next
+// phase start while the claim has failed (reviveArchitect).
+func childArchitectStart(issue record.Issue) record.SuperviseRequest {
+	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the
@@ -844,13 +973,14 @@ func ResumePhaseTask(issue record.Issue) string {
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an
 // escalation: the phase the hold came from, the role that works it, and why it is held. Admission
-// tells a carried root's own architect with it, since the hold's first notice went to the
-// architect of the tree the root was handed over from.
+// tells a carried root's own architect with it, since the hold's first notice was routed in the
+// tree the root was handed over from, where it reached an architect above the root unless the
+// root's own architect held its role then.
 func HeldNotice(issue record.Issue) record.Notice {
 	return record.Notice{Kind: "held", Role: phase.RoleFor(issue.Hold.From), Phase: issue.Hold.From, Reason: string(issue.Hold.Reason)}
 }
 
-// ChildReenteredNotice is the notice a re-entered child's tree architect is told, whichever path
+// ChildReenteredNotice is the notice the architect above a re-entered child is told, whichever path
 // re-enters it: reenterChild for a live tree's reopened child, or admission's
 // reenterStrandedChildren for one a reopen declined to re-enter for want of the label until its
 // root's own promotion made the tree live.
@@ -858,10 +988,11 @@ func ChildReenteredNotice(child, root string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: fmt.Sprintf("%s is todo; it runs again under %s", child, root)}
 }
 
-// ChildStartedNotice is the notice the tree's architect is told whenever a child of it starts
-// its first phase (Engine.StartFirstPhase), its reason saying why it starts now. waited is every
-// issue the child's mirror row still names, in Dispatch's own order, all of them done by now:
-// the last of them closed, which is what freed the child.
+// ChildStartedNotice is the notice the architect above a child is told whenever the child starts
+// its first phase (Engine.StartFirstPhase), its reason saying why it starts now and that the
+// child's own architect starts with it. waited is every issue the child's mirror row still names,
+// in Dispatch's own order, all of them done by now: the last of them closed, which is what freed
+// the child.
 //
 // Empty, the child's own links say nothing about why it starts, and the reason says what is true
 // of every child the line starts instead: it reached the front of the waiting line and took a
@@ -871,15 +1002,26 @@ func ChildReenteredNotice(child, root string) record.Notice {
 // links that were taken off would be a guess, and a reason the architect reads and cannot check
 // is worse than a plain one.
 //
+// The reason then says what the reader keeps of the child: from this start the child's own
+// architect owns it — its decomposition, its children and its acceptance — while that architect
+// holds its role. So the reader hears the child's child-status and child-closed and that
+// architect's worker-died and worker-stalled, and, while that architect does not hold its role,
+// every other notice of the child too (record.OwningArchitect).
+//
 // A start nobody hears of is the silent state the hold's report exists to remove, so no child
 // starts without one. It is the same child-status kind a child's leave and a re-entry are told
-// with — the daemon's notice routing sends one on a non-root child to the architect that owns it
-// — and not phase-finished: no phase of the child ended, it is beginning its first.
+// with — the daemon's notice routing starts the walk for one at the child's parent, so it reaches
+// the architect above the child — and not phase-finished: no phase of the child ended, it is
+// beginning its first.
 func ChildStartedNotice(child, root string, waited []string) record.Notice {
-	reason := fmt.Sprintf("%s starts planning under %s: every issue it waited on (%s) is done", child, root, strings.Join(waited, ", "))
+	why := fmt.Sprintf("every issue it waited on (%s) is done", strings.Join(waited, ", "))
 	if len(waited) == 0 {
-		reason = fmt.Sprintf("%s starts planning under %s: it reached the front of the waiting line and took an admission slot", child, root)
+		why = "it reached the front of the waiting line and took an admission slot"
 	}
+	reason := fmt.Sprintf("%s starts planning under %s: %s. Its own architect starts with it and owns it while that architect "+
+		"holds its role: its decomposition, its children and its acceptance. You hear its child-status and child-closed "+
+		"notices, a worker-died or worker-stalled of its architect, and its other notices while its architect does not "+
+		"hold its role, which the daemon's holdsRole decides", child, root, why)
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}
 }
 

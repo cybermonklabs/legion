@@ -278,6 +278,40 @@ func (r *roomServer) closeInstance(room string, doc *crdt.Doc) (bool, error) {
 	return true, nil
 }
 
+// retireInstance retires room while it holds doc and unadopted answers true, answering whether it
+// retired it: ygo's CloseRoomWithin without force. Its caller runs it inside its own Server.Apply on
+// room, holding off ygo's idle sweep as closeInstance's caller does, and it holds the close gate as
+// closeInstance does, so no other close the service makes, and no repair, comes between unadopted's
+// look at the room's record and ygo's lookup of the room by name; the writers and settlements that
+// take up a room without entering it are held off by the reservation unadopted takes on the record
+// as it answers true (Service.reserveRetirement). Without force ygo closes nothing
+// while a peer is on the room (websocket.ErrRoomHasPeers) or another caller is inside it
+// (websocket.ErrRoomInUse), and checks both again under its own locks where it takes the room out of
+// its map, as its idle sweep does (sjawhar/ygo v1.55.1-sami.2, provider/websocket/inject.go:609-627
+// and 693-703, idle_sweep.go:187-206); its teardown is the sweep's too, a flush of the room's
+// persistence and then the unload (inject.go:655-664 and 704-740, idle_sweep.go:173-225). Either
+// refusal, and a name that holds another instance by then, retire nothing and are no error: the
+// room is someone's. A retirement is no close of the service's own, as the idle sweep's is not: it
+// runs neither beforeClose, which takes out the awareness of browsers a room with no peer does not
+// have, nor afterClose, the test hooks' count of the rooms the service closed.
+func (r *roomServer) retireInstance(room string, doc *crdt.Doc, unadopted func() bool) (bool, error) {
+	gate := r.acquireGate(room)
+	defer r.releaseGate(room, gate)
+	gate.Lock()
+	defer gate.Unlock()
+	if r.GetDoc(room) != doc || !unadopted() {
+		return false, nil
+	}
+	err := r.Server.CloseRoomWithin(room, doc, false)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, websocket.ErrRoomHasPeers), errors.Is(err, websocket.ErrRoomInUse), errors.Is(err, websocket.ErrRoomNotFound):
+		return false, nil
+	}
+	return false, err
+}
+
 // closeOwned is CloseRoom for a room its caller owns: holding the gate exclusively, it asks owns
 // whether the room under that name is still the caller's, and only then closes the room and hands
 // the close's error to after, whose error it returns. CloseRoom closes by name, so two closes

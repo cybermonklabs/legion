@@ -42,6 +42,13 @@ const NarrowingCheckSkippedMessage = "broker: the narrowing check was skipped"
 // transaction inside that same call, so the check takes at most a third of the client's budget.
 // A caller that gave up before the broker wrote its pending request is the cost this check
 // removes, so the check must end well inside what the caller is waiting out.
+//
+// One revoke runs past these bounds: the give-back of a token GitHub minted in an answer the check
+// could not use (secrets.GitHubApp's giveBackUnusable) runs under a detached bound of its own,
+// secrets' revokeTimeout (10 seconds), since the check's own bound is the likeliest thing to have
+// cut that answer off. No mint starts once the budget is spent, so at most one such give-back runs
+// past it, and a check takes at most 20 seconds in all: still inside the client's 30, with less
+// of that to spare.
 const (
 	DefaultNarrowingCheckBudget = 10 * time.Second
 	DefaultNarrowingCheckMint   = 5 * time.Second
@@ -116,7 +123,7 @@ func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names [
 		refusedBeforeApproval(enr.ID, name, err)
 		return err
 	}
-	mint := m.Minters[policy.KindGitHubApp]
+	mint := m.Minters[policy.TypeGitHubApp]
 	if mint == nil {
 		skippedNarrowingCheck(enr.ID, "", "this broker has no github-app minter", nil)
 		return nil
@@ -131,8 +138,8 @@ func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names [
 	// one refusal refuses the release. The first refusal ends the check: the caller has its
 	// answer, and the names after it would be asked about for nothing.
 	for _, g := range requested {
-		kind, source, minted, err := policy.ParseKindSource(g.source)
-		if err != nil || !minted || kind != policy.KindGitHubApp {
+		secretType, source, minted, err := policy.ParseTypeSource(g.source)
+		if err != nil || !minted || secretType != policy.TypeGitHubApp {
 			continue
 		}
 		checked, refusal := m.checkNarrowingFor(budget, mint, enr.ID, g.name, source, set.Secrets[g.name], narrowing)
@@ -171,10 +178,10 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 		skippedNarrowingCheck(enrollmentID, name, "the stored value could not be read", err)
 		return false, nil
 	}
-	// The shape rule is spent here as the release spends it (Machine.release), and writes no
+	// The line-ending rule is spent here as the release spends it (Machine.release), and writes no
 	// line: the release logs TrailingLineEndingRemovedMessage once for each value the rule
 	// changed, and a check that logged it too would write that line twice for one release.
-	value, _ := policy.TrimForShape(stored, served.Shape)
+	value, _ := policy.TrimLineEnding(stored)
 	switch err := m.checkNarrowingMint(ctx, mint, name, served, value, narrowing); {
 	case err == nil:
 		return true, nil
@@ -229,18 +236,19 @@ func (m *Machine) checkNarrowingFor(ctx context.Context, mint Minter, enrollment
 //
 // Each mint, and the revoke inside it, is bounded by NarrowingCheckMint and by what is left of
 // the check's whole budget, whichever ends first: ctx already carries the budget, so deriving the
-// mint's own bound from it takes the shorter of the two. A budget already spent is answered
-// without asking GitHub anything, and reads as trouble to the caller, which lets the request
-// through.
+// mint's own bound from it takes the shorter of the two. The give-back of a token whose answer the
+// mint could not use runs to a detached bound of its own instead (DefaultNarrowingCheckBudget's
+// comment). A budget already spent is answered without asking GitHub anything, and reads as
+// trouble to the caller, which lets the request through.
 func (m *Machine) checkNarrowingMint(ctx context.Context, mint Minter, name string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	bounded, cancel := context.WithTimeout(ctx, m.narrowingCheckMintBound())
 	defer cancel()
-	// The check runs for github-app names alone (checkNarrowing), so that is the kind its
+	// The check runs for github-app names alone (checkNarrowing), so that is the type its
 	// minter counts this attempt under, as the release it stands for would.
-	request := mintRequest(name, policy.KindGitHubApp, served, value, narrowing)
+	request := mintRequest(name, policy.TypeGitHubApp, served, value, narrowing)
 	request.Check = true
 	_, err := mint(bounded, request)
 	if err != nil && bounded.Err() != nil {

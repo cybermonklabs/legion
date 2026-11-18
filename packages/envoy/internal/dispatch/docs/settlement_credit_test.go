@@ -1304,8 +1304,9 @@ func writeAskBeforeClose(t *testing.T, service *Service, artifactID string, acto
 // sends, and waits until every room resident before the close has closed. It waits for those rooms
 // alone, by instance, not for the service to hold none: a room's last browser leaving runs the
 // settlement the document owes at once (settleLastPeer), on the closed issue as on an open one,
-// and its warm-up can load the document into a new room, which stays resident until it idles out
-// (roomIdleTimeout).
+// and its warm-up can load the document into a new room, which stays resident until the departing
+// browser's socket ends and retires it, or until it idles out (roomIdleTimeout) when something took
+// it up (retireSettlementRoom).
 func closeTestIssue(t *testing.T, service *Service) {
 	t.Helper()
 	ctx := context.Background()

@@ -33,7 +33,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 const exitUsageError = 2
@@ -80,14 +81,19 @@ func exitUsage(err error) int {
 
 // commonFlags is every subcommand's shared connection and approver configuration.
 type commonFlags struct {
-	broker    string
+	broker    brokeraddr.Address
 	tokenFile string
 	login     string
 }
 
+// registerCommonFlags registers the flags every subcommand shares; --broker is a
+// brokeraddr.Address from the moment flag parses it.
 func registerCommonFlags(fs *flag.FlagSet) *commonFlags {
 	c := &commonFlags{}
-	fs.StringVar(&c.broker, "broker", "", "broker base URL (default $AGENT_SECRETS_URL)")
+	fs.Func("broker", "broker base `URL` (default $AGENT_SECRETS_URL)", func(raw string) error {
+		c.broker = brokeraddr.New(raw)
+		return nil
+	})
 	fs.StringVar(&c.tokenFile, "account-token-file", os.Getenv("AGENT_SECRETS_ACCOUNT_TOKEN_FILE"),
 		"file holding the token of a ServiceAccount the broker lists in BROKER_API_ACCOUNTS (default $AGENT_SECRETS_ACCOUNT_TOKEN_FILE)")
 	fs.StringVar(&c.login, "login", os.Getenv("AGENT_SECRETS_APPROVER"), "the deciding human's login (default $AGENT_SECRETS_APPROVER)")
@@ -95,12 +101,11 @@ func registerCommonFlags(fs *flag.FlagSet) *commonFlags {
 }
 
 func (c *commonFlags) validate() error {
-	if c.broker == "" {
-		// Read here, not as the flag's default: flag's usage text prints a non-empty default
-		// whole, credential included.
-		c.broker = os.Getenv("AGENT_SECRETS_URL")
+	if c.broker.Empty() {
+		// Read here, not as the flag's default, so the usage text names no address at all.
+		c.broker = brokeraddr.New(os.Getenv("AGENT_SECRETS_URL"))
 	}
-	if c.broker == "" {
+	if c.broker.Empty() {
 		return errors.New("--broker (or AGENT_SECRETS_URL) is required")
 	}
 	if c.tokenFile == "" {
@@ -124,7 +129,9 @@ func (c *commonFlags) client() (*apiClient, error) {
 	if token == "" {
 		return nil, fmt.Errorf("the account token file %s is empty", c.tokenFile)
 	}
-	return &apiClient{base: c.broker, http: &http.Client{Timeout: 30 * time.Second}, token: token}, nil
+	// The bearer below is this account's own, so a 3xx answered for the broker must not
+	// carry it to another host (redirects.Refused).
+	return &apiClient{base: c.broker, http: redirects.Refused(&http.Client{Timeout: 30 * time.Second}), token: token}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -132,21 +139,23 @@ func (c *commonFlags) client() (*apiClient, error) {
 // ---------------------------------------------------------------------------
 
 type apiClient struct {
-	base  string
+	base  brokeraddr.Address
 	token string
 	http  *http.Client
 }
 
-// apiError is the broker's {"code":...,"error":...} error envelope, plus the HTTP status it came
-// with.
+// apiError is a refusal in the broker's {"code":...,"error":...} error envelope: the HTTP status
+// it came with, and Answer, its code and words as a message may print them
+// (brokeraddr.Address.Words). Beside an address that is not clean, whoever answers at that
+// address can repeat the credential it carries in any text of its answer, so there Answer is
+// brokeraddr.WordsNotPrinted, and of the answer the refusal prints its status alone.
 type apiError struct {
 	Status int
-	Code   string
-	Reason string
+	Answer string
 }
 
 func (e *apiError) Error() string {
-	return fmt.Sprintf("%s: %s (HTTP %d)", e.Code, e.Reason, e.Status)
+	return fmt.Sprintf("%s (HTTP %d)", e.Answer, e.Status)
 }
 
 // do sends a request carrying the caller's ServiceAccount token and, on a 2xx response, returns
@@ -160,11 +169,11 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) ([]by
 		}
 		reader = bytes.NewReader(b)
 	}
-	// Each error naming the URL names it through redact.Error, so no credential the broker's URL
-	// carries prints.
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, reader)
+	// Each error naming the URL names it through the Address's Error, so no credential the
+	// broker's URL carries prints.
+	req, err := http.NewRequestWithContext(ctx, method, c.base.Raw()+path, reader)
 	if err != nil {
-		return nil, redact.Error(err, c.base)
+		return nil, c.base.Error(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
@@ -172,12 +181,12 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) ([]by
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, redact.Error(err, c.base)
+		return nil, c.base.Error(err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, c.base.Error(err)
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {
@@ -185,7 +194,7 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) ([]by
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &envelope)
-		return nil, &apiError{Status: resp.StatusCode, Code: envelope.Code, Reason: envelope.Error}
+		return nil, &apiError{Status: resp.StatusCode, Answer: c.base.Words(envelope.Code + ": " + envelope.Error)}
 	}
 	return raw, nil
 }

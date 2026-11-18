@@ -325,8 +325,8 @@ type Options struct {
 	// ControllerCredential is the daemon's function for the controller's own gh bundle
 	// (appauth.ControllerCredential). The refresher asks it for the owner the Secret holds
 	// (refreshGitHubCredential); a launch asks for none, taking the first owner, which is the
-	// default the Secret then records, and a refresh whose render names another default is
-	// refused rather than written. Required: configure refuses nil as it refuses a nil
+	// default the Secret then records, and a refresh whose render holds no directory for that
+	// default is refused rather than written. Required: configure refuses nil as it refuses a nil
 	// GitHubCredential.
 	ControllerCredential runtime.ControllerCredential
 	// GitHubDirs are the directories the gh bundle of a pod created now for repo would hold
@@ -354,9 +354,15 @@ type Options struct {
 	// .repository_cache, whose defaults the daemon's configuration supplies): required for
 	// supervision, which sweeps and refreshes caches.
 	RepositoryCache RepositoryCache
-	// Mapped is the repositories the project's mapping names now, read at every orphan sweep: the
-	// sweep makes or repairs each one's cache (EnsureRepositoryCache), and retires the cache of a
-	// repository it no longer names once that cache's retention passes. Required for supervision.
+	// Mapped is, despite its name, more than the mapping: the repositories the project works
+	// now, read at every orphan sweep, which are those Dispatch's mapping names and those of the
+	// project's live issue records, a set the daemon holds and answers without I/O
+	// (daemon's cacheRepositories). An issue of any project may name any repository both role
+	// Apps are installed on, so a repository no mapping names gets its cache — one volume and one
+	// pod — from the moment a record names it. The sweep makes or repairs each member's cache
+	// (EnsureRepositoryCache), and retires the cache of a repository the set no longer holds,
+	// which is one no live record and no mapping names, once that cache's retention passes.
+	// Required for supervision.
 	Mapped func() []ghrepo.Repository
 	// SavedWorkspaceBundle is the bundle an issue's last release saved, and WorkspaceBundleRestored
 	// the confirmation that drops it once the issue's new pod holds it. The pair carries the work a

@@ -97,6 +97,8 @@ function askAtRow(asks: SeededAsk[], fromTop: number): SeededAsk {
 }
 
 async function topOf(locator: Locator): Promise<number> {
+  await expect(locator).toBeVisible();
+  // The wait above drew the row, and a drawn element has a box, so the box is there.
   const box = await locator.boundingBox();
   if (box === null) throw new Error("row has no box");
   return box.y;
@@ -355,6 +357,8 @@ test("the row under the pointer stays put when a row above it is answered elsewh
     await expect(page.locator("[data-inbox-row]")).toHaveCount(20);
     const row = inboxRow(page, held.ask.id);
     await centreRow(row);
+    await expect(row).toBeVisible();
+    // The wait above drew the row, and a drawn element has a box, so the box is there.
     const box = await row.boundingBox();
     if (box === null) throw new Error("row has no box");
     await page.mouse.move(box.x + box.width / 2, box.y + 8);
@@ -414,6 +418,7 @@ test("a band's header stays with its pointer-held row while a P0 ask arrives", a
     const header = page.getByRole("button", { name: "P1 (2)" });
     await expect(row).toBeVisible();
     await expect(header).toBeVisible();
+    // The wait above drew the held row, and a drawn element has a box, so the box is there.
     const box = await row.boundingBox();
     if (box === null) throw new Error("held row has no box");
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -592,6 +597,8 @@ async function columnWithoutACard(
   page: Page,
   { from, rowID, to, x }: { from: number; rowID: string; to: number; x: number }
 ): Promise<{ x: number; y: number }> {
+  // The caller waited for the rows and took their boxes just before this, so the column is
+  // found in the same layout the journey it plans then crosses.
   const column = await page.evaluate(
     ({ from, rowID, to, x }) => {
       const root = document.querySelector('[data-testid="inbox-list"]')?.firstElementChild;
@@ -621,6 +628,8 @@ async function travelPointerAcrossIncomingRow(page: Page): Promise<void> {
   await expect(rows).toHaveCount(8);
   expect(await listScrollTop(page)).toBe(0);
   const sixth = rows.nth(5);
+  await expect(sixth).toBeVisible();
+  // The wait above drew the sixth row, and a drawn element has a box, so the box is there.
   const initialSixthBox = await sixth.boundingBox();
   const viewport = page.viewportSize();
   if (initialSixthBox === null || viewport === null) throw new Error("sixth row has no box");
@@ -629,12 +638,19 @@ async function travelPointerAcrossIncomingRow(page: Page): Promise<void> {
     height: Math.ceil(initialSixthBox.y + initialSixthBox.height + 40),
     width: viewport.width,
   });
+  for (const index of [2, 3, 4, 5]) await expect(rows.nth(index)).toBeVisible();
+  // The waits above drew the third to the sixth rows at this size, so each has a box.
   const third = await rows.nth(2).boundingBox();
+  // The fourth row was waited for above too, so its box is there as the third one's is.
   const fourth = await rows.nth(3).boundingBox();
+  // The fifth row was waited for above too, so its box is there as the third one's is.
   const fifth = await rows.nth(4).boundingBox();
+  // The sixth row was waited for above too, so its box is there as the third one's is.
   const sixthBox = await sixth.boundingBox();
   if (third === null || fourth === null || fifth === null || sixthBox === null)
     throw new Error("Inbox row has no box");
+  // `rows` matches only elements that carry `data-inbox-row`, so this read is never null and
+  // the check below only narrows the type.
   const sixthID = await sixth.getAttribute("data-inbox-row");
   if (sixthID === null) throw new Error("sixth row has no id");
   const destination = page.locator(`[data-inbox-row="${sixthID}"]`);
