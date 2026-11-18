@@ -111,10 +111,11 @@ type intakeLeases interface {
 // envoy-dispatch binary, with the Dispatch user denied exactly
 // $JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.delivery-events.> (envoy-infra's live row "without
 // the delivery consumer create Dispatch leaves only that intake unbound"). A denied AddConsumer
-// draws no reply at all, so the create blocks for the client's whole JetStream MaxWait -- 10 s
-// (internal/bus/nats.go, nats.MaxWait) -- and the lease is held for every second of it. The events
-// intake took the lease again on its next durableBindInterval poll and held it for another 10 s,
-// round after round:
+// drew no reply at all then, so the create blocked for the client's whole JetStream MaxWait -- 10 s
+// (internal/bus/nats.go, nats.MaxWait) -- and the lease was held for every second of it; it now
+// ends as the server's refusal arrives (internal/bus/refusal_reads.go), and a stuck change still
+// holds its lease for as long as it takes. The events intake took the lease again on its next
+// durableBindInterval poll and held it for another 10 s, round after round:
 //
 //	17:57:16.232 ERROR dispatch delivery: create NATS consumer name=delivery-events error="context deadline exceeded"
 //	17:57:16.232 INFO  dispatch duty: leased pass ran  lease=delivery-consumers

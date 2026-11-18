@@ -32,6 +32,10 @@ func openSubject(bucket string) string { return "$JS.API.STREAM.INFO.KV_" + buck
 // kv.go:524-534, js.go:189-192).
 func createSubject(bucket string) string { return "$JS.API.STREAM.CREATE.KV_" + bucket }
 
+// updateSubject is the request an update of a bucket's stream sends, a raise or a new age: the
+// STREAM.UPDATE of the bucket's stream (nats.go@v1.53.1 jsm.go UpdateStream, js.go:189-192).
+func updateSubject(bucket string) string { return "$JS.API.STREAM.UPDATE.KV_" + bucket }
+
 // accountInfoSubject is the request js.CreateKeyValue sends before its STREAM.CREATE: the
 // account's JetStream info, which nats.go asks for first (nats.go@v1.53.1 kv.go:432-434,
 // jsm.go:409). It names no bucket, so a row that drops it drops the account info of whatever
@@ -331,6 +335,101 @@ func TestAnUnansweredBucketCreateIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	// The handle open rides the lookup's subject, which this relay passes on.
 	if sends := relay.sent(); sends != 2 {
 		t.Fatalf("creates sent = %d, want 2: the lost one and the one that made the bucket", sends)
+	}
+}
+
+// A start whose raise of a bucket draws no answer sends the raise again and goes on, rather than
+// failing at the raise's own ten second wait with "raise KV_envoy_unanswered_raise:
+// ENVOY_NATS_REPLICAS=3: context deadline exceeded", which is what it did. nats-server drops an
+// update with no answer when its metadata proposal fails (updateStream); here the first raise
+// never reaches the server, so the stream, read again, still has one copy, and the raise is sent
+// again from that read and lands.
+func TestAnUnansweredRaiseIsSentAgainAndTheStartGoesOn(t *testing.T) {
+	const bucket = "envoy_unanswered_raise"
+	cluster := testnats.StartCluster(t, 3)
+	relay := startUnansweredRelayOn(t, cluster.Servers[0].URL(), updateSubject(bucket))
+	conn, js := relayedJetStream(t, relay)
+	if _, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
+		t.Fatalf("create the one-copy bucket the start raises: %v", err)
+	}
+
+	relay.arm(1)
+	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
+		t.Fatalf("a start whose first raise drew no answer = %v, want it to go on", err)
+	}
+
+	info, err := js.StreamInfo("KV_" + bucket)
+	if err != nil {
+		t.Fatalf("read the raised stream: %v", err)
+	}
+	if info.Config.Replicas != 3 {
+		t.Fatalf("the raised stream has %d copies, want 3", info.Config.Replicas)
+	}
+	// Two raises ride this subject: the one whose send was lost and the one that landed.
+	if sends := relay.sent(); sends != 2 {
+		t.Fatalf("raises sent = %d, want 2: the lost one and the one that landed", sends)
+	}
+}
+
+// A start whose raise the server never answers sends it again until the start's hang guard
+// passes, and ends with an error that names the raise and the guard and no setting: a server that
+// answered nothing refused none (refusedSettings). It once ended at the first raise's own ten
+// second wait with "raise KV_envoy_unanswered_raise_never: ENVOY_NATS_REPLICAS=3: context
+// deadline exceeded", which named a setting the server never saw. The guard is shortened here
+// (ensureKeyValue) to two seconds past that wait, so it passes during the second raise. Every
+// raise is dropped, so a single server serves: no raise reaches it.
+func TestARaiseTheServerNeverAnswersEndsAtTheHangGuardNamingNoSetting(t *testing.T) {
+	const bucket = "envoy_unanswered_raise_never"
+	relay := startUnansweredRelayOn(t, testnats.URL(t), updateSubject(bucket))
+	conn, js := relayedJetStream(t, relay)
+	if _, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage}); err != nil {
+		t.Fatalf("create the one-copy bucket the start raises: %v", err)
+	}
+	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
+
+	relay.arm(1 << 30)
+	guard := RequestTimeout + 2*time.Second
+	_, err := ensureKeyValue(context.Background(), guard, conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage, Replicas: 3})
+	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("a start whose raise the server never answers = %v, want the start's hang guard, with context.DeadlineExceeded", err)
+	}
+	if want := "raise KV_" + bucket + ": the update drew no answer when the wait ended"; !strings.Contains(err.Error(), want) {
+		t.Fatalf("a start whose raise the server never answers = %v, want it to name %q", err, want)
+	}
+	if strings.Contains(err.Error(), ReplicasEnvVar) {
+		t.Fatalf("a start whose raise the server never answers = %v, want no setting named: the server refused nothing", err)
+	}
+	if sends := relay.sent(); sends != 2 {
+		t.Fatalf("raises sent = %d, want 2: the raise sent again after its own wait, and the guard passing during the second", sends)
+	}
+}
+
+// A setting of a bucket's age whose update draws no answer sends the update again and lands,
+// rather than failing the session registry's start at the update's own ten second wait with "set
+// KV_envoy_unanswered_age max age: context deadline exceeded", which is what it did.
+func TestAnUnansweredMaxAgeUpdateIsSentAgain(t *testing.T) {
+	const bucket = "envoy_unanswered_age"
+	relay := startUnansweredRelayOn(t, testnats.URL(t), updateSubject(bucket))
+	conn, js := relayedJetStream(t, relay)
+	if _, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage}); err != nil {
+		t.Fatalf("create the bucket whose age is set: %v", err)
+	}
+	t.Cleanup(func() { _ = js.DeleteKeyValue(bucket) })
+
+	relay.arm(1)
+	age, err := SetKeyValueMaxAge(t.Context(), conn, js, bucket, time.Hour)
+	if err != nil || age != time.Hour {
+		t.Fatalf("a setting of the age whose first update drew no answer = %s, %v, want 1h and nil", age, err)
+	}
+	info, err := js.StreamInfo("KV_" + bucket)
+	if err != nil {
+		t.Fatalf("read the bucket's stream: %v", err)
+	}
+	if info.Config.MaxAge != time.Hour {
+		t.Fatalf("the bucket's age = %s, want 1h", info.Config.MaxAge)
+	}
+	if sends := relay.sent(); sends != 2 {
+		t.Fatalf("updates sent = %d, want 2: the lost one and the one that landed", sends)
 	}
 }
 

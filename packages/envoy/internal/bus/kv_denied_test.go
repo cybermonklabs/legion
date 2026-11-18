@@ -128,6 +128,50 @@ func TestACreateTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
 	}
 }
 
+// A durable consumer's create and delete that the grant refuses end at once, naming the refusal,
+// rather than after the request's own ten second wait with a bare "context deadline exceeded":
+// the listener's start creates its durable, and Dispatch's take-over of a held durable deletes
+// and creates one, through the client's own JetStream context (readsRefusals). The create's read
+// of the consumer, which nats.go sends first, is granted, so the refusal the create ends on is its
+// own; no stream is needed, since the read answers "stream not found" and nats.go goes on to the
+// create.
+func TestAConsumerCreateAndDeleteTheGrantRefusesEndAtOnceNamingTheRefusal(t *testing.T) {
+	const stream, consumer = "ENVOY_DENIED_CONSUMERS", "denied"
+	seed, public := testnats.User(t)
+	grant := testnats.StartNkeyGranted(t, public, "_INBOX.>", jsAPI("CONSUMER.INFO", stream, consumer))
+	t.Setenv("NATS_NKEY_SEED", seed)
+	client, err := Connect([]string{grant.URL})
+	if err != nil {
+		t.Fatalf("connect the granted client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	for _, row := range []struct {
+		name, subject string
+		call          func() error
+	}{
+		{"create", jsAPI("CONSUMER.CREATE", stream, consumer), func() error {
+			_, err := client.JS().AddConsumer(stream, &nats.ConsumerConfig{Durable: consumer, AckPolicy: nats.AckExplicitPolicy})
+			return err
+		}},
+		{"delete", jsAPI("CONSUMER.DELETE", stream, consumer), func() error { return client.JS().DeleteConsumer(stream, consumer) }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			started := time.Now()
+			err := row.call()
+			took := time.Since(started)
+			if !errors.Is(err, ErrPublishDenied) {
+				t.Fatalf("a %s the grant refuses = %v (after %s), want ErrPublishDenied", row.name, err, took)
+			}
+			if want := `Permissions Violation for Publish to "` + row.subject + `"`; !strings.Contains(err.Error(), want) {
+				t.Fatalf("the refused %s = %v, want it to name %q", row.name, err, want)
+			}
+			if took > refusalAnswerBound {
+				t.Fatalf("the refused %s ended after %s, want within %s", row.name, took, refusalAnswerBound)
+			}
+		})
+	}
+}
+
 // A watch of the bucket that the grant refuses ends at once with the server's refusal (refusedOn).
 // A read and a write of a key the grant refuses name the refusal too, after their own wait: they
 // are the calls the bus makes on every request it serves, so they read the record only when the

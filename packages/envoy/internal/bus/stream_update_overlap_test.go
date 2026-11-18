@@ -1,11 +1,13 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -17,7 +19,9 @@ import (
 // failed on v2.10.29. Such an update is settled from the stream: one that, read again, holds what
 // the caller asked for is done, one that does not is sent again, and one refused on every send, as
 // a stream another stream really does overlap is, returns the refusal after overlapSends sends. An
-// unanswered update is not sent again, and any other refusal is returned at once.
+// unanswered update is settled from the stream the same way and sent again while the stream does
+// not hold it, each update sent again built from the read before it, so it carries what another
+// writer changed since; any other refusal is returned at once.
 func TestAnUpdateRefusedAsOverlappingItsOwnStreamIsSettledFromTheStream(t *testing.T) {
 	overlap := &nats.APIError{Code: 400, ErrorCode: jsStreamSubjectOverlap, Description: "subjects overlap with an existing stream"}
 	otherRefusal := &nats.APIError{Code: 503, ErrorCode: 10023, Description: "insufficient resources"}
@@ -28,37 +32,77 @@ func TestAnUpdateRefusedAsOverlappingItsOwnStreamIsSettledFromTheStream(t *testi
 		// the other program's update lands with the first answer that is not nil, giving the
 		// stream what this update asks for
 		landed bool
-		sends  int
-		reads  int
-		want   error
+		// another writer sets the stream's byte limit with the first answer that is not nil, so
+		// every send after it must carry that limit
+		otherWrite bool
+		sends      int
+		reads      int
+		want       error
 	}{
 		{name: "the other update gave the stream what this one asks", answers: []error{overlap}, landed: true, sends: 1, reads: 1},
 		{name: "the stream read again does not hold it yet", answers: []error{overlap}, sends: 2, reads: 1},
 		{name: "refused, then accepted on the last send", answers: slices.Repeat([]error{overlap}, overlapSends-1), sends: overlapSends, reads: overlapSends - 1},
 		{name: "refused on every send", answers: slices.Repeat([]error{overlap}, overlapSends+1), sends: overlapSends, reads: overlapSends, want: overlap},
-		{name: "unanswered, and the stream does not hold it", answers: []error{nats.ErrTimeout}, sends: 1, reads: 1, want: nats.ErrTimeout},
+		{name: "refused while another writer changed the stream", answers: []error{overlap}, otherWrite: true, sends: 2, reads: 1},
+		{name: "unanswered, and the stream does not hold it", answers: []error{nats.ErrTimeout}, sends: 2, reads: 1},
+		{name: "unanswered twice, then accepted", answers: []error{nats.ErrTimeout, nats.ErrTimeout}, sends: 3, reads: 2},
+		{name: "unanswered while another writer changed the stream", answers: []error{nats.ErrTimeout}, otherWrite: true, sends: 2, reads: 1},
 		{name: "unanswered, and the stream holds it", answers: []error{nats.ErrTimeout}, landed: true, sends: 1, reads: 1},
 		{name: "refused otherwise", answers: []error{otherRefusal}, sends: 1, want: otherRefusal},
 		{name: "refused otherwise while the stream holds the update", answers: []error{otherRefusal}, landed: true, sends: 1, want: otherRefusal},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			js := &scriptedUpdateJetStream{config: nats.StreamConfig{Name: Stream, Replicas: 1}, answers: test.answers, landed: test.landed}
+			js := &scriptedUpdateJetStream{config: nats.StreamConfig{Name: Stream, Replicas: 1}, answers: test.answers, landed: test.landed, otherWrite: test.otherWrite}
 			update := nats.StreamConfig{Name: Stream, Replicas: 3}
 
-			err := updateStream(countedReads(t.Context()), js, &update, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= 3 })
+			_, err := updateStream(countedReads(t.Context()), js, &nats.StreamInfo{Config: js.config}, raisedToThree, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= 3 })
 
 			if !errors.Is(err, test.want) {
 				t.Fatalf("updateStream = %v, want %v", err, test.want)
 			}
-			if len(js.sent) != test.sends || js.reads != test.reads {
-				t.Fatalf("updateStream sent %d updates and read the stream %d times, want %d and %d", len(js.sent), js.reads, test.sends, test.reads)
+			sent, reads := js.counts()
+			if len(sent) != test.sends || reads != test.reads {
+				t.Fatalf("updateStream sent %d updates and read the stream %d times, want %d and %d", len(sent), reads, test.sends, test.reads)
 			}
-			for i, sent := range js.sent {
-				if !reflect.DeepEqual(sent, update) {
-					t.Fatalf("update %d = %+v, want the caller's %+v", i+1, sent, update)
+			for i, got := range sent {
+				want := update
+				if test.otherWrite && i > 0 {
+					want.MaxBytes = otherWriterMaxBytes
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Fatalf("update %d = %+v, want %+v: the caller's change of the stream as the read before it found it", i+1, got, want)
 				}
 			}
 		})
+	}
+}
+
+// raisedToThree is the change of the rows above: the stream as a read found it, at three copies.
+func raisedToThree(current *nats.StreamInfo) nats.StreamConfig {
+	raised := current.Config
+	raised.Replicas = 3
+	return raised
+}
+
+// otherWriterMaxBytes is the byte limit another writer gives the stream in a row of the table
+// above, between this update's sends.
+const otherWriterMaxBytes = 7 << 20
+
+// An update the server never answers is sent again, each send waiting the caller's JetStream wait,
+// until ctx ends, and the step then ends naming the update and ctx's cause: only the caller's
+// context, which every caller bounds by a hang guard, ends it, and no send's own wait does.
+func TestAnUpdateTheServerNeverAnswersIsSentAgainUntilTheWaitEnds(t *testing.T) {
+	js := &scriptedUpdateJetStream{config: nats.StreamConfig{Name: Stream, Replicas: 1}, neverAnswers: true}
+	ctx, cancel := context.WithTimeout(countedReads(t.Context()), 300*time.Millisecond)
+	defer cancel()
+
+	_, err := updateStream(ctx, js, &nats.StreamInfo{Config: js.config}, raisedToThree, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= 3 })
+
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("an update the server never answers = %v, want it to end with the wait's context.DeadlineExceeded", err)
+	}
+	if sent, _ := js.counts(); len(sent) < 2 {
+		t.Fatalf("updateStream sent %d updates, want the update sent again while the server leaves it unanswered", len(sent))
 	}
 }
 
@@ -66,18 +110,28 @@ func TestAnUpdateRefusedAsOverlappingItsOwnStreamIsSettledFromTheStream(t *testi
 // when that answer is nil, and every read with the stream as it holds it, counting the reads. With
 // landed, the other program's update lands with the first answer that is not nil, and it is this
 // update itself: the stream then holds what the caller asked for without the caller's own send
-// having been applied.
+// having been applied. With otherWrite, another writer sets the stream's byte limit with the first
+// answer that is not nil. With neverAnswers, every update is unanswered. Its state is under mu,
+// since an update a wait abandons (Bounded) runs on beside the test.
 type scriptedUpdateJetStream struct {
 	nats.JetStreamContext
-	config  nats.StreamConfig
-	answers []error
-	landed  bool
-	sent    []nats.StreamConfig
-	reads   int
+	mu           sync.Mutex
+	config       nats.StreamConfig
+	answers      []error
+	landed       bool
+	otherWrite   bool
+	neverAnswers bool
+	sent         []nats.StreamConfig
+	reads        int
 }
 
 func (js *scriptedUpdateJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
 	js.sent = append(js.sent, *cfg)
+	if js.neverAnswers {
+		return nil, nats.ErrTimeout
+	}
 	var answer error
 	if len(js.answers) > 0 {
 		answer = js.answers[0]
@@ -91,12 +145,25 @@ func (js *scriptedUpdateJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nat
 		js.config = *cfg
 		js.landed = false
 	}
+	if js.otherWrite {
+		js.config.MaxBytes = otherWriterMaxBytes
+		js.otherWrite = false
+	}
 	return nil, answer
 }
 
 func (js *scriptedUpdateJetStream) StreamInfo(string, ...nats.JSOpt) (*nats.StreamInfo, error) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
 	js.reads++
 	return &nats.StreamInfo{Config: js.config}, nil
+}
+
+// counts is the updates js was sent and the reads it answered so far.
+func (js *scriptedUpdateJetStream) counts() ([]nats.StreamConfig, int) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	return slices.Clone(js.sent), js.reads
 }
 
 // On a real three-server cluster, concurrent reconciles of one stream all end with the stream
@@ -130,7 +197,11 @@ func TestConcurrentUpdatesOfOneStreamEndWithTheStreamHoldingThem(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				sent := update
-				errs[i] = updateStream(countedReads(t.Context()), member, &sent, func(again *nats.StreamInfo) bool {
+				_, errs[i] = updateStream(countedReads(t.Context()), member, &nats.StreamInfo{Config: deployed}, func(current *nats.StreamInfo) nats.StreamConfig {
+					changed := current.Config
+					changed.MaxBytes = sent.MaxBytes
+					return changed
+				}, func(again *nats.StreamInfo) bool {
 					return again.Config.MaxBytes >= update.MaxBytes
 				})
 			}()

@@ -193,12 +193,12 @@ func keepStream(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamC
 	if roleLanes := slices.DeleteFunc(slices.Clone(info.Config.Subjects), func(subject string) bool { return !subjectCapturesRoleLanes(subject) }); len(roleLanes) > 0 {
 		return nil, fmt.Errorf("the stream carries subjects that capture the role lanes, which only a start moves off it: %s", strings.Join(roleLanes, ", "))
 	}
-	if err := updateStream(ctx, js, &kept, func(again *nats.StreamInfo) bool {
-		return reflect.DeepEqual(keptStream(again, cfg, defaultsAnUnsetCap), again.Config)
-	}); err != nil {
-		return nil, refusedSettings(err, &info.Config, &kept)
+	keep := func(current *nats.StreamInfo) nats.StreamConfig { return keptStream(current, cfg, defaultsAnUnsetCap) }
+	sent, err := updateStream(ctx, js, info, keep, func(again *nats.StreamInfo) bool { return reflect.DeepEqual(keep(again), again.Config) })
+	if err != nil {
+		return nil, refusedSettings(err, &info.Config, &sent)
 	}
-	return restoredFields(&info.Config, &kept), nil
+	return restoredFields(&info.Config, &sent), nil
 }
 
 // restoredFields names each field kept differs in from deployed, with its old and new value:

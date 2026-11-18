@@ -931,14 +931,16 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	if err := written("migrate", func() error { return migrateRoleLanesOffStream(js, &info.Config, &desired) }); err != nil {
 		return nil, err
 	}
+	// An update sent again is reconciled from the stream as its read found it (updateStream).
+	reconcile := func(current *nats.StreamInfo) nats.StreamConfig {
+		reconciled, _ := reconciledStream(current, cfg, defaultsAnUnsetCap)
+		return reconciled
+	}
 	if err := written("update", func() error {
-		if err := updateStream(ctx, js, &desired, func(again *nats.StreamInfo) bool {
-			reconciled, _ := reconciledStream(again, cfg, defaultsAnUnsetCap)
-			return reflect.DeepEqual(reconciled, again.Config)
-		}); err != nil {
-			return refusedSettings(err, &info.Config, &desired)
-		}
-		return nil
+		sent, err := updateStream(ctx, js, info, reconcile, func(again *nats.StreamInfo) bool {
+			return reflect.DeepEqual(reconcile(again), again.Config)
+		})
+		return refusedSettings(err, &info.Config, &sent)
 	}); err != nil {
 		return nil, err
 	}
@@ -1070,13 +1072,22 @@ func keptSubjects(deployed, own []string) []string {
 	return kept
 }
 
-// updateStream sends update, a whole stream configuration, and succeeds when the server accepts
-// it. Two other answers come of another update of the same stream landing at once rather than of
-// update itself, and after either the stream update names is read again, the update succeeding
-// when the stream holds what the caller asked for (holds):
-//   - an answer that never came (unanswered): nats-server can leave one of two replica changes
-//     proposed at once unanswered (seen with v2.10.29). That update may still land, so it is not
-//     sent again, and a stream that does not hold it returns the update's own error;
+// updateStream writes change, the update a caller makes of a stream given a read of it, starting
+// from info, the caller's own read, and succeeds when the server accepts it or when the stream,
+// read again, holds what the caller asked for (holds). It returns the update it sent last, which
+// the caller's error names (refusedSettings). Two answers say nothing of whether the update
+// landed, and after either the stream is read again:
+//   - an answer that never came (unanswered): nats-server v2.15.1 drops an update with no answer
+//     when its metadata proposal fails because the term moved (jsClusteredStreamUpdateRequestLocked,
+//     server/jetstream_cluster.go), and v2.10.29 was seen to leave one of two replica changes
+//     proposed at once unanswered. A stream that holds what was asked for has taken the update; one
+//     that does not is sent it again, for as long as ctx lasts, so an update the server dropped
+//     cannot fail the step at the caller's JetStream wait. Each send waits that MaxWait, a hang
+//     guard of one send, and the step ends on a server that never answers only when ctx does,
+//     which every caller bounds: a start's or a keeper pass's hang guard (startHangGuard), the
+//     session reaper's RequestTimeout. An update sent again while the one before it is still
+//     proposed is checked against that proposal (streamAssignmentOrInflight, v2.15.1), so a raise
+//     sent again stacks on the raise in flight rather than choosing another peer set;
 //   - a refusal of the update's subjects as overlapping an existing stream (overlapRefused), which
 //     every nats-server before v2.12.5 can give the later of two updates of one stream: the server
 //     reads the stream's assignment, releases its lock to check the new configuration, and then
@@ -1085,33 +1096,46 @@ func keptSubjects(deployed, own []string) []string {
 //     (jsClusteredStreamUpdateRequest, v2.10.29 server/jetstream_cluster.go; nats-server commit
 //     cb1afd68d014, first released in v2.12.5, skips by name). Nothing was written, so a stream
 //     that does not hold the update is sent it again, the write a server without that race would
-//     have taken after the other, up to overlapSends sends in all. A stream another stream really
-//     does overlap is refused every send, and the last refusal is returned.
+//     have taken after the other, up to overlapSends refused sends in all. A stream another stream
+//     really does overlap is refused every send, and the last refusal is returned.
 //
-// Any other refusal is the update's own error.
+// Each update sent again is change applied to the stream as the read before it found it, so it
+// changes only what the caller changes and never writes back what another writer changed since
+// the caller's read, and it goes bucketAppliedInterval after that read, as sentAgain pauses between
+// two sends. Any other refusal is the update's own error. A send in flight when ctx ends is
+// abandoned, its answer dropped (Bounded), and the step ends naming ctx's cause.
 //
 // The read after the update is a read of a stream's state, sent again while the server leaves it
 // unanswered, each send up to its read limit, for as long as ctx lasts (readAgain): an update
 // sent while the stream's group elects a leader can draw no answer, and a read sent then can be
 // lost too, so a read sent once could leave a raise that landed reported as one that failed.
-func updateStream(ctx context.Context, js nats.JetStreamContext, update *nats.StreamConfig, holds func(*nats.StreamInfo) bool) error {
-	settled := func() bool {
-		again, err := readAgain(ctx, update.Name+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(update.Name) })
-		return err == nil && holds(again)
-	}
-	var err error
-	for range overlapSends {
-		if _, err = js.UpdateStream(update); !overlapRefused(err) {
-			break
+func updateStream(ctx context.Context, js nats.JetStreamContext, info *nats.StreamInfo, change func(*nats.StreamInfo) nats.StreamConfig, holds func(*nats.StreamInfo) bool) (nats.StreamConfig, error) {
+	name := info.Config.Name
+	update := change(info)
+	for overlaps := 0; ; {
+		_, answered, err := Bounded(ctx, func() (*nats.StreamInfo, error) { return js.UpdateStream(&update) })
+		switch {
+		case !answered:
+			return update, fmt.Errorf("the update drew no answer when the wait ended: %w", context.Cause(ctx))
+		case overlapRefused(err):
+			overlaps++
+		case !unanswered(err):
+			return update, err
 		}
-		if settled() {
-			return nil
+		again, readErr := readAgain(ctx, name+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(name) })
+		switch {
+		case readErr == nil && holds(again):
+			return update, nil
+		case readErr != nil:
+			return update, fmt.Errorf("%w, and the read after it: %w", err, readErr)
+		case overlaps == overlapSends:
+			return update, err
 		}
+		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
+			return update, fmt.Errorf("%w, and the wait ended before it was sent again: %w", err, ended)
+		}
+		update = change(again)
 	}
-	if unanswered(err) && settled() {
-		return nil
-	}
-	return err
 }
 
 // overlapSends bounds the sends of one update the server refuses as overlapping an existing stream
@@ -1163,7 +1187,10 @@ func unanswered(err error) bool {
 // numbers and not where they came from, so the names are those of the settings every deployed
 // program reads them from (WithReplicas, WithStreamMaxBytes). One copy is never named: a server
 // refuses no stream for having one. nil, and a refusal of a request that changes none of them, are
-// returned as they are.
+// returned as they are, and so is an error that is no answer of the server's at all: a request the
+// server left unanswered (unanswered) or one whose wait ended (context.Canceled, or the hang
+// guard's cause, which wraps context.DeadlineExceeded), since a server that answered nothing
+// refused no setting.
 //
 // An update that changes the deployed stream's consumer cap names the cap too, under the name
 // nats-server spells it (max_consumers), with the value this binary asks for; the cap is compiled
@@ -1177,8 +1204,8 @@ func unanswered(err error) bool {
 // cap needs is nothing to an operator whose update was refused for another reason. A create is
 // never named: a create carries the cap on every nats-server.
 func refusedSettings(err error, deployed, request *nats.StreamConfig) error {
-	if err == nil {
-		return nil
+	if err == nil || unanswered(err) || errors.Is(err, context.Canceled) {
+		return err
 	}
 	var settings []string
 	if request.Replicas > 1 && (deployed == nil || request.Replicas != deployed.Replicas) {
