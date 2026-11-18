@@ -353,14 +353,15 @@ func allValidUTF8(c wireCase) bool {
 	return utf8.Valid(b) && !bytes.Contains(b, []byte(`\ufffd`))
 }
 
-// FuzzAirlock compares the two sides on every case the byte string generates. The committed
-// corpus under testdata/fuzz/FuzzAirlock reaches every refusal reason and both answers of
-// Validate, so `go test -run FuzzAirlock` is already the differential test; -fuzz goes on
-// from those seeds.
+// FuzzAirlock compares the two sides on the one fixed case compareHostlessEntryWithGuidance
+// writes and on every case the byte string generates. The committed corpus under
+// testdata/fuzz/FuzzAirlock reaches every refusal reason and both answers of Validate, so
+// `go test -run FuzzAirlock` is already the differential test; -fuzz goes on from those seeds.
 func FuzzAirlock(f *testing.F) {
 	if modelPath() == "" {
 		f.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
 	}
+	compareHostlessEntryWithGuidance(f)
 	f.Add([]byte{}) // the empty byte string: no entry, no header, every pool at its head
 	f.Fuzz(func(t *testing.T, data []byte) {
 		c := genCase(data)
@@ -384,15 +385,17 @@ func FuzzAirlock(f *testing.F) {
 	})
 }
 
-// TestTheModelReadsAHostlessEntryWithGuidance: a rules file whose entry binds no host and
-// carries a judge and guidance — the entry that says who decides a key the airlock binds
-// nowhere — is valid on both sides, and both refuse a proxy request for it as a secret not
-// behind the airlock. The generator never writes guidance, so this case is the one that puts the
-// field on the wire to the model, whose derived FromJson must read past it.
-func TestTheModelReadsAHostlessEntryWithGuidance(t *testing.T) {
-	if modelPath() == "" {
-		t.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
-	}
+// compareHostlessEntryWithGuidance: a rules file whose entry binds no host and carries a judge
+// and guidance — the entry that says who decides a key the airlock binds nowhere — is valid on
+// both sides, and both refuse a proxy request for it as a secret not behind the airlock. The
+// generator never writes guidance, so this case is the one that puts the field on the wire to the
+// model, whose derived FromJson must read past it. FuzzAirlock runs it before the generated
+// cases, and it is no test of its own: it needs the model FuzzAirlock needs, so it runs wherever
+// the two sides are compared (`go test -run FuzzAirlock`: the airlock-lean job's two steps,
+// scripts/airlock-check.sh and scripts/airlock-mutants.sh) and skips with FuzzAirlock where no
+// model is built, the one skip scripts/database-skips.sh expects of this package.
+func compareHostlessEntryWithGuidance(t testing.TB) {
+	t.Helper()
 	judge := uint32(600)
 	c := wireCase{
 		Rules: Rules{Secrets: []SecretRule{{
