@@ -3894,6 +3894,83 @@ test("inside NoTooltips Escape in the repository box closes the box and not the 
   }
 });
 
+// Inside `NoTooltips` Escape on the box's clear control is the box's as well, the control being
+// part of the box's place in a row of Details: the box, opened by Enter from the text of an issue
+// with a repository of its own, gives the focus to the control by Tab, and Escape there draws the
+// text again with the focus on it and writes nothing. The press, marked `defaultPrevented`, passes
+// by the dialog binding of Details, a sheet on a phone that closes on Escape too; a second Escape,
+// pressed on the text, closes the sheet, so the binding the first press passed is one that would
+// have closed it. Outside, the row is `main`'s box, which takes no Escape on its clear control:
+// the press closes the sheet as on `main`, and the box and the focus stay where they were.
+test("inside NoTooltips Escape on the repository box's clear control closes the box and not the sheet around it", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    const unemulate = emulateChromiumFocusFixup();
+    const patchIssue = answerIssuePatches();
+    // What each Escape closed, in order.
+    const closed: string[] = [];
+    const escapes = recordEscapes();
+    const view = draw(
+      <KeymapProvider>
+        <EscapeSheet onClose={() => closed.push("sheet")}>
+          <ReadRepositoryRow
+            read={async () => ({ key: "CORE-1", repo: "acme/api", resolved_repo: "acme/api" })}
+          />
+        </EscapeSheet>
+      </KeymapProvider>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      const box = () => scope.getByRole("combobox", { name: "Repository of CORE-1" });
+      const clearName = "Clear the repository of CORE-1";
+      const clear = () => scope.getByRole("button", { name: clearName });
+      if (surface === "outside") {
+        await scope.findByRole("combobox", { name: "Repository of CORE-1" });
+        await settleReads();
+        await act(async () => box().focus());
+        await settleReads();
+        await user.tab();
+        expect(document.activeElement).toBe(clear());
+
+        await user.keyboard("{Escape}");
+        expect(closed).toEqual(["sheet"]);
+        expect(box()).toBeInTheDocument();
+        expect(document.activeElement).toBe(clear());
+        expect(patchIssue).not.toHaveBeenCalled();
+        continue;
+      }
+      const textName = "acme/api, Repository of CORE-1";
+      const text = () => scope.getByRole("button", { name: textName });
+      await scope.findByRole("button", { name: textName });
+      await settleReads();
+      await act(async () => text().focus());
+      await user.keyboard("{Enter}");
+      expect(document.activeElement).toBe(box());
+      // The focus in the box starts the mappings' read, which lands before what follows.
+      await settleReads();
+      await user.tab();
+      expect(document.activeElement).toBe(clear());
+
+      await user.keyboard("{Escape}");
+      expect(closed).toEqual([]);
+      expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
+      expect(scope.queryByRole("combobox")).toBeNull();
+      expect(scope.queryByRole("button", { name: clearName })).toBeNull();
+      expect(document.activeElement).toBe(text());
+      expect(patchIssue).not.toHaveBeenCalled();
+
+      await user.keyboard("{Escape}");
+      expect(closed).toEqual(["sheet"]);
+    } finally {
+      escapes.stop();
+      patchIssue.mockRestore();
+      unemulate();
+      undraw(view);
+    }
+  }
+});
+
 // Inside `NoTooltips` the box's clear control is part of the box in a row of Details. Opened from
 // the text of an issue with a repository of its own, the box gives the focus to the control by
 // Tab, both still drawn and nothing written, since nothing was typed; Shift+Tab takes it back to
@@ -5706,6 +5783,50 @@ const FIELD_EDITORS = [
   ["route", PROPERTY_LABELS.route, CONTROL_LABELS.save_route],
   ["parent", PROPERTY_LABELS.parent, CONTROL_LABELS.save_parent],
 ] as const;
+
+// An editor's Escape is the editor's from its buttons as well as from its box: Escape on Save or
+// on Cancel closes the editor once, and the press, marked `defaultPrevented`, passes by the dialog
+// binding of Details, a sheet on a phone that closes on Escape too. A second Escape, with the
+// editor gone, closes the sheet, so the binding the first press passed is one that would have
+// closed it. The editors are drawn only on the new issue page, so the case is drawn inside
+// `NoTooltips` alone.
+test("inside NoTooltips Escape on an editor's Save or Cancel closes the editor and not the sheet around it", async () => {
+  const user = userEvent.setup();
+  for (const [field, label, saveLabel] of FIELD_EDITORS) {
+    for (const pressed of [saveLabel, CONTROL_LABELS.cancel]) {
+      // What each Escape closed, in order.
+      const closed: string[] = [];
+      const escapes = recordEscapes();
+      const view = draw(
+        <KeymapProvider>
+          <EscapeSheet onClose={() => closed.push("sheet")}>
+            <OpenFieldForm field={field} onClose={() => closed.push("editor")} />
+          </EscapeSheet>
+        </KeymapProvider>,
+        "inside"
+      );
+      try {
+        const scope = within(view.container);
+        const box = scope.getByRole("textbox", { name: label });
+        await waitFor(() => expect(document.activeElement).toBe(box));
+        const button = scope.getByRole("button", { name: pressed });
+        await act(async () => button.focus());
+        expect(document.activeElement).toBe(button);
+
+        await user.keyboard("{Escape}");
+        expect(closed).toEqual(["editor"]);
+        expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
+        expect(scope.queryByRole("textbox", { name: label })).toBeNull();
+
+        await user.keyboard("{Escape}");
+        expect(closed).toEqual(["editor", "sheet"]);
+      } finally {
+        escapes.stop();
+        undraw(view);
+      }
+    }
+  }
+});
 
 /** `main`'s focus indicator, which the page keeps, since its palette holds no focus colour: the
  *  ring and a field's focus rule. */

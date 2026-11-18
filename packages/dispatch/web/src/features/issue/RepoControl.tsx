@@ -124,9 +124,10 @@ export function repoControlName(issueKey: string): string {
  * does. Its clear control is drawn there on the line under the box, at the line's start, and not
  * over the box's right end: below 1280 px `styles.css` sets every input in 16 px and gives every
  * button a 44 px minimum width, which leaves a name that fits the value no room beside a control
- * laid over the box. Escape in the box is the box's alone there: marked `defaultPrevented`, it
- * passes by the dialog binding of a sheet around the box, as Details is on a phone, which a
- * second Escape, pressed outside the box, closes.
+ * laid over the box. Escape in the box's place, the box or its clear control, is the box's alone
+ * there: marked `defaultPrevented` and stopped, it passes by the dialog binding of a sheet around
+ * the box, as Details is on a phone, which a second Escape, pressed outside the box's place,
+ * closes.
  *
  * There a row of Details draws its value as text rather than in the box, as the other rows of
  * Details do: a text box holds its value on one line and cuts a long one at its width, while the
@@ -138,15 +139,16 @@ export function repoControlName(issueKey: string): string {
  * words it draws (WCAG 2.5.3) and says what it sets - `None, Repository of <KEY>`,
  * `<owner/name>, Repository of <KEY>` - and whose press draws the box above in its place, at the
  * row's full width, with the focus in it. The box gives the row back to the text when it is left,
- * on Escape, and once a write made from it is no longer out, the text then saying what the issue
- * resolves to after the write; while it holds a draft, refused or not, or a write that is out, it
- * stays. Its clear control is part of the box there: a focus moved between the two, by Tab or by
- * Shift+Tab, leaves neither, so a keyboard reaches the control, and the row is given back to the
- * text once the focus leaves both. A press of the control, from the keyboard as from the pointer,
- * leaves the focus in the box while its write is out. Whichever of the text and the box takes the
- * other's place takes the focus the other held, the clear control's included, where that focus
- * fell to the document with it. Outside a row of Details the box is drawn whether or not a
- * repository resolves, and its description says `No repository` when none does.
+ * on Escape in the box or on its clear control, and once a write made from it is no longer out,
+ * the text then saying what the issue resolves to after the write; while it holds a draft,
+ * refused or not, or a write that is out, it stays. Its clear control is part of the box there: a
+ * focus moved between the two, by Tab or by Shift+Tab, leaves neither, so a keyboard reaches the
+ * control, and the row is given back to the text once the focus leaves both. A press of the
+ * control, from the keyboard as from the pointer, leaves the focus in the box while its write is
+ * out. Whichever of the text and the box takes the other's place takes the focus the other held,
+ * the clear control's included, where that focus fell to the document with it. Outside a row of
+ * Details the box is drawn whether or not a repository resolves, and its description says
+ * `No repository` when none does.
  */
 export function RepoControl({
   disabled = false,
@@ -347,7 +349,32 @@ export function RepoControl({
         // `relative` is load-bearing: the description is `sr-only`, which is absolutely
         // positioned, and with no positioned ancestor it is laid out against the page and makes
         // it as wide as its own text at a phone width.
-        <span className={`relative ${placeLayout} items-center`} ref={place}>
+        // biome-ignore lint/a11y/noStaticElementInteractions: the place takes no key of its own; it only hears an Escape the box or its clear control inside it sends up, so it needs no role.
+        <span
+          className={`relative ${placeLayout} items-center`}
+          onKeyDown={
+            page === null || showsText
+              ? undefined
+              : (event) => {
+                  if (event.key !== "Escape") return;
+                  // Inside `NoTooltips` the press is the box's, from the box or from its clear
+                  // control: it puts back what the issue holds, closes the box in a row of
+                  // Details, and closes nothing around it. On a phone the box sits in Details, a
+                  // sheet that closes on Escape through the key registry's dialog binding
+                  // (`useDialog`), which takes a press inside a field and passes over one already
+                  // `defaultPrevented` (`keymap.ts`); unmarked, one Escape would close the box and
+                  // the whole sheet with it, and a press stopped here reaches no listener above
+                  // the place either. The focus the box or the control held goes back to the
+                  // row's text as it takes the box's place (`focusHeld`). While the text is drawn
+                  // the place takes no Escape: the box is not open, and the press is the sheet's.
+                  event.preventDefault();
+                  event.stopPropagation();
+                  restore();
+                  setOpened(false);
+                }
+          }
+          ref={place}
+        >
           {showsText && resolvedRepo !== null ? (
             // The repository in the box's font, so that the box opened in its place shows it as
             // the text did, breaking anywhere so that a name with no space in it wraps too.
@@ -397,19 +424,10 @@ export function RepoControl({
                   if (event.key === "Enter") {
                     event.preventDefault();
                     commit();
-                  } else if (event.key === "Escape") {
-                    // Inside `NoTooltips` the press is the box's: it puts back what the issue
-                    // holds, closes the box in a row of Details, and closes nothing around it. On
-                    // a phone the box sits in Details, a sheet that closes on Escape through the
-                    // key registry's dialog binding (`useDialog`), which takes a press inside a
-                    // field and passes over one already `defaultPrevented` (`keymap.ts`);
-                    // unmarked, one Escape would close the box and the whole sheet with it.
-                    // `main`'s page leaves the press unmarked.
-                    if (page !== null) {
-                      event.preventDefault();
-                    }
+                  } else if (event.key === "Escape" && page === null) {
+                    // Inside `NoTooltips` the box's place takes Escape, the box's own included
+                    // (its `onKeyDown`). `main`'s page leaves the press unmarked.
                     restore();
-                    setOpened(false);
                   }
                 }}
                 onMouseDown={(event) => event.stopPropagation()}

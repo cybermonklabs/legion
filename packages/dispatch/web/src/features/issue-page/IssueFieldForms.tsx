@@ -165,7 +165,22 @@ function RouteForm({
     onClose();
   };
   return (
-    <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
+    <form
+      className="flex w-full min-w-0 flex-wrap items-center gap-2"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        // The press is the editor's, from its box, its Save or its Cancel: it closes the editor
+        // and nothing around it. On a phone the editor sits in Details, a sheet that closes on
+        // Escape through the key registry's dialog binding (`useDialog`), which takes a press
+        // inside a field and passes over one already `defaultPrevented` (`keymap.ts`); unmarked,
+        // one Escape would close the editor and the whole sheet with it. A press stopped here
+        // reaches no listener above the form either.
+        event.preventDefault();
+        event.stopPropagation();
+        cancel();
+      }}
+      onSubmit={save}
+    >
       {/* The row of Details this editor is drawn in draws the property's label already, so this
           one is for a screen reader alone: it names the box, and the row's words are drawn once. */}
       <label className="sr-only" htmlFor="issue-route" {...pageChrome}>
@@ -177,17 +192,6 @@ function RouteForm({
         disabled={isClosed}
         id="issue-route"
         onChange={(event) => drafts.writeRoute(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            // The press is the box's: it closes the box and nothing around it. On a phone the
-            // box sits in Details, a sheet that closes on Escape through the key registry's
-            // dialog binding (`useDialog`), which takes a press inside a field and passes over
-            // one already `defaultPrevented` (`keymap.ts`); unmarked, one Escape would close the
-            // box and the whole sheet with it.
-            event.preventDefault();
-            cancel();
-          }
-        }}
         placeholder="role:legion-controller-core"
         ref={input}
         value={drafts.route}
@@ -239,7 +243,19 @@ function ParentForm({
     onClose();
   };
   return (
-    <form className="flex w-full min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
+    <form
+      className="flex w-full min-w-0 flex-wrap items-center gap-2"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape") return;
+        // Escape closes the editor alone, from its box, its Save or its Cancel, as in the route
+        // editor above: marked and stopped, the press passes the dialog binding that would close
+        // the Details sheet around it.
+        event.preventDefault();
+        event.stopPropagation();
+        cancel();
+      }}
+      onSubmit={save}
+    >
       {/* Named for a screen reader alone, as the route box is: the row draws the label. */}
       <label className="sr-only" htmlFor="issue-parent" {...pageChrome}>
         {PROPERTY_LABELS.parent}
@@ -250,14 +266,6 @@ function ParentForm({
         disabled={isClosed}
         id="issue-parent"
         onChange={(event) => drafts.writeParent(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            // Escape closes the box alone, as in the route box above: marked, the press passes
-            // the dialog binding that would close the Details sheet around it.
-            event.preventDefault();
-            cancel();
-          }
-        }}
         placeholder={`${issue.project}-12`}
         ref={input}
         value={drafts.parent}
