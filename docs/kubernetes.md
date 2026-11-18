@@ -326,6 +326,31 @@ Then:
   what bounds it is the pod's own ephemeral-storage limit, and a runaway test that fills the node's disk through it is evicted with all six roles.
   The WAL settings below bound the server's steady state, not a test writing rows.
 
+- The **server's log** is `server.log` in that directory.
+  The launcher names the file to the script (`LEGION_TESTPG_LOG`) and creates it before the first `ensure`, and every role reads it at `/var/run/legion/testpg.log`, the path `LEGION_TEST_PG_LOG` names:
+  role-init binds that one file there read-only, over an empty root-owned file the image makes.
+  It binds the file and not its directory because gVisor does not lock a read-only bind.
+  Measured in an issue pod on 2026-11-17, a role's own `unshare -Urm` remounted a read-only bind read-write, which Linux refuses; the cover over the roles directory held (its unmount answered `EINVAL`).
+  A role with a writable view of the directory could replace `server.log` with a link, and the next `pg_ctl start` or `ensure` would write the server's output through it, into `postgresql.auto.conf` for one.
+  A role that remounts its view of the bound file read-write the same way can write the file, truncate it or `chmod` it, since the file is the launcher's and a role's agent maps to the launcher's user;
+  it can neither replace the file with a link or another file nor remove it, since the file is a mount point: measured in an issue pod on 2026-11-18, after that remount a rename over it, an unlink of it and a link over it each answered `EBUSY`.
+  Nothing that reads the cluster's configuration reads the log.
+  A `chmod 000` would make the next start's writes to the log fail, and with them the start, so `legion-testpg` puts the log back as a regular file of its own, mode 0600, at the head of every start, and the image's build proves a restart over a `chmod 000` log.
+  role-init opens the log without following a link and binds it only when it is a regular file, so nothing planted at the log's path reaches a role.
+  The script and the server only ever append to the file or truncate it in place, so every role's bind keeps pointing at the file the server writes.
+  The daemon's image probe (`legion probe-image --role-namespaces`) makes the same read-only bind of a file, so a runtime that refuses it fails the boot probe rather than every role's start.
+  The server logs every connection with `log_connections=all`: the backend the postmaster forks for a connect writes a `connection received` line with the client's port, then the authentication, the authorization, and the setup time with the fork's share of it.
+  With `log_disconnections` it logs each session's end.
+  That costs about 350 bytes a connection (measured over 4,241 connections, about half of them refused at `max_connections`), for the pod's life, and the launcher's own `ensure` every 15 seconds is one more connection each time, whose five lines measured 653 bytes, about 3.7 MB a day:
+  the pod's ephemeral-storage limit bounds the log, as it bounds the data directory.
+  So a connect that failed with lines of its own failed in the server, and the log names why;
+  a fork the postmaster could not make logs `could not fork new process for connection` instead, with no `connection received` line;
+  and a connect with neither line never reached the postmaster.
+  The listen queue Postgres asks for is twice `max_connections`, 942, below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
+  Measured on 2026-11-17 against a server whose queue was 40, a burst of 2,500 connects ended some in EOF, which libpq reports as `server closed the connection unexpectedly`, and left the rest waiting until the client's own timeout, while the postmaster stayed up and served the next connect at once;
+  under that burst a fork took 20 ms at the median and 109 ms at the 95th percentile.
+  No server setting widens the queue past the runtime's 1,024, so a suite that opens more connections than that at once has to open them in smaller steps or retry them.
+
 - The DSN's user is `legion_test`, created `LOGIN CREATEDB CREATEROLE NOSUPERUSER` after the start;
   `initdb`'s superuser is the container's own OS user (`legion`).
   A test gets `create
@@ -340,6 +365,10 @@ Then:
   A plain `drop database` makes the server end that autovacuum worker itself and needs no such right:
   the clause is there to end a connection a test left open, which is why the helpers write it.
   Without the grant `packages/daemon/internal/workflow`'s tests fail in the pod alone, at a different three each run, with `permission denied to terminate process` (SQLSTATE 42501), and pass in CI, whose login is a superuser.
+  It is granted `pg_monitor` too — `pg_read_all_settings`, `pg_read_all_stats` and `pg_stat_scan_tables`.
+  Every role connects as the same login, so each already sees its siblings' backends in full in `pg_stat_activity`;
+  what the grant adds is the detail of backends under other roles of the cluster, the superuser's connections from `ensure`'s steps and the login roles a suite creates and connects as, of background processes such as autovacuum, and the settings only a superuser reads.
+  It reads no file, since it does not hold `pg_read_server_files`, and runs no program.
 
 - `ensure` is idempotent and cheap when the server is up:
   it returns after one connection through the DSN itself (`psql … select 1`, with a connect timeout), and otherwise initialises and starts under `flock -o`.
@@ -367,6 +396,13 @@ Then:
 - `template1` carries the `vector` extension, so every database made from it has pgvector, and the Dispatch browser suite runs on a database a role makes for it there (`createdb`, then `DATABASE_URL`).
 
 - The image's own build runs `legion-testpg check` and a real `initdb`, start, `create database` and extension read as the runtime user, so a build whose server package or script stops working fails there rather than at every pod's start.
+
+- **Upgrading.**
+  This release refuses one operator mount the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at `/var/run/legion/testpg.log` (or `/run/legion/testpg.log`, the same path through the image's link), where role-init now binds the server's log.
+  The loader refuses it in every deployment, whether or not it sets `runtime.kubernetes.test_postgres`:
+  `runtime.kubernetes.pod.volume_mounts[<i>].mount_path /var/run/legion/testpg.log overlaps /var/run/legion/testpg.log, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's` (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
+  A daemon of this release does not start on a file it refuses, so run this release's `legion start --check-config` on the file before the rollout, and move such a mount elsewhere.
+  A pod on a worker image of an earlier release reads no log and tells no role `LEGION_TEST_PG_LOG`, whatever release the daemon runs: the launcher, role-init and the file the log is bound over all come from the image.
 
 ### Image size and pull time
 
@@ -516,7 +552,7 @@ each agent's model resolves, with a working key, as the task tool resolves a sub
 Before those probes the probe Sandbox's command adds `--role-namespaces /var/run/legion/role-probe`, a disk `emptyDir` (`role-probe`) the probe pod mounts there as an issue pod mounts `role-homes`:
 the probe first runs one role generation through `legion launcher role-init` as an issue pod's launcher runs every role, over a layout of its own in that directory and with its own `legion version` as the shim, and exits 1 with `legion probe-image: role namespaces: <why>` when the runtime or node refuses what that generation makes (`launcher.CheckRoleNamespaces`):
 user, mount, PID and IPC namespaces of its own;
-its gh, private and state directories bound at the fixed paths;
+its gh, private and state directories bound at the fixed paths, and a test database's log file bound read-only at its own fixed path, as every role of a pod that serves the pod's test database gets it;
 an overlay whose lower layer is an empty home directory on the probe's own `emptyDir`;
 its own `/tmp` and `/var/tmp`, memory filesystems at `/run/lock` and `/dev/shm`, a devpts at `/dev/pts` and an mqueue at `/dev/mqueue`;
 the covers and its own `/proc`; and `legion version` started as uid 1000 in a nested user namespace, which must exit 0.
@@ -2094,9 +2130,10 @@ Left in place, the row would then publish the ask it was queued with, which name
 The roll forward does not need the row: it resets every pod round that the earlier release opened or kept open, as the first deploy did, and then asks again each role of such a round that has not answered.
 The `update` clears the ask mark (`update_tasked_at`) of every claim of a pod round that has not answered.
 The earlier release reads that mark as the moment it queued its own task, and it asks the role again only once its re-ask bound has passed since that moment, 1 hour by default (`askForUpdate` and `updateReaskDue` in `internal/supervise/table.go` on that release).
-This release writes the mark when it queues its Envoy ask, before the ask is published, so a role whose `update_ask` row the `delete from outbox` above removes was never asked.
+This release writes the mark only once its Envoy ask reached a session (`Machine.PublishUpdateAsk`), so a role whose `update_ask` row the `delete from outbox` above removes has no mark of that ask.
 With the mark cleared, the earlier release queues its task at once for each role of an open pod round that has not answered.
 A claim that has answered keeps its mark, and the earlier release asks no claim that has answered.
+A rollback to a release that writes the mark when it queues its ask (any release before migration `20261117200337`) asks once more each role whose ask of an open round is still queued at the rollback: that release reads such a claim as unasked and queues its own ask beside the row, so the role can read the ask twice.
 
 **Every daemon sharing the database moves together.**
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `claims` is one table for all of them, with the project in a column of each row (`store/migrations/0002_claims.up.sql`).
@@ -4152,11 +4189,17 @@ architect, planner, implementer, tester, reviewer, merger):
    its first 64 KiB is written as a line of its own and the rest follows on a new line behind the prefix again.
    A line the launcher writes for no role (a panic, a failed reap) has no prefix, and when the container ends the daemon's detail for a role quotes that role's last 20 lines, its prefix dropped, then the container's last 20 unprefixed lines under `the container's own last
    lines, no role's:` (`roleLog` in `internal/runtime/sandbox/observe.go`), all read from the log's last 2,000 lines and at most 1 MiB.
-   As the container's PID 1 the launcher reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
-   As that PID 1 it also runs a gVisor pod's memory guard, which near the limit ends one process that is neither Legion's own nor an agent's own, by the order of ends of [The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod).
-   In a microVM issue pod it runs the guest watch instead, which steers the pod's own kernel to stop a command ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
-   Only as that PID 1 does it sweep the clone's stale git locks (item 5): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
-   A launcher started any other way, by hand inside a role among them, sees that role's processes alone and would remove a lock another role's git or jj holds, so it writes one `launcher: git lock sweep: off reason=the launcher is pid <n>, …` line and sweeps nothing (`serveGitLockSweep`).
+   As the container's PID 1 the launcher does three things no other process of the pod does:
+
+   - It reaps every orphan its PID namespace adopts (what a `kubectl exec` leaves behind), never a role's own generation, whose exit its role reads.
+     Nor does it reap a process it runs for a step of its own (the test database's start script, the jj and git of a workspace restore, and the leak-check install's run of the check), which its `pidGuard` holds until that step's own wait has read the exit: a step whose exit the reaper took first would fail with `waitid: no child processes`, or under gVisor at times `waitid: no such process`, which for the leak-check install refuses the role's launch.
+
+   - It runs a gVisor pod's memory guard, which near the limit ends one process that is neither Legion's own nor an agent's own, by the order of ends of [The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod).
+     In a microVM issue pod it runs the guest watch instead, which steers the pod's own kernel to stop a command ([Memory in a microVM pod](#memory-in-a-microvm-pod)).
+
+   - It sweeps the clone's stale git locks (item 5): a pass keeps a lock that a process of the container holds open and may remove one that none holds, and only PID 1 sees every role's processes.
+     A launcher started any other way, by hand inside a role among them, sees that role's processes alone and would remove a lock another role's git or jj holds, so it writes one `launcher: git lock sweep: off reason=the launcher is pid <n>, …` line and sweeps nothing (`serveGitLockSweep`).
+
    A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
    a role-init that ends any other way without reporting its shim's status (a panic's
    2) is reported with that exit as it is.
@@ -4251,6 +4294,7 @@ The issue's `-boot` Secret holds the provisioning token, projected into `workspa
 The launcher starts each role generation through the hidden `legion launcher role-init`, in its own Linux user, mount, PID and IPC namespaces.
 Inside them `/var/run/legion/roles` is covered by an empty memory filesystem, and the role's own gh, private, state and agent-secrets directories are bound back at the fixed paths `/var/run/legion/gh`, `/var/run/legion/private`, `/var/run/legion/state` and `/var/run/legion/agent-secrets`;
 its launcher token is bound nowhere, so no role's process reads it, and no role sees a sibling's directories.
+The one file from under the covered directory a role reads is the pod's test server log, which role-init binds read-only at `/var/run/legion/testpg.log` where the pod serves a test database ([A test database in the pod](#a-test-database-in-the-pod) says why the file and not its directory).
 `/home/legion` is an overlay whose lower is the image's and whose upper and work directories are the role's on `role-homes` (a work directory of each generation's own), with every mount the container holds under `/var/run/legion/home` bound back on top at its own path under `/home/legion`, and `/var/run/legion/home` itself then covered.
 The mount carries `userxattr`, so gVisor writes a renamed directory's opaque mark in the `user.overlay.` attribute namespace, which the role's own upper layer keeps and the role may write (`homeOverlayOptions`, `roleinit_linux.go`);
 without it the mark goes to `trusted.overlay.opaque`, which a task in the role's nested user namespace may not write, and gVisor panics when that write is refused, which ends the pod's whole sandbox.
@@ -4272,7 +4316,7 @@ A mount at, under or above `/dev/mqueue`, `/dev/ptmx`, `/dev/pts` or `/proc` is 
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p>
 overlaps /dev/pts, which every role's namespace in an issue pod replaces with a filesystem of its
 own and carries no mount back onto: a mount may be neither at, under, nor above /dev/pts`.
-A mount at, under or above `/var/run/legion/roles`, `/var/run/legion/home` or `/var/run/legion/role-probe` (the image probe's volume, [The image is probed before it publishes](#the-image-is-probed-before-it-publishes)) is refused as any other path Legion mounts is:
+A mount at, under or above `/var/run/legion/roles`, `/var/run/legion/home` or `/var/run/legion/role-probe` (the image probe's volume, [The image is probed before it publishes](#the-image-is-probed-before-it-publishes)), or at `/var/run/legion/testpg.log`, where role-init binds the pod's test server log ([A test database in the pod](#a-test-database-in-the-pod)), is refused as any other path Legion mounts is:
 `runtime.kubernetes.pod.volume_mounts[i].mount_path <p> overlaps /var/run/legion/roles, which
 Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's`.
 Every one of these rules, and the check of the paths Legion mounts and the image owns, compares a mount through the worker image's links to directories (`/var/run` to `/run`, `/var/lock` to `/run/lock`, `/run/shm` to `/dev/shm`, and the merged `/bin`, `/sbin`, `/lib` and `/lib64`), since the kubelet mounts a path spelled through one where the link points:
@@ -5688,7 +5732,7 @@ Outside every role it protects:
 
 - the launcher itself, which serves every role;
 
-- each process the launcher runs for a step of its own (the test database's start script, and the jj and git of a workspace restore, which its `pidGuard` holds), with every process under it;
+- each process the launcher runs for a step of its own (the test database's start script, the jj and git of a workspace restore, and the leak-check install's run of the check, which its `pidGuard` holds), with every process under it;
 
 - the test database's server, the launcher's direct child whose executable is `postgres` and whose working directory is the test database's data directory, with every backend under it:
   ending one backend makes the server end and restart every backend, which stops every role's test database at once ([A test database in the pod](#a-test-database-in-the-pod)).
@@ -6078,13 +6122,13 @@ Every claim of the issue that has a session and has not retired is asked, since 
 The daemon publishes one message to each such role's own Envoy topic, the architect's included (`askRound`, `record.UpdateAsk`):
 it names the drift, the round's own id and the moment the round ends, it says that only the role's own push keeps its work, and it asks the role to push its work to the issue branch and answer `ready_for_update` with that id.
 The text is the one `supervise.UpdateTask` builds from the reasons and the opening the round recorded, so every role of one round reads one text.
-Each role that has not answered is asked at most once per round, which its claim records (the `update_tasked_at` column), and nothing asks it again.
+Each role that has not answered is asked once per round by an ask that reaches its session: the daemon marks the claim asked (the `update_tasked_at` column) when the publish reached a session, an ask that finds no live session on the role's topic marks nothing, the next sweep that finds the role ready asks it again, and no sweep asks a role while an ask of the round still waits for it in the outbox.
 The daemon asks a role only once its agent has said it is ready (`supervise.SaidReady`).
 A claim that is queued, launching, registered but not ready, or suspended has no live session on its role's topic, so the sweep asks it nothing and writes no mark on it.
 The first sweep after its agent is ready asks it.
 The message can reach a role in the middle of a turn, and it tells the role to act at once.
 A role that no live session holds — one whose pod an idle release took, or one a suspension let go — is not revived to read it, and the round does not wait for that role past its bound.
-A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered.
+A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered, and the next sweep asks that role again.
 A `failed` claim is the exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed goes with the disk, and a retry brings it back into the round as any other claim.
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to push its work and end its turn, since its round ends at the bound whatever it does.

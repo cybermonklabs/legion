@@ -12,14 +12,15 @@ import (
 
 // helperChildVariables are the markers this package's helper children are re-executed with: the
 // test binary runs as a launcher's child (TestLauncherChild), as a launcher of its own
-// (TestLauncherProcess, TestLauncherPIDOneHelper), as a generation that waits for a SIGTERM
+// (TestLauncherProcess, TestLauncherPIDOneHelper), as PID 1 of a PID namespace of its own
+// (runAsPIDOne's helpers), as a generation that waits for a SIGTERM
 // (TestLauncherTermDialer) and as role-init in a role's namespaces (TestRoleInitHelper and the
 // helpers of roleinit_test.go, which register their own markers here). Each reads its
 // instructions from a LEGION_ variable its test hands it, and Guard takes every LEGION_ variable
 // out, so a process that is one of these children runs no Guard of its own: it was started by a
 // guarded test process, whose environment it inherits, so it holds nothing of the pod's either.
 var helperChildVariables = []string{
-	launcherChildEnv, launcherProcessEnv, launcherTermDialerEnv, namespaceHelperEnv,
+	launcherChildEnv, launcherProcessEnv, launcherTermDialerEnv, namespaceHelperEnv, pidOneHelperEnv,
 	roleInitEnv, roleProbeEnv,
 }
 

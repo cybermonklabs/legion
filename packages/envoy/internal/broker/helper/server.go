@@ -789,7 +789,7 @@ func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string,
 	for i, name := range names {
 		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
 	}
-	compact, err := record.Sign(sess.identity().Key, s.Broker.URL, details, reason, "", lifetimeSeconds, time.Now())
+	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), details, reason, "", lifetimeSeconds, time.Now())
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
@@ -816,10 +816,9 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 		peer.Close()
 		return Response{Code: CodeBadRequest, Error: "sign-launcher needs method and url"}
 	}
-	if !operatorRoute(s.Broker.URL, method, url) {
+	if !operatorRoute(s.Broker.URL.Raw(), method, url) {
 		peer.Close()
-		b := redact.URL(s.Broker.URL)
-		return Response{Code: CodeBadRequest, Error: fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; not %[2]s %[3]s", b, method, redact.URL(url))}
+		return Response{Code: CodeBadRequest, Error: fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; not %[2]s %[3]s", s.Broker.URL, method, redact.URL(url))}
 	}
 	sess, unknown := s.Registry.RootOrUnknown(pid)
 	if sess != nil {
@@ -1482,13 +1481,15 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 // a skewed clock's PROOF_INVALID above all, which a corrected clock mends — says nothing about
 // the row, and reading one as the end of an enrollment costs a session every pending request
 // and grant that enrollment carries. renewLoop and confirmInherited draw the line in the same
-// place, so a renewal and a confirmation cannot disagree about what ended an enrollment.
+// place, so a renewal and a confirmation cannot disagree about what ended an enrollment. The
+// fallback reads the broker's words as they came (BrokerError.says), so it holds beside an address
+// whose refusals do not print them.
 func enrollmentNotLive(err error) (string, bool) {
 	var be *BrokerError
 	if !errors.As(err, &be) {
 		return "", false
 	}
-	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && strings.Contains(be.Message, "not live")) {
+	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && be.says("not live")) {
 		return be.Code, true
 	}
 	return be.Code, false

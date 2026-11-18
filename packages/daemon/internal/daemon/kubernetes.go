@@ -452,7 +452,16 @@ func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, s
 	if k == nil || k.AgentSecrets == nil {
 		return nil, nil, nil
 	}
-	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: &http.Client{Timeout: 30 * time.Second}, TokenFile: k.AgentSecrets.TokenFile, Log: log}
+	// Every call this client makes to the broker carries a Proof header of its own, so a 3xx
+	// answered for the broker - by the broker, or by anyone who can answer for it - must not
+	// hand that proof to a host this deployment never named. The refusal is written here as
+	// internal/modeltoken writes it, since envoy's redirects package is internal to that
+	// module; its comment is where the whole reason is.
+	broker := &http.Client{
+		Timeout:       30 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
 	go func() { _ = client.Start(context.Background()) }()
 	return brokerEnroller{client: client}, newRegistrar(*k.AgentSecrets, client), client
 }
