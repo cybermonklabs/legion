@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,9 @@ const (
 	messageAwareness = 1
 	messageAuth      = 2
 	messageStateless = 5
+	// messageSyncStatus is the room's answer to each sync step 2 or update a peer sends: one
+	// number, 1 where the room applied it and 0 where it did not.
+	messageSyncStatus = 8
 )
 
 // The auth message's sub-kinds: the client's token, and the room's two answers to it.
@@ -95,6 +99,16 @@ type Peer struct {
 	// closed is the close frame the room ended the connection with, nil for one that ended
 	// otherwise.
 	closed *gws.CloseError
+	// heard is each SyncStatus answer the room sent and the connection's end, as they arrived
+	// (Heard).
+	heard []Heard
+}
+
+// Heard is one thing a peer heard from the room - a SyncStatus answer or the connection's end -
+// and when, for a test that has to say what a peer was told when it fails.
+type Heard struct {
+	At   time.Time
+	What string
 }
 
 // AwarenessEntry is one client's state in an awareness update: its client id, its clock, and its
@@ -384,6 +398,21 @@ func (p *Peer) Scope() string {
 	return p.scope
 }
 
+// Heard is each SyncStatus answer the room has sent this peer and, once the connection has
+// ended, its end, in the order they arrived.
+func (p *Peer) Heard() []Heard {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return slices.Clone(p.heard)
+}
+
+// hear records what as heard now.
+func (p *Peer) hear(what string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.heard = append(p.heard, Heard{At: time.Now(), What: what})
+}
+
 // Close closes the connection and waits for the reader to stop.
 func (p *Peer) Close() {
 	_ = p.connection.Close()
@@ -424,6 +453,7 @@ func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 			if errors.As(err, &closed) {
 				p.closed = closed
 			}
+			p.hear(fmt.Sprintf("the connection ended: %v", err))
 			return
 		}
 		decoder := encoding.NewDecoder(message)
@@ -455,6 +485,10 @@ func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 			}
 		case messageAuth:
 			p.readAuth(decoder)
+		case messageSyncStatus:
+			if applied, err := decoder.ReadVarUint(); err == nil {
+				p.hear(fmt.Sprintf("SyncStatus %d (applied: %t)", applied, applied == 1))
+			}
 		}
 	}
 }

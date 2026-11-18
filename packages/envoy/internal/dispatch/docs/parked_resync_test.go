@@ -240,8 +240,16 @@ func (p *lcPage) rowsHeld() int {
 	return len(p.rows)
 }
 
+// lcText is the first paragraph's text of doc, a page's or the room's. It reads a copy of doc's
+// state: the page's reader and the room's apply write to their documents while the drive reads
+// them, and ygo walks a type's children under no lock of its own (YXmlFragment.Children), so the
+// state is encoded under the document's lock and read where nothing else writes.
 func lcText(doc *crdt.Doc) string {
-	texts := paragraphTextsOf(doc.GetXmlFragment(fragmentName))
+	copied := newDocumentCopy()
+	if err := crdt.ApplyUpdateV1(copied, crdt.EncodeStateAsUpdateV1(doc, nil), nil); err != nil {
+		return ""
+	}
+	texts := paragraphTextsOf(copied.GetXmlFragment(fragmentName))
 	if len(texts) == 0 {
 		return ""
 	}
@@ -275,8 +283,18 @@ func TestAnEditParkedBehindALostCommitIsUnsavedUntilTheCommitThatLandsItIsStored
 			service, artifactID := newTestService(t)
 			service.settle = 2 * time.Second
 			var lose atomic.Bool
+			// The append lost is that of a commit the room has relayed. The room hands each append
+			// on as it takes the commit, with no linger before the store, so an append refused at
+			// once can fail the room, and close bob, before the relay of alice's edit reaches him.
+			// The hook holds the append it loses until bob holds that edit (relayed), as a database
+			// that refuses the transaction at its commit would.
+			relayed := make(chan struct{})
 			service.beforeRoomAppend = func(string) error {
 				if lose.CompareAndSwap(true, false) {
+					select {
+					case <-relayed:
+					case <-time.After(10 * time.Second):
+					}
 					return errors.New("scratch: the database refused the append")
 				}
 				return nil
@@ -325,7 +343,11 @@ func TestAnEditParkedBehindALostCommitIsUnsavedUntilTheCommitThatLandsItIsStored
 
 			lose.Store(true)
 			alice.typeAt(4, "L")
-			lcWait(t, "bob to be relayed alice's L", 5*time.Second, func() bool { return strings.Contains(lcText(bob.doc), "L") })
+			heldL := lcWait(t, "bob to be relayed alice's L", 5*time.Second, func() bool { return strings.Contains(lcText(bob.doc), "L") })
+			close(relayed)
+			if !heldL {
+				t.Fatal("bob was never relayed alice's L while its append waited, so the commit lost is not one the room relayed")
+			}
 			lcWait(t, "both sockets to end", 10*time.Second, func() bool {
 				select {
 				case <-alice.ended:

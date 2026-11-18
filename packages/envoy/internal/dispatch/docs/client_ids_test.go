@@ -419,6 +419,8 @@ func TestAnAgentsWriteWhileABrowserTypesIsUnderAClientNoPageIsGiven(t *testing.T
 // under it, claims it. The id the history never named is claimed by its first writer, and
 // mallory's edit under a claimed id afterwards is refused.
 func TestAnEarlierBuildsTabLandsItsEditsAndSavedRowsAcrossTheDeploy(t *testing.T) {
+	// The service's lines are kept for the claim trace (awaitClaimRefused) and printed only with it.
+	logs, start := captureLogs(t), time.Now()
 	service, artifactID, serverURL := clientIDRoom(t)
 	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
 	url := socketURL(serverURL, artifactID)
@@ -457,7 +459,7 @@ func TestAnEarlierBuildsTabLandsItsEditsAndSavedRowsAcrossTheDeploy(t *testing.T
 	if err := early.Write(ygsync.EncodeUpdate(forgedUnder(t, early.Doc, "EVIL", open, early.Doc.StateVector().Clock(open)))); err != nil {
 		t.Fatal(err)
 	}
-	awaitRefused(t, early, "mallory claiming the open tab's id")
+	awaitClaimRefused(t, service, artifactID, open, early, logs, start, "mallory claiming the open tab's id")
 	// The tab left open reconnects across the deploy, still of the earlier build.
 	back := docstest.Dial(t, url, pageHeader("alice"), artifactID, openTab.Doc)
 	awaitAnswer(t, back, "the document after the deploy")
@@ -490,7 +492,94 @@ func TestAnEarlierBuildsTabLandsItsEditsAndSavedRowsAcrossTheDeploy(t *testing.T
 	if err := mallory.Write(ygsync.EncodeUpdate(forgedUnder(t, mallory.Doc, "EVIL", reloaded, next))); err != nil {
 		t.Fatal(err)
 	}
-	awaitRefused(t, mallory, "mallory")
+	awaitClaimRefused(t, service, artifactID, reloaded, mallory, logs, start, "mallory")
+}
+
+// awaitClaimRefused is awaitRefused for page, whose update claims client in artifactID, that says,
+// when the room leaves page connected, what the claim rule read and what page and the room were
+// told: the stored rows and whether each names client (historyNames), the versions and pending
+// authors the rule reads for a co-author (claimable), the room's state vector, the row the table
+// holds for client, what page heard and when, and the service's lines for the room since start.
+// It prints nothing where the room closes page.
+func awaitClaimRefused(t *testing.T, service *Service, artifactID string, client crdt.ClientID, page *docstest.Peer, logs *storetest.LockedLog, start time.Time, who string) {
+	t.Helper()
+	select {
+	case <-page.Ended:
+	case <-time.After(30 * time.Second):
+		logClaimTrace(t, service, artifactID, client, page, logs, start)
+		t.Fatalf("%s's page stayed connected: the room did not refuse its update", who)
+	}
+	awaitRefused(t, page, who)
+}
+
+// logClaimTrace logs what awaitClaimRefused says of a claim the room did not refuse. Times are
+// from start, the test's own; a query that fails is logged and the rest goes on.
+func logClaimTrace(t *testing.T, service *Service, artifactID string, client crdt.ClientID, page *docstest.Peer, logs *storetest.LockedLog, start time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	since := func(at time.Time) time.Duration { return at.Sub(start).Round(time.Millisecond) }
+	t.Logf("claim trace at %v, test began %s", since(time.Now()), start.UTC().Format(time.RFC3339Nano))
+	named, from, heldTo, err := service.historyNames(ctx, artifactID, client)
+	t.Logf("claim trace: the stored history names client %d: %t, from version %d, to clock %d (error %v)", client, named, from, heldTo, err)
+	if rows, err := service.store.Pool.Query(ctx, `select version, update, created_at from doc_updates where artifact_id = $1 order by version`, artifactID); err != nil {
+		t.Logf("claim trace: read doc_updates: %v", err)
+	} else {
+		for rows.Next() {
+			var version int64
+			var update []byte
+			var created time.Time
+			if err := rows.Scan(&version, &update, &created); err != nil {
+				t.Logf("claim trace: read doc_updates: %v", err)
+				break
+			}
+			structs, ends, metaErr := crdt.ParseUpdateMeta(update)
+			_, names := structs[client]
+			t.Logf("claim trace: doc_updates version %d, stored %s, %d bytes: names client %d %t (clocks %d to %d; parse error %v)",
+				version, created.UTC().Format(time.RFC3339Nano), len(update), client, names, structs[client], ends[client], metaErr)
+		}
+		rows.Close()
+	}
+	for _, query := range []string{
+		`select 'version ' || number || ' at doc_updates version ' || coalesce(doc_update_version::text, 'none') || ', authors ' || coalesce(authors::text, 'none') from artifact_versions where artifact_id = $1 order by number`,
+		`select 'pending author ' || actor::text || ' written through ' || written_through from doc_pending_authors where artifact_id = $1 order by written_through`,
+	} {
+		rows, err := service.store.Pool.Query(ctx, query, artifactID)
+		if err != nil {
+			t.Logf("claim trace: %v", err)
+			continue
+		}
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Logf("claim trace: %v", err)
+				break
+			}
+			t.Logf("claim trace: %s", line)
+		}
+		rows.Close()
+	}
+	var binding string
+	if err := service.store.Pool.QueryRow(ctx, `
+		select actor_kind || ':' || actor_id || ' minted ' || minted || ' landed ' || landed ||
+			' claimed_from ' || coalesce(claimed_from::text, 'none') || ' presented_at ' || coalesce(presented_at::text, 'never')
+		from document_client_ids where artifact_id = $1 and client_id = $2
+	`, artifactID, int64(client)).Scan(&binding); err != nil {
+		binding = "no row (" + err.Error() + ")"
+	}
+	t.Logf("claim trace: document_client_ids for client %d: %s", client, binding)
+	if live := service.srv.GetDoc(artifactID); live != nil {
+		t.Logf("claim trace: the room's state vector: %v", live.StateVector())
+	} else {
+		t.Logf("claim trace: the room is not loaded")
+	}
+	for _, heard := range page.Heard() {
+		t.Logf("claim trace: at %v the page heard %s", since(heard.At), heard.What)
+	}
+	lines := logs.Lines(artifactID)
+	if lines == "" {
+		lines = "(none)"
+	}
+	t.Logf("claim trace: the service's lines for the room since the test began:\n%s", lines)
 }
 
 // The race a claim leaves among co-authors loses nothing in silence. Bob, who edited the document

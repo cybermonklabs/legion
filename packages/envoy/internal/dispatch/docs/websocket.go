@@ -989,7 +989,7 @@ func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
 // of the two and not their sum because the larger covered every room measured
 // (answerHeapAStruct), and a sum would charge the frame again to every room whose state term
 // already covers it: a room of a mebibyte of prose is granted 24,281,920 bytes on its state, as
-// it was before the frame was priced, where the update at its fullest asks 1,412,096 beside the
+// it was before the frame was priced, where the update at its fullest asks 1,620,096 beside the
 // clients.
 //
 // The room's clients are what this answer's heap follows, and the library counts them in constant
@@ -1003,8 +1003,9 @@ func answerWeight(live *crdt.Doc, stateBytes, structs int64) int64 {
 // is scratch it drops update by update - each update it packs begins a delete set and a state
 // vector of its own, grows an encoder to the update's size and copies the update out of it - and
 // garbage is the Go memory limit's to bound, which the collector steers the whole heap to, not
-// the pool's. Measured 2026-11-16 on theorem-labs/ygo v1.55.1-theorem.6, the fewest bytes of five
-// answers against the most live heap a collection marked (liveHeapPeak): the grant covered what
+// the pool's. Measured 2026-11-16 on theorem-labs/ygo v1.55.1-theorem.6 with a struct priced at
+// 88 bytes (answerHeapAStruct, raised since for arm64), the fewest bytes of five answers against
+// the most live heap a collection marked (liveHeapPeak): the grant covered what
 // each answer held - 1.06 to 4.21 times over in rooms of 1,000 structs and more, and in smaller
 // ones by its fixed 4,096 bytes, which cover the 3,504 at most such a room held past the terms
 // that grow with it (TestAnAnswerFromARoomOfUnderAThousandStructsHoldsNoMoreThanItsGrant) -
@@ -1076,14 +1077,28 @@ const answerHeapAClient = 340
 // granted. answerHeapAStruct and answerHeapAnAnswer are the pair that covers all of them: with
 // 4,096 set aside, the most a room needed was 85.95 bytes a struct (a run of 2,048 characters
 // with every other one deleted, 181,656 bytes beside its two clients' 680), then 83.90 (a run of
-// 257 GC structs, 27,176) and 79.54 (542 structs of 200 GC structs a client, 48,568). It is set
-// past the most, as bytesOfHeapAStruct is.
-const answerHeapAStruct = 88
+// 257 GC structs, 27,176) and 79.54 (542 structs of 200 GC structs a client, 48,568). It was set
+// past the most, at 88, as bytesOfHeapAStruct is.
+//
+// It is raised to 101 for arm64, which holds more of the same cut. CI's envoy-go-docs-finalizers
+// job 134902505095 (run 44333064387, ubuntu-24.04-arm, 2026-11-18) read the run of 256 GC structs
+// of one client - 266 structs of 2 clients - holding 30,608 bytes at the fewest of five readings
+// (TestAnAnswerFromARoomOfUnderAThousandStructsHoldsNoMoreThanItsGrant), where this repository's
+// amd64 pod read 27,448 at two processors in seven of eight runs that day (25,400 in the other),
+// against the 28,184 that 88 granted: 1.027 times its reading. The same margin over the arm64
+// reading is 30,608 x 28,184 / 27,448 = 31,429, and beside the two clients' 680 and the fixed
+// 4,096 the room's 266 structs take (31,429 - 4,776) / 266 = 100.2 bytes each, so 101, which
+// grants that room 31,642: 1.034 times the arm64 reading and 1.153 times the amd64 one. The run
+// of 512 GC structs, which read 51,408 there and 47,928 here, is granted 57,498. On amd64 the
+// raise charges 13 bytes more for each struct of the update being packed, up to
+// answerFrameStructs: at most 208,000 bytes more an answer, and nothing more where the state term
+// sets the grant.
+const answerHeapAStruct = 101
 
 // answerHeapAnAnswer is the heap an answer cut from a room's own structs holds whatever the room:
 // the splitter, its maps, the encoders and each update's three copies at their smallest. The ten
-// structs of the seeded paragraph held 2,800 to 3,296 bytes in all, 2,076 beyond their 880 a
-// struct and their client's 340, and the document a test room is seeded with 2,112 to 2,480. It
+// structs of the seeded paragraph held 2,800 to 3,296 bytes in all, 2,076 beyond their 880 at 88
+// a struct and their client's 340, and the document a test room is seeded with 2,112 to 2,480. It
 // is set at 4,096, past those, which is what leaves answerHeapAStruct at the 85.95 the
 // small-struct rooms needed rather than the 95.90 a 2,048 would.
 const answerHeapAnAnswer = 4_096

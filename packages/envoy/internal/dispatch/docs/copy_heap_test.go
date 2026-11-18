@@ -615,9 +615,12 @@ func TestAnAnswerAllocatingPastItsGrantHoldsNoMoreLiveHeapThanIt(t *testing.T) {
 // hundreds of collections over thousands of answers find the answer's own peak. Measured
 // 2026-11-16 on theorem-labs/ygo v1.55.1-theorem.6, the answers held, past their variable
 // terms, from below nothing to 3,360 and 3,504 bytes in two runs (the run of 256 GC structs,
-// 27,448 and 27,592 against a grant of 28,184), where single readings of that room read up to
-// 31,480 and one of the run of 512 GC structs 328 bytes past its grant: the measurement's floor,
-// which the fewest of five sets aside.
+// 27,448 and 27,592 against the 28,184 a struct priced at 88 granted), where single readings of
+// that room read up to 31,480 and one of the run of 512 GC structs 328 bytes past its grant: the
+// measurement's floor, which the fewest of five sets aside. On arm64 the same room read 30,608
+// (CI job 134902505095), past that grant, and the struct's price was raised to cover it
+// (answerHeapAStruct), which grants the room 31,642. Each run logs the architecture and the
+// processors it measured on, so a reading names the machine it came from.
 func TestAnAnswerFromARoomOfUnderAThousandStructsHoldsNoMoreThanItsGrant(t *testing.T) {
 	skipUnderRace(t)
 	godebug := "gcstoptheworld=1"
@@ -628,6 +631,8 @@ func TestAnAnswerFromARoomOfUnderAThousandStructsHoldsNoMoreThanItsGrant(t *test
 	if !measuredAlone(t) {
 		return
 	}
+	t.Logf("measured on %s/%s, %d processors of the machine's %d (liveHeapProcessors)",
+		runtime.GOOS, runtime.GOARCH, liveHeapProcessors, runtime.NumCPU())
 	step1 := ygsync.EncodeSyncStep1(crdt.New())
 	keystrokes := func(count int) func(t *testing.T) *crdt.Doc {
 		return func(t *testing.T) *crdt.Doc {
@@ -691,7 +696,7 @@ func TestAnAnswerFromARoomOfUnderAThousandStructsHoldsNoMoreThanItsGrant(t *test
 // so a room of ten structs is charged for ten. The guard is what the answer allocates in all,
 // which bounds from above whatever it holds at once: the grant is held to twice that, which
 // leaves the price its rounding past the most measured and fails any price that charges a small
-// room the fullest update's 1,412,096 bytes, or a flat 950,000 for the update whatever the room,
+// room the fullest update's 1,620,096 bytes, or a flat 950,000 for the update whatever the room,
 // where the seeded paragraph's answer allocates 3,840 in all. The rooms are the seeded
 // paragraph, ten structs; a run of 64 keystrokes; a run of 256 GC structs, the heaviest struct
 // for its bytes; and a run of 1,000 keystrokes. It runs in a process of its own (measuredAlone),
@@ -803,10 +808,11 @@ type liveHeapReading struct {
 // live heap only where each collection stops the world, as in a process started with GODEBUG
 // gcstoptheworld=1: a concurrent collection marks as live whatever is allocated while it marks,
 // which at this rate is most of what the cut allocates. The goroutine reading each mark as it
-// ends needs a processor of its own beside the cut's.
+// ends needs a processor of its own beside the cut's, and the measurement runs on exactly
+// liveHeapProcessors of them, whatever the machine has, set here and given back on return.
 func liveHeapPeak(t *testing.T, cut func() any) liveHeapReading {
 	t.Helper()
-	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(max(2, runtime.GOMAXPROCS(0))))
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(liveHeapProcessors))
 	defer debug.SetGCPercent(debug.SetGCPercent(1))
 	marks := func() []metrics.Sample {
 		return []metrics.Sample{{Name: "/gc/heap/live:bytes"}, {Name: "/gc/cycles/total:gc-cycles"}}
@@ -852,6 +858,17 @@ func liveHeapPeak(t *testing.T, cut func() any) liveHeapReading {
 	}
 	return reading
 }
+
+// liveHeapProcessors is how many processors liveHeapPeak measures on: the cut's and the reader's,
+// the count the prices it checks were measured at. It is fixed because every processor keeps
+// caches of its own that the cut fills and that outlive a collection - ygo's encoder pool, which
+// the cut takes each encoder from (crdt.SplitStateAsUpdateV1, sync.EncodeSyncStep2Split), is a
+// sync.Pool with a slot a processor - so a reading grew with the machine: on this repository's
+// amd64 pod on 2026-11-18 the run of 256 GC structs of one client read 27,448 bytes at one and two
+// processors, 27,816 at four and 28,456 at eight, where the test failed
+// (TestAnAnswerFromARoomOfUnderAThousandStructsHoldsNoMoreThanItsGrant). What those caches hold
+// is the process's, bounded by its processors and shared by every answer, not one answer's.
+const liveHeapProcessors = 2
 
 // useLoadSlots makes slots the process's load concurrency for the rest of t (podLoadSlots).
 func useLoadSlots(t *testing.T, slots *loadSlots) *loadSlots {

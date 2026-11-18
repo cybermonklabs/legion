@@ -355,8 +355,13 @@ func (s *Service) admitClients(ctx context.Context, room string, actor model.Act
 // keepsClient is whether a page may keep client, the id it presented: the table names actor for
 // it, which this records as a presentation (presented_at) in the same statement, or it is an id
 // below mintedClientFloor no row names that actor may claim, which this claims from the clock the
-// document holds it to, in the stored history or the room where this server holds it.
+// document holds it to, in the stored history or the room where this server holds it. An id at
+// mintedClientCeiling or above is neither: no admission gives one out and no claim takes one, so
+// it is not kept and the table is not asked, as a presented id that does not read is not.
 func (s *Service) keepsClient(ctx context.Context, room string, actor model.Actor, client uint64) (bool, error) {
+	if client >= mintedClientCeiling {
+		return false, nil
+	}
 	tag, err := s.store.Pool.Exec(ctx, `
 		update document_client_ids set presented_at = now()
 		where artifact_id = $1 and client_id = $2 and actor_kind = $3 and actor_id = $4

@@ -68,7 +68,14 @@ func TestDeletingADeeplyNestedLiveTreeNeedsNoStackPerLevel(t *testing.T) {
 			}
 		}
 		serverWrite(func(txn *crdt.Transaction, live *crdt.YXmlFragment) { live.InsertElement(txn, 0, root) })
-		waitFor(t, 30*time.Second, "the peer to be sent the chain's root", func() bool { return fragment.Len() == 2 })
+		// The peer's reader applies what the room sends to its document while this polls it, and
+		// ygo reads a type's children under no lock of its own, so the count is read inside a
+		// transaction of the peer's document, which holds that document's lock (peerMarkdown).
+		waitFor(t, 30*time.Second, "the peer to be sent the chain's root", func() bool {
+			var blocks int
+			peer.Doc.Transact(func(*crdt.Transaction) { blocks = fragment.Len() })
+			return blocks == 2
+		})
 		// The delete is written on the peer's document as it stands here, holding the chain's root
 		// and the paragraph beside it but none of the chain, so the peer sends the same delete an
 		// ordinary client would and this test process does not walk the chain to write it.
