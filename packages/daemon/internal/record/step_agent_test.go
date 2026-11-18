@@ -1,6 +1,7 @@
 package record
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -53,5 +54,31 @@ func TestTheRecordNamesTheAgentOfARunThatIsNotEnded(t *testing.T) {
 		}
 		on(tester, "LEGION-1", true)
 		anywhere(tester, true)
+	})
+}
+
+// RunsAStep asks over every issue, on every completion of an implementer and every adoption, of a
+// table whose rows are never deleted, so the read is served by an index of the agents of the runs
+// that are not ended rather than by a scan of every row ever written. The plan is read with
+// sequential scans priced out, so the test asks whether an index can serve the read at all, which
+// the planner of a small table would not otherwise show.
+func TestRunsAStepIsServedByAnIndexOfTheRunsNotEnded(t *testing.T) {
+	st := migratedStore(t)
+	inTx(t, st, func(tx pgx.Tx) {
+		if _, err := tx.Exec(t.Context(), `set local enable_seqscan = off`); err != nil {
+			t.Fatalf("price out sequential scans: %v", err)
+		}
+		rows, err := tx.Query(t.Context(), `explain select exists(select 1 from step_starts where agent = $1 and run <> $2)`,
+			"legion-legion-legion-1-tester", RunEnded)
+		if err != nil {
+			t.Fatalf("explain RunsAStep's read: %v", err)
+		}
+		plan, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the plan: %v", err)
+		}
+		if text := strings.Join(plan, "\n"); !strings.Contains(text, "step_starts_running_agent") {
+			t.Fatalf("RunsAStep's read is planned as\n%s\nwant it served by the index step_starts_running_agent", text)
+		}
 	})
 }

@@ -82,6 +82,11 @@ create table step_starts (
   check (case when kind = 'step' then place >= 1 else place = 0 end)
 );
 
+-- An agent's request asks whether the record names that agent the agent of a run that is not
+-- ended, on any issue (record.RunsAStep), and no row is ever deleted: this index holds the agent
+-- of each run not ended alone, so the read is not a scan of every row ever written.
+create index step_starts_running_agent on step_starts (agent) where run <> 'ended';
+
 create table step_starts_rollback (
   issue text primary key,
   tree text not null,
