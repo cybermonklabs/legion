@@ -573,12 +573,10 @@ test("every property with a value is visible in Details at every width @phone", 
       // So is every symbol in the text of Details' own chrome, whichever control draws it: a
       // priority's Remove, a section's toggle, a control's mark. A reader's own text is left out.
       const chromeSymbols = await drawnFonts(page, ["[data-page-chrome]"], describeChromeSymbol);
-      expect
-        .soft(
-          chromeSymbols.filter(drawnOutsideThePagesTypeface).map(glyphReading),
-          `a mark of Details' controls is drawn in a font the page does not ship at ${width} px`
-        )
-        .toEqual([]);
+      expect(
+        chromeSymbols.filter(drawnOutsideThePagesTypeface).map(glyphReading),
+        `a mark of Details' controls is drawn in a font the page does not ship at ${width} px`
+      ).toEqual([]);
       // The status's own mark in the Status row's pill is a shape, as the page's other status
       // marks are (`StatusGlyph`), so no font of the machine draws it.
       await expect(
