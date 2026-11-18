@@ -128,8 +128,8 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
       # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the

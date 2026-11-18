@@ -13,6 +13,14 @@
 # path inside the role's namespace, so no role can edit postgresql.auto.conf and have the next start
 # load it into the launcher's namespace.
 #
+# The server's log is LEGION_TESTPG_LOG, server.log in that directory: the server's own output and
+# what each step of this script printed. The launcher names the file and creates it before the
+# first `ensure`, and every role's role-init binds that one file, read-only, at
+# /var/run/legion/testpg.log, the path every role is told as LEGION_TEST_PG_LOG. So a role whose
+# connect was refused or slow reads what the server did with it, where the cover over the
+# directory would otherwise leave it with the client's error alone (start says what the server
+# logs for a connection).
+#
 # The issue pod's launcher runs `ensure` at container start, as PID 1 of the roles container and
 # outside every role's PID namespace, and again every 15 s; a role never starts the server, it
 # finds it serving. `ensure` is idempotent, holds a lock over the work all the same, and tests the
@@ -32,14 +40,26 @@
 # autovacuum worker among them, and ending another role's backend needs that right. A plain
 # `drop database` makes the server end that autovacuum worker itself and needs no such right, so
 # the clause is there to end a connection a test left open, which is why the suites write it. The
-# right reaches nothing but a backend's signal (start).
+# right reaches nothing but a backend's signal (start). It is granted pg_monitor too: diagnosing a
+# refused or slow connect needs the detail of other Postgres roles' backends and of background
+# processes, and settings only a superuser reads, which pg_monitor shows; it reads no file and runs
+# no program (start).
 set -eu
 
 name=legion-testpg
 dir=${LEGION_TESTPG_DIR:-/var/run/legion/roles/testpg}
 data=$dir/data
 sockets=$dir/sockets
-log=$dir/server.log
+# The launcher names the log (LEGION_TESTPG_LOG), so the file role-init binds into every role's
+# namespace is the one this script and the server write; the default serves the image build's
+# self-check, the daemon's image probe (`legion probe-image --test-postgres`,
+# launcher.CheckTestPostgres, which passes no LEGION_TESTPG_LOG) and a run by hand. The script and
+# the server only ever append to the log or truncate it in place (`>` on initdb keeps the inode),
+# and never replace or remove a regular file there, because every role's namespace binds that
+# inode: a new file under the same name would leave each running role reading the old one for the
+# rest of its generation. own_log recreates the file only where it is already gone or no regular
+# file, and puts its mode back before every start.
+log=${LEGION_TESTPG_LOG:-$dir/server.log}
 superuser=$(id -un)
 
 # max_connections is what the server allows: testlimits.ServerConnections
@@ -48,7 +68,7 @@ superuser=$(id -un)
 # script leaves superuser_reserved_connections at its default. A shell script cannot read the Go
 # constant, so it holds the sum, and packages/envoy/internal/dispatch/testlimits/testlimits_test.go
 # fails when the two differ.
-max_connections=471
+max_connections=475
 
 die() {
 	echo "$name: $*" >&2
@@ -174,7 +194,30 @@ super() {
 	psql -X -q -h "$sockets" -p "$port" -U "$superuser" "$@"
 }
 
+# own_log puts the log back as this script writes it, a regular file of this user's with mode
+# 0600, and dies naming the log where it cannot. A role reaches the log through role-init's
+# read-only bind alone, but under gVisor a role's own `unshare -Urm` can remount its view of that
+# bind read-write, and then, since the file is the launcher's and a role's agent maps to that
+# user, it can `chmod 000` it (measured in an issue pod on 2026-11-18). Every `> "$log"`,
+# `>> "$log"` and `pg_ctl --log` of a later start would then fail, and `ensure` could never
+# restart the server. A postmaster already running keeps writing through the descriptor it holds,
+# so the next start is the one write that needs the mode, and start() calls this first. A file
+# made again here leaves every running role bound to the old one for the rest of its generation;
+# that is reached only when something other than this script and the server replaced the file,
+# which no role can do, since the bind is a mount point: a rename, an unlink or a link over it
+# answers EBUSY, measured the same day. `rm -rf --` removes a link itself, never what it names.
+own_log() {
+	if [ -L "$log" ] || { [ -e "$log" ] && [ ! -f "$log" ]; }; then
+		rm -rf -- "$log" || die "removing $log, which is no regular file, failed"
+	fi
+	if [ ! -e "$log" ]; then
+		(umask 077 && : > "$log") || die "creating $log failed"
+	fi
+	chmod 600 "$log" || die "making $log mode 600 failed"
+}
+
 start() {
+	own_log
 	bin=$(bindir)
 	mkdir -p "$data" "$sockets"
 	chmod 700 "$data"
@@ -241,9 +284,24 @@ start() {
 		# this cluster will never have. Measured on 18: a database grown to 985 MB, updated
 		# across a third of its rows, VACUUM FULLed and dropped left the data directory at
 		# 1.1 GB with the defaults and at 425 MB with these.
+		# log_connections=all and log_disconnections are what let a role tell a connect the
+		# server failed from one that never reached it. On 18 `all` logs, for each connection,
+		# `connection received: host=… port=…`, which the backend the postmaster forks for the
+		# connect writes as it starts (BackendInitialize), not the postmaster at accept, then
+		# the authentication and authorization lines, then `connection ready: setup total=…,
+		# fork=…, authentication=…`; log_disconnections adds the session's end. A connect whose
+		# fork failed has no backend to write that line: the postmaster logs `could not fork
+		# new process for connection: …` instead. So a connect the server forked for and then
+		# failed leaves lines, a connect whose fork failed leaves that one line, and a connect
+		# with neither never reached the postmaster: a burst past the listen queue, which is
+		# 2 x max_connections = 942, under gVisor's somaxconn of 1024, is dropped by the
+		# network stack with no server line. Measured 2026-11-17: some such connects ended in
+		# EOF, which libpq reports as `server closed the connection unexpectedly`, and the rest
+		# hung until the client's timeout. The cost, measured the same day, is about 350 bytes
+		# of log per connection over 4241 connections.
 		# shellcheck disable=SC2094 # pg_ctl writes $log through --log and this append; it reads none
 		"$bin/pg_ctl" --pgdata "$data" --log "$log" --wait --timeout 120 \
-			--options "-p $port -k $sockets -c listen_addresses=127.0.0.1 -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=$max_connections -c shared_buffers=256MB -c huge_pages=off -c dynamic_shared_memory_type=mmap -c jit=off -c wal_level=minimal -c max_wal_senders=0 -c max_wal_size=512MB -c min_wal_size=64MB -c wal_keep_size=0" \
+			--options "-p $port -k $sockets -c listen_addresses=127.0.0.1 -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=$max_connections -c shared_buffers=256MB -c huge_pages=off -c dynamic_shared_memory_type=mmap -c jit=off -c wal_level=minimal -c max_wal_senders=0 -c max_wal_size=512MB -c min_wal_size=64MB -c wal_keep_size=0 -c log_connections=all -c log_disconnections=on" \
 			start >> "$log" 2>&1 ||
 			die "pg_ctl start failed; $log holds its output"
 	fi
@@ -274,6 +332,17 @@ start() {
 	# because its disk, made with the pod, starts empty.
 	super -d postgres -c "grant pg_signal_backend to $user" >> "$log" 2>&1 ||
 		die "grant pg_signal_backend to $user failed; $log holds its output"
+	# pg_monitor is pg_read_all_settings, pg_read_all_stats and pg_stat_scan_tables. Every role
+	# of the pod already sees its own login's backends in full, since all of them connect as the
+	# DSN's login; pg_stat_activity hides the state and the query of every other backend. What
+	# the grant adds is that detail for backends of other Postgres roles (the cluster superuser's
+	# connections from ensure's steps, login roles a test suite creates and connects as) and of
+	# background processes such as autovacuum, and the settings only a superuser reads, which is
+	# what diagnosing a refused or slow connect needs. It is no superuser, reads no file (it does
+	# not include pg_read_server_files) and runs no program. Like the grant above it runs on
+	# every start, and a server already serving keeps what it has.
+	super -d postgres -c "grant pg_monitor to $user" >> "$log" 2>&1 ||
+		die "grant pg_monitor to $user failed; $log holds its output"
 	if [ "$database" != postgres ]; then
 		super -tA -d postgres -c "select 1 from pg_database where datname = '$database'" 2>> "$log" |
 			grep -q 1 ||
