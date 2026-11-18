@@ -477,11 +477,12 @@ export function reachFixtures() {
    *  A run started here differs from one `drive` starts in four ways, none of which the script
    *  reads or traps: it inherits SHLVL, PWD and `_` from the runner's bash, where `drive`'s run
    *  sets its own, so under bash 5.2 its SHLVL is 2, not 1; it is a background job of a
-   *  non-interactive shell, which bash 3.2 starts with SIGINT and SIGQUIT ignored (bash 5.2
-   *  restores them at the `exec`); the runs of one call share one HOME, in which none is given a
-   *  `.curlrc`; and its stdout and stderr are files, not pipes. The runner sets each variable with
-   *  `export` in its own bash, so a name of its own loop (all lower case) or one bash keeps
-   *  read-only would not reach the run as given: `driveEach` refuses such a name. */
+   *  non-interactive shell, which bash 3.2 starts with SIGINT and SIGQUIT ignored, where `drive`'s
+   *  run has them as the test process gives them (bash 5.2 restores them at the `exec`); the runs
+   *  of one call share one HOME, in which none is given a `.curlrc`; and its stdout and stderr are
+   *  files, where `drive`'s are the sockets Bun.spawn's `pipe` gives. The runner sets each
+   *  variable with `export` in its own bash, so a name of its own loop (all lower case) or one
+   *  bash keeps read-only would not reach the run as given: `driveEach` refuses such a name. */
   async function driveEach(
     runs: Record<string, string>[],
     options: { path?: string; together?: number } = {}
