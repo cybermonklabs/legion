@@ -231,9 +231,10 @@ import (
 )
 
 // Settings are what a guard runs by: the act share and the floor share of the limit, in percent,
-// the longest wait after a kill for the killed process to exit, after which the guard decides at
-// each reading and, with the reading not fallen and nothing grown since the kill, gives the rise
-// up (watch), and the time between two readings.
+// the act share setting the urgent share too (urgentShare), the longest wait after the kills of a
+// reading for the killed processes to exit, after which the guard decides at each reading and,
+// with the reading not fallen and nothing grown since the kills, gives the rise up (watch), and
+// the time between two readings.
 type Settings struct {
 	ActPercent   int
 	FloorPercent int

@@ -210,9 +210,11 @@ type LauncherHelloAck struct {
 // one it has read at most once in its last two readings near the limit, else the one that grew the
 // most since the guard's first kill while the reading stays near the limit, else the largest, a
 // fork that still runs its parent's program counted by what it holds over its parent, where those
-// processes hold at least FloorPercent of the limit between them; after a kill it ends no other
-// until the killed process has exited or WaitSeconds has passed, and it gives the rise up once
-// WaitSeconds has passed with the reading not fallen and nothing it may end grown since the kill.
+// processes hold at least FloorPercent of the limit between them, and at or above the urgent
+// share, halfway from ActPercent to the limit, every other process that grew over its last few
+// reads at the same reading; after the kills of a reading it ends no other until every killed
+// process has exited or WaitSeconds has passed, and it gives the rise up once WaitSeconds has
+// passed with the reading not fallen and nothing it may end grown since the kills.
 //
 // It holds no `enabled` member: a deployment that turns the guard off sends no member at all,
 // which is the same absence a daemon that does not know the guard sends, so one rule in the

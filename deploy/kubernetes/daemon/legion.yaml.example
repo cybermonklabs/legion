@@ -405,12 +405,14 @@ runtime:
     #     wait_seconds: 5              # two readings near the limit, else the one that grew the most since the
     #     interval_milliseconds: 100   # guard's first kill while the reading stays near the limit, else the
     #   controller_pod:                # largest, a fork that still runs its parent's program counted by what it
-    #     enabled: true                # holds over its parent, and tells the role whose process it was. Legion's
-    #     act_percent: 85              # own processes and each role's agent are never ended. After a kill it
-    #     floor_percent: 10            # waits for that process to exit, at most wait_seconds (1 to 60), and it
-    #     wait_seconds: 1              # reads every interval_milliseconds (50 to 5000). controller_pod is the
-    #     interval_milliseconds: 100   # same guard in the controller's pod (controller: daemon), which waits at
-    #                                  # most 1 second after a kill.
+    #     enabled: true                # holds over its parent, and tells the role whose process it was; from
+    #     act_percent: 85              # halfway between act_percent and the limit (92.5% at 85) it ends at one
+    #     floor_percent: 10            # reading every process that grew. Legion's own processes and each role's
+    #     wait_seconds: 1              # agent are never ended. After a kill it waits for the processes it killed
+    #     interval_milliseconds: 100   # to exit, at most wait_seconds (1 to 60), and it reads every
+    #                                  # interval_milliseconds (50 to 5000). controller_pod is the same guard in
+    #                                  # the controller's pod (controller: daemon), which waits at most 1 second
+    #                                  # after a kill.
     #                                  # These are the defaults, for each kind. enabled: false sends that kind's
     #                                  # launchers no settings, so each of their guards, which runs at these
     #                                  # defaults from the launcher's start, turns off at its first acknowledgement

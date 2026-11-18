@@ -4,11 +4,14 @@ body: |-
     that grew the most over its last few reads, then the largest one new to its stay near the
     limit that holds memory of its own, then the one that grew the most since the guard's first
     kill of that stay, and the largest only where none of these applies, with a fork that still
-    runs its parent's program counted by what it holds over its parent. At the first reading at
-    the mark it decides on the sizes it read below the mark, so its first kill comes within one
+    runs its parent's program counted by what it holds over its parent. From halfway between the
+    share it acts at (`act_percent`, the mark) and the limit, 92.5% at the default 85, it ends at
+    one reading every process that grew, each with its own `ended` line, the first naming its rule
+    and the others `rule=urgent`; below that it ends one a reading. At the first reading at the
+    mark it decides on the sizes it read below the mark, so its first kill comes within one
     interval, or two where it must search for a process started just before. After a kill it waits
-    only until the killed process has exited, and at most `wait_seconds`, which stays 5 for issue
-    pods, and then goes on at each reading. Each `ended` line gains `rule=`, `sizes=`,
+    only until the processes it killed have exited, and at most `wait_seconds`, which stays 5 for
+    issue pods, and then goes on at each reading. Each `ended` line gains `rule=`, `sizes=`,
     `less_parent=` and `new_read=` before `executable=`, saying which rule chose the process and
     from what, and each `stopped for this rise` line gains `unread_processes=` at its end, naming
     the processes the guard could not read. docs/kubernetes.md, "The memory guard in an issue pod",
