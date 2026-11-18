@@ -2645,10 +2645,13 @@ const (
 // (deliverResolvedCommentMention in internal/dispatch/api) and the outbox's fallback pass
 // (decideFallbackCopy). The read walks the partial index events_outbox_owner, whose predicate the
 // query's own clauses spell, so it reads the owner's unpublished events and no other, and the
-// owner's newest seq backwards over its unique (owner, seq) index. The exhaustive model of this order
-// (TestTheMentionCopyOrderModel in internal/dispatch/outbox) holds this rule, and
-// TestTheModelsCopyRuleIsTheSQLRule runs both on the same rows. It is a constant so that a guard
-// reading a statement's SQL can read it (the keyed-write guard of internal/dispatch/api).
+// owner's newest seq backwards over its unique (owner, seq) index, once: the newest-seq subquery
+// ends with offset 0, which keeps the planner from pulling it up into the filter on the earlier
+// events, where it ran once for each of them and read the newest event's payload each time. The
+// exhaustive model of this order (TestTheMentionCopyOrderModel in internal/dispatch/outbox) holds
+// this rule, and TestTheModelsCopyRuleIsTheSQLRule runs both on the same rows. It is a constant so
+// that a guard reading a statement's SQL can read it (the keyed-write guard of
+// internal/dispatch/api).
 const MentionCopyHolderSQL = `select k.id, k.publish_error
 		from events c
 		cross join lateral (
@@ -2659,7 +2662,7 @@ const MentionCopyHolderSQL = `select k.id, k.publish_error
 				   and (n.payload ->> 'pending') is distinct from 'true' order by n.seq desc limit 1),
 				(select n.seq from events n where n.project_key = c.project_key
 				   and (n.payload ->> 'pending') is distinct from 'true' order by n.seq desc limit 1)
-			) as last_seq
+			) as last_seq offset 0
 		) o
 		join events k on coalesce(k.issue_key, k.artifact_id::text, k.project_key) = coalesce(c.issue_key, c.artifact_id::text, c.project_key)
 		where c.id = $1::bigint
