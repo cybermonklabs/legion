@@ -109,6 +109,7 @@ func TestRoutesUsage(t *testing.T) {
 		problem string
 	}{
 		{nil, 2, "envoy-infra routes: the subcommand is record or check\n"},
+		{[]string{""}, 2, "envoy-infra routes: the subcommand is record or check\n"},
 		{[]string{canary}, 2, "envoy-infra routes: the subcommand is record or check\n"},
 		{[]string{"--help"}, 0, ""},
 		{[]string{"check", "--help"}, 0, ""},

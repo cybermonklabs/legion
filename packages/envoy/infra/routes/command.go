@@ -33,12 +33,11 @@ const timeout = 5 * time.Minute
 // Command runs `envoy-infra routes` on args, the words after "routes", reading the hub through
 // the Source open makes, and returns its exit code.
 func Command(ctx context.Context, args []string, stdout, stderr io.Writer, open Opener) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "envoy-infra routes: the subcommand is record or check")
-		fmt.Fprint(stderr, usageText)
-		return 2
+	sub := ""
+	if len(args) > 0 {
+		sub = args[0]
 	}
-	switch args[0] {
+	switch sub {
 	case "-h", "-help", "--help":
 		fmt.Fprint(stderr, usageText)
 		return 0
@@ -50,7 +49,6 @@ func Command(ctx context.Context, args []string, stdout, stderr io.Writer, open 
 		fmt.Fprint(stderr, usageText)
 		return 2
 	}
-	sub := args[0]
 	fs := flag.NewFlagSet("envoy-infra routes "+sub, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var target Target
