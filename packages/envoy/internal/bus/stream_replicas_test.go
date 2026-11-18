@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -745,19 +746,17 @@ func (js *missingOnceJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
 // A start at one copy whose create meets a bucket another start, configured with three, created
 // a moment before waits for that stream's leader: the other start's count is not this one's, and
 // its create may have been answered before its stream's first election ended. The other start's
-// create goes out through a wait of a millisecond, so it lands with its answer lost and its
-// stream still in that election.
+// create is abandoned the moment a listener on its subject sees it go out, so it lands with its
+// answer lost and its stream still in that election; the cut is made on the create itself, so the
+// account read nats.go makes before it is answered first however slow the machine is.
 func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALeader(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
 	const bucket = "envoy_created_elsewhere_test"
-	other, err := conn.JetStream(nats.MaxWait(time.Millisecond))
+	other, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open the other start's JetStream: %v", err)
 	}
-	// A wait of a millisecond can cut the account read nats.go makes before the create, and then
-	// no create goes out, so the create is sent until a listener on its subject sees it go out:
-	// read off the wire, not off the stream, so the stream is left in its first election.
 	creates, err := conn.SubscribeSync("$JS.API.STREAM.CREATE.KV_" + bucket)
 	if err != nil {
 		t.Fatalf("listen for the other start's create: %v", err)
@@ -766,15 +765,18 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 	if err := conn.Flush(); err != nil {
 		t.Fatalf("flush the listener: %v", err)
 	}
-	for sends := 1; ; sends++ {
-		_, _ = other.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
-		if _, err := creates.NextMsg(100 * time.Millisecond); err == nil {
-			break
-		}
-		if sends == 50 {
-			t.Fatal("the other start's create never went out, so this row holds nothing")
-		}
+	createCtx, abandon := context.WithCancel(t.Context())
+	abandoned := make(chan error, 1)
+	go func() {
+		_, err := other.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 3})
+		abandoned <- err
+	}()
+	_, err = creates.NextMsg(time.Minute)
+	abandon()
+	if err != nil {
+		t.Fatalf("the other start's create never went out, so this row holds nothing: %v", err)
 	}
+	<-abandoned
 	kv, err := EnsureKeyValue(t.Context(), conn, &missingOnceJetStream{JetStreamContext: js}, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
 	if err != nil {
 		t.Fatalf("a start at one copy whose create met another start's: %v", err)
