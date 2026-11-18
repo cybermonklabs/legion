@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -76,10 +75,7 @@ func (s *server) putIssueStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := r.PathValue("key")
-	// The rule of the daemon's own DaemonSession (packages/daemon/internal/dispatch/client.go):
-	// the session is legion-daemon: and the part of the key before its first hyphen.
-	project, _, _ := strings.Cut(key, "-")
-	writer := legionDaemonSessionPrefix + project
+	writer := legionDaemonSessionOf(key)
 	if actor.Kind != "session" || actor.ID != writer {
 		writeError(w, codeStepWriter, http.StatusForbidden,
 			fmt.Sprintf("only the session %s writes a step record of %s", writer, key))
