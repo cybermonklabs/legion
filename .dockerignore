@@ -20,6 +20,13 @@ docs
 # document the build never reads and no image trigger owes.
 skills/AGENTS.md
 
+# Every folder named out, which .gitignore ignores anywhere (its `out` line) and no build reads
+# from the context (a build stage's own /out is not the context's). A local run of Dispatch's
+# browser tests leaves the broker it builds and fake-secrets files in
+# packages/envoy/out/dispatch-e2e-broker (packages/dispatch/e2e/run-broker.sh), and Docker, which
+# does not read .gitignore, would otherwise copy them into the worker image with packages/envoy.
+**/out
+
 # Envoy: test files and deploy tooling not needed in the image.
 packages/envoy/**/*_test.go
 packages/envoy/internal/integration/

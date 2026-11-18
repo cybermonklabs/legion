@@ -123,9 +123,9 @@ type createdIssue struct {
 	LastSeq int64  `json:"last_seq"`
 }
 
-// openPullRequest is pull request number of issue, open at stepRecordsHead on the branch
+// stepRecordsPullRequest is pull request number of issue, open at stepRecordsHead on the branch
 // legion/<issue>, which GitHub reports clean, as the daemon's store records it.
-func openPullRequest(issue string, number int) record.PullRequest {
+func stepRecordsPullRequest(issue string, number int) record.PullRequest {
 	return record.PullRequest{State: record.PullRequestOpen, Issue: issue, Repo: liveRepo, Number: number,
 		Branch: "legion/" + issue, HeadSHA: stepRecordsHead, MergeState: record.MergeStateClean, Failing: []string{}}
 }
@@ -153,7 +153,7 @@ func (r *stepRecordsRig) seed(rank string, seq int64) {
 		}); err != nil {
 			return err
 		}
-		return r.records.PutPullRequest(ctx, tx, openPullRequest(r.key, r.number))
+		return r.records.PutPullRequest(ctx, tx, stepRecordsPullRequest(r.key, r.number))
 	}); err != nil {
 		t.Fatalf("seed %s: %v", r.key, err)
 	}

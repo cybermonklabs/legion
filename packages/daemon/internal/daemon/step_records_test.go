@@ -629,7 +629,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 		}); err != nil {
 			return err
 		}
-		return r.records.PutPullRequest(ctx, tx, openPullRequest(created.Key, number))
+		return r.records.PutPullRequest(ctx, tx, stepRecordsPullRequest(created.Key, number))
 	}); err != nil {
 		t.Fatalf("seed %s: %v", created.Key, err)
 	}

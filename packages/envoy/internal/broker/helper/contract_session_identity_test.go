@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 )
 
@@ -102,7 +103,7 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	next := &Server{
 		Registry: NewRegistry(cr.sessionsPath),
-		Broker: &Broker{URL: cr.broker.URL, OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
+		Broker: &Broker{URL: brokeraddr.New(cr.broker.URL), OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
 			HTTP: http.DefaultClient, Log: log},
 		Hostname: "contract-test-host", PeerOf: PeerOf, Log: log, MinRenew: 50 * time.Millisecond,
 	}
@@ -219,7 +220,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	next := &Server{
 		Registry: NewRegistry(cr.sessionsPath),
-		Broker: &Broker{URL: cr.broker.URL, OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
+		Broker: &Broker{URL: brokeraddr.New(cr.broker.URL), OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
 			HTTP: http.DefaultClient, Log: log},
 		Hostname: "contract-test-host", PeerOf: PeerOf, Log: log, MinRenew: 50 * time.Millisecond,
 	}

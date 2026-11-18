@@ -736,8 +736,15 @@ start_listener() {
   ENVOY_API_TOKEN="$(<"$S/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="$tag" NATS_URLS="nats://127.0.0.1:$nats_port" \
     start_held listener envoy_port ENVOY_LISTEN_FD --env 'PORT={port}' -- "$S/envoy-listener"
-  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
-    curl -fsS -o /dev/null -H "Authorization: Bearer $(<"$S/envoy-token")" "http://127.0.0.1:$envoy_port/v1/sessions"
+  await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" listener_answers
+}
+
+# listener_answers reads the listener's /v1/sessions with the rig's bearer, which reaches curl on
+# standard input from printf, a shell builtin, so it is in no command line.
+# shellcheck disable=SC2329 # await_start in start_listener runs it
+listener_answers() {
+  printf 'Authorization: Bearer %s' "$(<"$S/envoy-token")" |
+    curl -fsS -o /dev/null -H @- "http://127.0.0.1:$envoy_port/v1/sessions"
 }
 
 # start_dispatch DATABASE_URL starts the e2e harness's Dispatch server on that database. The

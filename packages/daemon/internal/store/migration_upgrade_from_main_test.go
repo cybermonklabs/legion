@@ -77,6 +77,9 @@ import (
 // outbox_kind_check. The count of starts of each step (20261117004117) creates tables and a
 // function of its own, and its roll forward (20261117064152) changes nothing on a database no
 // rollback touched; neither touches outbox_kind_check.
+// dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
+// of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
+// is still queued.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -84,7 +87,7 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261116165926, 20261117000528, 20261117004117, 20261117064152,
+	20261114061900, 20261116165926, 20261117000528, 20261117004117, 20261117064152, 20261117200337,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -95,10 +98,11 @@ var thisBranchsMigrations = []int{
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
 // 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the role-holders
-// publication's 20261116165926, and the step records' three: the kind list with the step record
+// publication's 20261116165926, the step records' three: the kind list with the step record
 // (20261117000528), the count of starts of each step (20261117004117) and its roll forward
-// (20261117064152). That is why the loop below holds the list rather than counting it, so that a
-// version added above any of them is named here rather than read as main's.
+// (20261117064152), and dispatch://INFRA-4109's 20261117200337. That is why the loop below holds
+// the list rather than counting it, so that a version added above any of them is named here
+// rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

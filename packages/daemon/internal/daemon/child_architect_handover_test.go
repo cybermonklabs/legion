@@ -39,7 +39,7 @@ func TestAHandedOverChildKeepsItsArchitectsSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	rig.sup.deps.Specs = specs{stateDir: t.TempDir(), project: "legion", prompts: composer, repositories: noRepositoriesView}
+	rig.sup.deps.Specs = specs{stateDir: t.TempDir(), project: "legion", prompts: composer, appOwners: noAppOwners}
 	token := mustClaimToken(t, doorChild, claim.RoleArchitect)
 
 	rig.written("release", childAt("todo", 2))

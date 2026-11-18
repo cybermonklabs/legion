@@ -64,8 +64,9 @@ const handed = true
 
 var fixedNow = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 
-// testRepositories serves every repository the admission tests record issues on, each at main, and
-// leaves out acme/gadgets, whose review App is not installed.
+// testRepositories is every repository the admission tests record issues on, each at main, and
+// leaves out acme/gadgets, whose review App is not installed. A repository it does not name is
+// one no preparation has read GitHub for, which the daemon answers as unread (its lookup).
 var testRepositories = servedRepositories{"sjawhar/legion": "main", "acme/widgets": "main", "acme/tools": "release/v7.1"}
 
 type servedRepositories map[string]string
@@ -77,7 +78,7 @@ func (r servedRepositories) ResolveRepository(resolved string) (workflow.Resolut
 	if resolved == "acme/gadgets" {
 		return workflow.Resolution{Refusal: "the review App is not installed on acme/gadgets", LeftOut: true}, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + testProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
 func newAdmission(t *testing.T, cap int, log *slog.Logger) *Admission {

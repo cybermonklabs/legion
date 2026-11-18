@@ -9,6 +9,7 @@ import {
 } from "@legion/contracts";
 import type { LegionState } from "@legion/contracts/legion-api";
 import { messageFor } from "@legion/envoy-client/errors";
+import { EnvoyApiError, type PublishResult } from "@legion/envoy-client/transport";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import {
   architectLive,
@@ -569,7 +570,45 @@ export interface StallTellerDeps {
   readonly log: StallWatchdogLog;
   /** The bound on one daemon read; `RECORD_READ_BOUND_MS` when it is left out. */
   readonly recordBoundMs?: number;
+  /** Waits before a notice the listener refused for this session's send rate is sent again;
+   * `Bun.sleep` when it is left out. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
+
+/** How many times one notice may be sent: the first publish, and up to three resends after the
+ * listener refuses it for this session's send rate. */
+const STALL_NOTICE_SENDS = 4;
+
+/** One publish of a notice, with every field of the first publish: a resend is the same call. */
+type SendNotice = () => Promise<Pick<PublishResult, "kept">>;
+
+/** The listener's refusal of a publish for this session's send rate, with the whole seconds it
+ * names until it takes the next message. */
+interface NoticeRateLimited {
+  readonly kind: "rate-limited";
+  readonly retryAfterSeconds: number;
+  readonly error: EnvoyApiError;
+}
+
+/** What one publish of a notice came to. */
+type NoticeAttempt =
+  | { readonly kind: "told" }
+  | { readonly kind: "kept" }
+  | NoticeRateLimited
+  | { readonly kind: "refused"; readonly error: unknown };
+
+/** What the first publish of a notice achieved. */
+interface NoticeSent {
+  readonly ownerTold: boolean;
+  /**
+   * Set when the listener refused the notice for this session's send rate: starts the detached
+   * chain that sends it again, which runs `onTold` when a resend tells the owner. The caller starts
+   * it once it has recorded the first answer, so a resend that tells the owner finds that record.
+   */
+  readonly resend: ((onTold?: () => void) => void) | undefined;
+}
+
+const NOTICE_UNTOLD: NoticeSent = { ownerTold: false, resend: undefined };
 
 /**
  * The detector's teller: the evidence into the session's transcript, and one notice to the owner
@@ -582,6 +621,15 @@ export interface StallTellerDeps {
  * for the owner's role while no live session holds it, and a session with Envoy off, leave a
  * line in the log and `ownerTold` false: the ladder goes on, because an owner that cannot be
  * reached is no reason to leave a worker stuck.
+ *
+ * **A refusal for the send rate is sent again.** The one refusal this teller sends again is the
+ * listener's 429 `sender_rate_limited`: this session sent past its send limit, the listener stored
+ * nothing, and it names the whole seconds until it takes the next message. The teller waits that
+ * long and sends the same notice under the same key, up to three times, so one notice is sent at
+ * most four times. The resends run detached: the detector awaits the teller before the step that
+ * frees the worker, and runs every overdue call in turn, so a wait here would hold that step, and
+ * every other stuck call's, for as long as the waits run. A resend that is answered and not kept
+ * tells the owner, and from then on the teller's record of the overdue call says so.
  *
  * **The ladder stopping short is a second thing, and it is told too.** `tellStopped` is the exit
  * cap, an unreadable counter file and unwritten evidence — the cases where the worker will not
@@ -626,18 +674,106 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
     }
   };
 
-  /** One publish, and what it achieved. Nothing here throws: the ladder runs either way. */
+  const sleep = deps.sleep ?? ((ms: number) => Bun.sleep(ms));
+
+  /** One publish of a notice, and what it came to. Nothing here throws. */
+  const attempt = async (send: SendNotice): Promise<NoticeAttempt> => {
+    try {
+      const answer = await send();
+      // A kept answer (202, `PublishResult.kept`) means that no live session holds the owner's
+      // role: the listener kept the notice on the role's kept lane for the next session that holds
+      // it live within the hour. That has told no owner yet, and the teller does not send a kept
+      // notice again, so the worker records no owner as told. The phase reminder's notice reads a
+      // kept answer the same way.
+      return answer.kept === true ? { kind: "kept" } : { kind: "told" };
+    } catch (error) {
+      // Only a refusal for this session's send rate is sent again: the listener stored nothing and
+      // named when it takes the next message. Its other 429, for too many access tokens checked
+      // from one address, carries no `sender_rate_limited` reason.
+      if (
+        error instanceof EnvoyApiError &&
+        error.reason === "sender_rate_limited" &&
+        error.retryAfterSeconds !== undefined
+      ) {
+        return { kind: "rate-limited", retryAfterSeconds: error.retryAfterSeconds, error };
+      }
+      return { kind: "refused", error };
+    }
+  };
+
+  /** The line a publish that told no owner leaves: the notice was kept, or it was refused. */
+  const logUntold = (
+    outcome: Extract<NoticeAttempt, { kind: "kept" | "refused" }>,
+    context: Record<string, unknown>
+  ): void => {
+    if (outcome.kind === "kept") {
+      deps.log.warn("legion: the listener kept the stall notice; no owner has taken it", context);
+      return;
+    }
+    deps.log.warn("legion: the owner was not told about this session's stuck tool call", {
+      ...context,
+      error: messageFor(outcome.error),
+    });
+  };
+
+  /** The line a refusal for the send rate leaves, naming the wait before the notice goes again. */
+  const logWait = (outcome: NoticeRateLimited, context: Record<string, unknown>): void => {
+    deps.log.warn(
+      "legion: the listener refused the stall notice for this session's send rate; it is sent again after the wait the listener named",
+      { ...context, retryAfterSeconds: outcome.retryAfterSeconds, error: messageFor(outcome.error) }
+    );
+  };
+
+  /**
+   * The resends of a notice the listener refused for this session's send rate. Each waits the
+   * seconds the last refusal named and sends the same notice under the same key, up to
+   * `STALL_NOTICE_SENDS` sends in all, the first publish counted. It runs detached from the
+   * ladder, and nothing in it throws.
+   */
+  const resendNotice = async (
+    send: SendNotice,
+    firstWaitSeconds: number,
+    context: Record<string, unknown>,
+    onTold: (() => void) | undefined
+  ): Promise<void> => {
+    let waitSeconds = firstWaitSeconds;
+    for (let sends = 2; sends <= STALL_NOTICE_SENDS; sends += 1) {
+      const outcome = await attempt(() => sleep(waitSeconds * 1_000).then(send));
+      const where = { ...context, sends };
+      if (outcome.kind === "told") {
+        onTold?.();
+        deps.log.warn("legion: the stall notice was sent again and its owner was told", where);
+        return;
+      }
+      if (outcome.kind !== "rate-limited") {
+        logUntold(outcome, where);
+        return;
+      }
+      if (sends === STALL_NOTICE_SENDS) {
+        deps.log.warn(
+          `legion: the listener refused the stall notice for this session's send rate; it was given up after ${STALL_NOTICE_SENDS} sends`,
+          { ...where, error: messageFor(outcome.error) }
+        );
+        return;
+      }
+      logWait(outcome, where);
+      waitSeconds = outcome.retryAfterSeconds;
+    }
+  };
+
+  /** The first publish of a notice, and what it achieved, with the resends a refusal for the send
+   * rate asks for. Nothing here throws: the ladder runs either way. */
   const publishNotice = async (
     notice: StallNotice,
     input: { readonly message: string; readonly payload: string; readonly key: string },
     context: Record<string, unknown>
-  ): Promise<boolean> => {
+  ): Promise<NoticeSent> => {
     if (notice.kind === "none") {
       deps.log.warn("legion: nobody was told about this session's stuck tool call", {
         ...context,
         why: notice.why,
       });
-      return false;
+      return NOTICE_UNTOLD;
     }
     const claim = deps.claim();
     const publish = deps.publisher();
@@ -646,10 +782,10 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         ...context,
         topic: notice.topic,
       });
-      return false;
+      return NOTICE_UNTOLD;
     }
-    try {
-      const answer = await publish({
+    const send: SendNotice = () =>
+      publish({
         topic: notice.topic,
         message: input.message,
         // The listener refuses an object here: the facts travel as a JSON string.
@@ -657,27 +793,20 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         idempotencyKey: input.key,
         sourceSessionID: claim.sessionID,
       });
-      // A kept answer (202, `PublishResult.kept`) means that no live session holds the owner's
-      // role: the listener kept the notice on the role's kept lane for the next session that holds
-      // it live within the hour. That has told no owner yet, and this notice is sent once and never
-      // again, so the worker records no owner as told. The phase reminder's notice reads a kept
-      // answer the same way.
-      if (answer.kept === true) {
-        deps.log.warn("legion: the listener kept the stall notice; no owner has taken it", {
-          ...context,
-          topic: notice.topic,
-        });
-        return false;
-      }
-      return true;
-    } catch (error) {
-      deps.log.warn("legion: the owner was not told about this session's stuck tool call", {
-        ...context,
-        topic: notice.topic,
-        error: messageFor(error),
-      });
-      return false;
+    const where = { ...context, topic: notice.topic };
+    const first = await attempt(send);
+    if (first.kind === "told") return { ownerTold: true, resend: undefined };
+    if (first.kind !== "rate-limited") {
+      logUntold(first, where);
+      return NOTICE_UNTOLD;
     }
+    logWait(first, { ...where, sends: 1 });
+    return {
+      ownerTold: false,
+      resend: (onTold) => {
+        void resendNotice(send, first.retryAfterSeconds, where, onTold);
+      },
+    };
   };
 
   const noticeFor = async (): Promise<StallNotice> => {
@@ -721,7 +850,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         arguments: record.arguments,
         tree: record.tree.read ? record.tree.processes.length : record.tree.reason,
       });
-      const ownerTold = await publishNotice(
+      const sent = await publishNotice(
         await noticeFor(),
         {
           message: stallNoticeMessage(record),
@@ -730,8 +859,11 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         },
         { toolCallId, tool: record.tool }
       );
-      const answer = { evidenceWritten, ownerTold };
+      const answer = { evidenceWritten, ownerTold: sent.ownerTold };
       told.set(toolCallId, answer);
+      // Started only now, so a resend that tells the owner always finds this record to correct,
+      // and a later telling of this call answers that the owner was told.
+      sent.resend?.(() => told.set(toolCallId, { evidenceWritten, ownerTold: true }));
       return answer;
     },
 
@@ -772,7 +904,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
       stopsTold.add(key);
       const claim = deps.claim();
       const who = claim === undefined ? "A session" : `The ${claim.role} of ${claim.issue}`;
-      await publishNotice(
+      const sent = await publishNotice(
         await noticeFor(),
         {
           message:
@@ -783,6 +915,7 @@ export function createStallTeller(deps: StallTellerDeps): StallWatchdogTeller {
         },
         { toolCallId: call.toolCallId, tool: call.toolName, reason }
       );
+      sent.resend?.();
     },
   };
 }
