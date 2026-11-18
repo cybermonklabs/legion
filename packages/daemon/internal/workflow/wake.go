@@ -98,7 +98,8 @@ func WakeTask(kind, detail string) string {
 			"A message sent with keep: false is not kept, and its sender sends it again."
 	case pods.WakeAgentMessage:
 		return preamble + "The wake is a message somebody sent to your session (" + detail +
-			") while your pod was gone, which nothing kept: the sender's next attempt reaches you now."
+			") while your pod was gone. A message that Envoy or Dispatch stored for your session reaches you in this session. " +
+			"A direct Envoy message that Envoy refused reaches you when its sender sends it again."
 	case pods.WakeBackstop:
 		return preamble + "The wake is the release's backstop running out: " + detail +
 			". Nothing else asked for you, so take up your phase where you left it."

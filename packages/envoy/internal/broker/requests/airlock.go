@@ -642,6 +642,7 @@ func (m *Machine) AirlockValues(ctx context.Context, grantID string) (map[string
 	// The same grant.used row and line a session's own release writes, marked as the proxy's: the
 	// values did leave the broker, and an operator reading the trail must see that they did.
 	if err := m.auditGrantUsed(ctx, grantID, checked, grantUse{names: releasedNames(read), airlock: true}); err != nil {
+		m.giveBack(ctx, read)
 		return nil, "", err
 	}
 	return values, checked.set.Version, nil

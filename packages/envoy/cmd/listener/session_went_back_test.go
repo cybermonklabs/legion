@@ -104,8 +104,12 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	srv.CutStream(t, bus.Stream, func(int64) int64 { return 0 })
 
 	// Each of the rig's connections reconnects on its own: the listener's bus, its
-	// session-consumer connection and the test's view of the session consumers.
-	testwait.Eventually(t, "the listener's connections to reconnect and read the stream", func() bool {
+	// session-consumer connection and the test's view of the session consumers. The interest
+	// bucket is a stream of its own, which the restarted server can answer after the notification
+	// stream, and the registration below reads the session's row from it first: a read made
+	// before it answers is refused 503, "the message bus did not answer". So the wait ends only
+	// once that read answers too, with the row or with none, since the deregistration removed it.
+	testwait.Eventually(t, "the listener's connections to reconnect and read the stream and the interest bucket", func() bool {
 		if !client.Connected() {
 			return false
 		}
@@ -115,8 +119,13 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 		if _, err := rig.deps.consumers.consumers.StreamID(ctx); err != nil {
 			return false
 		}
-		_, err := rig.consumers.StreamID(ctx)
-		return err == nil
+		if _, err := rig.consumers.StreamID(ctx); err != nil {
+			return false
+		}
+		readCtx, cancelRead := context.WithTimeout(ctx, time.Second)
+		defer cancelRead()
+		_, _, err := rig.deps.registry.RefreshAt(readCtx, sessionID)
+		return err == nil || errors.Is(err, natsgo.ErrKeyNotFound)
 	})
 	if _, last := rig.streamSeqs(t); last != 0 {
 		t.Fatalf("the stream's last sequence after the whole block was cut is %d, want 0", last)

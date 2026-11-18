@@ -72,7 +72,11 @@ name: CI
 # (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
 # .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
 # go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
-# entry, keyed on the Go version its job's setup-go installed, so it is
+# entry per runner architecture, keyed on the runner's architecture and on the Go version its
+# job's setup-go installed: a build cache holds the objects of the architecture that compiled
+# them, so an entry an x86_64 runner filled would give a job on ubuntu-24.04-arm its modules and
+# none of its objects, so each family is filled on every runner one of its jobs runs on. An
+# entry is
 # refreshed only when Go is bumped. A go.sum change downloads only the changed modules, and Go's
 # build cache is content-addressed, so a stale entry costs a run only what changed; a key on the
 # go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy-infra is
@@ -106,6 +110,34 @@ name: CI
 # one at main), only on a miss of the exact key, and into the scope of the ref it was dispatched
 # on. check-ci-filters.sh's cache-family rule reads a workflow's own actions/cache steps and not a
 # composite action's, so this paragraph is the one record of the two actions' restores and saves.
+#
+# Runners: a job of this workflow, or of a workflow it calls, runs on ubuntu-24.04-arm unless it
+# needs an x86_64 machine, and runs on ubuntu-24.04 then. The two pools queue apart, and both
+# queue. On 2026-11-16 a job of this repository waited 456 s for an ubuntu-24.04 runner at the
+# median and 678 s at the 90th percentile, and the jobs every run waits on twice (`changes` at
+# the start, and `ci-ok` after the last job ends) paid that x86_64 wait both times. On the run
+# that first moved jobs here (run 44069656523, 2026-11-17), the 24 arm64 jobs waited 217 s at the
+# median and 542 s at most, the 19 x86_64 ones 890 s and 1428 s: an arm64 job that starts with
+# twenty others still waits for its turn, but the gating jobs started in 7 to 23 s (`lint` 7 s,
+# `ci-ok` 14 s, `changes` 17 s, `pr-title` 23 s). What keeps a job on
+# ubuntu-24.04, each a reason of its own machine and not of the job's code:
+#   * a tool whose .github/ci-tools.yaml row is an x86_64 build alone: changie (test), crane
+#     (ci-images), mise and jj (pi-shared), elan (airlock-lean);
+#   * the pinned Oh My Pi build, which .omp-pin names and whose release ships linux-x64 alone:
+#     daemon-go, plugin-pack, pi-envoy and pi-legion;
+#   * a browser: dispatch-browser (its container is an image built for linux/amd64 alone),
+#     dispatch-two-builds and docs (Playwright's Chromium on the runner's own libraries);
+#   * an image of this repository built for linux/amd64: worker-image, browser-image, and
+#     envoy-smoke, which also installs the x86_64 rows of the Pulumi CLI and its docker plugin;
+#   * envoy-go-checks, whose pack step builds the release's listener archives with no
+#     CGO_ENABLED, as release-envoy-listener.yaml does on ubuntu-24.04: Go's default turns cgo on
+#     for a native build and off for a cross build, so only an x86_64 runner builds the release's
+#     own pair (ci-job-envoy-go-checks.yaml says what the arm64 runner built instead);
+#   * tool-fallback, which is the x86_64 half of the tool proof; tool-fallback-arm is its arm64
+#     half.
+# Every Go cache family carries the runner's architecture in its key, as the paragraph above
+# says, so a job moved from one runner to the other reads a cold entry until
+# .github/workflows/ci-caches.yaml fills its family on the runner it moved to.
 
 # No `paths:`: every change starts this workflow, and `changes` selects what runs. No `branches:`
 # on pull_request: a pull request on any base is tested. No `edited`: a title or body edit starts
@@ -572,6 +604,8 @@ jobs:
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/brokerclient/*'
               - 'packages/envoy/brokertest/*'
+              # The cobra conformance harness cmd/legion's tests drive the built legion with.
+              - 'packages/envoy/clitest/*'
               - 'packages/envoy/daemonpermissions/*'
               # dispatchbody is the one public door onto the Dispatch server's own block
               # splitter, which the daemon refuses a close reason or a READY packet the server
@@ -705,6 +739,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -832,6 +867,8 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/ctxlock/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
@@ -1999,6 +2036,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -2319,6 +2357,8 @@ jobs:
               # (packages/envoy/dispatchbody, and the parser and contracts under it).
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
               - 'packages/envoy/internal/dispatch/model/*'
@@ -2712,11 +2752,15 @@ jobs:
               - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
               # Fixtures its Go tests read: internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/docs/approval_carry_test.go:26,
-              # internal/cistore/settlement_fixture_test.go:57.
+              # internal/cistore/settlement_fixture_test.go:57,
+              # internal/dispatch/legion/golden_state_test.go:29 (the daemon's state golden, which
+              # packages/daemon/internal/api/state_golden_test.go writes, so a change to the
+              # daemon's state shape must start this job as well as the daemon's).
               - 'packages/contracts/fixtures/dedupe-keys.json'
               - 'packages/contracts/fixtures/github-envelopes/**'
               - 'packages/contracts/fixtures/decision-blocks/**'
               - 'packages/contracts/fixtures/checks-settlement/**'
+              - 'packages/contracts/fixtures/daemon-api/state.json'
               # The daemon's own fixture, the server.started envelope its intake decodes:
               # internal/dispatch/startup/started_test.go:379 reads it and
               # TestTheBuiltEnvelopeIsTheSharedFixture holds this package's build to it, so a
@@ -3218,6 +3262,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
               - 'packages/envoy/internal/dispatch/model/*'
               # cmd/listener/dispatch_kept_role_test.go drives Dispatch's outbox end to end, so the
               # serverchange soak compiles this package: a change to it must re-run that soak.
@@ -3591,6 +3636,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
               - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/legion/**/*_test.go'
               - '!packages/envoy/internal/dispatch/model/**/*_test.go'
               - '!packages/envoy/internal/dispatch/outbox/**/*_test.go'
               - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
@@ -3733,6 +3779,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/horizontest/*'
               - 'packages/envoy/internal/dispatch/identity/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/legion/*'
+              - 'packages/envoy/internal/dispatch/legion/metrics/*'
               - 'packages/envoy/internal/dispatch/model/*'
               - 'packages/envoy/internal/dispatch/outbox/*'
               - 'packages/envoy/internal/dispatch/pmdoc/*'
@@ -3833,6 +3881,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/horizontest/**/*_test.go'
               - '!packages/envoy/internal/dispatch/identity/**/*_test.go'
               - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/legion/**/*_test.go'
               - '!packages/envoy/internal/dispatch/model/**/*_test.go'
               - '!packages/envoy/internal/dispatch/outbox/**/*_test.go'
               - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
@@ -3886,6 +3935,8 @@ jobs:
               - '.github/scripts/pg-connection-ceiling.sh'
               - *go_workspace
               - 'packages/envoy/internal/contracts/*'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
@@ -4042,6 +4093,8 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokerclient/*'
               - 'packages/envoy/internal/contracts/*'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/ctxlock/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
@@ -4151,6 +4204,8 @@ jobs:
               # oauthwire reads the project-key rule the contracts package generates, and the
               # package's testdata is read by the job that compiles it.
               - 'packages/envoy/internal/contracts/**'
+              # internal/contracts mints an envelope's ids through it (message_envelope.go).
+              - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/fileowner/*'
               - 'packages/envoy/internal/fold/*'
@@ -4713,13 +4768,11 @@ jobs:
   # The same two halves of the Bun install, proved again on an arm64 runner.
   # .github/actions/setup-bun's third step selects a row from `uname -m` — `bun-linux-aarch64`
   # here — and reads .github/ci-tools.yaml through .github/scripts/ci-tools.sh, which needs
-  # python3 with PyYAML. Of the steps a pull request runs on ubuntu-24.04-arm, the one other that
-  # imports yaml is that same action in dispatch-browser.yaml's `merge` job, which runs only when
-  # a change selects the browser suite,
-  # so on most pull requests nothing says that runner image carries it until the arm64 leg of
-  # .github/workflows/release-envoy-listener.yaml runs, which happens on a push to main and so
-  # only after a merge. This job says it on the pull request instead, and a release that would
-  # have failed on the first push fails here.
+  # python3 with PyYAML. Every job of this file that runs on ubuntu-24.04-arm and installs Bun
+  # makes that same read, so a runner image without PyYAML fails all of them; what this job adds is
+  # the second half, the install from npm when the release asset serves nothing, which no other
+  # arm64 job drives and which the arm64 leg of .github/workflows/release-envoy-listener.yaml would
+  # otherwise meet first, on a push to main and so only after a merge.
   # It proves both halves: the healthy path, where the release asset serves Bun and the action's
   # fourth step holds it to the aarch64 row, and the npm path, under the fault the tool-fallback
   # job uses, where the release hosts answer nothing and the second source serves the same
@@ -5782,7 +5835,10 @@ jobs:
   # A job of its own waits for a runner, and that wait is the cost of this shape: it is created
   # with the run but starts only once the last of its needs has ended, when the pool is busiest
   # with the next wave. docs/solutions/github/join-a-job-to-the-ci-router.md holds every reading
-  # of it. The shape is kept because a late verdict is right while one in another workflow's
+  # of it. This job runs on ubuntu-24.04-arm because it needs nothing of an x86_64 machine, and
+  # that pool queues apart from the x86_64 one and is idle by the time the last need ends: on the
+  # run this file's "Runners" paragraph measures, it started 14 s after it was created. The shape
+  # is kept because a late verdict is right while one in another workflow's
   # suite blocks the head until a person re-runs it. What this job cannot do, and the
   # ci-ok-report step every other job ends with still does, is post the failing ci-ok of a
   # merge-group run one job's result has already decided: this job waits for every job of the
