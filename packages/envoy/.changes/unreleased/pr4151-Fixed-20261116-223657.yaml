@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+    `agent-secrets register` without `--exec` (the `register --session-id` a session runs from inside once it knows its omp session id) no longer makes its own short-lived process the session's root, which ended with the command and left `agent-secrets identity` answering `NOT_A_SESSION` after `register` had printed `enrolled`. Inside a registered session it names that session, whatever command `--exec` started (`omp`, `claude`, a shell); outside one, the helper pins the nearest `omp` above the caller; with neither, the helper refuses with `NOT_A_SESSION` and the command exits 1, naming `register --exec`. The helper takes as such a root only a live `omp` ancestor of the caller that the same user runs and that no live session's root is below, and a process now belongs to the nearest session root above it, so a register from outside every session cannot take over the sessions under a tmux server or a login shell.
+
+    A client of this release prints its line only when the helper answers a session root above the client's own process, so it refuses, with exit 1, a helper from before this release: restart `agent-secrets-helper` on this release (`agent-secrets-helper install`) before sessions run this client's `register`.
+time: 2026-11-16T22:36:57.446009484Z
+custom:
+    Issue: pr4151

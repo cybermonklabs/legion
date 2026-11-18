@@ -36,7 +36,9 @@ import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
+import { refetchFailedOnFocus } from "../refs/reference-target";
 import { wordsOf } from "../refs/tree-fragment";
+import { APPROVAL_CHIP } from "./approval-chip-box";
 import { decisionsDocumentId } from "./decision-review";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
@@ -45,6 +47,21 @@ import { CONTROL_LABELS } from "./page-words";
 import { treeContext } from "./tree-drafts";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type WaitingPress, waitingOnReader } from "./waiting";
+
+/**
+ * How the count's five reads are kept fresh: the tree's `EVENT_FRESH` (`useIssueTree.ts`), which
+ * that file keeps to itself, so the header holds this copy. They are refreshed by events, never
+ * by age (decision 180): the feed's rules read the decisions, the coverage, the comments and the
+ * blocks again when an event can change them, the reader's login does not change while the page
+ * is open, and a window focus fetches again only a read in error (`refetchFailedOnFocus`).
+ * TanStack judges staleness per observer, so a read here under the app's 30 s (`main.tsx`) would
+ * read its key again on each window focus, and on each mount of the header 30 s after the last
+ * read, although the tree beside it holds that key fresh.
+ */
+const EVENT_FRESH = {
+  refetchOnWindowFocus: refetchFailedOnFocus,
+  staleTime: Number.POSITIVE_INFINITY,
+} as const;
 
 /**
  * The header's one properties line (the prototype's `#hdr-props`): the status, the priority,
@@ -87,20 +104,23 @@ export function IssuePropertiesRow({
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
-  // decisions, the coverage's statements, the comments a Change is written as, and the decisions
-  // document's blocks, whose sections say which decision a Change's anchor belongs to - so it
-  // costs no request of its own (`waiting.ts`). Until those blocks answer the count reads the
-  // Changes by their quotes, as `decision-review.ts` does with no blocks read.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
-  const decisions = useQuery(issueDecisionsQuery(issue.key, true));
-  const coverage = useQuery(issueCoverageQuery(issue.key));
+  // reader's login, the decisions, the coverage's statements, the comments a Change is written
+  // as, and the decisions document's blocks, whose sections say which decision a Change's anchor
+  // belongs to - and kept fresh as the outline keeps them (`EVENT_FRESH`), so it costs no request
+  // of its own (`waiting.ts`). Until those blocks answer the count reads the Changes by their
+  // quotes, as `decision-review.ts` does with no blocks read.
+  const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
+  const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const comments = useQuery({
     queryFn: () => api.listComments(issue.key),
     queryKey: ["comments", issue.key],
+    ...EVENT_FRESH,
   });
   const decisionsDocument = decisionsDocumentId(issue.artifacts, decisions.data);
   const decisionsBlocks = useQuery({
     ...artifactBlocksQuery(decisionsDocument ?? ""),
+    ...EVENT_FRESH,
     enabled: decisionsDocument !== undefined,
   }).data;
   const documents = useMemo(
@@ -132,10 +152,12 @@ export function IssuePropertiesRow({
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
   const agentsTurn = openAsks.length - waitingOnHuman(openAsks).length;
   // The one shared read of the projects, under the key the shell's sidebar and the search
-  // palette already hold: only a root issue has gated steps at all (`gatedStepEntries`), so a
-  // child does not ask for the list, and while the read is pending or failed the issue draws
-  // its one chip rather than claiming a gate it has not read.
-  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  // palette already hold, kept fresh by the feed's events as the count's reads are
+  // (`EVENT_FRESH`), so a header mounted again does not send it a second time. Only a root issue
+  // has gated steps at all (`gatedStepEntries`), so a child does not ask for the list, and while
+  // the read is pending or failed the issue draws its one chip rather than claiming a gate it has
+  // not read.
+  const projects = useQuery({ ...projectsQuery(), ...EVENT_FRESH, enabled: issue.parent === null });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
   // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn
@@ -147,15 +169,16 @@ export function IssuePropertiesRow({
   const approval = documentArtifact?.approval;
   const line = useRef<HTMLDivElement>(null);
 
-  // The count's press: the Decisions filter, with the outline drawn in place of any document,
-  // and the focus on the next item there that waits, in the filter's order - the first press on
-  // the first, each press after on the one after it (the Decisions filter's body takes the press
-  // from the history entry); an approval request alone puts the focus on the first chip or entry
-  // on this line of a document whose request waits. Where the header draws no chip or entry of
-  // the waiting document - another document of a child, or a document no step of a gated root
-  // names - the request is counted and the press does nothing in the header, rather than put the
-  // focus on another document's chip. A press made on the filter already replaces its entry, so
-  // Back leaves the filter rather than walking back through the presses.
+  // The count's press, where an ask or a decision waits: it sets the Decisions filter's address
+  // and leaves the press in that history entry as its `WaitingPress` mark, one number per press.
+  // This part draws no view at that address; a later part's Decisions view reads the mark to put
+  // the focus on the next item there that waits, each press on the one after the last. An
+  // approval request alone puts the focus on the first chip or entry on this line of a document
+  // whose request waits. Where the header draws no chip or entry of the waiting document -
+  // another document of a child, or a document no step of a gated root names - the request is
+  // counted and the press does nothing in the header, rather than put the focus on another
+  // document's chip. A press made on the filter already replaces its entry, so Back leaves the
+  // filter rather than walking back through the presses.
   const goToWaiting = () => {
     if (waiting.asks + waiting.decisions > 0) {
       const press: WaitingPress = { waitingPress: performance.now() };
@@ -163,9 +186,9 @@ export function IssuePropertiesRow({
       navigate(path, { replace: pathname === path, state: press });
       return;
     }
-    const control = [
-      ...(line.current?.querySelectorAll<HTMLElement>("[data-approval-artifact]") ?? []),
-    ].find((found) => waiting.approvals.includes(found.dataset.approvalArtifact ?? ""));
+    const control = [...(line.current?.querySelectorAll<HTMLElement>(APPROVAL_CHIP) ?? [])].find(
+      (found) => waiting.approvals.includes(found.dataset.approvalArtifact ?? "")
+    );
     control?.focus();
   };
 
@@ -415,9 +438,11 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
  * widest, and the chips past the end of the box's first line are then left out, so the line
  * holds no word it hides. The count keeps the width it had in that reading, so the line breaks
  * around it as it did then and the count names every chip left out. That reading is taken in
- * the commit that lays the chips out whenever the labels change, and again on the next frame
- * whenever the line's width does. The frame between draws the last reading's chips at the new
- * width: the box wraps and draws its first line only, so a chip that no longer fits goes onto a
+ * the commit that lays the chips out whenever the labels change, again on the next frame
+ * whenever the line's width does, and again whenever the document's fonts finish loading: the
+ * typeface can arrive after the first reading (`font-display: swap`) and widen the chips while
+ * the line keeps its width. The frame between draws the last reading's chips at the new
+ * widths: the box wraps and draws its first line only, so a chip that no longer fits goes onto a
  * line the box clips away rather than past its edge, and each frame draws a chip whole or not
  * at all.
  */
@@ -477,7 +502,9 @@ function HeaderLabels({
     setFit({ key, shown: fits });
   });
   // A width the line changes to is read again on the next frame, so the reading is a commit
-  // of its own rather than one inside the observer's notification.
+  // of its own rather than one inside the observer's notification. A typeface that loads after
+  // the reading can widen the chips while the box keeps its width, which the observer does not
+  // see, so the line is read again on each `loadingdone` of the document's fonts too.
   const hasLabels = labels.length > 0;
   useEffect(() => {
     const element = box.current;
@@ -491,9 +518,14 @@ function HeaderLabels({
       frame = requestAnimationFrame(() => setFit(null));
     });
     observer.observe(element);
+    // The unit suite's DOM has no font set, and so no typeface to wait for.
+    const fonts = "fonts" in document ? document.fonts : undefined;
+    const readAgain = () => setFit(null);
+    fonts?.addEventListener("loadingdone", readAgain);
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
+      fonts?.removeEventListener("loadingdone", readAgain);
     };
   }, [hasLabels]);
   if (labels.length === 0) return null;

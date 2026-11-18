@@ -279,12 +279,15 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
-// SIGKILL because the pod was near its memory limit (shimwire.LauncherMemoryKill): the launcher
-// sends the report on the connection of the role whose process it was, and the daemon tells that
-// role why the process is gone. The session gives it the issue key, the claim token of the role
-// the connection authenticated for, the uid of the pod the launcher runs in and the report; the
-// three are the session's own and never the report's, so a launcher cannot name another role,
-// issue or pod.
+// SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
+// kernel stopped because the pod ran out of memory (the report's Cause,
+// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
+// runs the role's session), which the launcher's guest watch names
+// (shimwire.LauncherMemoryKill): the launcher sends the report on the connection of the role whose
+// process it was, and the daemon tells that role why the process is gone. The session gives it the
+// issue key, the claim token of the role the connection authenticated for, the uid of the pod the
+// launcher runs in and the report; the three are the session's own and never the report's, so a
+// launcher cannot name another role, issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
 // of the daemon's own packages, so the import is acyclic, and a second copy of the report would

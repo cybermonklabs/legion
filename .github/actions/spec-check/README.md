@@ -91,6 +91,10 @@ Each line that the command prints about the directory or an entry of it names th
   The log holds a warning for each entry that is not a spec file (see [Warnings](#warnings)), then one line that names the directory and the case, and the file when a file cannot be read.
   The command prints no count line, so the action sets no `count`.
 
+- **Exit 2: the command cannot write its output.**
+  The file that holds the command's standard output does not take all of it, for example on a full disk.
+  The log holds the line `spec-check: tree: cannot write standard output: <error>`.
+
 ## Warnings
 
 An entry of the directory that is not a spec file gives a warning line, `spec-check: warning: <path>: not a spec file (<kind>); the importer passes over it`.

@@ -379,8 +379,11 @@ html:has([data-issue-page]) {
      waits, and the title's editor at the heading's own size, which it must match so ending an
      edit moves nothing. This file's rules are in no cascade layer and Tailwind's are, so
      `revert-layer` gives back the size the control's own classes set. A menu or a dialog a
-     header control opens keeps the 1rem floor above, so a phone does not zoom into its fields. */
-  html:has([data-issue-page]) [data-issue-page]
+     header control opens keeps the 1rem floor above, so a phone does not zoom into its fields.
+     The rule takes no `html:has()` scope, because under one each change of the page recalculated
+     the style of every control of the page (decision 176); its `[data-issue-page]` ancestor
+     keeps it to the new page. */
+  [data-issue-page]
     [data-issue-header]
     :is(select, textarea):not([role="menu"] *):not([role="dialog"] *) {
     font-size: revert-layer;
@@ -423,8 +426,10 @@ html:has([data-issue-page]) {
      target (WCAG 2.2's 2.5.8), because the header at 390 px is held to eight lines and 250 px,
      nine lines and 280 px while an approval request waits. `revert-layer` takes the floor above
      off and gives back the size the control's own classes set. A menu or a dialog a header
-     control opens keeps the 44 px floor. */
-  html:has([data-issue-page]) [data-issue-page]
+     control opens keeps the 44 px floor. The rule takes no `html:has()` scope, because under one
+     each change of the page recalculated the style of every control of the page (decision 176);
+     its `[data-issue-page]` ancestor keeps it to the new page. */
+  [data-issue-page]
     [data-issue-header]
     :is(button, a, select, textarea):not([role="menu"] *):not([role="dialog"] *) {
     min-width: revert-layer;

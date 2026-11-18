@@ -298,7 +298,7 @@ type built struct {
 	mu         sync.Mutex
 	conns      runtime.Conns
 	address    string
-	apps       appauth.Tokens
+	apps       appauth.Source
 	repository func(context.Context, string) (ghrepo.Repository, string, error)
 	store      *store.Store
 	mapped     func() []ghrepo.Repository
@@ -308,7 +308,7 @@ type built struct {
 // real stream listener, store, and machines, with nothing launched for real.
 func fakeRuntime(rt runtime.Runtime, record *built) overrides {
 	return overrides{
-		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
+		runtime: func(_ context.Context, listener *stream.Listener, address string, apps appauth.Source,
 			repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 			record.mu.Lock()
 			defer record.mu.Unlock()
@@ -1173,7 +1173,8 @@ func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	want := api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets"}}}
+	want := api.RepositoriesView{Refused: []api.RefusedRepositoryView{{Repo: "acme/widgets", Reason: "the review App is not installed on acme/widgets",
+		Apps: &api.AppInstallationsView{Implement: true}}}}
 	if len(state.Repositories.Owners) != 0 || len(state.Repositories.Mapped) != 0 || !reflect.DeepEqual(state.Repositories.Refused, want.Refused) {
 		t.Fatalf("state's repositories = %+v, want none served and acme/widgets left out for its review App", state.Repositories)
 	}
@@ -1639,7 +1640,7 @@ type workflowTokenRecorder struct {
 	failing map[string]error
 }
 
-func (r *workflowTokenRecorder) Token(_ context.Context, role appauth.AppRole, _ ghrepo.Repository) (appauth.Lease, error) {
+func (r *workflowTokenRecorder) Token(_ context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.roles = append(r.roles, role)
@@ -1665,17 +1666,28 @@ func (r *workflowTokenRecorder) InstalledOn(_ context.Context, role appauth.AppR
 	return !r.missing[key], nil
 }
 
+// InstalledOwners answers no owner list: the recorder knows which repositories each App is
+// installed on (InstalledOn) and not the accounts, and no rig builds a gh bundle over it, since
+// each replaces the runtime that would. A rig that builds one names its owners itself.
+func (r *workflowTokenRecorder) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
+	return nil, errors.New("the workflow token recorder lists no owner accounts, which a gh bundle holds one directory per owner of")
+}
+
 // servedBootCall answers the calls every boot makes of Dispatch, whatever the test is about:
 // the repository mapping, acme/widgets the default of project; the webhook App check, Dispatch's
 // GitHub App installed on every repository; the publish of the project's gated design steps,
 // which the boot queues for its own project (daemon.queueGatedStepsPublish) and the outbox's
 // first sweep sends; the publish of the documents a gated issue's own gates record, which the
 // boot queues for every recorded issue Dispatch has not closed (daemon.queueRecordedGatesPublish)
-// and that same sweep sends; and the read of a gate's own document, which the boot's catch-up
-// makes for every root it reads (bindGateRequest through dispatch.Client.Approval). It reports
-// whether it answered r. A board that leaves one of these to its own default arm fails the test
-// with an unexpected request, which is what this helper exists to stop: none of them belongs to a
-// test here.
+// and that same sweep sends; the publish of an issue's role sessions, which the boot queues for
+// every issue with a recent claim (daemon.queueRoleHoldersPublish) and each boot ready and each
+// change of a claim's role holder queues again (roleHoldersChanged, the store's putClaim); and the
+// read of a gate's own document, which the boot's catch-up makes for every root it reads
+// (bindGateRequest through dispatch.Client.Approval). It reports whether it answered r. A board
+// that leaves one of these to its own default arm fails the test with an unexpected request,
+// which is what this helper exists to stop: none of them belongs to a test here.
+// role_holder_publish_test.go and TestRoleHoldersLandInScratchDispatch are the tests of the
+// role-holder publication.
 func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, project string) bool {
 	t.Helper()
 	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/projects/") &&
@@ -1685,6 +1697,11 @@ func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, projec
 	}
 	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/issues/") &&
 		strings.HasSuffix(r.URL.Path, "/design-gates") {
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/issues/") &&
+		strings.HasSuffix(r.URL.Path, "/role-holders") {
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}
@@ -1717,8 +1734,8 @@ func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, projec
 	return true
 }
 
-func (r *workflowTokenRecorder) ReadToken(ctx context.Context, role appauth.AppRole, _ string, _ []string) (appauth.Lease, error) {
-	lease, err := r.Token(ctx, role, ghrepo.Repository{})
+func (r *workflowTokenRecorder) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
+	lease, err := r.Token(ctx, role, "")
 	lease.Token += "-read"
 	return lease, err
 }

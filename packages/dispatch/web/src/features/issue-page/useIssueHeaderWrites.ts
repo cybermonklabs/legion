@@ -98,10 +98,7 @@ export interface IssueHeaderWrites {
    * keeps the pick, shows it in the shell's indicator and sends it in its turn with no caller
    * drawn, and a reload keeps it, as it keeps every write. And a title Dispatch refused must stay
    * shown and retryable: `titleRefusal`, `parentError` and `drafts.retry()` read `updateIssue`'s
-   * last write, which a status sent through it would replace. The source page held a status
-   * picked behind another write in `IssuePropertiesRow.tsx`'s own state (lines 80 to 90 there),
-   * while Details read only `pendingStatus` (`IssueMargin.tsx:216`), so Details went on showing
-   * the old status: the held-status defect the reviewer found at the checkpoint.
+   * last write, which a status sent through it would replace.
    */
   readonly pickStatus: (next: string) => void;
   /** A parent Dispatch refused, with the reason it gave, drawn where the parent is edited. */

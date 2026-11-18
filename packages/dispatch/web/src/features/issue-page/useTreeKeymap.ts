@@ -335,8 +335,18 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
         if (row === undefined) return;
         tree.onReport("");
         if (tree.oneNodeAtATime) {
+          // A child of the row the tree is zoomed to asked to zoom to that row, which is the
+          // zoom already: at 390 px the key moved nothing and said nothing. It says so at the
+          // row, as every key with nowhere to go does, and the zoom's own row zooms out.
           const parent = row.trail.at(-1);
-          if (parent !== undefined) tree.onZoom(parent);
+          if (parent === undefined) return;
+          if (parent === tree.zoom) {
+            tree.onReport(
+              parent === tree.root.id ? KEY_REPORTS.whole_tree : KEY_REPORTS.parent_zoomed
+            );
+            return;
+          }
+          tree.onZoom(parent);
           return;
         }
         if (row.expanded === true) {

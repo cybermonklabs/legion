@@ -103,6 +103,17 @@ export const NODE_TYPE_NAMES = freeze({
 export type NodeType = keyof typeof NODE_TYPE_NAMES;
 
 /**
+ * The name a typed block draws in a document that does not play its type's part, in place of
+ * its type's name, lowercase as every name above: a `requirement` block of any document but the
+ * issue's spec is no statement (`isStatement`), so its row's tag says its type's own word and
+ * never "statement" (decision 246), as a `check` block outside the Verification document draws
+ * no state word (decision 152).
+ */
+export const BLOCK_TYPE_NAMES = freeze({
+  requirement: "requirement",
+} as const);
+
+/**
  * The state words of each type whose state the model holds, and no entry at all for a type it
  * gives no state: a comment is not in a state, so the page has no word to draw for one, and an
  * entry holding an empty table would invite a row to draw a blank badge.
@@ -1417,6 +1428,7 @@ function phrasesIn(value: unknown): readonly string[] {
  */
 export const UNASKED_SOURCES: readonly unknown[] = freeze([
   NODE_TYPE_NAMES,
+  BLOCK_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
   FILTER_SIGNAL_WORDS,

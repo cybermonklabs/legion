@@ -128,8 +128,10 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
  *  toggle - the pin - says what is so with `pressed`. */
 export interface IssueAction {
   readonly disabled?: boolean;
-  /** Which action this is, apart from the words it shows, which change as it saves. */
-  readonly id: string;
+  /** Which action this is, apart from the words it shows, which change as it saves. It is the
+   *  control's `data-issue-action`, which a key finds the control by (`Shift+P` presses
+   *  `button[data-issue-action="pin"]`, `useHeaderKeys.ts`), so the four ids are a contract. */
+  readonly id: "pin" | "close" | "reopen" | "parent";
   readonly pressed?: boolean;
   readonly run: () => void;
   readonly text: string;

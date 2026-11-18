@@ -64,10 +64,11 @@ interface Reading {
 }
 
 /** Each text's readings, the least recently asked text first, by the small id of the list of
- *  issue keys it was read against (`keyListId`). The text itself is the key, so an entry holds
- *  no copy of it or of the keys. Nothing else a reading depends on changes while the page is
- *  open: the origin is the page's, and the references read ambiguous are left out after the
- *  reading (`rowReferences`), so a new set of them draws no stale link. */
+ *  issue keys it was read against (`keyListId`), the least recently asked list first. The text
+ *  itself is the key, so an entry holds no copy of it or of the keys. Nothing else a reading
+ *  depends on changes while the page is open: the origin is the page's, and the references read
+ *  ambiguous are left out after the reading (`rowReferences`), so a new set of them draws no
+ *  stale link. */
 const readings = new Map<string, Map<number, Reading>>();
 
 /** The id of each list of issue keys a caller has passed, by the list itself, and by its keys
@@ -117,7 +118,12 @@ function readingOf(text: string, issues: readonly string[] | undefined): Reading
   }
   readings.set(text, byKeys);
   const held = byKeys.get(id);
-  if (held !== undefined) return held;
+  if (held !== undefined) {
+    // The list asked is its text's newest, so a fifth list evicts the one asked longest ago.
+    byKeys.delete(id);
+    byKeys.set(id, held);
+    return held;
+  }
   const read: Reading = {
     reading: readTextReferences(text, issues === undefined ? {} : { issues }),
   };

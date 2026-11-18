@@ -102,5 +102,6 @@ Filing or admitting an issue, name each priority it advances (`--advance <id>` o
 `dispatch priorities` lists the ids, and names each issue in flight that advances no priority.
 
 Taking the label off a waiting root drops it from the waiting line; taking it off an admitted tree
-does not stop it. A child needs no label: it runs under its tree's architect once its root is
-admitted. A child outside a live tree is admitted as a root of its own and needs the label.
+does not stop it. A child needs no label: it runs in its tree once its root is admitted, and under
+its own architect once its first phase starts. A child outside a live tree is admitted as a root
+of its own and needs the label.

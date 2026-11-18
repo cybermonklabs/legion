@@ -1,8 +1,10 @@
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
+import { whoAmIQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
-import { ArtifactDocument } from "../artifacts/ArtifactDocument";
-import type { DocumentToolbar } from "../doc/ProofDocument";
+import type { EditorHandle } from "../doc/editor";
+import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
 import { DocumentStage, STAGE_IN_PANEL, useDocumentStage } from "./document-stage";
 import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
 
@@ -17,55 +19,57 @@ import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
  *
  * `resting` says whether the document's stage rests here while no row of the tree holds it.
  * The editor for an edited row rests nowhere, because that row is holding the stage itself.
+ *
+ * It draws the document's `ProofDocument` itself, as `ArtifactDocument` does for an address that
+ * names no comment and no ask - the reader's read, then the document - since no address lands
+ * here, and so it can hand the row the live editor (`onEditorHandle`), which the row holds every
+ * edit of to its node's block (`useNodeEditing.ts`).
  */
 export function StagedDocument({
   artifact,
-  askId,
-  commentId,
-  highlightTerm,
   isClosed,
   issueKey,
+  onEditorHandle,
   onToolbarChange,
   onVersionChange,
   resting = true,
   showDiff,
-  version,
 }: {
   artifact: Artifact;
-  /** The ask an address names for this document's editor to land on (`issue-address.ts`'s
-   *  `documentItem`). */
-  askId?: string;
-  /** The comment an address names the same way. */
-  commentId?: string;
-  /** What a `?q=` search term marks in the document's text. */
-  highlightTerm?: string;
   isClosed: boolean;
   issueKey: string;
+  /** Takes the document's live editor as it is made, and `undefined` as it is torn down. */
+  onEditorHandle?: (handle: EditorHandle | undefined) => void;
   onToolbarChange: (toolbar: DocumentToolbar | undefined) => void;
   onVersionChange: (version: number | null) => void;
   resting?: boolean;
   showDiff: boolean;
-  /** The version the address pins, or undefined for the document as it stands. */
-  version?: number;
 }): ReactNode {
   const stage = useDocumentStage(artifact.id, STAGE_IN_PANEL);
+  const user = useQuery(whoAmIQuery());
   return (
     <>
       {resting ? <div className="flex min-w-0 flex-col" ref={stage} /> : null}
       <DocumentStage artifactId={artifact.id}>
         <EditorBox>
-          <ArtifactDocument
-            artifact={artifact}
-            askId={askId}
-            commentId={commentId}
-            highlightTerm={highlightTerm}
-            isClosed={isClosed}
-            onToolbarChange={onToolbarChange}
-            onVersionChange={onVersionChange}
-            owner={{ key: issueKey, kind: "issue" }}
-            showDiff={showDiff}
-            version={version}
-          />
+          {user.data === undefined ? (
+            <p>Loading document…</p>
+          ) : (
+            <ProofDocument
+              artifact={artifact}
+              highlight={undefined}
+              highlightTerm={undefined}
+              isClosed={isClosed}
+              key={artifact.id}
+              onEditorHandle={onEditorHandle}
+              onToolbarChange={onToolbarChange}
+              onVersionChange={onVersionChange}
+              owner={{ key: issueKey, kind: "issue" }}
+              showDiff={showDiff}
+              user={user.data}
+              version={undefined}
+            />
+          )}
         </EditorBox>
       </DocumentStage>
     </>

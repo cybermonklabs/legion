@@ -31,6 +31,7 @@ import {
   createIssue,
   createMessage,
   getArtifact,
+  getArtifactText,
   getAsk,
   getIssue,
   getIssueCoverage,
@@ -89,6 +90,7 @@ import {
   branchMoreRows,
   bulletBoxes,
   caretInNode,
+  caretInRowBlock,
   childRow,
   childRows,
   childrenSection,
@@ -290,6 +292,11 @@ async function primarySlug(key: string): Promise<string> {
   const primary = ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary);
   expect(primary, `${key} carries no primary document`).toBeDefined();
   return primary?.slug ?? "";
+}
+
+/** The markdown the server stores for the document `artifactId`. */
+async function storedMarkdown(artifactId: string): Promise<string> {
+  return (await getArtifactText(artifactId)).markdown;
 }
 
 /** The kinds a row draws no tag for, because they are the conversation's own words rather than
@@ -840,8 +847,8 @@ function branchMoreIndent(width: number): { readonly inset: number; readonly ste
  * reaching past that column on both sides (`NODE_ROW_LAYOUT.foldControl`): it ends before its
  * words, so it covers none of them, and it stays inside the page.
  */
-async function expectPhoneBulletGaps(page: Page, where: string): Promise<void> {
-  const layouts = await rowLayouts(page);
+async function expectPhoneBulletGaps(page: Page, spec: string, where: string): Promise<void> {
+  const layouts = await rowLayouts(page, spec);
   const bullets = await bulletBoxes(page);
   expect(
     bullets.map((bullet) => bullet.id),
@@ -940,7 +947,9 @@ test("a folded branch's line is its first line, cut at a word @phone @phone-only
       );
       // No row makes the page scroll sideways at any of these widths.
       await assertPageFits(page);
-      if (width === PHONE.width) await expectPhoneBulletGaps(page, `the page at ${width} px`);
+      if (width === PHONE.width) {
+        await expectPhoneBulletGaps(page, specSlug, `the page at ${width} px`);
+      }
 
       // The phone's form ends at 760 px itself and the desktop's starts at 761.
       // Below 1024 px one level is drawn, so a branch the reader opens off the frontier folds
@@ -2803,8 +2812,12 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
 
 // The tester's finding: what a key says when it has nowhere to go - `w` on a row no decision
 // stands behind - is drawn at the row it was pressed on, once, and the reader's next move lets
-// it go.
-// SLOW(>=2s): a seeded thread loaded cold and one of its rows focused, for two keys pressed.
+// it go. At 390 px, where the tree is read one node at a time, Left on a child of the row the
+// tree is zoomed to asked to zoom to that row, which is the zoom already, and said nothing: it
+// says so at the row, and on the zoom's own row it zooms back out.
+// SLOW(>=2s): a seeded thread loaded cold and one of its rows focused, for two keys pressed, then
+// loaded again at a phone's size on a reply's address, waited on until the reply has the focus,
+// for four keys more and a zoom out waited on.
 test("a key with nowhere to go says so at its row, and the next move lets it go", async ({
   browser,
 }) => {
@@ -2833,6 +2846,39 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
       issuePage(page).locator("[data-row-report]"),
       "the report stays after the reader moved on"
     ).toHaveCount(0);
+
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}/comments/${seeded.first}`);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "the reply's address does not focus its row" })
+      .toBe(seeded.first);
+    const crumbs = issuePage(page).locator("[data-crumb]");
+    await expect(crumbs, "the reply's address does not zoom the tree to its thread").toHaveCount(1);
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, seeded.first).first().locator("[data-row-report]"),
+      "Left on a child of the row the tree is zoomed to says nothing at the row"
+    ).toHaveText(KEY_REPORTS.parent_zoomed);
+    expect(await focusedNodeId(page), "Left on a child of the zoom moved the focus").toBe(
+      seeded.first
+    );
+    // The zoom's own row, the thread's head: Left zooms out to the issue, and there Left on the
+    // head, a child of the issue, says the whole issue is drawn.
+    await page.keyboard.press("ArrowUp");
+    await expect.poll(() => focusedNodeId(page)).toBe(seeded.head);
+    await page.keyboard.press("ArrowLeft");
+    await expect(crumbs, "Left on the zoom's own row did not zoom out").toHaveCount(0);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "zooming out took the focus off the head" })
+      .toBe(seeded.head);
+    await page.keyboard.press("ArrowLeft");
+    await expect(
+      nodeRow(page, seeded.head).first().locator("[data-row-report]"),
+      "Left on a child of the issue, with the whole issue drawn, says nothing at the row"
+    ).toHaveText(KEY_REPORTS.whole_tree);
+    expect(await focusedNodeId(page), "Left on a child of the issue moved the focus").toBe(
+      seeded.head
+    );
   });
 });
 
@@ -2840,10 +2886,12 @@ test("a key with nowhere to go says so at its row, and the next move lets it go"
 // the caret at the start of its words, in that document's one room: the row takes the page's one
 // editor of the document, so the room gets no second connection. A second reader who does the
 // same on their own page is in that room too, and the first one's row draws the second one's
-// caret. What is typed is stored. Escape gives the same row the focus, and a second Escape leaves
+// caret. What is typed is stored, and keys pressed before the caret has reached the statement
+// edit the statement or nothing. Escape gives the same row the focus, and a second Escape leaves
 // the outline. A comment's row holds no document's text, and the key says so at the row.
 // SLOW(>=2s): the whole issue seeded and loaded, a second reader's context loading it too, both
-// carets put in the spec's live room, and two reloads or more reading what was stored.
+// carets put in the spec's live room, two reloads or more reading what was stored, and Enter
+// pressed on a page slowed four times, with Delete pressed until the caret is in the statement.
 test("Enter puts the caret in a node, and Escape gives the row back", async ({ browser }) => {
   test.setTimeout(120_000);
   const { context, page, seeded } = await openTree(browser);
@@ -2921,6 +2969,51 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
       .poll(storedWords, { message: "the word typed in the row was not removed" })
       .not.toContain(typed.trim());
 
+    // Keys pressed the moment Enter is pressed edit the statement or nothing. The editor took the
+    // focus with its own selection still at the top of the document, and read the caret put in
+    // the statement only a task later: on a busy page that was 0.27 to 0.84 s, and ten Deletes
+    // pressed in it removed the spec's first heading. The page is slowed here as a busy page is,
+    // the CPU throttled four times, and Delete pressed at once and again, without waiting on
+    // anything, until the caret has stood in the statement for three presses.
+    const before = await storedMarkdown(seeded.specArtifactId);
+    const words = requirementText(2);
+    const at = before.indexOf(words);
+    expect(at, "the stored spec does not hold the statement's words").toBeGreaterThan(-1);
+    const cpu = await context.newCDPSession(page);
+    await cpu.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+    try {
+      await page.keyboard.press("Enter");
+      const until = Date.now() + 30_000;
+      for (let inBlock = 0; inBlock < 3 && Date.now() < until; ) {
+        await page.keyboard.press("Delete");
+        if (await caretInRowBlock(page, requirementBlockId(2))) inBlock += 1;
+      }
+    } finally {
+      await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+      await cpu.detach();
+    }
+    await expect
+      .poll(() => storedMarkdown(seeded.specArtifactId), {
+        message: "no Delete pressed after Enter reached the statement",
+      })
+      .not.toBe(before);
+    const after = await storedMarkdown(seeded.specArtifactId);
+    const above = before.slice(0, at);
+    const below = before.slice(at + words.length);
+    expect(
+      after.slice(0, above.length),
+      "a key pressed after Enter edited above the statement"
+    ).toBe(above);
+    expect(after.slice(after.length - below.length), "a key edited below the statement").toBe(
+      below
+    );
+    const left = after.slice(above.length, after.length - below.length);
+    expect(
+      left.length < words.length && words.endsWith(left),
+      `the statement reads "${left}", not its own words with their first ones deleted`
+    ).toBe(true);
+    await page.keyboard.press("Escape");
+
     // A comment's row holds no document's text: Enter puts no caret, and the row says so.
     const comment = seeded.comments.threads[0] ?? "";
     await focusRow(page, comment);
@@ -2933,4 +3026,405 @@ test("Enter puts the caret in a node, and Escape gives the row back", async ({ b
   } finally {
     await context.close();
   }
+});
+
+/** Where `after` differs from `before`: the stretch of each that differs, with a few characters
+ *  around it, for a failure to say where an edit landed. */
+function changeIn(before: string, after: string): string {
+  let start = 0;
+  while (start < before.length && before[start] === after[start]) start += 1;
+  let tail = 0;
+  while (
+    tail < before.length - start &&
+    tail < after.length - start &&
+    before[before.length - 1 - tail] === after[after.length - 1 - tail]
+  ) {
+    tail += 1;
+  }
+  const around = (text: string) =>
+    JSON.stringify(text.slice(Math.max(0, start - 30), text.length - tail + 30).slice(0, 200));
+  return `${around(before)} became ${around(after)}`;
+}
+
+// The row's editor keeps its caret, and every edit a key makes, inside the node's own block. The
+// editor is the document's whole editor, and the keys it answers for a whole document reached past
+// the block: measured on a preview, Ctrl+Home moved the caret before the spec's `## Summary` and a
+// `Y` typed then made it `## YSummary`, and Up after Left put the caret before a heading above the
+// statement. Each move is pressed once Enter has put the caret at the start of a node's block, and
+// a `Y` typed after it. In a statement of the spec, Up from its first line and Down from its last
+// leave the caret at its start - unguarded, each put it between the statement and the block above
+// or below, and the `Y` became a paragraph of its own there - and select-all selects the
+// statement's words alone, which the `Y` replaces - unguarded, the `Y` replaced the whole spec.
+// In a decision's heading, Ctrl+Home leaves the caret at its start and Ctrl+End takes it to its
+// end - unguarded, they took it to the start of the document's first heading and the end of its
+// last paragraph; the spec opens and closes with typed blocks whose header and foot take no
+// caret, and Chromium's Ctrl+Home and Ctrl+End leave the caret where it is there. Backspace
+// pressed three times at the heading's start leaves the caret there too - unguarded, the editor
+// took the heading a level down and then made it a paragraph (Milkdown's `DowngradeHeading`), and
+// the third joined it to the paragraph above; the spec's statements are typed blocks, which no
+// join crosses. A paste of two lines at the heading's start, sent as a browser sends a paste, is
+// refused - unguarded, the editor put a line break into the heading, and the stored `## Keep...`
+// became a heading of two lines, `Two\`, `linesYKeep...` and `---` under them. Each time the
+// stored document holds the `Y` in that block, where the move stopped, and every other block byte
+// for byte as it was; the block is put back through the row after - past the `Y` and Backspace in
+// a heading, since Delete at a heading's start takes it a level down - and the stored document
+// read back as it was before.
+// SLOW(>=2s): the whole issue seeded and loaded, then seven edits made through the row, each read
+// back from the stored document, put back through the row and read back again.
+test("the keys of a row's editor move its caret and edit inside the node's own block alone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const { context, page, seeded } = await openTree(browser);
+  try {
+    await expectTreeDrawn(page);
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
+    const statementBlock = requirementBlockId(2);
+    const statement = blockNodeId(specSlug, statementBlock);
+    const words = requirementText(2);
+    const heading = "Keep every address the old page answered";
+    const decision = seeded.decisions[1] ?? "";
+
+    /** Enter on the focused row, the caret in its node's block `blockId`, and the editor's own
+     *  write of its selection after the focus passed. */
+    const enter = async (blockId: string) => {
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => caretInRowBlock(page, blockId), { message: "Enter put no caret in the block" })
+        .toBe(true);
+      // ProseMirror writes its own selection back over the page's 20 ms after it takes the focus
+      // (prosemirror-view's focus handler), undoing a caret move it has not read yet: an arrow
+      // pressed in that window is put back, and the key after it acts at the old place. A reader
+      // is never that quick, so the row waits that window out before its first key, on the page's
+      // own clock: a wait in this process lets the next key go out while that timer is still
+      // queued, and a busy page runs a queued key before a timer already due, while a timer the
+      // page sets after ProseMirror's runs after it, so the key is sent only once the write is
+      // made.
+      await page.evaluate(() => {
+        const waited = Promise.withResolvers<void>();
+        setTimeout(waited.resolve, 50);
+        return waited.promise;
+      });
+    };
+    /** One edit through the row `focus` focuses: Enter, `keys` pressed, `paste` pasted as a
+     *  browser sends a paste, a `Y` typed and Escape. The document `artifactId` then stores
+     *  `edited` in the place of `words`, its words before, and nothing else changed; `undo`,
+     *  after Enter, puts the words back. */
+    const editThroughRow = async (edit: {
+      artifactId: string;
+      blockId: string;
+      edited: string;
+      focus: () => Promise<void>;
+      keys: readonly string[];
+      name: string;
+      paste?: string;
+      undo: () => Promise<void>;
+      words: string;
+    }) => {
+      const before = await storedMarkdown(edit.artifactId);
+      const at = before.indexOf(edit.words);
+      expect(
+        at > -1 && before.lastIndexOf(edit.words) === at,
+        `the stored document does not hold "${edit.words}" once`
+      ).toBe(true);
+      await edit.focus();
+      await enter(edit.blockId);
+      for (const key of edit.keys) await page.keyboard.press(key);
+      if (edit.paste !== undefined) {
+        await page.evaluate((text) => {
+          const clipboardData = new DataTransfer();
+          clipboardData.setData("text/plain", text);
+          document.activeElement?.dispatchEvent(
+            new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData })
+          );
+        }, edit.paste);
+      }
+      await page.keyboard.type("Y");
+      await page.keyboard.press("Escape");
+      await expect
+        .poll(() => storedMarkdown(edit.artifactId), { message: `${edit.name}: no Y was stored` })
+        .not.toBe(before);
+      const after = await storedMarkdown(edit.artifactId);
+      expect(
+        after,
+        `${edit.name} then Y edited other than the block's words: ${changeIn(before, after)}`
+      ).toBe(before.slice(0, at) + edit.edited + before.slice(at + edit.words.length));
+      await edit.focus();
+      await enter(edit.blockId);
+      await edit.undo();
+      await page.keyboard.press("Escape");
+      await expect
+        .poll(() => storedMarkdown(edit.artifactId), {
+          message: `${edit.name}: the block was not put back`,
+        })
+        .toBe(before);
+    };
+    const inStatement = {
+      artifactId: seeded.specArtifactId,
+      blockId: statementBlock,
+      focus: async () => {
+        await focusRow(page, statement);
+      },
+      undo: () => page.keyboard.press("Delete"),
+      words,
+    };
+
+    await editThroughRow({
+      ...inStatement,
+      edited: `Y${words}`,
+      keys: ["ArrowUp"],
+      name: "Up from the statement's first line",
+    });
+    await editThroughRow({
+      ...inStatement,
+      edited: `Y${words}`,
+      keys: ["ArrowDown"],
+      name: "Down from the statement's last line",
+    });
+    await editThroughRow({
+      ...inStatement,
+      edited: "Y",
+      keys: ["Control+a"],
+      name: "select-all",
+      undo: async () => {
+        await page.keyboard.press("Control+a");
+        await page.keyboard.type(words);
+      },
+    });
+
+    // A decision's heading, reached by `w` from the third requirement, which that decision
+    // shapes.
+    const inHeading = {
+      artifactId: seeded.decisionsArtifactId,
+      blockId: decision,
+      focus: async () => {
+        await focusRow(page, blockNodeId(specSlug, requirementBlockId(3)));
+        await page.keyboard.press("w");
+        expect(await focusedRow(page), "w did not move into the decision behind r3").toBe(
+          blockNodeId(decisionsSlug, decision)
+        );
+      },
+      undo: async () => {
+        await page.keyboard.press("ArrowRight");
+        await page.keyboard.press("Backspace");
+      },
+      words: heading,
+    };
+    await editThroughRow({
+      ...inHeading,
+      edited: `Y${heading}`,
+      keys: ["Control+Home"],
+      name: "Ctrl+Home",
+    });
+    await editThroughRow({
+      ...inHeading,
+      edited: `${heading}Y`,
+      keys: ["Control+End"],
+      name: "Ctrl+End",
+      undo: async () => {
+        await page.keyboard.press("Control+End");
+        await page.keyboard.press("Backspace");
+      },
+    });
+    await editThroughRow({
+      ...inHeading,
+      edited: `Y${heading}`,
+      keys: ["Backspace", "Backspace", "Backspace"],
+      name: "Backspace pressed three times at the heading's start",
+    });
+    await editThroughRow({
+      ...inHeading,
+      edited: `Y${heading}`,
+      keys: [],
+      name: "a paste of two lines at the heading's start",
+      paste: "Two\nlines",
+    });
+  } finally {
+    await context.close();
+  }
+});
+
+// The row's editor is the document's whole editor, and Tab, which Milkdown answers in a list item
+// alone, was the browser's: from the caret in a statement it moved the focus on to the next
+// control the editor draws - driving a preview, an ask another block draws - and the editor's box
+// scrolled to it, away from the statement. Tab from the row's editor goes past every control the
+// editor draws outside the node's block to the first tab stop after the editor's box, and
+// Shift+Tab to the row, the outline's one tab stop; each ends the editing, as a Tab out of the
+// outline and Escape do, and edits nothing. The seeded spec holds the open question's `ask` block
+// after its statements, and the ask's card draws controls of its own inside the editor. The
+// statement is the third, which no comment or ask is on, so the editor draws no references
+// button of its own block (the next row reads one), and the second's, which the seed's anchored
+// comment draws, is another block's, passed over too. Nothing of the page's own takes the focus
+// after the outline at this head, so a stand-in control under it is the tab stop Tab goes to
+// (`standInControlBelow`).
+// SLOW(>=2s): the whole issue seeded and loaded, then the row's editor opened twice, each waited
+// on until it takes the caret and the ask's card is drawn in it, and until it closes again.
+test("Tab and Shift+Tab from a row's editor pass over the controls of an ask another block draws, and end the editing", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  const { context, page, seeded } = await openTree(browser);
+  try {
+    await expectTreeDrawn(page);
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const statementBlock = requirementBlockId(3);
+    const statement = blockNodeId(specSlug, statementBlock);
+    const before = await storedMarkdown(seeded.specArtifactId);
+    const row = nodeRow(page, statement).first();
+    const editable = row.locator('[contenteditable="true"]');
+    const below = await standInControlBelow(page);
+    // The tab stops the ask's card draws in the row's editor.
+    const askControls = row
+      .locator(`[data-block-id="${OPEN_QUESTION_BLOCK_ID}"]`)
+      .locator('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])');
+    /** Where the focus is: in an editor's box, in the ask's block, and its element - its name and
+     *  the block it stands in - for a failure to name. */
+    const focusAt = () =>
+      page.evaluate((ask) => {
+        const active = document.activeElement;
+        if (active === null || active === document.body) {
+          return { inAsk: false, inBox: false, name: "the page itself" };
+        }
+        const words = active.getAttribute("aria-label") ?? active.textContent?.slice(0, 40);
+        const block = active.closest("[data-block-id]")?.getAttribute("data-block-id");
+        const where = typeof block === "string" ? ` of block ${block}` : "";
+        return {
+          inAsk: active.closest(`[data-block-id="${ask}"]`) !== null,
+          inBox: active.closest("[data-editor-box]") !== null,
+          name: `${active.tagName.toLowerCase()} "${words}"${where}`,
+        };
+      }, OPEN_QUESTION_BLOCK_ID);
+    /** Enter on the statement's row, the caret in its block and the ask's card drawn in the
+     *  editor. */
+    const enter = async () => {
+      await focusRow(page, statement);
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => caretInRowBlock(page, statementBlock), {
+          message: "Enter put no caret in the statement",
+        })
+        .toBe(true);
+      await expect
+        .poll(() => askControls.count(), {
+          message: "the ask's block draws no control in the row's editor",
+        })
+        .toBeGreaterThan(0);
+    };
+
+    await enter();
+    await page.keyboard.press("Tab");
+    const afterTab = await focusAt();
+    expect(
+      afterTab.inBox,
+      `Tab from the row's editor left the focus in an editor's box, on ${afterTab.name}`
+    ).toBe(false);
+    expect(afterTab.inAsk, `Tab stopped on the ask's ${afterTab.name}`).toBe(false);
+    await expect(
+      below.control,
+      `Tab from the row's editor went to ${afterTab.name}, not the first tab stop after its box`
+    ).toBeFocused();
+    await expect(editable, "Tab from the row's editor did not end the editing").toHaveCount(0);
+    expect(await caretInNode(page), "a caret stayed in a row after Tab").toBe(false);
+
+    await enter();
+    await page.keyboard.press("Shift+Tab");
+    await expect(row, "Shift+Tab from the row's editor did not go to the row").toBeFocused();
+    await expect(editable, "Shift+Tab from the row's editor did not end the editing").toHaveCount(
+      0
+    );
+    await expect(row, "the row lost the focus as the editing ended").toBeFocused();
+    expect(
+      await storedMarkdown(seeded.specArtifactId),
+      "Tab or Shift+Tab from the row's editor changed the spec"
+    ).toBe(before);
+  } finally {
+    await context.close();
+  }
+});
+
+// A document draws a button for each block with comments or asks on it, which shows them and puts
+// the reader in that block, in an aside of its own beside the editor, outside every block
+// (`ProofDocument.tsx`'s "Block references"). The node's own block's button is the node's: Tab
+// from the row's editor stops at it, as the browser's own Tab did, and the editing stays; Tab from
+// it goes on past every other block's button to the first tab stop after the editor's box, and
+// ends the editing. The seed anchors a comment on the second statement, and the row anchors one on
+// the first and one on the third, so another block's button stands before the statement's and one
+// after it. A comment's quote is anchored to the innermost block that holds it - the paragraph
+// inside a statement's typed block, by the id the editor gave it - so each button names a block
+// inside its statement's (`data-block-references`). The buttons are found by their names, and the
+// one Tab reaches is read by the statement whose block holds the block it names.
+// SLOW(>=2s): the whole issue seeded with two more anchored comments and loaded, then the row's
+// editor opened and waited on until it takes the caret and draws the references buttons.
+test("Tab from a row's editor stops at the references button of the node's own block, and at no other block's", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(
+    browser,
+    async () => {
+      const seeded = await seedWholeIssue();
+      for (const index of [1, 3]) {
+        await createComment(seeded.key, {
+          anchor: { artifact: "spec", quote: requirementText(index) },
+          body: `A comment on requirement ${index}, so its block draws a references button.`,
+        });
+      }
+      return seeded;
+    },
+    async (page, seeded) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectTreeDrawn(page);
+      const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+      const statementBlock = requirementBlockId(2);
+      const statement = blockNodeId(specSlug, statementBlock);
+      const row = nodeRow(page, statement).first();
+      const editable = row.locator('[contenteditable="true"]');
+      const references = row
+        .locator("[data-editor-box]")
+        .getByRole("button", { name: /references on block$/ });
+      const below = await standInControlBelow(page);
+
+      await focusRow(page, statement);
+      await page.keyboard.press("Enter");
+      await expect
+        .poll(() => caretInRowBlock(page, statementBlock), {
+          message: "Enter put no caret in the statement",
+        })
+        .toBe(true);
+      await expect
+        .poll(() => references.count(), {
+          message: "the row's editor draws no references button for each statement commented on",
+        })
+        .toBeGreaterThanOrEqual(3);
+      await page.keyboard.press("Tab");
+      const reached = await page.evaluate((block) => {
+        const active = document.activeElement;
+        const named = active?.getAttribute("data-block-references") ?? null;
+        const editable = active
+          ?.closest("[data-editor-box]")
+          ?.querySelector('[contenteditable="true"]');
+        const drawn =
+          named === null ? null : editable?.querySelector(`[data-block-id="${CSS.escape(named)}"]`);
+        return {
+          inStatement: (drawn?.closest(`[data-block-id="${block}"]`) ?? null) !== null,
+          name: active?.getAttribute("aria-label") ?? active?.textContent?.slice(0, 40) ?? "",
+          named,
+        };
+      }, statementBlock);
+      expect(
+        reached.inStatement,
+        `Tab from the row's editor went to "${reached.name}", naming block ${reached.named}, not the statement's references button`
+      ).toBe(true);
+      await expect(editable, "the editing ended at the statement's references button").toHaveCount(
+        1
+      );
+      await page.keyboard.press("Tab");
+      await expect(
+        below.control,
+        "Tab from the statement's references button did not go past every other block's to the first tab stop after the editor's box"
+      ).toBeFocused();
+      await expect(editable, "Tab out of the editor's box did not end the editing").toHaveCount(0);
+    }
+  );
 });

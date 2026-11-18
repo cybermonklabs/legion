@@ -1,4 +1,4 @@
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import type { Artifact, IssueDetails, UserIssueState } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -12,6 +12,8 @@ import {
   pagePaperBg,
 } from "../../theme/classes";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
+import { chipOfLostAction } from "./approval-chip-box";
+import { type FocusFallback, useFocusKeeper } from "./focus-keeper";
 import type { IssueAction } from "./IssueActionsMenu";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueIdentityRow } from "./IssueIdentityRow";
@@ -22,6 +24,26 @@ import { pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
 import { type IssueHeaderWrites, statusPickOnly } from "./useIssueHeaderWrites";
 import { useIssuePalette } from "./useIssuePalette";
+
+/**
+ * Where the header's keeper puts the focus once a write takes away the control that held it -
+ * a close that disables the status, an answered request that removes Approve, a refusal line
+ * that goes once its write lands - in this order (decision 216). When the lost control is one of
+ * an approval chip's two actions, or a control of the Request changes dialog the chip opened,
+ * that chip comes first (`chipOfLostAction`): both actions go once the request is answered, and
+ * the dialog shuts once its change request is read, so the reader stays on the document they
+ * just reviewed rather than being sent to the top of the header. "Issue actions" comes next: the
+ * header draws it in every state and no write disables it, and it opens the actions a reader
+ * goes on with. The title's heading comes last, as the field the issue's refusal line stands for,
+ * which is the place the decision names; it stands in the same block as "Issue actions", so it
+ * is reached only should that control ever be missing.
+ */
+const HEADER_FOCUS_FALLBACKS: readonly FocusFallback[] = [
+  chipOfLostAction,
+  ({ root }) =>
+    root.querySelector<HTMLElement>(`button[aria-label="${CONTROL_LABELS.issue_actions}"]`),
+  ({ root }) => root.querySelector<HTMLElement>("h1"),
+];
 
 /**
  * The header: what tells a reader to act, and nothing else, drawn as the prototype's
@@ -78,6 +100,8 @@ export function IssueHeader({
   const { drafts, pendingStatus, updateIssue } = writes;
   const block = useRef<HTMLDivElement | null>(null);
   const { condensed } = useIdentityBlock(block);
+  const header = useRef<HTMLElement | null>(null);
+  useFocusKeeper(header, HEADER_FOCUS_FALLBACKS);
   useIssuePalette({
     drafts,
     isClosed,
@@ -117,12 +141,18 @@ export function IssueHeader({
     },
   ];
 
+  // Whether this header says the issue's refused write: a refused parent is said beside its
+  // editor, in Details (`IssueMargin.tsx`), and a status pick alone rolls back in its own control.
+  const issueRefused =
+    updateIssue.isError && !statusPickOnly(updateIssue.variables) && !writes.parentSaveFailed;
+
   return (
     <header
       className="contents"
       data-condensed={condensed ? "true" : "false"}
       data-issue-header=""
       data-testid="issue-header"
+      ref={header}
     >
       {/* The band stays from 761 px up and scrolls away at 760 px and below: `min-[761px]`
           and no `max-[760px]`, which Tailwind builds as `width < 760px` and so leaves 760 px
@@ -175,30 +205,60 @@ export function IssueHeader({
                 : ANSWER_LINES.saving_field}
           </span>
         ) : null}
-        {writes.pin.isError ? (
-          <QueryError
-            message="Could not save pin status."
-            onRetry={() => writes.pinGuard.retryLast(writes.pin)}
-            retrying={writes.pin.isPending}
-          />
+        <RefusalLine
+          failed={writes.pin.isError}
+          message="Could not save pin status."
+          onRetry={() => writes.pinGuard.retryLast(writes.pin)}
+          pending={writes.pin.isPending}
+        />
+        {issueRefused && writes.titleRefusal !== null ? (
+          <p className={`text-sm ${pageFailedText}`} id="issue-title-error" role="alert">
+            {writes.titleRefusal}
+          </p>
         ) : null}
-        {/* A refused parent is said beside its editor, in Details (`IssueMargin.tsx`). */}
-        {updateIssue.isError &&
-        !statusPickOnly(updateIssue.variables) &&
-        !writes.parentSaveFailed ? (
-          writes.titleRefusal !== null ? (
-            <p className={`text-sm ${pageFailedText}`} id="issue-title-error" role="alert">
-              {writes.titleRefusal}
-            </p>
-          ) : (
-            <QueryError
-              message="Could not update this issue."
-              onRetry={drafts.retry}
-              retrying={updateIssue.isPending}
-            />
-          )
-        ) : null}
+        <RefusalLine
+          failed={issueRefused && writes.titleRefusal === null}
+          message="Could not update this issue."
+          onRetry={drafts.retry}
+          pending={updateIssue.isPending}
+        />
       </div>
     </header>
   );
+}
+
+/**
+ * A refused write's line with its Retry (decision 209). It is drawn while the write `failed`, and
+ * it stays drawn while the write runs again (`pending`), until that write lands or is refused
+ * once more. A `QueryError` drawn only while the write failed goes the moment Retry starts it,
+ * since a pending write is no longer a failed one, and its `retrying` disables the Retry while
+ * the write runs: either way the focus of a keyboard reader who pressed Retry falls to the page's
+ * body. Here the line and its Retry stay, and the Retry stays enabled, which the write's own
+ * guard makes safe: it ignores a second press while one is out. While the write runs again the
+ * line says "Saving…" (`ANSWER_LINES.saving_field`) in place of its message, and says the
+ * message again once the write is refused once more: the alert's words change, so a second
+ * refusal is shown and announced as the first was, where the same words kept from one refusal to
+ * the next would change nothing a reader sees or a screen reader hears. When the write lands the
+ * line goes, and the header's keeper then moves the focus. The header draws it at all times, so
+ * it remembers across renders that it was drawn when the write started again.
+ */
+function RefusalLine({
+  failed,
+  message,
+  onRetry,
+  pending,
+}: {
+  failed: boolean;
+  message: string;
+  onRetry: () => void;
+  pending: boolean;
+}): ReactNode {
+  // Whether the line was drawn at the last render: a write that starts while it is drawn - from
+  // Retry or from the field itself - keeps it until that write ends.
+  const [drawn, setDrawn] = useState(failed);
+  const draw = failed || (drawn && pending);
+  if (draw !== drawn) setDrawn(draw);
+  return draw ? (
+    <QueryError message={failed ? message : ANSWER_LINES.saving_field} onRetry={onRetry} />
+  ) : null;
 }

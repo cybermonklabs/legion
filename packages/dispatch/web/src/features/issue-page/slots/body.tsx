@@ -20,10 +20,11 @@ import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
 import { useIssueTree } from "../useIssueTree";
 
-/** What each read the outline waits on takes, as the tree's own reads take it
- *  (`useIssueTree.ts`'s `EVENT_FRESH`): events keep it fresh and its age never does, so the slot
- *  mounted again on a press of a view more than 30 s after the load reads none of them again, and
- *  window focus fetches again only a read in error. */
+/** What each read the outline waits on takes: a copy of the tree's own rule for its reads,
+ *  `useIssueTree.ts`'s `EVENT_FRESH`, which this file is to import once that file exports it.
+ *  Events keep a read fresh and its age never does, so the slot mounted again on a press of a
+ *  view more than 30 s after the load reads none of them again, and window focus fetches again
+ *  only a read in error. */
 const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,
   staleTime: Number.POSITIVE_INFINITY,

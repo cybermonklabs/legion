@@ -40,11 +40,16 @@ var Scopes = []string{ScopePerson, ScopeApprove}
 // token: a person who narrows a token afterwards narrows what it may do next, and must not
 // retroactively un-approve what it approved while it held approve (docs.carryVerdict reads these
 // scopes to decide whether an answer can carry an approval).
+//
+// SessionProven says the credential itself proved Session - a broker-issued token's own session -
+// rather than the request naming it (a personal token's `?session=` or body actor). Absent means
+// Dispatch did not see the credential prove it, which is also every act recorded before the mark.
 type ActorAct struct {
-	Session   string   `json:"session,omitempty"`
-	TokenID   string   `json:"token_id,omitempty"`
-	TokenName string   `json:"token_name,omitempty"`
-	Scopes    []string `json:"scopes,omitempty"`
+	Session       string   `json:"session,omitempty"`
+	SessionProven bool     `json:"session_proven,omitempty"`
+	TokenID       string   `json:"token_id,omitempty"`
+	TokenName     string   `json:"token_name,omitempty"`
+	Scopes        []string `json:"scopes,omitempty"`
 }
 
 // Holds reports whether the act was made under one scope, as Credential.Holds reports it of the
@@ -103,6 +108,18 @@ type Actor struct {
 	// does an agent's own write on a route that always took tokens, which is recorded as the
 	// session it always was.
 	Act *ActorAct `json:"act,omitempty"`
+	// Proven says a credential itself proved Kind and ID: a browser's cookie its person, a
+	// broker-issued token its session, and actingPerson's person. It is set by the server and
+	// never read from a request body. An actor whose ID the body named - under the shared agent
+	// token, a personal token or a service-account token, none of which proves a session -
+	// carries none, and neither does any row recorded before the mark existed, so a reader that
+	// counts only proven writers counts no claimed one. A row Dispatch derives from an earlier
+	// write carries that write's actor, and so its mark, whatever credential the request that
+	// derives it presented: an approval a new version carries (docs.writeCarriedReview) and the
+	// answer it gives the open approval request name the person whose review it carries, proven
+	// when that review's credential proved them, even when the request that wrote the version
+	// proved nobody.
+	Proven bool `json:"proven,omitempty"`
 	// Credential is what authenticated the request: the OAuth scopes it holds and how it names
 	// the agent behind it. It is a fact of the request and never of the record, so it is not
 	// serialised; the scope gate and actingPerson read it, actingPerson copies what it needs
@@ -120,7 +137,7 @@ type Actor struct {
 // own actor for a browser caller (messages.go, message_delivery.go, comment_delivery.go,
 // issue_claim.go) keep the cookie's credential in memory and hand that actor to no document
 // write. A layer that needs the request's own credential reads it from optionalActor
-// (callerHoldsScope).
+// (callerHoldsScope). Proven is a fact of the record and stays.
 func (a Actor) Recorded() Actor {
 	a.Credential = nil
 	return a
@@ -143,9 +160,9 @@ func (a Actor) SameAs(other Actor) bool {
 // service-account token is {Service: &subject}. Under SameAs any two personal tokens are one
 // writer, whoever owns them, and the shared token is every pod's token.
 //
-// Origin, Project and Act are not compared: they say where a write came from and who it acted
-// for, which two requests of one credential differ in, so comparing them would call one
-// credential two.
+// Origin, Project, Act and Proven are not compared: they say where a write came from, who it acted
+// for and whether its credential proved its id, which two requests of one credential differ in,
+// so comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
 	return a.SameAs(other) && sameActorName(a.Owner, other.Owner) && sameActorName(a.Service, other.Service)
 }
@@ -556,7 +573,8 @@ type Issue struct {
 	Components       IssueComponents `json:"components"`
 	ExternalLinks    []ExternalLink  `json:"external_links"`
 	Route            *string         `json:"route"`
-	// Repo is the issue's own repository, owner/name, a mapping of its project; nil when it inherits.
+	// Repo is the issue's own repository, owner/name: any repository GitHub could hold, whether
+	// or not a project maps it; nil when it inherits.
 	Repo *string `json:"repo"`
 	// ResolvedRepo is the repository the issue targets, resolved on read: its own Repo, else its
 	// nearest ancestor's, else its project's default mapping, else nil.

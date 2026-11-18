@@ -118,18 +118,29 @@ export function IssuePriorityLine({
       // its own, and a refused write leaves this issue's read stale, so the next press must carry
       // the revision it holds now. The priorities body and the rail's two counts move with the
       // relation as well.
-      void queryClient.invalidateQueries({ queryKey: ["issue"] });
-      void queryClient.invalidateQueries({ queryKey: ["priorities"] });
+      const rereads = [
+        queryClient.invalidateQueries({ queryKey: ["issue"] }),
+        queryClient.invalidateQueries({ queryKey: ["priorities"] }),
+      ];
+      // Outside `NoTooltips` the write stops pending as it lands and these reads go on after it,
+      // as on `main`. Inside, `onSettled` returns them, which TanStack Query awaits before the
+      // write stops pending: each control of the line stays refused, and keeps the focus, until
+      // the issue it draws is the one read after the write.
+      if (page === null) return;
+      return Promise.all(rereads);
     },
   });
   const writeOwn = (ids: string[]) =>
     write.mutate({ advances: ids, advances_revision: issue.advances_revision });
   const busy = disabled || write.isPending;
-  // Inside `NoTooltips` the add control is `aria-disabled` while the write is out, in place of
+  // Inside `NoTooltips` each control a write of the line refuses - a priority's Remove, the
+  // form's Add and the add control - is `aria-disabled` while the write is out, in place of
   // `disabled`, so it can hold the focus, and a press of it does nothing then; the line's own
-  // `disabled` still disables it, on both sides. Outside it is `disabled` while the write is out,
-  // as on `main`.
-  const addHoldsFocus = page !== null && !disabled;
+  // `disabled` still disables each, on both sides. Outside each is `disabled` while the write is
+  // out, as on `main`.
+  const holdsFocus = page !== null && !disabled;
+  const refusedWhileOut = (holdsFocus && write.isPending) || undefined;
+  const controlDisabled = busy && !holdsFocus;
   const addControl = useRef<HTMLButtonElement>(null);
   const picker = useRef<HTMLSelectElement>(null);
   // Opening the form puts the focus in its first field: the add control the form replaces leaves
@@ -142,11 +153,11 @@ export function IssuePriorityLine({
   // focus the form held, for the same reason. The control takes it once it can hold it: outside
   // `NoTooltips` Add's write disables the control until the write settles, and a disabled control
   // holds no focus, so after an add the focus waits on the body until then; inside, the control
-  // holds it while the write is out (`addHoldsFocus`) and takes it at once. Only a focus still on
+  // holds it while the write is out (`holdsFocus`) and takes it at once. Only a focus still on
   // the document is taken back (`focusOnDocument`): anywhere else, the reader put it there in
   // between.
   const focusAddControl = useRef(false);
-  const addWaitsForWrite = write.isPending && !addHoldsFocus;
+  const addWaitsForWrite = write.isPending && !holdsFocus;
   useEffect(() => {
     if (adding || addWaitsForWrite || !focusAddControl.current) return;
     focusAddControl.current = false;
@@ -157,30 +168,31 @@ export function IssuePriorityLine({
     setAdding(false);
     focusAddControl.current = true;
   };
-  // Inside `NoTooltips` a press of a priority's Remove is remembered with the issue's own entries
-  // drawn after it and then before it, the nearest first, and each Remove is kept by its entry's
-  // id. Once the write is no longer out, a focus that fell to the document (`focusOnDocument`)
-  // goes to the pressed Remove while its entry is drawn, else to the Remove of the nearest of
-  // those entries still drawn, else to the add control; the press is forgotten once its entry is
-  // gone or the write failed. A focus anywhere else is left where it is.
-  const removePressed = useRef<{ id: string; nearest: readonly string[] } | null>(null);
+  // Inside `NoTooltips` a press of a priority's Remove is remembered, with the issue's own entries
+  // drawn after it and then before it, the nearest first, until its write stops pending, which is
+  // once the issue is read again (`onSettled` returns its reads); each Remove is kept by its
+  // entry's id. A Remove is never `disabled` there, so while its entry is drawn - the write
+  // failed, or the read kept it - it keeps the focus and nothing moves it. Once the read has taken
+  // the entry off the page, a focus that fell with it to the document (`focusOnDocument`) goes to
+  // the Remove of the nearest of those entries still drawn, else to the add control; a focus
+  // anywhere else is left where it is. The press is forgotten whenever the write stops pending.
+  // It is state, not a ref, so the render the press makes reads the write pending, and a write
+  // that ends before its own pending render is drawn still ends the press.
+  const [removePressed, setRemovePressed] = useState<{
+    id: string;
+    nearest: readonly string[];
+  } | null>(null);
   const removeButtons = useRef(new Map<string, HTMLButtonElement>());
   useEffect(() => {
-    const pressed = removePressed.current;
-    if (pressed === null || write.isPending) return;
-    const drawn = (issue.advances ?? []).some(
-      (entry) => entry.id === pressed.id && !entry.inherited
-    );
-    if (focusOnDocument()) {
-      const buttons = removeButtons.current;
-      const target = drawn
-        ? buttons.get(pressed.id)
-        : (pressed.nearest.map((id) => buttons.get(id)).find((button) => button !== undefined) ??
-          addControl.current);
-      target?.focus();
-    }
-    if (!drawn || write.isError) removePressed.current = null;
-  }, [issue.advances, write.isError, write.isPending]);
+    if (removePressed === null || write.isPending) return;
+    setRemovePressed(null);
+    const buttons = removeButtons.current;
+    if (buttons.has(removePressed.id) || !focusOnDocument()) return;
+    const target =
+      removePressed.nearest.map((id) => buttons.get(id)).find((button) => button !== undefined) ??
+      addControl.current;
+    target?.focus();
+  }, [removePressed, write.isPending]);
   // Inside `NoTooltips` each colour is one of the new issue page's: the line is the ink in a row
   // of Details (the prototype's `.frow .fv`) and the muted grey elsewhere (its `#hdr-props`); a
   // priority is a link in the ink; what qualifies it is quiet words, a refusal the failed red;
@@ -207,7 +219,7 @@ export function IssuePriorityLine({
 
   const add = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (picked === "") return;
+    if (picked === "" || write.isPending) return;
     writeOwn([...own, picked]);
     closeForm();
   };
@@ -245,16 +257,18 @@ export function IssuePriorityLine({
               </span>
             ) : (
               <button
+                aria-disabled={refusedWhileOut}
                 aria-label={`Remove ${label} from ${issue.key}`}
                 className={`shrink-0 ${page === null ? dismissButtonText : `${pageMutedText} hover:text-page-ink`}`}
-                disabled={busy}
+                disabled={controlDisabled}
                 onClick={() => {
+                  if (write.isPending) return;
                   if (page !== null) {
                     const at = own.indexOf(entry.id);
-                    removePressed.current = {
+                    setRemovePressed({
                       id: entry.id,
                       nearest: [...own.slice(at + 1), ...own.slice(0, at).reverse()],
-                    };
+                    });
                   }
                   writeOwn(own.filter((id) => id !== entry.id));
                 }}
@@ -319,8 +333,10 @@ export function IssuePriorityLine({
             ))}
           </select>
           <button
+            // While no priority is picked it is `disabled` alone, on both sides of `NoTooltips`.
+            aria-disabled={picked === "" ? undefined : refusedWhileOut}
             className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${page === null ? `${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}` : `${pageLineBorder} ${pageMutedText} refused:text-page-quiet`}`}
-            disabled={busy || picked === ""}
+            disabled={controlDisabled || picked === ""}
             type="submit"
             {...page?.pageChrome}
           >
@@ -338,8 +354,8 @@ export function IssuePriorityLine({
       ) : (
         <button
           // Inside `NoTooltips` it is `aria-disabled` in place of `disabled` while the write is
-          // out (`addHoldsFocus`, above).
-          aria-disabled={(addHoldsFocus && write.isPending) || undefined}
+          // out (`holdsFocus`, above).
+          aria-disabled={refusedWhileOut}
           // One character and its name, as the remove control beside it is: an issue that
           // advances nothing still carries this control, and a word here puts the issue
           // header's metadata rail over its width on a desktop, which would leave every bare
@@ -353,11 +369,11 @@ export function IssuePriorityLine({
           // instead.
           aria-label={addPriorityControlName(issue.key)}
           // Inside `NoTooltips` it is 28 px tall from `md`, as the controls beside it in Details
-          // are (`badgeSelectPageRailWrapper`'s `md:min-h-7`, the labels' and the components'
-          // triggers' `sm:min-h-7`); below 1280 px `styles.css` gives each of them a 44 px floor
-          // all the same. Outside it the class is `main`'s.
+          // are (the repository's box, `main`'s input in `RepoControl.tsx`, with its `md:min-h-7`;
+          // the labels' and the components' triggers' `sm:min-h-7`); below 1280 px `styles.css`
+          // gives each of them a 44 px floor all the same. Outside it the class is `main`'s.
           className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${page === null ? `${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary}` : `${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`}`}
-          disabled={busy && !addHoldsFocus}
+          disabled={controlDisabled}
           onClick={() => {
             if (!write.isPending) setAdding(true);
           }}

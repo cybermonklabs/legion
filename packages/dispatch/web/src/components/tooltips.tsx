@@ -43,7 +43,6 @@ export interface PageWords {
     | "external_link_unsafe"
     | "github_checks"
     | "no_repository"
-    | "none"
     | "not_requested"
     | "not_running"
     | "priority_to_advance"

@@ -5,53 +5,112 @@ import { api, apiErrorMessage } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
-  badgeLow,
-  badgePrimary,
+  dangerText,
+  focusBorder,
+  focusVisibleRing,
+  inputClasses,
+  pageFailedText,
+  pageHairBorder,
   pageInkText,
-  pageLabelChip,
   pageMutedText,
-  pagePaneBg,
-  pageQuietText,
+  pagePaperBg,
+  textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import {
-  badgeSelectBadge,
-  badgeSelectOverlay,
-  badgeSelectPageBadge,
-  badgeSelectPageRailWrapper,
-  badgeSelectRailWrapper,
-} from "./badge-select";
 import { useIssueRepo } from "./useIssueRepo";
 
-/** The name the repository picker answers to, in its words on every page: the property it sets
- *  and the issue it is on, so a voice user saying what they read presses it (WCAG 2.5.3). The
- *  new issue page's add menu reaches this picker by this name rather than drawing a second
- *  one, so a word changed here changes both sides at once. */
+/** The grammar a repository GitHub could hold is written in, which is the grammar the server
+ *  holds an issue's repository to (`githubCouldHoldRepo`, `issue_repo.go`, itself copied from the
+ *  daemon's `ghrepo`): an owner is a letter or digit and then up to 38 letters, digits, hyphens
+ *  and underscores - as GitHub serves logins, which is looser than its sign-up form, since
+ *  `hello--world`, `artofcode-` and a managed user's `mona-cat_octo` are all served - and a
+ *  repository name is at most 100 letters, digits, `.`, `-` and `_`, and is neither `.` nor
+ *  `..`. It is written here rather than taken from `ownerRepoPattern`, the looser `owner/name`
+ *  shape the settings forms share, because those forms write a repository mapping, which the
+ *  server holds to that looser shape alone.
+ *
+ *  The hyphen is written `\-` in both classes because this is also the box's `pattern`, which a
+ *  browser compiles with the `v` flag, and under that flag a bare hyphen in a class is a syntax
+ *  error: the browser then ignores the attribute and logs the error, and only the check below
+ *  holds the box. */
+const ownerRepoPattern = "[A-Za-z0-9][A-Za-z0-9_\\-]{0,38}/(?!\\.{1,2}$)[A-Za-z0-9._\\-]{1,100}";
+
+/** `ownerRepoPattern` as a test of a whole value: the check this control makes before it writes,
+ *  so a typo shows at the box rather than coming back as the server's 400 a round trip later. */
+const ownerRepo = new RegExp(`^(?:${ownerRepoPattern})$`);
+
+/** What the box says about a value GitHub could hold no repository at. The server says the same
+ *  thing in its own words for anything that reaches it. */
+const NOT_OWNER_NAME = "Write the repository as owner/name.";
+
+/** What clearing the issue's own repository does: the clear control's `title`, and inside
+ *  `NoTooltips`, where no control carries a `title`, that control's description. */
+const CLEAR_EXPLAINS = "Clear it, and the issue inherits a repository again";
+
+/** Inside `NoTooltips`, the new issue page's colours for the box and its clear control: the box
+ *  as `AskCard`'s answer box draws them - the page's hairline rule, its paper and its ink, the
+ *  repository the issue inherits (the placeholder) in the quiet grey, and `main`'s focus rule,
+ *  the application's one focus indicator - and the clear control, drawn on the box's paper, in
+ *  the muted grey that turns ink under the pointer. */
+const ON_PAGE = {
+  box: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+  clear: `${pageMutedText} hover:text-page-ink`,
+} as const;
+
+/** The name the repository box answers to, in its words on every page: the property it sets
+ *  and the issue it is on, so a voice user saying what they read reaches it (WCAG 2.5.3). The
+ *  new issue page's add menu reaches this box by this name rather than drawing a second one,
+ *  so a word changed here changes both sides at once. */
 export function repoControlName(issueKey: string): string {
   return `Repository of ${issueKey}`;
 }
 
 /**
- * The issue's repository in the details rail: `Repository:` and a badge naming the repository the
- * issue resolves to (its own, else its nearest ancestor's, else the project's default, muted when
- * not its own; "No repository" when none resolves) with a native `<select>` laid over it, as
- * `AssigneeControl` does. The select lists Inherit first, then the repositories mapped to the
- * issue's project in Settings; Inherit clears the issue's own repository. Labelled
- * `Repository of <KEY>`. While the issue resolves to a repository the mappings are read only once
- * the reader reaches for the control (pointer over it, a touch on it, or focus). While it resolves
- * to none, they are read at once, because the item shows only when the project maps a repository:
- * until the read answers nothing shows, a project that maps none has nothing to pick and gets no
- * item, and a read that fails shows `Repository:` with the failure and a Retry, never a hidden
- * item. A failed read beside a resolved repository shows the same failure next to the picker. The
- * badge is hidden from assistive technology; the select's description names what it shows: the
- * repository, `, inherited or the project's default` when it is not the issue's own, or
- * `No repository`.
+ * The issue's repository in the details rail: `Repository:` and one combobox, labelled
+ * `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` of the
+ * repositories Dispatch maps to this issue's project. The mappings are suggestions rather than the set
+ * of values: any `owner/name` may be typed, one this project maps, one another project maps, or
+ * one no project maps, which is what the server takes, and that is why this is a text box with a
+ * list and not a `<select>`, which cannot hold a value its options lack.
  *
- * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) it says that page's words
- * with their marks and carries no `title`, so the words "inherited or the project's default"
- * are drawn beside the badge, where the `title` said them. There `inRow` draws it as the value
- * of a row of Details, which draws the label: no `Repository:` of its own, a line that wraps,
- * and None where no item shows.
+ * The box shows the issue's own repository and nothing else, so the repository it resolves to -
+ * its nearest ancestor's, else the project's default - is its placeholder, which is what an empty
+ * box stands for; the description (`aria-describedby`, an `sr-only` span) says the same in words,
+ * with `, inherited or the project's default` after it when it is not the issue's own, and
+ * `No repository` when none resolves. A clear control inside the box, shown only while the issue
+ * has a repository of its own, puts it back to inheriting; emptying the box does the same.
+ *
+ * What is typed is written when the box is left or Enter is pressed, never per keystroke, since
+ * `owner/name` is only a repository once the whole of it is there; Escape restores what the issue
+ * holds. A value GitHub could hold no repository at - one that is not `owner/name`, or one whose
+ * owner or name is outside GitHub's own grammar (`ownerRepoPattern` above) - is refused here, at
+ * the box, with what was typed still in it, and the write path (`useIssueRepo`,
+ * `useIssueFieldWrite`) is unchanged, so the optimistic write, the rollback and the server's own
+ * refusal - `INVALID_ISSUE` for anything that reaches it - show as they did.
+ *
+ * The item renders whenever the issue can carry a repository, which is always: a project that
+ * maps none has nothing to suggest, and its issues still take any repository. The mappings are
+ * read once the reader reaches for the control (pointer over it, a touch on it, or focus), and at
+ * once while the issue resolves to no repository at all, which is the issue most likely to be
+ * given one. A read that fails costs the suggestions and nothing else: the failure and a Retry
+ * show beside the box, which takes a typed repository as ever.
+ *
+ * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) the same box says that
+ * page's words with their marks and carries no `title`. `Repository:` is the page's label, and
+ * `inRow` draws the control as the value of a row of Details, which draws the label, so the
+ * control draws none of its own. The description says the page's words around the repository,
+ * which is the issue's value, and the page's "inherited or the project's default" is drawn beside
+ * the box too, hidden from assistive technology because the description already says it. The
+ * clear control's `title` is its description there (`aria-describedby`), so its name stays
+ * `Clear the repository of <KEY>` and a reader still hears that the issue then inherits a
+ * repository. The refusal keeps its words, which the page's list has none for; a failed read or
+ * write shows `QueryError` as on every page. Each colour is the page's: the box is the page's
+ * field, the repository the issue inherits (its placeholder) in the quiet grey; the clear control
+ * is the muted grey that turns ink under the pointer; a refusal is the failed red; and the line is
+ * the ink in a row of Details and the muted grey elsewhere. Nothing there keeps its width: the
+ * line wraps, and the box, at most `main`'s 200 px, narrows to its line. The box is drawn whether
+ * or not a repository resolves, so a row of Details with none shows the empty box, its
+ * placeholder and a description saying `No repository`, and no word of its own such as "None".
  */
 export function RepoControl({
   disabled = false,
@@ -74,6 +133,11 @@ export function RepoControl({
   const page = usePageWords();
   const inDetails = page !== null && inRow;
   const [wanted, setWanted] = useState(false);
+  /** What the reader has typed since the box was last written, left or restored; null while the
+   *  box shows the issue's own repository. */
+  const [draft, setDraft] = useState<string | null>(null);
+  /** Whether the draft was refused here, for not being `owner/name`. */
+  const [refused, setRefused] = useState(false);
   const mappings = useQuery({
     enabled: wanted || resolvedRepo === null,
     queryKey: ["repo-projects"],
@@ -81,115 +145,60 @@ export function RepoControl({
   });
   const want = () => setWanted(true);
   const descriptionId = useId();
+  const suggestionsId = useId();
+  // Inside `NoTooltips` the clear control's description, named after the box's own so that the
+  // control asks React for no id `main` does not.
+  const clearDescriptionId = `${descriptionId}clear`;
   const write = useIssueRepo(issueKey);
   const mapped = (mappings.data ?? [])
     .filter((mapping) => mapping.project === project)
     .map((mapping) => mapping.repo)
     .sort();
-  const loadFailure = mappings.isError ? (
-    <QueryError
-      message={apiErrorMessage(
-        mappings.error,
-        `Could not load the repositories mapped to ${project}.`
-      )}
-      onRetry={() => void mappings.refetch()}
-      retrying={mappings.isFetching}
-    />
-  ) : null;
-  if (resolvedRepo === null && !mappings.isError && (mappings.isPending || mapped.length === 0)) {
-    return page !== null && inRow ? (
-      // The prototype's `.none` is the bullet grey, which no page pair registers for words
-      // (2.5:1 on the paper); the page's quiet words take it.
-      <span className={pageQuietText} {...page.pageChrome}>
-        {page.CONTROL_LABELS.none}
-      </span>
-    ) : null;
-  }
-  // The issue's own repository stays selectable before the list loads, so the control never
-  // shows a value its options lack.
-  const options = repo === null || mapped.includes(repo) ? mapped : [repo, ...mapped];
-  const tone = repo === null ? badgeLow : badgePrimary;
   const description =
     resolvedRepo === null
       ? "No repository"
       : repo === null
         ? `${resolvedRepo}, inherited or the project's default`
         : resolvedRepo;
-  // Inside `NoTooltips` each colour is one of the new issue page's: the issue's own repository
-  // is the page's label chip, one it inherits or none is the quiet words on the same ground; the
-  // line is the ink in a row of Details (the prototype's `.frow .fv`) and the muted grey
-  // elsewhere (its `#hdr-props`).
-  const badgeTone =
-    page === null
-      ? `${tone.bg} ${tone.text}`
-      : repo === null
-        ? `${pagePaneBg} ${pageQuietText}`
-        : pageLabelChip;
-  const lineText = page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText;
+  // Inside `NoTooltips` the repository is the issue's value, and the words around it are the
+  // page's own.
   const shownDescription =
     page === null ? (
       description
     ) : resolvedRepo === null ? (
       page.CONTROL_LABELS.no_repository
     ) : (
-      // The repository is the issue's value, and the words around it are the page's own.
       <>
         <span {...page.authorText}>{resolvedRepo}</span>
         {repo === null ? `, ${page.CONTROL_LABELS.repository_inherited}` : null}
       </>
     );
-  // Nothing resolved and no list to pick from: the failure is all there is to show. Inside
-  // `NoTooltips` the repository is a value, so it keeps `max-w-full` and breaks anywhere, and
-  // neither its chip nor anything around it keeps its width: a 44-character name with no space
-  // ran 101 px past Details' row at 1440 px.
-  const picker =
-    resolvedRepo === null && mappings.isError ? null : (
-      <span
-        className={`${page === null ? badgeSelectRailWrapper : badgeSelectPageRailWrapper} ${disabled ? "opacity-50" : ""}`}
-        title={
-          tooltips && repo === null && resolvedRepo !== null
-            ? "Inherited or the project's default"
-            : undefined
-        }
-      >
-        <span
-          aria-hidden="true"
-          className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} font-mono ${badgeTone}`}
-          {...(resolvedRepo === null ? page?.pageChrome : page?.authorText)}
-        >
-          {resolvedRepo ?? page?.CONTROL_LABELS.no_repository ?? "No repository"}
-        </span>
-        <select
-          aria-describedby={descriptionId}
-          aria-label={repoControlName(issueKey)}
-          className={badgeSelectOverlay}
-          disabled={disabled}
-          onFocus={want}
-          onMouseDown={(event) => event.stopPropagation()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onPointerEnter={want}
-          onTouchStart={(event) => {
-            event.stopPropagation();
-            want();
-          }}
-          onChange={(event) => {
-            const { value } = event.target;
-            write.submit(value === "" ? null : value);
-          }}
-          value={repo ?? ""}
-        >
-          <option value="">Inherit</option>
-          {options.map((candidate) => (
-            <option key={candidate} value={candidate}>
-              {candidate}
-            </option>
-          ))}
-        </select>
-        <span className="sr-only" id={descriptionId} {...page?.pageChrome}>
-          {shownDescription}
-        </span>
-      </span>
-    );
+  // Inside `NoTooltips` the line is the ink in a row of Details (the prototype's `.frow .fv`) and
+  // the muted grey elsewhere (its `#hdr-props`).
+  const lineText = page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText;
+  const restore = () => {
+    setDraft(null);
+    setRefused(false);
+  };
+  // The draft goes back to the issue's own repository as it is written, so the optimistic value
+  // is what the box shows and a rollback puts the previous one back under it. A refused draft
+  // stays in the box: it is what the reader has to correct.
+  const commit = () => {
+    if (draft === null) {
+      return;
+    }
+    const typed = draft.trim();
+    // What is read is what the server reads: it drops a `.git` suffix before it judges the name
+    // (canonicalRepo), so a clone URL's name is no longer to the box than to the server.
+    if (typed !== "" && !ownerRepo.test(typed.replace(/\.git$/i, ""))) {
+      setRefused(true);
+      return;
+    }
+    restore();
+    if (typed !== (repo ?? "")) {
+      write.submit(typed === "" ? null : typed);
+    }
+  };
   return (
     <div
       className={`flex ${page === null ? "shrink-0" : "min-w-0 max-w-full flex-wrap"} items-center gap-2 text-sm ${lineText}`}
@@ -199,16 +208,107 @@ export function RepoControl({
           {`${page?.PROPERTY_LABELS.repository ?? "Repository"}:`}
         </span>
       )}
-      {picker}
-      {/* Inside `NoTooltips`, why the repository shown may not be the issue's own, in words
-          where the `title` said it. Hidden from assistive technology because the select's own
-          description says the same thing, and nothing is said twice. */}
+      {/* `relative` is load-bearing: the description is `sr-only`, which is absolutely
+          positioned, and with no positioned ancestor it is laid out against the page and makes it
+          as wide as its own text at a phone width. */}
+      <span
+        className={`relative inline-flex ${page === null ? "shrink-0" : "w-[200px] min-w-0 max-w-full"} items-center`}
+      >
+        <input
+          aria-describedby={descriptionId}
+          aria-invalid={refused || undefined}
+          aria-label={repoControlName(issueKey)}
+          autoComplete="off"
+          className={`min-h-11 ${page === null ? "w-[200px]" : "w-full min-w-0"} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
+          disabled={disabled}
+          list={suggestionsId}
+          onBlur={commit}
+          onChange={(event) => {
+            setDraft(event.target.value);
+            setRefused(false);
+          }}
+          onFocus={want}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commit();
+            } else if (event.key === "Escape") {
+              restore();
+            }
+          }}
+          onMouseDown={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onPointerEnter={want}
+          onTouchStart={(event) => {
+            event.stopPropagation();
+            want();
+          }}
+          pattern={ownerRepoPattern}
+          placeholder={resolvedRepo ?? "owner/name"}
+          spellCheck={false}
+          value={draft ?? repo ?? ""}
+        />
+        {repo === null ? null : (
+          <button
+            aria-describedby={page === null ? undefined : clearDescriptionId}
+            aria-label={`Clear the repository of ${issueKey}`}
+            className={`absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 ${page === null ? textSecondaryHoverToPrimary : ON_PAGE.clear} ${focusVisibleRing}`}
+            disabled={disabled}
+            onClick={() => {
+              restore();
+              write.submit(null);
+            }}
+            // A press here must not take focus from the box. The box writes what was typed
+            // when it is left, so the press would write a repository the reader is throwing
+            // away and the click after it would write the clear: two writes for one action.
+            onMouseDown={(event) => event.preventDefault()}
+            title={tooltips ? CLEAR_EXPLAINS : undefined}
+            type="button"
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+        )}
+        <datalist id={suggestionsId}>
+          {mapped.map((candidate) => (
+            <option key={candidate} value={candidate} />
+          ))}
+        </datalist>
+        <span className="sr-only" id={descriptionId} {...page?.pageChrome}>
+          {shownDescription}
+        </span>
+        {page === null || repo === null ? null : (
+          <span className="sr-only" id={clearDescriptionId} {...page.pageChrome}>
+            {CLEAR_EXPLAINS}
+          </span>
+        )}
+      </span>
+      {/* Inside `NoTooltips`, why the repository shown may not be the issue's own, in words beside
+          the box. Hidden from assistive technology because the box's own description says the
+          same thing, and nothing is said twice. */}
       {page === null || resolvedRepo === null || repo !== null ? null : (
         <span aria-hidden="true" className="text-xs" {...page.pageChrome}>
           {page.CONTROL_LABELS.repository_inherited}
         </span>
       )}
-      {loadFailure}
+      {refused ? (
+        <p
+          className={page === null ? dangerText : pageFailedText}
+          role="alert"
+          {...page?.pageChrome}
+        >
+          {NOT_OWNER_NAME}
+        </p>
+      ) : null}
+      {mappings.isError ? (
+        <QueryError
+          message={apiErrorMessage(
+            mappings.error,
+            `Could not load the repositories mapped to ${project}.`
+          )}
+          onRetry={() => void mappings.refetch()}
+          retrying={mappings.isFetching}
+        />
+      ) : null}
       {write.failed ? (
         <QueryError
           message={write.error ?? `Could not update the repository of ${issueKey}.`}

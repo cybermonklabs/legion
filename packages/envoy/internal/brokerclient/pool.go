@@ -83,7 +83,7 @@ func (p *PoolIdentity) Token(ctx context.Context) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	token, err := p.generateIDToken(ctx, federated)
+	token, err := generateIDToken(ctx, p.HTTP, p.IAMCredentialsURL, p.ServiceAccount, p.TokenAudience, federated)
 	if err != nil {
 		return "", "", err
 	}
@@ -111,7 +111,7 @@ func (p *PoolIdentity) federate(ctx context.Context, subject, subjectType string
 	var answer struct {
 		AccessToken string `json:"access_token"`
 	}
-	if err := p.call(ctx, endpoint, "", body, &answer); err != nil {
+	if err := postGoogle(ctx, p.HTTP, endpoint, "", body, &answer); err != nil {
 		return "", fmt.Errorf("trade this machine's credential at the security token service %s: %w", endpoint, err)
 	}
 	if answer.AccessToken == "" {
@@ -120,23 +120,25 @@ func (p *PoolIdentity) federate(ctx context.Context, subject, subjectType string
 	return answer.AccessToken, nil
 }
 
-// generateIDToken is IAM Credentials' half: the federated access token spent on one
-// generateIdToken for the managed identity, with includeEmail set.
-func (p *PoolIdentity) generateIDToken(ctx context.Context, federated string) (string, error) {
-	origin := p.IAMCredentialsURL
+// generateIDToken is IAM Credentials' half of a mint: an access token that may act as
+// serviceAccount (bearer) spent on one generateIdToken for audience, with includeEmail set, at
+// iamURL, or Google's own service where it is empty. A workload identity pool spends its
+// federated token here, and an external_account credential the access token it mints.
+func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAccount, audience, bearer string) (string, error) {
+	origin := iamURL
 	if origin == "" {
 		origin = DefaultIAMCredentialsURL
 	}
 	endpoint := strings.TrimSuffix(origin, "/") + "/v1/projects/-/serviceAccounts/" +
-		url.PathEscape(p.ServiceAccount) + ":generateIdToken"
-	body, err := json.Marshal(map[string]any{"audience": p.TokenAudience, "includeEmail": true})
+		url.PathEscape(serviceAccount) + ":generateIdToken"
+	body, err := json.Marshal(map[string]any{"audience": audience, "includeEmail": true})
 	if err != nil {
 		return "", fmt.Errorf("build the generateIdToken request: %w", err)
 	}
 	var answer struct {
 		Token string `json:"token"`
 	}
-	if err := p.call(ctx, endpoint, federated, body, &answer); err != nil {
+	if err := postGoogle(ctx, client, endpoint, bearer, body, &answer); err != nil {
 		return "", fmt.Errorf("mint this machine's identity token at %s: %w", endpoint, err)
 	}
 	if answer.Token == "" {
@@ -145,10 +147,11 @@ func (p *PoolIdentity) generateIDToken(ctx context.Context, federated string) (s
 	return answer.Token, nil
 }
 
-// call posts body to endpoint, with bearer on the Authorization header when it is not empty, and
-// decodes the answer into out. A non-2xx answer is an error naming the status and the body
-// Google's services put their reason in, which carries no credential of this machine's.
-func (p *PoolIdentity) call(ctx context.Context, endpoint, bearer string, body []byte, out any) error {
+// postGoogle posts body to endpoint through client (nil is http.DefaultClient), with bearer on
+// the Authorization header when it is not empty, and decodes the answer into out. A non-2xx
+// answer is an error naming the status and the body Google's services put their reason in,
+// which carries no credential of this machine's.
+func postGoogle(ctx context.Context, client *http.Client, endpoint, bearer string, body []byte, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, poolTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -159,7 +162,6 @@ func (p *PoolIdentity) call(ctx context.Context, endpoint, bearer string, body [
 	if bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
-	client := p.HTTP
 	if client == nil {
 		client = http.DefaultClient
 	}

@@ -1407,12 +1407,13 @@ const sessionInterestReadTimeout = 1 * time.Second
 // role, and a claim it holds is reported whatever its record's topics are, or with no record at
 // all. A claims view that is not complete (store.ErrRoleViewNotReady: still scanning, refilling a
 // recreated bucket, or its watcher ended) is returned alone, as a read that did not answer, never
-// as a session holding no roles. A session the interest registry holds no key for keeps its empty
-// topics: a session that registered and subscribed to nothing is not an error here. The other
-// answers about the record (interestReadAnswered) are returned with the session's info, its topics
-// empty, so the caller can still show the session and name what the read answered. Every other
-// error is a read that did not answer and is returned alone: a caller answers it as the
-// bus-unavailable 503, never as a session with no topics or roles.
+// as a session holding no roles. A session the interest registry holds no key for keeps the
+// empty topics list sessionInfoWith gives it, never null: a session that registered and
+// subscribed to nothing is not an error here, and a record whose topics are null leaves that list
+// in place. The other answers about the record (interestReadAnswered) are returned with the
+// session's info, its topics the empty list, so the caller can still show the session and name
+// what the read answered. Every other error is a read that did not answer and is returned alone:
+// a caller answers it as the bus-unavailable 503 and never as a row.
 func sessionInfoFor(ctx context.Context, registry *store.Registry, entry session.ListEntry) (sessionInfo, error) {
 	held, err := registry.RolesHeldBy(entry.SessionID)
 	if err != nil {
@@ -1430,15 +1431,18 @@ func sessionInfoFor(ctx context.Context, registry *store.Registry, entry session
 	case err != nil:
 		return sessionInfo{}, err
 	}
-	info.Topics = interest.Topics
+	if interest.Topics != nil {
+		info.Topics = interest.Topics
+	}
 	return info, nil
 }
 
-// sessionInfoWith is the row entry makes, holding roles and no topics yet: the one shape both
-// sessionInfoFor and listedSessionInfo fill in, each from the read its route may make. The
-// entry's state is what its last registration says about the session, which every row carries so
-// that a caller reading a list, or one session's answer, can tell a session that is answering
-// from one that has stopped without comparing timestamps itself.
+// sessionInfoWith is the row entry makes, holding the roles it is given, and topics as the empty
+// list, never null: the one shape both sessionInfoFor and listedSessionInfo fill in, each with
+// the topics of the interest record its route may read. The entry's state is what its last
+// registration says about the session, which every row carries so that a caller reading a list,
+// or one session's answer, can tell a session that is answering from one that has stopped without
+// comparing timestamps itself.
 func sessionInfoWith(entry session.ListEntry, held []string) sessionInfo {
 	return sessionInfo{
 		SessionID:        entry.SessionID,
@@ -1451,6 +1455,7 @@ func sessionInfoWith(entry session.ListEntry, held []string) sessionInfo {
 		Title:            entry.Title,
 		Capabilities:     append([]string{}, entry.Capabilities...),
 		SelfSubscribed:   entry.SelfSubscribed,
+		Topics:           []string{},
 		Roles:            held,
 		UpdatedAt:        entry.UpdatedAt,
 		LastSeen:         entry.UpdatedAt,
@@ -1467,7 +1472,7 @@ func sessionInfoWith(entry session.ListEntry, held []string) sessionInfo {
 // writeInterestRecordUnreadable writes), or a key the interest bucket refuses (bus.ErrRefused: a
 // legacy id past envoy_interests' get bound that envoy_sessions still lists, or one outside
 // nats.go's key alphabet, which GET /v1/interests/<session_id> answers as the 413 or 400
-// writeBusUnavailable writes and the two session routes as a session with no topics). Any other
+// writeBusUnavailable writes and the two session routes as a row whose topics are []). Any other
 // error is a read that did not answer, whatever it names. In nats.go v1.50.0 that includes ctx's
 // end (store.Registry.Get's bound, or the JetStream MaxWait context nats.go's direct get always
 // runs under, so it always takes requestWithContext), nats.ErrConnectionClosed,
@@ -1493,10 +1498,11 @@ func writeInterestRecordUnreadable(w http.ResponseWriter, sessionID string, err 
 // interest copy alone (store.Registry.Cached), never the read-through Get, so a list makes no
 // per-key bucket read, which over a slow KV leader would hold the answer for seconds per row.
 // listedSessions has already checked that the copy can be served, so a session it holds no
-// interest for subscribed to nothing. The roles are the ones whose claims name the session, as
-// every other answer's are (sessionInfoFor); the list reads them for every row in one pass
-// (store.Registry.RolesBySession), and a claims view that cannot answer refuses that pass, as a
-// read that did not answer, before any row is built.
+// interest for subscribed to nothing, and its row carries topics as the empty list
+// sessionInfoWith gives it, as does one whose record's topics are null. The roles are the ones
+// whose claims name the session, as every other answer's are (sessionInfoFor); the list reads
+// them for every row in one pass (store.Registry.RolesBySession), and a claims view that cannot
+// answer refuses that pass, as a read that did not answer, before any row is built.
 func listedSessionInfo(registry *store.Registry, entry session.ListEntry, held []string) sessionInfo {
 	if held == nil {
 		// A session no claim names is absent from that pass's map, and its row says "no roles"
@@ -1505,7 +1511,7 @@ func listedSessionInfo(registry *store.Registry, entry session.ListEntry, held [
 		held = []string{}
 	}
 	info := sessionInfoWith(entry, held)
-	if interest, found := registry.Cached(entry.SessionID); found {
+	if interest, found := registry.Cached(entry.SessionID); found && interest.Topics != nil {
 		info.Topics = interest.Topics
 	}
 	return info
@@ -1703,12 +1709,14 @@ func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, d *lis
 // An id the session bucket refuses as a key is the caller's to fix, the 413 or 400
 // writeBusUnavailable writes. A live session whose id only the interest bucket refuses (a legacy id
 // past envoy_interests' get bound that envoy_sessions still serves, or one outside nats.go's key
-// alphabet) is answered 200 with no topics, as GET /v1/sessions lists it, and logged at WARN as the
-// list logs it: Dispatch reads a 413 or 400 here as a session that cannot exist. A read that did
-// not answer — the session's, its interest record's, or the claims view's (sessionInfoFor), all
-// within sendRequestBudget — is a 503 to retry: never a session a caller may take for ended, nor
-// one with no topics or roles. An interest record this build cannot decode is the 500
-// writeInterestRecordUnreadable writes: the bus answered it.
+// alphabet) and that this listener's interest copy holds no record for is answered 200 with
+// topics as the empty list, as GET /v1/sessions lists it, and logged at WARN: Dispatch reads a
+// 413 or 400 here as a session that cannot exist. A read that did not answer — the session's,
+// its interest record's, or the claims view's (sessionInfoFor),
+// all within sendRequestBudget — is a 503 to retry and never a row: neither a session a caller
+// may take for ended, nor one whose empty topics and roles it may take for a session that holds
+// none. An interest record this build cannot decode is the 500 writeInterestRecordUnreadable
+// writes: the bus answered it.
 //
 // view=registration is answered by writeSessionRegistration, whose comment says what it reads
 // and answers; any other value of view is refused 400 naming the selector, and no view at all is

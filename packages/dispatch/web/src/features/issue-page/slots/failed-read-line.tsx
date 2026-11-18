@@ -1,6 +1,8 @@
-import { createContext, type ReactNode, useCallback, useContext } from "react";
+import { createContext, type ReactNode, useCallback, useContext, useState } from "react";
 
-import { QueryError } from "../../../components/QueryError";
+import { pageFailedText, pageHeaderControl } from "../../../theme/classes";
+import { pageChrome } from "../page-structure";
+import { CONTROL_LABELS } from "../page-words";
 
 /** The Retry of a failed read's line, the one control the line draws. */
 export const FAILED_READ_RETRY = "[data-failed-read] button";
@@ -15,6 +17,9 @@ export const FAILED_READ_RETRY = "[data-failed-read] button";
 export const FailedLineLeaves = createContext<(() => void) | undefined>(undefined);
 
 export interface FailedReadLineProps {
+  /** Which failure the line says: a read's `errorUpdateCount`. Where it is not given, the line
+   *  counts the failures it sees itself: each run it saw end while it stayed drawn failed again. */
+  failure?: number;
   /** What the view says of the read that failed, in the page's words. */
   message: string;
   /** Asks that read alone again. */
@@ -25,21 +30,36 @@ export interface FailedReadLineProps {
 
 /**
  * A read that failed before it first answered, as every view drawn in the stage is to say it: one
- * line in the page's words with a Retry that asks that read alone again
- * (`components/QueryError.tsx`). A view is to draw one per failed read, in the order it gives its
- * reads, over its tree and never in it: an alert inside a tree would break the tree's own
- * structure of rows.
+ * line in the page's words and its failed colour, with a Retry that asks that read alone again. A
+ * view is to draw one per failed read, in the order it gives its reads, over its tree and never in
+ * it: an alert inside a tree would break the tree's own structure of rows.
  *
- * Retry stays enabled while the read runs again, since Chromium moves the focus of a control it
- * disables to the page's body. A press while the read runs asks nothing again: the run under way
- * already asks it, and a second request would only cancel that one and start it over.
+ * Retry is never disabled, since Chromium moves the focus of a control it disables to the page's
+ * body: while the read runs again it reads busy (`aria-busy`, and a quieter look), and a press
+ * then asks nothing again, since the run under way already asks it and a second request would
+ * only cancel that one and start it over. A view may keep the line drawn while its read runs
+ * again, so each failure draws the alert afresh (`failure`), and a screen reader says it again
+ * even in the same words; it keys the alert alone, so Retry stays the same button, with its focus.
  *
  * When the line leaves the page with the focus in it, its read answered or out again, the stage
  * puts the focus on the next failed read's Retry, on the tree's tab-stop row where rows came, or
  * on the tree itself while a read is out, unless something else took the focus in that render.
  */
-export function FailedReadLine({ message, onRetry, retrying }: FailedReadLineProps): ReactNode {
+export function FailedReadLine({
+  failure,
+  message,
+  onRetry,
+  retrying,
+}: FailedReadLineProps): ReactNode {
   const leaves = useContext(FailedLineLeaves);
+  // The failures the line has seen while drawn, for a view that names none: a run it saw end left
+  // the line drawn, so the read failed again.
+  const [seen, setSeen] = useState({ failures: 0, retrying });
+  let next = seen;
+  if (seen.retrying !== retrying) {
+    next = { failures: seen.retrying ? seen.failures + 1 : seen.failures, retrying };
+    setSeen(next);
+  }
   // One function for every render, so React runs its cleanup only when the line leaves the page.
   // React runs that cleanup before it takes the line off the page, while the focus is still in it.
   const line = useCallback(
@@ -52,13 +72,21 @@ export function FailedReadLine({ message, onRetry, retrying }: FailedReadLinePro
     [leaves]
   );
   return (
-    <div data-failed-read="" ref={line}>
-      <QueryError
-        message={message}
-        onRetry={() => {
+    <div className="flex flex-wrap items-center gap-3 text-sm" data-failed-read="" ref={line}>
+      <p className={pageFailedText} key={failure ?? next.failures} role="alert">
+        {message}
+      </p>
+      <button
+        aria-busy={retrying || undefined}
+        className={`${pageHeaderControl} aria-busy:opacity-50`}
+        onClick={() => {
           if (!retrying) onRetry();
         }}
-      />
+        type="button"
+        {...pageChrome}
+      >
+        {CONTROL_LABELS.retry}
+      </button>
     </div>
   );
 }

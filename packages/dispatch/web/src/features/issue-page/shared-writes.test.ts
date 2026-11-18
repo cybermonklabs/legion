@@ -316,8 +316,9 @@ test("labelsControlName names the labels control as it is drawn", () => {
   expect(labelsControlName("CORE-1", { labels: [], saving: true, words })).toBe(savingName);
   expect(labelsControlName("CORE-1", { labels: ["api"], saving: true, words })).toBe(savingName);
   expect(labelsControlName(undefined, { labels: ["api"], saving: true, words })).toBe(saving);
-  // The words are passed whether or not a save is in flight, and `saving` alone says which:
-  // with no save in flight the name is never the saving one.
+  // `saving` alone says whether a save is in flight: with it false the name is never the saving
+  // one, with a label or none and with a key or none. Of the four states the loop reads, one, a
+  // label with no key, is asserted nowhere above.
   for (const labels of [[], ["api"]]) {
     for (const issueKey of ["CORE-1", undefined]) {
       const name = labelsControlName(issueKey, { labels, saving: false, words });
@@ -388,14 +389,6 @@ test("componentsControlName names the components picker as it is drawn", async (
   expect(drawnName(ownSet)).toBe("Edit components of CORE-1");
   expect(drawnName(notAttached, true)).toBe(savingName);
   expect(drawnName(ownSet, true)).toBe(savingName);
-  // The words are passed whether or not a save is in flight, and `saving` alone says which:
-  // with no save in flight the name is never the saving one.
-  for (const components of [notAttached, ownSet]) {
-    expect({ mode: components.mode, saving: drawnName(components) === savingName }).toEqual({
-      mode: components.mode,
-      saving: false,
-    });
-  }
   // The saving words are the ones passed, and three dots end them as an ellipsis does.
   expect(
     componentsControlName("CORE-1", {

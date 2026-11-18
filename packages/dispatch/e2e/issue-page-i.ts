@@ -504,6 +504,21 @@ export function caretInNode(page: Page): Promise<boolean> {
   }, SELECTORS);
 }
 
+/** Whether the caret is in block `blockId` of the editor a row holds: the focus inside that
+ *  editable, and the selection's anchor inside the block. */
+export function caretInRowBlock(page: Page, blockId: string): Promise<boolean> {
+  return page.evaluate(
+    ({ block, selectors }) => {
+      const editable = document.activeElement?.closest('[contenteditable="true"]') ?? null;
+      if (editable === null || editable.closest(selectors.nodeRow) === null) return false;
+      const anchor = window.getSelection()?.anchorNode ?? null;
+      const drawn = editable.querySelector(`[data-block-id="${block}"]`);
+      return anchor !== null && drawn?.contains(anchor) === true;
+    },
+    { block: cssValue(blockId), selectors: SELECTORS }
+  );
+}
+
 /** The node id the tree's `aria-activedescendant` names, for a tree that roves with it rather
  *  than by moving the focus itself. Null when the tree names none. */
 export function treeActiveDescendant(page: Page): Promise<string | null> {
