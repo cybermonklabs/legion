@@ -41,9 +41,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
 // Prefix begins the key of every chunk, and no record's key: a write of a record under a key with
@@ -124,6 +122,29 @@ func (l Layout) key(index int) string { return Prefix + l.Generation + "." + str
 
 // IsChunkKey reports whether key is a chunk's, which no record's key is.
 func IsChunkKey(key string) bool { return strings.HasPrefix(key, Prefix) }
+
+// wellFormed reports whether key has the shape of a chunk key this build writes: Prefix, a
+// generation of crypto/rand.Text's length and alphabet (validGeneration), `.`, and a decimal index
+// with no sign and no leading zero. IsChunkKey reserves the whole prefix for chunks, but a key
+// under it reaches a store from whatever a writer of the bucket stored there, so only a well-formed
+// one is turned into a purge filter (PurgeMarkers), tracked for its purge (Markers) or collected
+// (Chunks.Unnamed): a key holding a wildcard would widen a purge to every chunk of the bucket.
+func wellFormed(key string) bool {
+	rest, ok := strings.CutPrefix(key, Prefix)
+	if !ok {
+		return false
+	}
+	generation, index, ok := strings.Cut(rest, ".")
+	if !ok || !validGeneration(generation) || index == "" || (len(index) > 1 && index[0] == '0') {
+		return false
+	}
+	for _, c := range []byte(index) {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
 
 // generation is the generation a chunk's key names.
 func generation(key string) string {
@@ -403,184 +424,4 @@ func Collect(ctx context.Context, kv bus.KeyValue, chunks []string) (int, error)
 		}
 	}
 	return len(chunks), nil
-}
-
-// MarkerGrace is how long after a store's watcher was delivered a chunk key's delete marker the
-// store may purge that marker (Markers, PurgeMarkers): long enough that every running listener's
-// watcher has been delivered the delete too and dropped the chunk from its copy, so the purge takes
-// away nothing a copy still holds. A listener whose watcher misses the delete - a reconnect across
-// it - drops the chunk at its next read of the bucket, which finds no message on the key.
-const MarkerGrace = 5 * time.Minute
-
-// Markers is the chunk keys a store's watcher was delivered as removed - a delete or purge marker,
-// or the server's removal of a chunk for its age - with when it was first delivered on the store's
-// clock, for a store whose bucket keeps a marker until its MaxAge (the known-session bucket) to
-// purge them. A chunk key is never written again, since each write names a new generation, so once
-// no copy holds its chunk its marker means nothing, and a bucket of such markers would hold one
-// subject for every chunk each rewrite replaced. A record's own key is never one: its marker says
-// the record was deleted.
-//
-// It has no lock of its own: the store calls every method under the mutex that guards its copies.
-type Markers struct {
-	seen map[string]time.Time
-}
-
-// NewMarkers is an empty set of a bucket's chunk markers.
-func NewMarkers() *Markers { return &Markers{seen: map[string]time.Time{}} }
-
-// Delivered takes one record of a chunk's key the watcher delivered at now: a marker is kept with
-// the first moment it was delivered, so a read of the bucket again does not restart its grace, and
-// a put - a key nothing writes again, delivered again only by a forged write - drops it.
-func (m *Markers) Delivered(entry kvwatch.Entry, now time.Time) {
-	if entry.Op == kvwatch.OpPut {
-		delete(m.seen, entry.Key)
-		return
-	}
-	if _, ok := m.seen[entry.Key]; !ok {
-		m.seen[entry.Key] = now
-	}
-}
-
-// Due is every marker first delivered at cutoff or before, sorted: the ones PurgeMarkers purges.
-func (m *Markers) Due(cutoff time.Time) []string {
-	var due []string
-	for key, seen := range m.seen {
-		if !seen.After(cutoff) {
-			due = append(due, key)
-		}
-	}
-	slices.Sort(due)
-	return due
-}
-
-// Forget drops keys, markers the store purged or found gone.
-func (m *Markers) Forget(keys []string) {
-	for _, key := range keys {
-		delete(m.seen, key)
-	}
-}
-
-// PurgeMarkers purges from kv's stream the one subject of each of keys, chunk keys whose newest
-// message is a marker (Markers.Due), with a purge filtered to that subject, which leaves no message
-// on it - no marker either - and reports how many it purged. A purge of a subject another listener
-// purged first purges nothing and counts too. A purge that failed ends it with that error: a server
-// that refuses it - a NATS user without STREAM.PURGE on the bucket's stream - refuses every one.
-// Each request waits no longer than ctx, and no longer than bus.RequestTimeout for a ctx with no
-// deadline of its own.
-func PurgeMarkers(ctx context.Context, kv bus.KeyValue, keys []string) (int, error) {
-	if len(keys) == 0 {
-		return 0, nil
-	}
-	within := func() (context.Context, context.CancelFunc) {
-		if _, ok := ctx.Deadline(); ok {
-			return context.WithCancel(ctx)
-		}
-		return context.WithTimeout(ctx, bus.RequestTimeout)
-	}
-	opened, cancel := within()
-	stream, err := kv.Streams().Stream(opened, "KV_"+kv.Bucket())
-	cancel()
-	if err != nil {
-		return 0, fmt.Errorf("open the stream of bucket %s to purge its chunk markers: %w", kv.Bucket(), err)
-	}
-	for purged, key := range keys {
-		if !IsChunkKey(key) {
-			return purged, fmt.Errorf("purge the marker of %s: not a chunk key", key)
-		}
-		request, cancel := within()
-		err := stream.Purge(request, jetstream.WithPurgeSubject("$KV."+kv.Bucket()+"."+key))
-		cancel()
-		if err != nil {
-			return purged, fmt.Errorf("purge the marker of chunk %s: %w", key, err)
-		}
-	}
-	return len(keys), nil
-}
-
-// chunk is one chunk in a copy: its bytes, and when the copy took it on the store's clock.
-type chunk struct {
-	value []byte
-	taken time.Time
-}
-
-// Chunks is the copy of a bucket's chunks that a cache fed by a watcher of the bucket keeps beside
-// the copy of its records, fed and swept by the same reads (BeginRead, Delivered, CompleteRead), so
-// it holds exactly the chunks the bucket does once a read completes. The cache joins a manifest
-// from it (Join), and the store's collection finds in it the chunks no record names (Unnamed).
-//
-// It has no lock of its own: the cache calls every method under the mutex that guards its copy of
-// the records, as kvwatch.Copy's methods are called.
-type Chunks struct {
-	copy kvwatch.Copy[chunk]
-	now  func() time.Time
-}
-
-// NewChunks is an empty copy of a bucket's chunks on now, the store's clock.
-func NewChunks(now func() time.Time) *Chunks {
-	c := &Chunks{now: now}
-	c.copy = kvwatch.NewCopy(kvwatch.Rows[chunk]{Decode: c.decode})
-	return c
-}
-
-// decode is the copy's decode (kvwatch.Rows). A chunk the copy already holds keeps the moment the
-// copy first took it, so a read of the bucket again (a reconnect's, a recreated bucket's) does not
-// restart its grace: a chunk is written once and never rewritten, so what the copy holds under its
-// key is the same chunk.
-func (c *Chunks) decode(entry kvwatch.Entry) (chunk, bool, error) {
-	taken := c.now()
-	if held, ok := c.copy.Get(entry.Key); ok {
-		taken = held.taken
-	}
-	return chunk{value: entry.Value, taken: taken}, true, nil
-}
-
-// BeginRead starts a read of the bucket (kvwatch.Copy.BeginRead). Every chunk stays.
-func (c *Chunks) BeginRead(read kvwatch.Read) { c.copy.BeginRead(read) }
-
-// Delivered takes one record of a chunk's key the read delivered (kvwatch.Copy.Delivered).
-func (c *Chunks) Delivered(entry kvwatch.Entry) error { return c.copy.Delivered(entry) }
-
-// CompleteRead removes every chunk the read found no evidence of (kvwatch.Copy.CompleteRead).
-func (c *Chunks) CompleteRead() { c.copy.CompleteRead() }
-
-// Join is the record value, a value under a record's key that the watcher delivered, stores, with
-// its layout: value itself for a record stored whole, and for a manifest the chunks it names,
-// joined from the copy. The watcher delivers each key's last message in stream order, and a write
-// stores a manifest's chunks before the manifest, so the copy holds every chunk a manifest names
-// by the time the watcher delivers the manifest; one it does not hold, and chunks that do not join
-// into what the manifest names, are ErrDamaged.
-func (c *Chunks) Join(value []byte) ([]byte, Layout, error) {
-	layout, err := ReadLayout(value)
-	if err != nil || !layout.Chunked() {
-		return value, layout, err
-	}
-	record, err := layout.join(func(key string) ([]byte, error) {
-		if held, ok := c.copy.Get(key); ok {
-			return held.value, nil
-		}
-		return nil, fmt.Errorf("%w: the copy holds no %s", ErrDamaged, key)
-	})
-	return record, layout, err
-}
-
-// Unnamed is every chunk of the copy whose generation named does not report and that the copy took
-// before cutoff, sorted: the chunks a store's collection deletes (Collect). named reports the
-// generations of the records the store's cache holds.
-//
-// The store judges with it only while its cache follows the bucket (kvwatch.Watcher.Following): a
-// copy that is behind could lack the manifest that names a chunk. A copy that follows holds every
-// manifest the bucket held a moment ago, and a manifest lands within WriteBound and one request of
-// its oldest chunk, so a chunk older than Grace that a manifest names is named by a record that
-// cache holds. A manifest the cache could not join names its chunks to no record either: that
-// record is damaged, which the store's next write of it replaces, and its chunks are collected like
-// any other.
-func (c *Chunks) Unnamed(named func(generation string) bool, cutoff time.Time) []string {
-	var unnamed []string
-	for key, held := range c.copy.All() {
-		if !named(generation(key)) && held.taken.Before(cutoff) {
-			unnamed = append(unnamed, key)
-		}
-	}
-	slices.Sort(unnamed)
-	return unnamed
 }

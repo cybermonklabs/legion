@@ -84,6 +84,12 @@ func heartbeatDay(t *testing.T, purge bool) (int, int) {
 		}
 	}
 	requireKnownTopics(t, "the store after a heartbeat day", known, "ses_known_day", topics)
+	known.mu.RLock()
+	fenced := known.chunks.Fenced()
+	known.mu.RUnlock()
+	if fenced != chunks {
+		t.Fatalf("after 144 heartbeats the chunk copy's fence holds %d keys, want the record's %d chunks: a replaced chunk's key must leave the fence with its delete", fenced, chunks)
+	}
 	return chunks, chunkSubjects(t, conn)
 }
 

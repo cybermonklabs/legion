@@ -671,3 +671,43 @@ func TestAWriteWhoseHeadTheBusRefusedLeavesNoChunkOfItsOwn(t *testing.T) {
 		}
 	}
 }
+
+// The chunk copy's revision fence holds one entry per chunk the bucket holds, however many times a
+// chunked record is rewritten: each rewrite deletes the chunks it replaced, and a chunk key, never
+// written again, leaves no fence entry behind its delete (kvwatch.Copy.Forget). Without that, the
+// fence kept every replaced chunk's key until a completed read of the bucket, which this watcher
+// makes only on a reconnect: about 576 entries a day for a session whose record is two chunks and
+// is rewritten every 5 minutes. The control is the count it reaches without the drop, which the
+// mutation survey's fence-forgets-chunk-deletes run shows growing with the rewrites.
+func TestTheChunkCopysFenceStaysBoundedAcrossRewrites(t *testing.T) {
+	conn := kvchunktest.SmallPayloadNATS(t)
+	reg := openRegistry(t, conn)
+	kv := rawInterests(t, conn)
+	const rewrites = 40
+	for rewrite := range rewrites {
+		label := []string{"even", "odd"}[rewrite%2]
+		if _, err := reg.Upsert(Interest{SessionID: "ses_rewritten_often", MachineID: "m1"}, kvchunktest.Topics(label, 400)); err != nil {
+			t.Fatalf("rewrite %d: %v", rewrite, err)
+		}
+		if err := reg.removeInterestTopics(t.Context(), "ses_rewritten_often", kvchunktest.Topics(label, 400)[200:]); err != nil {
+			t.Fatalf("rewrite %d, its shrink: %v", rewrite, err)
+		}
+	}
+	live := len(kvchunktest.LiveChunkKeys(t, kv))
+	if live == 0 {
+		t.Fatal("the bucket holds no chunk, so the case rewrote no chunked record")
+	}
+	fenced := func() int {
+		reg.mu.RLock()
+		defer reg.mu.RUnlock()
+		return reg.chunks.Fenced()
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for fenced() > live && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Logf("after %d rewrites the bucket holds %d chunks and the chunk copy's fence %d keys", 2*rewrites, live, fenced())
+	if got := fenced(); got > live {
+		t.Fatalf("after %d rewrites the chunk copy's fence holds %d keys, want at most the %d chunks the bucket holds", 2*rewrites, got, live)
+	}
+}

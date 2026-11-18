@@ -1689,9 +1689,10 @@ func (c *Client) ReachesNoSession(topic string) bool {
 }
 
 // ErrRefused is returned for an envelope that is refused the same way however often it is
-// published, or a KV key refused however often a call names it, so a caller answers it as a
-// refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey or
-// ErrNoForwardMsgID.
+// published, or a KV key or value refused however often a call names it, so a caller answers it as
+// a refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey,
+// ErrNoForwardMsgID, or internal/kvchunk's ReservedKey, a KV key under the chunk keys' prefix that
+// a store laying its records out in chunks takes for no record.
 var ErrRefused = errors.New("refused")
 
 // refusal is a kind of ErrRefused. Its text names only the kind, since every line and answer that

@@ -3,6 +3,7 @@ package kvchunk
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,18 +19,19 @@ import (
 func TestAChunkMarkerAPutFollowsIsNotDueForItsPurge(t *testing.T) {
 	markers := NewMarkers()
 	start := time.Now()
-	for _, key := range []string{Prefix + "A.0", Prefix + "B.0"} {
+	a, b := Prefix+strings.Repeat("A", generationLength)+".0", Prefix+strings.Repeat("B", generationLength)+".0"
+	for _, key := range []string{a, b} {
 		markers.Delivered(kvwatch.Entry{Key: key, Op: kvwatch.OpDelete}, start)
 	}
-	markers.Delivered(kvwatch.Entry{Key: Prefix + "A.0", Op: kvwatch.OpDelete}, start.Add(MarkerGrace))
-	markers.Delivered(kvwatch.Entry{Key: Prefix + "B.0", Op: kvwatch.OpPut}, start.Add(time.Second))
+	markers.Delivered(kvwatch.Entry{Key: a, Op: kvwatch.OpDelete}, start.Add(MarkerGrace))
+	markers.Delivered(kvwatch.Entry{Key: b, Op: kvwatch.OpPut}, start.Add(time.Second))
 	// A store asks for the markers due at now as Due(now - MarkerGrace).
 	dueAt := func(now time.Time) []string { return markers.Due(now.Add(-MarkerGrace)) }
 	if due := dueAt(start.Add(MarkerGrace - time.Second)); len(due) != 0 {
 		t.Fatalf("inside the grace the markers due are %v, want none", due)
 	}
-	if due := dueAt(start.Add(MarkerGrace)); !slices.Equal(due, []string{Prefix + "A.0"}) {
-		t.Fatalf("past the grace of the first delivery the markers due are %v, want %s alone", due, Prefix+"A.0")
+	if due := dueAt(start.Add(MarkerGrace)); !slices.Equal(due, []string{a}) {
+		t.Fatalf("past the grace of the first delivery the markers due are %v, want %s alone", due, a)
 	}
 }
 
@@ -51,5 +53,20 @@ func TestARecordThatFitsIsStoredWholeWhateverTheMaxPayload(t *testing.T) {
 	}
 	if _, layout, chunks, err := layOut(large, 1600+HeaderBytes); err != nil || !layout.Chunked() || len(chunks) < 2 {
 		t.Fatalf("a record of 2000 bytes under a max payload of %d is %d chunks (%v), want two or more", 1600+HeaderBytes, len(chunks), err)
+	}
+}
+
+// A marker of a key under the chunk prefix that is not in the shape this build writes is never kept
+// for a purge, so no pass offers it to PurgeMarkers; a well-formed key's marker is the control,
+// kept and due once its grace has passed.
+func TestAMarkerOfAMalformedChunkKeyIsNeverDue(t *testing.T) {
+	markers := NewMarkers()
+	start := time.Now()
+	wellFormedKey := Prefix + strings.Repeat("A", generationLength) + ".0"
+	for _, key := range []string{Prefix + ">", Prefix + "*.*", Prefix + "AAAA.0", Prefix + strings.Repeat("A", generationLength) + ".01", wellFormedKey} {
+		markers.Delivered(kvwatch.Entry{Key: key, Op: kvwatch.OpDelete}, start)
+	}
+	if due := markers.Due(start); !slices.Equal(due, []string{wellFormedKey}) {
+		t.Fatalf("the markers due are %v, want the well-formed %s alone", due, wellFormedKey)
 	}
 }
