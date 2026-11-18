@@ -506,13 +506,15 @@ describe("a card after a resume", () => {
   test("after a resume of a session that records no delivery, an old card the resumed process writes again before its first request keeps its delivered line, and a new card carries its own time", () => {
     const files = sessionFiles();
     const file = files.entries(SESSION);
-    let clock = LATE;
-    // An earlier release, which records nothing. Oh My Pi writes a card's entry into the session
-    // file a few milliseconds after the extension's `message_end` handler returns.
+    // Oh My Pi stamps a card's entry with the time it was handed the card, never later than the
+    // card's `message_end`, and usually writes that entry before the extension's handler runs.
+    // An earlier release recorded nothing, and its `written` read no entries: it took the time of
+    // the write, here 0.4 s after the host was handed the card.
+    let clock = LATE + 900;
     const first = new CardAges({ now: () => clock });
-    const old = card("evt-old", SENT, LATE);
-    first.written(old, SESSION, () => file);
-    file.push(cardEntry(old, LATE + 400));
+    const old = card("evt-old", SENT, LATE + 500);
+    file.push(cardEntry(old, LATE + 500));
+    first.written(old, SESSION, () => []);
     const before = textOf(
       first.annotate([old], () => file, SESSION),
       "evt-old"
@@ -523,25 +525,105 @@ describe("a card after a resume", () => {
     clock = LATE + 3 * 3_600_000;
     const resumed = new CardAges({ now: () => clock, record: files.record });
     const replayed = card("evt-old", SENT, clock);
+    file.push(cardEntry(replayed, clock));
     resumed.written(replayed, SESSION, () => file);
-    file.push(cardEntry(replayed, clock + 400));
     clock += 2_000;
     const fresh = card("evt-new", clock - 1_000, clock);
+    file.push(cardEntry(fresh, clock));
     resumed.written(fresh, SESSION, () => file);
-    file.push(cardEntry(fresh, clock + 400));
     const after = resumed.annotate([old, replayed, fresh], () => file, SESSION);
 
     expect(before).toContain('\n  delivered: "2026-10-31T11:13:02Z"\n');
     expect(textOf(after, "evt-old")).toBe(before);
     expect(textOf(after?.slice(1), "evt-old")).toBe(before);
     expect(textOf(after, "evt-new")).toContain('\n  delivered: "2026-10-31T14:13:04Z"\n');
-    // The old card's delivery is the time of its entry, which the resumed process fixed and
-    // recorded, and the new card's the time the resumed process wrote it.
+    // The old card's delivery is the time of its first entry, a little before the time the
+    // earlier process showed and in the same second, which the resumed process fixed and
+    // recorded; the new card's is the time its own entry was stamped.
     expect(files.recorded(SESSION)).toEqual([
-      { event_id: "evt-old", at: LATE + 400 },
+      { event_id: "evt-old", at: LATE + 500 },
       { event_id: "evt-new", at: LATE + 3 * 3_600_000 + 2_000 },
     ]);
   });
+});
+
+// A card's write (`written`) and a request that shows a card this process holds no delivery for
+// (`annotate`) read the delivery in one order, and differ only in their last source: the time of
+// the write, or the time of the request for a card handed after this instance started. When the
+// two read different orders, a card's time depends on which of them fixed it: in review round 2
+// of INFRA-4354, the write read no ledger record and no place in the session, so an old card a
+// resumed process wrote again took that process's clock. For each set of sources a session can
+// hold, both callers must give the card the same text and record the same delivery.
+describe("a card's delivery, fixed at its write or at a request", () => {
+  const NOW = LATE + 5 * 60_000;
+  const RECORDED = LATE - 60_000;
+  const LEDGER = LATE - 40_000;
+  const PLACED = LATE - 20_000;
+  /** The card's own entry, after a message the host wrote at `PLACED`. */
+  const placed = (message: Record<string, unknown>) => [
+    { type: "message", timestamp: new Date(PLACED).toISOString(), message: { role: "assistant" } },
+    cardEntry(message, PLACED),
+  ];
+  const sources: {
+    readonly name: string;
+    readonly entries: (message: Record<string, unknown>) => Record<string, unknown>[];
+    readonly delivered: string;
+    readonly recorded: unknown[];
+  }[] = [
+    {
+      name: "a recorded delivery, a ledger record and a place",
+      entries: (message) => [
+        { type: "custom", customType: CARD_DELIVERED, data: { event_id: "evt-old", at: RECORDED } },
+        ...placed(message),
+        ledgerRecord("evt-old", LEDGER),
+      ],
+      delivered: "2026-10-31T11:12:02Z",
+      recorded: [{ event_id: "evt-old", at: RECORDED }],
+    },
+    {
+      name: "a ledger record and a place",
+      entries: (message) => [...placed(message), ledgerRecord("evt-old", LEDGER)],
+      delivered: "2026-10-31T11:12:22Z",
+      recorded: [{ event_id: "evt-old", at: LEDGER }],
+    },
+    {
+      name: "a place alone",
+      entries: placed,
+      delivered: "2026-10-31T11:12:42Z",
+      recorded: [{ event_id: "evt-old", at: PLACED }],
+    },
+    {
+      name: "nothing",
+      entries: () => [],
+      delivered: "2026-10-31T11:18:02Z",
+      recorded: [{ event_id: "evt-old", at: NOW }],
+    },
+  ];
+
+  for (const source of sources) {
+    test(`reads the same from ${source.name}, whichever of the two fixes it`, () => {
+      const read = (fixAtWrite: boolean) => {
+        const files = sessionFiles();
+        const file = files.entries(SESSION);
+        const old = card("evt-old", SENT, NOW);
+        file.push(...source.entries(old));
+        const ages = new CardAges({ now: () => NOW, record: files.record });
+        if (fixAtWrite) ages.written(old, SESSION, () => file);
+        const text = textOf(
+          ages.annotate([old], () => file, SESSION),
+          "evt-old"
+        );
+        return { text, recorded: files.recorded(SESSION) };
+      };
+      const atWrite = read(true);
+      const atRequest = read(false);
+
+      expect(atWrite.text).toBe(atRequest.text);
+      expect(atWrite.text).toContain(`\n  delivered: "${source.delivered}"\n`);
+      expect(atWrite.recorded).toEqual(atRequest.recorded);
+      expect(atWrite.recorded).toEqual(source.recorded);
+    });
+  }
 });
 
 // The delivery a session first gives a card goes into the session file (`CARD_DELIVERED_ENTRY`),
