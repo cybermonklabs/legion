@@ -25,10 +25,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
-	"github.com/sjawhar/legion/daemon/internal/lookpath"
 )
 
 // capturedRequest is one request a real gh or git sent to GitHub through the capture proxy: the
@@ -260,10 +260,8 @@ func realGHForCapture(t *testing.T) string {
 		if err != nil {
 			t.Skip("no real gh on this machine: the capture test drives one")
 		}
-		if script, _, err := lookpath.Kind(found); err != nil {
-			t.Skipf("the first gh on PATH, %s, cannot be read (%v): set LEGION_GH_PATH to the real gh's install path", found, err)
-		} else if script {
-			t.Skipf("the first gh on PATH, %s, is a script, not the real gh: set LEGION_GH_PATH to the real gh's install path", found)
+		if err := daemon.RefuseScriptGH(found); err != nil {
+			t.Skip(err)
 		}
 		path = found
 	}

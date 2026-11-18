@@ -156,8 +156,7 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 
 func legionLeakCheckPrePush(t *testing.T, dir string, env map[string]string, line, url string) (int, string) {
 	t.Helper()
-	cmd := legionGhCommand(t, dir, env)
-	cmd.Args = []string{os.Args[0], "leak-check", "pre-push", "origin", url}
+	cmd := legionCommand(t, dir, env, "leak-check", "pre-push", "origin", url)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(line), &stdout, &stderr
 	code := 0
@@ -208,40 +207,57 @@ func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T)
 
 // git runs its pre-push hook, `legion leak-check pre-push`, in the terminal's foreground process
 // group with git, and the guard runs the shared check in a process group of its own, which none
-// of the terminal's signals reach. A SIGINT to the hook's group cancels the command's context
-// (main's signal.NotifyContext), and a SIGHUP, a pane that closes during the push, is caught while
-// the command runs (hangupCancels) and cancels it the same way; either stops the check's group,
-// and the command ends with 128+<signal>, which refuses the push. The command is started here as
-// the leader of a group of its own, and the stand-in check holds the push (signalWhileHeld).
+// of the terminal's signals reach; `legion leak-check text` runs its check the same way. A SIGINT
+// to the command's group cancels its context (main's signal.NotifyContext), and a SIGHUP, a pane
+// that closes during the push, is caught while the command runs (hangupCancels) and cancels it the
+// same way; either stops the check's group, and the command ends with 128+<signal>, which refuses
+// the write, and prints nothing (leakCheckReport). The command is started here as the leader of a
+// group of its own, and the stand-in check holds the write (signalWhileHeld).
 //
 // Before, a SIGHUP killed the command where it stood and left the check running, reparented and
 // waited for by nobody, and a SIGINT stopped the check and was answered with the guard's setup
 // error, exit 2.
-func TestASignalToLeakCheckPrePushsGroupStopsTheSharedCheck(t *testing.T) {
+func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
 	}
-	for _, tc := range []struct {
-		name   string
-		signal syscall.Signal
-		// seconds is the holding stand-in's sleep, one per row.
-		seconds string
+	dir, line := aPushFixture(t, "a commit of nothing in particular")
+	for _, shape := range []struct {
+		name  string
+		stdin string
+		// args is the command after `legion`. A local path names no github.com repository, so
+		// the push's guard reads no visibility and starts no gh, and the write is held in the
+		// check, the guard's first child.
+		args []string
+		// seconds is the holding stand-in's sleep for each signal, one per row.
+		seconds map[syscall.Signal]string
 	}{
-		{"SIGINT", syscall.SIGINT, "293"},
-		{"SIGHUP", syscall.SIGHUP, "294"},
+		{
+			name: "leak-check pre-push", stdin: line, args: []string{"leak-check", "pre-push", "origin", dir + ".git"},
+			seconds: map[syscall.Signal]string{syscall.SIGINT: "293", syscall.SIGHUP: "294"},
+		},
+		{
+			name: "leak-check text", stdin: "a title\na body of nothing in particular\n", args: []string{"leak-check", "text", "the pull request body"},
+			seconds: map[syscall.Signal]string{syscall.SIGINT: "291", syscall.SIGHUP: "292"},
+		},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			dir, line := aPushFixture(t, "a commit of nothing in particular")
-			pidFile := filepath.Join(t.TempDir(), "stand-in")
-			command := legionGhCommand(t, dir, map[string]string{
-				"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), holdsStandIn(pidFile, tc.seconds)),
+		for _, tc := range []struct {
+			name   string
+			signal syscall.Signal
+		}{
+			{"SIGINT", syscall.SIGINT},
+			{"SIGHUP", syscall.SIGHUP},
+		} {
+			t.Run(shape.name+" "+tc.name, func(t *testing.T) {
+				seconds := shape.seconds[tc.signal]
+				pidFile := filepath.Join(t.TempDir(), "stand-in")
+				command := legionCommand(t, dir, map[string]string{
+					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), holdsStandIn(pidFile, seconds)),
+				}, shape.args...)
+				command.Stdin = strings.NewReader(shape.stdin)
+				signalWhileHeld(t, command, "legion "+shape.name, pidFile, seconds, "the shared check", tc.signal)
 			})
-			// A local path names no github.com repository, so the guard reads no visibility and
-			// starts no gh, and the push is held in the check, the guard's first child.
-			command.Args = []string{os.Args[0], "leak-check", "pre-push", "origin", dir + ".git"}
-			command.Stdin = strings.NewReader(line)
-			signalWhileHeld(t, command, pidFile, tc.seconds, "the shared check", tc.signal)
-		})
+		}
 	}
 }
 

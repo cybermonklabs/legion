@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,7 +13,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A help read that outlives its timeout stops everything gh started, not gh alone. The gh here
@@ -38,6 +36,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	timeout := ghHelpTimeout
 	ghHelpTimeout = time.Second
 	t.Cleanup(func() { ghHelpTimeout = timeout })
+	killRecordedHelper(t, pidFile, helperSeconds)
 
 	_, err := readGhHelp(context.Background(), gh, []string{"pr"})
 	if err == nil || !strings.Contains(err.Error(), "did not answer its help within") {
@@ -51,116 +50,11 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gh recorded helper pid %q: %v", raw, err)
 	}
-	// A helper still running when the row ends is killed, so a failure here leaves nothing behind.
-	t.Cleanup(func() {
-		if helperRunning(pid, helperSeconds) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
-	})
 	// The group's stop is SIGTERM, then SIGKILL after procgroup.StopGrace; the helper, a sleep,
 	// ends on the SIGTERM, and the bound leaves room for a loaded machine to reap it.
 	for deadline := time.Now().Add(procgroup.StopGrace + 5*time.Second); helperRunning(pid, helperSeconds); time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("gh's helper (pid %d) is still running after the help read gave up; want the read's timeout to stop gh's whole process group", pid)
-		}
-	}
-}
-
-// helperRunning says whether pid is still this row's helper: a process whose command line is
-// `sleep <seconds>`, read from /proc so a pid the kernel has since given to another process does
-// not count.
-func helperRunning(pid int, seconds string) bool {
-	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
-	if err != nil {
-		return false
-	}
-	return strings.Join(strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00"), " ") == "sleep "+seconds
-}
-
-// holdsStandIn is the end of a stand-in script that holds its work: it records its pid in pidFile,
-// written whole by a rename, and becomes `sleep <seconds>` under that pid, held far past any bound
-// of the rows that use it, with a command line helperRunning tells from a pid the kernel has
-// reused. Each row gives its stand-in a sleep of its own.
-func holdsStandIn(pidFile, seconds string) string {
-	return "echo $$ >'" + pidFile + ".new'\nmv '" + pidFile + ".new' '" + pidFile + "'\nexec sleep " + seconds + "\n"
-}
-
-// signalWhileHeld starts command as the leader of a process group of its own, the way a shell's
-// job control starts a command, waits for the stand-in that holds its work (holdsStandIn, under
-// pidFile and seconds) to be running, and sends sig to that group, as a terminal does. It fails
-// the test unless command ends with 128+sig within a few seconds and the stand-in is gone after
-// it; what names the held work in a failure. A stand-in or a command still running when the test
-// ends is killed, so a failure leaves nothing behind.
-func signalWhileHeld(t *testing.T, command *exec.Cmd, pidFile, seconds, what string, sig syscall.Signal) {
-	t.Helper()
-	name := "legion " + command.Args[1]
-	standIn := func() (pid int, running bool) {
-		raw, err := os.ReadFile(pidFile)
-		if err != nil {
-			return 0, false
-		}
-		pid, err = strconv.Atoi(strings.TrimSpace(string(raw)))
-		return pid, err == nil && helperRunning(pid, seconds)
-	}
-	t.Cleanup(func() {
-		if pid, running := standIn(); running {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		}
-	})
-	// The group is the command's own, so the signal below never reaches this test binary's.
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Standard output and standard error are a file rather than a pipe, so nothing of the
-	// stand-in's can hold the wait open.
-	printed, err := os.Create(filepath.Join(t.TempDir(), "printed"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { printed.Close() })
-	command.Stdout, command.Stderr = printed, printed
-	if err := command.Start(); err != nil {
-		t.Fatal(err)
-	}
-	exited := make(chan struct{})
-	var waited error
-	go func() {
-		waited = command.Wait()
-		close(exited)
-	}()
-	// A command still running when the test ends is killed by its handle, which never signals a
-	// pid the kernel has given to another process since.
-	t.Cleanup(func() {
-		select {
-		case <-exited:
-		default:
-			_ = command.Process.Kill()
-			<-exited
-		}
-	})
-	var pid int
-	testwait.Eventually(t, "the stand-in to hold "+what, func() bool {
-		var running bool
-		pid, running = standIn()
-		return running
-	})
-	if err := syscall.Kill(-command.Process.Pid, sig); err != nil {
-		t.Fatal(err)
-	}
-	// The held work's group is stopped with a SIGTERM, then a SIGKILL after procgroup.StopGrace.
-	// The stand-in, a sleep, ends on the SIGTERM, and the bound leaves room for a loaded machine
-	// while staying far short of ghHelpTimeout, which a help read nothing stops runs to.
-	bound := procgroup.StopGrace + 5*time.Second
-	want := 128 + int(sig)
-	select {
-	case <-exited:
-	case <-time.After(bound):
-		t.Fatalf("%s is still running %s after signal %d (%v) to its group while %s was held; want it to stop that work and end with %d: %s", name, bound, int(sig), sig, what, want, readRecord(t, printed.Name()))
-	}
-	if exit, ok := waited.(*exec.ExitError); !ok || exit.ExitCode() != want {
-		t.Errorf("%s after signal %d (%v) to its group while %s was held = %v; want exit %d: %s", name, int(sig), sig, what, waited, want, readRecord(t, printed.Name()))
-	}
-	for deadline := time.Now().Add(bound); helperRunning(pid, seconds); time.Sleep(50 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the stand-in (pid %d) holding %s is still running %s after signal %d (%v) to %s's group; want its process group stopped", pid, what, bound, int(sig), sig, name)
 		}
 	}
 }
@@ -241,7 +135,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 					"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), held.check(pidFile, held.seconds)),
 				}, "pr", "create", "-R", "acme/widgets", "--title", "a title", "--body", "a body")
-				signalWhileHeld(t, command, pidFile, held.seconds, held.name, tc.signal)
+				signalWhileHeld(t, command, "legion gh", pidFile, held.seconds, held.name, tc.signal)
 			})
 		}
 	}
