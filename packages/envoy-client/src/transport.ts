@@ -168,10 +168,12 @@ const ErrorWireSchema = z.object({
   // `consumer_error` (a consumer call that failed, or a listener holding no session-consumer
   // connection), 503 `no_grant` (the listener's NATS user may not manage session consumers), 503
   // `consumer_limit` (the stream holds as many consumers as its `max_consumers` allows, so the
-  // server creates no more), 409 `not_requested` (the registration asked for no consumer) and 409
-  // `invalid_session_id` (the id names no consumer). A send or a publish: 429
-  // `sender_rate_limited` (its agent session sent faster than the listener lets one session send,
-  // so this message was not stored; `retry_after_seconds` says when it can be sent again).
+  // server creates no more), 413 `too_large` (the consumer's filter makes a request past the
+  // server's max payload, refused at every retry), 409 `not_requested` (the registration asked
+  // for no consumer) and 409 `invalid_session_id` (the id names no consumer). A send or a
+  // publish: 429 `sender_rate_limited` (its agent session sent faster than the listener lets one
+  // session send, so this message was not stored; `retry_after_seconds` says when it can be sent
+  // again).
   reason: z.string().optional(),
   expected: z.array(z.string()).optional(),
   state: SessionStateSchema.optional(),

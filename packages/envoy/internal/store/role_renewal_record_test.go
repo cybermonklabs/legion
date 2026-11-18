@@ -107,7 +107,7 @@ func seedStaleInterest(t *testing.T, rig *repairRig, sessionID, topic string) In
 	row.Topics = slices.DeleteFunc(slices.Clone(row.Topics), func(stored string) bool { return stored == topic })
 	rig.reg.mu.Lock()
 	_, epoch := rig.reg.watcher.Handle()
-	outcome := rig.reg.cache.Put(rig.reg.watcher, epoch, sessionID, row, entry.Revision())
+	outcome := rig.reg.cache.Put(rig.reg.watcher, epoch, sessionID, storedRow{Interest: row}, entry.Revision())
 	rig.reg.mu.Unlock()
 	if outcome != kvwatch.Applied {
 		t.Fatalf("the cache refused %s's row at revision %d (outcome %d)", sessionID, entry.Revision(), outcome)

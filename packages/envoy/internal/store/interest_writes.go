@@ -11,46 +11,81 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
 // deleteInterest deletes sessionID's interest at the revision it reads (bus.KeyValue.DeleteAtRead),
-// each bucket call waiting no longer than ctx (bus.Bounded). A delete ctx abandoned may still land
-// after this answer, and that is safe: it deletes only the revision it read, so a write that landed
-// since is kept. A record the read found absent is left alone, delete and all, so a registration
-// that stored the session's row between that read and this delete keeps it; the cache is brought
-// in line with the bucket either way (reconcileDeleted).
+// each bucket call waiting no longer than ctx (bus.Bounded), and then the chunks of the record it
+// deleted when that record is the one the cache holds, joined, for the session, and no other
+// session's row names them (ownLayout). A manifest the delete read but no read of this listener
+// joined names chunks never proved to be this record's, so they are left to the reaper's
+// collection, which takes only chunks no row names. A delete ctx abandoned may still land after
+// this answer, and that is safe: it deletes only the revision it read, so a write that landed
+// since is kept, and its chunks are left to the reaper's collection. A record the read found
+// absent is left alone, delete and all, so a registration that stored the session's row between
+// that read and this delete keeps it; the cache is brought in line with the bucket either way
+// (reconcileDeleted).
 func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	// The fence read before the delete is the bucket's this handle reaches only when the read under
 	// way began in its epoch (kvwatch.Copy.FenceFor).
 	r.mu.RLock()
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
+	held, _ := r.cache.Get(sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(sessionID) })
+	deleted, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.DeleteAtRead(sessionID) })
 	if !answered {
 		return fmt.Errorf("delete %s's interest record: %w", sessionID, err)
 	}
 	if err != nil {
 		return err
 	}
-	r.reconcileDeleted(ctx, kv, epoch, sessionID, max(revision, read))
+	if deleted != nil {
+		revision = max(revision, deleted.Revision())
+		if layout, err := kvchunk.ReadLayout(deleted.Value()); err == nil && layout.Chunked() && layout.Generation == held.layout.Generation {
+			r.deleteChunks(ctx, kv, sessionID, r.ownLayout(sessionID, held.layout))
+		}
+	}
+	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision, deleted != nil)
 	return nil
+}
+
+// ownLayout is layout when no row the cache holds for another session names its generation, and
+// the zero layout otherwise. A generation is new for each write, so only a manifest copied under
+// another key - which any writer of the bucket can store - shares one, and the chunks it names are
+// then not this record's alone: a write or a delete of this record leaves them to the reaper's
+// collection, which takes only chunks no row names. It reads every row only for a chunked layout.
+func (r *Registry) ownLayout(sessionID string, layout kvchunk.Layout) kvchunk.Layout {
+	if !layout.Chunked() {
+		return layout
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for key, row := range r.cache.All() {
+		if key != sessionID && row.layout.Generation == layout.Generation {
+			return kvchunk.Layout{}
+		}
+	}
+	return layout
 }
 
 // deleteInterestAt deletes sessionID's interest record only while its latest revision is
 // revision, and reports whether the bucket took the delete: a bucket that refused it holds a row
 // stored since, which is no error here (JetStream's wrong last sequence, 10071, which nats.go
-// names nats.ErrKeyExists), and that row stands. Each bucket call waits no longer than ctx
-// (bus.Bounded). A delete ctx abandoned may still land after this answer, and that is safe: it
-// deletes the one revision it names, so a write that landed since is kept.
+// names nats.ErrKeyExists), and that row stands. layout is the layout of the record read at
+// revision, whose chunks a delete the bucket took deletes after it, unless another session's row
+// names them too (ownLayout, deleteChunks). Each bucket
+// call waits no longer than ctx (bus.Bounded). A delete ctx abandoned may still land after this
+// answer, and that is safe: it deletes the one revision it names, so a write that landed since is
+// kept, and the chunks of the record it deleted are left to the reaper's collection.
 //
 // A revision of 0 fences nothing - nats.go sends no expected-last-sequence header for it, so the
 // bucket would take the delete over whatever it holds - and names no row a caller read, since a
 // bucket's revisions start at 1. It is the answer of a cache hit whose fence belongs to another
 // epoch (kvwatch.Copy.FenceFor). No delete is made for it: the row is reported kept, and the
 // caller reads the row's own revision from the bucket and asks again.
-func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revision uint64) (bool, error) {
+func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revision uint64, layout kvchunk.Layout) (bool, error) {
 	if revision == 0 {
 		return false, nil
 	}
@@ -67,23 +102,43 @@ func (r *Registry) deleteInterestAt(ctx context.Context, sessionID string, revis
 	if err != nil {
 		return false, err
 	}
-	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision)
+	r.deleteChunks(ctx, kv, sessionID, r.ownLayout(sessionID, layout))
+	r.reconcileDeleted(ctx, kv, epoch, sessionID, revision, true)
 	return true, nil
 }
 
 // reconcileDeleted brings sessionID's cache entry in line with the bucket after a delete through
-// kv, a handle of epoch, that succeeded past revision: it applies the key's latest history entry,
-// which is the delete marker unless a write has landed since, or, when the history cannot be read
-// within ctx, evicts the entry behind a fence just past revision.
-func (r *Registry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, revision uint64) {
+// kv, a handle of epoch, that answered past revision, and that deleted the record when deleted:
+// it applies the key's latest history entry, which is the delete marker unless a write has landed
+// since, or, when the history cannot be read within ctx, evicts the entry behind a fence just past
+// revision. A latest entry at a revision the cache's fence already holds is no news - a delete
+// that read nothing and so deleted nothing - and the cache is left as it is, its row and that row's
+// chunks named. A delete that deleted nothing leaves the cache as it is when the history cannot be
+// read either: nothing it did changed the bucket, and evicting the row would leave the chunks of a
+// record that still stands to the collection. A manifest another listener stored since is evicted
+// behind that fence rather than applied: the copy joins a manifest only from the chunks its watcher
+// delivered, which may not have reached it yet, and the watcher delivers that manifest after its
+// chunks, past the fence.
+func (r *Registry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch uint64, sessionID string, revision uint64, deleted bool) {
 	// A history that does not answer falls back to the fence below: the delete itself answered.
 	// ReadHistory ends with ctx; bus.RequestTimeout bounds it for a caller that answers no request
 	// and so passes a context that never ends.
 	historyCtx, cancel := context.WithTimeout(ctx, bus.RequestTimeout)
 	entries, err := kv.ReadHistory(historyCtx, sessionID)
 	cancel()
+	if err != nil && !deleted {
+		return
+	}
 	r.mu.Lock()
-	if err != nil || len(entries) == 0 {
+	var latest kvwatch.Entry
+	if err == nil && len(entries) > 0 {
+		latest = kvwatch.JetStreamEntry(entries[len(entries)-1])
+		if latest.Op == kvwatch.OpPut && latest.Revision <= r.cache.FenceFor(epoch, sessionID) {
+			r.mu.Unlock()
+			return
+		}
+	}
+	if err != nil || len(entries) == 0 || (latest.Op == kvwatch.OpPut && kvchunk.IsManifest(latest.Value)) {
 		// KeyValue.Delete does not return its revision. A successful delete must
 		// still fence off any watcher update from the preceding revision while the
 		// delete marker remains pending.
@@ -91,7 +146,6 @@ func (r *Registry) reconcileDeleted(ctx context.Context, kv bus.KeyValue, epoch 
 		r.mu.Unlock()
 		return
 	}
-	latest := kvwatch.JetStreamEntry(entries[len(entries)-1])
 	_, malformed := r.cache.Apply(r.watcher, epoch, latest)
 	r.mu.Unlock()
 	if malformed != nil {
@@ -145,7 +199,7 @@ func (r *Registry) Upsert(item Interest, topics []string) (Interest, error) {
 // plans once and writes that plan instead (PlanInterest, UpsertPlanned).
 func (r *Registry) UpsertWithin(ctx context.Context, item Interest, topics []string) (Interest, error) {
 	for range interestWriteAttempts {
-		cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, true)
+		cur, revision, getErr := r.readStored(ctx, item.SessionID, true)
 		roles, err := r.controllerLaneRoles(ctx, item.SessionID, cur.Topics, item.Topics, topics)
 		if err != nil {
 			return Interest{}, err
@@ -245,7 +299,7 @@ var ErrInterestPlanConflict = errors.New("the interest record changed under the 
 // the skip, which is one call wide rather than the seconds the consumer call takes: a row
 // stored inside it refuses the write, and the skip inside it answers from the row that moved.
 func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan InterestPlan) (Interest, error) {
-	cur, revision, getErr := r.getWithRevision(ctx, item.SessionID, true)
+	cur, revision, getErr := r.readStored(ctx, item.SessionID, true)
 	if revision != plan.Revision {
 		return Interest{}, fmt.Errorf("write %s's interest record: %w", item.SessionID, ErrInterestPlanConflict)
 	}
@@ -268,27 +322,28 @@ func (r *Registry) UpsertPlanned(ctx context.Context, item Interest, plan Intere
 //
 // It is the whole of what a merging write and a planned write do once their row is read
 // (UpsertWithin, UpsertPlanned): the heartbeat skip, which answers cur and writes nothing, the
-// compare-and-swap at the read's revision (putInterestAt), and the cache of what it stored
-// (recordInterest). The two differ in their answer to a write the bucket refused, and that is
-// what the bool leaves them: a merging write builds the row again over the row that won, and a
-// planned write is refused (ErrInterestPlanConflict), because the session's consumer is already
-// filtered on the plan this row came from.
-func (r *Registry) writeRowAt(ctx context.Context, cur Interest, revision uint64, getErr error, item Interest, plan InterestPlan) (Interest, bool, error) {
-	merged, buf, unchanged, err := r.interestRow(cur, getErr, item, plan)
+// compare-and-swap at the read's revision (putInterestAt), which deletes the chunks of cur's
+// layout once it lands, and the cache of what it stored (recordInterest). The two differ in their
+// answer to a write the bucket refused, and that is what the bool leaves them: a merging write
+// builds the row again over the row that won, and a planned write is refused
+// (ErrInterestPlanConflict), because the session's consumer is already filtered on the plan this
+// row came from.
+func (r *Registry) writeRowAt(ctx context.Context, cur storedRow, revision uint64, getErr error, item Interest, plan InterestPlan) (Interest, bool, error) {
+	merged, buf, unchanged, err := r.interestRow(cur.Interest, getErr, item, plan)
 	if err != nil {
 		return Interest{}, false, err
 	}
 	if unchanged {
-		return cur, true, nil
+		return cur.Interest, true, nil
 	}
-	written, epoch, stored, err := r.putInterestAt(ctx, merged.SessionID, buf, revision)
+	written, epoch, err := r.putInterestAt(ctx, merged.SessionID, merged, buf, revision, cur.layout)
 	if err != nil {
 		return Interest{}, false, err
 	}
-	if !stored {
+	if !written.Stored {
 		return Interest{}, false, nil
 	}
-	r.recordInterest(merged, written, epoch, getErr)
+	r.recordInterest(storedRow{Interest: merged, layout: written.Layout}, written.Revision, epoch, getErr)
 	return merged, true, nil
 }
 
@@ -326,49 +381,20 @@ func (r *Registry) interestRow(cur Interest, getErr error, item Interest, plan I
 	return merged, buf, false, nil
 }
 
-// recordInterest caches the row a write stored at its revision, through the handle of epoch it
-// was written with (kvwatch.Copy.Put), and logs the replacement of a record this build cannot
-// decode, which getErr reports.
-func (r *Registry) recordInterest(merged Interest, revision, epoch uint64, getErr error) {
+// recordInterest caches the row a write stored at its revision, with the layout it was stored in,
+// through the handle of epoch it was written with (kvwatch.Copy.Put), and logs the replacement of
+// a record this build cannot decode, which getErr reports.
+func (r *Registry) recordInterest(stored storedRow, revision, epoch uint64, getErr error) {
 	r.mu.Lock()
-	r.cache.Put(r.watcher, epoch, merged.SessionID, merged, revision)
+	r.cache.Put(r.watcher, epoch, stored.SessionID, stored, revision)
 	r.mu.Unlock()
 	if errors.Is(getErr, ErrMalformedInterest) {
 		r.logger().Warn("registry replaced an interest record it cannot decode",
-			slog.String("session_id", merged.SessionID),
+			slog.String("session_id", stored.SessionID),
 			slog.Uint64("revision", revision),
-			slog.Any("topics", merged.Topics),
+			slog.Any("topics", stored.Topics),
 		)
 	}
-}
-
-// putInterestAt writes sessionID's interest record only while its latest revision is revision,
-// creating it when revision is 0, which names the session that had no row when its plan read the
-// bucket. It reports the revision written, the epoch of the handle it was written through, and
-// whether the bucket took the write: a bucket that refused it holds another writer's row since,
-// which is no error here (nats.ErrKeyExists, the wrong-last-sequence answer a Create and an
-// Update share), and the caller plans again over that row. Each call waits no longer than ctx
-// (bus.Bounded); a write ctx abandoned may still land, and is safe for the same reason a
-// conditional delete is: it stores only over the very revision it read, so it cannot undo a write
-// that landed after it.
-func (r *Registry) putInterestAt(ctx context.Context, sessionID string, value []byte, revision uint64) (uint64, uint64, bool, error) {
-	kv, epoch := r.watcher.Handle()
-	written, answered, err := bus.Bounded(ctx, func() (uint64, error) {
-		if revision == 0 {
-			return kv.Create(sessionID, value)
-		}
-		return kv.Update(sessionID, value, revision)
-	})
-	if !answered {
-		return 0, epoch, false, fmt.Errorf("write %s's interest record at revision %d: %w", sessionID, revision, err)
-	}
-	if errors.Is(err, nats.ErrKeyExists) {
-		return 0, epoch, false, nil
-	}
-	if err != nil {
-		return 0, epoch, false, err
-	}
-	return written, epoch, true, nil
 }
 
 // mergeForUpsert computes the Interest to persist by reconciling the requested
@@ -534,7 +560,14 @@ func (r *Registry) controllerLaneRoles(ctx context.Context, sessionID string, to
 // a process frees the claims of that process and leaves another process's alone, and the
 // administrator's force frees them all; neither leaves a mark, since a mark is for the hand-back
 // that could free nothing, whether the claim it marks names a process or none.
+//
+// A session id under the chunk keys' prefix (kvchunk.Prefix) names no session, and a delete of it
+// would delete a chunk a stored manifest names, so its removal is refused (kvchunk.ReservedKey, a
+// bus.ErrRefused the routes answer 400) before anything is read or released.
 func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) ([]string, error) {
+	if kvchunk.IsChunkKey(sessionID) {
+		return nil, kvchunk.ReservedKey(sessionID)
+	}
 	if len(topics) == 0 {
 		record, _, err := r.getWithRevision(ctx, sessionID, true)
 		if err != nil && !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
@@ -640,11 +673,13 @@ var ErrInterestTopicsNotMerged = errors.New("the interest record changed under e
 // stale row's topics, dropping from the record a topic the other listener's registration was
 // answered 200 for, and no later write puts it back. The first attempt reads the cache, the row
 // the bucket holds in every pass but the raced one; a refused write reads the bucket itself and
-// builds the row again (getWithRevision), up to interestWriteAttempts times, past which the
+// builds the row again (readStored), up to interestWriteAttempts times, past which the
 // caller sees ErrInterestTopicsNotRemoved and nothing is stored. The delete of a record the
 // removal empties is fenced on that same revision (deleteInterestAt) for the same reason, and a
 // delete the bucket did not take - a row written since, or a cache hit that named no revision -
-// is another attempt too.
+// is another attempt too. Either one deletes the chunks of the record it replaced or deleted
+// once the bucket took it, so a removal that shrinks a chunked record to one message leaves no
+// chunk behind.
 //
 // A write ctx abandoned may still land after this answer, and that is safe for the reason a
 // registration's conditional write is: it stores over the one revision it read, so it cannot
@@ -657,7 +692,7 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 		return r.deleteInterest(ctx, sessionID)
 	}
 	for attempt := range interestWriteAttempts {
-		item, revision, err := r.getWithRevision(ctx, sessionID, attempt > 0)
+		read, revision, err := r.readStored(ctx, sessionID, attempt > 0)
 		if errors.Is(err, ErrMalformedInterest) {
 			r.logger().Warn("registry left an interest record it cannot decode unchanged",
 				slog.String("session_id", sessionID),
@@ -668,14 +703,14 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 		if err != nil {
 			return err
 		}
-		item = Remove(item, topics)
+		item := Remove(read.Interest, topics)
 		roles, err := r.controllerLaneRoles(ctx, sessionID, item.Topics)
 		if err != nil {
 			return err
 		}
 		item.Topics = dropPrivateStreamTopics(sessionID, roles, item.Topics)
 		if len(item.Topics) == 0 {
-			deleted, err := r.deleteInterestAt(ctx, sessionID, revision)
+			deleted, err := r.deleteInterestAt(ctx, sessionID, revision, read.layout)
 			if err != nil || deleted {
 				return err
 			}
@@ -686,15 +721,15 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 		if err != nil {
 			return err
 		}
-		written, epoch, stored, err := r.putInterestAt(ctx, sessionID, buf, revision)
+		written, epoch, err := r.putInterestAt(ctx, sessionID, item, buf, revision, read.layout)
 		if err != nil {
 			return err
 		}
-		if !stored {
+		if !written.Stored {
 			continue
 		}
 		r.mu.Lock()
-		r.cache.Put(r.watcher, epoch, sessionID, item, written)
+		r.cache.Put(r.watcher, epoch, sessionID, storedRow{Interest: item, layout: written.Layout}, written.Revision)
 		r.mu.Unlock()
 		return nil
 	}

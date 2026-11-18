@@ -1711,9 +1711,10 @@ func (c *Client) ReachesNoSession(topic string) bool {
 }
 
 // ErrRefused is returned for an envelope that is refused the same way however often it is
-// published, or a KV key refused however often a call names it, so a caller answers it as a
-// refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey or
-// ErrNoForwardMsgID.
+// published, or a KV key or value refused however often a call names it, so a caller answers it as
+// a refusal rather than a failure to retry. It is ErrTooLarge, ErrInvalidSubject, ErrInvalidKey,
+// ErrNoForwardMsgID, or internal/kvchunk's ReservedKey, a KV key under the chunk keys' prefix that
+// a store laying its records out in chunks takes for no record.
 var ErrRefused = errors.New("refused")
 
 // refusal is a kind of ErrRefused. Its text names only the kind, since every line and answer that
@@ -1726,7 +1727,8 @@ func (r refusal) Is(target error) bool { return target == ErrRefused }
 
 // ErrTooLarge is the ErrRefused of an envelope too large to publish whole: a message past the NATS
 // server's max payload, which nats.go refuses before sending it, a subject past maxSubjectBytes, a
-// KV key whose subject would be, or a CI record or settlement past the bound its store keeps below
+// KV key whose subject would be, a KV value past the server's max payload or its bucket's largest
+// value (KeyValue.tooLarge), or a CI record or settlement past the bound its store keeps below
 // those. Its error names the size and the bound.
 var ErrTooLarge error = refusal("too large to publish whole")
 

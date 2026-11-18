@@ -1,0 +1,20 @@
+kind: Fixed
+custom:
+  Issue: pr4325
+body: |-
+  A session whose interest record is larger than one NATS message (the server's max payload, 1 MiB
+  by default) is registered again: the listener stores such a record, and the session's
+  known-session record, in chunks under `=chunk.<generation>.<index>` and a manifest under the
+  record's own key, written last, and reads it back whole. Before, its write was refused, the
+  registration was answered `503` with `Retry-After: 1` at every retry, its role claims were never
+  renewed, and once it stopped a send to it was refused and a publish did not count it. A KV write the
+  bus refuses for its size, and a registration whose session consumer filter is past the max payload,
+  are now answered `413` naming the size and the bound, with no `Retry-After`. The manifest is itself
+  a record of the store's type that carries the topics which cover the session's list, so a listener
+  of an earlier build sharing the buckets keeps serving, counting and sending to the session. The
+  known-session store purges the delete markers of its replaced chunks every five minutes, which needs
+  a new grant, publish on `$JS.API.STREAM.PURGE.KV_envoy_known_sessions`, now in every listener, host
+  and Dispatch user set; a user without it keeps those markers for the bucket's 30 days, logs one
+  WARN and serves on. A rollback to an earlier build leaves the chunks in `envoy_interests` and
+  `envoy_known_sessions`, where that build removes none of them and they hold the interest bucket's
+  marker collection back: delete each `=chunk.` key with `nats kv del` after it.
