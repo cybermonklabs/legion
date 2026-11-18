@@ -1,12 +1,15 @@
 package prompts
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -676,14 +679,55 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 	}
 }
 
+// daemonRatingBounds is the file the daemon's TestPlanRatingGolden writes from the bounds api's
+// planRatingOf holds a retro's rating to (planRatingLeast, planRatingMost and planReasonMax in
+// internal/api/handoff.go), which this package cannot import.
+const daemonRatingBounds = "../../../contracts/fixtures/daemon-api/plan-rating.json"
+
+// ratingBounds is the scale and the most characters of a reason daemonRatingBounds holds. A file
+// that leaves one of the three out, or adds a bound, stops the test, since the retro's prompt is
+// held to all three and to nothing else.
+func ratingBounds(t *testing.T) (least, most, reasonMost int) {
+	t.Helper()
+	text, err := os.ReadFile(daemonRatingBounds)
+	if err != nil {
+		t.Fatalf("read %s: %v", daemonRatingBounds, err)
+	}
+	var bounds struct {
+		Least      *int `json:"least"`
+		Most       *int `json:"most"`
+		ReasonMost *int `json:"reasonMost"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(text))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&bounds); err != nil {
+		t.Fatalf("decode %s: %v; the retro's prompt is held to least, most and reasonMost alone", daemonRatingBounds, err)
+	}
+	if bounds.Least == nil || bounds.Most == nil || bounds.ReasonMost == nil {
+		t.Fatalf("%s is %s, want least, most and reasonMost, the bounds the retro's prompt states", daemonRatingBounds, text)
+	}
+	return *bounds.Least, *bounds.Most, *bounds.ReasonMost
+}
+
+// inThousands is n as the prompts write a count: its digits grouped in threes by commas, 2000 as
+// 2,000.
+func inThousands(n int) string {
+	digits := strconv.Itoa(n)
+	for at := len(digits) - 3; at > 0; at -= 3 {
+		digits = digits[:at] + "," + digits[at:]
+	}
+	return digits
+}
+
 // The agent that does the retro rates the plan the issue ran in the completion that ends the
 // retro, and the daemon refuses that completion without the rating from a plugin whose tool takes
-// it (api's PlanRatingContract, PLAN_RATING_REQUIRED), and a rating it cannot take: one outside 1
-// to 5, one of the two without the other, or a reason that is blank or too long (api's
+// it (api's PlanRatingContract, PLAN_RATING_REQUIRED), and a rating it cannot take: one outside its
+// scale, one of the two without the other, or a reason that is blank or too long (api's
 // planRatingOf, PLAN_RATING_INPUT). The role the daemon starts on the retro (phase.RoleFor)
 // therefore reads, in its composed prompt, which plan it rates (the issue's steps and the role that
 // worked each, never the planner's plan.md), the two fields its completion carries, both ends of
-// the scale and both refusals. No other phase worker ends the retro, and the daemon refuses a rating
+// the scale and the most characters of a reason, as the daemon holds them (daemonRatingBounds),
+// and both refusals. No other phase worker ends the retro, and the daemon refuses a rating
 // on its completion (PLAN_RATING_UNEXPECTED), so no other composed prompt teaches one.
 //
 // The same prompt reaches a tool that takes neither field: a claim whose launch installs no plugin
@@ -694,6 +738,7 @@ func TestTheComposedReviewerPromptWritesTheHeadItReviewedInItsFooter(t *testing.
 // than to send fields its tool refuses.
 // This shows the text is loaded, never that a role follows it.
 func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
+	least, most, reasonMost := ratingBounds(t)
 	composer, err := New(t.TempDir())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -702,10 +747,11 @@ func TestTheComposedRetroRatesThePlanTheIssueRan(t *testing.T) {
 	text := foldWhitespace(composedText(t, composer, retro, false))
 	for _, phrase := range []string{
 		"The agent that does the retro rates the plan the issue ran in that completion, the issue's steps and the role that worked each, not the planner's `plan.md`",
-		"`plan_rating`, a whole number from 1 (the plan cost the work) to 5 (the plan fit the work)",
+		fmt.Sprintf("`plan_rating`, a whole number from %d (the plan cost the work) to %d (the plan fit the work)", least, most),
 		"`plan_reason`, one sentence of why",
 		"The daemon refuses the completion that ends the retro without them from a tool that takes them (`PLAN_RATING_REQUIRED`)",
-		"a rating outside 1 to 5, one of the two without the other, or a reason that is blank or longer than 2,000 characters (`PLAN_RATING_INPUT`)",
+		fmt.Sprintf("a rating outside %d to %d, one of the two without the other, or a reason that is blank or longer than %s characters (`PLAN_RATING_INPUT`)",
+			least, most, inThousands(reasonMost)),
 		"A `legion` tool whose `handoff_complete` takes neither `plan_rating` nor `plan_reason` is a plugin of the release before the rating: send neither, complete the retro with the summary alone, and the daemon takes that retro with no rating.",
 	} {
 		if !strings.Contains(text, phrase) {
