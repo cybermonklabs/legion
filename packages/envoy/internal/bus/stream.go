@@ -878,7 +878,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		_, err = sentAgain(ctx, create, func() (*nats.StreamInfo, error) { return js.AddStream(&created) })
 		if err == nil {
 			if created.Replicas > 1 {
-				err = awaitStreamLeader(ctx, js, "create", Stream)
+				err = awaitStreamLeader(ctx, js, afterCreate, Stream)
 			}
 			if err != nil {
 				return nil, err
@@ -902,7 +902,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	if leaderless(info) {
 		// The stream another start created or raised a moment ago is still in its first election:
 		// that start's own wait does not reach this one, and a write sent now draws no answer.
-		if err := awaitStreamLeader(ctx, js, "open", Stream); err != nil {
+		if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
 			return nil, err
 		}
 	}
@@ -944,7 +944,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	}
 	reconciliation.log()
 	if desired.Replicas > info.Config.Replicas {
-		if err := awaitStreamLeader(ctx, js, "raise", Stream); err != nil {
+		if err := awaitStreamLeader(ctx, js, afterRaise, Stream); err != nil {
 			return nil, err
 		}
 	}
@@ -1154,204 +1154,6 @@ func maxConsumersRefused(err error) bool {
 // than the server's refusal.
 func unanswered(err error) bool {
 	return errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.DeadlineExceeded)
-}
-
-// sentAgain is what send answers, sent again while the server leaves it unanswered (unanswered)
-// and ctx lasts, with request naming it in the line each further send logs: the stream read and
-// the create of ensureStreamWithConfig, the handle open EnsureKeyValue makes, and EnsureKeyValue's
-// lookup of a KV bucket and its create (internal/bus/kv.go). A wait that runs out is either a
-// request the server will never answer, on one of the paths listed below, or one it is still
-// working on, and either is safe to send again: a read changes nothing, and a second identical
-// create is deduplicated and carries the same id as the one that may have landed, so no second
-// send can contradict the send before it (an update is read again rather than sent again,
-// updateStream). The create of a stream of more than one copy is one the server is still working
-// on until that stream's group elects its first leader, and the server answers it then: how many
-// sends that takes depends on the election, so no count of sends, and no clock of its own, ends
-// this wait. ctx does, which every caller bounds by the start's hang guard (startHangGuard), so a
-// bus that is not serving JetStream at all ends the start at that guard, with an error that says
-// how many sends drew no answer (unansweredUntil). Each send carries the wait of each request it
-// makes, and a send in flight when ctx ends is abandoned and its answer dropped (Bounded): a create
-// that lands after that leaves a stream the next start finds. Between two sends it pauses
-// bucketAppliedInterval, so a request that a context of the send's own ends at once
-// (requestsUnder) is not sent in a loop.
-// Any answer, the server's refusal included, is returned at once, so a refused create is sent
-// once. A refusal the server reports on the connection rather than in the request's answer
-// arrives here as an answer too, because every request of a start goes through a JetStream
-// context that reads the connection's record of it as it arrives (readsRefusals, refusedBy):
-// EnsureKeyValue's lookup, create, raise and handle open, and ensureStreamWithConfig's read and
-// create. So on a connection a client owns, a request the grant does not cover is sent once.
-//
-// Two programs starting at once each reconcile the one ENVOY_NOTIFICATIONS stream, and the start
-// that loses the answer to its own stream read is the listener that dies ten seconds after it
-// binds its port, serving nothing: cmd/listener's role-lane row
-// (TestRoleLaneRefusedSharedQueueFallsBackToMachineGroupsAndStoresOneCopy), whose fatal line was
-// the bare "context deadline exceeded" of the JetStream context's own ten-second wait.
-// Nor is it the in-process server's own fault: the production server leaves a JetStream request
-// unanswered too while its meta leader changes.
-//
-// A request that draws no answer never draws one later, because neither side sends it again:
-// nats.go publishes each JetStream request exactly once and waits (nats.go@v1.53.1
-// js.go:3559-3578), and nats-server v2.15.1 returns from several paths these requests take with
-// no response to the requester:
-//   - the account $JS.API.INFO nats.go sends before a KV create (nats.go@v1.53.1 kv.go:432-434)
-//     and a STREAM.CREATE, each at a member that is not the metadata leader
-//     (server/jetstream_api.go:1461-1474 and :1550-1563), and a STREAM.INFO of a stream this
-//     member holds no assignment for (a bucket not yet created, or one whose create this member
-//     has not yet applied) at such a member (:2087-2093). Each of those answers
-//     JSClusterNotAvailError instead once js.isLeaderless() is true, which it is only once the
-//     metadata group is older than lostQuorumInterval and the member holds no leader
-//     (jetstream_cluster.go:1481-1497); so the silence is a young metadata group, or a member
-//     that has not yet seen its leader go. That error is an answer and is not sent again. The
-//     STREAM.INFO handler sends its own 500 ms late (sendDelayedAPIErrResponse, errRespDelay at
-//     jetstream_api.go:1211), to let the leader answer first;
-//   - a STREAM.INFO of an existing bucket at a member that is not its stream's leader, while
-//     that member does not yet see the stream's group as leaderless (:2100-2133): only the
-//     stream's leader answers it;
-//   - a STREAM.CREATE whose metadata proposal is refused because the term moved
-//     (jetstream_cluster.go:11110-11112, with raft.go:1046-1060);
-//   - every request pending in the JetStream API queue (a STREAM.CREATE) or the info queue (a
-//     STREAM.INFO, the account $JS.API.INFO) when a push reaches that queue's limit, 10,000 by
-//     default: the server drains that queue, answers none of them, logs a rate-limited warning
-//     and publishes JSAdvisoryAPILimitReached to the system account
-//     (jetstream_api.go:1029-1045), which is no answer to the caller.
-//
-// So a start that sent a request once through a member in one of those states waited that send's
-// bound out, and ended the program over a send that was never going to be answered.
-func sentAgain[T any](ctx context.Context, request string, send func() (T, error)) (T, error) {
-	var last T
-	var lastErr error
-	for sends := 1; ; sends++ {
-		answer, answered, err := Bounded(ctx, send)
-		if !answered {
-			return last, unansweredUntil(sends-1, lastErr, context.Cause(ctx))
-		}
-		if !unanswered(err) {
-			return answer, err
-		}
-		last, lastErr = answer, err
-		slog.Warn("envoy nats stream request unanswered; sending it again",
-			slog.String("request", request), slog.Int("sent", sends), slog.String("error", err.Error()))
-		if ended := pause(ctx, bucketAppliedInterval); ended != nil {
-			return last, unansweredUntil(sends, lastErr, ended)
-		}
-	}
-}
-
-// firstReadLimit is how long a start waits for the answer to one read of a stream's state (a
-// STREAM.INFO) before it takes that read as lost and reads again (readAgain, awaitStream). A read
-// a member answers takes milliseconds, and a read it loses never gets an answer at all, so the
-// caller's own JetStream wait, ten seconds, held the start that long after the fact it waited for
-// was already true. It is three times the slowest answer measured, the sizing docs/testing.md gives
-// a bound of this kind: on 2026-11-17, on a dev box with 288 CPUs at a one-minute load of 566 to
-// 685, 448 fresh three-member clusters of nats-server v2.15.1, 64 and then 128 at a time, each had
-// another start's three-copy create land with its first leader election held 11 s, and a start on
-// another member read the stream every 25 ms until it had had a leader for 2 s. Of 167,230 reads,
-// the slowest answered took 209 ms, and 153 drew no answer within ten seconds, in 150 of the 448
-// rounds. Three times 209 ms is 627 ms.
-//
-// The limit decides no result. Each read the server leaves unanswered doubles the next one's
-// limit, up to RequestTimeout (readLimit.lost), so a server that answers slower than the
-// measurement is waited for at the caller's own wait after a few reads, and only the start's hang
-// guard ends the wait. Each read the server answers sets the next one's limit to three times that
-// read's own time, the same sizing, and never under this one (readLimit.answered): lost reads early
-// in a run of reads do not make a lost read later in it cost more, and a server that answers every
-// read late keeps a limit above its delay, so no read of it is cut and read again.
-const firstReadLimit = 630 * time.Millisecond
-
-// firstReadLimitKey is the context key a test that counts a start's requests sets its first read
-// limit under (countedReads, in this package's tests), at the caller's whole wait, so a read
-// a loaded machine answers past firstReadLimit is not read again and the count is the requests'
-// own. Nothing outside the tests sets it.
-type firstReadLimitKey struct{}
-
-// firstReadLimitOf is the first read limit of the reads made under ctx: firstReadLimit, unless a
-// test set another (firstReadLimitKey).
-func firstReadLimitOf(ctx context.Context) time.Duration {
-	if first, ok := ctx.Value(firstReadLimitKey{}).(time.Duration); ok {
-		return first
-	}
-	return firstReadLimit
-}
-
-// readLimit is the limit of the next read of a stream's state in a run of reads: every read of one
-// bucket's open (EnsureKeyValue), of one ensure of the notification stream (ensureStreamWithConfig)
-// or of one setting of the session bucket's age (SetKeyValueMaxAge), each of which carries its run
-// in its context (withReadLimit), so that a delay one step's reads measured holds for the next
-// step's first read and a slow server is not learnt again at every step. The reads of a run are made
-// one after the other, never two at once. A read made under a context that carries no run, such as
-// a keeper pass's, starts a run of its own (readLimitOf).
-type readLimit struct {
-	first, limit time.Duration
-}
-
-// readLimitKey is the context key of the run of reads withReadLimit puts in a context.
-type readLimitKey struct{}
-
-// withReadLimit is ctx carrying a new run of reads, starting at ctx's first read limit
-// (firstReadLimitOf). Each call makes a new run, so two calls under one parent context never share.
-func withReadLimit(ctx context.Context) context.Context {
-	first := firstReadLimitOf(ctx)
-	return context.WithValue(ctx, readLimitKey{}, &readLimit{first: first, limit: first})
-}
-
-// readLimitOf is the run of reads ctx carries (withReadLimit), or a new one when it carries none.
-func readLimitOf(ctx context.Context) *readLimit {
-	if run, ok := ctx.Value(readLimitKey{}).(*readLimit); ok {
-		return run
-	}
-	first := firstReadLimitOf(ctx)
-	return &readLimit{first: first, limit: first}
-}
-
-// lost records a read the server left unanswered within the limit: the next one waits twice as
-// long, up to RequestTimeout.
-func (r *readLimit) lost() {
-	r.limit = min(2*r.limit, RequestTimeout)
-}
-
-// answered records a read the server answered in took: the next one waits three times that, never
-// less than the first limit and never more than RequestTimeout.
-func (r *readLimit) answered(took time.Duration) {
-	r.limit = min(max(r.first, 3*took), RequestTimeout)
-}
-
-// readAgain is sentAgain for read, a read of a stream's state, each send of which is waited for
-// up to its read limit (limit) rather than up to the caller's whole wait: a read past its limit is
-// abandoned, its answer dropped (Bounded), and read again, as an unanswered one is. A create keeps
-// the caller's wait (sentAgain): its first send is answered only at the stream's first leader
-// election, seconds after it is sent. Its callers are the reads a start makes: EnsureKeyValue's
-// lookup, its read of a found bucket's stream and its handle open (wrapKeyValue), the stream
-// ensure's read (ensureStreamWithConfig), SetKeyValueMaxAge's read and updateStream's read after an
-// update that drew no answer.
-func readAgain[T any](ctx context.Context, request string, limit *readLimit, read func() (T, error)) (T, error) {
-	return sentAgain(ctx, request, func() (T, error) {
-		wait := limit.limit
-		readCtx, cancel := context.WithTimeout(ctx, wait)
-		defer cancel()
-		sent := time.Now()
-		value, answered, err := Bounded(readCtx, read)
-		switch {
-		case !answered:
-			err = fmt.Errorf("no answer within %s: %w", wait, context.DeadlineExceeded)
-			limit.lost()
-		case unanswered(err):
-			limit.lost()
-		default:
-			limit.answered(time.Since(sent))
-		}
-		return value, err
-	})
-}
-
-// unansweredUntil is sentAgain's error once ended, its context's cause, stopped it: the sends it
-// made with no answer and the last of those sends' errors, nats.ErrTimeout or
-// context.DeadlineExceeded, which unanswered() still reads through it, beside ended. The caller
-// names the request (namedRequest), as it names the server's answers to it.
-func unansweredUntil(sends int, last, ended error) error {
-	if last == nil {
-		return fmt.Errorf("no send answered when the wait ended: %w", ended)
-	}
-	return fmt.Errorf("%d sends drew no answer when the wait ended: %w: %w", sends, last, ended)
 }
 
 // refusedSettings is err, the server's answer to request, a create (deployed nil) or an update of
