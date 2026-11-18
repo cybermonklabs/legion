@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
@@ -120,11 +119,12 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 		},
 		{
 			// The stand-in gh answers the outer `legion gh`'s help reads, and holds the guard's
-			// read, which reads no help of its own.
+			// read, which reads no help of its own. It tells that read by its argv
+			// (ghVisibilityReadArgv): gh is handed no Legion variable naming it (ghChildEnviron).
 			name: "the guard's visibility read", seconds: "295", check: passes,
 			gh: func(pidFile, seconds string) string {
 				return ghStandInHelp(help) +
-					"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n" + holdsStandIn(pidFile, seconds) + "fi\nexit 0\n"
+					"case \" $* \" in\n" + ghVisibilityReadArgv + ")\n" + holdsStandIn(pidFile, seconds) + ";;\nesac\nexit 0\n"
 			},
 		},
 	} {

@@ -1329,12 +1329,18 @@ func TestWithGitHubUseHTTPPathAddsToGitsConfiguration(t *testing.T) {
 func ghStandInPrefix(help string) string {
 	return ghStandInHelp(help) +
 		"case \" $* \" in\n" +
-		"\\ api\\ --hostname\\ github.com\\ *\\ --jq\\ .visibility\\ |\\ api\\ --hostname\\ github.com\\ graphql\\ --include\\ -f\\ query=*\\ -f\\ owner=*\\ -f\\ name=*\\ )\n" +
+		ghVisibilityReadArgv + ")\n" +
 		"  printf 'visibility %s\\n' \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
 		"  echo \"${GH_STANDIN_VISIBILITY:-public}\"\n" +
 		"  exit 0;;\n" +
 		"esac\n"
 }
+
+// ghVisibilityReadArgv is the shell `case` pattern that matches the leak guard's own visibility
+// reads by their argv, as a stand-in gh must tell them: the REST read, `gh api --hostname
+// github.com repos/<slug> [--include] --jq .visibility`, and the GraphQL read, `gh api --hostname
+// github.com graphql --include -f query=… -f owner=… -f name=…`, each matched against " $* ".
+const ghVisibilityReadArgv = "\\ api\\ --hostname\\ github.com\\ *\\ --jq\\ .visibility\\ |\\ api\\ --hostname\\ github.com\\ graphql\\ --include\\ -f\\ query=*\\ -f\\ owner=*\\ -f\\ name=*\\ "
 
 // ghStandInHelp is the start of every stand-in gh of this package: a shell script that answers
 // `[<command>] --help` with the saved help of that command, gh's own for none, and falls through
