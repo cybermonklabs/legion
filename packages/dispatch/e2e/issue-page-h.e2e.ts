@@ -173,7 +173,11 @@ function describeGlyph(this: Element): Omit<GlyphFonts, "fonts"> {
 
 /** The glyphs of Details that `selectors` find, each with the fonts Chromium drew its text in, as
  *  Chromium reports them (`CSS.getPlatformFontsForNode`), once the page's typeface has loaded. */
-async function drawnFonts(page: Page, selectors: readonly string[]): Promise<GlyphFonts[]> {
+async function drawnFonts(
+  page: Page,
+  selectors: readonly string[],
+  describe: (this: Element) => Omit<GlyphFonts, "fonts"> | null = describeGlyph
+): Promise<GlyphFonts[]> {
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
   const cdp = await page.context().newCDPSession(page);
   try {
@@ -190,18 +194,43 @@ async function drawnFonts(page: Page, selectors: readonly string[]): Promise<Gly
       for (const nodeId of nodeIds) {
         const { object } = await cdp.send("DOM.resolveNode", { nodeId });
         const { result } = await cdp.send("Runtime.callFunctionOn", {
-          functionDeclaration: describeGlyph.toString(),
+          functionDeclaration: describe.toString(),
           objectId: object.objectId,
           returnByValue: true,
         });
+        const described = result.value as Omit<GlyphFonts, "fonts"> | null;
+        if (described === null) continue;
         const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", { nodeId });
-        glyphs.push({ ...(result.value as Omit<GlyphFonts, "fonts">), fonts });
+        glyphs.push({ ...described, fonts });
       }
     }
     return glyphs;
   } finally {
     await cdp.detach();
   }
+}
+
+/** What `drawnFonts` reads of a text of Details' own chrome (`data-page-chrome`) that holds a
+ *  symbol outside ASCII, a control's mark such as a priority's Remove, or `null` for any other:
+ *  one without such a symbol in its own text, or one inside a reader's own text
+ *  (`data-author-text`), which is the author's and drawn in whatever face holds it. It names the
+ *  row it stands in and the control's name, where it has one. */
+function describeChromeSymbol(this: Element): Omit<GlyphFonts, "fonts"> | null {
+  if (this.closest("[data-author-text]") !== null) return null;
+  const own = [...this.childNodes]
+    .filter((node) => node.nodeType === Node.TEXT_NODE)
+    .map((node) => node.textContent ?? "")
+    .join("");
+  const symbol = [...own].some(
+    (character) => (character.codePointAt(0) ?? 0) > 0x7f && /[\p{So}\p{Sm}]/u.test(character)
+  );
+  if (!symbol) return null;
+  const label =
+    this.closest("[data-margin-section] > div > div")?.querySelector(
+      ":scope > div:first-child > span[data-page-chrome]"
+    )?.textContent ?? "";
+  const name = this.getAttribute("aria-label");
+  return { icon: false, row: name === null ? label : `${label} (${name})`, text: own };
 }
 
 /** Whether a glyph's text is drawn in a font other than the page's own typeface, or in none: a
@@ -541,6 +570,15 @@ test("every property with a value is visible in Details at every width @phone", 
           `a glyph of Details is drawn in a font the page does not ship at ${width} px`
         )
         .toEqual([]);
+      // So is every symbol in the text of Details' own chrome, whichever control draws it: a
+      // priority's Remove, a section's toggle, a control's mark. A reader's own text is left out.
+      const chromeSymbols = await drawnFonts(page, ["[data-page-chrome]"], describeChromeSymbol);
+      expect
+        .soft(
+          chromeSymbols.filter(drawnOutsideThePagesTypeface).map(glyphReading),
+          `a mark of Details' controls is drawn in a font the page does not ship at ${width} px`
+        )
+        .toEqual([]);
       // The status's own mark in the Status row's pill is a shape, as the page's other status
       // marks are (`StatusGlyph`), so no font of the machine draws it.
       await expect(
@@ -552,7 +590,7 @@ test("every property with a value is visible in Details at every width @phone", 
       console.log(
         `Details' glyphs at ${width} px: ${glyphs
           .map(({ column, drawn, glyph, row }) => `${row} ${glyph} ${drawn} px in ${column} px`)
-          .join("; ")}\nDetails' glyph fonts at ${width} px: ${textGlyphs
+          .join("; ")}\nDetails' glyph fonts at ${width} px: ${[...textGlyphs, ...chromeSymbols]
           .map(glyphReading)
           .join("; ")}`
       );
