@@ -1074,7 +1074,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What the attribution of the stored pull requests still waits on, counted at the request, with no delivery settings and no App key: {facts_left, reads_left, facts_refused, reading, keys_on_another_reading, moves_queued, links_in_two_cases}. reads_left is the pull requests a reconcile pass still reads the facts of: an open or merged results row whose texts are not current or whose commit messages are not read, and a timeline row with no results row; a pull request GitHub proved absent is in no count. facts_left is the part of them with no facts, whose issue is the stored one or not known; facts_refused the part whose last read GitHub refused. reading is the identity of the reading that runs now, and keys_on_another_reading the stored texts whose keys another reading made. moves_queued is the changes of a pull request's issue that wait for their events. links_in_two_cases is the URLs, folded to lower case, that more than one issue links. */
+    /** @description What the attribution of the stored pull requests still waits on, counted at the request, with no delivery settings and no App key: {facts_left, reads_left, facts_refused, reading, keys_on_another_reading, moves_queued, links_in_two_cases, owed_failures, owed_failures_oldest_at, owed_refusals, owed_refusals_since}. reads_left is the pull requests a reconcile pass still reads the facts of: an open or merged results row whose texts are not current or whose commit messages are not read, and a timeline row with no results row; a pull request GitHub proved absent is in no count. facts_left is the part of them with no facts, whose issue is the stored one or not known; facts_refused the part whose last read GitHub refused. reading is the identity of the reading that runs now, and keys_on_another_reading the stored texts whose keys another reading made. moves_queued is the changes of a pull request's issue that wait for their events. links_in_two_cases is the URLs, folded to lower case, that more than one issue links. owed_failures and owed_refusals count the pull requests whose head is not read while a read of GitHub is owed: GitHub did not answer the read, or GitHub refuses it. owed_failures_oldest_at is the oldest time a failure is owed since. owed_refusals_since is the oldest time a refusal is refused since, or owed since where an older release owed it. Each time is absent where its count is 0. */
     get: operations["getApiV1DeliveryAttribution"];
     put?: never;
     post?: never;
@@ -1745,7 +1745,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time on GitHub, as the read that wrote the head answered it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
+    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time on GitHub, as the read that wrote the head answered it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository), read_failed (a read Dispatch makes did not answer), head_not_read (Dispatch has not read the head of a pull request of the issue yet) or issue_not_known (Dispatch does not know yet whether a pull request it read is this issue's). A before_merge check also carries heads_not_read, each pull request of its issue whose head Dispatch has not read, as {number, refused_as, refused_since}. Such a pull request has no results row yet, or a read of GitHub is owed for it. It is no basis, and no pass stands by it. refused_as (app_not_installed, repository_unreadable or pull_request_not_found) and refused_since, the time of the first refusal, are set where GitHub refuses the read that is owed. A check carries issues_not_known, each {number}, for each pull request of the issue's repository whose answer is not known and that the check's answer turns on: its facts name no issue that Dispatch holds, and its commit messages are not read. heads_not_read never names such a pull request. Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, where a head is not read or an issue is not known and no pass stands, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason, possible_head} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed, head_not_read, issue_not_known). possible_head {repo, pull_request, commit} names the pull request whose answer is not known where the commit is its head. It is set only with the reason issue_not_known, and basis is empty there. check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. With no ?at=, each result also answers currency (current or older) where either word applies, for dispatch clients older than pi-envoy 17.1.0; read commit_stands, check_words_moved and retracted instead. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue), github_unreadable (state unread), head_not_read (state unread: a read of GitHub is owed for that head, so no check run is read) or issue_not_known (state unread: a pull request of the repository whose answer is not known can come before that head, or no head is found, so no check run is read); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
     get: operations["getApiV1IssuesByKeyResults"];
     put?: never;
     /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch. */
@@ -3649,6 +3649,12 @@ export interface components {
       keys_on_another_reading: number;
       links_in_two_cases: number;
       moves_queued: number;
+      owed_failures: number;
+      /** Format: date-time */
+      owed_failures_oldest_at?: string;
+      owed_refusals: number;
+      /** Format: date-time */
+      owed_refusals_since?: string;
       reading: string;
       reads_left: number;
     };
@@ -3805,9 +3811,16 @@ export interface components {
       ci?: components["schemas"]["CheckCI"];
       ci_check?: string;
       /** @enum {string} */
-      compared_nothing?: "no_pull_request_or_branch" | "repository_unreadable" | "read_failed";
+      compared_nothing?:
+        | "no_pull_request_or_branch"
+        | "repository_unreadable"
+        | "read_failed"
+        | "head_not_read"
+        | "issue_not_known";
       compared_with: components["schemas"]["CheckBasis"][] | null;
+      heads_not_read?: components["schemas"]["HeadNotRead"][];
       issue_key: string;
+      issues_not_known?: components["schemas"]["IssueNotKnown"][];
       negative_control: string;
       pass_stands: components["schemas"]["CheckPassStands"];
       ref: string;
@@ -4874,6 +4887,13 @@ export interface components {
       phase: string;
       version: number;
     };
+    HeadNotRead: {
+      number: number;
+      /** @enum {string} */
+      refused_as?: "app_not_installed" | "repository_unreadable" | "pull_request_not_found";
+      /** Format: date-time */
+      refused_since?: string;
+    };
     HoldPersistenceInput: {
       duration: string;
     };
@@ -5186,6 +5206,9 @@ export interface components {
       candidates: components["schemas"]["DuplicateCandidate"][] | null;
       code: string;
       error: string;
+    };
+    IssueNotKnown: {
+      number: number;
     };
     IssueOpenAsk: {
       anchor: components["schemas"]["Anchor"] | null;
@@ -5695,6 +5718,11 @@ export interface components {
     PersonSignInsResponse: {
       signins: components["schemas"]["PersonSignInResp"][] | null;
     };
+    PossibleHead: {
+      commit: string;
+      pull_request: number;
+      repo: string;
+    };
     Priorities: {
       empty?: string;
       priorities: components["schemas"]["PriorityRow"][] | null;
@@ -5967,8 +5995,9 @@ export interface components {
       /** @enum {string} */
       answer: "at_basis" | "other_commit" | "unknown";
       basis?: components["schemas"]["CheckBasis"];
+      possible_head?: components["schemas"]["PossibleHead"];
       /** @enum {string} */
-      reason?: "repository_unreadable" | "read_failed";
+      reason?: "repository_unreadable" | "read_failed" | "head_not_read" | "issue_not_known";
     };
     RoomCounters: {
       awareness_clients: number;
@@ -14140,6 +14169,7 @@ export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
 export type GraphReferences = components["schemas"]["GraphReferences"];
 export type Handoff = components["schemas"]["Handoff"];
 export type HandoffSummary = components["schemas"]["HandoffSummary"];
+export type HeadNotRead = components["schemas"]["HeadNotRead"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];
@@ -14167,6 +14197,7 @@ export type IssueDesignGates = components["schemas"]["IssueDesignGates"];
 export type IssueDesignGatesInput = components["schemas"]["IssueDesignGatesInput"];
 export type IssueDetails = components["schemas"]["IssueDetails"];
 export type IssueDuplicateError = components["schemas"]["IssueDuplicateError"];
+export type IssueNotKnown = components["schemas"]["IssueNotKnown"];
 export type IssueOpenAsk = components["schemas"]["IssueOpenAsk"];
 export type IssueProgress = components["schemas"]["IssueProgress"];
 export type IssueRankInput = components["schemas"]["IssueRankInput"];
@@ -14225,6 +14256,7 @@ export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
 export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRevokedResponse"];
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
+export type PossibleHead = components["schemas"]["PossibleHead"];
 export type Priorities = components["schemas"]["Priorities"];
 export type Priority = components["schemas"]["Priority"];
 export type PriorityAct = components["schemas"]["PriorityAct"];

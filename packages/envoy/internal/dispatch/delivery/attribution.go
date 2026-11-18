@@ -685,15 +685,23 @@ func AppendAttributionEvents(ctx context.Context, pool *store.Pool, broker *even
 // part of them that has no facts, R4's number; FactsRefused the part whose last read was refused.
 // Reading is the identity of the reading that runs now, and KeysOnAnotherReading the texts rows
 // whose keys another reading made. MovesQueued is the moves that wait for their events.
-// LinksInTwoCases is the folded URLs that more than one issue links.
+// LinksInTwoCases is the folded URLs that more than one issue links. OwedFailures and
+// OwedRefusals count the pull requests whose head is not read while a read is owed: GitHub did
+// not answer the read, or GitHub refuses it. OwedFailuresOldestAt is the oldest time that a
+// failure is owed since. OwedRefusalsSince is the oldest time that a refusal is refused since, or
+// owed since where an older release owed it. Each time is nil where its count is 0.
 type AttributionCounts struct {
-	FactsLeft            int    `json:"facts_left"`
-	ReadsLeft            int    `json:"reads_left"`
-	FactsRefused         int    `json:"facts_refused"`
-	Reading              string `json:"reading"`
-	KeysOnAnotherReading int    `json:"keys_on_another_reading"`
-	MovesQueued          int    `json:"moves_queued"`
-	LinksInTwoCases      int    `json:"links_in_two_cases"`
+	FactsLeft            int        `json:"facts_left"`
+	ReadsLeft            int        `json:"reads_left"`
+	FactsRefused         int        `json:"facts_refused"`
+	Reading              string     `json:"reading"`
+	KeysOnAnotherReading int        `json:"keys_on_another_reading"`
+	MovesQueued          int        `json:"moves_queued"`
+	LinksInTwoCases      int        `json:"links_in_two_cases"`
+	OwedFailures         int        `json:"owed_failures"`
+	OwedFailuresOldestAt *time.Time `json:"owed_failures_oldest_at,omitempty"`
+	OwedRefusals         int        `json:"owed_refusals"`
+	OwedRefusalsSince    *time.Time `json:"owed_refusals_since,omitempty"`
 }
 
 // factsLineJudged is the judged rows of the facts line: each results row that is open or merged,
