@@ -547,8 +547,9 @@ func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
 // StatusText, `status <n>: <body>`, and ends at `status <n>` when GitHub answered no body: a loop
 // notes such an error as it is, and GET /healthz serves the note as the read's cause, which must
 // not end at a `: ` that nothing follows. A limit GitHub answered with no body ends at its wait
-// the same way (RateLimitError). Each row is one call that words such an answer, asked once with
-// no body and once with GitHub's.
+// the same way (RateLimitError). An answer at a 2xx status ends at its status with GitHub's body
+// too, since that body is the data the call asked for (StatusText). Each row is one call that
+// words such an answer, asked once with no body and once with GitHub's.
 func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 	const refusal = `{"message":"refused"}`
 	rows := []struct {
@@ -559,8 +560,10 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 		status int
 		call   func(ctx context.Context, client *Client) error
 		// want is the error's text when GitHub answered no body, {base} standing for the API
-		// origin; with a body it is that text, `: ` and the body.
+		// origin; with a body it is that text, `: ` and the body, unless data says the status is
+		// a 2xx, whose body is data that the text never carries.
 		want string
+		data bool
 	}{{
 		name:   "an installation lookup",
 		refuse: "GET /repos/acme/web/installation",
@@ -579,6 +582,17 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 			return err
 		},
 		want: "POST {base}/app/installations/7/access_tokens: status 500",
+	}, {
+		// The mint expects 201, and a 200 would carry the token itself.
+		name:   "a token mint GitHub answered 200",
+		refuse: "POST /app/installations/7/access_tokens",
+		status: http.StatusOK,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Token(ctx, 7)
+			return err
+		},
+		want: "POST {base}/app/installations/7/access_tokens: status 200",
+		data: true,
 	}, {
 		name:   "the repository read of a source's check",
 		refuse: "GET /repos/acme/web",
@@ -678,7 +692,7 @@ func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
 					t.Fatalf("new client: %v", err)
 				}
 				want := strings.ReplaceAll(row.want, "{base}", base)
-				if answer != "" {
+				if answer != "" && !row.data {
 					want += ": " + answer
 				}
 				if err := row.call(context.Background(), client); err == nil || err.Error() != want {

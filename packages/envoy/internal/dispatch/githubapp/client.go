@@ -685,11 +685,13 @@ func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag st
 // here and not by send, which notes no limit GitHub answers: GitHub answers a spent GraphQL
 // budget with 200, which no reading of the status alone can see. The limit GraphQLRateLimit reads
 // is noted once recordGraphQLLimit has recorded it, so the cause carries the wait every process
-// now holds. A limit read in a 200 is noted with GitHub's own wording of it in place of its body,
-// which is the query's answer (limitNoted, graphQLLimitWording): the envelope's entries that name
-// the limit, or, for the answer that spends the last point, which carries its data and no error,
-// the headers that name the limit. That data can be a private repository's, and GET /healthz
-// serves the cause to whoever reaches it, with no credential. The caller is given the limit whole.
+// now holds. A limit read in a 200 holds GitHub's own wording of it in place of its body, which is
+// the query's answer (answeredLimit, graphQLLimitWording): the envelope's entries that name the
+// limit, or, for the answer that spends the last point, which carries its data and no error, the
+// headers that name the limit. That data can be a private repository's, and GET /healthz serves
+// the cause to whoever reaches it, with no credential, so neither the note nor the error the
+// caller is given carries it, however a loop wraps and notes that error. The caller is given the
+// answer's body as the first result beside the error, and reads the data there if at all.
 // A client without Limits reads the answer as request reads a REST call's, and notes the limit
 // RateLimit reads, which is only ever a 403 or a 429: GitHub's refusal, which carries no data.
 func (c *Client) GraphQL(ctx context.Context, token string, query string, variables map[string]any) ([]byte, int, http.Header, error) {
@@ -719,7 +721,7 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	}
 	if c.limits == nil {
 		if limited := RateLimit(status, header, body); limited != nil {
-			noteFailure(ctx, limitNoted(http.MethodPost, target, limited, header, body))
+			noteFailure(ctx, limitNoted(http.MethodPost, target, limited))
 		}
 		return body, status, header, nil
 	}
@@ -730,7 +732,7 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	c.recordGraphQLLimit(ctx, installation, limited, secondary)
 	// Noted once recorded, so the cause carries the wait every process now holds, which a strike
 	// can make longer than GitHub's own.
-	noteFailure(ctx, limitNoted(http.MethodPost, target, limited, header, body))
+	noteFailure(ctx, limitNoted(http.MethodPost, target, limited))
 	return body, status, header, limited
 }
 
@@ -891,7 +893,7 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 	if limited == nil {
 		return responseBody, status, header, nil
 	}
-	noteFailure(ctx, limitNoted(method, target, limited, header, responseBody))
+	noteFailure(ctx, limitNoted(method, target, limited))
 	if c.limits != nil && scope != "" {
 		// Recorded past the caller's own end: see limitRecordContext.
 		record, cancel := limitRecordContext(ctx)
@@ -969,7 +971,7 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 	// point and a failure at another (a 404 is a deleted repository to one caller and a wrong
 	// workflow path to the next), and only the caller can tell the two apart.
 	if status := response.StatusCode; status/100 == 5 || status == http.StatusUnauthorized {
-		noteFailure(ctx, &failedAnswer{method: method, target: target, status: status, detail: errorBody(responseBody)})
+		noteFailure(ctx, &failedAnswer[[]byte]{method: method, target: target, status: status, detail: responseBody})
 	}
 	return responseBody, response.StatusCode, response.Header, nil
 }
@@ -992,65 +994,40 @@ func noteFailure(ctx context.Context, err error) {
 // request outside the leased passes formats nothing. The target carries no token: every token
 // travels in the Authorization header.
 //
-// It holds an answer's body only in detail, whose one text is all its own text carries after the
-// head. The body of a 200 is a query's data, and limitNoted, the one way a limit is noted, gives
-// such an answer a detail that words the limit alone (limitWording), so no failedAnswer has a
-// text that carries that data.
-type failedAnswer struct {
+// It holds an answer's body only in detail, which is all its own text carries after the head: for
+// a 5xx or a 401 the body send read, kept as the bytes it read, and for a limit the limit's Body,
+// which at a 2xx is GitHub's wording of the limit and never the answer's data (answeredLimit). So
+// no failedAnswer has a text that carries a 2xx answer's data.
+//
+// It is not the only note of a limit. A limit github_rate_limits already holds is noted as its own
+// held *RateLimitError (send, GraphQL), and a loop that a limit stops notes words of its own: the
+// CI reconcile's stop.ended, and the redelivery sweep's "a GitHub rate limit stopped the webhook
+// redelivery sweep" (Sweeper.sweepAndReport).
+type failedAnswer[Detail string | []byte] struct {
 	method, target string
 	status         int
 	// limited is whether the answer is a limit GitHub answered, never a held one, which is noted
 	// as it is; wait is what that limit asks for.
 	limited bool
 	wait    time.Duration
-	detail  answerDetail
+	detail  Detail
 }
 
-func (f *failedAnswer) Error() string {
-	// A failedAnswer built with no detail is an answer with no body, never a panic in the probe.
-	text := ""
-	if f.detail != nil {
-		text = f.detail.text()
-	}
+func (f *failedAnswer[Detail]) Error() string {
 	if f.limited {
-		return f.method + " " + f.target + ": " + withBody(limitAnswered(f.status, f.wait), text)
+		return f.method + " " + f.target + ": " + withBody(limitAnswered(f.status, f.wait), f.detail)
 	}
-	return f.method + " " + f.target + ": " + StatusText(f.status, text)
+	return f.method + " " + f.target + ": " + StatusText(f.status, f.detail)
 }
 
-// limitNoted is the note of limited, a limit GitHub answered method's request to target with
-// header and body, and the one way such a note is made. It keeps of the body what the cause may
-// carry: GitHub's own error at any status but 200, and at 200, where the body is the query's data
-// (GraphQLRateLimit), GitHub's wording of the limit alone.
-func limitNoted(method, target string, limited *RateLimitError, header http.Header, body []byte) *failedAnswer {
-	noted := &failedAnswer{method: method, target: target, status: limited.Status, limited: true, wait: limited.Wait}
-	if limited.Status == http.StatusOK {
-		noted.detail = limitWording{header: header, body: body}
-	} else {
-		noted.detail = errorBody(body)
-	}
-	return noted
+// limitNoted is the client's note of limited, a limit GitHub answered method's request to target
+// with (request, GraphQL). Its detail is limited.Body: GitHub's refusal, or at a 2xx GitHub's
+// wording of the limit and nothing of the answer's data (answeredLimit). It notes no held limit,
+// which is noted as its own error (send, GraphQL), and none of the limits a loop words itself
+// (failedAnswer).
+func limitNoted(method, target string, limited *RateLimitError) *failedAnswer[string] {
+	return &failedAnswer[string]{method: method, target: target, status: limited.Status, limited: true, wait: limited.Wait, detail: limited.Body}
 }
-
-// answerDetail is what a noted answer's text carries after its status or its limit
-// (failedAnswer), and nothing where text is empty.
-type answerDetail interface{ text() string }
-
-// errorBody is the body GitHub answered a request with at a status other than 200: GitHub's own
-// error or refusal, which the text carries whole.
-type errorBody []byte
-
-func (b errorBody) text() string { return string(b) }
-
-// limitWording is the answer to a query that GitHub limited at 200. Its body is the query's data,
-// so its one text is GitHub's wording of the limit, read from the envelope around that data or
-// from header (graphQLLimitWording).
-type limitWording struct {
-	header http.Header
-	body   []byte
-}
-
-func (w limitWording) text() string { return graphQLLimitWording(w.header, w.body) }
 
 // Ref resolves branch to its commit SHA under an installation token
 // (`GET /repos/{owner}/{repo}/commits/{branch}`). That read resolves any
