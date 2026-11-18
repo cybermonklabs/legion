@@ -14,11 +14,19 @@ body: |-
     first kill end a process that shares the block, a sleeping fork or the parent, in 7 of 7 runs,
     the closest run's highest reading 2.4 MiB below the kernel's kill point, and six that started
     5 ms before the band's last reading still lost a sleeping fork first to a tier that took only
-    the processes the reading before had not read. A pod short of CPU takes its readings 170 to
-    more than 300 ms apart, so the 300 ms window can hold one read and show no growth, which is why
-    growth since the kill comes before size. To know what grew, the guard reads the sizes of what
-    it may end at each reading in the band of 10% of the limit below the mark and after a kill, and
-    none below the band. At the first reading at or above the mark it chooses the process by the
+    the processes the reading before had not read. Where the new tier or the largest ranks by size,
+    a process that runs its parent's executable with its parent's whole arguments, where the guard
+    has read that parent in this stay, is a fork that has not run a program of its own, and ranks by
+    its size less its parent's latest read size (at most its own size), so a sleeping fork ranks
+    near nothing: three sleeping forks of a 2.4 GB parent were ended first by the new tier in 2 of
+    7 runs at 4 GiB without it. The parent ranks at its whole size, so where nothing grew a pool's
+    parent can be ended before its forks, and its end frees nothing while they hold the pages.
+    Growth, the floor and each line's sizes count every process whole. A pod short of CPU takes its
+    readings 170 to more than 300 ms apart, so the 300 ms window can hold one read and show no
+    growth, which is why growth since the kill comes before size. To know what grew, the guard
+    reads the sizes of what it may end at each reading in the band of 10% of the limit below the
+    mark and after a kill, and none below the band. At the first reading at or above the mark it
+    chooses the process by the
     sizes it read in the band and sends the kill before it reads every size, which it reads only
     after the kill. Where the window at the mark holds two band reads of no process while the
     band's own last 300 ms hold two of one, it measures growth over those last 300 ms, since band
@@ -60,11 +68,12 @@ body: |-
     that has not exited is never ended or reported again. The hourly line's high and low, its
     counter read and its scan for the largest process now come only after the guard has decided on
     the reading. Each `ended` line now carries, before `executable=`, `rule=`, the rule of the order
-    that put the process first (`grew`, `new`, `grew-since-kill` or `largest`), and `sizes=`, where
-    the sizes it was chosen by came from (`band`, the band's sizes alone at the mark; `reread`, with
+    that put the process first (`grew`, `new`, `grew-since-kill` or `largest`), `sizes=`, where the
+    sizes it was chosen by came from (`band`, the band's sizes alone at the mark; `reread`, with
     `smaps` read again there; `search`, with processes started since the band's last reading;
-    `reading`, the reading the kill is sent at); the microVM guest watch's lines write
-    `rule=kernel sizes=kernel`. The `stopped for this rise` line now ends with
+    `reading`, the reading the kill is sent at), and `less_parent=`, what the order took off a
+    fork's size, 0 where it took nothing; the microVM guest watch's lines write
+    `rule=kernel sizes=kernel less_parent=0`. The `stopped for this rise` line now ends with
     `unread_processes=`, which names each process the guard could not read, in pid order:
     `<pid>:<bytes>` where its `stat` reads a state other than `Z` and its `smaps` reads, a bare
     `<pid>` otherwise, and `none` where there is none; its other fields are unchanged. The guard

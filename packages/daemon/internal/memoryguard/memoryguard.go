@@ -1,9 +1,10 @@
 // Package memoryguard ends a process it may end when a container nears its memory limit, the
 // process that grew the most over its last few reads, else the largest one new to its stay in the
-// band, else the one that grew the most since the previous kill, else the largest, so that the
-// kernel does not end the whole sandbox instead (INFRA-3557, by the rules of INFRA-3531). Under
-// gVisor the host kernel sees one sandbox and not its processes: a container that passes its limit
-// loses every process at once, which in an issue pod is every role's turn.
+// band, else the one that grew the most since the previous kill, else the largest, a fork that
+// still runs its parent's program counted by what it holds over its parent, so that the kernel
+// does not end the whole sandbox instead (INFRA-3557, by the rules of INFRA-3531). Under gVisor
+// the host kernel sees one sandbox and not its processes: a container that passes its limit loses
+// every process at once, which in an issue pod is every role's turn.
 //
 // The guard reads the pod's anonymous memory, AnonPages of /proc/meminfo, and the container's
 // limit, the cgroup's memory.limit_in_bytes, once each interval. The cgroup's counter,

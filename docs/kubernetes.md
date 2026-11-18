@@ -3812,14 +3812,14 @@ The kernel can also stop a process that the classifier protects ("The score", ab
 Each process it names has the guard's own `ended` line, so a reader finds a process stopped for memory by the same line in either sandbox:
 
 ```text
-launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> rule=kernel sizes=kernel executable="<name>"
+launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> rule=kernel sizes=kernel less_parent=0 executable="<name>"
 ```
 
 The guest watch fills it from what it read:
 
 - `pid`, `role` and `executable` are the stopped process's, as the guard's lines give them, and `role=none` names a process of no role.
 
-- `rule` and `sizes` are both `kernel`: the kernel chose the process, by sizes of its own, where the guard's own line names the rule of its order and the sizes it chose by.
+- `rule` and `sizes` are both `kernel`, and `less_parent` is 0: the kernel chose the process, by sizes of its own, where the guard's own line names the rule of its order, the sizes it chose by and what it took off a fork's size.
 
 - `size` is the process's resident size at the last scan whose snapshot came before the pass, at a scan or at a wake, that saw SIGKILL pending in it, so its size before the kernel freed its memory.
   The kernel raises the counter before it sends SIGKILL and frees the memory only after it, and a scan reads the processes before the counter and their `status` after both, so a process that the watch already held and that a scan read while its memory was freed shows SIGKILL pending at that same scan.
@@ -5510,7 +5510,7 @@ the issue pod's whole 10Gi, shared by its six roles.
 An issue pod's six roles share one memory limit, and under gVisor the host kernel sees the pod's sandbox and not the processes in it:
 a container that passes its limit is stopped whole, `OOMKilled`, and every role's turn ends with it ([Liveness rules](#liveness-rules)).
 The memory guard in the pod's launcher, where the deployment runs it (it is on by default), acts before that point.
-When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL`, of the processes that are neither Legion's own nor an agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the previous kill, else the largest, and the daemon tells that process's role why, on the role's own topic.
+When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL`, of the processes that are neither Legion's own nor an agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the previous kill, else the largest, a fork that still runs its parent's program counted by what it holds over its parent, and the daemon tells that process's role why, on the role's own topic.
 The rest of the pod goes on: the guard never ends a role's agent, its shim or its `role-init`, so no role's turn ends for the kill, and the command that was ended fails in the turn that ran it.
 The guard is `packages/daemon/internal/memoryguard`, and the launcher runs it with the issue pod's rules (`serveMemoryGuard` and `podClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
 
@@ -5561,13 +5561,20 @@ Such a process has no earlier read to grow from, or one alone, and can be a runa
 Where the stay holds fewer than two readings before the one decided at, every process is new to it, which leaves the order by size; at the first reading at or above the mark, a process counts as new only where a read at that reading reached it (below).
 Of the rest, the ones that grew by 1 MiB or more since the previous kill of the rise come next, the most grown first ("After a kill: the rise rule", below); before a rise's first kill there is no previous kill, and no process has grown since one.
 The processes that fit none of these come last, largest first, so where none grew and none is new to the stay the guard ends the largest.
+Where the tier of the processes new to the stay, or the last tier, ranks by size, a process that runs its parent's executable with its parent's arguments, read whole, where the guard has read that parent in this stay, is a fork that has not run a program of its own:
+it ranks by its size less its parent's size at the guard's latest read of the parent, and by nothing where its parent's size is the larger.
+Under gVisor such a fork reports the pages it shares with its parent as its own, so a sleeping fork ranks near nothing, and a fork that grows ranks by what it holds over its parent.
+A fork whose parent the guard has not read in this stay (a protected parent, or one it could not read), one that runs another executable or the same one with other arguments, and one whose arguments or its parent's pass the 4 KiB the guard reads of them rank at their whole size.
+The parent itself ranks at its whole size, so where nothing grew a pool's parent can be ended before its forks, and its end frees nothing while the forks hold the pages, as a fork's end did before.
+Growth over the window and since a kill, the floor and the `ended` line's `size` count each process's own size whole: the discount only orders.
+It is there because at `23fdd92f` INFRA-3531's implementer measured the new tier end first one of three sleeping forks of a 2.4 GB parent, started between the band's last two readings, in 2 of 7 `latepool` runs at 4 GiB (`4g-latepool-v5s8l` and `4g-latepool-6gd5t`, each `rule=new sizes=search`; dispatch://INFRA-3531/artifact/t17i-2026-11-18-tar-gz).
 Processes new to the stay are in the order because at `e3a1923c` INFRA-3531's tester's `latepool` probe at 4 GiB, six processes that started growing together while a parent and three sleeping forks of a shared block held the pod at 84%, had its first kill end a process that shares the block, a sleeping fork or the parent, in 7 of 7 runs, since the growers had no earlier read:
 the closest run's highest reading was 2.4 MiB below the kernel's measured kill point (dispatch://INFRA-3531/comment/3a8abb30-1441-40c0-b80e-6122fe1dcf0d, and the tester's handoff of the test phase, version 3).
 At `778c42de`, whose order took only the processes the reading before had not read, the run `4g-latepool-zrr4d` still ended a sleeping fork first: its growers had started 5 ms before the band's last reading, which read each of them once at a few MiB (dispatch://INFRA-3531/artifact/t17h-2026-11-17-tar-gz).
 Growth since the kill is in the order because a pod short of CPU takes its readings 170 to more than 300 ms apart, so the window can hold one read of each process and show no growth at all:
 at `a55c6e50`, before growth since the kill was in the order, 8 kills after a kill in INFRA-3531's runs ended a sleeping fork or a parent while a grower lived (dispatch://INFRA-3531/comment/13452df7-caa9-462a-9d26-49614851a66b).
 At an `interval_milliseconds` above 300 no earlier read is in the window, so no process grows over it, and the guard ends the largest process new to the stay, else the most grown since the previous kill, else the largest.
-Of two processes of the same growth and size it ends the newer, since of a parent and the child it forked, the child is the one started for the work.
+Of two processes of the same growth and size as ranked it ends the newer, since of a parent and a child it forked that has run a program of its own, which read the same, the child is the one started for the work.
 Growth comes first because under gVisor a forked child reports the pages it shares with its parent as its own, and no line of its smaps tells them apart, so the largest process can be a sleeping fork whose end frees nothing while another process fills the pod.
 INFRA-3531's tester measured that on 2026-11-17 in gVisor pods of 4 GiB and 8 GiB (dispatch://INFRA-3531/comment/487c6241-44e5-4be8-8fcf-394c3eb67209):
 a Python parent wrote a block of 3/8 of the limit and forked three children that only sleep, and a separate Python process then grew beside them.
@@ -5707,7 +5714,7 @@ launcher: memory guard: started act_percent=<n> floor_percent=<n> wait=<d> inter
 launcher: memory guard: settings act_percent=<n> floor_percent=<n> wait=<d> interval=<d>
 launcher: memory guard: off: the daemon's acknowledgement carries no settings
 launcher: memory guard: settings refused: <why>; nothing changes
-launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> rule=<grew|new|grew-since-kill|largest> sizes=<band|reread|search|reading> executable="<name>"
+launcher: memory guard: ended pid=<pid> role=<role> size=<bytes> reading=<bytes> counter=<bytes> shmem=<bytes> limit=<bytes> rule=<grew|new|grew-since-kill|largest> sizes=<band|reread|search|reading> less_parent=<bytes> executable="<name>"
 launcher: memory guard: stopped for this rise reason=<not fallen|nothing to end> reading=<bytes> endable=<bytes> protected=<bytes> unread=<bytes> unheld=<bytes> limit=<bytes> left_out=<n> unread_processes=<none|pid[:bytes][,pid[:bytes]]…>
 launcher: memory guard: hour start=<time> end=<time> reading_high=<bytes> reading_high_at=<time> reading_low=<bytes> counter_high=<bytes> counter_low=<bytes> largest_pid=<pid> largest_role=<role> largest_size=<bytes> largest_executable="<name>"
 launcher: memory guard: off reason=<why>
@@ -5729,9 +5736,11 @@ For a process started since the band's last reading it is the `smaps` the readin
 `reread`, those and the `smaps` read again at that reading;
 `search`, those and the processes started since the band's last reading that the reading at the mark found;
 `reading`, the sizes of the reading the kill is sent at, as every kill after a kill of the rise has, and every first kill the band's sizes cannot decide.
-Both come before `executable`, so the name stays last.
+`less_parent` is how much of its size the order did not count: for a fork that runs its parent's program, its parent's size at the guard's latest read of the parent, or its own size where that is less ("What it ends", above), and 0 for every other process.
+So `size` less `less_parent` is the size it ranked by where its tier ranks by size, and `size` is always the process's own.
+These three come before `executable`, so the name stays last.
 `stopped for this rise` says where the reading's memory is: in the processes the guard may end, in the protected ones and in the ones it could not read, and `unheld` is the reading less those three.
-`endable` counts the processes the guard may end at the sizes it ranks them by, the memfds their descriptors hold included;
+`endable` counts the processes the guard may end at their own sizes, the memfds their descriptors hold included and no fork's parent size taken off;
 `protected` and `unread` count their processes' smaps alone, since the line reads none of their descriptors.
 A positive `unheld` is memory no process holds, such as the pages of a memory filesystem, or that only a descriptor of a protected or unread process holds, such as a memfd it has not mapped, and a negative one is what the sizes counted more than once, such as the pages a parent shares with the child it forked.
 `unheld` also holds the memory of a process the guard counts unread whose `smaps` does not show it ("What it does not do", below).
@@ -5842,10 +5851,10 @@ A note can be lost in each of these cases, and in each the `ended` line stays in
 The daemon-launched controller runs in a pod of its own, whose one container, `controller`, has one memory limit ([Daemon-launched controller](#daemon-launched-controller)).
 Under gVisor a container that passes its limit is stopped whole, `OOMKilled`, and the controller's turn ends with it.
 The launcher of that container runs the same memory guard as an issue pod's launcher ([The memory guard in an issue pod](#the-memory-guard-in-an-issue-pod)), and the guard acts before that point.
-When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL`, of the processes that are neither Legion's own nor the agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the previous kill, else the largest, and the daemon tells the controller why.
+When the pod's anonymous memory reaches a share of the limit, the guard ends with `SIGKILL`, of the processes that are neither Legion's own nor the agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the previous kill, else the largest, a fork that still runs its parent's program counted by what it holds over its parent, and the daemon tells the controller why.
 The rest of the pod goes on: the guard never ends the launcher, the shim or Oh My Pi, so the controller's turn does not end for the kill, and the command that was ended fails in the turn that ran it.
 The launcher runs the guard with the controller pod's rules (`serveMemoryGuard` and `controllerClassifier`, `packages/daemon/internal/launcher/memoryguard.go`).
-"What it reads", "What it ends" and "After a kill: the rise rule" of the issue pod's guard above hold here as written, among them the order of ends with the processes new to the stay in the band and growth since the previous kill in it, the band, and the first kill chosen at the mark, with the `smaps` read again and the processes started since the band's last reading looked for where none grew, and the `rule` and `sizes` of each `ended` line.
+"What it reads", "What it ends" and "After a kill: the rise rule" of the issue pod's guard above hold here as written, among them the order of ends with the processes new to the stay in the band, growth since the previous kill and a fork ranked by its size less its parent's in it, the band, and the first kill chosen at the mark, with the `smaps` read again and the processes started since the band's last reading looked for where none grew, and the `rule`, `sizes` and `less_parent` of each `ended` line.
 The controller's pod has its own list of what the guard spares (below) and its own longest wait after a kill, 1 second by default ("The settings", below).
 
 **What gVisor measured.**
@@ -7753,7 +7762,7 @@ Its one container, the launcher, carries the controller's reservation
 — `runtime.kubernetes.resources.controller` where the file sets a field, the daemon's default of 1 CPU and 4Gi otherwise
 — as request and limit alike unless the file sets a lower `cpu_request` or `memory_request`, so at the default the pod is `Guaranteed`, never the class the kubelet evicts first under node memory pressure (a lower request makes it `Burstable`, [Issue sizing](#issue-sizing-one-reservation-per-pod), "Guaranteed or Burstable");
 the image probe pod carries its own, smaller reservation, not the controller's, so a controller reservation the pool cannot place leaves the probe, and the boot, unaffected ([Issue sizing](#issue-sizing-one-reservation-per-pod)).
-Its launcher, as PID 1 of that container, runs the memory guard, which near the limit ends, of the processes that are neither Legion's own nor the agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the previous kill, else the largest ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
+Its launcher, as PID 1 of that container, runs the memory guard, which near the limit ends, of the processes that are neither Legion's own nor the agent's own, the process that grew the most over its last few reads, else the largest one it has read at most once in its last two readings near the limit, else the one that grew the most since the previous kill, else the largest, a fork that still runs its parent's program counted by what it holds over its parent ([The memory guard in the controller's pod](#the-memory-guard-in-the-controllers-pod)).
 
 The Sandbox is the claim's alone, where an issue's is its tree's.
 A release of the claim (a switch back, or `legion claims stop`) deletes it, and its role Secret and volume with it.

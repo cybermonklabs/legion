@@ -401,13 +401,13 @@ runtime:
     #     act_percent: 85              # it, it ends with SIGKILL the process that grew the most over its last
     #     floor_percent: 10            # few reads, else the largest one it has read at most once in its last
     #     wait_seconds: 5              # two readings near the limit, else the one that grew the most since the
-    #     interval_milliseconds: 100   # previous kill, else the largest, and tells the role whose process it
-    #   controller_pod:                # was. Legion's own processes and each role's agent are never ended.
-    #     enabled: true                # After a kill it waits for that process to exit, at most wait_seconds
-    #     act_percent: 85              # (1 to 60), and it reads every interval_milliseconds (50 to 5000).
-    #     floor_percent: 10            # controller_pod is the same guard in the controller's pod
-    #     wait_seconds: 1              # (controller: daemon), which waits at most 1 second after a kill.
-    #     interval_milliseconds: 100
+    #     interval_milliseconds: 100   # previous kill, else the largest, a fork that still runs its parent's
+    #   controller_pod:                # program counted by what it holds over its parent, and tells the role
+    #     enabled: true                # whose process it was. Legion's own processes and each role's agent are
+    #     act_percent: 85              # never ended. After a kill it waits for that process to exit, at most
+    #     floor_percent: 10            # wait_seconds (1 to 60), and it reads every interval_milliseconds (50 to
+    #     wait_seconds: 1              # 5000). controller_pod is the same guard in the controller's pod
+    #     interval_milliseconds: 100   # (controller: daemon), which waits at most 1 second after a kill.
     #                                  # These are the defaults, for each kind. enabled: false sends that kind's
     #                                  # launchers no settings, so each of their guards, which runs at these
     #                                  # defaults from the launcher's start, turns off at its first acknowledgement
