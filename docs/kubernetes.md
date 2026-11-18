@@ -2023,6 +2023,13 @@ That migration writes the whole list, the role-holders publication's kind and th
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
+The daemon and Dispatch deploy in either order.
+A Dispatch without the route answers `404 NOT_FOUND` "no route for …", and the daemon waits: it runs the row again on its backoff, at most 64 s apart, until Dispatch has the route.
+While it waits, each issue's row logs `outbox row waits` and no ERROR line: INFO at its first run, DEBUG after, and from its seventh retry, about two minutes after the first run, one WARN line at each run.
+That WARN line means a fault only once the Dispatch release that has the route is live: then the daemon reaches a Dispatch that does not serve the route.
+The daemon retries a `5xx` as a failure, with one ERROR line `outbox row failed` at each run.
+A refusal no retry changes ends the row (`stepRecordRefused` in `internal/daemon/outbox.go`): `404 ISSUE_NOT_FOUND`, a coded `400` such as `STEP_INPUT`, `403 STEP_WRITER` and `409 STEP_OTHER_ISSUE`; the record keeps what reached Dispatch before it.
+
 The rollback needs no statement for the kind's rows: they stay in the outbox.
 An earlier release puts the kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and a row left in place holds back no other row.
 Nor does such a row hold an issue's pod: the earlier release's idle check counts only the kinds it names (`idleWaitingKinds` in `store/idle.go`).
@@ -2033,7 +2040,7 @@ The kind check keeps the name after the rollback, and the rollback needs no stat
 The tables `step_starts` and `step_starts_rollback` and the function `step_run_witness` (`20261117004117_step_starts`) stay in place: an earlier release names none of them in a statement, so that release boots with them and their rows there.
 `step_starts` holds the count of the starts of each step of each issue, which carries a record's id from the step's start to its end (`StepID` in `internal/workflow/steps.go`), and the mark that gives each run one end.
 An earlier release starts and ends steps and counts none of them, so the rollback keeps in `step_starts_rollback` what the roll forward needs to tell the runs this release counted from the ones it did not: for each issue with a row in `step_starts`, its tree, its witness (`step_run_witness`) and the moment of the rollback.
-Run this with the daemon stopped, before the earlier image is pinned, and before the block of any older release below, which can drop the phase entries the witness reads:
+Run this with every daemon of the database stopped, before the earlier image is pinned, and before the block of any older release below, which can drop the phase entries the witness reads:
 
 ```sql
 insert into step_starts_rollback (issue, tree, witness, taken_at)
@@ -2058,6 +2065,13 @@ The boot opens only a step this release's own end rule holds open (`uncountedRun
 Its record reaches Dispatch with its end, under that count, and a request of its agent waits for that agent's stream before it applies a fact, as a request of the agent of a step this release started does.
 A step running at the rollback that the earlier release did not end is still the step this release counted, and its end ends the record its start wrote.
 What the rollback costs is the record of each step that both starts and ends under the earlier release, and the true end and result of each step running at the rollback that ends under it.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `step_starts`, `step_starts_rollback` and `schema_version` are one table each for all of them.
+The block above witnesses every project's issues with a row in `step_starts`, and its `delete` re-arms `20261117064152_step_starts_roll_forward` for the whole database, so the next daemon of that database to boot on this release applies the roll forward to every project's rows and then deletes every witness.
+A daemon left on this release while another rolls back would read the other project's witnesses as its own: it would end a run of its own that started after the rollback at the moment of that rollback, before its own start, and a later end would land on an earlier record's id.
+No statement can scope the roll forward to one project, since the database records each migration once.
+Roll back and roll forward every daemon of one database in the same change, and run the block above only when all of them are stopped.
 
 #### Rolling back the release whose update round ends at its bound
 
