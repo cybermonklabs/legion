@@ -624,9 +624,10 @@ It reads the same configuration the serving process does, so it reaches the same
 signs in to it the same way, binds no listener and applies no migration: an image older than the
 servers cannot migrate the database behind them on its way to ending a session. The person's next
 visit to a request's page signs them in again, if the provider still lets them; to stop that, take
-them out of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first. It is the only subcommand the
-broker takes: anything else is refused with a usage line, and `envoy-broker` with no argument
-serves.
+them out of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first. The broker takes three
+subcommands, `end-sessions`, `versions` ([A migration recorded under another
+file](#a-migration-recorded-under-another-file)) and `airlock-check`; anything else is refused with
+a usage line, and `envoy-broker` with no argument serves.
 
 ### A broker that signs nobody in
 
