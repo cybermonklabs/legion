@@ -566,15 +566,14 @@ func TestSeedFinishReadsItsCredentialsFromFiles(t *testing.T) {
 			redactPG(f.pg), f.token)
 	}
 
-	for _, c := range []struct{ flag, fileFlag, value, file string }{
-		{"-pg", "-pg-file", pg, pgFile},
-		{"-token", "-token-file", token, tokenFile},
-	} {
-		_, err := seedFinishResolve(t, append(bothFiles(), c.flag, c.value)...)
-		var both *bothCredentialFormsError
-		if !errors.As(err, &both) || both.Flag != c.flag || both.FileFlag != c.fileFlag {
-			t.Errorf("%s given with %s too: refusal %v, want one naming the two forms", c.flag, c.fileFlag, err)
-		}
+	// -pg given with -pg-file too is refused naming the two forms. A -token given at all is
+	// refused as a removed flag (TestACredentialOnTheCommandLineIsRefused).
+	_, err = seedFinishResolve(t, append(bothFiles(), "-pg", pg)...)
+	var both *bothCredentialFormsError
+	if !errors.As(err, &both) || both.Flag != "-pg" || both.FileFlag != "-pg-file" {
+		t.Errorf("-pg given with -pg-file too: refusal %v, want one naming the two forms", err)
+	}
+	for _, c := range []struct{ fileFlag, file string }{{"-pg-file", pgFile}, {"-token-file", tokenFile}} {
 		// A file that cannot be read, and one that holds no credential: each refused by the flag
 		// and the path, before the first connection.
 		absent := filepath.Join(t.TempDir(), "absent")
@@ -586,13 +585,13 @@ func TestSeedFinishReadsItsCredentialsFromFiles(t *testing.T) {
 		}
 	}
 
-	// Neither form of either credential: refused naming both forms, so a caller that gave none
-	// reads which flags it has.
+	// Neither form of the Postgres URL: refused naming both forms, so a caller that gave none
+	// reads which flags it has; -url with no bearer file is refused naming -token-file.
 	if _, err := seedFinishResolve(t); err == nil || !strings.Contains(err.Error(), "-pg or -pg-file is required") {
 		t.Errorf("no -pg and no -pg-file: refusal %v, want one naming both forms", err)
 	}
 	_, err = seedFinishResolve(t, "-pg-file", pgFile, "-url", dispatchURL)
-	if err == nil || !strings.Contains(err.Error(), "-token or -token-file is required with -url") {
-		t.Errorf("-url with no bearer in either form: refusal %v, want one naming both forms", err)
+	if err == nil || !strings.Contains(err.Error(), "-token-file is required with -url") {
+		t.Errorf("-url with no bearer file: refusal %v, want one naming -token-file", err)
 	}
 }

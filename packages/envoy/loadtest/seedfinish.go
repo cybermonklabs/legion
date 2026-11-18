@@ -119,22 +119,25 @@ type seedFinisher struct {
 }
 
 // seedFinishFlags are seed-finish's own flags. Two of them carry a secret -- the Postgres URL
-// with its password and the Dispatch agent bearer -- so each has the file form every credential
-// of this package has, for the reason readCredentials gives (guard.go).
+// with its password and the Dispatch agent bearer -- so each is read from a file, the way every
+// credential of this package is, for the reason readCredentials gives (guard.go): the bearer from
+// -token-file alone (tokenGiven stands where -token was), the URL from -pg-file or, with no
+// password in it, from -pg.
 type seedFinishFlags struct {
 	pg, pgFile            string
 	url, token, tokenFile string
+	tokenGiven            removedFlag
 	timeout, embedTimeout time.Duration
 	embedProgress         string
 }
 
 func (f *seedFinishFlags) register(fs *flag.FlagSet) {
-	fs.StringVar(&f.pg, "pg", "", "direct Postgres URL of the seeded dispatch database (required, or -pg-file)")
+	fs.StringVar(&f.pg, "pg", "", "direct Postgres URL of the seeded dispatch database, with no password in it (required, or -pg-file)")
 	fs.StringVar(&f.pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
 	fs.DurationVar(&f.timeout, "timeout", 15*time.Minute, "how long each wait on a Postgres count may take before it fails")
 	fs.StringVar(&f.url, "url", "", "Dispatch base URL; with it, seed-finish also waits for meaning search to embed the seed")
-	fs.StringVar(&f.token, "token", "", "Dispatch agent bearer, required with -url (or -token-file)")
-	fs.StringVar(&f.tokenFile, "token-file", "", "file holding the -token value, so no token reaches the command line")
+	fs.StringVar(&f.tokenFile, "token-file", "", "file holding the Dispatch agent bearer, required with -url")
+	f.tokenGiven.register(fs, "token", "-token-file")
 	fs.DurationVar(&f.embedTimeout, "embed-timeout", seedEmbedTimeout, "how long the wait for meaning search may take before it fails")
 	fs.StringVar(&f.embedProgress, "embed-progress", "", "where that wait's poll record is written (default $LOADTEST_ROOT/seedfinish.embed.json)")
 }
@@ -143,8 +146,8 @@ func (f *seedFinishFlags) register(fs *flag.FlagSet) {
 // before the first connection.
 func (f *seedFinishFlags) resolve() error {
 	if err := readCredentials(
-		credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg},
-		credentialFile{"-token", "-token-file", f.tokenFile, &f.token},
+		credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg, nil},
+		credentialFile{"-token", "-token-file", f.tokenFile, &f.token, &f.tokenGiven},
 	); err != nil {
 		return err
 	}
@@ -156,9 +159,9 @@ func (f *seedFinishFlags) resolve() error {
 	case f.embedTimeout <= 0:
 		return fmt.Errorf("-embed-timeout must be more than 0, not %s", f.embedTimeout)
 	case f.url == "" && f.token != "":
-		return fmt.Errorf("-token names no deployment to read: it needs -url")
+		return fmt.Errorf("-token-file names no deployment to read: it needs -url")
 	case f.url != "" && f.token == "":
-		return fmt.Errorf("-token or -token-file is required with -url: the coverage report takes the deployment's agent bearer")
+		return fmt.Errorf("-token-file is required with -url: the coverage report takes the deployment's agent bearer")
 	}
 	if f.url != "" {
 		u, err := url.Parse(f.url)
@@ -177,7 +180,7 @@ func runSeedFinish(args []string) error {
 	var f seedFinishFlags
 	f.register(fs)
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: loadgen seed-finish (-pg <postgres url> | -pg-file <path>) [-timeout 15m] [-url <dispatch url> (-token <bearer> | -token-file <path>) [-embed-timeout 8h] [-embed-progress <path>]]")
+		fmt.Fprintln(fs.Output(), "usage: loadgen seed-finish (-pg <postgres url> | -pg-file <path>) [-timeout 15m] [-url <dispatch url> -token-file <path> [-embed-timeout 8h] [-embed-progress <path>]]")
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)

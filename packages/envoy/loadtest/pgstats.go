@@ -684,7 +684,7 @@ func runPGStatements(args []string) error {
 	interval := fs.Duration("interval", pgLockInterval, "how often pg_locks is read for the step's lock waits")
 	window := fs.Duration("window", 0, "how long to sample before writing the file; 0 samples until SIGTERM or SIGINT")
 	var pg, pgFile string
-	fs.StringVar(&pg, "pg", "", "direct Postgres URL of the step's database (required, or -pg-file)")
+	fs.StringVar(&pg, "pg", "", "direct Postgres URL of the step's database, with no password in it (required, or -pg-file)")
 	fs.StringVar(&pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: loadgen pg-statements -step <step dir> (-pg <postgres url> | -pg-file <path>) [-top 50] [-interval 2s] [-window 0]")
@@ -693,7 +693,7 @@ func runPGStatements(args []string) error {
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
-	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg}); err != nil {
+	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg, nil}); err != nil {
 		return err
 	}
 	switch {
@@ -756,7 +756,7 @@ func runPGSize(args []string) error {
 	out := fs.String("out", "", "where the JSON is written (default <step>/"+pgSizeFileName+")")
 	phase := fs.String("phase", "", "start, before the load, or end, after it (required)")
 	var pg, pgFile string
-	fs.StringVar(&pg, "pg", "", "direct Postgres URL of the step's database (required, or -pg-file)")
+	fs.StringVar(&pg, "pg", "", "direct Postgres URL of the step's database, with no password in it (required, or -pg-file)")
 	fs.StringVar(&pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
 	fs.Usage = func() {
 		fmt.Fprintln(fs.Output(), "usage: loadgen pg-size -step <step dir> -phase start|end (-pg <postgres url> | -pg-file <path>)")
@@ -764,7 +764,7 @@ func runPGSize(args []string) error {
 		fs.PrintDefaults()
 	}
 	_ = fs.Parse(args)
-	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg}); err != nil {
+	if err := readCredentials(credentialFile{"-pg", "-pg-file", pgFile, &pg, nil}); err != nil {
 		return err
 	}
 	switch {

@@ -411,21 +411,20 @@ func runLoad(args []string) error {
 	}, sf)
 }
 
-// redacted replaces a token, or a value whose password cannot be found, in what a step records.
+// redacted replaces a value whose password cannot be found in what a step records.
 const redacted = "<redacted>"
 
 // recordedArgs is every flag given to fs, once parsed, as "-name=value" in fs's (lexical) order:
-// the value of each tokenFlags flag replaced by redacted, and each urlFlags flag's value without
-// its credentials (redactEndpoint: -pg as its hosts, ports and database alone). -loop-listeners
-// is a list of URLs, and every element of it is recorded without its credentials too. runLoad
-// takes no positional argument, so these are all of its arguments.
+// each urlFlags flag's value without its credentials (redactEndpoint: -pg as its hosts, ports and
+// database alone). No flag holds a token: each comes from its -…-file form, recorded as that
+// file's path (readCredentials). -loop-listeners is a list of URLs, and every element of it is
+// recorded without its credentials too. runLoad takes no positional argument, so these are all of
+// its arguments.
 func recordedArgs(fs *flag.FlagSet) []string {
 	var out []string
 	fs.Visit(func(f *flag.Flag) {
 		name, value := "-"+f.Name, f.Value.String()
 		switch {
-		case slices.Contains(tokenFlags, name):
-			value = redacted
 		case slices.Contains(urlFlags, name):
 			value = redactEndpoint(name, value)
 		case name == "-loop-listeners":

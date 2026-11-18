@@ -67,22 +67,26 @@ func TestOpenLoopSchedule(t *testing.T) {
 	}
 }
 
-// TestAForeignRunsMetaHoldsNoTokenOrPassword: under -allow-foreign the tokens and the URLs are
-// flags, and meta.json records them as the normalized flag list: each token as <redacted>, each URL
-// without its userinfo, the user too, since nats.go takes a user with no password as the auth
-// token; a comma-separated -nats server list loses every element's, and -pg is recorded from pgx's
-// own parse as its hosts, ports and database alone. Neither meta.json nor the log holds a token, a
+// TestAForeignRunsMetaHoldsNoTokenOrPassword: under -allow-foreign the URLs are flags and the
+// tokens come from files, and meta.json records them as the normalized flag list: each token file
+// as its path alone, each URL without its userinfo, the user too, since nats.go takes a user with
+// no password as the auth token; a comma-separated -nats server list loses every element's, and
+// -pg is recorded from pgx's own parse as its hosts, ports and database alone. A -pg that sets a
+// password is refused before a run records anything (readCredentials), and the cases below that
+// give one hold the redactor itself to every spelling of it, since a URL read from -pg-file is
+// recorded through the same redactEndpoint. Neither meta.json nor the log holds a token, a
 // password or a NATS token user.
 func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 	t.Setenv("LOADTEST_ROOT", t.TempDir())
 	isolatePG(t)
 	const agent, listener, password, natsToken = "agent-token-7f3a", "listener-token-9c1e", "url-password-51d2", "nats-token-4b2e"
+	agentFile, listenerFile := credentialFileAt(t, "dispatch-token", agent+"\n"), credentialFileAt(t, "listener-token", listener+"\n")
 	pg, pgRecorded := "postgres://127.0.0.1:1/dispatch?sslmode=disable", "postgres://127.0.0.1:1/dispatch"
 	foreignPG := func(pg string) []string {
-		return []string{"-allow-foreign", "-token", agent, "-listener-token", listener, "-pg", pg}
+		return []string{"-allow-foreign", "-token-file", agentFile, "-listener-token-file", listenerFile, "-pg", pg}
 	}
 	recordedPG := func(pg string) []string {
-		return []string{"-allow-foreign=true", "-listener-token=" + redacted, "-pg=" + pg, "-token=" + redacted}
+		return []string{"-allow-foreign=true", "-listener-token-file=" + listenerFile, "-pg=" + pg, "-token-file=" + agentFile}
 	}
 	for _, c := range []struct {
 		args, want []string
@@ -97,38 +101,38 @@ func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 		secrets []string
 	}{
 		{
-			args: []string{"-allow-foreign", "-token", agent, "--listener-token=" + listener, "-name", "-token", "-pg", pg},
-			want: []string{"-allow-foreign=true", "-listener-token=" + redacted, "-name=-token", "-pg=" + pgRecorded, "-token=" + redacted},
+			args: []string{"-allow-foreign", "-token-file", agentFile, "--listener-token-file=" + listenerFile, "-name", "-token", "-pg", pg},
+			want: []string{"-allow-foreign=true", "-listener-token-file=" + listenerFile, "-name=-token", "-pg=" + pgRecorded, "-token-file=" + agentFile},
 		},
 		{
 			args: []string{
-				"-allow-foreign", "-token", agent, "-listener-token", listener,
+				"-allow-foreign", "-token-file", agentFile, "-listener-token-file", listenerFile,
 				"-url", "http://agent:" + password + "@127.0.0.1:1", "-listener", "http://agent:" + password + "@127.0.0.1:2",
 				"-nats", "nats://loadgen:" + password + "@127.0.0.1:3", "-nats-mon", "http://monitor:" + password + "@127.0.0.1:4",
 				"-pprof", "http://pprof:" + password + "@127.0.0.1:5",
 				"-pg", "postgres://postgres:" + password + "@127.0.0.1:1/dispatch?sslmode=disable&password=" + password,
 			},
 			want: []string{
-				"-allow-foreign=true", "-listener=http://127.0.0.1:2", "-listener-token=" + redacted,
+				"-allow-foreign=true", "-listener=http://127.0.0.1:2", "-listener-token-file=" + listenerFile,
 				"-nats=nats://127.0.0.1:3", "-nats-mon=http://127.0.0.1:4", "-pg=" + pgRecorded,
-				"-pprof=http://127.0.0.1:5", "-token=" + redacted, "-url=http://127.0.0.1:1",
+				"-pprof=http://127.0.0.1:5", "-token-file=" + agentFile, "-url=http://127.0.0.1:1",
 			},
 		},
 		{
 			// A -nats URL whose user is the NATS token.
-			args: []string{"-allow-foreign", "-token", agent, "-listener-token", listener, "-nats", "nats://" + natsToken + "@127.0.0.1:3"},
-			want: []string{"-allow-foreign=true", "-listener-token=" + redacted, "-nats=nats://127.0.0.1:3", "-token=" + redacted},
+			args: []string{"-allow-foreign", "-token-file", agentFile, "-listener-token-file", listenerFile, "-nats", "nats://" + natsToken + "@127.0.0.1:3"},
+			want: []string{"-allow-foreign=true", "-listener-token-file=" + listenerFile, "-nats=nats://127.0.0.1:3", "-token-file=" + agentFile},
 		},
 		{
 			// A -nats server list and a -pg host list, credentials in more than the first element.
 			args: []string{
-				"-allow-foreign", "-token", agent, "-listener-token", listener,
+				"-allow-foreign", "-token-file", agentFile, "-listener-token-file", listenerFile,
 				"-nats", "nats://" + natsToken + "@127.0.0.1:3,nats://loadgen:" + password + "@127.0.0.1:6",
 				"-pg", "postgres://postgres:" + password + "@127.0.0.1:1,127.0.0.1:2/dispatch?sslmode=disable",
 			},
 			want: []string{
-				"-allow-foreign=true", "-listener-token=" + redacted, "-nats=nats://127.0.0.1:3,nats://127.0.0.1:6",
-				"-pg=postgres://127.0.0.1:1,127.0.0.1:2/dispatch", "-token=" + redacted,
+				"-allow-foreign=true", "-listener-token-file=" + listenerFile, "-nats=nats://127.0.0.1:3,nats://127.0.0.1:6",
+				"-pg=postgres://127.0.0.1:1,127.0.0.1:2/dispatch", "-token-file=" + agentFile,
 			},
 		},
 		{
@@ -192,13 +196,14 @@ func TestAForeignRunsMetaHoldsNoTokenOrPassword(t *testing.T) {
 		if err := fs.Parse(c.args); err != nil {
 			t.Fatal(err)
 		}
-		if ef.token != agent || ef.listenerToken != listener || !ef.allowForeign {
-			t.Fatalf("%q parsed to token %q, listener token %q: the test does not pass the tokens", c.args, ef.token, ef.listenerToken)
+		if ef.tokenFile != agentFile || ef.listenerTokenFile != listenerFile || !ef.allowForeign {
+			t.Fatalf("%q parsed to token file %q, listener token file %q: the test does not pass the tokens", c.args, ef.tokenFile, ef.listenerTokenFile)
 		}
 		var logged bytes.Buffer
+		// The endpoints hold the tokens as readCredentials reads them out of the two files.
 		cfg := runConfig{
 			name: *name, allowForeign: true, boxBusyBefore: 0, args: recordedArgs(fs),
-			ep: endpoints{pg: ef.pg, token: ef.token, listenerToken: ef.listenerToken, pids: map[string]int{}},
+			ep: endpoints{pg: ef.pg, token: agent, listenerToken: listener, pids: map[string]int{}},
 		}
 		meta, err := json.Marshal(collectMeta(context.Background(), cfg, log.New(&logged, "", 0)))
 		if err != nil {
@@ -748,7 +753,8 @@ func TestTwoPopulationFlagsAreRefusedByName(t *testing.T) {
 	base := []string{
 		"-allow-foreign", "-url", "http://127.0.0.1:1", "-listener", "http://127.0.0.1:1",
 		"-nats", "nats://127.0.0.1:1", "-nats-mon", "http://127.0.0.1:1", "-pprof", "http://127.0.0.1:1",
-		"-pg", "postgres://postgres@127.0.0.1:1/dispatch", "-token", "t", "-listener-token", "l",
+		"-pg", "postgres://postgres@127.0.0.1:1/dispatch",
+		"-token-file", credentialFileAt(t, "dispatch-token", "t\n"), "-listener-token-file", credentialFileAt(t, "listener-token", "l\n"),
 		"-sessions", "4", "-out", out,
 	}
 	both := []string{"-seed", seedPath, "-loop-seed", loopPath, "-route-mix", specLoopRouteMixName}

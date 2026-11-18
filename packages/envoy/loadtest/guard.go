@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -140,13 +141,16 @@ type endpoints struct {
 
 // endpointFlags are the endpoint flags seed and run share. Each defaults empty, so the stack's
 // value applies; one that differs from it is refused unless allowForeign is set, and then every
-// one is required -- by its own flag or, for the three that carry a secret, by the -…-file form
-// of it (readCredentialFiles).
+// one is required -- the two tokens by their -…-file forms, the only ones they have, and -pg by
+// either of its two (readCredentialFiles).
 type endpointFlags struct {
 	stack                                   string
 	url, listener, nats, natsMon, pprof, pg string
-	token, listenerToken                    string
-	// The file forms of the three credential flags: the file's content is the value.
+	// token and listenerToken are the contents of tokenFile and listenerTokenFile: no flag takes
+	// a token's value, and tokenGiven and listenerTokenGiven stand where -token and
+	// -listener-token were (removedFlag).
+	token, listenerToken                 string
+	tokenGiven, listenerTokenGiven       removedFlag
 	tokenFile, listenerTokenFile, pgFile string
 	natsServerName                       string
 	allowForeign                         bool
@@ -159,40 +163,68 @@ func (f *endpointFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&f.nats, "nats", "", "NATS URL (default: the stack's)")
 	fs.StringVar(&f.natsMon, "nats-mon", "", "NATS monitoring URL (default: the stack's)")
 	fs.StringVar(&f.pprof, "pprof", "", "Dispatch pprof base URL (default: the stack's)")
-	fs.StringVar(&f.pg, "pg", "", "direct Postgres URL of the dispatch database (default: the stack's)")
-	fs.StringVar(&f.token, "token", "", "Dispatch agent bearer (default: the stack's)")
-	fs.StringVar(&f.listenerToken, "listener-token", "", "listener bearer (default: the stack's)")
+	fs.StringVar(&f.pg, "pg", "", "direct Postgres URL of the dispatch database, with no password in it (default: the stack's)")
 	fs.StringVar(&f.pgFile, "pg-file", "", "file holding the -pg value, so no password reaches the command line")
-	fs.StringVar(&f.tokenFile, "token-file", "", "file holding the -token value, so no token reaches the command line")
-	fs.StringVar(&f.listenerTokenFile, "listener-token-file", "", "file holding the -listener-token value, so no token reaches the command line")
+	fs.StringVar(&f.tokenFile, "token-file", "", "file holding the Dispatch agent bearer (default: the stack's)")
+	fs.StringVar(&f.listenerTokenFile, "listener-token-file", "", "file holding the listener bearer (default: the stack's)")
+	f.tokenGiven.register(fs, "token", "-token-file")
+	f.listenerTokenGiven.register(fs, "listener-token", "-listener-token-file")
 	fs.StringVar(&f.natsServerName, "nats-server-name", "", "with -allow-foreign: the NATS server_name to expect (empty skips the check)")
 	fs.BoolVar(&f.allowForeign, "allow-foreign", false, "allow endpoint flags that differ from stack.json (another stack, such as a cluster copy)")
 }
 
-// credentialFile is one credential a command takes either as a value, under flag, or as the path
-// of a file holding it, under fileFlag; value is the flag's own variable, where the credential
-// lands whichever form gave it.
+// removedFlag stands where a flag that took a secret's value was: -token, -listener-token and
+// stub-embed's -key. Every argument of a process is readable by every user of its machine, in
+// /proc/<pid>/cmdline and `ps -eo args`, for as long as the process runs, so that secret comes
+// from the file the flag's -…-file form names, and the flag given at all is refused, by
+// readCredentials. Set keeps nothing of the value and refuses nothing itself: the flag package's
+// own refusal of a value quotes the value, so it would print the secret.
+type removedFlag struct {
+	given bool
+}
+
+func (r *removedFlag) String() string   { return "" }
+func (r *removedFlag) Set(string) error { r.given = true; return nil }
+
+// register registers r as flag name of fs, whose value now comes only from fileFlag.
+func (r *removedFlag) register(fs *flag.FlagSet, name, fileFlag string) {
+	fs.Var(r, name, "removed, and refused: give "+fileFlag+" instead, since a value on the command line is readable by every user of the machine")
+}
+
+// credentialFile is one credential a command takes as the path of a file holding it, under
+// fileFlag; value is where the credential lands. removed is the stand-in of the flag that took
+// its value, for a credential whose value form is gone (-token, -listener-token, -key); it is nil
+// for -pg, the one credential whose value is still taken under flag, as a connection string that
+// sets no password (pgSetsPassword).
 type credentialFile struct {
 	flag, fileFlag, path string
 	value                *string
+	removed              *removedFlag
 }
 
 // readCredentials replaces each credential's value with its file's content, trailing white space
 // trimmed, so that a file written with a final newline holds what the credential is. A credential
 // is a value that carries a secret: a Dispatch agent token, the listener token, a Postgres URL
 // with its password, the stub embedder's api-key. Every argument of every process is readable by
-// anything that can list processes (`ps -eo args`), here and on any machine an ssh carries the
-// command to, so a caller that can write a file of its own gives the file form: vm/vm.sh writes
-// one of mode 600 on the machine the command runs on, as it writes every container's settings.
+// every user of the machine (/proc/<pid>/cmdline, `ps -eo args`), here and on any machine an ssh
+// carries the command to, so a credential comes only from a file: vm/vm.sh writes one of mode 600
+// on the machine the command runs on, as it writes every container's settings, and
+// cluster/cluster.sh writes them in the runner pod for the one job that reads them.
 //
-// A credential given in both forms is refused: which was meant cannot be known, and the two may
-// name different things. A file that cannot be read, or that holds nothing, is refused by its
-// flag and its path, before the first connection, as every other input of this package is.
+// A secret on the command line is refused first, for every credential, before any file is read
+// (refuseCommandLineSecrets). A credential given in both forms is refused: which was meant cannot
+// be known, and the two may name different things. A file that cannot be read, or that holds
+// nothing, is refused by its flag and its path. Each refusal comes before the first connection,
+// as every other input of this package is refused, and none holds anything of the value.
 //
 // Every command of this package that takes a credential reads it here, and no second reader of a
-// credential file exists: the four refusals are one behaviour, and a command that spelled them
-// again would drift from it (stubembed.go, loopseed_check.go, loopseed_export.go, seedfinish.go).
+// credential file exists: the refusals are one behaviour, and a command that spelled them again
+// would drift from it (stubembed.go, loopseed_check.go, loopseed_export.go, pgstats.go,
+// seedfinish.go).
 func readCredentials(creds ...credentialFile) error {
+	if err := refuseCommandLineSecrets(creds...); err != nil {
+		return err
+	}
 	for _, c := range creds {
 		if c.path == "" {
 			continue
@@ -214,14 +246,85 @@ func readCredentials(creds ...credentialFile) error {
 	return nil
 }
 
-// readCredentialFiles reads the file form of the three endpoint flags that carry a secret: the
-// Dispatch agent token, the listener token and the Postgres URL with its password.
+// refuseCommandLineSecrets refuses, of creds, a removed flag given at all, naming its file form,
+// and a -pg value that sets a password, naming -pg-file: the two ways a secret reaches a command
+// line. A -pg given with -pg-file too is left to readCredentials' refusal of both forms.
+func refuseCommandLineSecrets(creds ...credentialFile) error {
+	for _, c := range creds {
+		switch {
+		case c.removed != nil && c.removed.given:
+			return &removedFlagError{Flag: c.flag, FileFlag: c.fileFlag}
+		case c.removed == nil && c.path == "" && pgSetsPassword(*c.value):
+			return &pgPasswordError{Flag: c.flag, FileFlag: c.fileFlag}
+		}
+	}
+	return nil
+}
+
+// credentials are the three endpoint credentials: the Dispatch agent token, the listener token
+// and the Postgres URL with its password.
+func (f *endpointFlags) credentials() []credentialFile {
+	return []credentialFile{
+		{"-token", "-token-file", f.tokenFile, &f.token, &f.tokenGiven},
+		{"-listener-token", "-listener-token-file", f.listenerTokenFile, &f.listenerToken, &f.listenerTokenGiven},
+		{"-pg", "-pg-file", f.pgFile, &f.pg, nil},
+	}
+}
+
+// readCredentialFiles reads the three endpoint credentials (credentials).
 func (f *endpointFlags) readCredentialFiles() error {
-	return readCredentials(
-		credentialFile{"-token", "-token-file", f.tokenFile, &f.token},
-		credentialFile{"-listener-token", "-listener-token-file", f.listenerTokenFile, &f.listenerToken},
-		credentialFile{"-pg", "-pg-file", f.pgFile, &f.pg},
-	)
+	return readCredentials(f.credentials()...)
+}
+
+// removedFlagError refuses a flag whose value form is removed (removedFlag).
+type removedFlagError struct {
+	Flag, FileFlag string
+}
+
+func (e *removedFlagError) Error() string {
+	return fmt.Sprintf("%s is removed: a value on the command line is readable by every user of the machine (/proc/<pid>/cmdline), so give the credential in a file of mode 600 with %s <path>", e.Flag, e.FileFlag)
+}
+
+// pgPasswordError refuses a -pg value that sets a password (pgSetsPassword).
+type pgPasswordError struct {
+	Flag, FileFlag string
+}
+
+func (e *pgPasswordError) Error() string {
+	return fmt.Sprintf("%s sets a password, and a value on the command line is readable by every user of the machine (/proc/<pid>/cmdline): give the connection string in a file of mode 600 with %s <path>, or give %s one with no password in it", e.Flag, e.FileFlag, e.Flag)
+}
+
+// pgNonSecretKeys are the connection keys pgx reads itself that hold no secret: every key of
+// pgconn's notRuntimeParams (pgconn/config.go, pgx v5.13.0) but password and sslpassword, with
+// the two other spellings it reads them under (dbname for database, ssl for sslmode).
+var pgNonSecretKeys = []string{
+	"host", "port", "database", "dbname", "user", "passfile", "connect_timeout",
+	"ssl", "sslmode", "sslkey", "sslcert", "sslcertmode", "sslrootcert", "sslnegotiation", "sslsni",
+	"krbspn", "krbsrvname", "target_session_attrs", "service", "servicefile",
+	"min_protocol_version", "max_protocol_version", "channel_binding", "require_auth",
+}
+
+// pgSetsPassword reports whether raw, a -pg value given on the command line, sets a password or
+// may: pgx's own parser reads it twice (pgconn.ParseConfigWithOptions), the second time allowing
+// the keys raw may set -- its runtime parameters, as the first read found them, and
+// pgNonSecretKeys -- so pgx refuses a password or an sslpassword wherever it would find one (the
+// userinfo, a query parameter, a keyword, any spelling it decodes to one of them), and a key pgx
+// reads that pgNonSecretKeys does not know yet as well. net/url is no such reader: it ends a
+// userinfo where pgx does not, so a password that starts with # is one pgx sends and one net/url
+// reads as a fragment, finding no user at all (TestAPostgresPasswordOnTheCommandLineIsRefused).
+// A value pgx cannot read at all is left to the command's own check of it, which refuses it as a
+// value pgx does not accept.
+func pgSetsPassword(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	config, err := pgconn.ParseConfig(raw)
+	if err != nil {
+		return false
+	}
+	allowed := append(slices.Collect(maps.Keys(config.RuntimeParams)), pgNonSecretKeys...)
+	_, err = pgconn.ParseConfigWithOptions(raw, pgconn.ParseConfigOptions{ConnStringAllowedKeys: allowed})
+	return err != nil
 }
 
 // bothCredentialFormsError refuses a credential given as a value and as a file at once.
@@ -233,13 +336,9 @@ func (e *bothCredentialFormsError) Error() string {
 	return fmt.Sprintf("%s and %s both give the same credential; pass one of them", e.Flag, e.FileFlag)
 }
 
-// tokenFlags are the endpoint flags whose values are bearer tokens, and urlFlags those whose values
-// are URLs. meta.json records the run's flags with each token replaced by redacted and each URL
-// without its credentials (recordedArgs, redactEndpoint).
-var (
-	tokenFlags = []string{"-token", "-listener-token"}
-	urlFlags   = []string{"-url", "-listener", "-nats", "-nats-mon", "-pprof", "-pg"}
-)
+// urlFlags are the endpoint flags whose values are URLs. meta.json records the run's flags with
+// each URL without its credentials (recordedArgs, redactEndpoint); no flag holds a token.
+var urlFlags = []string{"-url", "-listener", "-nats", "-nats-mon", "-pprof", "-pg"}
 
 // redactURL is raw without its userinfo and without a password query parameter, for every place
 // that records or prints an HTTP endpoint (redactEndpoint does each -nats server the same way).
@@ -378,8 +477,12 @@ func (e *missingForeignFlagError) Error() string {
 	return fmt.Sprintf("%s is required with -allow-foreign: a foreign run takes no endpoint or token from stack.json, so give every one of %s", e.Flag, strings.Join(e.All, ", "))
 }
 
-// resolve reads stack.json and resolves the endpoints. It opens no connection.
+// resolve reads stack.json and resolves the endpoints. It opens no connection. A secret on the
+// command line is refused first, before stack.json is read (refuseCommandLineSecrets).
 func (f endpointFlags) resolve() (endpoints, error) {
+	if err := refuseCommandLineSecrets(f.credentials()...); err != nil {
+		return endpoints{}, err
+	}
 	path := f.stack
 	if path == "" {
 		path = filepath.Join(loadtestRoot(), "stack.json")
@@ -397,8 +500,8 @@ func (f endpointFlags) resolve() (endpoints, error) {
 
 // resolveEndpoints takes every endpoint from st, refusing a flag that differs from it, unless
 // f.allowForeign: then every endpoint flag is required, none falls back to st, and pids stay
-// empty. A credential given as a file is read first (readCredentialFiles), so the three flags
-// that carry a secret are each given by one form or the other.
+// empty. The credentials are read first (readCredentialFiles): each token from its file, and the
+// Postgres URL from its file or from -pg.
 func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 	if st == nil && !f.allowForeign {
 		return endpoints{}, fmt.Errorf("no stack.json, and -allow-foreign is not set")
@@ -430,8 +533,8 @@ func resolveEndpoints(f endpointFlags, st *stackFile) (endpoints, error) {
 		{"-nats-mon", strings.TrimRight(f.natsMon, "/"), local("http", sv.Ports.NATSMonitor), &e.natsMon},
 		{"-pprof", strings.TrimRight(f.pprof, "/"), local("http", sv.Ports.Pprof), &e.pprof},
 		{"-pg", f.pg, fmt.Sprintf("postgres://postgres@127.0.0.1:%d/dispatch?sslmode=disable", sv.Ports.Postgres), &e.pg},
-		{"-token", f.token, sv.DispatchToken, &e.token},
-		{"-listener-token", f.listenerToken, sv.ListenerToken, &e.listenerToken},
+		{"-token-file", f.token, sv.DispatchToken, &e.token},
+		{"-listener-token-file", f.listenerToken, sv.ListenerToken, &e.listenerToken},
 	}
 	all := make([]string, len(fields))
 	for i, field := range fields {
