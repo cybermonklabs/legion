@@ -120,8 +120,10 @@ interface Box {
   top: number;
 }
 
-/** One element's box on screen, rounded to whole pixels. */
+/** One element's box on screen, rounded to whole pixels, once it shows. */
 async function boxOf(locator: Locator): Promise<Box> {
+  await expect(locator).toBeVisible();
+  // The wait above drew the element, and a drawn element has a box, so the box is there.
   const box = await locator.boundingBox();
   if (box === null) throw new Error("the element is not laid out");
   return {

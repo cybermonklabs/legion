@@ -40,6 +40,8 @@ func TestGithubEnvelopeGoldens(t *testing.T) {
 		// sjawhar/legion release.yaml push run on main), on its workflow's topic: the Legion daemon
 		// wakes a production check from it when the project names the workflow a deploy.
 		{name: "workflow-run-completed", event: "workflow_run"},
+		// A sub-issue added to an issue, on its parent's topic.
+		{name: "sub-issues-added", event: "sub_issues"},
 	}
 
 	for _, fixture := range fixtures {

@@ -2316,6 +2316,90 @@ No test file under `e2e/__tests__/` writes
 `e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
 controls.
 
+`e2e/zero-wait-probes.ts`, which `e2e/__tests__/zero-wait-probes.test.ts` runs
+over the suite, refuses a zero-wait probe whose answer decides a path, unless a
+reason stands directly above it.
+A probe is a `Locator` read whose answer is the page's state at one instant,
+waiting for nothing or at most for an element to attach: `isVisible`, `count`,
+`all`, `getAttribute`, `evaluate`, `evaluateAll`, `boundingBox` and the rest the
+guard's header lists by that rule, or a call of a wrapper that returns one.
+A probe is read by its name, so `page.evaluate(...)` is one too.
+A call on the plain identifier `Promise` is none: `Promise.all(...)` waits for
+the promises it is handed and reads no page.
+Its answer decides a path where it stands in a place TypeScript's grammar lets a
+value decide what runs next, and the guard's list of those places is the
+grammar's, enumerated by `SyntaxKind`, not the forms found so far: the condition
+of an `if` (one whose only branch throws among them), a `?:`, a `while`, a `do`
+or a `for`; a `switch`'s discriminant and each `case`; the iterable of a
+`for...of` or a `for...in` (`for (const row of await rows.all())` runs no turn
+on a page that has not drawn the rows yet, so the assertions inside it never
+run); the left operand of an `&&`, `||` or `??` whose right operand runs code,
+whatever its value goes on to (`(await menu.isVisible()) && (await menu.click())`);
+the target of an `&&=`, `||=` or `??=`; what a `?.` reads where the rest of the
+chain runs code; the source of a destructuring whose default runs code; and the
+first argument of `test.skip`, `test.fixme`, `test.slow` or `test.fail`.
+The guard reaches that place from the probe through every parent but a list of
+stops, enumerated by `SyntaxKind`: a function or a class written in place, a
+`return`, a `yield` or a `throw`, an element of an array literal or a property
+of an object literal, a comma's left operand, a `void`, the target of a plain
+`=` (a `+=` and its kin read their target, so it carries), an initializer that
+binds a name, and a statement or a declaration.
+So `await`, parentheses, `as`, `!`, an operator, a template literal,
+`(await rows.all()).length`, a key, and a call, the answer its receiver or an
+argument alike, carry the answer on: `(await menu.inputValue()).includes("B")`
+and `Boolean(await menu.isVisible())` decide the `if` they stand in.
+It refuses as well an answer bound to a name, by a declaration, a default, an
+assignment of any operator or a destructuring, that such a place reads anywhere
+in the name's scope: the function that binds it, or for an assignment the one
+that declares the name, and every function nested in it, above the binding or
+below it, since the guard reads no order of running.
+A place reads the name where the name's value reaches it as an answer written
+there would: `if (shown)`, `if (rows.length > 0)`, `if (text.includes("B"))`,
+`if (Boolean(shown))` and `for (const row of rows.slice(1))` each read it.
+So a call whose result decides is refused in both forms, on the answer in place
+and on a name bound to it.
+What the guard does not see is one class, a decision made where it does not
+read: inside a function the answer is passed into (the callee's own body
+branching on its argument or its `this`, `expect(await rows.count()).toBe(3)`, a
+callback that `(await rows.all()).forEach(...)` runs once per element, a
+getter); after the answer is returned, yielded or thrown from a function; and
+through an object property, an array element or another alias (a store into a
+property or an element, a name copied or computed from a bound name such as
+`const ok = shown`, a name bound to the probe rather than to its answer, a
+method destructured off a locator or written in brackets, a name another file
+imports).
+A probe that is only the last operand of a statement's `&&` decides nothing.
+The reason is a comment of at least eight words that ends on the line directly
+above the probe, measured as `e2e/fixed-waits.ts` measures one, and says why one
+instant's answer is safe there.
+Above a loop, the reason names the wait that settled the elements it walks, and
+that wait comes first (`await expect(rows).toHaveCount(3)` before the loop).
+A page that has not drawn its layout yet answers no to every probe, so a probe
+that stands in for a wait sends the row down the wrong path, and the row fails
+later, at a line that has nothing to do with the branch.
+A branch on what the page shows takes the shape of `settledState` of
+`e2e/settled.ts`: it reads the named states inside one `expect.poll` until one
+of them is visible, and answers the first that is.
+The guard skips a probe inside a function passed to `expect.poll`, the subject
+of `expect(...).toPass` and a page-side callback (`evaluate`, `waitForFunction`,
+`route` and the others its header lists), because each of those is read again,
+or at a moment the row did not pick; what a page-side callback runs is no probe,
+but the answer of `evaluate` and its kin is one.
+`e2e/__tests__/fixtures/zero-wait-probes.fixture.ts` holds its planted
+controls, `e2e/__tests__/fixtures/zero-wait-loops.fixture.ts`, which
+`e2e/__tests__/zero-wait-loops.test.ts` reads, its planted loops,
+`e2e/__tests__/fixtures/zero-wait-cases.fixture.ts`, which
+`e2e/__tests__/zero-wait-cases.test.ts` reads, its planted `case`, and
+`e2e/__tests__/fixtures/zero-wait-calls.fixture.ts`, which
+`e2e/__tests__/zero-wait-calls.test.ts` reads, its planted calls on an answer.
+A value read that is then checked by an `expect` that does not retry
+(`expect(await rows.count()).toBe(3)`) is the same defect: it reads one instant,
+and the check never reads again.
+No scan can tell such a read from one taken after a waiting assertion, so the
+guard does not refuse it.
+Assert the value web-first (`toHaveCount`, `toHaveText`), or read it only after
+a wait for the state it reads.
+
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
 read them from there rather than copying one: the Go reader's tests through
@@ -2637,10 +2721,11 @@ recipient order is not alphabetical, from five sessions of which one has no Disp
 one is twenty minutes stale — and `e2e/workspace.e2e.ts` asserts every surface the `person` scope opens that it fills
 (the Inbox's default list with its Later band and the document ask, which reaches its project's
 default assignee, `/agents` with both folds, the broadcast page, an issue's Conversation).
-`seedWorkspace()` expects an empty database and returns the ids it made and the Inbox rows it guarantees.
-It waits for the spec's decision block to be indexed, and that wait gives back the block id.
-`awaitSeededInbox` in `e2e/local-instance-support.ts` reads the Inbox again until those rows stand;
-both `bun run dispatch:local` and `e2e/workspace.e2e.ts` use it to assert those rows.
+`seedWorkspace({ boundMs, signal? })` expects an empty database and returns the ids it made and the pass line of its wait for the Inbox rows; an abort of `signal` (the smoke passes its Ctrl-C) stops the Inbox wait.
+It waits for the spec's decision block (`awaitDecisionBlock`), which gives back the block id, and then for the unfiltered Inbox to list exactly the rows it declares (`awaitSeededInbox`), both at the bound its caller passes.
+A Playwright row passes `expectTimeout` of `e2e/expect-timeout.ts`, so the seed gives up at the bound the row's own assertions use, before the row's clock ends the row and hides the wait's message.
+`bun run dispatch:local`, the visual review's host seed (`e2e/visual-seed.ts`) and the docs' media harness (`docs/site/media/harness.ts`) run outside Playwright and pass bounds of their own.
+Each wait of `e2e/local-instance-support.ts` takes its bound from its caller and, when it gives up, names what it waited for and the last value it read.
 
 Every real-stack spec takes its `test` from `e2e/test.ts`: it is
 Playwright's own `test` with an automatic fixture that empties the database before each row

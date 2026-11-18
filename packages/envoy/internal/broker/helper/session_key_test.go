@@ -115,7 +115,7 @@ func TestSignRequestSignsTheLifetimeItIsAsked(t *testing.T) {
 		if !resp.OK {
 			t.Fatalf("sign-request lifetime %v: %+v", lifetime, resp)
 		}
-		ro, err := record.VerifyRequestObject(resp.RequestObject, r.srv.Broker.URL, time.Minute, time.Now())
+		ro, err := record.VerifyRequestObject(resp.RequestObject, r.srv.Broker.URL.Raw(), time.Minute, time.Now())
 		if err != nil || (ro.LifetimeSeconds == nil) != (lifetime == nil) || lifetime != nil && *ro.LifetimeSeconds != *lifetime {
 			t.Fatalf("sign-request lifetime %v signed lifetime %v (%v)", lifetime, ro.LifetimeSeconds, err)
 		}
