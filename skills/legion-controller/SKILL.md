@@ -106,9 +106,11 @@ Start no replacement for a session whose `last_seen` is 20 minutes old or less, 
 
 Relaunch each claim the daemon's `unreachable-claims` notice names.
 `relaunch` stops that claim's process through its launcher and starts it again on the same session, which keeps its context, its workspace and the task it owes, so it is neither a fresh session nor a replacement of the session; the resumed session is told that its turn was cut.
-The daemon relaunches no workflow claim by itself, and its own controller claim is the one it relaunches (`skill://legion-controller/references/session.md`).
+The daemon relaunches no workflow claim by itself, and relaunches its own controller claim only where it runs the controller, under `controller: daemon` (`skill://legion-controller/references/session.md`).
 
-Some of these claims are a person's work and not yours to retry, and the daemon names each of them in a notice of its own: ask the person with a `dispatch ask` on the report issue that names the claim, its issue and the refusal, since they can have the pod replaced or the old process ended on its node.
+Some of these claims are a person's work and not yours to retry.
+The daemon names each of them in one of two ways: in a notice of its own (`relaunch-guard-held`, `relaunch-not-back`, `unreachable-exit` or `worker-locked-out`), or only in `relaunch`'s refusal, whose answer ends `This is a case for a person.` (five codes).
+For each one, ask the person with a `dispatch ask` on the report issue that names the claim, its issue and the refusal, since they can have the pod replaced or the old process ended on its node.
 Such a case stops nothing else: relaunch every other unreachable claim, the other claims of that same pod included, and relaunch again a claim the guard refused once the daemon's `relaunch-ready` notice says the guard would let it through.
 Which claims are a person's, what `relaunch` refuses and what each notice carries: `skill://legion-controller/references/unreachable-claims.md`.
 
