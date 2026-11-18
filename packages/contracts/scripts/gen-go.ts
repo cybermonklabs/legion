@@ -56,6 +56,8 @@ import {
   SEARCH_KIND_DEPTH,
   SEARCH_QUERY_HINT,
   SEARCH_QUERY_MAX,
+  STEP_AGENT_TEXT_PATTERN,
+  STEP_AGENT_TEXT_RULE_WORDS,
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
 import {
@@ -510,6 +512,16 @@ const HandoffPhaseRule = ${JSON.stringify(HANDOFF_PHASE_RULE_WORDS)}
 // packages/contracts, which the dispatch command checks a phase against, so the two accept the
 // same phases.
 const HandoffPhasePattern = ${JSON.stringify(HANDOFF_PHASE_PATTERN.source)}
+
+// StepAgentTextPattern is the form of the agent, the session and the model a step record names:
+// printable ASCII with no space, from 1 to 128 characters. Generated from STEP_AGENT_TEXT_PATTERN in
+// packages/contracts: Dispatch's step write refuses text outside it, and the Legion daemon, through
+// github.com/sjawhar/envoy/steptext, leaves such text out of the records it writes.
+const StepAgentTextPattern = ${JSON.stringify(STEP_AGENT_TEXT_PATTERN.source)}
+
+// StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
+// Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
+const StepAgentTextRule = ${JSON.stringify(STEP_AGENT_TEXT_RULE_WORDS)}
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the

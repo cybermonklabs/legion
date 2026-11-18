@@ -656,6 +656,9 @@ jobs:
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
               - 'packages/envoy/testnatsimages/*'
+              # The daemon holds a step record's session and model to the generated form of a
+              # step's agent text through this one public package, for the same reason.
+              - 'packages/envoy/steptext/*'
             # The Dispatch server, `go list -deps ./cmd/dispatch` in packages/envoy (its embedded
             # migrations and pmdoc schema included): what the daemon's outbox test builds
             # (internal/testbuild/testbuild.go:112, called from
@@ -860,6 +863,8 @@ jobs:
               # nats-server versions the daemon refuses, for the same reason.
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
+              # The door onto the form of a step record's agent text, for the same reason.
+              - 'packages/envoy/steptext/*'
             # The listener's packages, `go list -deps ./cmd/listener` in packages/envoy.
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
@@ -1048,6 +1053,7 @@ jobs:
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
+              - 'packages/envoy/steptext/*'
               - 'packages/envoy/testnatsimages/*'
               - 'packages/contracts/**'
               - 'packages/envoy-client/**'
@@ -2333,6 +2339,7 @@ jobs:
               - 'packages/envoy/sessiontiming/*'
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
+              - 'packages/envoy/steptext/*'
               - *go_workspace
               # The guides and docs the skills guard sweeps (src/skills-guard.test.ts:143-148).
               - 'AGENTS.md'
@@ -3651,6 +3658,7 @@ jobs:
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natsversion/**/*_test.go'
               - '!packages/envoy/roleholder/**/*_test.go'
+              - '!packages/envoy/steptext/**/*_test.go'
               # END generated
             # The API race job. Not packages/envoy/**, as envoy_go_race has: that root was here
             # because internal/dispatch/api's lock_level_test.go, event_insert_guard_test.go and
@@ -4080,6 +4088,8 @@ jobs:
               # nats-server versions the daemon refuses, for the same reason.
               - 'packages/envoy/subjectforms/*'
               - 'packages/envoy/natsversion/*'
+              # The door onto the form of a step record's agent text, for the same reason.
+              - 'packages/envoy/steptext/*'
             # The private-name port harness, in a job of its own: it builds the `legion` binary
             # of this head (.github/scripts/check-private-names-port.test.sh:70) and holds the
             # rules that binary carries to the frozen shell script's verdicts, case for case.
@@ -4422,6 +4432,7 @@ jobs:
               - 'packages/envoy/sessiontiming/**'
               - 'packages/envoy/subjectforms/**'
               - 'packages/envoy/natsversion/**'
+              - 'packages/envoy/steptext/**'
               - 'packages/envoy/testnatsimages/**'
               - '.omp-pin'
               - '.bun-version'

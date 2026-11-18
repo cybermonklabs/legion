@@ -467,6 +467,18 @@ const ASK_BOUND_RULE =
  */
 export const DISPATCH_HANDOFF_BODY_MAX = 262144;
 
+/** The form of the agent, the session and the model a step record names: printable ASCII with no
+ *  space, from 1 to 128 characters. The session and the model come from the agent's own frames,
+ *  and `dispatch steps` joins a record's fields with spaces, so a space or a control character in
+ *  one would shift its columns or forge a line. Generated into Go as
+ *  `contracts.StepAgentTextPattern`: Dispatch refuses a step write that names text outside it,
+ *  and the Legion daemon leaves such text out of the record it writes. */
+export const STEP_AGENT_TEXT_PATTERN = /^[!-~]{1,128}$/;
+
+/** STEP_AGENT_TEXT_PATTERN's rule in words, which Dispatch's refusal gives: generated into Go as
+ *  `contracts.StepAgentTextRule`. */
+export const STEP_AGENT_TEXT_RULE_WORDS = "printable ASCII with no space, from 1 to 128 characters";
+
 /** A handoff's phase, the `{phase}` segment of the handoff routes: a lowercase slug. Legion writes
  *  `plan`, `implement`, `test` and `review`. Generated into Go as `contracts.HandoffPhasePattern`,
  *  which the server compiles; the `handoffs.phase` check constraint holds the same rule. */

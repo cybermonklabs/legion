@@ -20,8 +20,9 @@ const defaultTask = "default"
 // StepAgent is what the daemon reads of a step's agent where it writes the step's end, the one
 // write of a step's record that names either field (endStep): the session its claim records now,
 // and the model that answered it last in that session as `<provider>/<model>`, or the model alone
-// when the frame named no provider. Either is "" where the daemon reads none, and the end then
-// leaves that field out, so the record names none.
+// when the frame named no provider. Either is "" where the daemon reads none, or reads text outside
+// the form of a step's agent text (the daemon's stepAgent), and the end then leaves that field
+// out, so the record names none.
 type StepAgent struct {
 	Session string
 	Model   string

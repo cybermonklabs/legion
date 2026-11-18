@@ -791,6 +791,14 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 		"type":       func(write *StepWrite) { write.Type = new("Review") },
 		"generation": func(write *StepWrite) { write.Generation = new(int64(0)) },
 		"issue":      func(write *StepWrite) { write.Issue = "" },
+		// The agent, the session and the model are printable ASCII with no space, at most 128
+		// characters (contracts.StepAgentTextPattern): `dispatch steps` joins a record's fields with
+		// spaces, so a space or a newline in one would shift its columns or forge a line.
+		"model":                func(write *StepWrite) { write.Model = new("first/model with spaces") },
+		"model with a newline": func(write *StepWrite) { write.Model = new("first/model\ndefault 9 step forged") },
+		"model over the bound": func(write *StepWrite) { write.Model = new("first/" + strings.Repeat("m", 123)) },
+		"session":              func(write *StepWrite) { write.Session = new("ses\tone") },
+		"agent":                func(write *StepWrite) { write.Agent = new("legion agent") },
 	} {
 		t.Run(name, func(t *testing.T) {
 			write := startOf(implementer(uuid.NewString()), minute(0))
@@ -807,6 +815,26 @@ func TestAStepWriteRefusesAValueOutsideItsForm(t *testing.T) {
 	}
 	if log := wholeLog(t, pool); len(log) != 0 {
 		t.Errorf("the refused writes left %d tuples, want none", len(log))
+	}
+}
+
+// The control of the agent text rows above: an agent, a session and a model inside the form, the
+// model at its 128-character bound with the punctuation a model id carries, are taken and read
+// back unchanged.
+func TestAStepWriteKeepsAgentTextInsideItsForm(t *testing.T) {
+	pool := storetest.Open(t).Pool
+	write := startOf(implementer(uuid.NewString()), minute(0))
+	model := "openrouter/vendor/model-4.1:beta_" + strings.Repeat("x", 128-len("openrouter/vendor/model-4.1:beta_"))
+	write.Session, write.Model = new("01a1edce-23dd-726e-b804-626dd5bb3957"), new(model)
+	if _, err := tryPut(pool, write, minute(0)); err != nil {
+		t.Fatalf("a write whose agent text is inside its form answered %v, want it taken", err)
+	}
+	steps := issueSteps(t, pool, "LEG-1")
+	if len(steps) != 1 {
+		t.Fatalf("LEG-1 reads %d steps, want 1", len(steps))
+	}
+	if got := steps[0]; got.Agent != *write.Agent || got.Session != *write.Session || got.Model != model {
+		t.Errorf("the step reads agent %q, session %q, model %q; want %q, %q, %q", got.Agent, got.Session, got.Model, *write.Agent, *write.Session, model)
 	}
 }
 

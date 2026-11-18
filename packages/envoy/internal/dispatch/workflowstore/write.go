@@ -14,14 +14,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The forms of a step's names. A task id is a plan's slug, `default` for an issue whose owner gave
-// no plan; a role and a type are a word of lowercase letters, digits and hyphens.
+// no plan; a role and a type are a word of lowercase letters, digits and hyphens. The agent, the
+// session and the model are printable ASCII with no space, at most 128 characters
+// (contracts.StepAgentTextPattern), since `dispatch steps` joins a record's fields with spaces.
 var (
-	taskForm = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
-	roleForm = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	taskForm      = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+	roleForm      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	agentTextForm = regexp.MustCompile(contracts.StepAgentTextPattern)
 )
 
 var (
@@ -230,9 +234,14 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 	if err := typeOfKind(kind, typ); err != nil {
 		return "", nil, err
 	}
-	text(AttributeAgent, write.Agent)
-	text(AttributeSession, write.Session)
-	text(AttributeModel, write.Model)
+	for _, field := range []struct {
+		name  string
+		value *string
+	}{{AttributeAgent, write.Agent}, {AttributeSession, write.Session}, {AttributeModel, write.Model}} {
+		if value := text(field.name, field.value); value != "" && !agentTextForm.MatchString(value) {
+			return "", nil, inputError("%s %q is not an agent's text: %s", field.name, value, contracts.StepAgentTextRule)
+		}
+	}
 	if err := moment(AttributeStartedAt, write.StartedAt); err != nil {
 		return "", nil, err
 	}
