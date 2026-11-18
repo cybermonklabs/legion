@@ -100,15 +100,15 @@ func TestAReleasedNameIsNotHonoured(t *testing.T) {
 // INVALID_REQUEST, a list of one null and B's list of its own S3 and a null are each 400
 // INVALID_REQUEST naming the null's index, since a null is no name, an entry that is a number
 // and a body that is a string are each 400 INVALID_REQUEST with encoding/json's whole text, which
-// names podSessionReleaseBody and its sessions field, and an account BROKER_SERVICE_LOGINS does
-// not list is 403 ACCOUNT_NOT_LISTED; 4096 entries of a name B holds no registration of are
-// admitted and release nothing. B releasing [S1, S3, S3] is answered {sessions: 2, released: 1}:
-// its own S3, and none of A's rows of S1, whose pods still trade. A, once the list no longer names
-// it, releasing [S2, S1, "has space", "", "\u0000"] is answered {sessions: 5, released: 3}, and
-// the same again, which leaves each release mark where the first call put it: a release is not
-// gated by BROKER_POD_REGISTRARS, and a name no registration could have taken is released with
-// nothing to release, a NUL byte, which Postgres refuses in text, included. No row's expires_at
-// moved.
+// names podSessionReleaseBody, and for the number its sessions field too, and an account
+// BROKER_SERVICE_LOGINS does not list is 403 ACCOUNT_NOT_LISTED; 4096 entries of a name B holds
+// no registration of are admitted and release nothing. B releasing [S1, S3, S3] is answered
+// {sessions: 2, released: 1}: its own S3, and none of A's rows of S1, whose pods still trade. A,
+// once the list no longer names it, releasing [S2, S1, "has space", "", "\u0000"] is answered
+// {sessions: 5, released: 3}, and the same again, which leaves each release mark where the first
+// call put it: a release is not gated by BROKER_POD_REGISTRARS, and a name no registration could
+// have taken is released with nothing to release, a NUL byte, which Postgres refuses in text,
+// included. No row's expires_at moved.
 func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
 	var registrars api.PodRegistrars
 	ts := newTestServerWith(t, func(d *api.Deps) { registrars = d.PodRegistrars })
@@ -169,8 +169,9 @@ func TestTheReleaseRouteReleasesOnlyTheCallersRegistrations(t *testing.T) {
 			t.Errorf("a release with %s is refused %q, want it to name %q", c.name, refusal.Error, c.names)
 		}
 	}
-	// encoding/json's error is the text of these two refusals. It names the body's type and field,
-	// and a client reads it, so the test holds each refusal to its whole text.
+	// encoding/json's error is the text of these two refusals. It names the body's type, and for
+	// the number its sessions field as well; a client reads it, so the test holds each refusal to
+	// its whole text.
 	for _, c := range []struct{ name, body, refusal string }{
 		{"an entry that is a number", `{"sessions":[1]}`,
 			"body must be one valid JSON object: json: cannot unmarshal number into podSessionReleaseBody.sessions.0 of type string"},

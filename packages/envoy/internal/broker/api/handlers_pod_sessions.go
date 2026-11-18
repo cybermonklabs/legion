@@ -322,8 +322,8 @@ type podSessionReleaseResponse struct {
 // account wrote. So a deployment lists as a registrar only an account whose pods may end the
 // trades of every pod that account registers. An account paired with itself is the common case of
 // an account whose pods may not. The caller stops every write of the names it releases first, its
-// renewal and any write in flight: a registration write by that account after the release makes
-// that registration live again.
+// renewal and any write in flight: a registration write by the caller's login account after the
+// release makes that registration live again.
 //
 // The body is exactly {"sessions": [...]}, at most 1 MiB (413 REQUEST_TOO_LARGE above it); an
 // unknown field, a body that is not JSON, and an entry that is not a string are 400
