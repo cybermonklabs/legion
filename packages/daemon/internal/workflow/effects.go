@@ -190,16 +190,16 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 // two of each task of the reviewer, in each phase, so a kind of task added later cannot be queued
 // without them.
 //
-// Only a start of the reviewer that carries a task is named, so no other row reads the record
-// for them. A reviewer's start reads the phase its issue stands in and the reviewer's row as tx
-// holds them, which is the row's commit and entry at the moment the task is queued: a start that
-// raised the entry wrote the row first in this same transaction (enter). Each start of the
-// reviewer it queues carries the typed fact that its task ends with the daemon's sentences
-// (record.SuperviseRequest.RoundNamed), which the claim's send reads, so it adds none. A start
-// whose task is the stored task of its entry, sent as stored, comes with that fact already, and
-// its task is queued as it is: it holds the sentences already. That is a fact the start carries
-// and never a reading of the task's text, which can quote either sentence, a retry's reason among
-// it.
+// Only a start of the reviewer that carries a task and does not hold the sentences already is
+// named, so no other row reads the record for them. Such a start reads the phase its issue stands
+// in and the reviewer's row as tx holds them, which is the row's commit and entry at the moment
+// the task is queued, and it then carries the typed fact that its task ends with the daemon's
+// sentences (record.SuperviseRequest.RoundNamed), which the claim's send reads, so it adds none.
+// A start whose task is the stored task of its entry - the start of the transition that raised
+// the entry, whose task enter stored through namingTheReviewRound in the same transaction, the
+// promoted worker's and the owed entry's - comes with that fact already, and is queued as it is
+// before any read: it holds the sentences already. That is a fact the start carries and never a
+// reading of the task's text, which can quote either sentence, a retry's reason among it.
 func queuedRow(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.OutboxPayload, at time.Time) (record.OutboxRow, error) {
 	start, ok := payload.(record.SuperviseRequest)
 	if !ok || start.Op != "start" || start.Task == "" || start.Role != claim.RoleReviewer || start.RoundNamed {
