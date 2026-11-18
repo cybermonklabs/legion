@@ -482,7 +482,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         appliedThisTurn = { entryId: own.entry.id, reasoned: event.reason !== undefined };
         // What the host walked for, in the provider's own words: it names the reason as
         // `Request failed: ` and the error text of the message that failed
-        // (`session/turn-recovery.ts` at the pinned tag `v18.16.0-sami.20261104-021732`), so
+        // (`session/turn-recovery.ts` at the pinned tag), so
         // `Request failed: Refusal (cyber): Declined` reads as Anthropic's `cyber` filter and
         // arms the same refusal the plugin's own walk arms, category and all.
         //

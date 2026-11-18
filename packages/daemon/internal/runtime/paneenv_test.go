@@ -58,8 +58,8 @@ func TestPaneVariableRefusalNamesWhyAndNeverTheValue(t *testing.T) {
 
 // The names that place a session are the ones the Sandbox runtime refuses in an operator's pod for
 // the same reason, read from the constants it builds its refusal from (ompsessions' session
-// variables, the pod baseline's reserved names, and ompdirs' config root variable), which this
-// package cannot import.
+// variables, the pod baseline's reserved names, and ompdirs' config root variable). ompsessions
+// imports package runtime, so runtime spells its names out.
 func TestPaneVariableRefusalCoversTheSandboxRuntimesSessionNames(t *testing.T) {
 	names := []string{ompsessions.StorageVariable, ompsessions.DSNFileVariable, ompsessions.DSNFileName, ompdirs.ConfigRootVariable}
 	for _, v := range podsafety.Variables() {

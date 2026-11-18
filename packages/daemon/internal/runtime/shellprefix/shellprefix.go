@@ -17,18 +17,21 @@ import (
 // in one persistent shell, so a `set -e`, `set -u` or `set -o pipefail` one call makes stays on and
 // cuts a later call: under `-e` a command that fails ends it, under `-u` an unset variable does,
 // and under `pipefail` a pipe whose first command exits non-zero, `cmd | head` at 141 included,
-// reads as failed. The prefix turns all three off before each command. The agent's shell has
-// sourced the operator's rc file and replays the PATH the rc left, so an rc that prepends its own
-// directories puts them ahead of the runtime's: on the devbox the dotfiles shims, whose gh is not
-// Legion's. The prefix removes every entry that is one of dirs, wherever the rc left it, keeps
-// every other entry in its order, empty ones included, and puts dirs in front, so the agent's plain
-// gh and legion are the runtime's and PATH never grows. It works on PATH with each entry wrapped in
-// its own pair of separators (`:a::b:`), where an entry equal to a dir is exactly one `:dir:`
-// match, in a variable it unsets again. It ends with `hash -r`: Oh My Pi's bash tool runs in brush,
-// which keeps a command it has looked up after PATH changes where bash forgets it, so one earlier
-// `PATH=<dir>:$PATH gh` would otherwise leave every later plain gh running that dir's. PATH is
-// already exported. Every PATH step ends in `&&`, and so does the value, because tmux splits its
-// argv only at an argument that ends in `;`; the one `;`, after the reset, is inside the value.
+// reads as failed. The agent's shell has sourced the operator's rc file and replays the PATH the
+// rc left, so an rc that prepends its own directories puts them ahead of the runtime's: on the
+// devbox the dotfiles shims, whose gh is not Legion's. The prefix removes every entry that is one
+// of dirs, wherever the rc left it, keeps every other entry in its order, empty ones included, and
+// puts dirs in front, so the agent's plain gh and legion are the runtime's and PATH never grows.
+// It works on PATH with each entry wrapped in its own pair of separators (`:a::b:`), where an
+// entry equal to a dir is exactly one `:dir:` match, in a variable it unsets again. It ends with
+// `hash -r`: Oh My Pi's bash tool runs in its embedded bash engine (pi-shell), which keeps a
+// command it has looked up after PATH changes where bash forgets it (measured in a Legion pod on
+// 2026-11-18 on 18.18.6-sami.20261117-013345 and 18.18.6-sami.20261118-091112: after
+// `export PATH=<a>:$PATH; foo` then `export PATH=<b>:$PATH; foo`, both calls ran `<a>/foo`), so
+// one earlier `PATH=<dir>:$PATH gh` would otherwise leave every later plain gh running that dir's.
+// PATH is already exported. Every PATH step ends in `&&`, and so does the value, because tmux
+// splits its argv only at an argument that ends in `;`; the one `;`, after the reset, is inside
+// the value.
 func For(dirs ...string) string {
 	const sep, rest = string(filepath.ListSeparator), "__legion_path"
 	steps := []string{rest + "=" + sep + "${PATH//" + sep + "/" + sep + sep + "}" + sep}

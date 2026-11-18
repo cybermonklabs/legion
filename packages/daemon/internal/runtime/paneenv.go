@@ -3,6 +3,8 @@ package runtime
 import (
 	"regexp"
 	"slices"
+
+	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 )
 
 // sessionPlacing are the variables that decide where Oh My Pi keeps the session a resume reads:
@@ -13,8 +15,8 @@ import (
 // OMP_SESSION_SQL_DSN). The Sandbox runtime refuses the same names in an operator's pod, from
 // ompdirs', ompsessions' and podsafety's constants (sandbox.CheckPod), and
 // TestPaneVariableRefusalCoversTheSandboxRuntimesSessionNames holds this list to those constants:
-// ompsessions imports this package, so it cannot name them here.
-var sessionPlacing = []string{"OMP_CONFIG_ROOT", "OMP_SESSION_SQL_DSN", "OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PI_CODING_AGENT_DIR", "PI_CONFIG_DIR"}
+// ompsessions imports this package, so its names are spelled out here.
+var sessionPlacing = []string{ompdirs.ConfigRootVariable, "OMP_SESSION_SQL_DSN", "OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PI_CODING_AGENT_DIR", "PI_CONFIG_DIR"}
 
 // ClaudeConfigDirVariable is the variable a Claude Code worker's own configuration directory is
 // named in, under either runtime (claudelaunch.Environment): the claim's session transcripts, MCP

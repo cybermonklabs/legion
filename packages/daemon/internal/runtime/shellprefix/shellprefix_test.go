@@ -10,10 +10,10 @@ import (
 	"testing"
 )
 
-// The exact bytes: Oh My Pi runs the prefix verbatim before every command, so a change in the
-// opening reset, in quoting, in the closing `hash -r` or in the trailing `&&` is a change in what
-// every agent's shell does.
-func TestForIsTheAssignmentThatPutsTheDirectoriesFirst(t *testing.T) {
+// The exact bytes, the opening reset and then the PATH steps: Oh My Pi runs the prefix verbatim
+// before every command, so a change in the opening reset, in quoting, in the closing `hash -r` or
+// in the trailing `&&` is a change in what every agent's shell does.
+func TestForResetsTheShellThenPutsTheDirectoriesFirst(t *testing.T) {
 	got := For("/legion/worker-bin", "/opt/legion/bin")
 	want := `set +e +u +o pipefail; __legion_path=:${PATH//:/::}: && ` +
 		`__legion_path=${__legion_path//:'/legion/worker-bin':/} && ` +
@@ -110,10 +110,10 @@ func TestThePrefixResolvesItsDirectoriesAheadOfAnRcsAndIsStable(t *testing.T) {
 	}
 }
 
-// runCalls runs calls the way Oh My Pi's executor does: one bash, without the operator's profile
-// or rc, reading `<prefix> <call>` from its stdin, one line a call. It returns what the calls
-// printed on stdout and on stderr; bash exiting non-zero is no failure here, since a setting that
-// cuts a call can end the shell.
+// runCalls runs calls in one persistent bash, with no profile and no rc so the test is hermetic,
+// reading `<prefix> <call>` lines from its stdin, one line a call: a stand-in for the one shell
+// Oh My Pi's bash tool keeps. It returns what the calls printed on stdout and on stderr; bash
+// exiting non-zero is no failure here, since a setting that cuts a call can end the shell.
 func runCalls(t *testing.T, prefix string, calls ...string) (stdout, stderr string) {
 	t.Helper()
 	var script strings.Builder
@@ -144,7 +144,7 @@ func TestThePrefixTurnsOffWhatAnEarlierCallSet(t *testing.T) {
 	}
 	for _, tc := range []struct{ set, call, want, cut string }{
 		{"set -e", "false; echo ok", "ok\n", ""},
-		{"set -u", `echo "${UNSET_O6_VAR}x"; echo ok`, "x\nok\n", ""},
+		{"set -u", `echo "${__legion_unset_variable}x"; echo ok`, "x\nok\n", ""},
 		{"set -o pipefail", "false | true; echo $?", "0\n", "1\n"},
 	} {
 		if got, stderr := runCalls(t, prefix, tc.set, tc.call); got != tc.want {

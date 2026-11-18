@@ -154,6 +154,13 @@ func TestPluginManifestPathIsWhereOhMyPiResolvesItsPluginsRoot(t *testing.T) {
 		// PI_CONFIG_DIR under HOME when that is set, and its XDG data root still wins when that
 		// exists (getConfigRootOverride, getBaseConfigRoot, DirResolver's constructor).
 		{
+			name: "an absolute OMP_CONFIG_ROOT names the config root, over PI_CONFIG_DIR",
+			env: func(home, xdg string) map[string]string {
+				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "OMP_CONFIG_ROOT": filepath.Join(home, "omp-root"), "PI_CONFIG_DIR": ".omp-alt"}
+			},
+			want: func(home, _ string) string { return manifestAt(filepath.Join(home, "omp-root")) },
+		},
+		{
 			name: "PI_CONFIG_DIR names the config root under HOME",
 			env: func(home, xdg string) map[string]string {
 				return map[string]string{"HOME": home, "XDG_DATA_HOME": xdg, "PI_CONFIG_DIR": ".omp-alt"}

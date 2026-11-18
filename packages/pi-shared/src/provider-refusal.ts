@@ -12,9 +12,9 @@
  *
  * Every provider writes its own refusal text, and the host hands an extension the message the
  * provider left, not a code, so the texts below are matched as Oh My Pi writes them at the pinned
- * tag `v18.16.0-sami.20261104-021732`. The module reads its input as `unknown` and narrows it
- * field by field, as `./phase-stall` does: a host whose message shape differs falls through to
- * `clean` rather than throwing inside an event handler.
+ * tag. The module reads its input as `unknown` and narrows it field by field, as `./phase-stall`
+ * does: a host whose message shape differs falls through to `clean` rather than throwing inside an
+ * event handler.
  */
 
 import type { AgentEndEvent } from "./pi-types";

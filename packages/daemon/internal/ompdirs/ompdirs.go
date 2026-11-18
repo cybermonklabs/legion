@@ -177,28 +177,21 @@ func NormalizeProfile(requested string) (string, bool) {
 	return profile, true
 }
 
-// configRoot is the profile-independent config root Oh My Pi started under env reads
-// (getBaseConfigRoot): OMP_CONFIG_ROOT when, trimmed and with a leading `~` expanded against the
-// home directory (ompHome), it is an absolute path, cleaned (getConfigRootOverride,
-// resolveAbsoluteDir); else PI_CONFIG_DIR, else `.omp`, under the home directory
-// (getConfigDirName). A relative, empty or blank OMP_CONFIG_ROOT is ignored, as Oh My Pi ignores
-// it.
+// configRoot is the profile-independent config root Oh My Pi started under env reads, as
+// ProfileRoot's config-root bullet sets it out (getBaseConfigRoot).
 func configRoot(env map[string]string) (string, error) {
-	if override := strings.TrimSpace(env[ConfigRootVariable]); override != "" {
-		if override == "~" || strings.HasPrefix(override, "~/") || strings.HasPrefix(override, `~\`) {
-			home, err := ompHome(env)
-			if err != nil {
-				return "", err
-			}
-			override = home + override[1:]
-		}
-		if filepath.IsAbs(override) {
-			return filepath.Clean(override), nil
-		}
+	override := strings.TrimSpace(env[ConfigRootVariable])
+	if filepath.IsAbs(override) {
+		return filepath.Clean(override), nil
 	}
 	home, err := ompHome(env)
 	if err != nil {
 		return "", err
+	}
+	if override == "~" || strings.HasPrefix(override, "~/") || strings.HasPrefix(override, `~\`) {
+		if expanded := home + override[1:]; filepath.IsAbs(expanded) {
+			return filepath.Clean(expanded), nil
+		}
 	}
 	return filepath.Join(home, cmp.Or(env["PI_CONFIG_DIR"], ".omp")), nil
 }

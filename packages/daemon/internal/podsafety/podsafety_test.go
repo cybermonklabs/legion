@@ -15,9 +15,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 )
 
-// Variables are two of the three that place a pod's sessions, both reserved to the runtime, and
-// nothing else: the third, OMP_CONFIG_ROOT, is not set (the package doc says why), nothing else is
-// set on a pod's agent, so nothing of a repository's .env is held off beyond those two, and no
+// Variables are two of the variables that place a pod's sessions, both reserved to the runtime,
+// and nothing else: another, OMP_CONFIG_ROOT, is not set (the package doc says why), nothing else
+// is set on a pod's agent, so nothing of a repository's .env is held off beyond those two, and no
 // settings overlay of Legion's reaches PI_CONFIG_FILES.
 func TestVariablesAreTheTwoThatPlaceSessions(t *testing.T) {
 	want := []Variable{{Name: "PI_CONFIG_DIR", Reserved: placesSessions}, {Name: "OMP_SESSION_STORAGE", Reserved: placesSessions}}
@@ -336,10 +336,10 @@ func TestARepositorysSettingsReachTheAgentUnderTheOperators(t *testing.T) {
 // directory under it: with EnsureStateHome applied, `omp models list` (which writes a log; `omp
 // config get` writes none) logs under `$XDG_STATE_HOME/omp/profiles/legion/logs` and the config
 // root's profile gets no `logs`; without it, the log lands under the config root's profile and the
-// state home stays empty. The config root is `$HOME/.omp`, or `$OMP_CONFIG_ROOT` where that names a
-// directory, here one outside HOME, which then gets the log while HOME's profile gets none. Each
-// way ompdirs.StateRoot answers the root the log landed under, so the port, the shim and the binary
-// agree on the rule.
+// state home stays empty. The config root is `$HOME/.omp`, or `$OMP_CONFIG_ROOT` where that names
+// an absolute directory, here one outside HOME, which then gets the log while HOME's profile gets
+// none. Each way ompdirs.StateRoot answers the root the log landed under, so the port, the shim and
+// the binary agree on the rule.
 func TestThePinnedOhMyPiRootsItsStateUnderTheStateHomeOnlyWhereTheShimMadeTheProfileDirectory(t *testing.T) {
 	omp := testbin.OMP(t)
 	for name, tc := range map[string]struct{ ensured, configRoot bool }{

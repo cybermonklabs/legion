@@ -395,11 +395,15 @@ exit %[2]d
 	if err := os.WriteFile(omp, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the recording omp: %v", err)
 	}
+	// Oh My Pi's directories are this HOME's: the plugin gate reads the process environment through
+	// ompdirs.ProfileRoot, so each variable that would move them is cleared, OMP_CONFIG_ROOT, which
+	// ProfileRoot honours over PI_CONFIG_DIR, included.
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("OMP_PROFILE", "")
 	t.Setenv("PI_CONFIG_DIR", "")
+	t.Setenv("OMP_CONFIG_ROOT", "")
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("PATH", "/usr/bin:/bin")
 	t.Setenv("LEGION_OMP_PATH", omp)
