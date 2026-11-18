@@ -567,31 +567,39 @@ func TestARatingIsWrittenOnceInEitherOrder(t *testing.T) {
 }
 
 // An issue that ran three times has three plans and three retros. The third run's plan is its
-// owner's, with the document, the version and two tasks in the order the owner gave them, not by
-// id; the plan write answers it whole. The read lists that plan, the highest generation, though the
-// first two runs' plans were written after it, and the three ratings whole, in the order the retros
-// ran: each its own score, reason, record and end. The scores (3, 1, 4) and the reasons ("The
-// review…", "The plan…", "Two tasks…") are each in neither ascending nor descending order as the
-// retros ran, so a sort of the ratings by either, in either direction, is seen; with two retros one
-// direction of each always matches the order they ran in.
+// owner's, with the document, a version that is no generation of the issue, and three tasks in
+// the order the owner gave them, which is neither order of their ids; the plan write answers it
+// whole. The plans were written in the order of generations 1, 3 and 2, so the owner's plan is
+// neither the first nor the last made, and its id is neither the least nor the greatest of the
+// three. The read lists that plan, the highest generation, and the three ratings whole, in the
+// order the retros ran: each its own score, reason, record and end. The scores (3, 1, 4) and the
+// reasons ("The review…", "The plan…", "Two tasks…") are each in neither ascending nor descending
+// order as the retros ran, so a sort of the ratings by either, in either direction, is seen; with
+// two retros one direction of each always matches the order they ran in.
 func TestAnIssueWithThreeRetrosHasThreeRatings(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	daemon := daemonSession("LEG")
-	document, version := uuid.NewString(), 3
-	owners := model.PlanRecord{ID: uuid.NewString(), Issue: issue, Generation: 3, Source: "owner", ArtifactID: &document, Version: &version,
-		Tasks: []model.PlanTask{{ID: "web", Steps: []string{"planner", "implementer"}}, {ID: "api", Steps: []string{"implementer", "reviewer:security"}}}}
+	document, version := uuid.NewString(), 7
+	owners := model.PlanRecord{ID: "50000000-0000-4000-8000-000000000000", Issue: issue, Generation: 3, Source: "owner", ArtifactID: &document, Version: &version,
+		Tasks: []model.PlanTask{
+			{ID: "web", Steps: []string{"planner", "implementer"}},
+			{ID: "api", Steps: []string{"implementer", "reviewer:security", "tester"}},
+			{ID: "docs", Steps: []string{"writer"}},
+		}}
+	putPlanRecordOK(t, handler, issue, "90000000-0000-4000-8000-000000000000", defaultPlanBody(daemon, 1))
 	written := putPlanRecordOK(t, handler, issue, owners.ID, map[string]any{
 		"actor": daemon, "generation": 3, "source": "owner", "artifact_id": document, "version": version,
 		"tasks": []map[string]any{
-			{"id": "web", "steps": []string{"planner", "implementer"}}, {"id": "api", "steps": []string{"implementer", "reviewer:security"}},
+			{"id": "web", "steps": []string{"planner", "implementer"}},
+			{"id": "api", "steps": []string{"implementer", "reviewer:security", "tester"}},
+			{"id": "docs", "steps": []string{"writer"}},
 		},
 	})
 	if !reflect.DeepEqual(written, owners) {
 		t.Fatalf("the owner's plan write answers %+v, want %+v", written, owners)
 	}
-	putPlanRecordOK(t, handler, issue, uuid.NewString(), defaultPlanBody(daemon, 1))
-	putPlanRecordOK(t, handler, issue, uuid.NewString(), defaultPlanBody(daemon, 2))
+	putPlanRecordOK(t, handler, issue, "10000000-0000-4000-8000-000000000000", defaultPlanBody(daemon, 2))
 	retros := map[int]struct {
 		started time.Time
 		rating  int
