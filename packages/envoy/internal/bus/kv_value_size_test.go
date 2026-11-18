@@ -27,7 +27,7 @@ func TestAKeyValueWriteOfAValueTooLargeForTheBusIsErrTooLarge(t *testing.T) {
 		t.Fatalf("jetstream: %v", err)
 	}
 	const valueBound = 4096
-	kv, err := EnsureKeyValue(client.Conn, js, &nats.KeyValueConfig{Bucket: "kv_value_size", Storage: nats.MemoryStorage, MaxValueSize: valueBound})
+	kv, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: "kv_value_size", Storage: nats.MemoryStorage, MaxValueSize: valueBound})
 	if err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}

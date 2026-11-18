@@ -40,7 +40,7 @@ func TestAMalformedChunkKeyIsRefusedAndPurgesNothing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: "kvchunk_purge", Storage: nats.MemoryStorage})
+	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: "kvchunk_purge", Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("create the bucket: %v", err)
 	}

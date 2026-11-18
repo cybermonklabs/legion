@@ -27,7 +27,7 @@ func TestReadAnswersADamagedRecordWithNoLayout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: "kvchunk_read", Storage: nats.MemoryStorage})
+	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: "kvchunk_read", Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("create the bucket: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestReadOfAManifestARewriteReplacedAnswersTheNewRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: "kvchunk_reread", Storage: nats.MemoryStorage})
+	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: "kvchunk_reread", Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("create the bucket: %v", err)
 	}

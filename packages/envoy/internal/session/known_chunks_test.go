@@ -170,7 +170,7 @@ func newMarkerRig(t *testing.T, deny ...string) markerRig {
 	t.Cleanup(conn.Close)
 	clock := &knownClock{at: time.Now()}
 	logs := &lockedLog{}
-	known, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1), WithKnownSessionClock(clock.Now),
+	known, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1), WithKnownSessionClock(clock.Now),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
@@ -357,7 +357,7 @@ func TestTheChunkMarkerPassLeavesARecordsOwnMarker(t *testing.T) {
 // openKnownOn opens the known-session store on conn with the clock now and waits for its cache.
 func openKnownOn(t *testing.T, conn *nats.Conn, now func() time.Time) *KnownSessions {
 	t.Helper()
-	known, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
+	known, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}

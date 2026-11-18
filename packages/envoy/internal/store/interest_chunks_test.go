@@ -288,7 +288,7 @@ func TestAReaderDuringRewritesGetsOneWholeRecord(t *testing.T) {
 func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
 	clock := &manualClock{at: time.Now()}
-	reg, err := Open(conn, WithReplicas(1), WithClock(clock.Now))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -497,7 +497,7 @@ func TestAWriteTheBucketRefusedLeavesNoChunkOfItsOwn(t *testing.T) {
 func TestAFencedDeleteOfAChunkedRecordLeavesNoChunk(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
 	clock := &manualClock{at: time.Now()}
-	reg, err := Open(conn, WithReplicas(1), WithClock(clock.Now))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -583,7 +583,7 @@ func (kv deleteFailingKeyValue) Delete(key string, opts ...natsgo.DeleteOpt) err
 func TestAReaperPassCollectsChunksWhenItsReapFailed(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
 	clock := &manualClock{at: time.Now()}
-	reg, err := Open(conn, WithReplicas(1), WithClock(clock.Now))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

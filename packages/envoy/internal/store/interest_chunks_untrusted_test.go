@@ -45,7 +45,7 @@ func (kv historyFailingWatch) Watch(ctx context.Context, keys string, opts ...je
 func TestADeleteThatReadNothingAndCannotReadHistoryKeepsTheRow(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
 	clock := &manualClock{at: time.Now()}
-	reg, err := Open(conn, WithReplicas(1), WithClock(clock.Now))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -206,7 +206,7 @@ func (kv missingGetKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
 func TestADeleteThatReadNothingKeepsTheChunkedRowItsCacheHolds(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
 	clock := &manualClock{at: time.Now()}
-	reg, err := Open(conn, WithReplicas(1), WithClock(clock.Now))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
