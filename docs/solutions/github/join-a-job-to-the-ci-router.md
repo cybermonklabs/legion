@@ -127,6 +127,10 @@ So the cost is a distribution rather than a number, and what sets it is how busy
 queue is at the moment the last of the verdict job's needs ends.
 The verdict stays a job regardless, because a late verdict is right while a verdict filed in
 another workflow's suite blocks the head until a person re-runs it.
+Those three readings were taken while the job ran on `ubuntu-24.04`. It runs on
+`ubuntu-24.04-arm` now, with `changes`, `pr-title` and `cancel-started`. That pool queues apart
+from the x86_64 one, and by the time the last need ends the run's other arm64 jobs have long
+started, so the wait is short: 14 s on the run the "Choose the runner" section below measures.
 
 Two things still run outside that job. The `ci-ok-report` step every other job ends with posts
 the failing `ci-ok` of a merge-group run that job's own result decides — its failure or its
@@ -363,17 +367,20 @@ writes the default branch's scope — a push to main — leaves an entry every l
 the fills live in workflows that run there.
 
 - Give `actions/setup-go` `cache: false` and `id: setup-go`.
-- Restore with `actions/cache/restore`, keyed on the Go version setup-go installed
-  (`key: <family>-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}`), with the
-  family's prefix as `restore-keys`
-  (`restore-keys: ${{ format('<family>-{0}-', runner.os) }}`; the families are `go-daemon`,
-  `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-infra`, `go-notices`). In `ci.yaml` that
-  fallback applies on every run, a dispatched one on main included, because no job there saves.
-  A job that does save keeps the prefix off main alone
-  (`restore-keys: ${{ github.ref != 'refs/heads/main' && format('<family>-{0}-', runner.os) || '' }}`),
+- Restore with `actions/cache/restore`, keyed on the runner's architecture and the Go version
+  setup-go installed
+  (`key: <family>-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}`),
+  with the family's prefix as `restore-keys`
+  (`restore-keys: ${{ format('<family>-{0}-{1}-', runner.os, runner.arch) }}`; the families are
+  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-infra`, `go-notices`). In
+  `ci.yaml` that fallback applies on every run, a dispatched one on main included, because no job
+  there saves. A job that does save keeps the prefix off main alone
+  (`restore-keys: ${{ github.ref != 'refs/heads/main' && format('<family>-{0}-{1}-', runner.os, runner.arch) || '' }}`),
   so the entry it saves after a Go bump holds nothing the older Go built; docs-site.yaml's build,
-  which docs-pages.yaml calls on main, is the one such job. Each family keeps one
-  entry, refreshed only when Go is bumped. Do not
+  which docs-pages.yaml calls on main, is the one such job. The architecture is in the key because
+  a build cache holds the objects of the architecture that compiled them: without it, a job on
+  `ubuntu-24.04-arm` restores an entry an x86_64 runner filled and compiles every object again.
+  Each family keeps one entry per runner architecture, refreshed only when Go is bumped. Do not
   key on go.sum: every go.sum change would leave a whole entry, up to a gigabyte, for seven days. A
   go.sum change downloads only the changed modules, and Go's build cache is content-addressed, so a
   stale entry costs a run only what changed. Share a family only with the jobs that build the same
@@ -384,13 +391,35 @@ the fills live in workflows that run there.
   restores is filled by `.github/workflows/ci-caches.yaml`, which runs on a push to main, looks
   each key up (`lookup-only: true`, no `restore-keys`) and, only on a miss, runs what the job
   builds and saves it under exactly the key and paths the restore names; `check-ci-filters.sh`
-  holds the save to the restore and fails when the two drift. `go-docs` is the exception:
-  docs-pages.yaml saves it on that same push, from the build job it shares with ci.yaml's docs
-  job.
+  holds the save to the restore and fails when the two drift. The fill runs on every runner a
+  job restoring that family runs on, one matrix leg per runner where there are two. `go-docs` is
+  the exception: docs-pages.yaml saves it on that same push, from the build job it shares with
+  ci.yaml's docs job.
 - The release workflows' Go builds (release.yaml's `legion_build`, release-envoy-infra.yaml's
   `build`) restore `go-daemon` and `go-envoy-infra` and save nothing, so they keep the prefix as
   `restore-keys` on main too: an entry they never save cannot grow.
 - `.github/actions/setup-bun` reads and writes its cache only on main; use it as it is.
+
+## Choose the runner: ubuntu-24.04-arm unless the job needs an x86_64 machine
+
+A new job runs on `ubuntu-24.04-arm`. The two hosted pools queue apart, and both queue. On
+2026-11-16 a job waited 456 s for an `ubuntu-24.04` runner at the median and 678 s at the 90th
+percentile. On the run that first moved this repository's jobs to arm64 (run 44069656523,
+2026-11-17), the 24 `ubuntu-24.04-arm` jobs waited 217 s at the median and 542 s at most, against
+890 s and 1428 s for the 19 `ubuntu-24.04` ones: an arm64 job created with twenty others waits its
+turn too, and the gating jobs (`lint`, `ci-ok`, `changes`, `pr-title`) started in 7 to 23 s. So
+the gain is a second pool, and gating jobs that no longer wait behind the x86_64 queue; it is not
+zero wait. A job goes on `ubuntu-24.04` only for a reason of the machine,
+and ci.yaml's "Runners" paragraph lists each one: a tool with no arm64 row in
+`.github/ci-tools.yaml`, the pinned Oh My Pi build (linux-x64 alone), a browser, an image built
+for linux/amd64, or a build that must match a release built on `ubuntu-24.04`. A Go build that
+sets no `CGO_ENABLED` is that last kind: Go turns cgo on for a native build where gcc is present
+and off for a cross build, so the same command links a different pair of binaries on each runner.
+That is why envoy-go-checks, which packs the release's listener archives that way, stays on
+`ubuntu-24.04`. A job that installs a tool on arm64 needs that tool's `<tool>-aarch64` row, which
+`check-ci-tools.sh` holds to the version of the `<tool>` row, an install action that picks the
+row from `uname -m`, and a case of that row in the tool-fallback-arm job; a Go cache family it
+restores needs a fill on that runner (the section above).
 
 ## The merge queue runs the router too
 
@@ -404,8 +433,8 @@ What skips a
 group does so on purpose, and worker-image is the one job that does (pull request only, so it is
 in `CI_OK_PULL_REQUEST_ONLY`; main's image builds are release.yaml's). The queued pull request's
 text is checked on the group by ci.yaml's `pr-title` job, which finds it with
-find-pr-payload.sh; pr-title.yaml runs on an edit and a review alone, and a group carries
-neither. The nine slow suites go the
+find-pr-payload.sh; pr-title.yaml runs on an edit alone, which a group never
+carries. The nine slow suites go the
 other way: the queue is where their result normally comes from, and a pull request runs them only
 when it carries the label `full-ci`. The
 docs job runs on a group and on a pull request alike; docs-pages.yaml builds and publishes main's

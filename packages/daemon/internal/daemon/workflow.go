@@ -327,10 +327,11 @@ func appAttempt(attempt func(context.Context) error) func(context.Context) bootp
 // appLoginsAtBoot reads each App's bot login under its own JWT (appauth.Logins), which needs no
 // installation, so a daemon serving no repository yet still knows the review App's login, as one
 // attempt run again after a failure GitHub reports as its own trouble (appauth.TransientError); any
-// other failure is refused at once. It returns the review App's login: the engine judges a review
-// by the login that authored it (workflow's byReviewer), so one App configured for both roles
-// would submit every role's review under the one login, and is refused, as is a review App that
-// names no login.
+// other failure is refused at once. It returns the review App's login: the engine tells the review
+// App's reviews from every other account's by the login that authored them, and the reviewer's own
+// among those by the session their Legion footer names, which must be the one the reviewer's claim
+// records (workflow's byReviewer), so one App configured for both roles would submit every role's
+// review under the one login, and is refused, as is a review App that names no login.
 func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger) (string, error) {
 	logins := map[appauth.AppRole]string{}
 	err := bootprobe.Run(ctx, "GitHub App logins read", appMintRetry, log, appAttempt(func(ctx context.Context) error {

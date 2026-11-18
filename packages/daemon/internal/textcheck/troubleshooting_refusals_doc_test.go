@@ -11,7 +11,7 @@ import (
 // The refusal table of the troubleshooting page - the table under its `## The daemon will not
 // start` heading - is held to the daemon by cmd/legion's
 // TestTheTroubleshootingTableHoldsEveryRefusalToAMessageTheLoaderProduces, which drives a fixture
-// per row and holds the row's `It says` text to the refusal `legion start --check-config` prints.
+// per row and holds the row's `It says` text to the refusal `legion config check` prints.
 // That comparison is in two halves, because a test that reads the guide puts the guide in its
 // job's filter — a declared read applies to every compiled source file of a run — and a
 // documentation-only edit would then start the whole daemon Go lane. The product half reads

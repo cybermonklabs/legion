@@ -81,7 +81,7 @@ import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
-import { clearReplyDraft } from "./reply-drafts";
+import { UnsentText } from "./UnsentText";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 import { useAskHandOn } from "./useAskHandOn";
 
@@ -482,11 +482,6 @@ export function AskCard({
   // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
   // round-trips down from the parent.
   const currentAsk = completed ?? displayedAsk;
-  // A resolved ask takes no more replies, so an unsent one has nowhere to go.
-  const resolved = displayedAsk.state === "resolved" || currentAsk.state === "resolved";
-  useEffect(() => {
-    if (resolved) clearReplyDraft(displayedAsk.id);
-  }, [displayedAsk.id, resolved]);
   // The count comes from `displayedAsk`, never from `completed`: answering an ask does not move
   // a backlink count, and the answer response is the one ask shape that carries no count.
   const referencedByCount = displayedAsk.referenced_by_count ?? 0;
@@ -681,18 +676,12 @@ export function AskCard({
           onChangeAnswer={canChangeAnswer ? startChanging : undefined}
         />
         {unsentAnswer === "" ? null : (
-          <div
-            className={`mt-3 rounded-xl border p-3 ${borderDefault}`}
-            data-testid="ask-unsent-answer"
-          >
-            <p className={`text-xs ${textMutedOnSurface}`}>
-              This question closed before you sent your answer, so it was not sent. Your text is
-              here to copy.
-            </p>
-            <p className={`mt-1 text-sm whitespace-pre-wrap ${textPrimaryOnSurface}`}>
-              {unsentAnswer}
-            </p>
-          </div>
+          <UnsentText
+            className="mt-3"
+            testId="ask-unsent-answer"
+            text={unsentAnswer}
+            why="This question closed before you sent your answer, so it was not sent. Your text is here to copy."
+          />
         )}
         {answerFailure === null ? null : <QueryError message={answerFailure.message} />}
         {referencedByNode}

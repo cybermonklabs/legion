@@ -8,23 +8,23 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-const workspaceCacheUsage = "legion workspace-init cache --repo <owner>/<repo> --root <dir> [--listen :8418] [--refresh 10m]"
-
-func runWorkspaceCache(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("workspace-init cache", "usage: "+workspaceCacheUsage, stderr)
-	repo := flags.String("repo", "", "repository as <owner>/<name> (required)")
-	root := flags.String("root", "", "the cache's own volume, where the bare clone lives (required)")
-	listen := flags.String("listen", fmt.Sprintf(":%d", repocache.Port), "the address the cache serves /healthz and /tar on")
-	refresh := flags.Duration("refresh", 10*time.Minute, "how long between fetches from GitHub")
-	if code, ok := parseWorkspaceInitFlags(flags, args, stderr); !ok {
-		return code
-	}
-	return workspaceInitExit(flags, workspaceCache(ctx, *repo, *root, *listen, *refresh, stdout), stderr)
+func newWorkspaceCacheCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{Use: "cache --repo <owner>/<repo> --root <dir> [--listen :8418] [--refresh 10m]", Short: "serve a repository cache's bare clone, fetching it from GitHub on a schedule", Hidden: true, Args: noArguments}
+	repo := cmd.Flags().String("repo", "", "repository as <owner>/<name> (required)")
+	root := cmd.Flags().String("root", "", "the cache's own volume, where the bare clone lives (required)")
+	listen := cmd.Flags().String("listen", fmt.Sprintf(":%d", repocache.Port), "the address the cache serves /healthz and /tar on")
+	refresh := cmd.Flags().Duration("refresh", 10*time.Minute, "how long between fetches from GitHub")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		return workspaceInitExit(cmd, workspaceCache(ctx, *repo, *root, *listen, *refresh, stdout), stderr)
+	})
+	return cmd
 }
 
 // workspaceCache is a cache pod's one process (repocache.Serve): it reads --repo before anything

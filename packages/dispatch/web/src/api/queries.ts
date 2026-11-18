@@ -430,15 +430,17 @@ interface DeliveryLiveBodies {
   readonly pipeline: DeliveryPipelineResponse;
 }
 
-/** The live view's answer, which is the body of the GET route its kind mirrors. */
-function subscribeLive<V extends DeliveryLiveView>(
+/** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
+ *  this page subscribes — timeline, measures and pipeline — are keyed here; the socket serves
+ *  other kinds this page does not read. */
+function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
-  view: V
-): Promise<DeliveryLiveBodies[V["kind"]]> {
+  view: DeliveryLiveView & { readonly kind: K }
+): Promise<DeliveryLiveBodies[K]> {
   // The socket answers each view with its own route's body (packages/contracts DeliveryLiveView);
   // the frame carries the union, and the view's kind names the member.
   return liveSocketFor(context.client).subscribe(context.queryKey, view) as Promise<
-    DeliveryLiveBodies[V["kind"]]
+    DeliveryLiveBodies[K]
   >;
 }
 
@@ -485,4 +487,13 @@ export const deliverySettingsQuery = () =>
   queryOptions({
     queryKey: ["delivery-settings"],
     queryFn: () => api.getDeliverySettings(),
+  });
+
+/** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
+ *  project is its own entry: the Settings page's Legion section reads one entry per project
+ *  (`useLegionDaemons`), since no route lists them. */
+export const legionDaemonQuery = (project: string) =>
+  queryOptions({
+    queryKey: ["legion-daemon", project],
+    queryFn: () => api.getLegionDaemon(project),
   });

@@ -134,6 +134,10 @@ type AppContextOptions struct {
 	// (brokerTokenVerifier). See api.DepsInput.
 	BrokerTokens *brokertoken.Verifier
 	AgentStream  agentstream.Source
+	// AgentPublisher queues a person's targeted message on its session's own subject when no store
+	// of the listener's holds that session: cmd/dispatch's NATS client, its recorder under the
+	// test hooks with NATS disabled, and nil otherwise. See api.Deps.AgentPublisher.
+	AgentPublisher api.AgentPublisher
 	// Lifetime is the process context the API's background work runs on, which New passes to
 	// api.Register as its lifetime; required, since api.Register refuses a nil one.
 	Lifetime context.Context
@@ -212,6 +216,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OIDC:                   opts.OIDC,
 		BrokerTokens:           opts.BrokerTokens,
 		AgentStream:            opts.AgentStream,
+		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
 		Files:                  opts.Files,
@@ -294,12 +299,23 @@ type router struct {
 // cancelled; its ResumeDeliveries is the delivery sweep's pass the maintenance loop runs
 // (api.RunMaintenanceSweep).
 func New(ctx *AppContext) (http.Handler, api.Background) {
+	mux := http.NewServeMux()
+	r, background := mount(ctx, mux)
+	if ctx.devSignInHost == "" {
+		return r.enforceCookieOrigin(mux), background
+	}
+	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+}
+
+// mount builds New's router and mounts every route the server serves on mux, the API's table
+// among them (api.Register), so a mux that keeps what is mounted on it reads the server's routes
+// from the mounting itself (TestAKeyedWriteNeverRunsUnkeyed).
+func mount(ctx *AppContext, mux api.RouteMux) (*router, api.Background) {
 	r := &router{
 		ctx:          ctx,
 		retainedHeld: semaphore.NewWeighted(maxRetainedBytesHeld),
 		assets:       newAssetCache(maxCachedAssetBytes),
 	}
-	mux := http.NewServeMux()
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
 	mux.HandleFunc("GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
@@ -313,11 +329,10 @@ func New(ctx *AppContext) (http.Handler, api.Background) {
 		r.eventHead = background.EventHead
 	}
 	mux.HandleFunc("/", r.staticHandler)
-	if ctx.devSignInHost == "" {
-		return r.enforceCookieOrigin(mux), background
+	if ctx.devSignInHost != "" {
+		mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
 	}
-	mux.HandleFunc("GET /auth/_dev/signin", accesslog.HandlerFunc("/auth/_dev/signin", r.authDevSignIn))
-	return requireHost(ctx.devSignInHost, r.enforceCookieOrigin(mux)), background
+	return r, background
 }
 
 // ───── auth ─────────────────────────────────────────────────────────────────

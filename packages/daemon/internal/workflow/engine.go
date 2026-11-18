@@ -71,10 +71,13 @@ type Config struct {
 	ProductionCheckRole claim.Role
 	Clock               func() time.Time
 	// ReviewAppLogin is the review App's bot login (<slug>[bot]) from its boot token lease. A review
-	// it submits decides a round whatever GitHub gives its bot account (DecidesRound) and can be the
-	// reviewer's answer to a round it left undecided (reviewersAnswer); a push by it is recorded as
-	// the review App's (record.ClassifiedPush.ByReviewApp). Empty matches no one. A workflow boot
-	// never leaves it empty: it refuses a review App that names no login (daemon.appLoginsAtBoot).
+	// it submits is the reviewer's own only when its Legion footer also names the session the
+	// reviewer's claim records (byReviewer), and only then does it decide a round whatever GitHub
+	// gives its bot account (DecidesRound) or answer a round the reviewer left undecided
+	// (reviewersAnswer); while that claim records no session, it waits (RefusedWhileNoSession). A
+	// push by it is recorded as the review App's (record.ClassifiedPush.ByReviewApp). Empty matches
+	// no one. A workflow boot never leaves it empty: it refuses a review App that names no login
+	// (daemon.appLoginsAtBoot).
 	ReviewAppLogin string
 	// Repositories is the daemon's in-memory view of the project's repositories, which the workflow
 	// records an issue's repository and default branch from when it first records the issue.
@@ -455,7 +458,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 
 // releaseHeldRoot takes a todo written on a held root whose tree does not linger: the one status
 // a person's move in the Dispatch dashboard, the controller's set_status and an operator's
-// `legion status` all reach the record as (R7). The hold is cleared, the issue returns to the
+// `legion issue status` all reach the record as (R7). The hold is cleared, the issue returns to the
 // phase the hold came from and that phase's role is started with its task, which is the effect
 // of the architect's retry_or_escalate with retry. Nothing else moves: no new generation, no
 // reset of the rounds, no new pod, and no change of place in the admission line.

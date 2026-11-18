@@ -31,7 +31,7 @@ env:
 
 jobs:
   dispatch-memory:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 75
     services:
       postgres:
