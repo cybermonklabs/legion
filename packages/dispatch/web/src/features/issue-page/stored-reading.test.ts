@@ -195,3 +195,18 @@ test("a parsed reading is shared by every holder of its text and by a caller nam
   // Both holders are read here, so both live to the end of the test.
   expect(first).not.toBe(second);
 });
+
+// GFM's autolink literals are left out of the parse (`STORED_TEXT_PARSE`): a bare URL, a `www.`
+// address and an email read as the same words linked or not, so the parse reads each as the text
+// it is written as, with no link, and a bare address beside them is still written short.
+test("the parse reads a bare URL, a www address and an email as the words they are written as", () => {
+  const text =
+    "See https://example.com/a?b=c,\nwww.example.com  and someone@example.com\nbeside dispatch://ACME-12.";
+  const collapsed = (words: string): string => words.replace(/\s+/gu, " ").trim();
+  const reading = parsedReading(text);
+  expect(JSON.stringify(reading)).not.toContain('"link"');
+  expect(collapsed(wordsOf(reading))).toBe(collapsed(text));
+  expect(collapsed(wordsOf(withShortAddresses(reading)))).toBe(
+    "See https://example.com/a?b=c, www.example.com and someone@example.com beside ACME-12."
+  );
+});

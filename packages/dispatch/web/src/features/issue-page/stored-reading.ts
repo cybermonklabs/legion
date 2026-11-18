@@ -27,20 +27,54 @@ type Parsed = ParsedRoot["children"][number];
 type ParsedRow = Extract<Parsed, { type: "tableRow" }>;
 
 /**
- * The parse a stored text is read with: CommonMark with GFM's syntax - tables, strikethrough
- * with one tilde or two, task boxes, autolink literals and footnotes - and YAML front matter, a
- * `---` fenced block a text opens with. It is the base of the parse the page's markdown engine
- * reads a body with, since remark-parse, remark-gfm and remark-frontmatter are these extensions
- * over `mdast-util-from-markdown`, and its lists and quotes nest within the document service's
- * bound (`boundBlockNesting`). The engine's other extensions on top of that base are not applied
- * here; among them, a container directive (a typed block such as `:::ask`) reads as its literal
- * fence lines and the content between them, and a Proof mark span (`<span data-proof=…>`) reads
- * as HTML around its text. The extensions hold nothing of any one parse, so one set serves every
- * text.
+ * The mdast halves of GFM's syntax (`gfmFromMarkdown`) less autolink literals': that one is the
+ * only one holding `transforms`, its search for bare addresses over every text node. The release
+ * the parse is built on returns five, autolink literals' first; the check below throws where a
+ * later release reshapes them, so that what the parse reads cannot change without a word.
+ */
+const GFM_FROM_MARKDOWN = gfmFromMarkdown().filter((extension) => !("transforms" in extension));
+if (
+  GFM_FROM_MARKDOWN.length !== 4 ||
+  GFM_FROM_MARKDOWN.some((extension) => "literalAutolink" in (extension.enter ?? {}))
+) {
+  throw new Error(
+    "mdast-util-gfm's gfmFromMarkdown() changed shape: the stored-text parse " +
+      "(stored-reading.ts) can no longer leave out autolink literals by dropping the one " +
+      "extension holding transforms. Read the new release and change how it is left out."
+  );
+}
+
+/**
+ * The parse a stored text is read with: CommonMark with GFM's tables, strikethrough with one
+ * tilde or two, task boxes and footnotes, and YAML front matter, a `---` fenced block a text opens
+ * with, its lists and quotes nesting within the document service's bound (`boundBlockNesting`).
+ * It is the base of the parse the page's markdown engine reads a body with, since remark-parse,
+ * remark-gfm and remark-frontmatter are these extensions over `mdast-util-from-markdown`, less
+ * GFM's autolink literals. Those are left out, both halves, because a bare URL, `www.` address or
+ * email reads as the same words whether it is linked or not, while that extension was the parse's
+ * largest single cost as measured. micromark's tokenizer refuses a construct an extension's
+ * `disable.null` names (`micromark/lib/create-tokenizer.js`), and these are the three names
+ * `micromark-extension-gfm-autolink-literal` gives its constructs; the mdast half is left out of
+ * `GFM_FROM_MARKDOWN`. The words differ where a bare address holds markup, since the
+ * extension reads an address as written before emphasis, code or links form, so every character
+ * inside it is the address's own: here a `*`, `_` or `~` pair inside a bare URL reads as a mark
+ * rather than as the URL's own characters, and so does a `_` pair in an email's name, and a code
+ * span's backticks, a link's brackets and target, a backslash escape and a character reference
+ * inside a bare URL read as that markup. The server's reading, which reads bare addresses as the
+ * engine does (`pmdoc/linkify.go`), then keeps those characters as written.
+ *
+ * The engine's other extensions on top of that base are not applied here; among them, a container
+ * directive (a typed block such as `:::ask`) reads as its literal fence lines and the content
+ * between them, and a Proof mark span (`<span data-proof=…>`) reads as HTML around its text. The
+ * extensions hold nothing of any one parse, so one set serves every text.
  */
 const STORED_TEXT_PARSE: Options = {
-  extensions: [gfm(), frontmatter(["yaml"])],
-  mdastExtensions: [gfmFromMarkdown(), frontmatterFromMarkdown(["yaml"])],
+  extensions: [
+    gfm(),
+    { disable: { null: ["wwwAutolink", "protocolAutolink", "emailAutolink"] } },
+    frontmatter(["yaml"]),
+  ],
+  mdastExtensions: [...GFM_FROM_MARKDOWN, frontmatterFromMarkdown(["yaml"])],
 };
 
 /** One remembered reading (`readings`): the reading, and how many registrations (`releases`) of
@@ -99,14 +133,15 @@ const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
 
 /**
  * The reading of a stored markdown text: the text parsed by the base of the page's markdown
- * engine's parse (`STORED_TEXT_PARSE`) and held as a `DisplayTree` of the shape the server's
- * reading of a text has, or, for a text that holds no markup (`isPlainText`), built as that parse
- * would read it (`plainReading`). The walks that read the server's reading - its words
- * (`wordsOf`), a node's first block (`lineWords`), its addresses written short
- * (`withShortAddresses`) - so read a stored text the same way. Its words are the words of that
- * base parse, which are what the server's reading holds for every text that holds neither a
- * container directive nor a Proof mark span (`STORED_TEXT_PARSE`), so a place that has only the
- * text reads what the server's reading of it would hold (R21).
+ * engine's parse less GFM's autolink literals (`STORED_TEXT_PARSE`) and held as a `DisplayTree`
+ * of the shape the server's reading of a text has, or, for a text that holds no markup
+ * (`isPlainText`), built as that parse would read it (`plainReading`). The walks that read the
+ * server's reading - its words (`wordsOf`), a node's first block (`lineWords`), its addresses
+ * written short (`withShortAddresses`) - so read a stored text the same way. Its words are the
+ * words of that parse, which are what the server's reading holds for every text that holds none
+ * of three things: a container directive, a Proof mark span and a bare address holding markup
+ * (`STORED_TEXT_PARSE`), so a place that has only the text reads what the server's reading of it
+ * would hold (R21).
  *
  * The reading holds what decides the words and where they stand apart: the blocks, the text runs
  * and the marks on them, by the server's names, and no attribute, since no word lies in one. A
