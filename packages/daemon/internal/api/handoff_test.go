@@ -270,11 +270,8 @@ func (h *harness) completeRaw(grant, members string) *httptest.ResponseRecorder 
 	return h.request(http.MethodPost, "/legion/v1/handoff/complete", fmt.Sprintf(`{"grantId":%s,"verdict":""%s}`, encoded, members), nil)
 }
 
-// refused holds a response to the status and the stable code of one credential, workflow or claim
-// refusal, which carries a sentence beside its code, and returns that sentence; refusedSaying holds
-// the sentence too. The two are this package's tests' one check of a coded refusal: a test that
-// reads a refusal for another end decodes it itself, as a golden that writes its code down, a
-// repeat that takes either of two codes, or a read of the sentence alone does.
+// refused holds a response to the status and the stable code of a coded refusal, a Failure that
+// carries a sentence beside its code, and returns that sentence.
 func refused(t *testing.T, recorder *httptest.ResponseRecorder, status int, code string) string {
 	t.Helper()
 	if recorder.Code != status {
