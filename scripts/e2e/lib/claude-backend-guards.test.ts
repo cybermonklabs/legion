@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
 
 // The Claude Code backend proof's process guards (claude-backend-tmux.sh), taken from the script by
@@ -152,7 +153,10 @@ await_below() {
   exit 1
 }
 `;
-  const result = Bun.spawnSync(["bash", "-c", `${prelude}\n${body}`], {
+  // The harness shell, and so every process it spawns, runs in a process group of its own
+  // (ownGroup): its EXIT trap stops each tree, and a stopped member of the test runner's own group
+  // hangs the runner up where that group is orphaned, as in a Legion pod.
+  const result = Bun.spawnSync(ownGroup(["bash", "-c", `${prelude}\n${body}`]), {
     cwd,
     env: { PATH: process.env.PATH ?? "", WORK: work, CLAUDE: claude, SCRATCH: dir, ...vars },
   });

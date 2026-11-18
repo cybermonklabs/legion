@@ -328,8 +328,13 @@ claim_pane_pid() {
     '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation') || return 1
   incarnation_pid "$inc"
 }
+# endpoint_mismatch OMP_PID prints the first rig endpoint the OMP process does not carry, the
+# ANTHROPIC_API_KEY it must not carry, or that its environment could not be read, and succeeds; it
+# fails, printing nothing, only when every endpoint is the rig's and the key's absence holds on
+# env_has's status 1 (lib/process-tree.sh). An environment that could not be read, at either read,
+# is a mismatch and never a clean one.
 endpoint_mismatch() {
-  local omp=$1 name want got
+  local omp=$1 name want got status
   for name in DISPATCH_URL DISPATCH_TOKEN_FILE ENVOY_URL ENVOY_NATS_URL; do
     case "$name" in
       DISPATCH_URL) want="http://127.0.0.1:$port_dispatch" ;;
@@ -337,11 +342,19 @@ endpoint_mismatch() {
       ENVOY_URL) want="http://127.0.0.1:$port_listener" ;;
       ENVOY_NATS_URL) want="nats://127.0.0.1:$port_nats" ;;
     esac
-    got=$(env_of "$omp" "$name") || got=
+    status=0
+    got=$(env_of "$omp" "$name") || status=$?
+    if [ "$status" != 0 ]; then printf 'an environment that could not be read (env_of status %s)\n' "$status"; return 0; fi
     if [ "$got" != "$want" ]; then printf '%s=%s, want %s\n' "$name" "${got:-<unset>}" "$want"; return 0; fi
   done
-  if env_has "$omp" ANTHROPIC_API_KEY; then printf 'ANTHROPIC_API_KEY set, want unset\n'; return 0; fi
-  return 1
+  status=0
+  env_has "$omp" ANTHROPIC_API_KEY || status=$?
+  case $status in
+    0) printf 'ANTHROPIC_API_KEY set, want unset\n' ;;
+    1) return 1 ;;
+    *) printf 'an environment that could not be read (env_has status %s)\n' "$status" ;;
+  esac
+  return 0
 }
 # carries_no_grant OMP_PID succeeds when the Oh My Pi's environment names neither LEGION_GRANT_FILE
 # nor LEGION_GRANT, and otherwise prints the first it names, or that the environment could not be

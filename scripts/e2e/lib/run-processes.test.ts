@@ -2,6 +2,8 @@ import { afterEach, beforeAll, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { argMaxForceHolds } from "./arg-max-force";
+import { ownGroup } from "./own-group";
 
 // run_processes (lib/rig.sh) names the processes of a run still alive, and stop_marked_processes
 // (lib/process-tree.sh) ends them: each that carries the run's mark, LEGION_E2E_RUN=$work, which the
@@ -33,7 +35,9 @@ beforeAll(() => {
   );
 });
 
-// Every process a row starts, killed when the row ends whatever it ended on.
+// Every process a row starts, killed when the row ends whatever it ended on. Each, and each harness
+// shell, runs in a process group of its own (ownGroup): the sweeps stop what they end, and a stopped
+// member of the test runner's own group hangs the runner up where that group is orphaned.
 const started: number[] = [];
 afterEach(() => {
   for (const pid of started.splice(0)) {
@@ -43,7 +47,7 @@ afterEach(() => {
   }
 });
 function spawn(argv: string[], options: { cwd: string; env?: Record<string, string> }) {
-  const child = Bun.spawn(argv, {
+  const child = Bun.spawn(ownGroup(argv), {
     cwd: options.cwd,
     env: { PATH: process.env.PATH ?? "", ...(options.env ?? {}) },
     stdout: "ignore",
@@ -78,7 +82,7 @@ async function gone(pid: number): Promise<boolean> {
 // carries no mark. PATH, when given, comes first.
 function harness(work: string, body: string, path = "") {
   const ran = Bun.spawnSync(
-    [
+    ownGroup([
       "bash",
       "-c",
       `set -Eeuo pipefail
@@ -89,7 +93,7 @@ work=$WORK
 . ${JSON.stringify(force)}
 export LEGION_E2E_RUN=$work
 ${body}`,
-    ],
+    ]),
     {
       env: { PATH: `${path}${path ? ":" : ""}${process.env.PATH ?? ""}`, WORK: work },
       stdout: "pipe",
@@ -149,13 +153,13 @@ test("names a marked process of the run that left every tree the run started, do
   mkdirSync(work);
   const pidFile = join(dir, "escaped.pid");
   const forked = Bun.spawnSync(
-    [
+    ownGroup([
       "bash",
       "-c",
       `( (exec sleep 60 </dev/null >/dev/null 2>&1) & echo $! >"$1" ) </dev/null >/dev/null 2>&1`,
       "fork",
       pidFile,
-    ],
+    ]),
     {
       env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work },
       stdout: "ignore",
@@ -176,44 +180,52 @@ test("names a marked process of the run that left every tree the run started, do
   expect(pids(r.out)).toEqual([String(pid)]);
 });
 
-test("names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry", () => {
-  // The force (lib/arg-max-force.sh): an exec handed every /proc/<pid> entry as an argument fails
-  // with E2BIG, as `find /proc/[0-9]*/cwd` did unforced at about 80,000 processes, while an exec of a
-  // few arguments still starts. The walk must still name the run's process, or fail naming why; an
-  // empty answer is the defect.
-  const work = join(dir, "e2big");
-  mkdirSync(work);
-  const inside = spawn(["sleep", "60"], { cwd: work, env: { LEGION_E2E_RUN: work } });
-  const r = harness(
-    work,
-    `arg_max_force environ 6144 "$work" ${JSON.stringify(String.raw`find /proc/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0'`)}
-run_processes`
-  );
-  expect(r.err).toBe("");
-  expect(r.code).toBe(0);
-  expect(pids(r.out)).toContain(String(inside));
-});
-
-test("listening_holders names the holder of a listening socket where a program handed every /proc/<pid>/fd would not start", () => {
-  // listening_holders (lib/rig.sh) walks every process for the one holding a socket, held_only_by's
-  // reading of a port. Under the same force its walk must still name this test process, which
-  // holds the listener, or fail naming why; no holder at all is the defect.
-  const work = join(dir, "holders");
-  mkdirSync(work);
-  const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-  try {
+// The force cannot hold under gVisor (a Legion pod's kernel), which starts a program past ARG_MAX:
+// there these two rows are skipped, by this name (argMaxForceHolds), rather than failed or passed.
+test.skipIf(!argMaxForceHolds())(
+  "names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry",
+  () => {
+    // The force (lib/arg-max-force.sh): an exec handed every /proc/<pid> entry as an argument fails
+    // with E2BIG, as `find /proc/[0-9]*/cwd` did unforced at about 80,000 processes, while an exec of a
+    // few arguments still starts. The walk must still name the run's process, or fail naming why; an
+    // empty answer is the defect.
+    const work = join(dir, "e2big");
+    mkdirSync(work);
+    const inside = spawn(["sleep", "60"], { cwd: work, env: { LEGION_E2E_RUN: work } });
     const r = harness(
       work,
-      `arg_max_force fd 1024 "$work" ${JSON.stringify(String.raw`find /proc/[0-9]*/fd -maxdepth 1 -lname 'socket:\[0\]'`)}
-listening_holders ${listener.port}`
+      `arg_max_force environ 6144 "$work" ${JSON.stringify(String.raw`find /proc/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0'`)}
+run_processes`
     );
     expect(r.err).toBe("");
     expect(r.code).toBe(0);
-    expect(pids(r.out)).toContain(String(process.pid));
-  } finally {
-    listener.stop(true);
+    expect(pids(r.out)).toContain(String(inside));
   }
-});
+);
+
+test.skipIf(!argMaxForceHolds())(
+  "listening_holders names the holder of a listening socket where a program handed every /proc/<pid>/fd would not start",
+  () => {
+    // listening_holders (lib/rig.sh) walks every process for the one holding a socket, held_only_by's
+    // reading of a port. Under the same force its walk must still name this test process, which
+    // holds the listener, or fail naming why; no holder at all is the defect.
+    const work = join(dir, "holders");
+    mkdirSync(work);
+    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    try {
+      const r = harness(
+        work,
+        `arg_max_force fd 1024 "$work" ${JSON.stringify(String.raw`find /proc/[0-9]*/fd -maxdepth 1 -lname 'socket:\[0\]'`)}
+listening_holders ${listener.port}`
+      );
+      expect(r.err).toBe("");
+      expect(r.code).toBe(0);
+      expect(pids(r.out)).toContain(String(process.pid));
+    } finally {
+      listener.stop(true);
+    }
+  }
+);
 
 test("a walk whose reader a signal ended after part of its output is no answer: listening_holders and run_processes exit 2", () => {
   // A find that writes 2000 bytes and is then SIGKILLed prints no complaint of its own; neither does
@@ -280,13 +292,13 @@ test("stop_marked_processes ends every marked process of the run, an escaped one
   const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
   const pidFile = join(dir, "sweep-escaped.pid");
   Bun.spawnSync(
-    [
+    ownGroup([
       "bash",
       "-c",
       `( (exec sleep 60 </dev/null >/dev/null 2>&1) & echo $! >"$1" ) </dev/null >/dev/null 2>&1`,
       "fork",
       pidFile,
-    ],
+    ]),
     { env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work } }
   );
   const escaped = Number(readFileSync(pidFile, "utf8").trim());
@@ -311,20 +323,20 @@ test("stop_marked_processes with a grace gives each marked process SIGTERM and t
   // says "ready" once its trap is set, and the stop starts only then.
   const env = { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work };
   const a = Bun.spawn(
-    [
+    ownGroup([
       "bash",
       "-c",
       `trap 'sleep 0.3; touch ${JSON.stringify(graceful)}; exit 0' TERM; echo ready; while :; do sleep 0.1; done`,
-    ],
+    ]),
     { env, stdout: "pipe" }
   );
   started.push(a.pid);
   const b = Bun.spawn(
-    [
+    ownGroup([
       "bash",
       "-c",
       `trap '' TERM; echo ready; while :; do sleep 0.1; done; touch ${JSON.stringify(stubborn)}`,
-    ],
+    ]),
     { env, stdout: "pipe" }
   );
   started.push(b.pid);
@@ -342,7 +354,7 @@ test("stop_marked_processes with a grace gives each marked process SIGTERM and t
 
 test("stop_marked_processes signals no pid whose start time is not the one its walk read, and leaves it running", async () => {
   // The walk's pairs stand in for a pid that ended and passed to another marked process between the
-  // walk and the signal: the start time is not that process's own, so freeze_if thaws and leaves it.
+  // walk and the signal: the start time is not that process's own, so freeze_if sends it nothing.
   const work = join(dir, "reused");
   mkdirSync(work);
   const pid = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
@@ -355,4 +367,62 @@ stop_marked_processes "$work"; echo "status $?"`
   expect(r.out).toBe("status 0\n");
   await Bun.sleep(200);
   expect(state(pid)).toBe("S");
+});
+
+test("stop_marked_processes ends a child that cleared its environment with the marked process that started it", async () => {
+  // A marked bash starts a child under `env -i`, which carries no mark and no other variable of the
+  // run's: the sweep takes it with the tree of the marked process that started it (stop_tree).
+  const work = join(dir, "cleared");
+  mkdirSync(join(work, "ws"), { recursive: true });
+  const childFile = join(dir, "cleared-child.pid");
+  const parent = Bun.spawn(
+    ownGroup([
+      "bash",
+      "-c",
+      `env -i sleep 300 </dev/null >/dev/null 2>&1 & echo $! >"$1"; echo ready; wait`,
+      "marked",
+      childFile,
+    ]),
+    {
+      cwd: join(work, "ws"),
+      env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work },
+      stdout: "pipe",
+    }
+  );
+  started.push(parent.pid);
+  await parent.stdout.getReader().read();
+  const child = Number(readFileSync(childFile, "utf8").trim());
+  started.push(child);
+  const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);
+  expect(r.err).toBe("");
+  expect(r.out).toBe("status 0\n");
+  expect(await gone(parent.pid)).toBe(true);
+  expect(await gone(child)).toBe(true);
+});
+
+test("stop_marked_processes with a grace ends a child that cleared its environment when the marked process that started it exits on its SIGTERM", async () => {
+  // The marked process exits on the TERM and leaves its child behind; what it had started was read
+  // while it was stopped for the TERM, so the child is still ended, by its own start time.
+  const work = join(dir, "cleared-grace");
+  mkdirSync(work);
+  const childFile = join(dir, "cleared-grace-child.pid");
+  const parent = Bun.spawn(
+    ownGroup([
+      "bash",
+      "-c",
+      `env -i sleep 300 </dev/null >/dev/null 2>&1 & echo $! >"$1"; trap 'exit 0' TERM; echo ready; while :; do sleep 0.1; done`,
+      "marked",
+      childFile,
+    ]),
+    { cwd: dir, env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work }, stdout: "pipe" }
+  );
+  started.push(parent.pid);
+  await parent.stdout.getReader().read();
+  const child = Number(readFileSync(childFile, "utf8").trim());
+  started.push(child);
+  const r = harness(work, `stop_marked_processes "$work" 1; echo "status $?"`);
+  expect(r.err).toBe("");
+  expect(r.out).toBe("status 0\n");
+  expect(await parent.exited).toBe(0);
+  expect(await gone(child)).toBe(true);
 });

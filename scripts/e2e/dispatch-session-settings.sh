@@ -76,7 +76,8 @@ transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-session-settings.$$.XXXXXXXX")
 # Every process the run starts from here on carries its mark (run_marks, lib/process-tree.sh): the
-# driver hands it to each Oh My Pi it starts. The transcript's tee, started above, carries none.
+# driver hands it to each Oh My Pi it starts, and the listener's and Dispatch's `env -i` starts name
+# it. The transcript's tee, started above, carries none.
 export LEGION_E2E_RUN=$work
 driver=$root/scripts/e2e/lib/dispatch-session-settings.ts
 check=setup
@@ -223,12 +224,12 @@ envoy_port=$(bun "$driver" free-port)
 dispatch_port=$(bun "$driver" free-port)
 # Neither service inherits this shell (dispatch-user-turns.sh's reasoning): a HOME or XDG directory
 # holding legion/envoy.json would hand Dispatch a production configuration.
-env -i PATH="$PATH" HOME=/nonexistent ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
+env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT="$envoy_port" \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
   "$work/envoy-listener" >"$evidence/logs/listener.log" 2>&1 &
 listener_pid=$!
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
-env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
   DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
   DISPATCH_SERVER_URL="http://127.0.0.1:$dispatch_port" DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \

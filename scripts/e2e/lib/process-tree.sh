@@ -131,10 +131,13 @@ process_args() {
 # from the NUL-delimited /proc/PID/environ with no pipe between the read and the check: a
 # `tr | grep -q` stops reading at its match, tr's SIGPIPE is the pipeline's status under pipefail,
 # and a negated check reads that as absent. It fails with 2 when the environment cannot be read or
-# is empty (the process has exited), which is never the same as a clean one.
+# is empty (the process has exited), which is never the same as a clean one. Like every reader of an
+# environment here, it turns the shell's xtrace off for itself (`local -`), so a run under `bash -x`
+# does not write the environment's other values, a provider key among them, into its transcript.
 env_of() {
-  local entry
+  local - entry
   local -a entries=()
+  set +x
   { mapfile -d '' -t entries <"/proc/$1/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
   for entry in "${entries[@]}"; do
     case $entry in "$2="*) printf '%s\n' "${entry#*=}" ;; esac
@@ -144,13 +147,32 @@ env_of() {
 # when it does not, and with 2 when it cannot be read (env_of). A check that a variable is absent
 # holds only on status 1.
 env_has() {
-  local entry
+  local - entry
   local -a entries=()
+  set +x
   { mapfile -d '' -t entries <"/proc/$1/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
   for entry in "${entries[@]}"; do
     case $entry in "$2="*) return 0 ;; esac
   done
   return 1
+}
+# env_length PID NAME prints the length in bytes of the first value PID's environment gives NAME, and
+# 0 when it gives none, and fails with 2 when the environment cannot be read (env_of): a check of a
+# secret's presence reads its length without the value ever standing in a variable of its caller.
+env_length() {
+  local - entry
+  local -a entries=()
+  set +x
+  { mapfile -d '' -t entries <"/proc/$1/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
+  for entry in "${entries[@]}"; do
+    case $entry in "$2="*)
+      entry=${entry#*=}
+      printf '%s\n' "${#entry}"
+      return 0
+      ;;
+    esac
+  done
+  printf '0\n'
 }
 
 # incarnation_pid INCARNATION prints the pid of the tmux runtime's incarnation `<pid>:<start ticks>`
@@ -168,19 +190,25 @@ incarnation_pid() {
 }
 
 # freeze_if PID START SIGNAL [CHECK…] signals PID with SIGNAL only while it is still the process
-# that started at START (proc_start) and CHECK, a command given PID as its last word, succeeds: it
-# stops PID first (SIGSTOP), so the process cannot end and its pid pass to another between the
-# check and the signal, checks, signals, and thaws it (SIGCONT) unless SIGNAL is KILL or STOP. On a
-# mismatch it thaws PID and fails, sending nothing; it fails too when PID cannot be signalled
-# (signalable) or stopped. A process of another user cannot be stopped at all, and one of this
-# user's that took the pid stands still only for the check.
+# that started at START (proc_start) and CHECK, a command given PID as its last word, succeeds. It
+# reads both before it sends anything, and sends nothing to a pid that fails either: a process of
+# this user's that took a pid the walk read gets no signal at all. Then it stops PID (SIGSTOP), so
+# the process cannot end and its pid pass to another between the check and the signal, reads both
+# again, signals, and thaws it (SIGCONT) unless SIGNAL is KILL or STOP. On a mismatch at the second
+# read it sends nothing more, and thaws PID only when this stop is what stopped it: a process that
+# was stopped already (state T or t at the first read, a job its shell stopped) stays stopped. It
+# fails too when PID cannot be signalled (signalable) or stopped; a process of another user cannot
+# be stopped at all.
 freeze_if() {
-  local pid=$1 start=$2 signal=$3
+  local pid=$1 start=$2 signal=$3 was
   shift 3
   signalable "$pid" || return 1
+  [ "$(proc_start "$pid")" = "$start" ] || return 1
+  [ "$#" = 0 ] || "$@" "$pid" || return 1
+  was=$(proc_stat_field "$pid" 3 state)
   kill -STOP "$pid" 2>/dev/null || return 1
   if [ "$(proc_start "$pid")" != "$start" ] || { [ "$#" -gt 0 ] && ! "$@" "$pid"; }; then
-    kill -CONT "$pid" 2>/dev/null || true
+    case $was in T | t) ;; *) kill -CONT "$pid" 2>/dev/null || true ;; esac
     return 1
   fi
   kill -"$signal" "$pid" 2>/dev/null || true
@@ -190,10 +218,11 @@ freeze_if() {
 # names_dir DIR NAME… PID succeeds when PID's environment, read whole in this shell with no pipe,
 # gives one of the NAMEs the value DIR or a path under DIR; fails with 1 when none has that value,
 # and with 2 when the environment cannot be read or is empty (the process has gone). PID comes last,
-# so freeze_if can run it as a CHECK.
+# so freeze_if can run it as a CHECK. It runs with xtrace off (env_of).
 names_dir() {
-  local dir=$1 pid=${!#} entry name
+  local - dir=$1 pid=${!#} entry name
   local -a names=("${@:2:$# - 2}") entries=()
+  set +x
   { mapfile -d '' -t entries <"/proc/$pid/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
   for entry in "${entries[@]}"; do
     for name in "${names[@]}"; do
@@ -201,6 +230,39 @@ names_dir() {
     done
   done
   return 1
+}
+
+# proc_descendants PID prints `PID START` for every process below PID, children first, then theirs:
+# each read from its parent's own /proc entry (proc_children) with its start time (proc_start), so a
+# later signal can hold it to the process the read saw. A process that ends during the read is left
+# out.
+proc_descendants() {
+  local child start
+  for child in $(proc_children "$1"); do
+    start=$(proc_start "$child")
+    [ -n "$start" ] || continue
+    printf '%s %s\n' "$child" "$start"
+    proc_descendants "$child"
+  done
+}
+
+# stop_tree PID [PARENT] stops PID and every process under it. A watcher is a loop whose kubectl, jq
+# or sleep outlives the loop when only the loop is stopped; the loop is frozen first, so it starts
+# nothing new while its children go. PID is signalled only while its parent is PARENT (default this
+# shell), so a pid the watcher left and another process reused is never hit. An empty PID is a
+# watcher that never started: nothing to stop. The parent and the children are read from PID's own
+# /proc entry (proc_parent and proc_children), never from every process on the machine.
+# proc_children prints nothing for a process with no children, which is no error: under a driver's
+# `set -E` a failing command would run the ERR trap inside the substitution, and a trap that prints
+# there would hand its words over as child pids (the `0` of an `exit 0` among them).
+stop_tree() {
+  local pid=${1:-} parent=${2:-$$} child
+  [ -n "$pid" ] || return 0
+  signalable "$pid" || return 0
+  [ "$(proc_parent "$pid")" = "$parent" ] || return 0
+  kill -STOP "$pid" 2>/dev/null || return 0
+  for child in $(proc_children "$pid"); do stop_tree "$child" "$pid"; done
+  kill -KILL "$pid" 2>/dev/null || true
 }
 
 # procs_naming DIR NAME… prints `PID START` (proc_start) for each process whose environment gives
@@ -269,17 +331,21 @@ marked_processes() {
   procs_naming "$1" "${run_marks[@]}"
 }
 
-# stop_marked_processes DIR [GRACE] ends every process of the run under DIR (marked_processes), and
-# no other: each is signalled only through freeze_if, while it is the process the walk read and
-# still carries the run's mark, so a pid the kernel gave to another process since is thawed and left.
-# GRACE, in seconds (default 0), gives each SIGTERM first and that long for all of them to exit: a
-# pane's Oh My Pi in the middle of a token refresh gets the time to write the rotated token back to
-# the operator's database before it goes, where a plain SIGKILL could leave it a refresh token that
-# is already spent. A process still alive after GRACE, or every one with no GRACE, gets SIGKILL. It
-# prints why and fails with 2 when the run's processes could not be read, having signalled nothing.
+# stop_marked_processes DIR [GRACE] ends every process of the run under DIR (marked_processes), with
+# everything under each, and no other: each is stopped only through freeze_if, while it is the
+# process the walk read and still carries the run's mark, and then ended with its tree (stop_tree),
+# so a child that cleared its environment, and so carries no mark, goes with the process that
+# started it. A pid the kernel gave to another process since gets no signal. GRACE, in seconds
+# (default 0), gives each SIGTERM first and that long for all of them to exit: a pane's Oh My Pi in
+# the middle of a token refresh gets the time to write the rotated token back to the operator's
+# database before it goes, where a plain SIGKILL could leave it a refresh token that is already
+# spent. What each had started is read while it is stopped for its TERM, so a child it leaves behind
+# when it exits is still ended, by its own start time. A process still alive after GRACE, or every
+# one with no GRACE, is ended with its tree. It prints why and fails with 2 when the run's processes
+# could not be read, having signalled nothing.
 stop_marked_processes() {
-  local dir=$1 grace=${2:-0} pairs pid start i
-  local -a sent=() alive=()
+  local dir=$1 grace=${2:-0} pairs pid start i entry
+  local -a sent=() alive=() below=()
   pairs=$(marked_processes "$dir") || {
     echo "stop_marked_processes: stopped no process of the run under $dir, since none could be named" >&2
     return 2
@@ -287,23 +353,32 @@ stop_marked_processes() {
   [ -n "$pairs" ] || return 0
   if [ "$grace" -gt 0 ]; then
     while read -r pid start; do
-      freeze_if "$pid" "$start" TERM names_dir "$dir" "${run_marks[@]}" && sent+=("$pid $start")
+      freeze_if "$pid" "$start" STOP names_dir "$dir" "${run_marks[@]}" || continue
+      mapfile -t -O "${#below[@]}" below < <(proc_descendants "$pid")
+      kill -TERM "$pid" 2>/dev/null || true
+      kill -CONT "$pid" 2>/dev/null || true
+      sent+=("$pid $start")
     done <<<"$pairs"
-    alive=("${sent[@]}")
+    alive=(${sent[@]+"${sent[@]}"})
     for ((i = 0; i < grace * 5 && ${#alive[@]} > 0; i++)); do
       sleep 0.2
       sent=("${alive[@]}")
       alive=()
-      for pid in "${sent[@]}"; do
-        [ "$(proc_start "${pid%% *}")" != "${pid#* }" ] || alive+=("$pid")
+      for entry in "${sent[@]}"; do
+        [ "$(proc_start "${entry%% *}")" != "${entry#* }" ] || alive+=("$entry")
       done
     done
-    [ "${#alive[@]}" -gt 0 ] || return 0
-    pairs=$(printf '%s\n' "${alive[@]}")
+    pairs=
+    [ "${#alive[@]}" = 0 ] || pairs=$(printf '%s\n' "${alive[@]}")
   fi
   while read -r pid start; do
-    freeze_if "$pid" "$start" KILL names_dir "$dir" "${run_marks[@]}" || true
+    [ -n "$pid" ] || continue
+    freeze_if "$pid" "$start" STOP names_dir "$dir" "${run_marks[@]}" || continue
+    stop_tree "$pid" "$(proc_parent "$pid")"
   done <<<"$pairs"
+  for entry in ${below[@]+"${below[@]}"}; do
+    freeze_if "${entry%% *}" "${entry#* }" KILL || true
+  done
   return 0
 }
 

@@ -850,15 +850,16 @@ pane_path=$(env_of "$shim1" PATH) || fail "shim $shim1's environment could not b
 omp_path=$(env_of "$omp1" PATH) || fail "omp $omp1's environment could not be read"
 [ "${omp_path%%:*}" = "${pane_path%%:*}" ] ||
   fail "OMP PATH begins ${omp_path%%:*}, not the pane PATH head ${pane_path%%:*}"
-key=$(env_of "$omp1" GEMINI_API_KEY) || fail "omp $omp1's environment could not be read"
-key_length=${#key}
-key=
+# The key's length, and the shim's and the three names' lengths, are read without any value standing
+# in a variable of this shell (env_length, lib/process-tree.sh), so a run under `bash -x` writes none
+# of them to the transcript.
+key_length=$(env_length "$omp1" GEMINI_API_KEY) || fail "omp $omp1's environment could not be read"
 [ "$key_length" -gt 0 ] || fail "omp's environment carries no GEMINI_API_KEY"
-shim_key=$(env_of "$shim1" GEMINI_API_KEY) || fail "shim $shim1's environment could not be read"
-[ -z "$shim_key" ] || fail "the shim's own environment carries the provider key"
+shim_key_length=$(env_length "$shim1" GEMINI_API_KEY) || fail "shim $shim1's environment could not be read"
+[ "$shim_key_length" = 0 ] || fail "the shim's own environment carries the provider key"
 for name in GEMINI_API_KEY_TESTS SOPS_AGE_KEY_FILE SECRETSD_CONFIG; do
-  value=$(env_of "$omp1" "$name") || fail "omp $omp1's environment could not be read"
-  [ -z "$value" ] || fail "omp's environment carries $name"
+  length=$(env_length "$omp1" "$name") || fail "omp $omp1's environment could not be read"
+  [ "$length" = 0 ] || fail "omp's environment carries $name"
 done
 note "pane process $pane1_pid is /bin/sh -c; its line to omp: $chain"
 note "omp $omp1 executes the configured pinned binary $actual_omp, no process in its chain runs the dotfiles wrapper, and its PATH head ${omp_path%%:*} matches the pane's; XDG_CONFIG_HOME=$xdg; GEMINI_API_KEY of $key_length bytes (from the daemon-held file), absent from the shim; no ANTHROPIC_API_KEY, GEMINI_API_KEY_TESTS, SOPS_AGE_KEY_FILE or SECRETSD_CONFIG"

@@ -208,9 +208,9 @@ mkdir -p "$evidence/logs" "$evidence/answers"
 transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/envoy-session-states.$$.XXXXXXXX")
-# Every process the run starts from here on carries its mark (run_marks, lib/process-tree.sh); a start
-# that clears its environment (`env -i`) names the mark itself. The transcript's tee, started above,
-# carries none.
+# Every process the run starts from here on carries its mark (run_marks, lib/process-tree.sh); each
+# start that clears its environment (`env -i`: the listeners, Dispatch, the CLI and both agents)
+# names the mark itself. The transcript's tee, started above, carries none.
 export LEGION_E2E_RUN=$work
 
 note() { echo "   $*"; }
@@ -713,7 +713,7 @@ note "NATS on $nats_url, its JetStream store in $work/nats-store"
 # id of its own, because the durable consumer a listener binds is named after it and a second
 # listener of the same name is refused the bind and shuts itself down.
 start_listener() {
-  start_kept "$1" "$2" ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_kept "$1" "$2" ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
     ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
     ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
@@ -737,7 +737,7 @@ note "listener A on 127.0.0.1:$port_a, listener B on 127.0.0.1:$port_b"
 # without restarting the listeners whose /healthz it then reads.
 set_max_age() {
   rm -f "$work/maxage.port"
-  start_held maxage maxage_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_held maxage maxage_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
     ENVOY_MACHINE_ID="envoy-session-states-maxage-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_MAX_AGE="$1" "$work/bin/envoy-listener"
@@ -770,7 +770,7 @@ if [ -n "$needs_dispatch" ]; then
   # (roleHolderWindows, roles.NewBuckets), and at its own five-minute default it would call a
   # holder live that both listeners already read unresponsive and forward a role-routed event at a
   # session that answers nothing.
-  start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent DISPATCH_LISTEN_FD=3 \
     DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
@@ -826,7 +826,7 @@ dispatch_cli() {
   local session=$1
   shift
   mkdir -p "$work/cli-home" "$work/cli-state"
-  env -i PATH="$PATH" HOME="$work/cli-home" XDG_CONFIG_HOME="$work/cli-home/config" \
+  env -i PATH="$PATH" HOME="$work/cli-home" LEGION_E2E_RUN="$work" XDG_CONFIG_HOME="$work/cli-home/config" \
     XDG_STATE_HOME="$work/cli-state" XDG_DATA_HOME="$work/cli-home/data" \
     XDG_CACHE_HOME="$work/cli-home/cache" DISPATCH_STATE_DIR="$work/cli-state/dispatch" \
     DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN="$(cat "$work/dispatch-token")" \
@@ -1595,7 +1595,7 @@ check_gone_only_past_the_horizon() {
   # 10s — the session reaper, which deletes the dead holder's record, and the role claim reaper,
   # which then releases its claim.
   rm -f "$work/shortlistener.port"
-  start_held shortlistener short_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_held shortlistener short_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
     ENVOY_MACHINE_ID="envoy-session-states-short-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_LIVE_WINDOW=30s ENVOY_SESSION_GONE_HORIZON=90s \

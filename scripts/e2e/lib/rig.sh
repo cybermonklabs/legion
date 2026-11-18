@@ -289,7 +289,8 @@ start_process() {
   set +m
 }
 
-# signalable (lib/process-tree.sh) refuses a pid that names no one process the run started.
+# signalable and stop_tree (lib/process-tree.sh) refuse a pid that names no one process the run
+# started; stop_tree stops a process with everything under it.
 
 # stop_pid is intentionally best effort: a failed cleanup must never obscure the check that failed.
 stop_pid() {
@@ -303,25 +304,6 @@ stop_pid() {
   done
   kill -KILL "$pid" 2>/dev/null || true
   return 0
-}
-
-# stop_tree PID stops PID and every process under it. A watcher is a loop whose kubectl, jq or sleep
-# outlives the loop when only the loop is stopped; the loop is frozen first, so it starts nothing new
-# while its children go. PID is signalled only while its parent is PARENT (default this shell), so a
-# pid the watcher left and another process reused is never hit. An empty PID is a watcher that
-# never started: nothing to stop. The parent and the children are read from PID's own /proc entry
-# (proc_parent and proc_children, lib/process-tree.sh), never from every process on the machine.
-# proc_children prints nothing for a process with no children, which is no error: under a driver's
-# `set -E` a failing command would run the ERR trap inside the substitution, and a trap that prints
-# there would hand its words over as child pids (the `0` of an `exit 0` among them).
-stop_tree() {
-  local pid=${1:-} parent=${2:-$$} child
-  [ -n "$pid" ] || return 0
-  signalable "$pid" || return 0
-  [ "$(proc_parent "$pid")" = "$parent" ] || return 0
-  kill -STOP "$pid" 2>/dev/null || return 0
-  for child in $(proc_children "$pid"); do stop_tree "$child" "$pid"; done
-  kill -KILL "$pid" 2>/dev/null || true
 }
 
 # run_processes prints the pid of every process of this run still alive: each that carries the run's
@@ -340,10 +322,10 @@ run_processes() {
 
 # lib/process-tree.sh holds how a proof knows a process it started by the pid it started, never by
 # a walk of the machine's /proc for its name or working directory: proc_parent, proc_group,
-# proc_start, proc_children and proc_describe, which read one process's own /proc entry (signalable,
-# stop_pid and stop_tree above use them), record_pid_sh, recorded_pid, incarnation_pid, launched,
-# child_of, omp_program, env_of and env_has, and the run's mark and its sweep (marked_processes,
-# stop_marked_processes). It needs nothing of this rig's, and stage2-tmux-supervision.sh sources it
-# without it.
+# proc_start, proc_children, proc_descendants and proc_describe, which read one process's own /proc
+# entry (signalable, stop_pid above and stop_tree use them), stop_tree, record_pid_sh, recorded_pid,
+# incarnation_pid, freeze_if, launched, child_of, omp_program, env_of, env_has and env_length, and
+# the run's mark and its sweep (marked_processes, stop_marked_processes). It needs nothing of this
+# rig's, and stage2-tmux-supervision.sh sources it without it.
 # shellcheck source-path=SCRIPTDIR source-path=SCRIPTDIR/lib source=process-tree.sh
 . "$root/scripts/e2e/lib/process-tree.sh"

@@ -710,10 +710,10 @@ Every wait is bounded and names what it waited for;
 a failed assertion prints `FAIL <check>: <why>` and exits 1, and any other failing command names the check it ended.
 A failed run also [notes](#libmodel-gateway-unservedsh) each agent that could have failed that check for want of a model key, and still exits 1.
 The `EXIT` trap — on a pass, a failure, or an interrupt
-— stops both daemons (SIGKILL after 10 s), under `box-login` gives every process of the run SIGTERM and up to 10 s and removes the profile's `agent.db` link, kills both private tmux servers, stops the listener, SIGKILLs any process still naming the work directory in its command line or working directory, removes both containers and the OMP profile, and removes the work directory when the run passed (keeping it, with `transcript.log` (the whole run), `daemon.log`, `deadline.log`, `listener.log`, the model key command's log and each refusal's log, when it did not).
+— stops both daemons (SIGKILL after 10 s), under `box-login` gives every process of the run SIGTERM and up to 10 s and removes the profile's `agent.db` link, kills both private tmux servers, stops the listener, ends every process of the run still alive with everything under it ([`stop_marked_processes`](#libprocess-treesh): each that carries the run's mark, `LEGION_E2E_RUN`, or a daemon pane's `XDG_CONFIG_HOME` under the work directory, and no other), removes both containers and the OMP profile, and removes the work directory when the run passed (keeping it, with `transcript.log` (the whole run), `daemon.log`, `deadline.log`, `listener.log`, the model key command's log and each refusal's log, when it did not).
 The trap still runs when whoever reads the run's output goes first, for example a supervised launcher's own `tee` stopped with the run, and a stop follows:
 the run's output goes through [`lib/transcript.sh`](#libtranscriptsh)'s `tee`, which outlives the reader.
-The transcript is in the work directory, whose processes the teardown kills by path, so the script opens it on fd 8 and calls `transcript_to /dev/fd/8`.
+The transcript's `tee` starts before the run exports its mark, so it carries none, and the teardown's sweep, which ends only the run's marked processes, leaves it running to write the run's last line.
 
 Three things the run had to learn about its surface:
 
@@ -971,7 +971,7 @@ Every proof pull request is retargeted to a scratch base before any merge (the t
 The evidence is kept in `ACCEPT_EVIDENCE_DIR` (default the kept scratch work directory's `evidence/`), `transcript.log` (the whole run) among it.
 A run that ends on its soft failures gets [notes](#libmodel-gateway-unservedsh) for its first soft-failing check, from that check's own start.
 The `EXIT` trap closes every proof pull request still open and deletes the proof branches and both bases, also when whoever reads the run's output goes first or the transcript's disk fills, as in [stage 3](#stage3-devbox-workflowsh).
-The default evidence directory is under the scratch work directory, whose processes the teardown kills by path, so the script opens the transcript on fd 8 and calls `transcript_to /dev/fd/8` ([`lib/transcript.sh`](#libtranscriptsh)).
+The transcript's `tee` ([`lib/transcript.sh`](#libtranscriptsh)) starts before the run exports its mark, so it carries none, and the teardown's sweeps, which end only the run's marked processes, leave it running to write the run's last line.
 
 ## claude-backend-tmux.sh
 
@@ -5930,8 +5930,8 @@ Seven of the nine proofs that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s
 . "$root/scripts/e2e/lib/rig.sh"     # sourced, never run
 ```
 
-The caller sets `root` (the checkout), `work` (the run's scratch directory:
-every process whose working directory or command line names it is the run's), `evidence` (each service started by `start_process` logs to `$evidence/logs/<name>.log`) and `timeout_hook` (empty, or a function a timed-out wait runs before it fails), and defines `note` and `fail`, which exits.
+The caller sets `root` (the checkout), `work` (the run's scratch directory), `evidence` (each service started by `start_process` logs to `$evidence/logs/<name>.log`) and `timeout_hook` (empty, or a function a timed-out wait runs before it fails), and defines `note` and `fail`, which exits.
+A caller that sweeps, or checks that no process of its run remains, also exports `LEGION_E2E_RUN=$work` once its transcript runs, and names it in every start that clears its environment: the processes that carry that mark, or a daemon pane's `XDG_CONFIG_HOME` under `$work`, are the run's ([`marked_processes`](#libprocess-treesh)), and no process that only works under `$work` or names it on its command line is.
 Stage 1 calls `real_bin_path`, `keep_port`, `start_kept` and `held_only_by`.
 
 Each item below names a function, then what it does.
@@ -6001,11 +6001,11 @@ Each item below names a function, then what it does.
   TERM, then KILL after 10 s; best effort, so a failed cleanup never hides the check that failed.
   An empty PID does nothing; a PID that cannot name one process of the run (0 however spelled, so any value with a leading zero, 1, a negative or non-numeric value, the calling shell or its process group's leader) is refused with a printed line ([`signalable`](#libprocess-treesh)), since `kill 0` signals the caller's whole process group
 
-- `stop_tree PID`
+- `stop_tree PID [PARENT]` (in [`lib/process-tree.sh`](#libprocess-treesh), which this rig sources)
 
   stops a background loop with every process under it:
   it freezes the loop, stops each child the same way, then kills the loop, so the `kubectl`, `jq` or `sleep` the loop was waiting on goes with it.
-  It signals a pid only while its parent is the calling shell, so a pid the watcher left and another process reused is never hit, and refuses the same pids `stop_pid` does:
+  It signals a pid only while its parent is PARENT (default the calling shell), so a pid the watcher left and another process reused is never hit, and refuses the same pids `stop_pid` does:
   `kill -STOP 0` would freeze the whole driver and a later `kill -KILL 0` end it.
   It and the refusal read only the `/proc` entries of the processes they ask about ([`proc_parent`, `proc_group` and `proc_children`](#libprocess-treesh)), never every process of the machine as `ps -p` and `pgrep -P` do.
   Stage 3's and Stage 4b's watchers are stopped with it
@@ -6033,10 +6033,21 @@ Each item below names a function, then what it does.
 it names a process that carries the run's mark and a pane-shaped one whose `XDG_CONFIG_HOME` is under the run's state, leaves a process working in the run's directory, a `tail -f` of its transcript and an unrelated one alone, runs a handful of greps and no `readlink`, and trips no trap.
 It names a marked process double-forked to pid 1, which no tree the run started holds.
 Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none.
+Where the kernel does not hold an exec to ARG_MAX, as gVisor does not, those two rows are skipped by that name (`argMaxForceHolds`, [`lib/arg-max-force.sh`](#libarg-max-forcesh)).
 A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, and a run that has not marked itself has no processes to read.
 `stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
-and it signals no pid whose start time is not the one its walk read
+it signals no pid whose start time is not the one its walk read;
+and it ends a child a marked process started under `env -i`, which carries no mark, with or without a grace, also when the grace's SIGTERM ends the process that started it.
+Every process a row signals, and every harness shell, runs in a process group of its own ([`lib/own-group.ts`](#libown-groupts)).
+
+## lib/own-group.ts
+
+`ownGroup(argv)` is `argv` run as the leader of a process group of its own inside the test runner's session, with the runner as its parent: a `python3` that calls `setpgid(0, 0)` and then execs `argv`, so the pid `Bun.spawn` returns is `argv`'s own.
+A row that stops a process (SIGSTOP, through `stop_tree`, `freeze_if` or a sweep of [`lib/process-tree.sh`](#libprocess-treesh)) must not stop a member of the runner's own group: where that group is orphaned, as in a Legion pod, whose bash tool starts each command as the leader of a session of its own, gVisor before release-20261012.0 sent SIGHUP and SIGCONT to an orphaned group with a stopped member whenever another member exited (gVisor's 553528ee1034 sends them only when the group becomes orphaned, as Linux does), and `bun test` died of that SIGHUP without naming a row.
+A group whose parent, the runner, is in another group of the same session is not orphaned while the runner runs.
+A session of its own (`setsid`, or `Bun.spawn`'s `detached`) is the wrong tool: its group is orphaned from the start.
+`lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts` and the skill-scenario rig's sweep rows use it
 
 ## lib/arg-max-force.sh
 
@@ -6045,7 +6056,8 @@ A 512 KiB stack makes ARG_MAX 128 KiB, and an exported `PADDING` fills the envir
 An exec handed every entry as an argument then fails with E2BIG, as one does unforced at about 80,000 processes, while an exec of a few arguments still starts.
 A machine with too few processes for every entry together to outgrow twice ROOM gets more first, sleeps it starts, records by pid and ends when the shell exits.
 The control it must pass runs there too: OLD_FORM, the command line the walk replaced, fails with E2BIG, and a program of no arguments still starts; a force that is not in force exits the shell naming why.
-`lib/run-processes.test.ts` and the skill-scenario rig's `run_env_pids` row (`packages/pi-legion/scripts/skill-scenarios/rig.test.ts`) source it
+`lib/run-processes.test.ts` and the skill-scenario rig's `run_env_pids` row (`packages/pi-legion/scripts/skill-scenarios/rig.test.ts`) source it.
+`lib/arg-max-force.ts`'s `argMaxForceHolds()` says whether the kernel holds that exec at all: an environment of two 100,000-byte variables under a 512 KiB stack must stop a program of no arguments, as Linux does; gVisor starts it, so there the force cannot be in force, and those rows are skipped by that name rather than failed or passed
 
 ## lib/process-tree.sh
 
@@ -6084,12 +6096,14 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
 
 - `freeze_if PID START SIGNAL [CHECK…]`
 
-  stops PID, then sends SIGNAL only while PID is still the process that started at START and `CHECK… PID` succeeds, and thaws it after any signal but KILL and STOP; on a mismatch it thaws PID and sends nothing.
+  reads PID's start and runs `CHECK… PID` before it sends anything, and sends nothing to a pid that fails either; then it stops PID, reads both again, sends SIGNAL, and thaws it after any signal but KILL and STOP.
+  On a mismatch at the second read it thaws PID only when its own SIGSTOP stopped it: a process that was stopped already stays stopped.
   A stopped process cannot end and hand its pid to another between the check and the signal
 
-- `env_of PID NAME`, `env_has PID NAME`, `process_args PID ARRAY`
+- `env_of PID NAME`, `env_has PID NAME`, `env_length PID NAME`, `process_args PID ARRAY`
 
-  read PID's environment or command line whole, in the calling shell, with no pipe between the read and the check: `env_of` prints every value of NAME, `env_has` is 0 when NAME is there, 1 when it is not and 2 when the environment cannot be read, so an absence holds only on 1
+  read PID's environment or command line whole, in the calling shell, with no pipe between the read and the check: `env_of` prints every value of NAME, `env_has` is 0 when NAME is there, 1 when it is not and 2 when the environment cannot be read, so an absence holds only on 1, and `env_length` prints the length of NAME's value (0 when absent), so a check of a secret never holds its value in a variable.
+  Each reader of an environment turns xtrace off for itself, so a run under `bash -x` writes no value of it into its transcript
 
 - `names_dir DIR NAME… PID`, `procs_naming DIR NAME…`
 
@@ -6099,7 +6113,7 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
 
   are a stage proof's run's own processes and its sweep: each process that carries `LEGION_E2E_RUN=DIR`, which the run exports after its transcript starts, or the `XDG_CONFIG_HOME` under DIR that a daemon pane carries, its environment built from the daemon's allow-list (`paneEnvAllowList`, `packages/daemon/internal/runtime/tmux/environment.go`).
   `marked_processes` refuses a run that has not marked itself.
-  `stop_marked_processes` signals each through `freeze_if`, so a pid that passed to another process since is left; with GRACE it gives each SIGTERM and GRACE seconds before SIGKILL.
+  `stop_marked_processes` stops each through `freeze_if`, so a pid that passed to another process since gets no signal, and then ends it with everything under it (`stop_tree`), so a child that cleared its environment goes with it; with GRACE it gives each SIGTERM and GRACE seconds first, and what each had started, read while it was stopped for the TERM, is ended by its own start time if it outlives the process that started it.
   Every stage proof's sweep is this one, and a start that clears its environment (`env -i`) names `LEGION_E2E_RUN` itself
 
 - `proc_describe PID…`

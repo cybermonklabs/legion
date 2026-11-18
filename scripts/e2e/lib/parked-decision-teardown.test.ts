@@ -141,7 +141,8 @@ test.skipIf(skip)(
     const stale = join(work, "state/omp/profiles/p/run/daemons/fedcba9876543210");
     for (const d of [ws, home, runtime, stale, join(work, "tmux")])
       mkdirSync(d, { recursive: true });
-    // The stand-in broker lives outside $work; its environment, the pane's, carries the run's mark.
+    // The stand-in broker lives outside $work; its environment, the pane's, carries a daemon pane's
+    // mark.
     const broker = join(dir, "fake-broker.sh");
     writeFileSync(
       broker,
@@ -178,12 +179,16 @@ wait
       [bystander.pid, stranger.pid].every((pid) => alive(pid) && sessionOf(pid) === pid)
     );
 
-    // The run's tmux server, and so every pane, carries the run's mark, as a rig's own does.
+    // The run's tmux server, and so every pane, carries what a daemon pane carries and no variable of
+    // the run's own: the daemon builds a pane's environment from its allow-list, with the XDG
+    // directories moved under its state directory, which the run keeps under $work
+    // (packages/daemon/internal/runtime/tmux/environment.go). That is the one mark the sweep and
+    // cleanup-is-complete's wait find a pane's broker by.
     const env = {
       PATH: process.env.PATH ?? "",
       HOME: home,
       TMUX_TMPDIR: join(work, "tmux"),
-      LEGION_E2E_RUN: work,
+      XDG_CONFIG_HOME: join(work, "state", "home", ".config"),
     };
     const pidFile = join(runtime, "broker.pid");
     // The stand-in broker the pane starts leads a session of its own and names it in broker.pid.

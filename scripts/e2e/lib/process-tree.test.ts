@@ -3,6 +3,7 @@ import { copyFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
 
 // lib/process-tree.sh (sourced through lib/rig.sh): how a proof knows a process it started by the
@@ -30,7 +31,12 @@ beforeAll(() => {
 
 // run runs BODY with lib/rig.sh sourced and a scratch directory of its own in $scratch; every
 // process BODY records in `started` is stopped with everything under it when BODY ends (stop_tree,
-// lib/rig.sh), its children's children included. start_of PID prints PID's start time, stat field 22.
+// lib/process-tree.sh), its children's children included. start_of PID prints PID's start time,
+// stat field 22. ended_pid prints the pid of a program this shell started, killed and reaped: a pid
+// that names no process, whose environment no one can read, where pid 1's can be read (a sandbox
+// whose init runs as this user). The harness shell, and so everything it starts with `&`, runs in
+// a process group of its own (ownGroup): the rows stop what they end, and a stopped member of the
+// test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
 function run(body: string) {
   const script = `set -Eeuo pipefail
 trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
@@ -50,9 +56,17 @@ start_of() {
   read -r -a fields <<<"\${stat##*) }"
   printf '%s\\n' "\${fields[19]}"
 }
+ended_pid() {
+  local pid
+  "$program" 600 </dev/null >/dev/null 2>&1 &
+  pid=$!
+  builtin kill -KILL "$pid"
+  { wait "$pid" || true; } 2>/dev/null
+  printf '%s\\n' "$pid"
+}
 program=$PROGRAM other=$OTHER
 ${body}`;
-  const result = Bun.spawnSync(["bash", "-c", script], {
+  const result = Bun.spawnSync(ownGroup(["bash", "-c", script]), {
     env: { PATH: process.env.PATH ?? "", DIR: dir, PROGRAM: program, OTHER: other },
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
@@ -541,7 +555,7 @@ started+=("$pid")
 until_true 10 "the program's environment" sh -c '[ "$(readlink /proc/$1/exe)" = "$2" ]' sh "$pid" "$program"
 for name in LEGION_GRANT_FILE LEGION_GRANT; do st=0; env_has "$pid" "$name" || st=$?; echo "$name $st"; done
 echo "value $(env_of "$pid" LEGION_GRANT_FILE)"
-st=0; env_has 1 HOME 2>/dev/null || st=$?; echo "unreadable $st"
+st=0; env_has "$(ended_pid)" HOME 2>/dev/null || st=$?; echo "unreadable $st"
 `);
       expect(r.err).toBe("");
       expect(r.out).toBe("LEGION_GRANT_FILE 0\nLEGION_GRANT 1\nvalue /grant\nunreadable 2\n");
@@ -550,24 +564,48 @@ st=0; env_has 1 HOME 2>/dev/null || st=$?; echo "unreadable $st"
   );
 
   test(
-    "freeze_if signals a process only while it is the one that started then and its check holds, and otherwise thaws it and sends nothing",
+    "freeze_if signals a process only while it is the one that started then and its check holds, sends nothing on a mismatch, and leaves a stopped process stopped",
     async () => {
+      // `kill` is shadowed by a function that records each signal freeze_if sends and then sends it,
+      // so what a call sent is read from its record, whether or not the target's state shows it: a
+      // SIGSTOP and SIGCONT pair leaves a running process as it was. The row's own signals go
+      // through `builtin kill`. `once` holds on its first call only, so a call can pass the read
+      // before the stop and fail the one after it.
       const r = run(`
 "$program" 600 </dev/null >/dev/null 2>&1 &
 pid=$!
 started+=("$pid")
 until_true 10 "the program to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$2" ]' sh "$pid" "$program"
 start=$(start_of "$pid")
-state() { local s; read -r s <"/proc/$1/stat"; s=\${s##*) }; printf '%s\\n' "\${s%% *}"; }
-st=0; freeze_if "$pid" "$((start + 1))" KILL || st=$?; echo "another start: $st, $(state "$pid")"
-st=0; freeze_if "$pid" "$start" KILL false || st=$?; echo "its check fails: $st, $(state "$pid")"
-st=0; freeze_if "$pid" "$start" TERM true || st=$?; echo "its check holds: $st"
+state() { local s; read -r s <"/proc/$1/stat"; s=\${s##*) }; case \${s%% *} in T) echo stopped ;; *) echo running ;; esac; }
+kills=$scratch/kills
+: >"$kills"
+kill() { [ "$1" = -0 ] || printf '%s\\n' "$1" >>"$kills"; builtin kill "$@"; }
+sent() { if [ -s "$kills" ]; then paste -sd, "$kills"; else echo nothing; fi; : >"$kills"; }
+once() { [ ! -e "$scratch/once" ] && touch "$scratch/once"; }
+try() { local label=$1 st=0; shift; freeze_if "$@" || st=$?; rm -f "$scratch/once"; echo "$label: $st, sent $(sent), $(state "$pid")"; }
+try "another start" "$pid" "$((start + 1))" KILL
+try "its check fails" "$pid" "$start" KILL false
+try "its check fails once stopped" "$pid" "$start" KILL once
+builtin kill -STOP "$pid"
+until_true 10 "the program to stop" sh -c 'read -r s <"/proc/$1/stat"; s=\${s##*) }; [ "\${s%% *}" = T ]' sh "$pid"
+try "stopped already, another start" "$pid" "$((start + 1))" KILL
+try "stopped already, its check fails" "$pid" "$start" KILL false
+try "stopped already, its check fails once stopped" "$pid" "$start" KILL once
+builtin kill -CONT "$pid"
+st=0; freeze_if "$pid" "$start" TERM true || st=$?; echo "its check holds: $st, sent $(sent)"
 echo "pid $pid"
 `);
       expect(r.err).toBe("");
       const pid = Number(/^pid (\d+)$/m.exec(r.out)?.[1]);
       expect(r.out).toBe(
-        `another start: 1, S\nits check fails: 1, S\nits check holds: 0\npid ${pid}\n`
+        "another start: 1, sent nothing, running\n" +
+          "its check fails: 1, sent nothing, running\n" +
+          "its check fails once stopped: 1, sent -STOP,-CONT, running\n" +
+          "stopped already, another start: 1, sent nothing, stopped\n" +
+          "stopped already, its check fails: 1, sent nothing, stopped\n" +
+          "stopped already, its check fails once stopped: 1, sent -STOP, stopped\n" +
+          `its check holds: 0, sent -STOP,-TERM,-CONT\npid ${pid}\n`
       );
       expect(await gone(pid)).toBe(true);
     },
@@ -593,7 +631,7 @@ env -i PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1
 clean=$!
 started+=("$clean")
 until_true 10 "both programs to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$3" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$granted" "$clean" "$program"
-for p in "$granted" "$clean" 1; do
+for p in "$granted" "$clean" "$(ended_pid)"; do
   st=0
   why=$(carries_no_grant "$p") || st=$?
   echo "status $st: $why"
@@ -602,6 +640,55 @@ done
       expect(r.err).toBe("");
       expect(r.out).toBe(
         "status 1: still carries LEGION_GRANT_FILE\nstatus 0: \nstatus 1: has an environment that could not be read (env_has status 2)\n"
+      );
+    },
+    slow
+  );
+});
+
+// stage3-4b13b-acceptance.sh's and stage3-devbox-workflow.sh's endpoint_mismatch read an Oh My Pi's
+// environment for the rig's endpoints (env_of) and then for the ANTHROPIC_API_KEY it must not carry
+// (env_has): the key's absence holds only on env_has's status 1, and an environment either read
+// could not read is a mismatch, never a clean one.
+describe.skipIf(skip)("endpoint_mismatch", () => {
+  test.each(["stage3-4b13b-acceptance.sh", "stage3-devbox-workflow.sh"])(
+    "%s's holds only for the rig's endpoints and no key, and fails closed on an environment either read could not read",
+    (script) => {
+      const endpointMismatch = scriptFunctions(join(import.meta.dir, "..", script))(
+        "endpoint_mismatch"
+      );
+      // The third program ends between the two reads: env_has, shadowed, kills and reaps it before
+      // its own read, after env_of has read every endpoint, so env_has finds no environment. check
+      // runs endpoint_mismatch in this shell, not a substitution, so the wait reaps the harness's
+      // own child and the pid is gone, not a zombie, when env_has reads it.
+      const r = run(`${endpointMismatch}
+port_dispatch=1 port_listener=2 port_nats=3 state=/rig
+rig=(DISPATCH_URL=http://127.0.0.1:1 DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token ENVOY_URL=http://127.0.0.1:2 ENVOY_NATS_URL=nats://127.0.0.1:3)
+env -i "\${rig[@]}" "$program" 600 </dev/null >/dev/null 2>&1 &
+clean=$!
+env -i "\${rig[@]}" ANTHROPIC_API_KEY=k "$program" 600 </dev/null >/dev/null 2>&1 &
+keyed=$!
+env -i "\${rig[@]}" "$program" 600 </dev/null >/dev/null 2>&1 &
+ending=$!
+started+=("$clean" "$keyed" "$ending")
+until_true 10 "the three programs to run" sh -c 'p=$1; shift; for pid; do [ "$(readlink /proc/$pid/exe)" = "$p" ] || exit 1; done' sh "$program" "$clean" "$keyed" "$ending"
+check() { local st=0; endpoint_mismatch "$2" >"$scratch/found" || st=$?; echo "$1: status $st: $(cat "$scratch/found")"; }
+check clean "$clean"
+check keyed "$keyed"
+check unreadable "$(ended_pid)"
+eval "real_$(declare -f env_has)"
+env_has() {
+  if [ "$1" = "$ending" ]; then builtin kill -KILL "$1"; { wait "$1" || true; } 2>/dev/null; fi
+  real_env_has "$@"
+}
+check "ended between the reads" "$ending"
+`);
+      expect(r.err).toBe("");
+      expect(r.out).toBe(
+        "clean: status 1: \n" +
+          "keyed: status 0: ANTHROPIC_API_KEY set, want unset\n" +
+          "unreadable: status 0: an environment that could not be read (env_of status 2)\n" +
+          "ended between the reads: status 0: an environment that could not be read (env_has status 2)\n"
       );
     },
     slow

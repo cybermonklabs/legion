@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { ownGroup } from "./own-group";
 import { scriptFunctions } from "./script-functions";
 
 // The controller start proof's lookup of the controller's Oh My Pi (controller-start-tmux.sh's
@@ -81,7 +82,10 @@ padding() {
 }
 state=$work/controller-state
 ${body}`;
-  const result = Bun.spawnSync(["bash", "-c", script], {
+  // The harness shell, and so every stand-in it starts, runs in a process group of its own
+  // (ownGroup): its EXIT trap stops each tree, and a stopped member of the test runner's own group
+  // hangs the runner up where that group is orphaned, as in a Legion pod.
+  const result = Bun.spawnSync(ownGroup(["bash", "-c", script]), {
     env: { PATH: process.env.PATH ?? "", WORK: work },
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
