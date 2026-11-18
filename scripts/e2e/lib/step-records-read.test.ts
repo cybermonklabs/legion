@@ -4,10 +4,11 @@ import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // step-records-read.sh (the read of a deployed issue's step records after the merge) against a
-// fake `dispatch` on PATH: it logs its arguments, prints FAKE_DISPATCH_OUT as the real command's
-// answer would print, and exits FAKE_DISPATCH_EXIT. The answers below are the lines `dispatch
-// steps` prints (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then one run per
-// line.
+// fake `dispatch` on PATH: it logs its arguments, prints FAKE_DISPATCH_ERR on stderr, as the real
+// command prints its `dispatch: <warning>` lines before its answer, then FAKE_DISPATCH_OUT as the
+// real command's answer would print, and exits FAKE_DISPATCH_EXIT. The answers below are the lines
+// `dispatch steps` prints (packages/envoy-client/src/dispatch-commands/steps.ts): a header, then one
+// run per line.
 const script = join(import.meta.dir, "..", "step-records-read.sh");
 const dir = temporaryDirectory("step-records-read-test");
 beforeAll(() => {
@@ -15,6 +16,7 @@ beforeAll(() => {
     join(dir, "dispatch"),
     `#!/usr/bin/env bash
 printf '%s\\n' "$*" >>"$FAKE_DISPATCH_LOG"
+printf '%s' "$FAKE_DISPATCH_ERR" >&2
 printf '%s' "$FAKE_DISPATCH_OUT"
 exit "\${FAKE_DISPATCH_EXIT:-0}"
 `,
@@ -55,9 +57,9 @@ function changed(pick: RegExp, edit: (line: string) => string): string {
 const bash = Bun.which("bash", { PATH: "/usr/bin:/bin" });
 if (bash === null) throw new Error("no bash in /usr/bin or /bin");
 let runs = 0;
-// read runs the script with args against the fake dispatch, which prints out and exits exit, on
-// path, which by default finds the fake first.
-function read(out: string, args: string[] = [key], exit = 0, path = `${dir}:/usr/bin:/bin`) {
+// read runs the script with args against the fake dispatch, which prints err on stderr and out on
+// stdout and exits exit, on path, which by default finds the fake first.
+function read(out: string, args: string[] = [key], exit = 0, path = `${dir}:/usr/bin:/bin`, err = "") {
   const log = join(dir, `calls-${++runs}`);
   writeFileSync(log, "");
   const result = Bun.spawnSync([bash, script, ...args], {
@@ -66,6 +68,7 @@ function read(out: string, args: string[] = [key], exit = 0, path = `${dir}:/usr
       HOME: dir,
       FAKE_DISPATCH_LOG: log,
       FAKE_DISPATCH_OUT: out,
+      FAKE_DISPATCH_ERR: err,
       FAKE_DISPATCH_EXIT: String(exit),
     },
   });
@@ -85,6 +88,14 @@ describe("step-records-read.sh", () => {
     expect(stdout).toContain(
       `PASS: ${key}: 10 records; steps 1 to 5, the retro and the merge each have one, each record ended, each step and retro with an agent, each step with a model`
     );
+    expect(code).toBe(0);
+  });
+
+  test("a warning the command prints on stderr is no part of its answer: the read passes", () => {
+    const warning = "dispatch: the bearer token expires in 2 days\n";
+    const { code, stdout, stderr } = read(`${whole.join("\n")}\n`, [key], 0, undefined, warning);
+    expect(stdout).toContain(`PASS: ${key}: 10 records`);
+    expect(stderr).toContain(warning.trim());
     expect(code).toBe(0);
   });
 

@@ -34,9 +34,15 @@ unknown() {
 }
 command -v dispatch >/dev/null || unknown "no dispatch command is on PATH, so nothing was read"
 
+# The answer is stdout alone: the command prints its own `dispatch: <warning>` lines on stderr,
+# before its answer, and a warning is no line of the answer. Stderr goes to the operator, and into
+# the message when the command fails.
+errors=$(mktemp)
+trap 'rm -f "$errors"' EXIT
 code=0
-out=$(dispatch steps --issue "$issue" 2>&1) || code=$?
-[ "$code" -eq 0 ] || unknown "dispatch steps --issue $issue exited $code, so nothing was read: $out"
+out=$(dispatch steps --issue "$issue" 2>"$errors") || code=$?
+[ "$code" -eq 0 ] || unknown "dispatch steps --issue $issue exited $code, so nothing was read: $(cat "$errors")$out"
+cat "$errors" >&2
 printf '%s\n' "$out"
 
 # Each line after the header is one run, as `dispatch steps` prints it:
