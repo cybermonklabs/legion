@@ -956,9 +956,7 @@ func TestAQueueOfOneRefusesASecondSendWhileTheFirstIsInFlight(t *testing.T) {
 	sending := post("in flight")
 	state.awaitSend(t)
 	refused := post("past the bound")
-	served.mentions.mu.Lock()
-	queued, inflight := len(served.mentions.claims), len(served.mentions.held)-len(served.mentions.claims)
-	served.mentions.mu.Unlock()
+	queued, inflight := queuedAndInFlight(served.mentions)
 	t.Logf("with the first send in flight: queued %d, in flight %d, of a capacity of 1", queued, inflight)
 	if !unclaimedPending(t, database, refused, "session:s1") {
 		t.Fatal("the second attempt, accepted while the first send was in flight, kept the claim it committed with: the queue took it past its capacity of 1")
@@ -1016,18 +1014,36 @@ func withMentionClaimRefresh(t *testing.T, served *server, period time.Duration)
 		served.sendCommentMention, served.refreshMentionClaims, served.releaseMentionClaims)
 }
 
+// queuedAndInFlight is how many sends sender holds on its lanes, not started yet, and how many it
+// holds in flight.
+func queuedAndInFlight(sender *mentionSender) (queued, inflight int) {
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	for _, sends := range sender.lanes {
+		queued += len(sends)
+	}
+	return queued, len(sender.held) - queued
+}
+
 // ageQueuedClaims moves every claim the sender holds on a send that has not started back by by,
 // on the attempt row and in the sender's own record together: what a lane held that long leaves
-// behind when nothing writes those claims again. It holds the sender's lock throughout, so no
-// refresh records anything until every row and its record agree again.
+// behind when nothing writes those claims again. A send in flight is left as it is, its try having
+// claimed its row for itself. It holds the sender's lock throughout, so no refresh records
+// anything until every row and its record agree again.
 func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender, by time.Duration) {
 	t.Helper()
 	sender.mu.Lock()
 	defer sender.mu.Unlock()
-	if len(sender.claims) == 0 {
+	var queued []mentionKey
+	for _, sends := range sender.lanes {
+		for _, send := range sends {
+			queued = append(queued, send.key())
+		}
+	}
+	if len(queued) == 0 {
 		t.Fatal("the mention sender holds no queued send whose claim could age")
 	}
-	for key := range sender.claims {
+	for _, key := range queued {
 		// A refresh whose statement ran but whose result is not recorded yet leaves the row newer
 		// than the map (refreshHeldClaims), so the claim aged is the one the row carries, and the
 		// map is set to it: that refresh then finds the map changed and records nothing over it.

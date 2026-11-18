@@ -251,9 +251,13 @@ type mentionSender struct {
 	ready []laneKey
 	// serving is how many goroutines serve lanes.
 	serving int
-	// claims is the claim this sender holds on each send that has not started, as it last wrote
-	// it, so one statement writes them all again and no statement of its own ever touches the
-	// claim a send has taken over. Its size is how many sends are queued.
+	// claims is the claim this sender holds on each attempt it holds, as it last wrote it, so one
+	// statement writes them all again: every send that has not started, and a send in flight until
+	// it ends (next). A try that claims the attempt for itself takes that claim out of the
+	// statements' reach, as each matches only the claim recorded here, and park records the
+	// try's; a try that reads the rule alone (sendCommentMention) writes no claim, so its send's
+	// row still carries the one recorded here, and a refresh that writes it meanwhile records what
+	// it wrote (refreshHeldClaims).
 	claims map[mentionKey]time.Time
 	// held is every attempt this sender queued whose send has not finished - queued, parked or in
 	// flight - so that one attempt is never queued twice: a keyed repeat of a comment answers while
@@ -336,8 +340,8 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 	if _, mine := m.held[key]; mine {
 		// A keyed repeat claimed the attempt anew before it asked (claimQueuedMention), so the
 		// claim its send waits under is the one that repeat just wrote, and the refreshes and the
-		// drain's release move that one. A send a lane has already started is not among the claims
-		// this sender writes: its claim is the send's own, and nothing here touches it.
+		// drain's release move that one. A send in flight is among them too, and parks under that
+		// claim unless its try claims the attempt for itself (park).
 		if _, waiting := m.claims[key]; waiting {
 			m.claims[key] = item.claimed
 		}
@@ -405,7 +409,7 @@ func (m *mentionSender) serve(lane laneKey) {
 			continue
 		}
 		finished = mentionKey{}
-		held, delay := m.park(lane, again)
+		held, delay := m.park(lane, again, !again.claimed.Equal(item.claimed))
 		wake := func() { m.after(delay, func() { m.unpark(held) }) }
 		if held == lane {
 			lane, givenUp = laneKey{}, wake
@@ -418,13 +422,16 @@ func (m *mentionSender) serve(lane laneKey) {
 // next releases finished, the attempt whose send the goroutine serving lane has just finished (the
 // zero key when it has finished none), and takes that goroutine's next send and the lane it now
 // serves. lane is the zero laneKey when the goroutine gave its lane up to a park (serve), and it
-// then takes a lane that waits. The send it takes leaves the claims this sender writes again: from
-// here its attempt's claim is the send's own. ok is false when the goroutine is done: the sender
-// stopped, or no lane has a send left for it.
+// then takes a lane that waits. The send it takes carries the claim this sender records for it,
+// which stays among the claims the refresh writes again until the send ends: a try that reads
+// the rule alone writes no claim, so the claim its row carries is still that one, and a refresh
+// that writes the row while the try is in flight records the claim it wrote (claims). ok is false
+// when the goroutine is done: the sender stopped, or no lane has a send left for it.
 func (m *mentionSender) next(lane laneKey, finished mentionKey) (mentionSend, laneKey, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.held, finished)
+	delete(m.claims, finished)
 	if m.stoppedLocked() {
 		m.serving--
 		return mentionSend{}, laneKey{}, false
@@ -446,7 +453,6 @@ func (m *mentionSender) next(lane laneKey, finished mentionKey) (mentionSend, la
 	m.lanes[lane][0] = mentionSend{}
 	m.lanes[lane] = m.lanes[lane][1:]
 	item.claimed = m.claims[item.key()]
-	delete(m.claims, item.key())
 	return item, lane, true
 }
 
@@ -461,11 +467,14 @@ func heldLane(lane laneKey, owner string) laneKey {
 }
 
 // park puts item, the send lane just started that waited for an earlier event of its comment's
-// owner, at the head of that owner's held lane for the recipient (heldLane) under the claim it
-// holds now, which this sender writes again from here as it writes every queued send's
-// (refreshHeldClaims), and leaves the held lane with no goroutine until mentionOrderRetry of
-// item's parks has passed (unpark). Every send of the same owner still queued on lane moves with
-// it, in order, and every later one queues behind them (queueLocked), so the owner's sends keep
+// owner, at the head of that owner's held lane for the recipient (heldLane), and leaves the held
+// lane with no goroutine until mentionOrderRetry of item's parks has passed (unpark). Its claim is
+// the one its try took for itself when claimed is set, which this sender records and writes again
+// from here as it writes every queued send's (refreshHeldClaims), and otherwise the one it records
+// already: a try that read the rule alone took none, and a refresh that wrote its row while it
+// was in flight recorded what it wrote, which item, carrying the claim the try started with,
+// would set back. Every send of the same owner still queued on lane moves with it, in order, and
+// every later one queues behind them (queueLocked), so the owner's sends keep
 // their order; the recipient's sends of other owners stay on lane and go on, as an earlier event
 // of one owner holds no event of another (planChains keeps order per owner). The held lane is
 // deleted once it is empty and served (next), after which the owner's sends join lane again. Its
@@ -482,7 +491,7 @@ func heldLane(lane laneKey, owner string) laneKey {
 // at WARN (warnHeld), naming its owner, the earlier event it waits behind and that event's last
 // publish error, beside the ERROR the outbox writes for that event's own failed publish, which is
 // the cause: here when a park finds it past the threshold, else as it leaves the lane (reportLate).
-func (m *mentionSender) park(lane laneKey, item mentionSend) (held laneKey, delay time.Duration) {
+func (m *mentionSender) park(lane laneKey, item mentionSend, claimed bool) (held laneKey, delay time.Duration) {
 	item.parks++
 	now := time.Now()
 	if item.heldSince.IsZero() {
@@ -492,7 +501,9 @@ func (m *mentionSender) park(lane laneKey, item mentionSend) (held laneKey, dela
 	owner := item.owner()
 	held = heldLane(lane, owner)
 	m.mu.Lock()
-	m.claims[item.key()] = item.claimed
+	if claimed {
+		m.claims[item.key()] = item.claimed
+	}
 	if held == lane {
 		m.lanes[held] = append([]mentionSend{item}, m.lanes[held]...)
 	} else {
@@ -645,11 +656,12 @@ func (m *mentionSender) keepClaims() {
 	}
 }
 
-// refreshHeldClaims writes the claim of every send that has not started again, in one statement,
+// refreshHeldClaims writes the claim of every attempt this sender holds again, in one statement,
 // and records what that statement wrote: the next refresh and the lane's own send both read the
-// claim this sender last took. A send the lanes have handed out is not in the snapshot, and the
-// statement moves only a row that still carries the claim this sender wrote, so a refresh can
-// never move the claim a starting send has just taken out from under that send's settle.
+// claim this sender last took. The statement moves only a row that still carries the claim this
+// sender recorded, so it never moves the claim a try has taken for itself out from under that
+// try's settle, and it goes on writing the row of a send in flight whose try reads the rule alone
+// and writes none (claims).
 //
 // The statement runs without the lock, so for its length a row carries a newer claim than the map
 // records. That gap is safe: the row's claim only moves forward, so the delivery sweep, which

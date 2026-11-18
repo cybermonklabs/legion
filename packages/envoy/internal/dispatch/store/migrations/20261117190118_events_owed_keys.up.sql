@@ -25,9 +25,11 @@
 -- the outbox's fallback pass - so it is held behind the earlier events of its owner that still
 -- owe a send its session may take (model.MentionCopyHolderSQL), and these columns are what say
 -- so: only the outbox computes an event's destinations. An earlier event holds the copy while its
--- owed_keys name a send that session may take, and while its owed_seq is behind the owner's
--- last_seq, until a batch that read the owner's last write records it again. The read walks
--- events_outbox_owner, whose rows are the owner's unpublished events.
+-- owed_keys name a send that session may take, and while its owed_seq is behind the seq of the
+-- owner's newest event, until a batch that read the owner's last write records it again. A
+-- pending subscription command is not counted: it makes no session a destination and no batch
+-- reads it. The read walks events_outbox_owner, whose rows are the owner's unpublished events,
+-- and the owner's newest seq backwards over its unique (owner, seq) index.
 --
 -- An event written before this migration carries null in both, which holds every mention copy of
 -- a later comment of its owner until the outbox publishes it or records it again. No backfill

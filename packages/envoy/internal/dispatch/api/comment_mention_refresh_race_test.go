@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -76,5 +77,96 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 	release()
 	if sent := settledCommentDeliveries(t, database, queued); len(sent) != 1 || !allSent(sent) {
 		t.Fatalf("the repeated comment's attempts = %#v, want its one attempt sent", sent)
+	}
+}
+
+// A claim refresh that lands while a parked send's try is in flight - a try that reads the rule
+// alone, which writes no claim - must leave the sender recording the claim the refresh wrote on
+// the row. The refresh writes a row only where it carries the claim the sender records
+// (refreshMentionClaims), so a record left behind its row is never written again: the row's claim
+// lapses with the send still parked, the lane's own send is then refused as another sender's,
+// and the issue's next mention reaches the session first (TestTheMentionSenderClaimModel finds
+// all three). The send, the refresh and the rule are the server's own, on the database; only
+// their order is the test's. The control row runs the refresh while the send is parked.
+func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		across bool
+	}{
+		{name: "control: the refresh runs while the send is parked"},
+		{name: "the refresh runs while the parked send's try is in flight", across: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener, _ := newMentionListener(t)
+			handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
+				envoyURL: listener.URL, envoyTimeout: 30 * time.Second, outboxPublishes: true,
+			})
+			served.mentions.wait()
+			var gated atomic.Bool
+			refreshEntered, refreshGo := make(chan struct{}), make(chan struct{})
+			tryEntered, tryGo := make(chan struct{}), make(chan struct{})
+			sender := newMentionSender(served.lifetime, time.Hour,
+				func(ctx context.Context, item mentionSend) (mentionSend, bool) {
+					if item.heldFor != "" && gated.Load() {
+						tryEntered <- struct{}{}
+						<-tryGo
+					}
+					return served.sendCommentMention(ctx, item)
+				},
+				func(ctx context.Context, queued []mentionClaim) ([]mentionClaim, error) {
+					if gated.Load() {
+						refreshEntered <- struct{}{}
+						<-refreshGo
+					}
+					return served.refreshMentionClaims(ctx, queued)
+				},
+				served.releaseMentionClaims)
+			timers := make(chan func(), 4)
+			sender.mu.Lock()
+			sender.after = func(_ time.Duration, f func()) { timers <- f }
+			sender.mu.Unlock()
+			served.mentions = sender
+
+			// No outbox runs, so the issue's earlier events stay unsent and the comment's send
+			// waits behind them: its first try claims and parks, and each later try reads the
+			// rule alone.
+			issue := createInteractionIssue(t, handler, "TEST", "A refresh across a parked send's try", "before")
+			comment := postMentionOfS1(t, handler, issue.Key, "the parked one")
+			unpark := <-timers
+			if tc.across {
+				gated.Store(true)
+				refreshed := make(chan struct{})
+				go func() {
+					sender.refreshHeldClaims(context.Background())
+					close(refreshed)
+				}()
+				<-refreshEntered // the refresh holds its snapshot, the parked send in it
+				go unpark()
+				<-tryEntered // the lane has started the send's try
+				close(refreshGo)
+				<-refreshed // the refresh wrote the row and recorded what it wrote
+				gated.Store(false)
+				close(tryGo) // the try reads the rule alone and parks again
+			} else {
+				sender.refreshHeldClaims(context.Background())
+				go unpark()
+			}
+			<-timers
+
+			key := mentionKey{comment: comment, target: "session:s1", attempt: 1}
+			sender.mu.Lock()
+			recorded, holds := sender.claims[key]
+			sender.mu.Unlock()
+			row := attemptClaimedAt(t, database, comment, "session:s1")
+			t.Logf("parked again: the sender records claim %v (held %t), the row carries %v", recorded, holds, row)
+			if !holds || !recorded.Equal(row) {
+				t.Fatalf("the sender records the parked send's claim as %v (held %t) while its row carries %v: the refresh writes only a row that carries the claim the sender records, so this one is never written again and lapses with the send still parked",
+					recorded, holds, row)
+			}
+			sender.refreshHeldClaims(context.Background())
+			if again := attemptClaimedAt(t, database, comment, "session:s1"); !again.After(row) {
+				t.Fatalf("the parked send's claim is still %v after the next refresh, want it written again", again)
+			}
+		})
 	}
 }
