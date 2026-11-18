@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -452,6 +453,171 @@ func TestReadAcceptsAResponseAtTheLimit(t *testing.T) {
 	if status != http.StatusOK || string(body) != want {
 		t.Fatalf("Read: status=%d body length=%d, want 200 and %d bytes", status, len(body), len(want))
 	}
+}
+
+// answeringGitHub is a GitHub that answers GET /answer/{status} with that status and the body
+// GitHub gives with it, a 429 and a 403 with the headers of an exhausted rate limit when the
+// query asks for them (?limited=1), and /large with a body of 64 bytes.
+func answeringGitHub(t *testing.T) (*Client, string) {
+	t.Helper()
+	base := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/large" {
+			fmt.Fprint(w, strings.Repeat("x", 64))
+			return
+		}
+		status, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/answer/"))
+		if err != nil {
+			githubtest.Unexpected(t, w, r)
+			return
+		}
+		if r.URL.Query().Get("limited") == "1" {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("Retry-After", "60")
+		}
+		w.WriteHeader(status)
+		if status != http.StatusNotModified {
+			fmt.Fprintf(w, `{"message":"answered %d"}`, status)
+		}
+	}})
+	_, pemText := testKeyPEM(t)
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+	if err != nil || client == nil {
+		t.Fatalf("new client: %v", err)
+	}
+	return client, base
+}
+
+// The client notes on the attempt a request's context carries (githubreads) the answers no
+// caller takes as data: a 5xx, a 401, a limit RateLimit reads (a 429, and a 403 that carries
+// one) and a body past the caller's limit, each in the words of the client's own errors. Every
+// other answer is the caller's to judge, so a 200, a 304, a 403 that carries no limit, a 404, a
+// 409 and a 422 are not noted. Each request is marked sent either way, and the same request on
+// a context with no attempt is answered exactly as on one with an attempt.
+func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
+	client, base := answeringGitHub(t)
+	cases := []struct {
+		name  string
+		path  string
+		etag  string
+		limit int64
+		// cause is the cause noted, "" when the answer is not noted.
+		cause string
+	}{
+		{name: "200", path: "/answer/200"},
+		{name: "304", path: "/answer/304", etag: `"abc"`},
+		{name: "a 403 that carries no limit", path: "/answer/403"},
+		{name: "404", path: "/answer/404"},
+		{name: "409", path: "/answer/409"},
+		{name: "422", path: "/answer/422"},
+		{name: "503", path: "/answer/503", cause: "GET " + base + `/answer/503: status 503: {"message":"answered 503"}`},
+		{name: "500", path: "/answer/500", cause: "GET " + base + `/answer/500: status 500: {"message":"answered 500"}`},
+		{name: "401", path: "/answer/401", cause: "GET " + base + `/answer/401: status 401: {"message":"answered 401"}`},
+		{name: "429", path: "/answer/429?limited=1", cause: "GET " + base + `/answer/429?limited=1: rate-limited by GitHub (status 429), next request in 1m0s: {"message":"answered 429"}`},
+		{name: "a 403 that RateLimit reads as a limit", path: "/answer/403?limited=1", cause: "GET " + base + `/answer/403?limited=1: rate-limited by GitHub (status 403), next request in 1m0s: {"message":"answered 403"}`},
+		{name: "a body past the caller's limit", path: "/large", limit: 16, cause: "GET " + base + "/large: GitHub response body exceeds the 16-byte limit"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			limit := tc.limit
+			if limit == 0 {
+				limit = responseLimit
+			}
+			read := func(ctx context.Context) string {
+				body, status, _, err := client.ReadConditionalWithin(ctx, "installation-token", tc.path, tc.etag, limit)
+				return fmt.Sprintf("status %d, body %q, error %v", status, body, err)
+			}
+			ctx, attempt := githubreads.Begin(context.Background())
+			withAttempt := read(ctx)
+			if without := read(context.Background()); without != withAttempt {
+				t.Fatalf("with an attempt the read answers %s, and without one %s; want the same answer", withAttempt, without)
+			}
+			sent, failed, cause := attempt.Outcome()
+			if !sent || failed != (tc.cause != "") || cause != tc.cause {
+				t.Fatalf("after %s: sent %v, failed %v, cause %q; want sent and cause %q", withAttempt, sent, failed, cause, tc.cause)
+			}
+		})
+	}
+}
+
+// A request GitHub gave no answer to is noted, with the error the caller is given: a transport
+// error, and the client's own RequestTimeout ending while the caller's context is live. A request
+// whose caller's context ended is not noted, since the caller's end -- a pass's own bound, or the
+// process shutting down -- is no failure of GitHub's. Both are marked sent.
+func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
+	t.Run("a transport error", func(t *testing.T) {
+		closed := httptest.NewServer(http.NotFoundHandler())
+		closed.Close()
+		_, pemText := testKeyPEM(t)
+		client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, closed.URL)
+		if err != nil {
+			t.Fatalf("new client: %v", err)
+		}
+		ctx, attempt := githubreads.Begin(context.Background())
+		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
+		if readErr == nil {
+			t.Fatal("a read of a closed server succeeded")
+		}
+		sent, failed, cause := attempt.Outcome()
+		if !sent || !failed || cause != readErr.Error() || !strings.HasPrefix(cause, "GET "+closed.URL+"/repos/acme/web: ") {
+			t.Fatalf("sent %v, failed %v, cause %q; want sent and the read's own error %q", sent, failed, cause, readErr)
+		}
+	})
+
+	t.Run("the client's own timeout", func(t *testing.T) {
+		client := hangingGitHub(t, nil)
+		saved := RequestTimeout
+		RequestTimeout = 50 * time.Millisecond
+		t.Cleanup(func() { RequestTimeout = saved })
+		ctx, attempt := githubreads.Begin(context.Background())
+		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
+		if !errors.Is(readErr, context.DeadlineExceeded) {
+			t.Fatalf("a read past RequestTimeout: err = %v, want the deadline", readErr)
+		}
+		sent, failed, cause := attempt.Outcome()
+		if !sent || !failed || cause != readErr.Error() {
+			t.Fatalf("sent %v, failed %v, cause %q; want sent and the read's own error %q", sent, failed, cause, readErr)
+		}
+	})
+
+	t.Run("a caller that ended", func(t *testing.T) {
+		arrived := make(chan struct{}, 1)
+		client := hangingGitHub(t, arrived)
+		caller, end := context.WithCancel(context.Background())
+		defer end()
+		go func() {
+			<-arrived
+			end()
+		}()
+		ctx, attempt := githubreads.Begin(caller)
+		_, _, _, readErr := client.Read(ctx, "installation-token", "/repos/acme/web")
+		if !errors.Is(readErr, context.Canceled) {
+			t.Fatalf("a read whose caller ended: err = %v, want the cancel", readErr)
+		}
+		if sent, failed, cause := attempt.Outcome(); !sent || failed {
+			t.Fatalf("sent %v, failed %v, cause %q; want sent and nothing noted", sent, failed, cause)
+		}
+	})
+}
+
+// hangingGitHub is a client of a GitHub that answers no request until the request's own context
+// ends, signalling arrived, when it is not nil, as each request reaches it.
+func hangingGitHub(t *testing.T, arrived chan<- struct{}) *Client {
+	t.Helper()
+	base := githubtest.Server(t, githubtest.Spec{Handle: func(_ http.ResponseWriter, r *http.Request) {
+		if arrived != nil {
+			select {
+			case arrived <- struct{}{}:
+			default:
+			}
+		}
+		<-r.Context().Done()
+	}})
+	_, pemText := testKeyPEM(t)
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	return client
 }
 
 func TestGraphQLPostsQueryAndVariablesWithAnInstallationToken(t *testing.T) {

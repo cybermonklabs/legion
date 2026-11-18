@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -306,6 +307,107 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 			// and so does the installation's, which every query is sent under.
 			_, _, _, err = b.GraphQL(ctx, tokenB, "query { viewer { login } }", nil)
 			requireHeld(t, err, "B's query inside the limit A met")
+		})
+	}
+}
+
+// Every rate limit a request meets is noted on the attempt its context carries (githubreads),
+// with the error its caller is given: a limit already recorded, which holds a REST request in
+// send and a query in GraphQL before it is sent, and is noted though nothing was sent; and a limit
+// GraphQLRateLimit reads in a query's answer, which GitHub gives with status 200, named with the
+// query's method and target. A query GitHub answers is not noted.
+func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
+	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
+	spent := `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`
+	read := func(ctx context.Context, client *Client, token string) error {
+		_, _, _, err := client.Read(ctx, token, "/repos/acme/web/issues/2")
+		return err
+	}
+	query := func(ctx context.Context, client *Client, token string) error {
+		_, _, _, err := client.GraphQL(ctx, token, "query { viewer { login } }", nil)
+		return err
+	}
+	held := func(scope string) func(*limitGitHub, error) string {
+		return func(_ *limitGitHub, err error) string {
+			if limited, ok := AsRateLimit(err); !ok || !limited.Held || limited.Scope != scope {
+				return fmt.Sprintf("(want a limit held under %s, got %v)", scope, err)
+			}
+			return err.Error()
+		}
+	}
+	cases := []struct {
+		name string
+		// prepare records the limit, or sets the answer, the request meets.
+		prepare func(t *testing.T, limits *ratelimit.Store, fake *limitGitHub)
+		request func(ctx context.Context, client *Client, token string) error
+		// sent is whether the request reached GitHub, and cause the cause noted given the error
+		// the caller was given, "" when nothing is noted.
+		sent  bool
+		cause func(fake *limitGitHub, err error) string
+	}{{
+		name: "a REST request a recorded limit holds",
+		prepare: func(t *testing.T, limits *ratelimit.Store, _ *limitGitHub) {
+			if err := limits.Record(context.Background(), InstallationScope(7), time.Minute); err != nil {
+				t.Fatalf("record the installation's limit: %v", err)
+			}
+		},
+		request: read,
+		cause:   held(InstallationScope(7)),
+	}, {
+		name: "a query a recorded GraphQL limit holds before it is sent",
+		prepare: func(t *testing.T, limits *ratelimit.Store, _ *limitGitHub) {
+			if err := limits.Record(context.Background(), GraphQLScope, time.Minute); err != nil {
+				t.Fatalf("record the GraphQL limit: %v", err)
+			}
+		},
+		request: query,
+		cause:   held(GraphQLScope),
+	}, {
+		name: "a query GitHub answers 200 with its budget spent",
+		prepare: func(_ *testing.T, _ *ratelimit.Store, fake *limitGitHub) {
+			fake.answerGraphQL(graphQLAnswer{status: http.StatusOK, header: map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": reset}, body: spent})
+		},
+		request: query,
+		sent:    true,
+		cause: func(fake *limitGitHub, err error) string {
+			if limited, ok := AsRateLimit(err); !ok || limited.Held || limited.Status != http.StatusOK {
+				return fmt.Sprintf("(want GitHub's own 200 as a limit, got %v)", err)
+			}
+			return "POST " + fake.server.URL + "/graphql: " + err.Error()
+		},
+	}, {
+		name:    "a query GitHub answers",
+		prepare: func(*testing.T, *ratelimit.Store, *limitGitHub) {},
+		request: query,
+		sent:    true,
+		cause:   func(*limitGitHub, error) string { return "" },
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := startLimitGitHub(t)
+			limits := ratelimit.New(storetest.Open(t).Pool)
+			client := fake.newClient(t, WithLimits(limits))
+			token, err := client.Token(context.Background(), 7)
+			if err != nil {
+				t.Fatalf("token: %v", err)
+			}
+			tc.prepare(t, limits, fake)
+			requests := fake.count()
+
+			ctx, attempt := githubreads.Begin(context.Background())
+			err = tc.request(ctx, client, token)
+			sentRequests := 0
+			if tc.sent {
+				sentRequests = 1
+			}
+			if got := fake.count() - requests; got != sentRequests {
+				t.Fatalf("GitHub got %d requests, want %d", got, sentRequests)
+			}
+			want := tc.cause(fake, err)
+			sent, failed, cause := attempt.Outcome()
+			if sent != tc.sent || failed != (want != "") || cause != want {
+				t.Fatalf("the request answered %v: sent %v, failed %v, cause %q; want sent %v and cause %q", err, sent, failed, cause, tc.sent, want)
+			}
 		})
 	}
 }
