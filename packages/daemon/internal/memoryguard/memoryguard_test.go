@@ -180,6 +180,10 @@ func (p *fakePod) write(fp fakeProcess) {
 			p.t.Fatal(err)
 		}
 	} else {
+		// A smaps an earlier write made unreadable is a directory, which no file replaces.
+		if info, err := os.Lstat(smaps); err == nil && info.IsDir() {
+			_ = os.RemoveAll(smaps)
+		}
 		p.writeWhole(smaps, smapsOf(fp))
 	}
 	if fp.threads > 0 {
@@ -4302,6 +4306,85 @@ func TestMemoryGuardMeasuresGrowthSinceAKillOnHeldSizesFromTheSizesTheDecisionRe
 	}
 }
 
+// A process the reading's table lists but whose smaps the reading could not read keeps its sizes
+// as of the kill and as of the stay's first kill (dropEnded, INFRA-3531 R1): only a process the
+// table no longer lists by its pid and start time has them dropped. Readings come 400 ms apart,
+// wider than the window, so no read in the window shows growth. At the first reading at the mark
+// the guard ends pid 300, of 900 MiB, the largest, which lingers. Pid 301, python3 grow.py of 300
+// MiB, grows 64 MiB while the next reading cannot read its smaps, and reads 364 MiB at the two
+// after, while the guard waits for pid 300; pid 302, python3 idle.py of 600 MiB, never grows. Pid
+// 300 then exits, freeing nothing, and at the reading after, not fallen, pid 301 has grown 64 MiB
+// since the kill: the guard goes on, and ends it by its growth since the stay's first kill, before
+// the larger pid 302. A guard that dropped its sizes at the reading that did not read it took 364
+// MiB, read after its step, as its size as of the kill, saw nothing grown and waited.
+func TestMemoryGuardMeasuresGrowthSinceAKillAcrossAReadingThatCouldNotReadTheProcess(t *testing.T) {
+	pod := newFakePod(t)
+	grower := fakeProcess{pid: 301, ppid: 100, start: 3010, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+	pod.add(agent(2*gib), grower,
+		fakeProcess{pid: 300, ppid: 100, start: 3000, args: []string{"python3", "big.py"}, anon: 900 * mib},
+		fakeProcess{pid: 302, ppid: 100, start: 3020, args: []string{"python3", "idle.py"}, anon: 600 * mib})
+	pod.setAnon(3600 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = func(int) bool { return false }
+	h.run()
+	h.requireKilled(300)
+
+	const apart = 400*time.Millisecond - 100*time.Millisecond
+	grower.unreadableSmaps = true
+	pod.resize(&grower, 364*mib)
+	h.tickAfter(apart)
+	grower.unreadableSmaps = false
+	pod.add(grower)
+	h.tickAfter(apart)
+	h.tickAfter(apart)
+	h.requireKilled(300)
+
+	h.signal.exit(300)
+	pod.remove(300)
+	h.tickAfter(apart)
+	h.requireKilled(300, 301)
+	requireChosenBy(h, 301, "grew-since-kill", "reading")
+	if stopped := h.log.with("stopped"); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up while pid 301 grew: %q", stopped)
+	}
+}
+
+// At the reading at the mark of a rise after a dip, a held process whose smaps the reads again
+// cannot read is left out of that decision and keeps its size as of the stay's first kill, since
+// the band's table still lists it (dropEnded, INFRA-3531 R1). Readings come 400 ms apart. At the
+// first reading at the mark the guard ends pid 300, of 900 MiB, the largest, which exits; two
+// readings follow in the band, below the mark, and pid 301, python3 grow.py of 300 MiB, grows 64
+// MiB between them. At the next reading at the mark its smaps cannot be read: the guard ends the
+// largest held process, pid 302, and pid 301's size as of the stay's first kill is still 300 MiB.
+func TestMemoryGuardKeepsTheSizeAsOfTheStaysFirstKillOfAHeldProcessItCannotReadAgainAtTheMark(t *testing.T) {
+	pod := newFakePod(t)
+	grower := fakeProcess{pid: 301, ppid: 100, start: 3010, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+	pod.add(agent(2*gib), grower,
+		fakeProcess{pid: 300, ppid: 100, start: 3000, args: []string{"python3", "big.py"}, anon: 900 * mib},
+		fakeProcess{pid: 302, ppid: 100, start: 3020, args: []string{"python3", "idle.py"}, anon: 700 * mib},
+		fakeProcess{pid: 303, ppid: 100, start: 3030, args: []string{"python3", "idle.py"}, anon: 500 * mib})
+	pod.setAnon(3600 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	h.requireKilled(300)
+
+	const apart = 400*time.Millisecond - 100*time.Millisecond
+	pod.setAnon(3400 * mib)
+	h.tickAfter(apart)
+	pod.resize(&grower, 364*mib)
+	h.tickAfter(apart)
+	grower.unreadableSmaps = true
+	pod.add(grower)
+	pod.setAnon(3600 * mib)
+	h.tickAfter(apart)
+	h.requireKilled(300, 302)
+	key := procKey{pid: 301, start: 3010}
+	if got, kept := h.g.atFirstKill[key]; !kept || got.size != 300*mib {
+		t.Fatalf("pid 301's size as of the stay's first kill is %+v (kept %t), want %d", got, kept, 300*mib)
+	}
+}
+
 // A killed process that has not exited when the wait passes is waited on no longer. At the reading
 // at which the wait has passed, the reading not fallen, the guard ends the next in the order where
 // a process it may end has grown since the kill, and otherwise gives the rise up with reason not
@@ -4541,14 +4624,16 @@ func TestMemoryGuardEndsOneKernelForAProtectedRiseThoughItDecidesAtEachReadingAf
 func TestMemoryGuardMeasuresGrowthSinceAKillAllocatingNothingForAProcessReadBefore(t *testing.T) {
 	h := newHarness(t, newFakePod(t), nil)
 	cs := make([]candidate, 50)
+	table := &Table{byPID: make(map[int]*Process, len(cs))}
 	for i := range cs {
 		cs[i] = candidate{Process: &Process{PID: 1000 + i, StartTime: uint64(i)}, size: uint64(i) * mib}
+		table.byPID[cs[i].PID] = cs[i].Process
 	}
 	now := testStart
 	h.g.keepKillSizes(now, cs, nil)
 	allocs := testing.AllocsPerRun(100, func() {
 		now = now.Add(Defaults().Interval)
-		if h.g.grownSinceKill(now, cs) {
+		if h.g.grownSinceKill(now, cs, table) {
 			t.Fatal("a process whose size has not changed since the kill counts as grown")
 		}
 	})

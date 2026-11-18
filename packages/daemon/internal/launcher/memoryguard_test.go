@@ -170,6 +170,10 @@ func (p *guardPod) write(gp guardProcess) {
 			p.t.Fatal(err)
 		}
 	} else {
+		// A smaps an earlier write made unreadable is a directory, which no file replaces.
+		if info, err := os.Lstat(path); err == nil && info.IsDir() {
+			_ = os.RemoveAll(path)
+		}
 		p.writeWhole(path, smaps)
 	}
 	links := []struct{ name, target string }{{"exe", gp.exe}, {filepath.Join("ns", "pid"), gp.ns}}
@@ -3028,6 +3032,49 @@ func TestControllerPodMemoryGuardMeasuresGrowthSinceAKillOnHeldSizesFromTheSizes
 	}
 	if stopped := guardLines(log, "stopped "); len(stopped) != 0 {
 		t.Fatalf("the guard gave the rise up: %q", stopped)
+	}
+}
+
+// In the controller's tree, a process the reading's table lists but whose smaps the reading could
+// not read keeps its size as of the kill (INFRA-3531 R1): its growth since the kill counts once it
+// is read again. The shell command Oh My Pi ran runs three Python programs; at the first reading,
+// at the mark, the guard ends the largest, pid 1700, of 900 MiB, which exits and frees nothing.
+// Pid 1701, python3 grow.py of 300 MiB, grows 64 MiB at the next reading, 400 ms later, which
+// cannot read its smaps, and the reading has not fallen: nothing the guard read has grown, and it
+// ends nothing. At the reading after, 400 ms later, pid 1701 reads 364 MiB, grown since the kill,
+// and the guard goes on and ends it, before pid 1702, python3 idle.py of 600 MiB, which never grew.
+// A guard that dropped its size as of the kill at the reading that did not read it took 364 MiB as
+// that size, saw nothing grown, and gave the rise up once the wait had passed.
+func TestControllerPodMemoryGuardGoesOnForAGrowerItCouldNotReadAtAReadingAfterTheKill(t *testing.T) {
+	pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+	command := func(pid int, program string, anon uint64) guardProcess {
+		return guardProcess{pid: pid, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", program}, anon: anon}
+	}
+	grower := command(1701, "grow.py", 300*guardMiB)
+	pod.add(command(1700, "big.py", 900*guardMiB), grower, command(1702, "idle.py", 600*guardMiB))
+	pod.setAnon(guardHigh)
+	rig := useGuardPod(t, pod, nil)
+	m, log := controllerManager()
+	serveControllerGuard(t, m, &pidGuard{})
+	rig.started()
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{1700}) {
+		t.Fatalf("at the first reading, at the mark, the guard killed %v, want the largest, 1700; its log:\n%s", kills, rig.log())
+	}
+
+	grower.anon, grower.unreadableSmaps = 364*guardMiB, true
+	pod.add(grower)
+	rig.tickAfter(300 * time.Millisecond)
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{1700}) {
+		t.Fatalf("at the reading that could not read pid 1701 the guard killed %v, want nothing more; its log:\n%s", kills, rig.log())
+	}
+	grower.unreadableSmaps = false
+	pod.add(grower)
+	rig.tickAfter(300 * time.Millisecond)
+	if kills := rig.signal.kills(); !slices.Equal(kills, []int{1700, 1701}) {
+		t.Fatalf("at the reading after, the guard killed %v, want pid 1701, grown since the kill, next; its log:\n%s", kills, rig.log())
+	}
+	if stopped := guardLines(log, "stopped "); len(stopped) != 0 {
+		t.Fatalf("the guard gave the rise up while pid 1701 grew: %q", stopped)
 	}
 }
 
