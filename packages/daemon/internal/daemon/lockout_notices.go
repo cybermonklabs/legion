@@ -27,19 +27,7 @@ import (
 // It reads nothing of a claim's reach, and holds a lock of its own (mu), apart from the reach
 // keeper's.
 type lockOutNotices struct {
-	log     *slog.Logger
-	project string
-	// tell queues a controller notice on an issue with its marks, in one transaction
-	// (workflowRuntime.tellControllerQueued); nil in a deployment with no workflow, which tells
-	// nobody. records is the store of the project's own notice records; nil keeps them in this
-	// daemon's memory alone. lockedOut is the worker stream's open lock-out of a claim
-	// (stream.Listener.LockedOut); nil reads none open. claimOf is the claim the daemon
-	// supervises for a token, as its machine holds it. alerts writes R6's lines.
-	tell      func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error)
-	records   reachNotices
-	lockedOut func(claim.Token) (stream.LockOut, bool)
-	claimOf   func(claim.Token) (supervise.Claim, bool)
-	alerts    *fleetalert.Writer
+	lockOutOptions
 
 	mu sync.Mutex
 	// loaded is whether this daemon has read the project's notice records yet (load); kept is
@@ -59,11 +47,18 @@ type untoldLockOut struct {
 	newer, older uint64
 }
 
-// lockOutOptions are what lockOutNotices are built from (lockOutNotices says what each is).
+// lockOutOptions are what lockOutNotices are built from, every field of it that is not its own
+// state.
 type lockOutOptions struct {
-	log       *slog.Logger
-	project   string
-	tell      func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error)
+	log     *slog.Logger
+	project string
+	// tell queues a controller notice on an issue with its marks, in one transaction
+	// (workflowRuntime.tellControllerQueued); nil in a deployment with no workflow, which tells
+	// nobody. records is the store of the project's own notice records; nil keeps them in this
+	// daemon's memory alone. lockedOut is the worker stream's open lock-out of a claim
+	// (stream.Listener.LockedOut); nil reads none open. claimOf is the claim the daemon
+	// supervises for a token, as its machine holds it. alerts writes R6's lines.
+	tell      controllerTell
 	records   reachNotices
 	lockedOut func(claim.Token) (stream.LockOut, bool)
 	claimOf   func(claim.Token) (supervise.Claim, bool)
@@ -71,8 +66,7 @@ type lockOutOptions struct {
 }
 
 func newLockOutNotices(o lockOutOptions) *lockOutNotices {
-	return &lockOutNotices{log: o.log, project: o.project, tell: o.tell, records: o.records, lockedOut: o.lockedOut,
-		claimOf: o.claimOf, alerts: o.alerts, kept: map[claim.Token]untoldLockOut{}, told: map[claim.Token][2]uint64{}}
+	return &lockOutNotices{lockOutOptions: o, kept: map[claim.Token]untoldLockOut{}, told: map[claim.Token][2]uint64{}}
 }
 
 // report is the worker stream's report of a claim whose newer process it has refused for

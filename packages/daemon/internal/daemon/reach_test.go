@@ -78,22 +78,24 @@ func newReachRig(t *testing.T, daemonController bool) *reachRig {
 			r.puts[token] = reach
 			return true, nil
 		},
-		tell: func(_ context.Context, notice record.ControllerNotice, issue string, marks []reachMark) (bool, error) {
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			if r.refuseTell {
-				return false, nil
-			}
-			r.told = append(r.told, toldNotice{notice: notice, issue: issue})
-			r.putMarks(marks)
-			return true, nil
-		},
-		enqueue: func(_ context.Context, issue string, notice record.Notice, marks []reachMark) error {
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			r.rows[issue] = append(r.rows[issue], notice)
-			r.putMarks(marks)
-			return nil
+		reachNotify: reachNotify{
+			tell: func(_ context.Context, notice record.ControllerNotice, issue string, marks []reachMark) (bool, error) {
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				if r.refuseTell {
+					return false, nil
+				}
+				r.told = append(r.told, toldNotice{notice: notice, issue: issue})
+				r.putMarks(marks)
+				return true, nil
+			},
+			enqueue: func(_ context.Context, issue string, notice record.Notice, marks []reachMark) error {
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				r.rows[issue] = append(r.rows[issue], notice)
+				r.putMarks(marks)
+				return nil
+			},
 		},
 		alerts: fleetalert.New(log, "legion"),
 		relaunchController: func(_ context.Context, c supervise.Claim, at time.Time) (supervise.Claim, error) {

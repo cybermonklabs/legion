@@ -36,9 +36,17 @@ func listSessions(envoyURL, token string) func(context.Context) ([]notify.Listed
 // a controller notice with its marks (tellControllerQueued) and an architect's notice with its
 // marks (enqueueReachNotice). Both are nil in a deployment with no workflow, which tells nobody.
 type reachNotify struct {
-	tell    func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error)
-	enqueue func(context.Context, string, record.Notice, []reachMark) error
+	tell    controllerTell
+	enqueue architectEnqueue
 }
+
+// controllerTell queues a controller notice on an issue and, where it queued it, writes each of
+// its marks in the same transaction, answering whether it queued it (tellControllerQueued).
+type controllerTell func(ctx context.Context, notice record.ControllerNotice, issue string, marks []reachMark) (bool, error)
+
+// architectEnqueue writes an architect's notice row on an issue and its marks in one transaction
+// (enqueueReachNotice).
+type architectEnqueue func(ctx context.Context, issue string, notice record.Notice, marks []reachMark) error
 
 // reachNotify is w's reach writes, and none for a deployment with no workflow (w nil), which
 // openSupervision is handed before the workflow attaches to it.
@@ -67,8 +75,7 @@ func projectMark(log *slog.Logger, n store.ReachProjectNotice, notice record.Con
 // no workflow (tell nil), a controller not registered, a notice of the same kind still waiting, and
 // a store that refused either write, each of which marks nothing and which the caller tells again
 // at a later sweep. The reach keeper and the lock-out notices both tell through it.
-func tellQueued(ctx context.Context, log *slog.Logger, tell func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error),
-	notice record.ControllerNotice, issue string, marks ...reachMark) bool {
+func tellQueued(ctx context.Context, log *slog.Logger, tell controllerTell, notice record.ControllerNotice, issue string, marks ...reachMark) bool {
 	if tell == nil {
 		return false
 	}

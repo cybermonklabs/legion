@@ -69,28 +69,7 @@ var (
 // the keeper takes it into its record from the claim at its next read of it
 // (relaunchTakenIn), whether this daemon or the next made it.
 type reachKeeper struct {
-	log              *slog.Logger
-	project          string
-	boot             time.Time
-	daemonController bool
-	now              func() time.Time
-	list             func(context.Context) ([]notify.ListedSession, error)
-	put              func(context.Context, claim.Token, supervise.Reach) (bool, error)
-	// tell queues a controller notice on an issue (admit.Admission.TellControllerQueued) and,
-	// where it queued it, writes each of its marks in the same transaction, answering whether it
-	// queued it (workflowRuntime.tellControllerQueued); enqueue writes an architect's notice row
-	// and its marks in one transaction (workflowRuntime.enqueueReachNotice). Both are nil in a
-	// deployment with no workflow, which tells nobody.
-	tell    func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error)
-	enqueue func(context.Context, string, record.Notice, []reachMark) error
-	alerts  *fleetalert.Writer
-	// relaunchController is the daemon's own relaunch of its controller's claim at a moment of
-	// the keeper's clock, which may replace that claim's pod, answering the claim as the relaunch
-	// left it; nil where the operator runs the controller.
-	relaunchController func(context.Context, supervise.Claim, time.Time) (supervise.Claim, error)
-	// step reads the step record the store holds for a claim (store's ClaimStep); nil reads the
-	// record the claim carries (stepOf).
-	step func(context.Context, claim.Token) (supervise.StepRecord, error)
+	reachKeeperOptions
 
 	wg sync.WaitGroup
 
@@ -108,18 +87,14 @@ type reachKeeper struct {
 	noLiveTold             bool
 	// relaunching is the controller's claim while the daemon's relaunch of it is in flight.
 	relaunching claim.Token
-
-	// notices is the store of the project's own notice records (store.ReachProjectNotice), which
-	// holds whether the notice that Envoy lists no live session was told, written beside that
-	// notice in its own transaction; nil keeps it in this daemon's memory alone. loaded is whether
-	// this daemon has read it yet (loadNotices), and noLiveUncleared whether the record of a no-live
-	// run that was told still waits for its delete, a read having found a live session since.
-	notices         reachNotices
+	// loaded is whether this daemon has read the project's notice records yet (loadNotices), and
+	// noLiveUncleared whether the record of a no-live run that was told still waits for its
+	// delete, a read having found a live session since.
 	loaded          bool
 	noLiveUncleared bool
 }
 
-// reachNotices is the store of the project's own notice records (reachKeeper.notices).
+// reachNotices is the store of the project's own notice records (reachKeeperOptions.notices).
 type reachNotices interface {
 	ReachProjectNotices(ctx context.Context, project string) ([]store.ReachProjectNotice, error)
 	PutReachProjectNotice(ctx context.Context, n store.ReachProjectNotice) error
@@ -136,32 +111,37 @@ type reachMark struct {
 	project *store.ReachProjectNotice
 }
 
-// reachKeeperOptions are what a keeper is built from, every field of it that is not its own state
-// (reachKeeper says what each is). A daemon builds its keeper once, from all of them, and never
-// sets one afterwards.
+// reachKeeperOptions are what a keeper is built from, every field of it that is not its own state.
+// A daemon builds its keeper once, from all of them, and never sets one afterwards.
 type reachKeeperOptions struct {
-	log                *slog.Logger
-	project            string
-	boot               time.Time
-	daemonController   bool
-	now                func() time.Time
-	list               func(context.Context) ([]notify.ListedSession, error)
-	put                func(context.Context, claim.Token, supervise.Reach) (bool, error)
-	tell               func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error)
-	enqueue            func(context.Context, string, record.Notice, []reachMark) error
-	alerts             *fleetalert.Writer
+	log              *slog.Logger
+	project          string
+	boot             time.Time
+	daemonController bool
+	now              func() time.Time
+	list             func(context.Context) ([]notify.ListedSession, error)
+	put              func(context.Context, claim.Token, supervise.Reach) (bool, error)
+	// reachNotify is the workflow's two writes the keeper tells through: a controller notice with
+	// its marks (tell) and an architect's notice with its marks (enqueue), each in one
+	// transaction. Both are nil in a deployment with no workflow, which tells nobody.
+	reachNotify
+	alerts *fleetalert.Writer
+	// relaunchController is the daemon's own relaunch of its controller's claim at a moment of
+	// the keeper's clock, which may replace that claim's pod, answering the claim as the relaunch
+	// left it; nil where the operator runs the controller.
 	relaunchController func(context.Context, supervise.Claim, time.Time) (supervise.Claim, error)
-	step               func(context.Context, claim.Token) (supervise.StepRecord, error)
-	notices            reachNotices
+	// step reads the step record the store holds for a claim (store's ClaimStep); nil reads the
+	// record the claim carries (stepOf).
+	step func(context.Context, claim.Token) (supervise.StepRecord, error)
+	// notices is the store of the project's own notice records (store.ReachProjectNotice), which
+	// holds whether the notice that Envoy lists no live session was told, written beside that
+	// notice in its own transaction; nil keeps it in this daemon's memory alone.
+	notices reachNotices
 }
 
 func newReachKeeper(o reachKeeperOptions) *reachKeeper {
-	return &reachKeeper{
-		log: o.log, project: o.project, boot: o.boot, daemonController: o.daemonController, now: o.now,
-		list: o.list, put: o.put, tell: o.tell, enqueue: o.enqueue, alerts: o.alerts, relaunchController: o.relaunchController,
-		step: o.step, notices: o.notices,
-		records: map[claim.Token]supervise.Reach{}, dirty: map[claim.Token]bool{}, seen: map[string]time.Time{},
-	}
+	return &reachKeeper{reachKeeperOptions: o,
+		records: map[claim.Token]supervise.Reach{}, dirty: map[claim.Token]bool{}, seen: map[string]time.Time{}}
 }
 
 // wait waits for the controller relaunch a sweep started and for every record of R6's lines the
