@@ -325,7 +325,7 @@ func (d Deployment) measure(name Name) (bool, Source, string) {
 		case d.ProbeCapacityWaits == 0:
 			return true, SourceBoot, "the image probe pod scheduled at its first attempt"
 		default:
-			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 250m / 1Gi reservation",
+			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 500m / 1Gi reservation",
 				d.ProbeCapacityWaits, d.ProbeCapacityReason)
 		}
 	}

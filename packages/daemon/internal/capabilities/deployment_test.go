@@ -398,9 +398,9 @@ func TestDeploymentRowsArePresentDecidedOrOpen(t *testing.T) {
 		{"tmux runs no probe pod", Deployment{Runtime: "tmux"}, PoolCapacity, StatusPresent, "the tmux runtime runs no probe pod"},
 		{"the probe pod scheduled at once", satisfied, PoolCapacity, StatusPresent, "the image probe pod scheduled at its first attempt"},
 		{"the probe pod waited on capacity", Deployment{Runtime: "kubernetes", Probed: true, ProbeCapacityWaits: 2, ProbeCapacityReason: full}, PoolCapacity, StatusOpen,
-			"the image probe pod was Unschedulable 2 time(s) at boot before it scheduled: " + full + "; the pool had no room for its 250m / 1Gi reservation"},
+			"the image probe pod was Unschedulable 2 time(s) at boot before it scheduled: " + full + "; the pool had no room for its 500m / 1Gi reservation"},
 		{"a decided capacity gap", Deployment{Runtime: "kubernetes", Probed: true, ProbeCapacityWaits: 1, ProbeCapacityReason: full, Decided: decided}, PoolCapacity, StatusDecided,
-			"the image probe pod was Unschedulable 1 time(s) at boot before it scheduled: " + full + "; the pool had no room for its 250m / 1Gi reservation"},
+			"the image probe pod was Unschedulable 1 time(s) at boot before it scheduled: " + full + "; the pool had no room for its 500m / 1Gi reservation"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := states(tc.deployment.Report())[tc.row]

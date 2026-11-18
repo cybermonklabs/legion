@@ -597,7 +597,7 @@ func (r *liveRig) checkImageProbeMissingVolumeRefusal() error {
 
 // imageProbe is the probe as the daemon asks for it: its contract, the references of the role
 // prompts it hands every pod (prompts.RoleReferences), and the probe's own fixed reservation
-// (internal/daemon/kubernetes.go imageProbe, probeReservation) — 250m and 1Gi, not a role's share,
+// (internal/daemon/kubernetes.go imageProbe, probeReservation) — 500m and 1Gi, not a role's share,
 // so a probe pod fits a pool with little room — with cpu and memory the request and the limit
 // alike, so the probe pod is Guaranteed whatever the roles request. The probe command it sends, with
 // --role-references and, the run having a provider key, --provider-env-dir, is noted.
