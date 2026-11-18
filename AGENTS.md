@@ -444,9 +444,6 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   every shared clone's git credential helper (`!legion git-credential`, with credential.useHttpPath on), and, as `legion gh auth git-credential`, the helper of the git gh runs itself;
   git runs it, never a person: `get` answers https://github.com with the token of the owner the requested path names, from that owner's directory of LEGION_GH_OWNERS_DIR and from nothing else, answering nothing (exit 1, naming why) for any other host, a request with no path, or an owner the bundle holds no directory for; `store` and `erase` write nothing
 
-  A knives ledger sweep in a pod (`skills/legion-worker/references/tools.md`, "Working on a fork with knives in a pod") pushes the fork's ledger repository with plain git from a directory that is no clone.
-  The git configuration entries every role is given (`gitConfigPairs`, docs/kubernetes.md) name this helper there too, so it answers that push by the rule above, and no person's token is used.
-
 - `legion sessions import --dsn-file <url file> --claims <claims.json|-> [--tree <KEY>] [--tree-volume <dir>]`
 
   the one-off copy from legion-v10.0.0 before a runtime.kubernetes.session_store that keeps sessions in a database (postgres or cloudsql-iam;
