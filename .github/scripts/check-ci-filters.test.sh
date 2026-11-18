@@ -1790,6 +1790,19 @@ check "fails" "$(is "$status" 1)"
 check "names the step and the two directories" \
   "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: it runs in mod/cmd, the entry.s in mod; ')"
 
+# A no-break space where the pin has a space: bash reads `test<NBSP>-count=1` as one word, so the
+# refusal names the character on the differing line, and names it once - the step is not refused
+# a second time for the character its script holds.
+echo "case: a step off its pin by a no-break space is refused once, naming the character"
+root=$(fixture exact-step-nbsp)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" "go test -count=1" "go test"$'\xc2\xa0'"-count=1"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the line and the character" \
+  "$(contains "$out" 'job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 reads `.*` where the pinned text.s reads `  go test -count=1 ".pkg"`, and holds the character U+00A0 there; ')"
+check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+
 # What surrounds a pinned step can move what it compiles or which tests it runs while its text
 # stays the pin's - a GOFLAGS -skip in its env skips a test its -run names - so such a step is
 # refused too, naming what moves it, rather than read as reading everything. Each plant below is

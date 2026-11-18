@@ -961,10 +961,16 @@ def script_lines(text: str) -> list:
     return [line for line in stripped if line and not line.startswith("#")]
 
 
+def odd_character(text: str) -> str | None:
+    """The first character of text outside printable ASCII, tabs and newlines, which Python and
+    bash may split, strip or read differently (a \\r, a NBSP); None when it holds none."""
+    return next((c for c in text if c not in "\t\n" and not " " <= c <= "~"), None)
+
+
 def script_reason(text: str) -> str:
     """'' when a run: script holds only printable ASCII, tabs and newlines; else the first other
-    character, which Python and bash may split, strip or read differently (a \\r, a NBSP)."""
-    odd = next((c for c in text if c not in "\t\n" and not " " <= c <= "~"), None)
+    character (odd_character)."""
+    odd = odd_character(text)
     return f"its step's script holds the character U+{ord(odd):04X}" if odd else ""
 
 
@@ -1008,8 +1014,9 @@ def name_list_difference(line: str, pin: str) -> str:
         return ""
     parts = []
     for (flag, got), (_, wanted) in zip(lists, pins):
-        gone = ", ".join(sorted(set(wanted.split("|")) - set(got.split("|"))))
-        extra = ", ".join(sorted(set(got.split("|")) - set(wanted.split("|"))))
+        got_names, wanted_names = set(got.split("|")), set(wanted.split("|"))
+        gone = ", ".join(sorted(wanted_names - got_names))
+        extra = ", ".join(sorted(got_names - wanted_names))
         if gone:
             parts.append(f"its -run leaves out {gone}, which the pinned -run names" if flag == "-run"
                          else f"its -skip no longer skips {gone}, which the pinned -skip skips")
@@ -1052,7 +1059,7 @@ def pin_difference(script: str, pinned: str) -> str:
         return f"its line {i + 1} differs from the pinned text's in spaces or tabs alone"
     start = len(os.path.commonprefix([line, pin]))
     same_end = len(os.path.commonprefix([line[start:][::-1], pin[start:][::-1]]))
-    odd = next((c for c in line[start:len(line) - same_end] if c != "\t" and not " " <= c <= "~"), None)
+    odd = odd_character(line[start:len(line) - same_end])
     return (f"its line {i + 1} reads `{excerpt(line, start, len(line) - same_end)}` where the pinned text's reads "
             f"`{excerpt(pin, start, len(pin) - same_end)}`"
             + (f", and holds the character U+{ord(odd):04X} there" if odd else ""))
@@ -1308,19 +1315,19 @@ def refuse_off_pin(path: str, where: str, step: dict, holder: dict, job: dict, w
     pins = defaultdict(set)  # (the script an entry pins, as pin_difference compares it; its directory) -> gates
     for name, e in entries:
         pins[(e.script.rstrip(), clean_dir(e.workdir))].add(name)
-    drifted = False
+    off_pin = False
     for (pinned_script, directory), names in pins.items():
         drift = [d for d in (pin_difference(script, pinned_script),
                              "" if workdir == directory else f"it runs in {workdir}, the entry's in {directory}") if d]
         if drift:
-            drifted = True
+            off_pin = True
             pin = "pins" if len(names) == 1 else "pin"
             problems.append(error(path, f"{where} step \"{label}\" is off the script and directory "
                                         f"{exact_entries(names)} {pin} it to: {'; '.join(drift)}; make the step run "
                                         f"that text there again, or change {'the entry' if len(names) == 1 else 'the entries'}, "
                                         f"and any list of ci_job_reads.py its text is built from, with the step"))
-    # A character a pin_difference above already named is not named again here.
-    moved = around_reason(holder, job, [step]) or ("" if drifted else script_reason(script))
+    # A step already refused as off its pin is not refused again for a character its script holds.
+    moved = around_reason(holder, job, [step]) or ("" if off_pin else script_reason(script))
     if moved:
         problems.append(error(path, f"{where} step \"{label}\" is pinned whole by {exact_entries(n for n, _ in entries)}, "
                                     f"but {moved}, and that can change what its go commands compile, or which tests "
@@ -1438,11 +1445,11 @@ def check_table(documents: dict, data, filters: dict, files: set, problems: list
                 continue
             script = str(step["run"])
             workdir = step_workdir(holder, job, step)
-            around = around_reason(holder, job, [step]) or script_reason(script)
             entries = [fe for (j, ref), fes in exacts.items() if j == own and step_matches(step, ref) for fe in fes]
             if entries:
                 refuse_off_pin(path, where_job(path, name_there, own), step, holder, job, workdir, entries, problems)
                 continue  # every go line of the step is claimed by its Exact entries
+            around = around_reason(holder, job, [step]) or script_reason(script)
             mine = [r for (j, ref), rs in claims.items() if j == own and step_matches(step, ref) for r in rs]
             for line in go_lines(script):
                 where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\" runs `{line}`"
