@@ -206,11 +206,14 @@ func TestTheSweeperDeletesThePlaceholdersOfGrantsThatHaveEnded(t *testing.T) {
 func TestAirlockConnectionAnswersTheEnrollmentsSessionAndRuntime(t *testing.T) {
 	m, enr, _, release := twoNameGrant(t, "reach the service")
 	placeholder := release.Airlock.Names["LOGIN_KEY"].Slots[SlotValue]
+	// The fixture enrolls with no session, so the row names one: a read that answered the empty
+	// string for the session, or read another table's session column, would otherwise pass.
+	session := "session-" + t.Name()
+	nameSession(t, m, enr, session)
 	var runtimeID string
-	var sessionID *string
 	if err := m.Store.Pool.QueryRow(t.Context(),
-		`select runtime_id, session_id from enrollments where id=$1`, enr).Scan(&runtimeID, &sessionID); err != nil {
-		t.Fatalf("read the enrollment's runtime and session: %v", err)
+		`select runtime_id from enrollments where id=$1`, enr).Scan(&runtimeID); err != nil {
+		t.Fatalf("read the enrollment's runtime: %v", err)
 	}
 	if runtimeID == "" {
 		t.Fatal("the fixture's enrollment names no runtime, so this row could not tell a read of that column from an empty one")
@@ -222,12 +225,8 @@ func TestAirlockConnectionAnswersTheEnrollmentsSessionAndRuntime(t *testing.T) {
 	if conn.RuntimeID != runtimeID {
 		t.Errorf("connection runtime = %q, want the enrollment's %q", conn.RuntimeID, runtimeID)
 	}
-	want := ""
-	if sessionID != nil {
-		want = *sessionID
-	}
-	if conn.SessionID != want {
-		t.Errorf("connection session = %q, want the enrollment's %q", conn.SessionID, want)
+	if conn.SessionID != session {
+		t.Errorf("connection session = %q, want the enrollment's %q", conn.SessionID, session)
 	}
 
 	// An enrollment with no session at all: the column is null, which the read answers as the
