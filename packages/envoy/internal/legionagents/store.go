@@ -66,8 +66,9 @@ func WithLogger(log *slog.Logger) Option {
 }
 
 // Open opens the registry's bucket on conn, creating it when it does not exist: file storage, no
-// TTL, one value per key, the replicas WithReplicas names.
-func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
+// TTL, one value per key, the replicas WithReplicas names. ctx bounds the open's waits on the
+// cluster (bus.EnsureKeyValue).
+func Open(ctx context.Context, conn *nats.Conn, opts ...Option) (*Store, error) {
 	o := options{replicas: 1, now: time.Now, log: slog.Default()}
 	for _, opt := range opts {
 		opt(&o)
@@ -76,7 +77,7 @@ func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open legion agent registry JetStream: %w", err)
 	}
-	if _, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{
+	if _, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.LegionAgentBucket,
 		History:  1,
 		Replicas: o.replicas,
@@ -84,7 +85,7 @@ func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("open legion agent KV bucket: %w", err)
 	}
-	kv, err := openHandle(context.Background(), conn)
+	kv, err := openHandle(ctx, conn)
 	if err != nil {
 		return nil, err
 	}

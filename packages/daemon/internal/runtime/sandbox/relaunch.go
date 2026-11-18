@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -323,9 +322,8 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // it: the enrollment decision for that role in that pod (enrollsIn, which reads the broker's
 // volumes the pod carries), which of the role's own overlays and of every declared variant's
 // overlays
-// its container holds (heldRoleOverlays), the skills repository its recorded pod shape names, and
-// the session store it was built under (heldSessionStore, the URL file its generation is pointed
-// at). A launch that keeps such a pod
+// its container holds (heldRoleOverlays), and the session store it was built under
+// (heldSessionStore, the URL file its generation is pointed at). A launch that keeps such a pod
 // builds its start command from these rather than from the configuration as it now reads, so the
 // role is started as its pod was built (launcherCommand, roleOperatorEnv, mainEnvironment) and
 // runs degraded until the update round replaces the pod — able to push its work and answer that
@@ -334,11 +332,10 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 // The same enrollment decision writes the generation's address record (recordAddresses), so the
 // record says what the start said.
 //
-// It reads the Sandbox's stored pod template and its pod-shape annotation. Overlays and session
-// storage predate that annotation and are read from the template; skills_repository is recorded
-// there when the skills volume is built. A missing field names no skills, so an old pod's role
-// can still answer the ordinary update round instead of looking for a volume it does not carry.
-// readable is false when the template
+// It reads the Sandbox's stored pod template, the build of the pod the controller made from it,
+// and not the pod-shape annotation (podShapeAnnotation), which records the configuration the pod
+// was built from rather than what its container holds, and which a pod created before the
+// annotation existed does not carry. readable is false when the template
 // holds no container for the role — a template of another shape, or one this daemon cannot read:
 // the daemon then cannot tell what the pod carries, and relaunch replaces the pod.
 func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
@@ -347,22 +344,8 @@ func (r *Runtime) keptBy(s *sandbox, l launch) (keptPod, bool) {
 	if !readable {
 		return keptPod{}, false
 	}
-	var shape podShapeRecord
-	if record := s.Spec.PodTemplate.Metadata.Annotations[podShapeAnnotation]; record != "" {
-		if err := json.Unmarshal([]byte(record), &shape); err != nil {
-			return keptPod{}, false
-		}
-	}
-	var skills ghrepo.Repository
-	if shape.SkillsRepository != "" {
-		var err error
-		skills, err = ghrepo.Parse("the stored pod's skills repository", shape.SkillsRepository)
-		if err != nil {
-			return keptPod{}, false
-		}
-	}
 	kind, _, _ := heldSessionStore(spec)
-	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind, skills: skills}, true
+	return keptPod{enrolled: r.enrollsIn(&spec, l.spec.Role), trades: r.tradesIn(&spec, l.spec.Role), overlays: overlays, variantFiles: variantFiles, store: kind}, true
 }
 
 // stopIssuedChild stops generation of token's launcher in podUID after its Start returned startErr,
@@ -461,20 +444,18 @@ func launcherBackstop(boot, bound time.Duration) time.Duration {
 
 // awaitRoleLauncher waits until loc's role launcher has connected, reporting false, or loc's pod
 // has ended, reporting true, and returns the deadline the wait stood at when it stopped. The
-// launcher starts only once every init container of the pod has finished, however many the
-// deployment gives it, and the three steps whose duration follows the repository's size —
-// workspace-fetch's whole fetch — its stream from the repository cache, which no clock ends
-// while it keeps receiving (workspace.CacheStreamLowSpeedBytes), its transfers with their
-// retries, and the restarts the grace covers (fetchRestartGrace) — then workspace-init's
-// shared clone of the feed
-// and the issue's own checkout of it — may take up to ProvisionBound from the fetch's own start,
-// a sum that counts no term for the commands which keep CommandTimeout, skills-fetch's one
-// shallow clone among them (ProvisionBound, manifest.go). So until the wait
-// first sees the pod provisioning (an init container running, or a fetch between those restarts:
-// provisioning) it gives the pod the
-// boot timeout, the image pull's; from then on, the boot timeout from the last moment it saw the
-// pod provisioning, never past the boot timeout plus ProvisionBound from the first
-// (launcherDeadline). A pod that never provisions past the boot timeout waits it alone.
+// launcher starts only once every init container of the pod has finished (an issue pod's two; the
+// controller's pod has none), and the three steps whose duration follows the repository's size —
+// workspace-fetch's whole fetch — its stream from the repository cache, which no clock ends while
+// it keeps receiving (workspace.CacheStreamLowSpeedBytes), its transfers with their retries, and
+// the restarts the grace covers (fetchRestartGrace) — then workspace-init's shared clone of the
+// feed and the issue's own checkout of it — may take up to ProvisionBound from the fetch's own
+// start, a sum that counts no term for the commands which keep CommandTimeout (ProvisionBound,
+// manifest.go). So until the wait first sees the pod provisioning (an init container running, or a
+// fetch between those restarts: provisioning) it gives the pod the boot timeout, the image pull's;
+// from then on, the boot timeout from the last moment it saw the pod provisioning, never past the
+// boot timeout plus ProvisionBound from the first (launcherDeadline). A pod that never provisions
+// past the boot timeout waits it alone.
 func (r *Runtime) awaitRoleLauncher(ctx context.Context, loc runtime.Locator) (bool, time.Time, error) {
 	what := "role launcher " + string(loc.Claim)
 	start := time.Now()

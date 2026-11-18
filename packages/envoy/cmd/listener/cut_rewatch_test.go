@@ -64,7 +64,7 @@ func TestASilentCutRewatchesTheCachesWithNoErrorLine(t *testing.T) {
 	// listed by this listener, which answers /v1/interests/ from its cache alone.
 	writer := testnats.Connect(t, uri)
 	t.Cleanup(writer.Close)
-	registry, err := store.Open(writer)
+	registry, err := store.Open(t.Context(), writer)
 	if err != nil {
 		t.Fatalf("open the interest registry as another listener: %v", err)
 	}

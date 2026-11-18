@@ -275,12 +275,12 @@ func TestARecordStoresEachTopicAsTheCallerWroteIt(t *testing.T) {
 
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	writer, err := Open(conn, WithReplicas(1))
+	writer, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}
 	defer writer.StopWatch()
-	reader, err := Open(conn, WithReplicas(1))
+	reader, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the second registry: %v", err)
 	}

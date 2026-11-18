@@ -531,11 +531,13 @@ airlock needs: `cmd/dev-airlock-stands`, which serves the stand-in services and 
 request each one is sent; a rules file (`BROKER_AIRLOCK_RULES_FILE`) and a fake secrets file that
 name the same secrets; two broker processes on one database, each with an API port and a proxy
 port of its own, behind one TCP front over both API ports and one over both proxy ports; one
-enrolled pod session, whose key directory the exports name; and the model judge on both brokers
-([let the judge decide a request](#let-the-judge-decide-a-request)). Run it in place of
-`dev-broker.sh`, from `packages/envoy`, and set the same `DEV_BROKER_POSTGRES_URL` where you have
-no Docker. Each bound host listens on port 443 of a loopback address of its own (127.0.0.2 and
-up), so the machine must let this user bind 443, and one such stack runs at a time.
+enrolled pod session, whose key directory the exports name and whose lease an
+`agent-secrets renew` keeps alive for as long as the stack runs, as a Legion worker pod's is; and
+the model judge on both brokers ([let the judge decide a request](#let-the-judge-decide-a-request)).
+Run it in place of `dev-broker.sh`, from `packages/envoy`, and set the same
+`DEV_BROKER_POSTGRES_URL` where you have no Docker. Each bound host listens on port 443 of a
+loopback address of its own (127.0.0.2 and up), so the machine must let this user bind 443, and
+one such stack runs at a time.
 
 This run used the same Postgres server as the first section. The lines `dev-broker.sh` prints are
 the ones that section shows, and are cut here:
@@ -724,3 +726,6 @@ authority is made at each start, where a deployment keeps it in a Kubernetes Sec
 pods mount. The two brokers behind one TCP front stand in for two pods behind a Service, so a
 call reaches either process. And the pod session the script enrols stands in for the Legion
 daemon's enrollment of a worker pod, which is why `agent-secrets self` answers `kind: pod` there.
+The two brokers start as processes outside any cluster even when the script runs in a pod: it
+empties `KUBERNETES_SERVICE_HOST` for them, so neither needs `BROKER_AIRLOCK_CLUSTER_RANGES`,
+which a deployed broker in a cluster refuses to start without.

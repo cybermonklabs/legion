@@ -20,7 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// A refusal vouches that its sentence is fixed words and the broker's answer alone.
+// A refusal vouches that its sentence is fixed words, the identity it names, and the broker's
+// answer alone.
 var _ redact.Printable = (*RefusedError)(nil)
 
 // tradeID is a caller's typed id, the kind of value a caller wraps around a failure.
@@ -35,7 +36,7 @@ func TestARefusalPrintsItsSentenceAndNoneOfACallersWrapper(t *testing.T) {
 		base = "http://127.0.0.1:1"
 		id   = tradeID("trade-5d1e8b-demo-not-a-secret")
 	)
-	refused := newRefusedError(400, "invalid_request", refusalBody)
+	refused := newRefusedError(refusedIdentity(projectedStub()), 400, "invalid_request", refusalBody)
 	sentence := "the secrets broker refused this machine's identity: HTTP 400 invalid_request: " + refusalBody
 	if refused.Error() != sentence || refused.PrintableText() != sentence {
 		t.Fatalf("the refusal reads %q and %q, want %q", refused.Error(), refused.PrintableText(), sentence)
@@ -81,7 +82,7 @@ func TestARefusalWhoseDescriptionHoldsALineBreakForgesNoLine(t *testing.T) {
 		"no entry lists this account\r\nagent-secrets: FORGED",
 		"no entry lists this account\x1b[2Kagent-secrets: FORGED",
 	} {
-		refused := newRefusedError(400, "invalid_grant", description)
+		refused := newRefusedError(refusedIdentity(projectedStub()), 400, "invalid_grant", description)
 		want := fmt.Sprintf("oauth2: %q %q", "invalid_grant", description)
 		inCall := &url.Error{Op: "Post", URL: base + "/v1/oauth/token", Err: refused}
 		for what, got := range map[string]string{
