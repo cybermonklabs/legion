@@ -92,6 +92,13 @@ func parseOptionalRFC3339(query url.Values, name string, fallback time.Time) (ti
 	return parsed, nil
 }
 
+// deliveryNotConfiguredCode and deliveryNotConfiguredMessage are the one refusal a Dispatch with
+// no delivery settings gives, from this route and from the live hub's worker alike.
+const (
+	deliveryNotConfiguredCode    = "DELIVERY_NOT_CONFIGURED"
+	deliveryNotConfiguredMessage = "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery"
+)
+
 // parseOptionalWindow is a record route's [from, to) window: each bound an RFC3339 time, nil when
 // the query leaves it out or blank, and from before to when both are given. Its error is the text
 // of the route's 400 INVALID_QUERY. The loop's variable is not `name`: the query-key walk
@@ -122,7 +129,7 @@ func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (deliv
 	settings, err := delivery.GetSettings(r.Context(), s.deps.Store.Pool)
 	if err != nil {
 		if errors.Is(err, delivery.ErrNoSettings) {
-			writeError(w, "DELIVERY_NOT_CONFIGURED", http.StatusNotFound, "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery")
+			writeError(w, deliveryNotConfiguredCode, http.StatusNotFound, deliveryNotConfiguredMessage)
 			return delivery.DeliverySettings{}, false
 		}
 		s.writeHandlerError(w, err)
