@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/brokerclient"
 	"github.com/sjawhar/envoy/brokertest"
 )
@@ -212,9 +213,10 @@ func TestContractOnlyTheListedAccountWithALiveTokenLogsIn(t *testing.T) {
 }
 
 // TestContractAPodEnrollmentStatesItsClaim: the real broker reads the claim the daemon sends under
-// the name the daemon sends it, and files the pod under that claim of the daemon's service, so the
-// claim's next pod reads the requests this one makes. A field the broker did not declare would be
-// refused, retried without it, and leave the row with no owner.
+// the name the daemon sends it, and files the pod under that claim of the account the daemon's
+// own token login proved (claim:<login subject>/<claim>), so the claim's next pod reads the
+// requests this one makes. A field the broker did not declare would be refused, retried without
+// it, and leave the row with no owner.
 func TestContractAPodEnrollmentStatesItsClaim(t *testing.T) {
 	rig := newBrokerRig(t)
 	ctx := context.Background()
@@ -231,8 +233,8 @@ func TestContractAPodEnrollmentStatesItsClaim(t *testing.T) {
 	if err := rig.Store.Pool.QueryRow(ctx, `select owner, claim from enrollments where id=$1`, enrolled.ID).Scan(&owner, &stated); err != nil {
 		t.Fatal(err)
 	}
-	if owner == nil || *owner != "claim:"+launcherService+"/"+claim || stated == nil || *stated != claim {
-		t.Fatalf("the enrollment records owner %v and claim %v, want claim:%s/%s and %s", deref(owner), deref(stated), launcherService, claim, claim)
+	if want := "claim:" + brokertest.DaemonAccount + "/" + claim; owner == nil || *owner != want || stated == nil || *stated != claim {
+		t.Fatalf("the enrollment records owner %v and claim %v, want %s and %s", deref(owner), deref(stated), want, claim)
 	}
 }
 
@@ -343,7 +345,7 @@ func keyThumbprint(t *testing.T, key *ecdsa.PrivateKey) string {
 // session.
 func tradeAs(t *testing.T, rig *brokertest.Rig, exchangeToken string, key *ecdsa.PrivateKey, session string) error {
 	t.Helper()
-	client, err := brokerclient.New(brokerclient.Config{BrokerURL: rig.URL, Key: key, Subject: rolesSubject{token: exchangeToken}, Session: session})
+	client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokeraddr.New(rig.URL), Key: key, Subject: rolesSubject{token: exchangeToken}, Session: session})
 	if err != nil {
 		t.Fatal(err)
 	}

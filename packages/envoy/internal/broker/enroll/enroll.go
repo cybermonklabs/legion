@@ -634,7 +634,7 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 //
 // Every enrollment also records whose its requests are (ownerKey): the person its credential
 // carries, the claim its launcher stated for a pod, or the machine. Any enrollment of the same
-// owner reads and cancels a request of another (requests.Machine.OwnerOf), and the next pod of a
+// owner reads and cancels a request of another (requests.Machine.OwnerAndState), and the next pod of a
 // claim takes what a dormant pod of that claim left (adopt). A claim is only for a pod a launcher
 // enrols, in the shape a claim token takes (ErrInvalidClaim).
 func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (Enrollment, error) {
@@ -868,7 +868,7 @@ const claimOwnerPrefix = "claim:"
 
 // ownerKey is whose the requests an enrollment makes are, which the insert writes into
 // enrollments.owner: any enrollment with the same owner reads and cancels them
-// (requests.Machine.OwnerOf), and the next pod of a claim takes what a dormant pod of that claim
+// (requests.Machine.OwnerAndState), and the next pod of a claim takes what a dormant pod of that claim
 // left (adopt). It is read from what the caller has already proved and from the claim a launcher
 // stated, which is the launcher's word as the session name it gives each pod is
 // (podUnderTokenLogin), and from nothing else:
@@ -876,9 +876,15 @@ const claimOwnerPrefix = "claim:"
 //   - an enrollment under a credential that carries an operator — a person's own box, and that
 //     person's sign-in on a machine — is that person's (exchange.PersonPrincipal), whichever box
 //     or session it is;
-//   - a pod its launcher states a claim for is that claim's within the launcher's own service,
-//     claim:<service>/<claim>, so a claim token is one owner however many generations and pods
-//     it runs in, and the same token stated by another service's launcher is another owner;
+//   - a pod its launcher states a claim for is that claim's under the account the launcher's own
+//     token login proved, claim:<login subject>/<claim>, so a claim token is one owner however
+//     many generations and pods it runs in, and the same token stated by another login is another
+//     owner. The login's account and not its service: every project's Legion daemon logs in as
+//     the one service legion-daemon, each under an account of its own, so a key on the service
+//     would make one project's daemon that states another project's claim that claim's owner,
+//     taking what its dormant pods left (adopt). A claim comes only from a login whose own token
+//     proved its subject (ErrInvalidClaim), and a claim holds no slash, so no two pairs of a
+//     login and a claim spell one owner;
 //   - a machine's own session is that machine's, machine:<service>/<subject>, the subject its
 //     credential proved naming one machine and its key (exchange.MachineSubject), so two machines
 //     of one fleet are two owners;
@@ -899,8 +905,8 @@ func ownerKey(cred Credential, in Enrollment) *string {
 		return nullable(exchange.PersonPrincipal(*cred.Operator))
 	case cred.Service == nil:
 		return nil
-	case in.Kind == "pod" && in.Claim != "":
-		return new(claimOwnerPrefix + *cred.Service + "/" + in.Claim)
+	case in.Kind == "pod" && in.Claim != "" && cred.Subject != nil:
+		return new(claimOwnerPrefix + *cred.Subject + "/" + in.Claim)
 	case in.Kind == "pod" && in.Slot != "":
 		return new("machine:" + *cred.Service + "/" + in.RuntimeID + "/" + in.Slot)
 	case in.Kind == "pod":
@@ -1003,9 +1009,9 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // still running, and this is no end of it. A person's and a machine's grants move by the session
 // rule alone, so a session that resumes gets its own grant back even after another session of
 // the same person enrolled first, and that other session, which reads and cancels the request
-// (requests.Machine.OwnerOf), never takes the grant. A pair changes nothing of the claim rule,
-// which reads the owner alone, and a row both rules find, a paired account's included, is the
-// session rule's.
+// (requests.Machine.OwnerAndState), never takes the grant. A pair changes nothing of the claim
+// rule, which reads the owner alone, and a row both rules find, a paired account's included, is
+// the session rule's.
 //
 // What moves is the rows keyed by the predecessor: grants.enrollment_id and
 // requests.enrollment_id from a predecessor of the first part, withheld_secrets.enrollment_id

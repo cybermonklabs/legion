@@ -32,6 +32,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -701,15 +702,16 @@ func main() {
 			// broker_answers_total, which counts the proxy's answers under caller class
 			// airlock beside the API port's.
 			Answers: answers,
-			// The local stack's four settings for the proxy, every one of them refused on a
+			// The local stack's settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
-			// addresses it may dial anyway, the roots it trusts upstream, and the two
-			// negative controls.
-			Resolve:       airlockTestResolver(cfg.AirlockTestResolve),
-			UpstreamRoots: airlockTestUpstreamRoots,
-			DialAllow:     cfg.AirlockTestDialAllow,
-			KeepValues:    cfg.AirlockTestKeepValues,
-			NoKind:        cfg.AirlockTestNoKind,
+			// addresses it may dial anyway, the roots it trusts upstream, the two negative
+			// controls, and the stand-in token authority the azure exchange is held to.
+			Resolve:        airlockTestResolver(cfg.AirlockTestResolve),
+			UpstreamRoots:  airlockTestUpstreamRoots,
+			DialAllow:      cfg.AirlockTestDialAllow,
+			KeepValues:     cfg.AirlockTestKeepValues,
+			NoKind:         cfg.AirlockTestNoKind,
+			AzureAuthority: cfg.AirlockTestAzureAuthority,
 		})
 		airlockProxy.Store(proxy)
 	}
@@ -911,7 +913,7 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
-// settings, the airlock's seven and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
+// settings, the airlock's eight and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
 // a local run, as the port-0 refusal above does and for the same reason: each of them points
 // the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
 // a check the airlock or the judge is made of, so one reaching a real deployment must fail
@@ -934,6 +936,7 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_RESOLVE", len(cfg.AirlockTestResolve) > 0},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", cfg.AirlockTestAzureAuthority != ""},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
@@ -1005,8 +1008,9 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
 // that the boot and airlock-check refuse the same file in the same words: airlock.Validate's
-// answer, which is the Lean model's, and then the one refusal that is this program's own and not
-// that model's — an entry whose name is not a name a session can ask for.
+// answer, which is the Lean model's, and then the two refusals that are this program's own and
+// not that model's — an entry whose name is not a name a session can ask for, and guidance longer
+// than the judge is shown (maxGuidanceRunes).
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
@@ -1022,9 +1026,18 @@ func validateRulesFile(rules airlock.Rules) error {
 		if _, err := policy.NameToSlug(s.Name); err != nil {
 			return fmt.Errorf("secrets[%d] %q: %w, so the entry matches no name a session can ask for and holds nothing back", i, s.Name, err)
 		}
+		if n := utf8.RuneCountInString(s.Guidance); n > maxGuidanceRunes {
+			return fmt.Errorf("secrets[%d] %q: guidance is %d characters, longer than the %d the judge is shown", i, s.Name, n, maxGuidanceRunes)
+		}
 	}
 	return nil
 }
+
+// maxGuidanceRunes is the longest guidance a rules entry may give the judge. The judge shows the
+// whole text to its model beside the request's reason and what Dispatch holds of it, all within
+// one bounded prompt, so a text past this would be cut rather than read; it is refused instead,
+// at the boot and in airlock-check, where its author reads why.
+const maxGuidanceRunes = 2000
 
 // readAirlockRules reads the airlock's rules file, the path BROKER_AIRLOCK_RULES_FILE names. An
 // empty path is a deployment with no airlock, and answers empty rules, whose Digest is "" for
@@ -1115,18 +1128,19 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // one retry policy and process-wide retry budget of the three minters that call an upstream over
 // HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
 // counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
-// unretried too: each holds the one pointer, which kindMinters' copies keep.
+// unretried too: each holds the one pointer, which typeMinters' copies keep.
 func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
+	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{
 		Store: st, Policy: current, Secrets: secretStore, PendingTTL: agentSecretPendingTTL,
 		Audience: cfg.PublicURL, Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Replay: replay,
 		ServicesByAccount:   cfg.ServicesByAccount,
 		VMServicesByAccount: cfg.VMServicesByAccount,
-		// The two kinds whose minter calls an endpoint of its own carry the local stack's
+		// The two types whose minter calls an endpoint of its own carry the local stack's
 		// stand-in endpoints when it named them, and the real ones otherwise: a minter left
 		// zero mints against GitHub and Google themselves.
-		Minters: kindMinters(
-			secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry},
+		Minters: typeMinters(
+			githubApp,
 			secrets.GoogleLogin{TokenURL: cfg.AirlockTestGoogleTokenURL, Retry: retry},
 			secrets.AzureLogin{TokenFile: cfg.AzureTokenFile, SecretName: cfg.AzureLoginSecret},
 			// The google-service-account minter takes the deployment's binding of each such
@@ -1138,6 +1152,10 @@ func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Curre
 			// asks Google's own IAM endpoint. It is passed by pointer because that is where it
 			// keeps those credentials.
 			&secrets.GoogleServiceAccount{Accounts: cfg.ServiceAccountSecrets, Retry: retry}),
+		// A GitHub App token a release minted and hands to nobody - a release that failed after
+		// the mint, or a name behind the airlock - goes back to GitHub through the same minter's
+		// endpoint and retry.
+		GiveBacks:            map[string]requests.GiveBack{policy.TypeGitHubApp: githubApp.GiveBack},
 		Airlock:              rules,
 		AirlockProxyURL:      cfg.AirlockProxyURL,
 		AirlockCACertificate: caCertificate,
@@ -1354,20 +1372,20 @@ func issuerKeys(ctx context.Context, issuer string) (*oidc.Keys, error) {
 	return oidc.NewKeys(discovery, issuer)
 }
 
-// kindMinters is the broker's minter for each kind. Its arguments are the production minters in
+// typeMinters is the broker's minter for each type. Its arguments are the production minters in
 // newRequestMachine; a test passes ones aimed at its own endpoints and projected token file, and
 // its own binding of each google-service-account secret to the account that minter may mint for,
 // which in production is BROKER_SERVICE_ACCOUNT_SECRETS; a minter given no binding at all mints
-// no secret of that kind. The google-service-account minter is a pointer: its method value would
+// no secret of that type. The google-service-account minter is a pointer: its method value would
 // otherwise copy the credentials it caches away from the minter every later mint reads. The other
 // two are copied, and each Retry they hold is a pointer, so minters given one Retry still draw
 // from its one budget.
-func kindMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
+func typeMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, azureLogin secrets.AzureLogin, googleServiceAccount *secrets.GoogleServiceAccount) map[string]requests.Minter {
 	return map[string]requests.Minter{
-		policy.KindGitHubApp:            githubApp.Mint,
-		policy.KindGoogleLogin:          googleLogin.Mint,
-		policy.KindAzureLogin:           azureLogin.Mint,
-		policy.KindGoogleServiceAccount: googleServiceAccount.Mint,
+		policy.TypeGitHubApp:            githubApp.Mint,
+		policy.TypeGoogleLogin:          googleLogin.Mint,
+		policy.TypeAzureLogin:           azureLogin.Mint,
+		policy.TypeGoogleServiceAccount: googleServiceAccount.Mint,
 	}
 }
 

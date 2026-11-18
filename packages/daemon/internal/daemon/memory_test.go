@@ -140,7 +140,7 @@ func memorySpecs(t *testing.T, instructions string) specs {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
 	return specs{
-		stateDir: t.TempDir(), project: "test", prompts: composer, repositories: noRepositoriesView,
+		stateDir: t.TempDir(), project: "test", prompts: composer, appOwners: noAppOwners,
 		instructions: "/state/deployment-instructions.md",
 		variants: func(_ context.Context, tree, _ string, _ claim.Role) (experiment.Arms, error) {
 			if tree != "LEGION-1" {

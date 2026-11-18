@@ -8,14 +8,16 @@
 -- owner is that principal, written when the enrollment is created from what the caller proved and
 -- never changed afterwards (enroll.ownerKey):
 --   * person:<login> for an enrollment under a credential that carries an operator;
---   * claim:<credential service>/<claim> for a pod enrollment whose launcher stated a claim, which
---     for the Legion daemon is the role claim token, stable across role generations and pod
---     replacements (packages/daemon/internal/claim/token.go);
+--   * claim:<login subject>/<claim> for a pod enrollment whose launcher stated a claim, the
+--     subject being the account the launcher's own token login proved, so one project's daemon
+--     that states another's claim is another owner; for the Legion daemon the claim is the role
+--     claim token, stable across role generations and pod replacements
+--     (packages/daemon/internal/claim/token.go);
 --   * machine:<credential service>/<credential subject> for a machine's own session, and
 --     machine:<credential service>/<pod uid>, with /<slot> after it for a slot of the pod, for a
 --     pod enrollment that states no claim, so the role processes of one pod are owners apart.
 -- Null on every row this migration finds, and on an enrollment whose caller proved none of those,
--- and a null owner is owned by its own enrollment alone: requests.Machine.OwnerOf answers
+-- and a null owner is owned by its own enrollment alone: requests.Machine.OwnerAndState answers
 -- 'enrollment:' || id for it, which is the rule every request was held to before this column.
 --
 -- claim is what the launcher stated, kept beside the owner so a reader of the row sees it without

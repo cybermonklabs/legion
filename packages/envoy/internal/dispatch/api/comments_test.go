@@ -355,6 +355,141 @@ func TestReplyToAskClarificationContinuesAskThread(t *testing.T) {
 	}
 }
 
+// resolveAskAs closes an open ask through the resolve route as an agent does, with the kind given.
+func resolveAskAs(kind string) func(t *testing.T, handler http.Handler, issueKey, askID string) {
+	return func(t *testing.T, handler http.Handler, _, askID string) {
+		t.Helper()
+		if response := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/resolve", map[string]any{
+			"kind": kind, "reason": "Settled elsewhere.", "actor": sessionActor(),
+		}); response.Code != http.StatusOK {
+			t.Fatalf("resolve the ask as %s: status=%d body=%s", kind, response.Code, response.Body.String())
+		}
+	}
+}
+
+// The conversation under a question goes on however the question closed: answered, resolved,
+// retracted, declined by a person, or withdrawn by its issue's close. A reply naming the ask joins
+// its thread, a person's and an agent's alike, and records no turn even when the request asks for
+// one, since only an open ask has a turn to hand over (commentThreadTarget.replyTurn): the reply
+// carries none, its comment.created names the ask's state and no ask_waiting_on, and the ask's
+// WaitingOn stays empty. The ask stays closed as it was.
+func TestAReplyUnderAClosedAskJoinsItsThreadAndRecordsNoTurn(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		// close takes the open ask askID on issueKey to the state and resolution kind below.
+		close func(t *testing.T, handler http.Handler, issueKey, askID string)
+		state string
+		// kind is the resolution's kind, "" for an ask that closed with no resolution.
+		kind string
+	}{
+		{
+			name: "answered",
+			close: func(t *testing.T, handler http.Handler, _, askID string) {
+				t.Helper()
+				if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
+					"text": "Yes.",
+				}, "alice"); response.Code != http.StatusOK {
+					t.Fatalf("answer the ask: status=%d body=%s", response.Code, response.Body.String())
+				}
+			},
+			state: "answered",
+		},
+		{name: "resolved", close: resolveAskAs("resolved"), state: "resolved", kind: "resolved"},
+		{name: "retracted", close: resolveAskAs("retracted"), state: "resolved", kind: "retracted"},
+		{
+			name: "declined",
+			close: func(t *testing.T, handler http.Handler, _, askID string) {
+				t.Helper()
+				if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/decline", map[string]any{
+					"note": "Not mine to say.",
+				}, "alice"); response.Code != http.StatusOK {
+					t.Fatalf("decline the ask: status=%d body=%s", response.Code, response.Body.String())
+				}
+			},
+			state: "resolved",
+			kind:  "declined",
+		},
+		{
+			name: "withdrawn by the issue's close",
+			close: func(t *testing.T, handler http.Handler, issueKey, _ string) {
+				t.Helper()
+				closeIssue(t, handler, issueKey)
+			},
+			state: "resolved",
+			kind:  "withdrawn",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			handler := newTestHandler(t)
+			issue := createInteractionIssue(t, handler, "TEST", "Closed asks", "before")
+			askID := openTurnAsk(t, handler, issue.Key, "Which transport?")
+			row.close(t, handler, issue.Key, askID)
+
+			comments := "/api/v1/issues/" + issue.Key + "/comments"
+			replies := []struct {
+				who  string
+				send func() *httptest.ResponseRecorder
+			}{
+				{"a person's", func() *httptest.ResponseRecorder {
+					return dispatchRequest(t, handler, http.MethodPost, comments, map[string]any{
+						"body": "One more thing.", "ask_id": askID, "turn": "agent",
+					}, "alice")
+				}},
+				{"an agent's", func() *httptest.ResponseRecorder {
+					return sessionRequest(t, handler, http.MethodPost, comments, map[string]any{
+						"body": "Noted, and the transport stays.", "ask_id": askID, "turn": "agent", "actor": sessionActor(),
+					})
+				}},
+			}
+			var replyIDs []string
+			for _, reply := range replies {
+				response := reply.send()
+				if response.Code != http.StatusCreated {
+					t.Fatalf("%s reply: status=%d body=%s", reply.who, response.Code, response.Body.String())
+				}
+				created := decodeBody[model.Comment](t, response)
+				if created.AskID == nil || *created.AskID != askID {
+					t.Fatalf("%s reply ask_id = %#v, want %q", reply.who, created.AskID, askID)
+				}
+				if created.Turn != nil {
+					t.Fatalf("%s reply turn = %q, want none under a closed ask", reply.who, *created.Turn)
+				}
+				payload := latestCommentCreatedPayload(t, handler, issue.Key)
+				if _, present := payload["ask_waiting_on"]; present || payload["ask_state"] != row.state || payload["turn"] != nil {
+					t.Fatalf("%s reply's comment.created = %#v, want ask_state %s with no turn and no ask_waiting_on",
+						reply.who, payload, row.state)
+				}
+				replyIDs = append(replyIDs, created.ID)
+			}
+
+			read := dispatchRequest(t, handler, http.MethodGet, "/api/v1/asks/"+askID, nil, "alice")
+			if read.Code != http.StatusOK {
+				t.Fatalf("read the ask: status=%d body=%s", read.Code, read.Body.String())
+			}
+			thread := decodeBody[struct {
+				Ask     model.Ask       `json:"ask"`
+				Replies []model.Comment `json:"replies"`
+			}](t, read)
+			kind := ""
+			if thread.Ask.Resolution != nil {
+				kind = thread.Ask.Resolution.Kind
+			}
+			if thread.Ask.State != row.state || kind != row.kind || thread.Ask.WaitingOn != "" {
+				t.Fatalf("the ask after its replies = state %q resolution kind %q waiting_on %q, want state %q kind %q waiting_on empty",
+					thread.Ask.State, kind, thread.Ask.WaitingOn, row.state, row.kind)
+			}
+			if len(thread.Replies) != len(replyIDs) {
+				t.Fatalf("the ask's replies = %#v, want %v", thread.Replies, replyIDs)
+			}
+			for index, stored := range thread.Replies {
+				if stored.ID != replyIDs[index] || stored.AskID == nil || *stored.AskID != askID || stored.Turn != nil {
+					t.Fatalf("the ask's reply %d = %#v, want %s under ask %s with no turn", index, stored, replyIDs[index], askID)
+				}
+			}
+		})
+	}
+}
+
 func TestCreateCommentSeparatesMalformedAndWrongOwnerThreadIDs(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Thread IDs", "before")
@@ -547,7 +682,7 @@ func TestResolveRecordsWhoAndWhen(t *testing.T) {
 	if accepted.Code != http.StatusOK {
 		t.Fatalf("accept suggestion: status=%d body=%s", accepted.Code, accepted.Body.String())
 	}
-	assertResolution("accept", decodeBody[model.Comment](t, accepted), model.Actor{Kind: "user", ID: "alice"})
+	assertResolution("accept", decodeBody[model.Comment](t, accepted), model.Actor{Kind: "user", ID: "alice", Proven: true})
 
 	rejectedSuggestion := createThreadComment(t, handler, issue.Key, map[string]any{
 		"body": "reject", "suggestion": map[string]string{"replace_with": "ignored"}, "actor": sessionActor(),
@@ -556,7 +691,7 @@ func TestResolveRecordsWhoAndWhen(t *testing.T) {
 	if rejected.Code != http.StatusOK {
 		t.Fatalf("reject suggestion: status=%d body=%s", rejected.Code, rejected.Body.String())
 	}
-	assertResolution("reject", decodeBody[model.Comment](t, rejected), model.Actor{Kind: "user", ID: "bob"})
+	assertResolution("reject", decodeBody[model.Comment](t, rejected), model.Actor{Kind: "user", ID: "bob", Proven: true})
 }
 
 // What the API writes for a stored instant is the same text whatever zone the host runs in. The

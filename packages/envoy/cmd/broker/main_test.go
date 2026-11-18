@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -115,8 +116,21 @@ func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
 	}
 }
 
-// airlockTestSettings is the eight test-only settings of the broker's local stack, the
-// airlock's seven and the judge's one, each as a Config the refusal below reads and as the
+// TestTheWaitLimitEndsInsideTheRequestDeadline: a held read of the longest wait the broker takes
+// (GET /v1/requests/{id}?wait=) ends before requestDeadline ends its request. A deadline that fell
+// to the limit or under it would end every undecided held read as a 503 DATABASE_UNAVAILABLE,
+// logged at ERROR as `broker: read request failed` and counted failed. A deadline under the limit
+// would also cut such a read before the wait agent-secrets asked had passed, which it answers with
+// its backoff, so R1's second would become up to ten; at the limit exactly the 503 comes after that
+// wait, and agent-secrets reads again at once, but the ERROR line and the failed count remain.
+func TestTheWaitLimitEndsInsideTheRequestDeadline(t *testing.T) {
+	if limit := time.Duration(record.MaxRequestWaitSeconds) * time.Second; limit >= requestDeadline {
+		t.Fatalf("record.MaxRequestWaitSeconds is %s, want under requestDeadline (%s)", limit, requestDeadline)
+	}
+}
+
+// airlockTestSettings is the nine test-only settings of the broker's local stack, the
+// airlock's eight and the judge's one, each as a Config the refusal below reads and as the
 // environment a real broker is started with. One row per setting: the refusal has to name
 // whichever one it found, since an operator reads from it which setting to take out.
 func airlockTestSettings() []struct {
@@ -138,11 +152,12 @@ func airlockTestSettings() []struct {
 		}, "s.airlock.test=127.0.0.1"},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", func(c *config.Config) { c.AirlockTestKeepValues = true }, "true"},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", func(c *config.Config) { c.AirlockTestNoKind = true }, "true"},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", func(c *config.Config) { c.AirlockTestAzureAuthority = "microsoft.airlock.test" }, "microsoft.airlock.test"},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", func(c *config.Config) { c.JudgeTestSkipChecks = true }, "true"},
 	}
 }
 
-// TestEachAirlockTestSettingIsRefusedInProduction: every one of the eight points the broker at
+// TestEachAirlockTestSettingIsRefusedInProduction: every one of the nine points the broker at
 // a stand-in, lets it dial what no production proxy may, or turns a check off, so each on its
 // own refuses a start that is not a local run, naming itself.
 func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
@@ -160,7 +175,7 @@ func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	}
 }
 
-// TestEveryAirlockTestSettingIsFineForALocalRun: all eight at once, with the fake secrets file
+// TestEveryAirlockTestSettingIsFineForALocalRun: all nine at once, with the fake secrets file
 // that makes a start a local run, are accepted - and a production start naming none of them is
 // accepted too, since this refusal must not stand in the way of an ordinary boot.
 func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
@@ -169,7 +184,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 		setting.cfg(&cfg)
 	}
 	if err := refuseAirlockTestSettingsInProduction(cfg, "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("all eight with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+		t.Fatalf("all nine with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
 	}
 	if err := refuseAirlockTestSettingsInProduction(config.Config{}, ""); err != nil {
 		t.Fatalf("a production start naming none of them: want nil, got %v", err)
@@ -177,7 +192,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 }
 
 // TestMainRefusesAnAirlockTestSettingInProduction drives the REAL compiled binary with each of
-// the eight, as the port-0 row above drives it: the helper's rows prove it is correct, and this
+// the nine, as the port-0 row above drives it: the helper's rows prove it is correct, and this
 // proves the broker runs it at boot, before it migrates the database or binds a socket. The
 // database it is given is unreachable, so a broker that read these settings later would fail on
 // the host instead of on the setting.
@@ -228,13 +243,13 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	if !maps.Equal(m.ServicesByAccount, want) {
 		t.Fatalf("request Machine's ServicesByAccount = %v, want %v", m.ServicesByAccount, want)
 	}
-	for _, kind := range policy.Kinds {
-		if m.Minters[kind] == nil {
-			t.Errorf("request Machine has no minter for kind %q, which the policy serves", kind)
+	for _, secretType := range policy.Types {
+		if m.Minters[secretType] == nil {
+			t.Errorf("request Machine has no minter for type %q, which the policy serves", secretType)
 		}
 	}
-	if len(m.Minters) != len(policy.Kinds) {
-		t.Errorf("request Machine has %d minters for %d kinds: %v", len(m.Minters), len(policy.Kinds), m.Minters)
+	if len(m.Minters) != len(policy.Types) {
+		t.Errorf("request Machine has %d minters for %d types: %v", len(m.Minters), len(policy.Types), m.Minters)
 	}
 }
 
@@ -1125,8 +1140,8 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		// The broker logs a refusal as a JSON string in its error field, so a quotation mark
 		// inside it comes out escaped; these rows look for the parts around it.
 		"an entry the airlock refuses": {
-			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": []}]}`),
-			want: []string{"secrets[0]", "DEEL_API_KEY", "no host"},
+			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "judge": 1800}]}`),
+			want: []string{"secrets[0]", "DEEL_API_KEY", "1800", "900"},
 		},
 		// An entry whose name is not of the policy's form matches no release, so the file
 		// would hold back nothing of the secret a reviewer read it as covering.

@@ -148,6 +148,12 @@ over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
 front`, round-robin per connection), and enrols one pod session the way the Legion
 daemon does — a service login at `POST /v1/launcher-credentials/token`, then
 `POST /v1/enrollments` of kind `pod` — so `agent-secrets self` answers `kind: pod`.
+It keeps that session's lease alive for as long as it runs, with the renewer the
+Legion worker shim gives a pod: `agent-secrets renew --pod-token-file` on the pod
+token `dev-oidc-issuer` rewrites in place. The broker ends a session whose lease
+(`BROKER_LEASE_SECONDS`, 900 seconds by default) passes unrenewed, and every grant
+of it with it, so without the renewer a check that holds a grant for longer would
+have its calls refused 407 midway.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/dev-airlock.sh
@@ -170,9 +176,21 @@ Options: `--keep-values` and `--no-kind`, the two negative controls
 `dev-airlock.test.sh` proves the driver's own decisions behind fake binaries — the
 work directories under `TMPDIR`, two brokers with the whole airlock block on one
 database, one front over each pair of ports, the options reaching the brokers, the
-enrolment written beside the session key, the usage error, and the cleanup stopping
-everything it started — with no real Postgres, no network and no Go build; CI runs
-it in the `envoy-go` job of `.github/workflows/ci.yaml`.
+enrolment written beside the session key, the session's renewer, the usage error,
+and the cleanup stopping everything it started — with no real Postgres, no network
+and no Go build; CI runs it in the `envoy-go-checks` job
+(`.github/workflows/ci-job-envoy-go-checks.yaml`).
+
+`dev-airlock-lease.test.sh` proves the renewer works on the real stack: it starts
+the stack with one broker and `BROKER_LEASE_SECONDS=91`, the shortest lease the
+broker starts with at its default sweep, holds one 30-minute grant of
+`AIRLOCK_DEMO_TOKEN`, and calls S through the proxy front at once and again three
+leases later. Both calls must reach S with the real value, and the session must still
+be the one enrolled, with a later lease. It prints a `PASS:` or `FAIL:` line for each
+and ends `dev-airlock-lease: passed` or `dev-airlock-lease: failed (<n> of <m>)`. It
+needs what `dev-airlock.sh` needs, takes the stack's start plus about five minutes,
+and is not part of CI. Without the renewer, the second call is refused 407 "grant is
+expired, revoked, or its session ended".
 
 ## airlock-check.sh
 
@@ -247,9 +265,11 @@ from `VmHWM` in `/proc/<pid>/status`, which is the quantity `getrusage` reports 
 `ru_maxrss` for a process one can wait on — these two are `dev-airlock.sh`'s children,
 not the check's.
 
-It needs bash, curl, jq, go, python3, openssl, node and psql; `k2` and `k7` also need
-`gh` (the last released `agent-secrets` comes from the newest `legion-envoy-v*`
-release, and the consumers come from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
+It needs bash, curl, jq, go, python3, openssl, node and psql; `k2`, `k6` and `k7` also
+need `gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
+`agent-secrets` of the pinned release before the airlock, `OLD_CLI_DEFAULT_TAG` in the
+script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k6`'s and `k7`'s consumers come
+from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
 `wget`, `git`, `uv` and the clients `airlock-clients.sh` installs, `k9` needs `git`,
 and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
 listens on one loopback address and port 443, so only one stack runs on a machine at a
@@ -296,7 +316,7 @@ No line it prints is a credential: the child reads its token out of its own
 environment and prints the repository it asked for and the status it got, and a
 refusal is printed as `agent-secrets` wrote it, which names no part of any token. The
 child's `curl` calls carry no `--cacert` and no `--resolve`: the GitHub stand is
-served over plain http on `127.0.0.1`, because the broker mints a kind's value with
+served over plain http on `127.0.0.1`, because the broker mints a type's value with
 an HTTP client that trusts the host's own roots and nothing else.
 
 `--keep-stack` leaves the stack and the run's work directory up to look at a failure

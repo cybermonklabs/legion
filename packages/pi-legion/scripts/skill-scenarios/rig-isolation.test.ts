@@ -234,6 +234,14 @@ const setpgid = [
   "sys.exit(128 + os.WTERMSIG(status) if os.WIFSIGNALED(status) else os.WEXITSTATUS(status))",
 ].join("\n");
 
+/** The interpreter python3 reports as sys.executable, resolved in the hook with the caller's
+ * environment, before the rig changes HOME and PATH. The rig's parent runs as that file, not as the
+ * first python3 on PATH: a version manager's shim there (mise's, with no python selected) runs
+ * under the HOME above and refuses the user's mise config as untrusted when the checkout is under
+ * the user's home, or elsewhere runs python with mise's tool directories gone from PATH, so the
+ * rig's own tools (bun) then have no version either. */
+let python = "";
+
 /** Runs the rig, in a process group of its own, and returns its exit status and its stderr.
  *
  * The rig stops its own tree before it exits (stop_tree, scripts/e2e/lib/rig.sh), and a process
@@ -263,7 +271,7 @@ const setpgid = [
  * it, `python3 --version`, in the runtime image's toolchain step). The rig's own shell runs with
  * job control off, as it always has. */
 async function runRig(args: string[], vars: Record<string, string> = {}) {
-  const child = Bun.spawn(["python3", "-I", "-c", setpgid, "bash", rig, ...args], {
+  const child = Bun.spawn([python, "-I", "-c", setpgid, "bash", rig, ...args], {
     env: { ...env, ...vars },
     stdout: "pipe",
     stderr: "pipe",
@@ -289,6 +297,14 @@ beforeAll(async () => {
   // Nothing is staged and no rig is started where the rows do not run: python3 starts every one
   // of them, and this hook would throw on a host that does not have it.
   if (withoutPython) return;
+  const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
+  const executable = resolved.stdout.toString().trim();
+  if (resolved.exitCode !== 0 || !path.isAbsolute(executable)) {
+    throw new Error(
+      `could not resolve the python3 interpreter (exit ${resolved.exitCode}): ${resolved.stderr.toString() || "no absolute executable path"}`
+    );
+  }
+  python = executable;
   // A staging may queue another, so the queue is drained until it is empty.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
   mkdirSync(env.HOME);

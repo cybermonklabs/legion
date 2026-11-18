@@ -570,6 +570,52 @@ func TestKubernetesSetupReachesTheSandboxRuntime(t *testing.T) {
 	}
 }
 
+// runtime.kubernetes.sandbox reaches sandbox.Options member for member: the type, the canary list
+// and the microvm block with its ComputeClass, its storage class (the one the loader settled,
+// runtime.kubernetes.storage_class where the file names none) and its metadata endpoint, while
+// leaving the block out runs every pod in gVisor.
+func TestKubernetesSandboxReachesTheSandboxRuntime(t *testing.T) {
+	cfg := config.Config{Project: "TEST", Projects: map[string]config.Project{"TEST": {}}}
+	k := config.Kubernetes{
+		Namespace: "legion", Image: "ghcr.io/cybermonklabs/legion-worker@sha256:" + strings.Repeat("a", 64),
+		StorageClass: "gp2", IssueVolume: "20Gi", Resources: config.DefaultResources(), RepositoryCache: config.DefaultRepositoryCache(),
+	}
+	k.Sandbox = config.SandboxConfig{
+		Type: config.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
+		MicroVM: &config.MicroVMConfig{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &config.MetadataConfig{
+			WorkloadPool:     "example-project.svc.id.goog",
+			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
+		}},
+	}
+	opts, err := sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions: %v", err)
+	}
+	want := sandbox.SandboxConfig{
+		Type: sandbox.SandboxMicroVM, CanaryIssues: []string{"TEST-7"},
+		MicroVM: &sandbox.MicroVM{ComputeClass: "example-microvm", StorageClass: "gp2", Metadata: &sandbox.MetadataEndpoint{
+			WorkloadPool:     "example-project.svc.id.goog",
+			IdentityProvider: "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster",
+		}},
+	}
+	if !reflect.DeepEqual(opts.Sandbox, want) {
+		t.Errorf("Options.Sandbox = %+v, want %+v", opts.Sandbox, want)
+	}
+	if opts.Sandbox.Of("TEST-7") != sandbox.SandboxGVisor || opts.Sandbox.Of("TEST-8") != sandbox.SandboxMicroVM {
+		t.Errorf("Options.Sandbox runs TEST-7 in %s and TEST-8 in %s, want the canary in gVisor and every other issue in a microVM",
+			opts.Sandbox.Of("TEST-7"), opts.Sandbox.Of("TEST-8"))
+	}
+
+	k.Sandbox = config.SandboxConfig{}
+	opts, err = sandboxOptions(cfg, k, "test", "", lookup(nil), quietLogger())
+	if err != nil {
+		t.Fatalf("sandboxOptions without a sandbox block: %v", err)
+	}
+	if opts.Sandbox.AnyMicroVM() || opts.Sandbox.MicroVM != nil {
+		t.Errorf("Options.Sandbox = %+v without runtime.kubernetes.sandbox, want every pod in gVisor", opts.Sandbox)
+	}
+}
+
 // runtime.kubernetes.repository_cache reaches the runtime's Options as its volume, its intervals and
 // its container's requirements, a settled reservation's lower memory request under its limit.
 func TestTheRepositoryCacheReachesTheSandboxRuntime(t *testing.T) {
@@ -752,7 +798,7 @@ func TestAKubernetesDaemonRefusesAnOperatorPodCollidingWithLegionsBeforeItsBoot(
 }
 
 // The daemon holds the operator's pod to the exchange identity's names, before its boot and for
-// `legion start --check-config`, only where runtime.kubernetes.agent_secrets names an
+// `legion config check`, only where runtime.kubernetes.agent_secrets names an
 // exchange_audience. With no agent_secrets block, or one that names no exchange_audience, an
 // operator's AGENT_SECRETS_MACHINE_IDENTITY and AGENT_SECRETS_MACHINE_TOKEN_FILE, a volume named
 // agent-secrets-exchange and a mount at /var/run/legion/agent-secrets-exchange are the operator's,

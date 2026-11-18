@@ -23,19 +23,18 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
-// MintFailedMessage is logged, at ERROR, each time a kind secret's minter fails a release,
-// followed by name=<the secret's name>, kind=<its kind>, class=<secrets.MintErrorClass of the
+// MintFailedMessage is logged, at ERROR, each time a type secret's minter fails a release,
+// followed by name=<the secret's name>, type=<its type>, class=<secrets.MintErrorClass of the
 // error>, attempts=<secrets.MintAttempts of the error: the attempts the upstream call the mint
 // failed at made, 1 to 3, and 0 for a failure that was no call's> and error=<the minter's
 // message>, which never holds the stored value or a token. The session's answer is 502
 // MINT_FAILED; this line is the operator's.
 const MintFailedMessage = "broker: mint failed"
 
-// TrailingLineEndingRemovedMessage is logged, at INFO, in release, each time the shape rule
-// (policy.TrimForShape) changed a value the broker read from the store, followed by
+// TrailingLineEndingRemovedMessage is logged, at INFO, in release, each time the line-ending rule
+// (policy.TrimLineEnding) changed a value the broker read from the store, followed by
 // name=<the secret's name> and nothing else: no grant, which release is given none of, and no
-// part of any value. It is the operator's line for reading which secrets the rule reaches, so
-// an owner whose value it reads wrongly can retag that secret shape=document.
+// part of any value. It is the operator's line for reading which secrets the rule reaches.
 const TrailingLineEndingRemovedMessage = "broker: a stored value's trailing line ending was removed"
 
 // NarrowingRefusedMessage is logged, at WARN, each time a narrowing of a GitHub App token is
@@ -140,8 +139,8 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 		}
 		for _, g := range granted {
 			if err := stillAllowed(set, m.Airlock, g.name, g.source, g.decision, decidedBy, lifetime, requester); err != nil {
-				// A grant whose frozen source is not the one the name is served from now (its kind
-				// was changed or removed) ends for good: setting the kind back serves the same
+				// A grant whose frozen source is not the one the name is served from now (its type
+				// was changed or removed) ends for good: setting the type back serves the same
 				// source again, and the grant must not come back with it. So does one whose
 				// requesters tag no longer lists this session: listing the person again must not
 				// revive a grant made while they were off the list. So does a judged grant of a
@@ -178,8 +177,8 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 // Values releases the values of a live grant to its own enrollment, and when the grant expires:
 // nil for a grant that lasts until its session ends. Every call runs checkRelease's whole set of
 // re-checks and then the release loop both releases of a grant run (readRelease, release.go). A
-// stored secret releases its frozen source. A kind secret reads that same stored source and
-// passes its value to the kind's minter. It holds no pooled connection across a Secrets Manager
+// stored secret releases its frozen source. A type secret reads that same stored source and
+// passes its value to the type's minter. It holds no pooled connection across a Secrets Manager
 // read: the grant's names are read into memory before the first value is fetched. A non-nil
 // narrowing is this release's alone: it reaches the github-app minter of every github-app name
 // the grant holds, and the grant records nothing of it, so its next release without one is
@@ -191,10 +190,11 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 //
 // A granted name the airlock's rules name is released as placeholders instead of as its value:
 // its value is read or minted exactly as every other name's is, which is what says the value
-// exists and which slots it fills, and is then discarded. Such a name is left out of Values
-// altogether — a CLI from before the airlock finds it missing and runs nothing, rather than
-// running the command with a placeholder it does not understand — and what the session needs to
-// reach it is Release.Airlock.
+// exists and which slots it fills, and is then discarded, a minted one given back to its upstream
+// once the release is recorded (giveBack, heldBack), since the proxy mints a value of its own
+// (AirlockValues). Such a name is left out of Values altogether — a CLI from before the airlock
+// finds it missing and runs nothing, rather than running the command with a placeholder it does
+// not understand — and what the session needs to reach it is Release.Airlock.
 //
 // call is what the session says of this release: the command it starts and the reason its own
 // call gave. The release records both, with the reason of the grant's request, in its grant.used
@@ -231,6 +231,7 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 	release := Release{Values: values, Expires: checked.expires}
 	if len(splits) > 0 {
 		if release.Airlock, err = m.airlockRelease(ctx, grantID, checked.expires, splits); err != nil {
+			m.giveBack(ctx, read)
 			return Release{}, err
 		}
 	}
@@ -242,12 +243,16 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 	}
 	use := grantUse{names: releasedNames(read), command: command, callReason: callReasonOf(call.Reason, checked.reason), narrowing: narrowing}
 	if err := m.auditGrantUsed(ctx, grantID, checked, use); err != nil {
+		// The row is what says the values left the broker, and a release whose row failed hands
+		// nothing over, so what it minted is given back.
+		m.giveBack(ctx, read)
 		return Release{}, err
 	}
+	m.giveBack(ctx, heldBack(read))
 	return release, nil
 }
 
-// readValue is one granted name's value and, for a minted kind, when that value stops working,
+// readValue is one granted name's value and, for a minted type, when that value stops working,
 // with the refusals every release answers: a name the
 // store no longer holds (ErrSecretNotInStore), a narrowing the minter refused, which is logged as
 // a refused narrowing and handed back as it is, and any other failure named with the secret.
@@ -289,7 +294,7 @@ func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g
 func (m *Machine) narrowingRefusal(set *policy.Set, granted []requestedSecret, narrowing *secrets.GitHubNarrowing) (string, error) {
 	held := false
 	for _, g := range granted {
-		if kind, _, minted, err := policy.ParseKindSource(g.source); err != nil || !minted || kind != policy.KindGitHubApp {
+		if secretType, _, minted, err := policy.ParseTypeSource(g.source); err != nil || !minted || secretType != policy.TypeGitHubApp {
 			continue
 		}
 		held = true
@@ -301,7 +306,7 @@ func (m *Machine) narrowingRefusal(set *policy.Set, granted []requestedSecret, n
 		return "", ErrNarrowingNotApplicable
 	}
 	for _, g := range granted {
-		if m.Airlock.Lookup(g.name) != nil {
+		if m.Airlock.Bound(g.name) != nil {
 			return g.name, fmt.Errorf("%w: the airlock holds %s, whose value the proxy spends for this grant", ErrNarrowingBehindAirlock, g.name)
 		}
 	}
@@ -309,17 +314,17 @@ func (m *Machine) narrowingRefusal(set *policy.Set, granted []requestedSecret, n
 }
 
 // recheckStoredSources checks every name of grantID that releases its stored value (a source no
-// kind froze) against the policy as it stands after Values read the store, since the policy Values
-// checked before its reads can be replaced while they run: a retag to a kind, reread as a read
-// starts, makes the read return what the secret stores as that kind (a GitHub App key, or a Google
-// refresh token stored once the reread served the kind). A name now served from another source,
-// a kind's included, ends the grant for good (endGrant), as it does before the reads; a name the
+// type froze) against the policy as it stands after Values read the store, since the policy Values
+// checked before its reads can be replaced while they run: a retag to a type, reread as a read
+// starts, makes the read return what the secret stores as that type (a GitHub App key, or a Google
+// refresh token stored once the reread served the type). A name now served from another source,
+// a type's included, ends the grant for good (endGrant), as it does before the reads; a name the
 // policy no longer serves pauses it, as before the reads. Either way Values releases none of the
 // values it read. A minted name needs no such check: its minter returns only a token.
 func (m *Machine) recheckStoredSources(ctx context.Context, grantID string, granted []requestedSecret) error {
 	now := m.Policy.Get()
 	for _, g := range granted {
-		if _, _, minted, _ := policy.ParseKindSource(g.source); minted {
+		if _, _, minted, _ := policy.ParseTypeSource(g.source); minted {
 			continue
 		}
 		current, served := now.Secrets[g.name]
@@ -365,7 +370,7 @@ const GrantEndedActor = "broker:release-recheck"
 // endGrant ends grantID for good in one transaction, revoking it and writing a grant.revoked audit
 // row naming GrantEndedActor and why (reason's text), then answers reason, an ErrGrantNotLive. A
 // release ends a grant this way when what it was granted cannot come back: its frozen source is
-// not the one served now (a kind change), its lifetime is longer than the secret's max-grant
+// not the one served now (a type change), its lifetime is longer than the secret's max-grant
 // now, or the name's airlock entry is not the one the request recorded. A secret the policy
 // merely stops serving (no value, a malformed tag) pauses its grants instead, which release
 // again once it is served. A grant another writer revoked first is left as it is, with no second
@@ -399,14 +404,14 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 	return reason
 }
 
-// release is one granted name's value, and when that value stops working for a kind whose
+// release is one granted name's value, and when that value stops working for a type whose
 // minter says. A stored secret reads its frozen source and ignores the
 // policy metadata and narrowing; it carries no expiry, since nothing but a new stored version
-// ends it. A kind source reads its frozen store source (on Secret
+// ends it. A type source reads its frozen store source (on Secret
 // Manager its deletion verdict is cached for 30 s, as for every secret), then passes that value
 // and the name, tier, GitHub owners and Google OAuth scopes from the policy snapshot Values
-// checked to the minter. Either value is spent as the secret's shape tag says
-// (policy.TrimForShape): the stored value a session is handed, and the input the minter is
+// checked to the minter. Either value is spent by the one line-ending rule
+// (policy.TrimLineEnding): the stored value a session is handed, and the input the minter is
 // given, are read by the one rule, and each value the rule changed is logged as
 // TrailingLineEndingRemovedMessage with the secret's name. A token a minter makes is never
 // touched; the rule reaches the stored value alone.
@@ -416,13 +421,13 @@ func (m *Machine) endGrant(ctx context.Context, grantID string, reason error) er
 // for Values to log as a refused narrowing, and is no mint failure. A minter that refuses the
 // stored value itself (secrets.ErrMintStoredValue, its secrets.ParseValue) also has the policy
 // refuse the secret as value-malformed (policy.Current.RefuseValue), at the version the live
-// policy listed when this release read the value and under the kind and shape it was decoded
+// policy listed when this release read the value and under the type it was decoded
 // under, so the grants of it pause until a new value is stored; a retag since leaves the secret
-// to the decode of its new kind or shape. The failure line and this release's answer are every
+// to the decode of its new type. The failure line and this release's answer are every
 // other mint failure's. A deleted secret stops releasing once the policy drops it:
 // `agent-secrets secret delete` rereads the name at once.
 func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.Secret, narrowing *secrets.GitHubNarrowing) (secrets.Minted, error) {
-	kind, source, minted, err := policy.ParseKindSource(g.source)
+	secretType, source, minted, err := policy.ParseTypeSource(g.source)
 	if err != nil {
 		return secrets.Minted{}, fmt.Errorf("secret %s: %w", g.name, err)
 	}
@@ -431,14 +436,14 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 		if err != nil {
 			return secrets.Minted{}, err
 		}
-		return secrets.Minted{Value: shapedValue(stored, served.Shape, g.name)}, nil
+		return secrets.Minted{Value: trimmedValue(stored, g.name)}, nil
 	}
-	if kind == policy.KindAzureLogin && g.decision != policy.Approval {
+	if secretType == policy.TypeAzureLogin && g.decision != policy.Approval {
 		return secrets.Minted{}, fmt.Errorf("%w: %w: Azure login requires a person's approval", ErrMintFailed, secrets.ErrMintRefused)
 	}
-	mint := m.Minters[kind]
+	mint := m.Minters[secretType]
 	if mint == nil {
-		return secrets.Minted{}, fmt.Errorf("secret %s is a minted kind %q, but this broker has no token minter for it", g.name, kind)
+		return secrets.Minted{}, fmt.Errorf("secret %s is a minted type %q, but this broker has no token minter for it", g.name, secretType)
 	}
 	// The version the policy lists for the value this release reads, which a refusal of that
 	// value below is keyed on: a load that lists a newer one meanwhile decodes that one itself.
@@ -447,33 +452,33 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	if err != nil {
 		return secrets.Minted{}, err
 	}
-	token, err := mint(ctx, mintRequest(g.name, kind, served, shapedValue(value, served.Shape, g.name), narrowing))
+	token, err := mint(ctx, mintRequest(g.name, secretType, served, trimmedValue(value, g.name), narrowing))
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
 		return secrets.Minted{}, err
 	}
 	if err != nil {
 		// The minter's error names its class and why, never the stored value or a token, so the
 		// line is safe to log; the session sees the same words as MINT_FAILED.
-		slog.Error(MintFailedMessage, "name", g.name, "kind", kind, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
+		slog.Error(MintFailedMessage, "name", g.name, "type", secretType, "class", secrets.MintErrorClass(err), "attempts", secrets.MintAttempts(err), "error", err)
 		if errors.Is(err, secrets.ErrMintStoredValue) {
-			m.Policy.RefuseValue(ctx, g.name, version, kind, served.Shape)
+			m.Policy.RefuseValue(ctx, g.name, version, secretType)
 		}
 		return secrets.Minted{}, fmt.Errorf("%w: %w", ErrMintFailed, err)
 	}
 	return token, nil
 }
 
-// mintRequest is the input one granted name's release gives its minter: the name, the kind tag
-// its minters count their attempts under, the stored value as the shape rule spends it, the
+// mintRequest is the input one granted name's release gives its minter: the name, the type tag
+// its minters count their attempts under, the stored value as the line-ending rule spends it, the
 // tier, GitHub owners and Google OAuth scopes of the policy snapshot the release was checked
 // against, and the narrowing the caller asked for, nil where it asked for none. Create's check
 // builds its request here too and sets Check on it (checkNarrowingMint), which is the whole
 // worth of the check: it asks GitHub about the same secret, with the same owners and the same
 // narrowing, as the release it stands for.
-func mintRequest(name, kind string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) secrets.MintRequest {
+func mintRequest(name, secretType string, served policy.Secret, value string, narrowing *secrets.GitHubNarrowing) secrets.MintRequest {
 	return secrets.MintRequest{
 		Name:            name,
-		Kind:            kind,
+		Type:            secretType,
 		HumanTier:       served.Tier == policy.TierHuman,
 		Value:           value,
 		GitHubOwners:    served.GitHubOwnerLogins(),
@@ -482,13 +487,13 @@ func mintRequest(name, kind string, served policy.Secret, value string, narrowin
 	}
 }
 
-// shapedValue answers the value release spends for a stored value it has just read, under that
-// secret's shape tag (policy.TrimForShape), and writes the operator's line
+// trimmedValue answers the value release spends for a stored value it has just read
+// (policy.TrimLineEnding), and writes the operator's line
 // (TrailingLineEndingRemovedMessage) naming the secret each time the rule changed it. Both of
 // release's reads pass through it, so the value a session is handed and the input a minter is
 // given are read by the one rule and logged alike.
-func shapedValue(value, shape, name string) string {
-	spend, changed := policy.TrimForShape(value, shape)
+func trimmedValue(value, name string) string {
+	spend, changed := policy.TrimLineEnding(value)
 	if changed {
 		slog.Info(TrailingLineEndingRemovedMessage, "name", name)
 	}
@@ -518,6 +523,15 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 		requested = append(requested, g)
 	}
 	return requested, rows.Err()
+}
+
+// neededADecision answers, for a request's names as requestedSecrets reads them, which ones the
+// policy wanted approved when the request was made: the keys the judge decided of a request it
+// held, where every other name is one the session got at once (record.MayJudge).
+func neededADecision(requested []requestedSecret) func(string) bool {
+	return func(name string) bool {
+		return slices.ContainsFunc(requested, func(g requestedSecret) bool { return g.name == name && g.decision == policy.Approval })
+	}
 }
 
 // stillAllowed re-checks one granted name against a policy newer than the one its request was
@@ -615,7 +629,7 @@ func judgeStillDecides(set *policy.Set, rules airlock.Rules, name string, lifeti
 }
 
 // errSourceMoved is stillAllowed's refusal of a name served from another source than its grant
-// froze: a kind changed or removed, a secret replaced on AWS, the broker moved between stores.
+// froze: a type changed or removed, a secret replaced on AWS, the broker moved between stores.
 // Values ends such a grant for good (endGrant).
 var errSourceMoved = errors.New("source moved")
 
@@ -713,14 +727,15 @@ func (m *Machine) JudgeRequestState(ctx context.Context, recordID string) (strin
 
 // Get reads one request by id. Its Approver is the approver column of its credential-request
 // record, the column PendingForApprover lists the record by, so the request names exactly the
-// person whose list shows it; a request with no record has none.
+// person whose list shows it; a request with no record has none. JudgeDeciding is whether the
+// judge holds it now: pending, with its judge_until ahead.
 func (m *Machine) Get(ctx context.Context, id string) (Request, error) {
 	var r Request
 	var enrollmentID string
 	err := m.Store.Pool.QueryRow(ctx, `select r.id, r.state, r.enrollment_id, r.lifetime_seconds, r.decided_at, r.decided_by, r.decision_detail, r.record_id, cr.approver,
-		(select g.id::text from grants g where g.request_id=r.id and g.revoked_at is null limit 1)
+		(select g.id::text from grants g where g.request_id=r.id and g.revoked_at is null limit 1), r.state='pending' and coalesce(r.judge_until > now(), false)
 		from requests r left join credential_requests cr on cr.id = r.record_id where r.id=$1`, id).
-		Scan(&r.ID, &r.State, &enrollmentID, &r.LifetimeSeconds, &r.DecidedAt, &r.DecidedBy, &r.Detail, &r.RecordID, &r.Approver, &r.GrantID)
+		Scan(&r.ID, &r.State, &enrollmentID, &r.LifetimeSeconds, &r.DecidedAt, &r.DecidedBy, &r.Detail, &r.RecordID, &r.Approver, &r.GrantID, &r.JudgeDeciding)
 	if err != nil {
 		return Request{}, err
 	}
@@ -739,21 +754,25 @@ func (m *Machine) Get(ctx context.Context, id string) (Request, error) {
 	return r, rows.Err()
 }
 
-// OwnerOf is whose request requestID is: the owner the enrollment it hangs off now records
-// (enrollments.owner, enroll's ownerKey), or 'enrollment:<id>' for an enrollment that records
-// none, which no other enrollment's owner can spell. A caller may read and cancel the request
-// when its own enrollment answers the same (EnrollmentOwner), so a request is any enrollment's of
-// the person, the Legion claim or the machine that made it, and an enrollment with no owner's
-// alone. It reads the request's enrollment as it stands, which an adoption rewrites, so a request
-// that moved with its session belongs to whoever it moved to.
-func (m *Machine) OwnerOf(ctx context.Context, requestID string) (string, error) {
-	var owner string
-	err := m.Store.Pool.QueryRow(ctx, `select `+ownerOf("e")+` from requests r join enrollments e on e.id = r.enrollment_id where r.id=$1`, requestID).Scan(&owner)
-	return owner, err
+// OwnerAndState reads whose request requestID is, its state, and whether the model judge holds it
+// (pending with judge_until ahead), in one statement. The owner is the one the enrollment it hangs
+// off now records (enrollments.owner, enroll's ownerKey), or 'enrollment:<id>' for an enrollment
+// that records none, which no other enrollment's owner can spell. A caller may read and cancel the
+// request when its own enrollment answers the same (EnrollmentOwner), so a request is any
+// enrollment's of the person, the Legion claim or the machine that made it, and an enrollment with
+// no owner's alone. It reads the request's enrollment as it stands, which an adoption rewrites, so
+// a request that moved with its session belongs to whoever it moved to. GET /v1/requests/{id}
+// checks it before it answers, and its held read reads it again at each step while the request is
+// pending. A request with no row is pgx.ErrNoRows.
+func (m *Machine) OwnerAndState(ctx context.Context, requestID string) (owner, state string, judging bool, err error) {
+	err = m.Store.Pool.QueryRow(ctx, `select `+ownerOf("e")+`, r.state, coalesce(r.state = 'pending' and r.judge_until > now(), false)
+		from requests r join enrollments e on e.id = r.enrollment_id where r.id=$1`, requestID).Scan(&owner, &state, &judging)
+	return owner, state, judging, err
 }
 
-// EnrollmentOwner is OwnerOf for an enrollment: the owner it records, or 'enrollment:<id>'. A
-// caller's proof names a live enrollment, so pgx.ErrNoRows means it ended under the call.
+// EnrollmentOwner is OwnerAndState's owner for an enrollment: the owner it records, or
+// 'enrollment:<id>'. A caller's proof names a live enrollment, so pgx.ErrNoRows means it ended
+// under the call.
 func (m *Machine) EnrollmentOwner(ctx context.Context, enrollmentID string) (string, error) {
 	var owner string
 	err := m.Store.Pool.QueryRow(ctx, `select `+ownerOf("e")+` from enrollments e where e.id=$1`, enrollmentID).Scan(&owner)
@@ -761,7 +780,7 @@ func (m *Machine) EnrollmentOwner(ctx context.Context, enrollmentID string) (str
 }
 
 // ownerOf is the one SQL text for whose requests the enrollment aliased alias makes are, which
-// OwnerOf, EnrollmentOwner and Cancel compare.
+// OwnerAndState, EnrollmentOwner and Cancel compare.
 func ownerOf(alias string) string {
 	return `coalesce(` + alias + `.owner, 'enrollment:' || ` + alias + `.id::text)`
 }
@@ -787,7 +806,7 @@ func (m *Machine) SessionID(ctx context.Context, id string) (string, error) {
 }
 
 // Grant is a live grant's public summary, for GET /v1/enrollments/self. It follows the same query
-// pattern as OwnerOf and enrollment above.
+// pattern as OwnerAndState and enrollment above.
 type Grant struct {
 	// The grant's id, which the values and revoke routes take.
 	ID string `json:"grant_id"`
@@ -1029,6 +1048,18 @@ func (m *Machine) RecordKind(ctx context.Context, recordID string) (string, erro
 	return kind, err
 }
 
+// JudgeHolds reports whether the model judge holds the request of a credential-request record now:
+// the request is pending and its judge_until lies ahead. It reads that one fact and not the
+// record, so api.decideRecord can say JUDGE_DECIDES for a record whose signed request verifies for
+// no audience of this broker's, which ReadRecord refuses. A record with no request (a machine
+// login) is held by nobody.
+func (m *Machine) JudgeHolds(ctx context.Context, recordID string) (bool, error) {
+	var held bool
+	err := m.Store.Pool.QueryRow(ctx, `select coalesce(bool_or(state = 'pending' and judge_until > now()), false)
+		from requests where record_id=$1`, recordID).Scan(&held)
+	return held, err
+}
+
 // Session is the two possibly-differing session ids a credential-request record can name, read
 // independently (LEGION-587): Enrollment is the id the requesting session's own enrollment stated
 // when it enrolled (enrollments.session_id — agentbox's --session-id, or the Legion daemon's
@@ -1084,13 +1115,14 @@ type PendingSummary struct {
 // rows only to another enrollment of the same session id (the carry pair enroll.Create matches
 // on), so that id is the one the enrollment holding the request names too. Which records are
 // pending comes from the requests rows, which move, so a moved card is listed once and the box it
-// moved off lists it no more.
+// moved off lists it no more. A request the model judge holds (judge_until ahead) is no person's
+// yet, so it is listed only once its hold has ended: handed over, or run out.
 const pendingForApproverQuery = `select cr.id, cr.kind, cr.body, cr.created_at, cr.expires_at, coalesce(req.session_id, ''), coalesce(enr.session_id, '')
 	from credential_requests cr
 	left join requests req on req.record_id = cr.id
 	left join enrollments enr on enr.id = cr.enrollment_id
 	where (
-		cr.approver in ($1, $2) and cr.kind='agent_secret' and cr.id in (select r.record_id from requests r where r.state='pending')
+		cr.approver in ($1, $2) and cr.kind='agent_secret' and cr.id in (select r.record_id from requests r where r.state='pending' and (r.judge_until is null or r.judge_until <= now()))
 		or cr.approver in ($1, $2) and cr.kind='launcher_credential' and not exists (
 			select 1 from credential_request_events ev where ev.record_id=cr.id and ev.event in ('approved','denied','expired','cancelled'))
 	) order by cr.created_at desc`
@@ -1246,6 +1278,9 @@ type RecordDetail struct {
 	RequestedAt     time.Time
 	Decided         *RecordDecision
 	Session         Session
+	// JudgeDeciding is whether the model judge holds the record's request now: pending, with its
+	// judge_until ahead. No person decides such a record until the judge has given it up.
+	JudgeDeciding bool
 }
 
 // ReadRecord reads a credential-request record's full detail by id, for the broker's approval page
@@ -1254,13 +1289,15 @@ type RecordDetail struct {
 func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail, error) {
 	var canonical, approver, kind, requestSession, enrollmentSession string
 	var createdAt, expiresAt time.Time
+	var judgeDeciding bool
 	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.approver, cr.kind, cr.created_at, cr.expires_at,
-			coalesce(req.session_id, ''), coalesce(enr.session_id, '')
+			coalesce(req.session_id, ''), coalesce(enr.session_id, ''),
+			coalesce(req.state = 'pending' and req.judge_until > now(), false)
 		from credential_requests cr
 		left join requests req on req.record_id = cr.id
 		left join enrollments enr on enr.id = cr.enrollment_id
 		where cr.id=$1`, recordID).
-		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession); err != nil {
+		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &judgeDeciding); err != nil {
 		return RecordDetail{}, err
 	}
 	body, err := record.ParseBody(canonical)
@@ -1289,7 +1326,8 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		RecordID: recordID, Kind: kind, State: "pending", Approver: approver, Enrollment: enr,
 		Identifiers: identifiers, Service: service, Reason: obj.Reason, LifetimeSeconds: body.LifetimeSeconds,
 		RulesVersion: body.RulesVersion, ExpiresAt: expiresAt, RequestedAt: createdAt,
-		Session: Session{Request: requestSession, Enrollment: enrollmentSession},
+		Session:       Session{Request: requestSession, Enrollment: enrollmentSession},
+		JudgeDeciding: judgeDeciding,
 	}
 	// Whether the record is still pending follows PendingForApprover's rule: an agent_secret record
 	// by its request's state, a machine login by its terminal event. A decided record's terminal

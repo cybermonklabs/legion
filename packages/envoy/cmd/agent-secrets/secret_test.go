@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -171,10 +172,19 @@ func (b *secretBroker) failRereads(status int) {
 }
 
 // startSecretBroker serves a secretBroker on AGENT_SECRETS_URL for the rest of t, answering
-// GET /v1/settings with policytest's namespace in testAccount.
+// GET /v1/settings with policytest's namespace in testAccount, as a broker of this release that
+// reads the type tag.
 func startSecretBroker(t *testing.T, answer func(name string) Reread) *secretBroker {
 	t.Helper()
-	return startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1"}, answer)
+	return startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1", SecretTypeTag: true}, answer)
+}
+
+// readNoTypeTag makes the broker answer GET /v1/settings from now on as a broker from before the
+// type tag does: with no secret_type_tag, which such a broker never sends.
+func (b *secretBroker) readNoTypeTag() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.settings.SecretTypeTag = false
 }
 
 // startSecretBrokerWith is startSecretBroker with settings of the caller's choosing, so a test for
@@ -185,7 +195,10 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/settings":
-			writeJSON(w, b.settings)
+			b.mu.Lock()
+			settings := b.settings
+			b.mu.Unlock()
+			writeJSON(w, settings)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/secrets/") && strings.HasSuffix(r.URL.Path, "/reread"):
 			name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/secrets/"), "/reread")
 			b.mu.Lock()
@@ -220,7 +233,7 @@ func (b *secretBroker) recorded() ([]string, []Reread) {
 
 // servedBy answers a reread as the broker would from what sm holds: absent for a secret it does
 // not hold or one scheduled for deletion, no-current-value for one with no AWSCURRENT version,
-// served otherwise, as the kind its kind tag names.
+// served otherwise, as the type its type tag names.
 func servedBy(sm secretsAPI) func(name string) Reread {
 	return func(name string) Reread {
 		out, err := sm.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID(name))})
@@ -230,7 +243,7 @@ func servedBy(sm secretsAPI) func(name string) Reread {
 		case !secrets.HasCurrentVersion(out.VersionIdsToStages):
 			return Reread{Name: name, Reason: policy.ReasonNoCurrentValue}
 		}
-		return Reread{Name: name, Served: true, Kind: secrets.TagMap(out.Tags)[policy.TagKind]}
+		return Reread{Name: name, Served: true, Type: policy.TypeFromTags(secrets.TagMap(out.Tags))}
 	}
 }
 
@@ -460,7 +473,7 @@ func useAWSSources(t *testing.T, sources []aws.CredentialSource) {
 // line naming the credential it signs in to the store with, and prints it before its first call of
 // the store.
 func TestEverySecretFormNamesTheSourceItUses(t *testing.T) {
-	onEachStore(t, func(t *testing.T, store kindStore, _ *secretBroker) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "HELD_TEST", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
 		for _, form := range []struct {
 			stdin string
@@ -692,18 +705,18 @@ func TestSecretFormsRefuseBadUsageWithExitTwo(t *testing.T) {
 }
 
 // TestTheValueReaderRemovesATrailingLineEndingBeforeItStores: the value a write pipes in is
-// stored as the broker's own shape rule reads it (policy.TrimForShape), so a value stored
-// through this client and a value stored by any other writer are spent alike: a one-line
+// stored as the broker's own line-ending rule reads it (policy.TrimLineEnding), so a value
+// stored through this client and a value stored by any other writer are spent alike: a one-line
 // credential loses its whole trailing run of carriage returns and line feeds, however many and
 // in whichever order, rather than keeping a carriage return an editor or a shell left behind.
-// Where the rule changes nothing — a document, whose every byte is part of it, and a value that
-// holds a line ending inside it — one final line feed goes, which is what this reader has always
-// removed. A value that is only line endings is not emptied by the rule, so it keeps every line
-// feed but the last, and a single one of them is refused as an empty value.
+// Where the rule changes nothing — a value that holds a line ending inside it — one final line
+// feed goes, which is what this reader has always removed. A value that is only line endings is
+// not emptied by the rule, so it keeps every line feed but the last, and a single one of them is
+// refused as an empty value.
 func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 	const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
 	for _, tc := range []struct {
-		name, piped, shape, stored, refusal string
+		name, piped, stored, refusal string
 	}{
 		{name: "token-and-a-line-feed", piped: "tok\n", stored: "tok"},
 		{name: "token-and-a-carriage-return-and-a-line-feed", piped: "tok\r\n", stored: "tok"},
@@ -712,20 +725,13 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 		{name: "a-pem-document", piped: pem, stored: "-----BEGIN KEY-----\nabc\n-----END KEY-----"},
 		{name: "one-line-feed-alone", piped: "\n", refusal: "standard input, which was empty"},
 		{name: "two-line-feeds", piped: "\n\n", stored: "\n"},
-		// An owner who declared the secret a document asked for its bytes to be kept, so only
-		// the one final line feed goes and the carriage return before it stays.
-		{name: "a-document-token-and-a-carriage-return-and-a-line-feed", piped: "tok\r\n", shape: policy.ShapeDocument, stored: "tok\r"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			local := secrets.NewLocal()
 			startSecretBroker(t, servedBy(local))
 			useAWS(t, local, testAccount, adaSignIn)
 			useStdin(t, tc.piped)
-			args := []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}
-			if tc.shape != "" {
-				args = append(args, "--shape", tc.shape)
-			}
-			_, stderr, code := runSecret(args...)
+			_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 			if tc.refusal != "" {
 				if code != exitUsageError || !strings.Contains(stderr, tc.refusal) {
 					t.Fatalf("exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, tc.refusal)
@@ -745,25 +751,112 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 	}
 }
 
-// TestSecretSetReadsTheSecretsOwnShape: a set names no tag, so it reads the shape the secret
-// already carries and stores the value under it. The value is one line, a carriage return and a
-// line feed: under the document reading the carriage return stays and only the final line feed
-// goes, while the untagged reading would store the line alone, so the test fails if the set
-// stores the value under no shape at all.
-func TestSecretSetReadsTheSecretsOwnShape(t *testing.T) {
-	const piped, want = "tok\r\n", "tok\r"
-	wholeFile := policytest.Secret("DOCUMENT_KEY", "ada@example.com", policy.TierAgent, "old")
-	wholeFile.Tags[policy.TagShape] = policy.ShapeDocument
-	local := secrets.NewLocal(wholeFile)
-	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	useStdin(t, piped)
-	if _, stderr, code := runSecret("set", "DOCUMENT_KEY"); code != 0 {
-		t.Fatalf("set: exit %d, stderr %q", code, stderr)
-	}
-	if v := valueOf(t, local, "DOCUMENT_KEY"); v != want {
-		t.Fatalf("stored %q, want %q", v, want)
-	}
+// TestSecretCreateAndRetagRefuseShape: `--shape` is a flag of no form of this CLI. A create that
+// names it is refused by the flag reader itself, exiting 2 with the reader's own words, before
+// the store is called and before standard input is read — the value is never asked for, so a
+// writer who typed the old flag loses nothing — and a retag that names it is refused the same
+// way, leaving the secret's tags as they were.
+func TestSecretCreateAndRetagRefuseShape(t *testing.T) {
+	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+		store.put(t, "API_KEY", policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
+		before := store.tags(t, "API_KEY")
+		read := countingStdin(t, "value-never-read")
+
+		for _, args := range [][]string{
+			{"create", "NEW_KEY", "--owner", "shared", "--tier", "agent", "--shape", "token"},
+			{"retag", "API_KEY", "--shape", "none"},
+		} {
+			_, stderr, code := runSecret(args...)
+			if code != exitUsageError || !strings.Contains(stderr, "flag provided but not defined: -shape") {
+				t.Fatalf("%v: exit %d stderr %q; want %d naming the flag the reader does not define", args, code, stderr, exitUsageError)
+			}
+		}
+		if store.has(t, "NEW_KEY") {
+			t.Fatal("the refused create made NEW_KEY")
+		}
+		if got := store.tags(t, "API_KEY"); !maps.Equal(got, before) {
+			t.Fatalf("tags after the refused retag = %v, were %v", got, before)
+		}
+		if n := read(); n != 0 {
+			t.Fatalf("the refused create read %d bytes of standard input; want none", n)
+		}
+		if rereads, _ := broker.recorded(); len(rereads) != 0 {
+			t.Fatalf("rereads = %v after two refused forms; want none", rereads)
+		}
+	})
+}
+
+// countingStdin makes value the secret forms' standard input for the rest of t and answers how
+// many of its bytes were read, so a test can say that a form never asked for the value.
+func countingStdin(t *testing.T, value string) func() int {
+	t.Helper()
+	counted := &countingReader{r: strings.NewReader(value)}
+	restore := secretStdin
+	secretStdin = counted
+	t.Cleanup(func() { secretStdin = restore })
+	return func() int { return counted.read }
+}
+
+// countingReader is a reader that counts the bytes read from it.
+type countingReader struct {
+	r    io.Reader
+	read int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read += n
+	return n, err
+}
+
+// TestSecretSetReadsTheSecretsOwnType: a set names no tag, so it reads the type the secret
+// already carries and checks the value as that type's minter reads it. A value that minter
+// refuses is refused in its words, and nothing is written; one it reads is stored, less its
+// trailing line ending.
+func TestSecretSetReadsTheSecretsOwnType(t *testing.T) {
+	notALogin := appValue(t, map[string]string{"type": "service_account"})
+	says := mintRefusal(t, policy.TypeGoogleLogin, notALogin)
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		store.put(t, "LOGIN_KEY", policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, "").Tags, "old")
+		useStdin(t, notALogin+"\n")
+		_, stderr, code := runSecret("set", "LOGIN_KEY")
+		if code != exitUsageError || !strings.Contains(stderr, says) {
+			t.Fatalf("set of a value the type's minter refuses: exit %d stderr %q; want %d naming %q", code, stderr, exitUsageError, says)
+		}
+		if got := store.value(t, "LOGIN_KEY"); got != "old" {
+			t.Fatalf("the refused set stored %q; want the value the secret held", got)
+		}
+		login := policytest.TypeValue(policy.TypeGoogleLogin)
+		useStdin(t, login+"\n")
+		if _, stderr, code := runSecret("set", "LOGIN_KEY"); code != 0 {
+			t.Fatalf("set of a value the type's minter reads: exit %d stderr %q", code, stderr)
+		}
+		if got := store.value(t, "LOGIN_KEY"); got != login {
+			t.Fatalf("stored %q; want the piped value less its trailing line ending", got)
+		}
+	})
+}
+
+// TestSecretSetRefusedTagReadNamesThePermission: a set reads the secret's tags for the type it
+// checks the value as, so whoever stores a value may read that secret's tags. When the store
+// refuses that read, the refusal names the permission the read needs, and the value is never
+// asked for.
+func TestSecretSetRefusedTagReadNamesThePermission(t *testing.T) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		store.put(t, "API_KEY", policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
+		read := countingStdin(t, "a-new-value")
+		store.refuseTagReads()
+		_, stderr, code := runSecret("set", "API_KEY")
+		if code != 1 || !strings.Contains(stderr, store.tagReadPermission()) {
+			t.Fatalf("set whose tag read is refused: exit %d stderr %q; want 1 naming %s", code, stderr, store.tagReadPermission())
+		}
+		if n := read(); n != 0 {
+			t.Fatalf("the refused set read %d bytes of standard input; want none", n)
+		}
+		if got := store.value(t, "API_KEY"); got != "v1" {
+			t.Fatalf("the refused set stored %q", got)
+		}
+	})
 }
 
 // TestSecretRetagSendsBothTags: a retag naming one tag sends both, the other re-sent as the secret
@@ -1266,7 +1359,7 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 	}
 	rows := map[string][]string{}
 	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER KIND SHAPE MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
+	if got := strings.Fields(lines[0]); strings.Join(got, " ") != "NAME OWNER TIER TYPE MAX_GRANT DEFAULT_GRANT VALUE DELETED EARLIEST_PURGE" {
 		t.Fatalf("header = %q", lines[0])
 	}
 	for _, line := range lines[1:] {
@@ -1274,10 +1367,10 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 		rows[fields[0]] = fields
 	}
 	want := map[string][]string{
-		"EMPTY_KEY":    {"EMPTY_KEY", "shared", "agent", "-", "-", "-", "-", "no", "-", "-"},
-		"GONE_KEY":     {"GONE_KEY", "ada@example.com", "agent", "-", "-", "-", "-", "yes", "2026-10-01T12:00:00Z", "2026-10-08T12:00:00Z"},
-		"LIVE_KEY":     {"LIVE_KEY", "ada@example.com", "human", "-", "-", "-", "session", "yes", "-", "-"},
-		"UNTAGGED_KEY": {"UNTAGGED_KEY", "-", "-", "-", "-", "-", "-", "yes", "-", "-"},
+		"EMPTY_KEY":    {"EMPTY_KEY", "shared", "agent", "-", "-", "-", "no", "-", "-"},
+		"GONE_KEY":     {"GONE_KEY", "ada@example.com", "agent", "-", "-", "-", "yes", "2026-10-01T12:00:00Z", "2026-10-08T12:00:00Z"},
+		"LIVE_KEY":     {"LIVE_KEY", "ada@example.com", "human", "-", "-", "session", "yes", "-", "-"},
+		"UNTAGGED_KEY": {"UNTAGGED_KEY", "-", "-", "-", "-", "-", "yes", "-", "-"},
 	}
 	if len(rows) != len(want) {
 		t.Fatalf("rows = %v, want exactly %v", rows, want)
@@ -1399,98 +1492,89 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 	}
 }
 
-// TestSecretShowAndListPrintTheShape: show prints a shape line holding the shape tag the store
-// holds, and "-" for a secret carrying none; list prints the same value in a SHAPE column, since
-// the shape is a one-word tag as the kind, the max grant and the default grant are. Each form's
-// --json carries the tag as the store holds it, "" for a secret carrying none, so a reader of
-// the JSON tells a secret tagged nothing from one tagged a word the broker refuses it for.
-func TestSecretShowAndListPrintTheShape(t *testing.T) {
-	oneLine := policytest.Secret("TOKEN_KEY", "ada@example.com", policy.TierAgent, "tok-abc")
-	oneLine.Tags[policy.TagShape] = policy.ShapeToken
-	wholeFile := policytest.Secret("DOCUMENT_KEY", "ada@example.com", policy.TierAgent, "-----BEGIN KEY-----\n")
-	wholeFile.Tags[policy.TagShape] = policy.ShapeDocument
-	untagged := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "v1")
-	local := secrets.NewLocal(oneLine, wholeFile, untagged)
-	startSecretBroker(t, servedBy(local))
+// TestSecretShowSaysWhoDecidesAndOnWhatGuidance: show prints who decides a request for the key and
+// the guidance the judge decides it on, so an agent can meet the guidance on its first request.
+// The model judge for a key the broker's rules give a judge entry (GET /v1/settings's judge_keys),
+// whoever owns it, with its seconds and its guidance; a person, on the broker page, for a key with
+// no entry, and for an administrator's key even where the rules name it; and, for an agent-tier
+// key, nobody for a session its tags allow, since only another session's request waits at all.
+func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
+	admin := policytest.Secret("ADMIN_JUDGED_KEY", "ada@example.com", policy.TierHuman, "a")
+	admin.Tags[policy.TagAdmin] = "true"
+	local := secrets.NewLocal(
+		policytest.Secret("JUDGED_KEY", "ada@example.com", policy.TierHuman, "j"),
+		policytest.Secret("PAGE_KEY", "ada@example.com", policy.TierHuman, "p"),
+		admin,
+		policytest.Secret("SHARED_JUDGED_KEY", policy.OwnerShared, policy.TierHuman, "s"),
+		policytest.Secret("AGENT_KEY", "ada@example.com", policy.TierAgent, "g"),
+	)
+	startSecretBrokerWith(t, Settings{
+		SecretsPrefix: policytest.Prefix, KMSKeyARN: policytest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1",
+		JudgeKeys: map[string]JudgeKey{
+			"JUDGED_KEY":        {Seconds: 900, Guidance: "grant for the release job named in the reason"},
+			"ADMIN_JUDGED_KEY":  {Seconds: 900, Guidance: "grant for anything"},
+			"SHARED_JUDGED_KEY": {Seconds: 300},
+		},
+	}, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
-
-	for _, tc := range []struct{ name, stored, printed string }{
-		{"TOKEN_KEY", policy.ShapeToken, policy.ShapeToken},
-		{"DOCUMENT_KEY", policy.ShapeDocument, policy.ShapeDocument},
-		{"PLAIN_KEY", "", "-"},
+	const person = "decides: a person, on the broker page\nguidance: -\n"
+	for name, want := range map[string]string{
+		"JUDGED_KEY":        "decides: the model judge, up to 15m0s, against its guidance; the key's person only if the judge cannot decide\nguidance: grant for the release job named in the reason\n",
+		"PAGE_KEY":          person,
+		"ADMIN_JUDGED_KEY":  "decides: a person, on the broker page: an administrator's key, which the judge never decides\nguidance: -\n",
+		"SHARED_JUDGED_KEY": "decides: the model judge, up to 5m0s, against its guidance; the key's person only if the judge cannot decide\nguidance: -\n",
+		"AGENT_KEY":         "decides: nobody, for a session its tags allow; otherwise a person, on the broker page\nguidance: -\n",
 	} {
-		stdout, stderr, code := runSecret("show", tc.name)
+		stdout, stderr, code := runSecret("show", name)
+		if code != 0 || !strings.Contains(stdout, want) {
+			t.Errorf("show %s = exit %d stdout %q stderr %q; want it to print %q", name, code, stdout, stderr, want)
+		}
+	}
+}
+
+// TestSecretShowAndListNameNoShape: this CLI reads no shape tag, so a secret a writer left one
+// on prints as any other secret does: show writes no line opening `shape:`, its --json object
+// holds no `shape` key, and list's header carries no SHAPE column. The leftover tag is left in
+// the store untouched; nothing here removes it.
+func TestSecretShowAndListNameNoShape(t *testing.T) {
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		leftover := policytest.Secret("LEFTOVER_KEY", "ada@example.com", policy.TierAgent, "v1").Tags
+		leftover["shape"] = "token"
+		store.put(t, "LEFTOVER_KEY", leftover, "tok-abc")
+
+		stdout, stderr, code := runSecret("show", "LEFTOVER_KEY")
 		if code != 0 {
-			t.Fatalf("show %s: exit %d, stderr %q", tc.name, code, stderr)
+			t.Fatalf("show: exit %d, stderr %q", code, stderr)
 		}
-		if want := "shape: " + tc.printed + "\n"; !strings.Contains(stdout, want) {
-			t.Fatalf("show %s stdout %q must contain %q", tc.name, stdout, want)
+		for _, line := range strings.Split(stdout, "\n") {
+			if strings.HasPrefix(line, "shape:") {
+				t.Fatalf("show printed %q; this CLI reads no shape tag", line)
+			}
 		}
-		jsonOut, stderr, code := runSecret("show", tc.name, "--json")
+		jsonOut, stderr, code := runSecret("show", "LEFTOVER_KEY", "--json")
 		if code != 0 {
-			t.Fatalf("show %s --json: exit %d, stderr %q", tc.name, code, stderr)
+			t.Fatalf("show --json: exit %d, stderr %q", code, stderr)
 		}
-		var view struct {
-			Shape string `json:"shape"`
-		}
+		var view map[string]any
 		if err := json.Unmarshal([]byte(jsonOut), &view); err != nil {
-			t.Fatalf("show %s --json is not a secret: %v: %s", tc.name, err, jsonOut)
+			t.Fatalf("show --json is not a secret: %v: %s", err, jsonOut)
 		}
-		if view.Shape != tc.stored {
-			t.Fatalf("show %s --json shape = %q, want the tag the store holds, %q", tc.name, view.Shape, tc.stored)
+		if _, named := view["shape"]; named {
+			t.Fatalf("show --json = %s; want no shape key", jsonOut)
 		}
-	}
 
-	stdout, stderr, code := runSecret("list")
-	if code != 0 {
-		t.Fatalf("list: exit %d, stderr %q; want 0", code, stderr)
-	}
-	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
-	header := strings.Fields(lines[0])
-	column := -1
-	for i, name := range header {
-		if name == "SHAPE" {
-			column = i
+		stdout, stderr, code = runSecret("list")
+		if code != 0 {
+			t.Fatalf("list: exit %d, stderr %q", code, stderr)
 		}
-	}
-	if column < 0 {
-		t.Fatalf("list header = %q, want a SHAPE column", lines[0])
-	}
-	shapes := map[string]string{}
-	for _, line := range lines[1:] {
-		fields := strings.Fields(line)
-		shapes[fields[0]] = fields[column]
-	}
-	want := map[string]string{"TOKEN_KEY": policy.ShapeToken, "DOCUMENT_KEY": policy.ShapeDocument, "PLAIN_KEY": "-"}
-	if len(shapes) != len(want) {
-		t.Fatalf("list SHAPE column = %v, want exactly %v", shapes, want)
-	}
-	for name, shape := range want {
-		if shapes[name] != shape {
-			t.Fatalf("list %s SHAPE = %q, want %q", name, shapes[name], shape)
+		header := strings.Fields(strings.SplitN(stdout, "\n", 2)[0])
+		if slices.Contains(header, "SHAPE") {
+			t.Fatalf("list header = %q; want no SHAPE column", header)
 		}
-	}
-
-	stdout, stderr, code = runSecret("list", "--json")
-	if code != 0 {
-		t.Fatalf("list --json: exit %d, stderr %q", code, stderr)
-	}
-	var views []struct {
-		Name  string `json:"name"`
-		Shape string `json:"shape"`
-	}
-	if err := json.Unmarshal([]byte(stdout), &views); err != nil {
-		t.Fatalf("list --json is not a JSON array of secrets: %v: %s", err, stdout)
-	}
-	stored := map[string]string{"TOKEN_KEY": policy.ShapeToken, "DOCUMENT_KEY": policy.ShapeDocument, "PLAIN_KEY": ""}
-	if len(views) != len(stored) {
-		t.Fatalf("list --json = %s, want one row per secret", stdout)
-	}
-	for _, v := range views {
-		if v.Shape != stored[v.Name] {
-			t.Fatalf("list --json %s shape = %q, want the tag the store holds, %q", v.Name, v.Shape, stored[v.Name])
+		if tags := store.tags(t, "LEFTOVER_KEY"); tags["shape"] != "token" {
+			t.Fatalf("the leftover tag reads %q after show and list; want them to have left it alone", tags["shape"])
 		}
-	}
+	})
 }
 
 // TestSecretDeleteThenRestoreRereads: delete schedules a 30-day deletion and the broker's reread
