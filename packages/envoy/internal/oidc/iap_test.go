@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -105,7 +106,6 @@ func TestIAPVerifierRefusesWhatIAPDidNotSignForThisAudience(t *testing.T) {
 		{"another audience", func(c map[string]any) { c["aud"] = "/projects/123456789012/global/backendServices/1" }, ErrAudience},
 		{"another issuer", func(c map[string]any) { c["iss"] = "https://accounts.google.com" }, ErrIssuer},
 		{"expired past the skew", func(c map[string]any) { c["exp"] = time.Now().Add(-IAPClockSkew - 10*time.Second).Unix() }, ErrExpired},
-		{"no exp", func(c map[string]any) { delete(c, "exp") }, ErrExpired},
 		{"issued ahead past the skew", func(c map[string]any) { c["iat"] = time.Now().Add(IAPClockSkew + 10*time.Second).Unix() }, ErrNotYetValid},
 		{"no iat", func(c map[string]any) { delete(c, "iat") }, ErrMalformed},
 	} {
@@ -139,5 +139,31 @@ func TestIAPVerifierReportsAnUnreadableKeySetAsUnavailable(t *testing.T) {
 	rig.server.FailKeys(0)
 	if _, err := rig.verify(t, rig.signing, nil); err != nil {
 		t.Fatalf("the same assertion once the key set answers: %v", err)
+	}
+}
+
+// An expired assertion IAP signed is refused with an *IAPExpiredError that carries the account the
+// signature covers, so its caller can tell whether that person would still be admitted; it is
+// ErrExpired, and Reason names it so. The domain is the caller's rule, so an account of another
+// Workspace is carried as it is.
+func TestIAPVerifierCarriesTheAccountOfAnExpiredAssertionIAPSigned(t *testing.T) {
+	rig := newIAPRig(t)
+	for _, hd := range []string{"example.com", "other.example"} {
+		exp := time.Now().Add(-IAPClockSkew - time.Minute).Truncate(time.Second)
+		claims, err := rig.verify(t, rig.signing, func(c map[string]any) {
+			c["hd"], c["exp"] = hd, exp.Unix()
+		})
+		var expired *IAPExpiredError
+		if !errors.As(err, &expired) || !errors.Is(err, ErrExpired) || Reason(err) != "expired" {
+			t.Fatalf("hd %s: claims = %+v, err = %v; want an *IAPExpiredError, which is %v", hd, claims, err, ErrExpired)
+		}
+		got := expired.Claims
+		if got.Subject != "accounts.google.com:118000000000000000001" || got.Email != "A.Person@example.com" || got.HostedDomain != hd ||
+			!got.EmailVerified || got.Issuer != IAPIssuer || !got.Expiry.Equal(exp) {
+			t.Errorf("hd %s: the expired assertion's claims = %+v, want its account, hd, issuer and exp", hd, got)
+		}
+		if !reflect.DeepEqual(claims, Claims{}) {
+			t.Errorf("hd %s: Verify returned claims %+v beside its refusal, want none", hd, claims)
+		}
 	}
 }

@@ -36,9 +36,12 @@ type IAPIdentity struct {
 
 // Login returns the lowercased email of the person a valid assertion names, when Rule admits
 // them; ErrNoIdentity for a request with no assertion, one that does not verify, or a person Rule
-// refuses; ErrCredentialExpired, which is ErrNoIdentity too, for an assertion past its exp; an
-// error matching ErrSignInUnavailable when IAP's key set could not be read, so no verdict was
-// reached; or the people store's own error.
+// refuses; ErrCredentialExpired, which is ErrNoIdentity too, for an assertion that is past its exp
+// and sound in every other respect (oidc.IAPExpiredError: IAP's key set verifies its signature, it
+// is IAP's to this audience, its iat holds) and whose person Rule still admits; an error matching
+// ErrSignInUnavailable when IAP's key set could not be read, so no verdict was reached; or the
+// people store's own error. An expired assertion that is wrong in any other way is refused for
+// that, at WARN, as a fresh one would be.
 //
 // An expired assertion is logged at DEBUG, not WARN: IAP signs a fresh one for every request it
 // passes, so the one request that carries an old assertion is a websocket's heartbeat, which
@@ -50,10 +53,15 @@ func (i IAPIdentity) Login(r *http.Request) (string, error) {
 		return "", ErrNoIdentity
 	}
 	claims, err := i.Verifier.Verify(r.Context(), raw)
+	var expired *oidc.IAPExpiredError
 	switch {
 	case errors.Is(err, oidc.ErrIssuerUnavailable):
 		return "", fmt.Errorf("%w: %w", ErrSignInUnavailable, err)
-	case errors.Is(err, oidc.ErrExpired):
+	case errors.As(err, &expired):
+		if _, refused := i.Rule.Person(expired.Claims); refused != nil {
+			slog.Warn("dispatch: IAP person refused", append(i.Rule.RefusalLogFields(expired.Claims), "reason", refused)...)
+			return "", ErrNoIdentity
+		}
 		slog.Debug("dispatch: IAP assertion expired", "error", err)
 		return "", ErrCredentialExpired
 	case err != nil:

@@ -202,7 +202,9 @@ assertion about ten minutes. When it expires, Dispatch closes the socket with a 
 page reopens it at once (`4001` for the live socket, `4412` for a document's), and the reopened
 socket carries IAP's next assertion, which is checked again. So each of an IAP user's sockets
 reopens about every ten minutes: the live socket shows nothing of it, and a document reconnects
-as it does after any close the server makes, its sync restoring whatever was in flight.
+as it does after any close the server makes, its sync restoring whatever was in flight. Only an
+assertion IAP signed counts as expired: one IAP's keys no longer verify, or whose person the domain
+no longer admits, is refused, and the socket closes as it does when its person signs out.
 
 ## Changing the session key
 

@@ -15,13 +15,15 @@ import (
 // session has ended, or a person whose membership could not be confirmed.
 var ErrNoIdentity = errors.New("no identity")
 
-// ErrCredentialExpired means a request's credential has expired: an Identity-Aware Proxy assertion
-// for this deployment's issuer and audience, past its exp (IAPIdentity; oidc.ErrExpired, which is
-// reported before the signature). It is ErrNoIdentity to every caller, so WriteError answers it
-// 401 NO_IDENTITY and it admits nobody. A websocket's heartbeat re-checks the assertion its upgrade
-// verified, and reads this as the end of that assertion's life rather than of the person's: the
-// socket closes with a code on which the page reopens it at once, and the reopened socket's fresh
-// assertion is judged again (api.whileCallerResolves).
+// ErrCredentialExpired means a request's credential has expired and nothing else is wrong with it:
+// an Identity-Aware Proxy assertion past its exp that IAP signed, whose signature IAP's key set
+// verifies, for this deployment's audience, naming a person Rule still admits (IAPIdentity,
+// oidc.IAPExpiredError). An expired assertion wrong in any other way is plain ErrNoIdentity. It is
+// ErrNoIdentity to every caller, so WriteError answers it 401 NO_IDENTITY and it admits nobody. A
+// websocket's heartbeat re-checks the assertion its upgrade verified, and reads this as the end of
+// that assertion's life rather than of the person's: the socket closes with a code on which the
+// page reopens it at once, and the reopened socket's fresh assertion is judged again
+// (api.whileCallerResolves).
 var ErrCredentialExpired = fmt.Errorf("%w: the credential has expired", ErrNoIdentity)
 
 // ErrSignInUnavailable means a sign-in needed the sign-in issuer and could not reach it: a sign-in

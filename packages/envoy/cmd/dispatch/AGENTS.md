@@ -471,14 +471,22 @@ write identity errors with `identity.WriteError`.
   `checkIAPSignInSettings` requires, refusing the issuer, client ID, client
   secret and group by name. Each request is decided on its own: no session,
   refresh token or `Membership`; an admitted person is `Record`ed; a refusal
-  is `ErrNoIdentity` (401), an expired assertion `ErrCredentialExpired`
-  (still `ErrNoIdentity`, 401), and an unreadable key set
-  `ErrSignInUnavailable` (503). A websocket's heartbeat re-checks the
-  assertion its upgrade carried, which IAP gives ten minutes, so
-  `api.whileCallerResolves` reads `ErrCredentialExpired` as a rotation: it
-  cancels with `errCredentialExpired`, and the live socket closes `4001`
-  (`credential expired`) and the document socket `4412` (the cause's
-  `CloseCode`, which ygo sends); the page reopens on a fresh assertion.
+  is `ErrNoIdentity` (401), and an unreadable key set
+  `ErrSignInUnavailable` (503). An expired assertion is
+  `ErrCredentialExpired` (still `ErrNoIdentity`, 401) only when IAP signed
+  it and nothing else is wrong: go-oidc reports an expired payload before
+  the signature, and `classify` ranks exp ahead of it, so
+  `oidc.IAPVerifier.Verify` checks an expired assertion again with a second
+  go-oidc verifier on the same key set and `SkipExpiryCheck`, refusing a bad
+  signature as `ErrSignature`, and only then answers an
+  `*oidc.IAPExpiredError` carrying the claims; `IAPIdentity` applies the rule
+  to them, and a refused person is `ErrNoIdentity` at WARN. A websocket's
+  heartbeat re-checks the assertion its upgrade carried, which IAP gives ten
+  minutes, so `api.whileCallerResolves` reads `ErrCredentialExpired` as a
+  rotation: it cancels with `errCredentialExpired`, and the live socket
+  closes `4001` (`credential expired`) and the document socket `4412` (the
+  cause's `CloseCode`, which ygo sends); the page reopens on a fresh
+  assertion. Every other refusal closes `1008`/`1006` as before.
   `routes.enforceCookieOrigin` holds an unsafe request that carries an
   assertion to Dispatch's origin, as it holds one with a session cookie.
 - `DISPATCH_IDENTITY=header:<Header-Name>` is for tests and local harnesses

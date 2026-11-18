@@ -8,9 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	gws "github.com/gorilla/websocket"
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -105,11 +107,77 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	reopened.refusal(t, 3*time.Second, "", "INVALID_FRAME")
 }
 
+// switchedIdentity is a Dispatch's IAP identity, which a test swaps while sockets are open, so a
+// heartbeat meets the world after a change: IAP's key withdrawn, a person no longer admitted.
+type switchedIdentity struct {
+	current atomic.Pointer[identity.IAPIdentity]
+}
+
+func newSwitchedIdentity(initial identity.IAPIdentity) *switchedIdentity {
+	switched := &switchedIdentity{}
+	switched.swap(initial)
+	return switched
+}
+
+func (s *switchedIdentity) Login(r *http.Request) (string, error) { return s.current.Load().Login(r) }
+
+func (s *switchedIdentity) swap(next identity.IAPIdentity) { s.current.Store(&next) }
+
+// iapChange is one change in the world an open socket's heartbeat meets.
+type iapChange struct {
+	name  string
+	apply func(t *testing.T, iap iapSocketKeys) identity.IAPIdentity
+}
+
+// iapChanges are the two ways an assertion IAP signed stops admitting its person, besides its age:
+// IAP withdrew the key that signed it (the key set now holds another key under that key id, so the
+// signature no longer verifies), or the person is no longer of the domain the rule admits.
+var iapChanges = []iapChange{
+	{"IAP's key withdrawn", func(t *testing.T, iap iapSocketKeys) identity.IAPIdentity {
+		rotated := oidctest.New(t)
+		rotated.Publish(oidctest.NewES256Key(t, iap.signing.KeyID()))
+		changed := iap.identity
+		changed.Verifier = oidc.NewIAPVerifier(iapSocketAudience, oidc.NewKeysAt(rotated.URL()+"/keys"))
+		return changed
+	}},
+	{"the person no longer admitted", func(t *testing.T, iap iapSocketKeys) identity.IAPIdentity {
+		changed := iap.identity
+		changed.Rule = identity.DomainRule{Domain: "other.example"}
+		return changed
+	}},
+}
+
+// An assertion that has expired AND that IAP's keys no longer verify, or whose person is no longer
+// admitted, is wrong, not merely old: the heartbeat that meets it closes the live socket with 1008,
+// the close that says its caller no longer resolves, never the 4001 rotation, and the reopen with a
+// fresh assertion is judged again and refused. The heartbeat is 3 s, so by the first one the
+// upgrade's assertion, which had about a second left, is past its exp and the skew.
+func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
+	for _, change := range iapChanges {
+		t.Run(change.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			iap := newIAPSocketKeys(t, database)
+			switched := newSwitchedIdentity(iap.identity)
+			rig := newLiveSocketRig(t, testServerOptions{store: database, streamHeartbeat: 3 * time.Second, identity: switched}, nil)
+			socket := rig.dial(t, iap.expiring(t, time.Second))
+			switched.swap(change.apply(t, iap))
+			if closed := socket.closeError(t, 8*time.Second); closed.Code != gws.ClosePolicyViolation {
+				t.Fatalf("the socket whose upgrade's assertion expired, %s, closed with %d %q, want %d: it is refused, not rotated",
+					change.name, closed.Code, closed.Text, gws.ClosePolicyViolation)
+			}
+			if status := rig.refused(t, iap.assertion(t, time.Now().Add(9*time.Minute))); status != http.StatusUnauthorized {
+				t.Fatalf("%s: a reopen with a fresh assertion was answered %d, want 401", change.name, status)
+			}
+		})
+	}
+}
+
 // iapDocumentRig is a Dispatch behind IAP serving document sockets: the API and the document
-// service share one IAP identity, as cmd/dispatch hands them one, and the sockets re-check their
-// caller every heartbeat.
+// service share one IAP identity, as cmd/dispatch hands them one, which a test may swap
+// (switched), and the sockets re-check their caller every heartbeat.
 type iapDocumentRig struct {
 	iap        iapSocketKeys
+	switched   *switchedIdentity
 	server     *httptest.Server
 	sockets    *servedSockets
 	artifactID string
@@ -119,11 +187,12 @@ func newIAPDocumentRig(t *testing.T, heartbeat time.Duration) *iapDocumentRig {
 	t.Helper()
 	database := storetest.Open(t)
 	rig := &iapDocumentRig{iap: newIAPSocketKeys(t, database)}
+	rig.switched = newSwitchedIdentity(rig.iap.identity)
 	broker := events.NewBroker()
-	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: rig.iap.identity, Settle: time.Hour})
+	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: rig.switched, Settle: time.Hour})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
-		Store: database, Identity: rig.iap.identity, AgentTokens: sharedAgentTokens(t, "agent-token"),
+		Store: database, Identity: rig.switched, AgentTokens: sharedAgentTokens(t, "agent-token"),
 		ServerURL: testServerURL, Docs: documents, Events: broker, StreamHeartbeat: heartbeat,
 	})
 	if err != nil {
@@ -204,6 +273,29 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 	}
 	long.barrier(t)
 	rig.openDocument(t, rig.iap.assertion(t, time.Now().Add(9*time.Minute))).barrier(t)
+}
+
+// The document socket's side of the same rule: an expired assertion that IAP's keys no longer
+// verify, or whose person is no longer admitted, ends the socket as any refusal does, with no close
+// frame (1006), never the 4412 on which the provider reconnects as after a rotation. The heartbeat
+// is 4 s, so by the first one the upgrade's assertion, which had about 2 s left, is past its exp.
+func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
+	for _, change := range iapChanges {
+		t.Run(change.name, func(t *testing.T) {
+			rig := newIAPDocumentRig(t, 4*time.Second)
+			peer := rig.openDocument(t, rig.iap.expiring(t, 2*time.Second))
+			rig.switched.swap(change.apply(t, rig.iap))
+			select {
+			case <-peer.connection().Ended:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("the document socket whose upgrade's assertion expired, %s, is still open after 10 s", change.name)
+			}
+			if code := peer.connection().CloseCode(); code != gws.CloseAbnormalClosure {
+				t.Fatalf("the document socket whose upgrade's assertion expired, %s, closed with %d, want %d: it is refused, not rotated",
+					change.name, code, gws.CloseAbnormalClosure)
+			}
+		})
+	}
 }
 
 // A socket whose person no longer resolves is still cut as before, whatever identity it runs
