@@ -183,7 +183,7 @@ import { connect, Events, type NatsConnection, StringCodec, type Subscription } 
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
-import { CardAges } from "../src/card-age";
+import { CARD_DELIVERED_ENTRY, CardAges } from "../src/card-age";
 import { CardWake, type EnvoyCardMarker } from "../src/card-wake";
 import { withDispatchFirst } from "../src/dispatch-first";
 import { sessionDispatchClient } from "../src/dispatch-session";
@@ -1282,6 +1282,28 @@ export default function envoyExtension(pi: PiApi): void {
   const cardAges = new CardAges({
     now: () => Date.now(),
     clockOffset: () => serverClock.offset(),
+    // The delivery a session first gives a card goes into its file, so every later request, and
+    // the first of a process that resumes the session, shows the card with the same bytes. The
+    // write is guarded as the answers record is: an entry for a session the host is not on would
+    // land in that other session's file, so nothing is written and the log says so; the request
+    // still shows the card's time, and a process that resumes the session takes it from the
+    // card's ledger record or its place in the session.
+    record: (session, entry) => {
+      if (hostSessionID() !== session) {
+        logger.warn(
+          `envoy: the time card ${entry.event_id} reached session ${session} was not recorded: the host is on another session`
+        );
+        return;
+      }
+      try {
+        pi.appendEntry(CARD_DELIVERED_ENTRY, entry);
+      } catch (error) {
+        logger.warn(
+          `envoy: the time card ${entry.event_id} reached session ${session} could not be recorded in the session file`,
+          { error: messageFor(error) }
+        );
+      }
+    },
   });
 
   // A card's message: its `details` name the frame (`ledgerIdentity`), which the host keeps
@@ -2907,8 +2929,9 @@ export default function envoyExtension(pi: PiApi): void {
 
   // The host writes a message to the transcript as it ends it: a card or a person's turn handed to
   // it, idle or taken by a turn after it streamed, is shown from here on (`UnwrittenFrames`), and a
-  // card's write is when it reached this session (`../src/card-age`). A card the host appended
-  // also arms the wake's check (`../src/card-wake`).
+  // card's write is when it reached this session, unless the session already records when the
+  // card's event did, as for a card a resumed process replays (`../src/card-age`). A card the host
+  // appended also arms the wake's check (`../src/card-wake`).
   pi.on("message_end", async (event, context) => {
     const { message } = event;
     if (!shuttingDown) cardWake.messageEnd(message, context);
@@ -2916,7 +2939,11 @@ export default function envoyExtension(pi: PiApi): void {
     // Every message of a turn moves the context window's filling, and this is where the host has
     // finished one.
     refreshAgentStreamContext(sessionID);
-    cardAges.written(message, context.sessionManager.getSessionId());
+    cardAges.written(
+      message,
+      context.sessionManager.getSessionId(),
+      () => context.sessionManager.getBranch?.() ?? []
+    );
     await unwritten.written(message);
   });
   // The host asks whether any extension handles `session_before_compact`, which turns its

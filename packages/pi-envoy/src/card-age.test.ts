@@ -81,6 +81,54 @@ function blocksOf(message: unknown): readonly unknown[] {
   return Array.isArray(message.content) ? message.content : [];
 }
 
+/**
+ * The custom type a session file holds a card's recorded delivery under, written out as the file
+ * holds it: a release that renamed it would no longer read the deliveries sessions already hold.
+ */
+const CARD_DELIVERED = "envoy-card-delivered";
+
+/**
+ * Session files as a test keeps them: each session's entries by its id, and the `record` a
+ * `CardAges` is given, which appends a delivery to the session it names as `pi.appendEntry` does,
+ * a `custom` entry holding its data.
+ */
+function sessionFiles() {
+  const files = new Map<string, Record<string, unknown>[]>();
+  const entries = (sessionID: string): Record<string, unknown>[] => {
+    const file = files.get(sessionID) ?? [];
+    files.set(sessionID, file);
+    return file;
+  };
+  return {
+    entries,
+    record: (sessionID: string, data: unknown): void => {
+      entries(sessionID).push({ type: "custom", customType: CARD_DELIVERED, data });
+    },
+    /** The data of every delivery recorded in session `sessionID`, in the order written. */
+    recorded: (sessionID: string): unknown[] =>
+      entries(sessionID).flatMap((entry) =>
+        entry.customType === CARD_DELIVERED ? [entry.data] : []
+      ),
+  };
+}
+
+/** The entry the host writes for `message`, a card, as it takes the card into the session at `at`. */
+function cardEntry(message: Record<string, unknown>, at: number): Record<string, unknown> {
+  return {
+    type: "custom_message",
+    customType: message.customType,
+    timestamp: new Date(at).toISOString(),
+    content: message.content,
+    display: true,
+    details: message.details,
+  };
+}
+
+/** The replay ledger's record of the card naming `eventID`, stamped `at` by the ledger's clock. */
+function ledgerRecord(eventID: string, at: number): Record<string, unknown> {
+  return { type: "custom", customType: REPLAY_DELIVERED_ENTRY, data: { event_id: eventID, at } };
+}
+
 describe("a card in a model request", () => {
   // The case that made this: a session hours behind on its inbox read a card stamped 06:27:17Z
   // at 11:13Z, took the stamp for the present time, and told other sessions that the machines'
@@ -90,7 +138,7 @@ describe("a card in a model request", () => {
     const ages = new CardAges({ now: () => clock });
     const late = card("evt-late", SENT, SENT);
     clock = LATE;
-    ages.written(late, SESSION);
+    ages.written(late, SESSION, () => []);
 
     const text = textOf(
       ages.annotate([late], () => [], SESSION),
@@ -108,7 +156,7 @@ describe("a card in a model request", () => {
   test("written at once says when it was delivered, and nothing about a wait", () => {
     const ages = new CardAges({ now: () => SENT + 2_000 });
     const fresh = card("evt-fresh", SENT, SENT + 1_000);
-    ages.written(fresh, SESSION);
+    ages.written(fresh, SESSION, () => []);
 
     const text = textOf(
       ages.annotate([fresh], () => [], SESSION),
@@ -125,9 +173,9 @@ describe("a card in a model request", () => {
     const under = card("evt-under", SENT, SENT);
     const at = card("evt-at", SENT, SENT);
     clock = SENT + MATERIAL_WAIT_MS - 1_000;
-    ages.written(under, SESSION);
+    ages.written(under, SESSION, () => []);
     clock = SENT + MATERIAL_WAIT_MS;
-    ages.written(at, SESSION);
+    ages.written(at, SESSION, () => []);
 
     const annotated = ages.annotate([under, at], () => [], SESSION);
 
@@ -141,7 +189,7 @@ describe("a card in a model request", () => {
     const ages = new CardAges({ now: () => clock });
     const late = card("evt-late", SENT, SENT);
     clock = LATE;
-    ages.written(late, SESSION);
+    ages.written(late, SESSION, () => []);
     const first = ages.annotate([late], () => [], SESSION);
     clock = LATE + 3 * 3_600_000;
     const second = ages.annotate([late], () => [], SESSION);
@@ -159,7 +207,7 @@ describe("a card in a model request", () => {
       "evt-handed"
     );
     clock = LATE + 60_000;
-    ages.written(handed, SESSION);
+    ages.written(handed, SESSION, () => []);
 
     expect(first).toContain('delivered: "2026-10-31T11:13:02Z"');
     expect(
@@ -228,10 +276,10 @@ describe("a card in a model request", () => {
     const ages = new CardAges({ now: () => clock });
     const late = card("evt-late", SENT, SENT);
     clock = LATE;
-    ages.written(late, SESSION);
+    ages.written(late, SESSION, () => []);
     const annotated = ages.annotate([late], () => [], SESSION);
     const other = new CardAges({ now: () => LATE + 60_000 });
-    other.written(late, SESSION);
+    other.written(late, SESSION, () => []);
 
     expect(other.annotate(annotated ?? [], () => [], SESSION)).toBeUndefined();
   });
@@ -243,7 +291,7 @@ describe("a card in a model request", () => {
     const image = { type: "image", data: "AAAA", mimeType: "image/png" };
     const withPictures = { ...base, content: [{ type: "text", text: base.content }, image] };
     clock = LATE;
-    ages.written(withPictures, SESSION);
+    ages.written(withPictures, SESSION, () => []);
 
     const annotated = ages.annotate([withPictures], () => [], SESSION);
     const blocks = blocksOf(annotated?.[0]);
@@ -278,7 +326,7 @@ describe("a card in a model request", () => {
     let clock = SENT;
     const ages = new CardAges({ now: () => clock });
     const first = card("evt-shared", SENT, SENT);
-    ages.written(first, SESSION);
+    ages.written(first, SESSION, () => []);
     const early = textOf(
       ages.annotate([first], () => [], SESSION),
       "evt-shared"
@@ -288,7 +336,7 @@ describe("a card in a model request", () => {
     // there: its ledger record in that session's entries dates the write.
     clock = LATE;
     const second = card("evt-shared", SENT, SENT);
-    ages.written(second, "ses_switched");
+    ages.written(second, "ses_switched", () => []);
     const branch = [
       {
         type: "custom",
@@ -322,8 +370,8 @@ describe("a card in a model request", () => {
     const ordinary = failureNotice("evt-notice", {});
     const inert = failureNotice("evt-notice-inert", { btw: true });
     clock = LATE;
-    ages.written(ordinary, SESSION);
-    ages.written(inert, SESSION);
+    ages.written(ordinary, SESSION, () => []);
+    ages.written(inert, SESSION, () => []);
 
     const annotated = ages.annotate([ordinary, inert], () => [], SESSION);
 
@@ -339,6 +387,255 @@ describe("a card in a model request", () => {
   });
 });
 
+// A request's bytes up to its newest message repeat on the next request, and the provider's prompt
+// cache reads them again only while they do, so an old card must read the same in the first request
+// of a process that resumed the session as in the requests before it.
+describe("a card after a resume", () => {
+  // INFRA-4227 S12, in real Oh My Pi: the host wrote a card and was restarted 0.4 s later, before
+  // the card's ledger record reached the session file. The process that resumed the session
+  // replayed the card, the same event, before its first request, and the old card's `delivered:`
+  // line moved two seconds on, so the provider wrote 76,870 of 116,991 prompt tokens again.
+  test("after a resume that replays an old card before the first request, the old card keeps its delivered line, and a new card carries its own time", () => {
+    const files = sessionFiles();
+    const file = files.entries(SESSION);
+    let clock = LATE;
+    const first = new CardAges({ now: () => clock, record: files.record });
+    const old = card("evt-old", SENT, LATE);
+    file.push(cardEntry(old, LATE));
+    first.written(old, SESSION, () => file);
+    const before = textOf(
+      first.annotate([old], () => file, SESSION),
+      "evt-old"
+    );
+
+    // The process ends before the card's ledger record is written. The one that resumes the
+    // session minutes later replays the card, and a new card arrives: the host writes both before
+    // the first request, and the ledger records the replay by its own clock.
+    clock = LATE + 5 * 60_000;
+    const resumed = new CardAges({ now: () => clock, record: files.record });
+    const replayed = card("evt-old", SENT, clock);
+    file.push(cardEntry(replayed, clock));
+    resumed.written(replayed, SESSION, () => file);
+    file.push(ledgerRecord("evt-old", clock + 1_000));
+    const fresh = card("evt-new", clock - 1_000, clock);
+    file.push(cardEntry(fresh, clock));
+    resumed.written(fresh, SESSION, () => file);
+    const after = resumed.annotate([old, replayed, fresh], () => file, SESSION);
+
+    expect(before).toContain('\n  delivered: "2026-10-31T11:13:02Z"\n');
+    expect(textOf(after, "evt-old")).toBe(before);
+    expect(textOf(after?.slice(1), "evt-old")).toBe(before);
+    expect(textOf(after, "evt-new")).toContain('\n  delivered: "2026-10-31T11:18:02Z"\n');
+    // The replay recorded nothing: the session holds the one delivery it first gave the card.
+    expect(files.recorded(SESSION)).toEqual([
+      { event_id: "evt-old", at: LATE },
+      { event_id: "evt-new", at: LATE + 5 * 60_000 },
+    ]);
+  });
+
+  // The ledger stamps its record by its own clock, after the host's write. A process that resumed
+  // the session took that later time for every card it had not seen written.
+  test("after a resume, an old card whose ledger record is stamped after its write keeps its delivered line, and a new card that arrives before the first request carries its own time", () => {
+    const files = sessionFiles();
+    const file = files.entries(SESSION);
+    let clock = LATE;
+    const first = new CardAges({ now: () => clock, record: files.record });
+    const old = card("evt-old", SENT, LATE);
+    file.push(cardEntry(old, LATE));
+    first.written(old, SESSION, () => file);
+    file.push(ledgerRecord("evt-old", LATE + 2_000));
+    const before = textOf(
+      first.annotate([old], () => file, SESSION),
+      "evt-old"
+    );
+
+    clock = LATE + 5 * 60_000;
+    const resumed = new CardAges({ now: () => clock, record: files.record });
+    const fresh = card("evt-new", clock - 1_000, clock);
+    file.push(cardEntry(fresh, clock));
+    resumed.written(fresh, SESSION, () => file);
+    const after = resumed.annotate([old, fresh], () => file, SESSION);
+
+    expect(before).toContain('\n  delivered: "2026-10-31T11:13:02Z"\n');
+    expect(textOf(after, "evt-old")).toBe(before);
+    expect(textOf(after, "evt-new")).toContain('\n  delivered: "2026-10-31T11:18:02Z"\n');
+  });
+});
+
+// The delivery a session first gives a card goes into the session file (`CARD_DELIVERED_ENTRY`),
+// which every later request reads back once the process no longer holds it.
+describe("a card's delivery the session records", () => {
+  const AHEAD = 4 * 3_600_000 + 45 * 60_000;
+
+  test("is used over the card's ledger record, and is not recorded again", () => {
+    const files = sessionFiles();
+    const file = files.entries(SESSION);
+    const old = card("evt-old", SENT, SENT);
+    file.push(
+      { type: "custom", customType: CARD_DELIVERED, data: { event_id: "evt-old", at: LATE } },
+      ledgerRecord("evt-old", LATE + 60_000)
+    );
+    const ages = new CardAges({ now: () => LATE + 86_400_000, record: files.record });
+
+    const text = textOf(
+      ages.annotate([old], () => file, SESSION),
+      "evt-old"
+    );
+
+    expect(text).toContain('\n  delivered: "2026-10-31T11:13:02Z"\n');
+    expect(files.recorded(SESSION)).toEqual([{ event_id: "evt-old", at: LATE }]);
+  });
+
+  test("that does not read as a delivery is passed over, and the ledger record's time is fixed and recorded", () => {
+    const files = sessionFiles();
+    const file = files.entries(SESSION);
+    const old = card("evt-old", SENT, SENT);
+    const unreadable: unknown[] = [
+      { event_id: "", at: LATE - 60_000 },
+      { event_id: 7, at: LATE - 60_000 },
+      { at: LATE - 60_000 },
+      { event_id: "evt-old", at: "2026-10-31T11:12:02Z" },
+      { event_id: "evt-old", at: Number.NaN },
+      { event_id: "evt-old", at: Number.POSITIVE_INFINITY },
+      { event_id: "evt-old", at: LATE - 60_000, clock_offset: "4 h 45 min" },
+      { event_id: "evt-old", at: LATE - 60_000, clock_offset: Number.NaN },
+      { event_id: "evt-old", at: LATE - 60_000, clock_offset: null },
+      null,
+      "evt-old",
+    ];
+    for (const data of unreadable) file.push({ type: "custom", customType: CARD_DELIVERED, data });
+    file.push(ledgerRecord("evt-old", LATE));
+    const ages = new CardAges({ now: () => LATE + 86_400_000, record: files.record });
+
+    const text = textOf(
+      ages.annotate([old], () => file, SESSION),
+      "evt-old"
+    );
+
+    expect(text).toContain('\n  delivered: "2026-10-31T11:13:02Z"\n');
+    expect(files.recorded(SESSION).slice(unreadable.length)).toEqual([
+      { event_id: "evt-old", at: LATE },
+    ]);
+  });
+
+  test("fixes and records the time the card's place in the session gives, or the time of the request it was handed for", () => {
+    const files = sessionFiles();
+    const file = files.entries(SESSION);
+    const old = card("evt-old", SENT, SENT);
+    file.push(
+      { type: "message", timestamp: "2026-10-31T11:12:58.000Z", message: { role: "assistant" } },
+      cardEntry(old, SENT)
+    );
+    let clock = LATE;
+    const ages = new CardAges({ now: () => clock, record: files.record });
+    const handed = card("evt-handed", SENT, LATE + 1_000);
+    clock = LATE + 2_000;
+
+    ages.annotate([old, handed], () => file, SESSION);
+
+    expect(files.recorded(SESSION)).toEqual([
+      { event_id: "evt-old", at: Date.parse("2026-10-31T11:12:58Z") },
+      { event_id: "evt-handed", at: LATE + 2_000 },
+    ]);
+  });
+
+  test("fixed with no clock difference is recorded again, with the same time, when one is first measured, and a later process reads the same text", () => {
+    const files = sessionFiles();
+    const file = files.entries(SESSION);
+    let clock = SENT;
+    let offset: number | undefined;
+    const ages = new CardAges({
+      now: () => clock,
+      clockOffset: () => offset,
+      record: files.record,
+    });
+    const prompt = card("evt-measured-later", SENT, SENT);
+    clock = SENT + 1_000 + AHEAD;
+    file.push(cardEntry(prompt, clock));
+    ages.written(prompt, SESSION, () => file);
+    const unmeasured = textOf(
+      ages.annotate([prompt], () => file, SESSION),
+      "evt-measured-later"
+    );
+    offset = AHEAD;
+    const measured = textOf(
+      ages.annotate([prompt], () => file, SESSION),
+      "evt-measured-later"
+    );
+    offset = 0;
+    ages.annotate([prompt], () => file, SESSION);
+    // A process that takes the session over an hour later, measuring no difference at all.
+    const later = new CardAges({
+      now: () => clock + 3_600_000,
+      clockOffset: () => 0,
+      record: files.record,
+    });
+    const again = textOf(
+      later.annotate([prompt], () => file, SESSION),
+      "evt-measured-later"
+    );
+
+    expect(unmeasured).toContain('waited: "4 h 45 min between at and delivered; ');
+    expect(measured).toContain("clocks: \"this machine's clock runs 4 h 45 min ahead of");
+    expect(measured).not.toContain("waited:");
+    expect(again).toBe(measured);
+    expect(files.recorded(SESSION)).toEqual([
+      { event_id: "evt-measured-later", at: SENT + 1_000 + AHEAD },
+      { event_id: "evt-measured-later", at: SENT + 1_000 + AHEAD, clock_offset: AHEAD },
+    ]);
+  });
+
+  test("read with no clock difference takes the first one measured, and records it with the same time", () => {
+    const files = sessionFiles();
+    const file = files.entries(SESSION);
+    const prompt = card("evt-measured-later", SENT, SENT);
+    const at = SENT + 1_000 + AHEAD;
+    file.push({
+      type: "custom",
+      customType: CARD_DELIVERED,
+      data: { event_id: "evt-measured-later", at },
+    });
+    const ages = new CardAges({
+      now: () => at + 3_600_000,
+      clockOffset: () => AHEAD,
+      record: files.record,
+    });
+
+    const text = textOf(
+      ages.annotate([prompt], () => file, SESSION),
+      "evt-measured-later"
+    );
+
+    expect(text).toContain('\n  delivered: "2026-10-31T11:12:18Z"\n');
+    expect(text).toContain("clocks: \"this machine's clock runs 4 h 45 min ahead of");
+    expect(files.recorded(SESSION)).toEqual([
+      { event_id: "evt-measured-later", at },
+      { event_id: "evt-measured-later", at, clock_offset: AHEAD },
+    ]);
+  });
+
+  // One process serves one session at a time and moves between them, and each session's file
+  // holds only the delivery that session was given.
+  test("is recorded under each session for the delivery that session was given", () => {
+    const files = sessionFiles();
+    let clock = SENT;
+    const ages = new CardAges({ now: () => clock, record: files.record });
+    const first = card("evt-shared", SENT, SENT);
+    ages.written(first, SESSION, () => files.entries(SESSION));
+    // The host moves to a session that followed the same topic and writes the event there later.
+    clock = LATE;
+    const second = card("evt-shared", SENT, LATE);
+    ages.written(second, "ses_switched", () => files.entries("ses_switched"));
+    // A third session had the card written by a process before this one: its ledger record dates it.
+    files.entries("ses_third").push(ledgerRecord("evt-shared", LATE + 60_000));
+    ages.annotate([first], () => files.entries("ses_third"), "ses_third");
+
+    expect(files.recorded(SESSION)).toEqual([{ event_id: "evt-shared", at: SENT }]);
+    expect(files.recorded("ses_switched")).toEqual([{ event_id: "evt-shared", at: LATE }]);
+    expect(files.recorded("ses_third")).toEqual([{ event_id: "evt-shared", at: LATE + 60_000 }]);
+  });
+});
+
 // A card's `at:` is the sending server's clock and its `delivered:` this machine's. On 2026-10-31 a
 // real 4 h 45 min wait was read as slow clocks; the mirror, a clock 4 h 45 min ahead, printed the
 // same `waited:` line byte for byte for a card that waited a second.
@@ -351,7 +648,7 @@ describe("a card whose two clocks disagree", () => {
     const prompt = card("evt-ahead", SENT, SENT);
     // Written one second after its send, by a clock 4 h 45 min ahead.
     clock = SENT + 1_000 + AHEAD;
-    ages.written(prompt, SESSION);
+    ages.written(prompt, SESSION, () => []);
 
     const text = textOf(
       ages.annotate([prompt], () => [], SESSION),
@@ -371,7 +668,7 @@ describe("a card whose two clocks disagree", () => {
     const stale = card("evt-behind", SENT, SENT);
     // Written two hours after its send, by a clock 4 h 45 min behind: before its `at:`.
     clock = SENT + 2 * 3_600_000 - AHEAD;
-    ages.written(stale, SESSION);
+    ages.written(stale, SESSION, () => []);
 
     const text = textOf(
       ages.annotate([stale], () => [], SESSION),
@@ -392,7 +689,7 @@ describe("a card whose two clocks disagree", () => {
     const ages = new CardAges({ now: () => clock });
     const early = card("evt-before", SENT, SENT);
     clock = SENT - 20 * 60_000;
-    ages.written(early, SESSION);
+    ages.written(early, SESSION, () => []);
 
     const text = textOf(
       ages.annotate([early], () => [], SESSION),
@@ -413,7 +710,7 @@ describe("a card whose two clocks disagree", () => {
     const ages = new CardAges({ now: () => clock, clockOffset: () => 20 * 60_000 });
     const early = card("evt-third-clock", SENT, SENT);
     clock = SENT - 3 * 3_600_000;
-    ages.written(early, SESSION);
+    ages.written(early, SESSION, () => []);
 
     const text = textOf(
       ages.annotate([early], () => [], SESSION),
@@ -432,7 +729,7 @@ describe("a card whose two clocks disagree", () => {
     const ages = new CardAges({ now: () => clock, clockOffset: () => 10 * 60_000 });
     const late = card("evt-small-skew", SENT, SENT);
     clock = SENT + 2 * 3_600_000 + 10 * 60_000;
-    ages.written(late, SESSION);
+    ages.written(late, SESSION, () => []);
 
     const text = textOf(
       ages.annotate([late], () => [], SESSION),
@@ -449,7 +746,7 @@ describe("a card whose two clocks disagree", () => {
     const ages = new CardAges({ now: () => clock, clockOffset: () => offset });
     const prompt = card("evt-measured-later", SENT, SENT);
     clock = SENT + 1_000 + AHEAD;
-    ages.written(prompt, SESSION);
+    ages.written(prompt, SESSION, () => []);
     const unmeasured = textOf(
       ages.annotate([prompt], () => [], SESSION),
       "evt-measured-later"

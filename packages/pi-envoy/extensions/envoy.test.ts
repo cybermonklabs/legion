@@ -22438,6 +22438,31 @@ describe("consumer delivery", () => {
       // Returning to it reads the same bytes, so the provider's prompt cache reads them again.
       expect(liveAgain).toBe(live);
     });
+
+    // The delivery a session first gives a card goes into its file once, at the card's
+    // `message_end` (`envoy-card-delivered`, a literal so the case loads against a source without
+    // the export), and the requests after it record nothing (`../src/card-age`).
+    test("a card's write records its delivery in the session once", async () => {
+      const session = await bootConsumer("card-age-recorded", { turn: "streaming" });
+      session.relay(1, peer("card-age-recorded"));
+      await until(() => session.cards("evt-card-age-recorded").length > 0, "the relayed card");
+      await session.take();
+      const [card] = session.cards("evt-card-age-recorded");
+      if (card === undefined) throw new Error("the card was not handed");
+      const { customType, content, details } = card;
+      const written = { role: "custom", customType, content, display: true, details, timestamp: 1 };
+      const contextHandler = session.fixture.handlers.get("context");
+      if (contextHandler === undefined) throw new Error("no context handler was registered");
+      await contextHandler({ messages: [written] }, sessionContext(SESSION));
+      await contextHandler({ messages: [written] }, sessionContext(SESSION));
+
+      const recorded = session.fixture.entries.filter(
+        (entry) => entry.customType === "envoy-card-delivered"
+      );
+      expect(recorded.map((entry) => entry.data)).toEqual([
+        { event_id: "evt-card-age-recorded", at: expect.any(Number) },
+      ]);
+    });
   });
 
   // A comment, message or broadcast body is bounded block by block, so one event carries its
