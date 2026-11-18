@@ -48,8 +48,8 @@ expect.extend(reportableJestDomMatchers());
 // flag of `package.json`'s test scripts rather than a line of this file, and both are explained
 // here, since this file is what every `web/src` test loads.
 //
-// The per-test deadline is `--timeout 60000`, carried by both of package.json's scripts that run
-// tests: `test:web` for `web/src`, and `test:harness` for `e2e/__tests__`.
+// The per-test deadline is `--timeout 60000`, carried by each of package.json's scripts that run
+// tests: `test:web` and `test:web:cold` for `web/src`, and `test:harness` for `e2e/__tests__`.
 // Bun's own default is 5000 ms, which a lane test failed on a 2-core pod, where it read 4.45 s
 // idle and 6.55 s loaded: "the Playwright config refuses a --workers that is not the lane count",
 // of `e2e/__tests__/harness-lanes.test.ts`, a file pull request #3435 later deleted. The suite's

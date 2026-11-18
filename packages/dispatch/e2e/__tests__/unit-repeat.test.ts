@@ -451,7 +451,7 @@ test(
     ]);
     expect(code).toBe(2);
     expect(output).toContain(`unit-repeat: --out ${file} cannot be the output directory: EEXIST`);
-    expect(output).toContain("usage: bun run test:repeat --lane <web|harness>");
+    expect(output).toContain("usage: bun run test:repeat --lane <web|web-cold|harness>");
     expect(output).not.toContain("seed=1 lane=web");
     expect(await Bun.file(file).text()).toBe(text);
   },

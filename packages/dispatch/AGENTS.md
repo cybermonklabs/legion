@@ -1678,7 +1678,8 @@ bun run typecheck
 bun run lint
 bun run test
 bun run test:harness e2e/__tests__
-bun run test:repeat --lane <web|harness> --out <dir>
+bun run test:web:cold web/src/<file> --seed=<n>
+bun run test:repeat --lane <web|web-cold|harness> --out <dir>
 bun run dispatch:local
 ```
 
@@ -1698,13 +1699,14 @@ no preload and fails with no DOM.
 The suite runs in random order, which this package's `bunfig.toml` sets.
 Bun reads that file from the working directory only, not from a parent directory, and
 `bun run <script>` runs in this package's directory.
-So the file reaches `bun run test`, `test:web`, `test:harness` and `test:repeat` from any
-directory, and with them CI's "Test dispatch dashboard" step and the weekly repeated run.
+So the file reaches `bun run test`, `test:web`, `test:web:cold`, `test:harness` and `test:repeat`
+from any directory, and with them CI's "Test dispatch dashboard" step and the weekly repeated run.
 It also reaches a `bun test <file>` started in this package, but not one started from the
 repository root or from a subdirectory.
 Each lane prints its own ` --seed=<n>` in its summary.
 To reproduce a failing row, run its file alone with that seed:
-`bun run test:web web/src/<file> --seed=<n>` or
+`bun run test:web web/src/<file> --seed=<n>`,
+`bun run test:web:cold web/src/<file> --seed=<n>` for a row of the web-cold lane, or
 `bun run test:harness e2e/__tests__/<file> --seed=<n>`, with `--rerun-each=<k>` added for a row
 that first failed on run k, which the report of `bun run test:repeat` names.
 This works because the order of the tests in a file depends only on the seed and on that file,
@@ -1722,10 +1724,24 @@ A row is never pinned to an order or skipped to make it pass.
 It is fixed at its cause.
 Read the order a run used from its junit file (`--reporter=junit --reporter-outfile=<f>`), not
 from its console: Bun prints no `(pass)` lines where `CLAUDECODE` or `AGENT` is set.
-`bun run test:repeat --lane <web|harness> [--reruns <k>] [--seed <n>] --out <dir>` runs one lane
-with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes a report
-of the rows that failed.
-`.github/workflows/dispatch-unit-repeat.yaml` runs it weekly.
+`bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>` runs
+one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes
+a report of the rows that failed.
+`.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three seeds.
+`bun run test:web:cold` is `test:web` with `web/src/__tests__/hold-lazy-loads.ts` preloaded
+first, before `register-dom.ts`, so its plugin is registered before any module loads; it imports
+nothing that reads the DOM, so `register-dom.ts` still comes before every module that does.
+It holds back each load of every module the web app loads by `import()` or `lazy()` (the Markdown
+engine, each `lazy()` page) for `DISPATCH_COLD_HOLD_MS` milliseconds of real time, 1000 when
+unset: every row that runs while such a module is held finds it unloaded, not only the row that
+random order puts first in its file.
+Run a file under it when a row of it reads lazily rendered text:
+`bun run test:web:cold web/src/<file> --seed=<n>`.
+A row that fails there and passes under `test:web` reads before it waits; a row that waits and
+still fails there ran out its wait behind a chain of holds, one lazy module loading the next, which
+a smaller `DISPATCH_COLD_HOLD_MS` tells apart.
+The weekly workflow runs it as the `web-cold` lane with `--reruns 1`: a rerun of a file keeps the
+modules its first run loaded, so only the first run is cold.
 
 Every request a unit test makes is answered by something the test set up or it fails that test,
 reads included.
@@ -1775,6 +1791,8 @@ prototype after that never reaches it.
 A row that reads a Markdown body or a lazily loaded part in the commit that mounts it first waits
 for it (`warmMarkdownRenderer()` from `features/refs/markdown-engine.ts`, or a `findBy*` query),
 because the earlier row that loaded it may run after it in random order.
+A lazily loaded part is anything that renders from a module `import()` or `lazy()` loads: every
+such module, not the Markdown engine alone, and `test:web:cold` holds each of them back.
 
 The preload's act rule fails a row in which React printed one of its five act messages: an update
 outside `act`, an `act(async () => ...)` left unawaited, overlapping `act` calls, a component

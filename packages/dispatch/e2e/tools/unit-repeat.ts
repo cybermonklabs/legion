@@ -1,15 +1,20 @@
-/** `bun run test:repeat --lane <web|harness> [--reruns <k>] [--seed <n>] --out <dir>`: runs one
- *  lane of the Dispatch unit suite with every test run `k` times, and reports each row that
- *  failed (INFRA-1511).
+/** `bun run test:repeat --lane <web|web-cold|harness> [--reruns <k>] [--seed <n>] --out <dir>`:
+ *  runs one lane of the Dispatch unit suite with every test run `k` times, and reports each row
+ *  that failed (INFRA-1511).
  *
  *    bun run test:repeat --lane web --out /tmp/repeat-web
+ *    bun run test:repeat --lane web-cold --reruns 1 --out /tmp/repeat-web-cold
  *    bun run test:repeat --lane harness --reruns 5 --seed 1234 --out /tmp/repeat-harness
  *
- *  The web lane is `bun run test:web web/src`. The harness lane is
- *  `bun run test:harness e2e/__tests__`. The tool runs the lane from this package's directory,
- *  whatever directory it starts in. It adds `--seed`, `--rerun-each` and Bun's junit reporter.
- *  It prints the seed before the run starts, so a run killed midway still names its seed. During
- *  the run it prints only Bun's summary lines. Bun's whole output goes to `<out>/bun.log`.
+ *  The web lane is `bun run test:web web/src`. The web-cold lane is
+ *  `bun run test:web:cold web/src`: the web lane with every module the web app loads lazily held
+ *  back on each load (web/src/__tests__/hold-lazy-loads.ts). A rerun of a file keeps the modules
+ *  its first run loaded, so only the first run of each file is cold: run that lane with
+ *  `--reruns 1`. The harness lane is `bun run test:harness e2e/__tests__`. The tool runs the lane
+ *  from this package's directory, whatever directory it starts in. It adds `--seed`,
+ *  `--rerun-each` and Bun's junit reporter. It prints the seed before the run starts, so a run
+ *  killed midway still names its seed. During the run it prints only Bun's summary lines. Bun's
+ *  whole output goes to `<out>/bun.log`.
  *
  *  `<out>` then holds `junit.xml`, `bun.log`, `report.json` and `report.md`. Where
  *  `GITHUB_STEP_SUMMARY` is set, `report.md` is also appended to the file it names. Under GitHub
@@ -27,7 +32,7 @@
  *  real runs:
  *
  *  - one top-level `<testsuite>` per file. Its `file` is the path from the directory Bun ran in,
- *    which is packages/dispatch for both lanes;
+ *    which is packages/dispatch for every lane;
  *  - one nested `<testsuite>` per `describe`. A rerun may open it again or add to the one before,
  *    so the reader knows a row by its describe names, not by the element;
  *  - every rerun of a file in that file's one top-level suite, after the run before it, so the
@@ -60,7 +65,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-export type Lane = "web" | "harness";
+export type Lane = "web" | "web-cold" | "harness";
 
 interface LaneScript {
   /** The script of package.json that runs the lane. */
@@ -71,6 +76,7 @@ interface LaneScript {
 
 const lanes: Readonly<Record<Lane, LaneScript>> = {
   web: { script: "test:web", target: "web/src" },
+  "web-cold": { script: "test:web:cold", target: "web/src" },
   harness: { script: "test:harness", target: "e2e/__tests__" },
 };
 
@@ -81,7 +87,7 @@ function isLane(text: string): text is Lane {
   return Object.hasOwn(lanes, text);
 }
 
-/** This package's directory. Both lanes run from it. */
+/** This package's directory. Every lane runs from it. */
 const packageDirectory = fileURLToPath(new URL("../..", import.meta.url));
 
 /** The largest seed Bun 1.4.4 accepts. Its `--seed` takes a decimal number from 0 to 2^32 - 1. */
@@ -97,12 +103,15 @@ const ERROR_LIMIT = 10;
 /** How often the tool reads /proc/meminfo while Bun runs. */
 const MEMORY_SAMPLE_MS = 5_000;
 
-/** The value `--lane` takes, as the usage writes it: `<web|harness>`. */
+/** The value `--lane` takes, as the usage writes it: `<web|web-cold|harness>`. */
 const laneChoice = `<${laneNames.join("|")}>`;
+
+/** The lanes as a refusal names them: `web, web-cold or harness`. */
+const laneList = `${laneNames.slice(0, -1).join(", ")} or ${laneNames.at(-1)}`;
 
 const usage =
   `usage: bun run test:repeat --lane ${laneChoice} [--reruns <k>] [--seed <n>] --out <dir>\n` +
-  `  --lane ${laneChoice}  ` +
+  `  --lane ${laneChoice}\n                        ` +
   Object.entries(lanes)
     .map(([lane, { script, target }]) => `${lane} runs \`bun run ${script} ${target}\``)
     .join(";\n                        ") +
@@ -160,7 +169,7 @@ export function parseArguments(argv: readonly string[], seed: () => number = ran
   const { lane, out } = values;
   if (lane === undefined) return { problem: "--lane is missing" };
   if (!isLane(lane)) {
-    return { problem: `--lane is ${laneNames.join(" or ")}, not ${JSON.stringify(lane)}` };
+    return { problem: `--lane is ${laneList}, not ${JSON.stringify(lane)}` };
   }
   if (out === undefined || out === "") return { problem: "--out is missing" };
   const reruns = wholeNumber(values.reruns ?? String(DEFAULT_RERUNS));
