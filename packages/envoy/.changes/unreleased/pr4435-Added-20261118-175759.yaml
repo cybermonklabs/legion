@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+    Dispatch and the secrets broker refuse to start, and apply no migration, when their database
+    records a migration's version under another file's name or another text than the release's
+    own file of that version: a database that ran another branch's or an earlier commit's
+    migration was booted before without that migration applied, and said nothing. The refusal
+    names the version, what the database records and what the release's file is, and both ways
+    out: reset a database that ran another branch's or commit's migration (drop it, create it
+    empty and let the server migrate it), or, for an edit or rename made on purpose, add the
+    `-- replaces: <name> sha256:<hex>` line it names to the file, after which the next start
+    records the new file and logs both. `go run ./internal/pgmigrate/cmd/versions
+    dispatch|broker` from `packages/envoy` reads, without writing, what the next start would do
+    with each recorded migration.
+time: 2026-11-18T17:57:59.259752309Z
+custom:
+    Issue: pr4435
