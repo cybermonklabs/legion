@@ -1,7 +1,6 @@
 package core_test
 
 import (
-	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -106,23 +105,4 @@ func connectGranted(t *testing.T, uri, seed string, maxWait time.Duration) (*nat
 	js, err := conn.JetStream(natsgo.MaxWait(maxWait))
 	require.NoError(t, err)
 	return conn, js, errs
-}
-
-// requirePublishRefused waits up to 10 s for the server's permissions violation of a publish to
-// subject among errs.
-func requirePublishRefused(t *testing.T, errs <-chan error, subject string) {
-	t.Helper()
-	want := `Publish to "` + subject + `"`
-	timeout := time.After(10 * time.Second)
-	for {
-		select {
-		case err := <-errs:
-			if errors.Is(err, natsgo.ErrPermissionViolation) && strings.Contains(err.Error(), want) {
-				return
-			}
-			t.Logf("another asynchronous error: %v", err)
-		case <-timeout:
-			t.Fatalf("the server reported no permissions violation of the publish to %s", subject)
-		}
-	}
 }
