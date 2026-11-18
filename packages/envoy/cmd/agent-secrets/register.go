@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // helperConnectPatience is how long cmdRegister retries connecting to a still-starting helper
@@ -123,7 +124,10 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "agent-secrets register: the agent-secrets-helper at %s answered pid %d as the session's root, which is not an ancestor of this process%s, so that session is not this one; relaunch the session under agent-secrets register --exec -- omp …\n", sock, resp.RootPID, why)
 			return 1
 		}
-		fmt.Fprintf(stdout, "%s\t%s\t%s\n", resp.RuntimeID, resp.EnrollmentID, resp.State)
+		// The enrollment is the broker's and the runtime id and state the helper's answer, so
+		// each prints on one line (redact.OneLine) and the line keeps its three tab-separated
+		// fields.
+		fmt.Fprintf(stdout, "%s\t%s\t%s\n", redact.OneLine(resp.RuntimeID), redact.OneLine(resp.EnrollmentID), redact.OneLine(resp.State))
 		if *wait > 0 && resp.State != "enrolled" {
 			fmt.Fprintf(stderr, "agent-secrets register: not enrolled yet: %s\n", resp.Error)
 			return 1

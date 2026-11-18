@@ -131,27 +131,43 @@ func refusedIdentity(s Source) string {
 	return "this machine's identity"
 }
 
-// Error names the identity refused (refusedIdentity) and the broker's answer.
-func (e *RefusedError) Error() string {
+// Error names the identity refused (refusedIdentity) and the broker's answer: it is PrintableText.
+func (e *RefusedError) Error() string { return e.PrintableText() }
+
+// PrintableText is this refusal's sentence, built from fixed words, the identity refused (Identity,
+// as refusedIdentity names it), and the answered OAuth error's own status, code and description
+// alone, which is what lets internal/redact print it beside a clean broker URL as it prints that
+// answer (redact.Printable). The identity is this client's own words for the source it traded,
+// held before the trade, which neither the answer nor a caller writes: a fixed phrase for every
+// machine source, and for a person's sign-in the person that sign-in's record names
+// (PersonIdentity.Describe). The code and description go in as the broker wrote them, so where
+// they, or the identity, hold a control character redact prints the answer's own quoted text
+// instead. A caller's words around this error still print nothing there.
+func (e *RefusedError) PrintableText() string {
 	identity := e.Identity
 	if identity == "" {
 		identity = "the identity traded"
 	}
-	if e.Description == "" {
-		return fmt.Sprintf("the secrets broker refused %s: HTTP %d %s", identity, e.Status, e.Code)
+	status := 0
+	if e.answer.Response != nil {
+		status = e.answer.Response.StatusCode
 	}
-	return fmt.Sprintf("the secrets broker refused %s: HTTP %d %s: %s", identity, e.Status, e.Code, e.Description)
+	if e.answer.ErrorDescription == "" {
+		return fmt.Sprintf("the secrets broker refused %s: HTTP %d %s", identity, status, e.answer.ErrorCode)
+	}
+	return fmt.Sprintf("the secrets broker refused %s: HTTP %d %s: %s", identity, status, e.answer.ErrorCode, e.answer.ErrorDescription)
 }
 
 // Unwrap is this refusal as the answered OAuth token-endpoint error it is, which is how every
 // caller of this package reads it. A broker failure is printed through internal/redact, whose
 // allow-list prints an error's own text only where it can prove that text carries nothing of
 // the URL the deployment configured, and an answered HTTP refusal is one of the kinds it
-// passes. Without this a refusal read as an unplaceable failure and printed as "the request
-// failed", losing the broker's reason — that the request names no session, that no entry lists
-// this account — which is the only part a person can act on; beside a broker URL that carries
-// a credential, whose text redact prints no part of, the status on this answer is what names
-// the refusal rather than that same "the request failed".
+// passes, with this refusal's sentence over it (PrintableText). Without this a refusal read as
+// an unplaceable failure and printed as "the request failed", losing the broker's reason — that
+// the request names no session, that no entry lists this account — which is the only part a
+// person can act on; beside a broker URL that carries a credential, whose text redact prints no
+// part of, the status on this answer is what names the refusal rather than that same "the
+// request failed".
 func (e *RefusedError) Unwrap() error { return &e.answer }
 
 // Permanent reports whether this refusal is one no retry can cure, which every refusal is but
@@ -600,11 +616,12 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		// handed: `legion controller start` with %w, `agent-secrets self` on stderr, and
 		// this client's own log. So they are redacted here, where the configured address
 		// is known, rather than at each of those. On a clean address the redactor prints
-		// the refusal whole - it is an answered OAuth error with a code and no error_uri
-		// (RefusedError.Unwrap) - and on one that is not clean it prints the status alone,
-		// since a broker, or anyone answering for it, can repeat the credential the address
-		// carries in the words it answers with; any other answer prints its words as the
-		// address lets them (brokeraddr.Address.Words).
+		// the refusal's sentence - RefusedError is a redact.Printable over an answered
+		// OAuth error with a code and no error_uri - or, where the broker's words hold a
+		// control character, that answer's own quoted text; on one that is not clean it
+		// prints the status alone, since a broker, or anyone answering for it, can repeat
+		// the credential the address carries in the words it answers with; any other
+		// answer prints its words as the address lets them (brokeraddr.Address.Words).
 		if resp.StatusCode/100 == 4 && answer.Error != "" {
 			return nil, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, answer.Error, answer.ErrorDescription))
 		}

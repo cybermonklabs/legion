@@ -39,12 +39,16 @@ code, which whoever answers at that URL could fill with the credential it carrie
 code prints there only where it is one the program matched against its own list: `renew`'s exit
 on a terminal refusal, and the helper's log of a refusal it acts on; the helper's log of a
 sign-in the broker refused names its code as that marker. What these programs print or log of an
-answer they accept is as it came, whatever the URL; among those outputs, `--json` writes a 2xx
-body verbatim, `machine login` prints the `user_code` and `verification_uri` the broker answered,
-`machine login-status` prints that `user_code`, a pending secret request's line names the
-`approve_url` above, and the helper's log lines name the `credential_id` of the machine login the
-broker issued. People and
-launchers use its other forms to log a
+answer they accept prints whatever the URL; `--json` writes a 2xx body verbatim.
+Every other value of a broker's answer this CLI prints - the request, grant and enrollment ids,
+a request's state, who decided it and the broker's sentence about it, whom and where a pending
+request waits on, `self`'s lines, the cells of `machine list` and `grant list`, and `machine
+login`'s `user_code` and `verification_uri` - prints on one line: as it came where it holds no
+control character, Go-quoted where it holds one, which a broker's code and words beside a clean
+URL print under too.
+The helper's log lines name the `credential_id` of the machine login the broker issued, which the
+log's own format escapes the same way.
+People and launchers use its other forms to log a
 machine in
 (`agent-secrets machine
 login`), register an agent session (`agent-secrets register --exec -- <agent>`), and inspect a

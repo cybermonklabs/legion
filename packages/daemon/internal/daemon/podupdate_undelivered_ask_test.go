@@ -412,6 +412,12 @@ func (p stoppingPublisher) Publish(ctx context.Context, topic, message string, p
 	return err
 }
 
+func (p stoppingPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
+	kept, err := p.inner.PublishKept(ctx, topic, message, payload, key)
+	p.cancel()
+	return kept, err
+}
+
 // A daemon stop that cancels the lane while its row is in a delivered publish still leaves the
 // mark written: the mark's write runs under context.WithoutCancel, bounded by the claim-write
 // deadline (supervise's Machine.PublishUpdateAsk), as the outbox's own settle takes a fresh
