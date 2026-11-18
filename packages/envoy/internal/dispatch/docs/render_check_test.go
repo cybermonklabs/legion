@@ -49,11 +49,19 @@ func newRCRoom(t *testing.T, state []byte) *rcRoom {
 	if err := crdt.ApplyUpdateV1(live, state, nil); err != nil {
 		t.Fatal(err)
 	}
+	return loadedRCRoom(t, live, nil)
+}
+
+// loadedRCRoom is newRCRoom's room on live, with decoded, the copy a load decodes of the same
+// stored state, as the replica's document where it is not nil (startFromLoad), as a load hands it
+// over.
+func loadedRCRoom(t *testing.T, live, decoded *crdt.Doc) *rcRoom {
+	t.Helper()
 	service := calibratedService()
 	service.budget.limit = roomBudgetBytes
 	log := live.OpenUpdateLog()
 	t.Cleanup(log.Close)
-	replica := service.keepReplica(live, log, liveRendering(t, live), nil)
+	replica := service.keepReplica(live, log, liveRendering(t, live), decoded)
 	service.chargeLoadedRoom("room", replica, int64(len(crdt.EncodeStateAsUpdateV1(live, nil))))
 	room := &rcRoom{service: service, live: live, replica: replica, origin: new(int)}
 	live.OnUpdate(func([]byte, any) {

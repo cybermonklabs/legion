@@ -316,6 +316,54 @@ func TestARefusedDrainLeavesTheReplicaHoldingWhatTheRoomHolds(t *testing.T) {
 	room.requireRenderedAs(t, "after a server write into the code block", whole)
 }
 
+// The one replica that holds anything parked is one whose load decoded it - rows an earlier build
+// stored of what parked, which the load decodes into the room and into the copy it hands the
+// replica (startFromLoad) - and that replica's document refuses a drain of its own that lands any
+// of it (holdParkedIn), as gapRoom's replica, holding nothing parked, needs no check to. Here the
+// stored rows hold gapFrames' 5,000 newlines parked behind the keystroke the room lacks: the
+// keystroke fills their gap, the room's check refuses the drain it releases and the room discards
+// it, and the replica, whose own drain of the same newlines its check refuses, discards them too
+// and holds what the room holds. A replica's copy given no check would land the newlines and
+// render a megabyte the room does not hold.
+func TestAReplicaLoadedHoldingParkedRowsRefusesTheDrainTheRoomDiscards(t *testing.T) {
+	skipAtTheBoundsUnderRace(t)
+	prefix := strings.Repeat("> ", 98)
+	state := stateOf(t, rcProse(300_000)+"\n\n"+prefix+"```\n"+prefix+"x\n"+prefix+"```\n")
+	parked, fill := gapFrames(t, newRCRoom(t, state), 5_000)
+	load := func() *crdt.Doc {
+		doc := newDocumentCopy()
+		for _, row := range [][]byte{state, parked} {
+			if err := crdt.ApplyUpdateV1(doc, row, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return doc
+	}
+	live, decoded := load(), load()
+	if held := decoded.PendingStats(); held.Items == 0 {
+		t.Fatalf("the load's copy parks %+v, want the newlines parked behind the keystroke it lacks", held)
+	}
+	room := loadedRCRoom(t, live, decoded)
+	if room.replica.doc != decoded {
+		t.Fatal("the replica did not take the load's copy, so nothing here is tested")
+	}
+	if err := room.frame(t, "the keystroke filling the gap", fill); err != nil {
+		t.Fatalf("the keystroke filling the gap was answered %v, want it taken", err)
+	}
+	if room.live.StateVector().Clock(gapNewlinesClient) != 0 {
+		t.Fatal("the room landed the newlines, so the check refused no drain and nothing here is tested")
+	}
+	if landed := room.replica.doc.StateVector().Clock(gapNewlinesClient); landed != 0 {
+		t.Errorf("the replica landed the newlines the room discarded, to clock %d", landed)
+	}
+	roomRendering, roomErr := renderDocument(room.live)
+	replicaRendering, replicaErr := renderDocument(room.replica.doc)
+	if roomErr != nil || replicaErr != nil || replicaRendering != roomRendering {
+		t.Errorf("after the refused drain the replica's document renders %d bytes (%v) and the room %d (%v): %s",
+			len(replicaRendering), replicaErr, len(roomRendering), roomErr, renderingDifference(replicaRendering, roomRendering))
+	}
+}
+
 // A drain the apply's scan allowance cannot hold is discarded in the room while the update that
 // filled its gap stands (roomScans, leaveParkedOut), as a drain the room's apply check refuses is,
 // and what it scanned is not charged to the room's scan total (roomScans.settle): here 20 items
