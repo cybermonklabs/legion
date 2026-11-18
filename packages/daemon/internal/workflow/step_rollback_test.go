@@ -195,17 +195,13 @@ func databaseNow(t *testing.T, pool *pgxpool.Pool) time.Time {
 	return now
 }
 
-// stepRecordsRollForward is the version of the migration whose header carries the step records'
-// way back, which the way back re-arms and the roll forward applies again.
-const stepRecordsRollForward = 20261117064152
-
 // rollBackStepRecords runs the way back the roll forward's migration carries in its header
 // (migrations.WayBack), as an operator runs it with the daemon stopped (docs/kubernetes.md,
 // "Rolling back the release that records each step", carries the same block; internal/textcheck
 // holds the two to one text).
 func rollBackStepRecords(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	block, err := migrations.WayBack(stepRecordsRollForward)
+	block, err := migrations.WayBack(migrations.StepRecordsRollForward)
 	if err != nil {
 		t.Fatalf("read the way back of the roll forward: %v", err)
 	}

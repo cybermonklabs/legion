@@ -13,17 +13,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 )
 
-// stepRecordsRollForwardVersion is the version of the migration this file tests: the roll forward
-// of a rollback of the release that records each step, whose header carries that rollback's way
-// back.
-const stepRecordsRollForwardVersion = 20261117064152
-
 // stepRecordsWayBack is the way back the roll forward's header carries (migrations.WayBack): the
 // statements an operator runs (docs/kubernetes.md carries the same block, and internal/textcheck
 // holds the two to one text).
 func stepRecordsWayBack(t *testing.T) string {
 	t.Helper()
-	block, err := migrations.WayBack(stepRecordsRollForwardVersion)
+	block, err := migrations.WayBack(migrations.StepRecordsRollForward)
 	if err != nil {
 		t.Fatalf("read the way back of the roll forward: %v", err)
 	}
@@ -254,7 +249,7 @@ func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.
 
 	s.wayBack()
 	var recorded bool
-	if err := s.store.Pool().QueryRow(ctx, `select exists (select 1 from schema_version where version = $1)`, stepRecordsRollForwardVersion).Scan(&recorded); err != nil || recorded {
+	if err := s.store.Pool().QueryRow(ctx, `select exists (select 1 from schema_version where version = $1)`, migrations.StepRecordsRollForward).Scan(&recorded); err != nil || recorded {
 		t.Fatalf("after the way back the roll forward is recorded = %t, %v; want its row deleted, so the roll forward applies it again", recorded, err)
 	}
 	var rolledBackAt time.Time
@@ -618,7 +613,7 @@ func TestTheWayBackOfTheStepRecordsKeepsEveryOtherRow(t *testing.T) {
 		}
 		var want []string
 		for _, version := range versionsBefore {
-			if version != fmt.Sprint(stepRecordsRollForwardVersion) {
+			if version != fmt.Sprint(migrations.StepRecordsRollForward) {
 				want = append(want, version)
 			}
 		}

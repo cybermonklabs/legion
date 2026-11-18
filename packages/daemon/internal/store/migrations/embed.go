@@ -43,13 +43,19 @@ func All() ([]Migration, error) {
 	return Load(files)
 }
 
+// StepRecordsRollForward is the version of 20261117064152_step_starts_roll_forward.up.sql, the roll
+// forward of a rollback of the release that records each step, whose header carries that
+// release's way back (WayBack): the one spelling of it every test that runs, reads or re-arms that
+// block names.
+const StepRecordsRollForward = 20261117064152
+
 // WayBack is the way back the header of migration version carries, as an operator runs it with
 // the daemon stopped: the run of "-- " comment lines that closes with the line deleting that
 // version's schema_version row, without the markers. A blank "--" line, or any line that is no
-// such comment, ends the run before it, so the prose above the block is none of it.
-// 20261117064152_step_starts_roll_forward.up.sql carries one; docs/kubernetes.md carries the same
-// block, and internal/textcheck holds the two to one text. A header with no such run, and a
-// version not embedded, are errors, so no caller runs an empty block against a store.
+// such comment, ends the run before it, so the prose above the block is none of it. The header of
+// StepRecordsRollForward carries one; docs/kubernetes.md carries the same block, and
+// internal/textcheck holds the two to one text. A header with no such run, and a version not
+// embedded, are errors, so no caller runs an empty block against a store.
 func WayBack(version int) (string, error) {
 	all, err := All()
 	if err != nil {

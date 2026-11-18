@@ -317,9 +317,6 @@ const (
 	stepRecordsOutboxRows = `select row_to_json(o)::text from outbox o order by id`
 	// stepRecordsStartRows is every row of step_starts, whole, in its key's order.
 	stepRecordsStartRows = `select row_to_json(s)::text from step_starts s order by issue, task, kind, place`
-	// stepRecordsRollForward is the version of the migration whose header carries the step records'
-	// way back, which the way back re-arms and the newer image's Migrate applies again.
-	stepRecordsRollForward = 20261117064152
 )
 
 // storeRows is each row query answers on the daemon's store, as text.
@@ -369,7 +366,7 @@ func (r *stepRecordsRig) phaseOf(role claim.Role) record.PhaseRow {
 // (migrations.WayBack), as an operator runs it with the daemon stopped.
 func (r *stepRecordsRig) rollBackStepRecords() {
 	r.t.Helper()
-	block, err := migrations.WayBack(stepRecordsRollForward)
+	block, err := migrations.WayBack(migrations.StepRecordsRollForward)
 	if err != nil {
 		r.t.Fatalf("read the way back of the roll forward: %v", err)
 	}

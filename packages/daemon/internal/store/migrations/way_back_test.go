@@ -1,6 +1,8 @@
 package migrations
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -48,15 +50,26 @@ func TestAWayBackThatIsNotThereIsAnError(t *testing.T) {
 
 // The roll forward of a rollback of the release that records each step carries its way back in
 // its header: two statements on five lines, the insert that keeps each issue's witness and the
-// delete of the roll forward's own version row.
+// delete of the roll forward's own version row. StepRecordsRollForward, the version every test of
+// that block names, is the version of the roll forward's own file.
 func TestTheStepRecordsRollForwardCarriesItsWayBack(t *testing.T) {
-	block, err := WayBack(20261117064152)
+	all, err := All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	const file = "_step_starts_roll_forward.up.sql"
+	if !slices.ContainsFunc(all, func(m Migration) bool {
+		return m.Version == StepRecordsRollForward && m.Name == fmt.Sprint(StepRecordsRollForward)+file
+	}) {
+		t.Fatalf("no embedded migration is %d%s: StepRecordsRollForward names the roll forward's version", StepRecordsRollForward, file)
+	}
+	block, err := WayBack(StepRecordsRollForward)
 	if err != nil {
 		t.Fatalf("read the way back of the step records' roll forward: %v", err)
 	}
 	lines := strings.Split(block, "\n")
 	if len(lines) != 5 || !strings.HasPrefix(lines[0], "insert into step_starts_rollback ") ||
-		lines[4] != "delete from schema_version where version = 20261117064152;" {
+		lines[4] != fmt.Sprintf("delete from schema_version where version = %d;", StepRecordsRollForward) {
 		t.Fatalf("the way back of the step records' roll forward is %d lines, want the five from its insert into step_starts_rollback to the delete of its own version row:\n%s",
 			len(lines), block)
 	}
