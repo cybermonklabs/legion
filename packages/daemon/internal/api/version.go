@@ -2234,7 +2234,8 @@ package api
 // unconfigured daemon sent before #3982: 1 and 4 (`withPodUpdateHours`). A caller at 123 or above
 // is served the settings block that a daemon at 123 sent. The stand-ins describe
 // no behaviour of this daemon, whose update round asks no worker a second time and ends at its
-// bound. They exist only to keep the records of 46 to 111 fixed. No plugin code reads either key:
+// bound, or earlier once every role has answered and no turn runs. They exist only to keep the
+// records of 46 to 111 fixed. No plugin code reads either key:
 // measured at the commit of each of the 24 contracts from 46 to 111, `legionSettings` is a loose
 // object, and no plugin source names either key. A controller's model does see them: the
 // `legion` tool's `read_state` with `settings` answers the whole settings block, and there the
@@ -2312,9 +2313,11 @@ package api
 //     names, `HANDOFF_STALE_ASSIGNMENT`, it names in its tool description and not in a branch.
 //   - A change to the type of a field. The records hold key paths, value domains and request
 //     field paths, and no types, so a string that becomes a number passes both gates.
-//   - A change that keeps the contract number. A key or a request field that arrived at that
-//     number stands in the records of the daemon's own contract only, and `-update` writes
-//     those again, so the change passes for such keys and fields.
+//   - A change that keeps a contract number the base does not carry yet. A key or a request field
+//     that arrived at that number stands in the records of the daemon's own contract only, and
+//     `-update` writes those again, so the change passes for such keys and fields. Once the base
+//     carries the number, check-daemon-api-contract.sh holds each of its records to the base's,
+//     so a change that keeps it and changes one of its records is refused.
 //
 // The request gate catches only a request field that a later type no longer reads. A newly
 // required field, a narrowed value and a changed type all pass it. (This

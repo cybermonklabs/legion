@@ -22,13 +22,14 @@ import (
 // 46 is the reading this change records: no claim holding a process recorded a contract below 46.
 // The 50 claims at contracts 36 to 43 are all suspended, so they call nothing.
 //
-// The gate has three parts, and only the added-key part is bounded. A plugin built before
-// dispatch://INFRA-1048 reads an answer with a strict schema and refuses the whole body for one
-// key it does not know. dispatch://INFRA-1048 landed the reader that drops an unknown key
-// instead, and the first release carrying that reader declares 49. So once
-// `lowestPluginContract` on the state reports 49 or more, no live reader refuses a key it does
-// not know, and the added-key part of the gate may be dropped with the record entries that
-// serve it. The removed-key part stays for good: a reader still needs the key its own contract
+// The gate has three parts. A plugin built before dispatch://INFRA-1048 reads an answer with a
+// strict schema and refuses the whole body for one key it does not know, which the added-key
+// part serves down. dispatch://INFRA-1048 landed the reader that drops an unknown key instead,
+// and the first release carrying that reader declares 49, so once `lowestPluginContract` on the
+// state reports 49 or more, no live reader refuses a key it does not know. The added-key part
+// stays all the same: dropping it would mean editing the records of contracts that have
+// shipped, which check-daemon-api-contract.sh refuses, and a serving-down no reader needs costs
+// nothing. The removed-key part stays for good: a reader still needs the key its own contract
 // requires, whatever this daemon stopped writing. The third part is the value hold-back: the
 // values a later contract added to an enumerated field are held back from a caller below that
 // contract (EnumeratedFields, shaping.go's valueStrips, fieldArrivals.heldBack). It stays after
