@@ -82,7 +82,7 @@ func TestAStreamReadTheServerLeavesUnansweredIsSentAgainAndTheStartGoesOn(t *tes
 	losing := &unansweredJetStream{JetStreamContext: js, unansweredReads: 1}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	if _, err := ensureStreamWithConfig(countedReads(t.Context()), losing, &cfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(countedReads(t.Context()), losing, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose first stream read drew no answer = %v, want it to go on", err)
 	}
 
@@ -102,7 +102,7 @@ func TestACreateTheServerLeavesUnansweredIsSentAgainAndTheStartGoesOn(t *testing
 	losing := &unansweredJetStream{JetStreamContext: js, unansweredCreate: 1}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	if _, err := ensureStreamWithConfig(t.Context(), losing, &cfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), losing, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose first create drew no answer = %v, want it to go on", err)
 	}
 
@@ -129,7 +129,7 @@ func TestARefusedCreateIsSentOnce(t *testing.T) {
 	refused := &unansweredJetStream{JetStreamContext: js, refuseCreate: refusal}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	_, err := ensureStreamWithConfig(t.Context(), refused, &cfg, capsAnUnsetStream)
+	_, err := ensureStreamWithConfig(t.Context(), refused, &cfg, capsAnUnsetStream, atStart)
 	var apiErr *nats.APIError
 	if err == nil || !errors.As(err, &apiErr) || apiErr.ErrorCode != refusal.ErrorCode {
 		t.Fatalf("a start whose create the server refused = %v, want that refusal back", err)
@@ -154,7 +154,7 @@ func TestAStreamReadTheServerNeverAnswersIsGivenUpOn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
 
-	_, err := ensureStreamWithConfig(ctx, lost, &cfg, capsAnUnsetStream)
+	_, err := ensureStreamWithConfig(ctx, lost, &cfg, capsAnUnsetStream, atStart)
 	if !unanswered(err) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("a start whose stream read is never answered = %v, want the deadline back: a start that goes on sending writes no fatal line of its own", err)
 	}

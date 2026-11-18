@@ -276,7 +276,7 @@ func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testin
 	cluster, js := startClusterJetStream(t)
 	cfg := parseConnectOptions([]ConnectOption{WithReplicas(3)}).streamConfig()
 	early := &earlyAnswerJetStream{JetStreamContext: js}
-	if _, err := ensureStreamWithConfig(t.Context(), early, &cfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(t.Context(), early, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose create's first answer was lost: %v", err)
 	}
 	if early.sent < 2 {

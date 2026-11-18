@@ -613,9 +613,9 @@ const streamSubjectsRead = 10 * time.Second
 // and keeps the subjects it carries afterwards. defaultsAnUnsetCap is what the connected server
 // is, read from the version it answers (serverDefaultsAnUnsetCap): whether a deployed stream with
 // no consumer cap is one the server caps at a default of its own. ctx ends the ensure's waits on
-// the server, which the start's hang guard bounds too (ensureStreamAt).
+// the server, which the start's hang guard bounds too (ensureStreamWithConfig).
 func (c *Client) ensureStream(ctx context.Context, js nats.JetStreamContext, defaultsAnUnsetCap bool, at streamEnsure) error {
-	subjects, err := ensureStreamAt(ctx, js, c.streamConfig, defaultsAnUnsetCap, at)
+	subjects, err := ensureStreamWithConfig(ctx, js, c.streamConfig, defaultsAnUnsetCap, at)
 	if err != nil {
 		return err
 	}

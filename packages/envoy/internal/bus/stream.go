@@ -781,10 +781,28 @@ func (r streamReconciliation) log() {
 	}
 }
 
-// ensureStreamWithConfig is a start's ensure of the stream (atStart; the reconnect hook's is
-// ensureStreamAt at atReconnect). It creates the stream with cfg, under a fresh
-// StreamIDMetadataKey, or reconciles the deployed one towards cfg, and returns the subjects the
-// stream carries afterwards.
+// streamEnsure is who ensures the stream (ensureStreamWithConfig), which decides whether the
+// ensure waits for the leader of a stream it finds with none: one that another program created or
+// raised a moment ago, or that lost its leader.
+type streamEnsure int
+
+const (
+	// atStart is a program's start in the foreground (install): a write it sends to a stream in its
+	// first election draws no answer, so it waits for the leader, as the start that created or
+	// raised the stream does.
+	atStart streamEnsure = iota + 1
+	// atReconnect is the reconnect hook (ensureStreamOn), a background start's first ensure
+	// included: the hooks after it rewatch the program's state, and a stream a connection event
+	// finds with no leader may stay so past the hang guard, as one whose members are lost does, so
+	// it waits for no election it did not cause. A create or a raise it makes itself is still
+	// followed by a wait for the leader.
+	atReconnect
+)
+
+// ensureStreamWithConfig ensures the stream for at, the caller that ensures it (streamEnsure): a
+// program's start (atStart) or the reconnect hook (atReconnect). It creates the stream with cfg,
+// under a fresh StreamIDMetadataKey, or reconciles the deployed one towards cfg, and returns the
+// subjects the stream carries afterwards.
 // cfg's Replicas is the deployment's replica count and its MaxBytes the deployment's byte limit, 0
 // when it sets none. defaultsAnUnsetCap is what the connected server is, read from the version it
 // answers (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is one the
@@ -860,31 +878,7 @@ func (r streamReconciliation) log() {
 // after its second send at 10 s, and its first publish then failed "no response from stream"; a
 // start that raised the stream from one copy to three answered at once, and its first publish,
 // with no election held, drew no answer within its 5 s.
-func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
-	return ensureStreamAt(ctx, js, cfg, defaultsAnUnsetCap, atStart)
-}
-
-// streamEnsure is who ensures the stream (ensureStreamAt), which decides whether the ensure waits
-// for the leader of a stream it finds with none: one that another program created or raised a
-// moment ago, or that lost its leader.
-type streamEnsure int
-
-const (
-	// atStart is a program's start in the foreground (install): a write it sends to a stream in its
-	// first election draws no answer, so it waits for the leader, as the start that created or
-	// raised the stream does.
-	atStart streamEnsure = iota + 1
-	// atReconnect is the reconnect hook (ensureStreamOn), a background start's first ensure
-	// included: the hooks after it rewatch the program's state, and a stream a connection event
-	// finds with no leader may stay so past the hang guard, as one whose members are lost does, so
-	// it waits for no election it did not cause. A create or a raise it makes itself is still
-	// followed by a wait for the leader.
-	atReconnect
-)
-
-// ensureStreamAt is ensureStreamWithConfig for at, the caller that ensures the stream
-// (streamEnsure).
-func ensureStreamAt(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool, at streamEnsure) ([]string, error) {
+func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool, at streamEnsure) ([]string, error) {
 	ctx, cancel := hangGuard(ctx, startHangGuard)
 	defer cancel()
 	ctx = withReadLimit(ctx)

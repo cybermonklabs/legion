@@ -123,7 +123,7 @@ func TestALostUpdateIsNotSentAgainOntoANewerBuildsStream(t *testing.T) {
 		run  func(t *testing.T, js nats.JetStreamContext, cfg *nats.StreamConfig) error
 	}{
 		{"a start", func(t *testing.T, js nats.JetStreamContext, cfg *nats.StreamConfig) error {
-			_, err := ensureStreamWithConfig(countedReads(t.Context()), js, cfg, capsAnUnsetStream)
+			_, err := ensureStreamWithConfig(countedReads(t.Context()), js, cfg, capsAnUnsetStream, atStart)
 			return err
 		}},
 		{"a keeper pass", func(t *testing.T, js nats.JetStreamContext, cfg *nats.StreamConfig) error {
@@ -137,7 +137,7 @@ func TestALostUpdateIsNotSentAgainOntoANewerBuildsStream(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			js := streamTestJetStream(t)
 			own := parseConnectOptions([]ConnectOption(nil)).streamConfig()
-			if _, err := ensureStreamWithConfig(t.Context(), js, &own, capsAnUnsetStream); err != nil {
+			if _, err := ensureStreamWithConfig(t.Context(), js, &own, capsAnUnsetStream, atStart); err != nil {
 				t.Fatalf("this build creates the stream: %v", err)
 			}
 			// A byte limit the stream lacks, so this build's start and keeper each have an update to
