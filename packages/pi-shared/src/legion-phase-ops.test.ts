@@ -4,6 +4,8 @@ import path from "node:path";
 import { LEGION_PHASE_BACKWARD_TARGETS } from "@legion/contracts/legion-api";
 import { z } from "zod";
 import { createLegionDaemonClient } from "./daemon-client";
+import { daemonWaitMs, forgetDaemonWaitsForTests } from "./daemon-wait";
+import type { HandoffReport } from "./handoff-record";
 import {
   type ClaimCapability,
   executePhaseOp,
@@ -286,6 +288,103 @@ test("a handoff_complete attempt given up at its limit mints and posts nothing w
     "/legion/v1/handoff/complete",
   ]);
   expect(lookups).toEqual(["implementing implementer"]);
+});
+
+// A completion's report is read in the pane, by jj and from Dispatch, and is no request to the
+// daemon: a read that runs past the attempt's limit (a jj waiting on a working-copy lock) is not
+// a daemon that stopped serving. So it is neither ended nor made again as one, the agent is not
+// told the daemon is restarting, and none of its time is taken off the call's stall clock: the
+// stall watch still sees the hang.
+test("a handoff report that runs past the attempt's limit is no daemon outage: it is not retried, the agent is not told, and its time is no wait for the daemon", async () => {
+  forgetDaemonWaitsForTests();
+  const { ops: answering, routes, lookups } = runtime();
+  const reading = Promise.withResolvers<void>();
+  const read = Promise.withResolvers<HandoffReport>();
+  const told: string[] = [];
+  const sleeps: number[] = [];
+  let clock = 0;
+  let limits = 0;
+  const ops: PhaseOpRuntime = {
+    ...answering,
+    handoffReport: async (phase, role) => {
+      lookups.push(`${phase} ${role}`);
+      reading.resolve();
+      return read.promise;
+    },
+    restart: {
+      now: () => clock,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+      onRetrying: (message) => told.push(message),
+      toolCallId: "toolu_legion",
+      // The first limit armed runs out once the report read is open; no later one runs out.
+      attemptLimit: () => {
+        limits += 1;
+        return limits === 1 ? reading.promise : Promise.withResolvers<void>().promise;
+      },
+    },
+  };
+
+  const completing = executePhaseOp(ops, {
+    op: "handoff_complete",
+    summary: "Done.",
+    verdict: "pass",
+  });
+  await reading.promise;
+  // Six minutes of jj waiting on a lock, and a turn of the event loop for the limit to act in.
+  clock += 6 * 60_000;
+  const turn = Promise.withResolvers<void>();
+  setImmediate(turn.resolve);
+  await turn.promise;
+  read.resolve(REPORT);
+
+  await expect(completing).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(told).toEqual([]);
+  expect(sleeps).toEqual([]);
+  expect(lookups).toEqual(["implementing implementer"]);
+  expect(routes).toEqual(["/legion/v1/state", "/legion/v1/grants", "/legion/v1/handoff/complete"]);
+  expect(daemonWaitMs("toolu_legion", 0, clock)).toBe(0);
+});
+
+// The report's own failure is the pane's answer, whatever it looks like: a Dispatch the pane
+// cannot reach fails the read with the error a dropped connection to the daemon fails with, and
+// that failure is handed to the agent at once rather than waited out as a daemon restart.
+test("a handoff report's own failure is passed on at once and never waited out as the daemon's, though it reads as a dropped connection", async () => {
+  const { ops: answering, routes, lookups } = runtime();
+  const unreachableDispatch = new TypeError("fetch failed");
+  const told: string[] = [];
+  const sleeps: number[] = [];
+  let clock = 0;
+  const ops: PhaseOpRuntime = {
+    ...answering,
+    handoffReport: async (phase, role) => {
+      lookups.push(`${phase} ${role}`);
+      throw unreachableDispatch;
+    },
+    restart: {
+      now: () => clock,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+      onRetrying: (message) => told.push(message),
+      attemptLimit: () => Promise.withResolvers<void>().promise,
+    },
+  };
+
+  const refused = await executePhaseOp(ops, {
+    op: "handoff_complete",
+    summary: "Done.",
+    verdict: "pass",
+  }).catch((error: unknown) => error);
+
+  expect(refused).toBe(unreachableDispatch);
+  expect(told).toEqual([]);
+  expect(sleeps).toEqual([]);
+  expect(lookups).toEqual(["implementing implementer"]);
+  expect(routes).toEqual(["/legion/v1/state"]);
 });
 
 // Workers named their own issue on handoff_complete and left it off read_record, and both were

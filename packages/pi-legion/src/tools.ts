@@ -335,7 +335,8 @@ export function createLegionTool(deps: {
    * naming the remedy when the phase the role works has no record, Dispatch does not answer, or,
    * in implementing, the implementer's record names no head, the commit its workspace stands on
    * is not pushed, or its record's head is not that pushed commit. `signal` is the
-   * `handoff_complete` attempt's, which stops the read once that attempt is given up on. */
+   * `handoff_complete` attempt's, which stops the read once the agent aborts the call; the read
+   * runs off the attempt's limit, since it is no request to the daemon (`OutsideTheDaemon`). */
   readonly handoffReport: (
     phase: LegionPhase,
     role: LegionRole,

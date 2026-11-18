@@ -577,12 +577,12 @@ for (const write of WAITING_WRITES) {
   }, 30_000);
 }
 
-// The report a completion finds in the pane is a step of its attempt too: a reviewer's
-// `handoff_complete` reads its review record from the pane's Dispatch (`paneHandoffReport`, as
-// the entry wires it), and an attempt given up at its limit while that read is open ends the read
-// at Dispatch rather than leaving it running. The next attempt reads the record again and
-// completes.
-test("a handoff_complete attempt given up while its report read waits on Dispatch ends that read at Dispatch, and the next attempt completes", async () => {
+/** A reviewer's `legion` tool whose `handoff_complete` reads its review record from the pane's
+ * Dispatch (`paneHandoffReport`, as the entry wires it), over a Dispatch that holds the first
+ * read until the case calls `release` and a daemon that answers every route at once. `first`
+ * resolves with the held read once it has arrived, whose `signal` says whether the client ended
+ * it; `reads` records every read Dispatch was sent. */
+async function reviewerOverHeldDispatch(attemptLimit: DaemonRestartRetry["attemptLimit"]) {
   const root = await mkdtemp(path.join(tmpdir(), "legion-report-read-"));
   stops.push(() => void rm(root, { recursive: true, force: true }));
   const reads: Request[] = [];
@@ -617,7 +617,6 @@ test("a handoff_complete attempt given up while its report read waits on Dispatc
   });
   const live = liveDaemon();
   const clock = virtualClock();
-  let attempts = 0;
   const paneEnv = {
     LEGION_WORKSPACE: root,
     LEGION_ISSUE: "LEGION-208",
@@ -655,27 +654,69 @@ test("a handoff_complete attempt given up while its report read waits on Dispatc
     restartClock: {
       now: clock.now,
       sleep: clock.sleep,
-      // The first attempt's limit runs out once its report read is open at Dispatch.
-      attemptLimit: () => {
-        attempts += 1;
-        return attempts === 1 ? first.promise.then(() => undefined) : noLimit();
-      },
+      ...(attemptLimit === undefined ? {} : { attemptLimit }),
     },
   });
+  return { tool, live, reads, first: first.promise, release: () => released.resolve(), clock };
+}
 
-  const { result } = await run(tool, { op: "handoff_complete", summary: "Reviewed." });
+// The report a completion finds in the pane is no request to the daemon: a reviewer's
+// `handoff_complete` reads its review record from the pane's Dispatch, and a read that is still
+// open when the attempt's limit runs out is the pane's slow answer, not a daemon that stopped
+// serving. So the read is left to finish, the agent is not told the daemon is restarting, nothing
+// is read or sent again, and none of the read's time is recorded as a wait for the daemon.
+test("a handoff_complete whose report read waits on Dispatch past the attempt's limit is no daemon outage: the read finishes and the call completes once", async () => {
+  forgetDaemonWaitsForTests();
+  let limits = 0;
+  const held = await reviewerOverHeldDispatch(() => {
+    limits += 1;
+    // The first limit armed runs out once the report read is open at Dispatch.
+    return limits === 1 ? held.first.then(() => undefined) : noLimit();
+  });
+
+  const running = run(held.tool, { op: "handoff_complete", summary: "Reviewed." }, "toolu_legion");
+  await held.first;
+  // Six minutes of a slow read, and a turn of the event loop for the limit to act in.
+  held.clock.pass(6 * 60_000);
+  await nextTurn();
+  held.release();
+  const { result, updates } = await running;
 
   expect(result.isError).toBeUndefined();
-  expect(live.answered).toEqual([
-    "/legion/v1/state",
+  expect(updates).toEqual([]);
+  expect(held.live.answered).toEqual([
     "/legion/v1/state",
     "/legion/v1/grants",
     "/legion/v1/handoff/complete",
   ]);
-  expect(reads).toHaveLength(2);
-  // Dispatch saw the given-up attempt's read ended by its client.
-  await endedByClient(await first.promise);
-  expect(clock.waits).toEqual([500]);
+  expect(held.reads).toHaveLength(1);
+  expect(held.clock.waits).toEqual([]);
+  expect(daemonWaitMs("toolu_legion", 0, held.clock.now())).toBe(0);
+}, 30_000);
+
+// The agent's abort still reaches the report read: it ends the read at Dispatch, the call
+// answers at once, and no grant is minted and nothing posted.
+test("an abort while a handoff_complete's report read waits on Dispatch ends that read at Dispatch and posts nothing", async () => {
+  const held = await reviewerOverHeldDispatch(noLimit);
+  const abort = new AbortController();
+
+  const running = held.tool.execute(
+    "",
+    { op: "handoff_complete", summary: "Reviewed." },
+    abort.signal,
+    undefined,
+    context
+  );
+  await held.first;
+  abort.abort();
+  const result = await running;
+
+  expect(result.isError).toBe(true);
+  await endedByClient(await held.first);
+  held.release();
+  await nextTurn();
+  expect(held.live.answered).toEqual(["/legion/v1/state"]);
+  expect(held.reads).toHaveLength(1);
 }, 30_000);
 
 // The agent's abort ends the attempt that is waiting on the daemon, not only the waits between

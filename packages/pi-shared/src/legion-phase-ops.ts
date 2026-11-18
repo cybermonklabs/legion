@@ -10,6 +10,7 @@ import { z } from "zod";
 import {
   type DaemonRestartRetry,
   type LegionDaemonClient,
+  type OutsideTheDaemon,
   retryWhileDaemonRestarts,
 } from "./daemon-client";
 import type { HandoffReport } from "./handoff-record";
@@ -308,8 +309,9 @@ export interface PhaseOpRuntime {
    * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
    * implementer's record names no head, the commit its workspace stands on is not pushed, or its
    * record's head is not that pushed commit. `signal` is the `handoff_complete` attempt's, which
-   * stops the read's jj and ends its Dispatch request once that attempt is given up on
-   * (`HandoffReportInput.signal`). */
+   * stops the read's jj and ends its Dispatch request once the agent aborts the call
+   * (`HandoffReportInput.signal`). The read is no request to the daemon, so it runs off the
+   * attempt's limit and off its wait for the daemon (`OutsideTheDaemon`). */
   readonly handoffReport: (
     phase: LegionPhase,
     role: LegionRole,
@@ -430,10 +432,12 @@ export async function executePhaseOp(
       // attempt from a refused one (the daemon records both under the completion's key), so its
       // refusal is passed on, marked as possibly following an applied attempt. Each attempt's
       // requests carry its own signal, so an attempt given up on reads, mints and posts nothing
-      // more, whatever its open request answers later.
+      // more, whatever its open request answers later. The report is read in the pane, off the
+      // daemon's clock: a slow jj or Dispatch is no daemon outage, and its failure is never
+      // waited out as one.
       return retryWhileDaemonRestarts(
         "handoff_complete",
-        (attempt) => completeHandoff(runtime, args, attempt),
+        (attempt, outside) => completeHandoff(runtime, args, attempt, outside),
         runtime.restart
       );
     }
@@ -621,11 +625,13 @@ async function releaseRecords(
 
 /** One attempt of `handoff_complete` (`executePhaseOp`'s doc comment). `attempt` is the
  * attempt's own signal, which each of its steps carries: the state read, the report read in the
- * pane (its jj and its Dispatch request), the grant mint and the post. */
+ * pane (its jj and its Dispatch request), the grant mint and the post. The report read runs
+ * through `outside`, since it is no request to the daemon. */
 async function completeHandoff(
   runtime: PhaseOpRuntime,
   args: Extract<z.infer<typeof PhaseOpArguments>, { op: "handoff_complete" }>,
-  attempt: AbortSignal
+  attempt: AbortSignal,
+  outside: OutsideTheDaemon
 ): Promise<Readonly<Record<string, unknown>>> {
   const { daemon, claim } = runtime;
   const request = { signal: attempt };
@@ -702,7 +708,7 @@ async function completeHandoff(
   }
   // The record and the commit are found before the grant is minted. The phase is the issue
   // record's, the role the claim's.
-  const report = await runtime.handoffReport(record.phase, claim.role, attempt);
+  const report = await outside(() => runtime.handoffReport(record.phase, claim.role, attempt));
   return daemon.handoffComplete(
     {
       grantId: await mintClaimGrant(daemon, claim, attempt),

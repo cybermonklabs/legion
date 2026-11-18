@@ -292,7 +292,8 @@ export interface DaemonRestartRetry {
   readonly now?: () => number;
   readonly sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Answers once `ms` have passed and the attempt is overdue; `answered` is aborted the moment
-   * the attempt settles, which ends the timer without that answer. */
+   * the attempt settles or steps outside the daemon (`OutsideTheDaemon`), which ends the timer
+   * without that answer. */
   readonly attemptLimit?: (ms: number, answered: AbortSignal) => Promise<void>;
   /** The tool call this wait runs inside (the `legion` tool's `handoff_complete`, `sign_off`,
    * `register_gate`), under which the call's time on the daemon is recorded so the worker's own
@@ -395,7 +396,8 @@ function waitFor(ms: number, abort?: AbortSignal): Promise<void> {
 }
 
 /** One attempt's own limit: it answers once `ms` have passed, and answers never once the
- * attempt has settled, since an attempt that is over is not overdue. */
+ * attempt has settled or stepped outside the daemon, since time that is not the daemon's is not
+ * overdue. */
 function limitOneAttempt(ms: number, answered: AbortSignal): Promise<void> {
   const overdue = Promise.withResolvers<void>();
   const timer = setTimeout(overdue.resolve, ms);
@@ -410,15 +412,37 @@ const noAnswer = Symbol("no answer from the daemon");
 const callerAborted = Symbol("the caller aborted the call");
 
 /**
+ * How an attempt runs a step of its own that is no request to the daemon: `handoff_complete`'s
+ * report read in the pane (its jj and its Dispatch request). `step` runs outside the attempt's
+ * limit, outside the record of the call's wait for the daemon and outside the call's budget for
+ * that wait, and the limit starts again, whole, once the step is over: a pane that is slow to
+ * answer — a jj waiting on a working-copy lock — is not a daemon that stopped serving, and the
+ * worker's own stall watch sees it as it sees any other step of the call. A failure of `step` is
+ * its own answer and is never waited out, whatever it reads as (`daemonUnreachable`). The
+ * caller's abort still reaches it through the attempt's signal.
+ */
+export type OutsideTheDaemon = <S>(step: () => Promise<S>) => Promise<S>;
+
+/** The part of a call that is time on the daemon, which a step outside it pauses and resumes
+ * (`OutsideTheDaemon`): the record of the call's wait (`src/daemon-wait.ts`) and its budget. */
+interface TimeOnTheDaemon {
+  readonly paused: () => void;
+  readonly resumed: () => void;
+}
+
+/**
  * One attempt, bounded at `DAEMON_ATTEMPT_LIMIT_MS` and by the caller's own abort (`cancel`). A
  * daemon that takes the connection and never answers is a daemon that is not serving, so the
  * attempt is aborted — which closes its connection before the next attempt is sent, so the
  * daemon never has two of them in flight and the registration it applies last is the one this
- * client read — and the wait tries again. The caller's abort ends the attempt at once, and the
- * call with it: the attempt's signal is aborted the moment the caller's is, and an attempt that
- * has not ended by the next turn of the event loop is answered as aborted, since an attempt
- * that does not end on its signal must not hold the call. An end the attempt had already reached,
- * or reached through that abort — a refused connection, the daemon's answer — is its own.
+ * client read — and the wait tries again. The limit runs only while the attempt is on the
+ * daemon: a step it runs through `outside` stops the limit and starts it again, whole, once it is
+ * over, and a failure of that step is put in `ownFailures`, which the wait passes on as it is. The
+ * caller's abort ends the attempt at once, and the call with it: the attempt's signal is aborted
+ * the moment the caller's is, and an attempt that has not ended by the next turn of the event
+ * loop is answered as aborted, since an attempt that does not end on its signal must not hold the
+ * call. An end the attempt had already reached, or reached through that abort — a refused
+ * connection, the daemon's answer — is its own.
  *
  * An attempt given up on in either way can no longer advance: `call` hands `attempt` to every
  * request it makes, and the client refuses to send a request, or to hand on an answer, once that
@@ -430,12 +454,13 @@ const callerAborted = Symbol("the caller aborted the call");
  */
 async function oneAttempt<T>(
   label: string,
-  call: (attempt: AbortSignal) => Promise<T>,
+  call: (attempt: AbortSignal, outside: OutsideTheDaemon) => Promise<T>,
   limit: (ms: number, answered: AbortSignal) => Promise<void>,
-  cancel: AbortSignal | undefined
+  cancel: AbortSignal | undefined,
+  onTheDaemon: TimeOnTheDaemon,
+  ownFailures: Set<unknown>
 ): Promise<T> {
   const attempt = new AbortController();
-  const answered = new AbortController();
   const aborted = new Error(
     `${label}: the call was aborted while an attempt waited for the daemon's answer; that attempt may have been applied, so read the record before calling again`
   );
@@ -445,13 +470,45 @@ async function oneAttempt<T>(
     setImmediate(() => cancelled.resolve(callerAborted));
   };
   cancel?.addEventListener("abort", onCancel, { once: true });
+  const overdue = Promise.withResolvers<typeof noAnswer>();
+  let settled = false;
+  let stepping = false;
+  // The limit now running, ended when the attempt settles or steps outside the daemon; a limit
+  // that answers once it is ended answers nothing.
+  let running = new AbortController();
+  const startLimit = () => {
+    const answered = new AbortController();
+    running = answered;
+    void limit(DAEMON_ATTEMPT_LIMIT_MS, answered.signal).then(() => {
+      if (!answered.signal.aborted) overdue.resolve(noAnswer);
+    });
+  };
+  const outside: OutsideTheDaemon = async (step) => {
+    running.abort();
+    stepping = true;
+    onTheDaemon.paused();
+    try {
+      return await step();
+    } catch (error) {
+      ownFailures.add(error);
+      throw error;
+    } finally {
+      stepping = false;
+      // A step that ends after the attempt settled (the caller's abort came first) starts no
+      // limit and records no wait: the call it belonged to is over.
+      if (!settled) {
+        onTheDaemon.resumed();
+        startLimit();
+      }
+    }
+  };
   let outcome: { readonly value: T } | typeof noAnswer | typeof callerAborted;
   try {
-    outcome = await Promise.race([
-      call(attempt.signal).then((value) => ({ value })),
-      limit(DAEMON_ATTEMPT_LIMIT_MS, answered.signal).then((): typeof noAnswer => noAnswer),
-      cancelled.promise,
-    ]);
+    // The call is begun before its limit, as the limit times what the call sent; a call that
+    // stepped outside the daemon at once starts its limit when that step is over.
+    const answer = call(attempt.signal, outside).then((value) => ({ value }));
+    if (!stepping) startLimit();
+    outcome = await Promise.race([answer, overdue.promise, cancelled.promise]);
   } catch (error) {
     // A request the caller's abort ended rejects with the abort, whose reason is `aborted`; Bun's
     // fetch hands that reason on, and a transport that names it an AbortError is the same end.
@@ -460,13 +517,14 @@ async function oneAttempt<T>(
       ? aborted
       : error;
   } finally {
-    answered.abort();
+    settled = true;
+    running.abort();
     cancel?.removeEventListener("abort", onCancel);
   }
   if (outcome === noAnswer) {
-    const overdue = new LegionDaemonNoAnswerError(label, DAEMON_ATTEMPT_LIMIT_MS);
-    attempt.abort(overdue);
-    throw overdue;
+    const overdueError = new LegionDaemonNoAnswerError(label, DAEMON_ATTEMPT_LIMIT_MS);
+    attempt.abort(overdueError);
+    throw overdueError;
   }
   if (outcome === callerAborted) throw aborted;
   return outcome.value;
@@ -478,7 +536,9 @@ async function oneAttempt<T>(
  * `signal` aborts; an abort sends no further attempt and ends the one in flight. One attempt that
  * the daemon takes and does not answer within `DAEMON_ATTEMPT_LIMIT_MS` is ended and made again
  * (`oneAttempt`), and `call` is handed that attempt's own signal to pass to every request it
- * makes, so an attempt given up on mints and posts nothing more.
+ * makes, so an attempt given up on mints and posts nothing more. `call` is also handed `outside`,
+ * which runs a step of the attempt that is no request to the daemon off the daemon's clock: off
+ * the attempt's limit, the record of the call's wait and the budget (`OutsideTheDaemon`).
  *
  * Only a call that the daemon applies at most once however often it arrives may run through it:
  * `claims/register` (a repeat from the recorded session is reissued a secret, and the client
@@ -497,26 +557,48 @@ async function oneAttempt<T>(
  */
 export async function retryWhileDaemonRestarts<T>(
   label: string,
-  call: (attempt: AbortSignal) => Promise<T>,
+  call: (attempt: AbortSignal, outside: OutsideTheDaemon) => Promise<T>,
   options: DaemonRestartRetry = {}
 ): Promise<T> {
   const { signal } = options;
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? waitFor;
   const limit = options.attemptLimit ?? limitOneAttempt;
-  const deadline = now() + DAEMON_RESTART_BUDGET_MS;
+  let deadline = now() + DAEMON_RESTART_BUDGET_MS;
   let delay = DAEMON_RESTART_FIRST_DELAY_MS;
   let told = false;
   let dropped = false;
   let lastFailure: unknown;
+  const ownFailures = new Set<unknown>();
   /** Ends the record of this call's time on the daemon, which the worker's own stall watch reads
    * so that no outage is counted against the tool call that waited it out (`src/daemon-wait.ts`).
    * It is opened at the call's first request, since a daemon that takes the connection and does
    * not answer is not serving from that moment, though nothing says so until the attempt's limit
    * five minutes later; and only for a wait a tool call owns, so a wait no tool call owns records
-   * nothing. */
-  const waitEnded =
-    options.toolCallId === undefined ? undefined : daemonWaitBegan(options.toolCallId, now());
+   * nothing. A step outside the daemon ends it, and its end opens another: that step's time is
+   * the call's own, which the stall watch counts. */
+  let waitEnded: ((endedAt: number) => void) | undefined;
+  const waitBegins = () => {
+    waitEnded =
+      options.toolCallId === undefined ? undefined : daemonWaitBegan(options.toolCallId, now());
+  };
+  const waitEnds = () => {
+    waitEnded?.(now());
+    waitEnded = undefined;
+  };
+  // The budget is for time on the daemon, so a step outside it moves the deadline on by as long.
+  let pausedAt = 0;
+  const onTheDaemon: TimeOnTheDaemon = {
+    paused: () => {
+      pausedAt = now();
+      waitEnds();
+    },
+    resumed: () => {
+      deadline += now() - pausedAt;
+      waitBegins();
+    },
+  };
+  waitBegins();
   try {
     for (;;) {
       // An abort sends nothing more: a write the agent cancelled before it was sent is never
@@ -529,8 +611,11 @@ export async function retryWhileDaemonRestarts<T>(
         );
       }
       try {
-        return await oneAttempt(label, call, limit, signal);
+        return await oneAttempt(label, call, limit, signal, onTheDaemon, ownFailures);
       } catch (error) {
+        // A step outside the daemon answered for itself: its failure is the call's, never a
+        // daemon to wait for.
+        if (ownFailures.has(error)) throw error;
         const unreachable = daemonUnreachable(error);
         if (unreachable === undefined) {
           if (dropped && error instanceof LegionDaemonApiError) {
@@ -557,7 +642,7 @@ export async function retryWhileDaemonRestarts<T>(
       }
     }
   } finally {
-    waitEnded?.(now());
+    waitEnds();
   }
 }
 

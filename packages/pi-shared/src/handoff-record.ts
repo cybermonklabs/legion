@@ -122,9 +122,10 @@ export interface HandoffReportInput {
   /** PATH's jj by default, the one the pane's own shell runs. */
   readonly jj?: JjRunner;
   /** The signal of the `handoff_complete` attempt this read is a step of
-   * (`retryWhileDaemonRestarts`). Its abort, once the wait gave that attempt up or the agent
-   * aborted the call, stops the jj the read started and ends its Dispatch request, and the read
-   * rejects with the abort's reason rather than running on. */
+   * (`retryWhileDaemonRestarts`). Its abort, once the agent aborted the call, stops the jj the
+   * read started and ends its Dispatch request, and the read rejects with the abort's reason
+   * rather than running on. The read runs off the attempt's limit (`OutsideTheDaemon`), so a
+   * slow read is never given up on as a daemon that does not answer. */
   readonly signal?: AbortSignal;
 }
 
