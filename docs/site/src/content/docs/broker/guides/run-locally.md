@@ -18,6 +18,13 @@ refused, with the commands that move its data onto the right one). Without Docke
 yourself and set `DEV_BROKER_POSTGRES_URL` to `postgres://<user>@<host>:<port>/<database>`, for a
 role that may create databases; the script then creates and drops its database there with `psql`.
 
+Set `DEV_BROKER_GCP_PREFIX` (`projects/<project number>/secrets/<id prefix>`) and
+`DEV_BROKER_GCP_KMS_KEY_NAME` (a global Cloud KMS key) together to give the broker Google Cloud
+Secret Manager as its store under them, with an empty fake secrets file: `GET /v1/settings` then
+describes that store, so `agent-secrets secret` writes the real Secret Manager under the
+credential you choose for it ([Manage a secret](/legion/broker/guides/manage-a-secret/#before-you-start)),
+while the broker serves none of the demo secrets below. One of the two alone is refused (exit 2).
+
 ## Start the stack
 
 With Docker the command is the script alone; this run used a Postgres server of its own:
@@ -258,8 +265,11 @@ standard output stays one row per login or grant for a script.
 
 `machine list` shows your own machines' logins alone; Dispatch's machine-login page also lists
 every service's. `agent-secrets grant revoke <grant id>` ends a grant there, and
-`agent-secrets machine revoke <credential id>` one of your logins. Run in the session's shell, they
-are refused `IN_SESSION`, so the session's own commands cannot act as you:
+`agent-secrets machine revoke <credential id>` one of your logins. `grant revoke` run in a
+session's shell is the session's own revoke, as `agent-secrets revoke` is: it ends only a grant
+given to the broker identity (enrollment) the session signs as. Run there, `machine list`,
+`machine revoke` and `grant list` are refused `IN_SESSION`, so the session's own commands cannot
+act as you:
 
 ```console
 $ agent-secrets machine list
@@ -309,7 +319,7 @@ demo-new-token-value
 Writing the file whole, as the `mv` does, keeps it readable throughout: while it does not parse,
 each of those calls fails, naming the file.
 
-The broker reads a kind secret's value at the first load that lists it, so a value its minter
+The broker reads a type secret's value at the first load that lists it, so a value its minter
 cannot mint from is refused before anyone asks for it. Here a copy of `DEMO_GITHUB_APP` whose value
 has no `app_id` is added, and then read twice:
 
@@ -487,9 +497,9 @@ $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'
 broker_policy_store_reads_total{read="describe"} 6
 broker_policy_store_reads_total{read="list"} 6
 broker_policy_store_reads_total{read="value"} 3
-broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="1"} 1
-broker_mint_attempts_total{kind="github-app",outcome="ok",attempt="2"} 1
-broker_mint_attempts_total{kind="github-app",outcome="upstream",attempt="1"} 1
+broker_mint_attempts_total{type="github-app",outcome="ok",attempt="1"} 1
+broker_mint_attempts_total{type="github-app",outcome="ok",attempt="2"} 1
+broker_mint_attempts_total{type="github-app",outcome="upstream",attempt="1"} 1
 broker_answers_total{outcome="refused",code="ACCOUNT_LACKS_POWER",caller_class="unauthenticated"} 1
 broker_answers_total{outcome="refused",code="SECRET_NAME_INVALID",caller_class="public"} 1
 broker_answers_total{outcome="refused",code="UNKNOWN_SECRET",caller_class="session"} 2

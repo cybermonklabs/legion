@@ -147,7 +147,7 @@ func TestLoadLimitsAzureLoginToOneNamedSecret(t *testing.T) {
 // The deployment's binding of each google-service-account agent secret to the one Google account
 // the broker may mint a token for it, BROKER_SERVICE_ACCOUNT_SECRETS: whitespace-separated
 // <SECRET NAME>=<account email> entries, keyed by the name a session asks for, and nil when the
-// setting is unset, which binds nothing and so mints nothing of that kind. Two secrets may name
+// setting is unset, which binds nothing and so mints nothing of that type. Two secrets may name
 // one account, since only the secret name is the key; each refusal names the setting and the
 // whole entry, so an operator reads which one to fix.
 func TestServiceAccountBindingSettingIsRead(t *testing.T) {

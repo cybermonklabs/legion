@@ -41,45 +41,62 @@ func (r *racingTagWrites) first() {
 }
 
 // loginWithOwnersLeft is a google-login secret that still holds the github-owners tag a github-app
-// kind left on it, as retagging a GitHub App secret to a Google login leaves it.
+// type left on it, as retagging a GitHub App secret to a Google login leaves it.
 func loginWithOwnersLeft(name string) map[string]string {
-	tags := policytest.KindSecret(name, "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin)).Tags
+	tags := policytest.TypeSecret(name, "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)).Tags
 	tags[policy.TagGitHubOwners] = "ada"
 	return tags
 }
 
-// TestAConcurrentRetagNeverLeavesAGitHubAppSecretWithoutOwners: `--github-owners none` on a
-// google-login secret is checked against that kind, which reads no owners. When another writer
-// retags the secret github-app, keeping its owners, between that check and the write, the removal
-// would leave a github-app secret with no owners, which the broker refuses. On GCP the write is
-// made against the read it was checked on (its etag), so the store refuses it, naming the change,
-// and the other writer's tags stand. AWS has no conditional tag write, so the retag reads the tags
-// back, finds the pair the broker refuses, restores the tags it read and exits 1 naming the race.
-func TestAConcurrentRetagNeverLeavesAGitHubAppSecretWithoutOwners(t *testing.T) {
+// TestAConcurrentRetagIsReportedAndOverwritesNothing: `--github-owners none` on a google-login
+// secret is checked against that type, which reads no owners. When another writer retags the
+// secret github-app, keeping its owners, between that check and the write, the removal leaves a
+// github-app secret with no owners, which the broker refuses. On GCP the write is made against
+// the read it was checked on (its etag), so the store refuses it, naming the change, and the
+// other writer's tags stand. AWS has no conditional tag write, so the retag reads the tags back,
+// finds the pair the broker refuses, and reports it: it names the tags it read and the tags it
+// found, and the command that sets the secret right, and it writes nothing, so the other
+// writer's retag stands rather than being taken back.
+func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 	t.Run("aws", func(t *testing.T) {
-		secret := policytest.KindSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin))
+		secret := policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 		secret.Tags = loginWithOwnersLeft("APP_KEY")
 		local := secrets.NewLocal(secret)
-		startSecretBroker(t, servedBy(local))
+		broker := startSecretBroker(t, servedBy(local))
 		writes := &racingTagWrites{Local: local}
 		writes.race = func() {
 			if _, err := local.TagResource(context.Background(), &secretsmanager.TagResourceInput{
-				SecretId: aws.String(policytest.ID("APP_KEY")), Tags: secrets.TagList(map[string]string{policy.TagKind: policy.KindGitHubApp}),
+				SecretId: aws.String(policytest.ID("APP_KEY")), Tags: secrets.TagList(map[string]string{policy.TagType: policy.TypeGitHubApp}),
 			}); err != nil {
 				t.Errorf("the other writer's retag: %v", err)
 			}
 		}
 		useAWS(t, writes, testAccount, adaSignIn)
 		_, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "none")
-		if code != 1 || !strings.Contains(stderr, "another write changed the secret after this retag read it") || !strings.Contains(stderr, "one writer at a time") || !strings.Contains(stderr, "restored") {
-			t.Fatalf("racing retag: exit %d stderr %q; want 1 naming the race and the restore", code, stderr)
+		for _, said := range []string{
+			"another write changed the secret after this retag read it",
+			"nothing was restored",
+			"type=" + policy.TypeGoogleLogin,
+			policy.TagGitHubOwners + "=ada",
+			"type=" + policy.TypeGitHubApp,
+			"agent-secrets secret retag APP_KEY --type " + policy.TypeGitHubApp,
+			"agent-secrets secret retag APP_KEY --type " + policy.TagRemoved,
+		} {
+			if !strings.Contains(stderr, said) {
+				t.Fatalf("racing retag: stderr %q does not say %q", stderr, said)
+			}
 		}
-		tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags)
-		if !maps.Equal(tags, secret.Tags) {
-			t.Fatalf("tags after the race = %v; want the tags the retag read, %v", tags, secret.Tags)
+		if code != 1 {
+			t.Fatalf("racing retag: exit %d; want 1", code)
 		}
-		if _, err := policy.GitHubOwnersFor(tags[policy.TagKind], tags[policy.TagGitHubOwners]); err != nil {
-			t.Fatalf("tags after the race are a pair the broker refuses: %v", err)
+		want := maps.Clone(secret.Tags)
+		want[policy.TagType] = policy.TypeGitHubApp
+		delete(want, policy.TagGitHubOwners)
+		if tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags); !maps.Equal(tags, want) {
+			t.Fatalf("tags after the race = %v; want the other writer's type with this retag's removal, %v, and nothing restored", tags, want)
+		}
+		if rereads, _ := broker.recorded(); len(rereads) != 1 || rereads[0] != "APP_KEY" {
+			t.Fatalf("rereads = %v; want one of APP_KEY: the tags changed twice, so the broker is asked to read them as they now stand", rereads)
 		}
 	})
 	t.Run("gcp", func(t *testing.T) {
@@ -92,12 +109,12 @@ func TestAConcurrentRetagNeverLeavesAGitHubAppSecretWithoutOwners(t *testing.T) 
 		fake.secrets[id] = &fakeSecret{
 			secret:      &secretmanagerpb.Secret{Name: id, Annotations: loginWithOwnersLeft("APP_KEY"), Etag: "1"},
 			versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
-			payloads:    [][]byte{[]byte(policytest.KindValue(policy.KindGoogleLogin))},
+			payloads:    [][]byte{[]byte(policytest.TypeValue(policy.TypeGoogleLogin))},
 			etagCounter: 1,
 		}
 		fake.race = func(entry *fakeSecret) {
 			annotations := maps.Clone(entry.secret.Annotations)
-			annotations[policy.TagKind] = policy.KindGitHubApp
+			annotations[policy.TagType] = policy.TypeGitHubApp
 			entry.secret.Annotations = annotations
 			entry.etagCounter++
 			entry.secret.Etag = "2"
@@ -109,7 +126,7 @@ func TestAConcurrentRetagNeverLeavesAGitHubAppSecretWithoutOwners(t *testing.T) 
 		fake.mu.Lock()
 		annotations, gets := fake.secrets[id].secret.GetAnnotations(), fake.gets
 		fake.mu.Unlock()
-		if annotations[policy.TagKind] != policy.KindGitHubApp || annotations[policy.TagGitHubOwners] != "ada" {
+		if annotations[policy.TagType] != policy.TypeGitHubApp || annotations[policy.TagGitHubOwners] != "ada" {
 			t.Fatalf("annotations after the race = %v; want the other writer's github-app with its owners", annotations)
 		}
 		if gets != 1 {
@@ -121,52 +138,52 @@ func TestAConcurrentRetagNeverLeavesAGitHubAppSecretWithoutOwners(t *testing.T) 
 	})
 }
 
-// TestARetagExitsOneWhileTheBrokerServesTheOldKind: `broker: serving` alone does not say the
-// broker reads the tags a retag wrote, since a reread can read them stale. A retag to a kind whose
-// reread answers the secret served as stored (or as another kind) exits 1, saying the broker still
+// TestARetagExitsOneWhileTheBrokerServesTheOldType: `broker: serving` alone does not say the
+// broker reads the tags a retag wrote, since a reread can read them stale. A retag to a type whose
+// reread answers the secret served as stored (or as another type) exits 1, saying the broker still
 // sees the old tags, to run the retag again, and to store no value yet; the reread answering the
-// kind the retag wrote exits 0. A retag that removes the kind is held to the same rule.
+// type the retag wrote exits 0. A retag that removes the type is held to the same rule.
 //
-// Each refused row also reads the kind the refusal names. Without that, the message could name
-// any kind at all, or none, and this test would stay green: the operator it is written for has
-// to be told which kind the broker is still serving, because that is what says whether the retag
+// Each refused row also reads the type the refusal names. Without that, the message could name
+// any type at all, or none, and this test would stay green: the operator it is written for has
+// to be told which type the broker is still serving, because that is what says whether the retag
 // has to be run again or something else wrote the secret. A secret the broker serves with no
-// kind at all is named "a stored secret" (kindName), the words the refusal uses for it.
-func TestARetagExitsOneWhileTheBrokerServesTheOldKind(t *testing.T) {
+// type at all is named "a stored secret" (typeName), the words the refusal uses for it.
+func TestARetagExitsOneWhileTheBrokerServesTheOldType(t *testing.T) {
 	for _, row := range []struct {
 		name, served string
 		args         []string
 		code         int
-		// refusal is what the stderr of a refused row must name: the kind the broker serves and
-		// the kind the retag wrote, in the refusal's own words.
+		// refusal is what the stderr of a refused row must name: the type the broker serves and
+		// the type the retag wrote, in the refusal's own words.
 		refusal string
 	}{
-		{"stale: still stored", "", []string{"--kind", policy.KindGoogleLogin}, 1, "serves LOGIN_KEY as a stored secret, not " + policy.KindGoogleLogin},
-		{"stale: the other kind", policy.KindGitHubApp, []string{"--kind", policy.KindGoogleLogin}, 1, "serves LOGIN_KEY as " + policy.KindGitHubApp + ", not " + policy.KindGoogleLogin},
-		{"read", policy.KindGoogleLogin, []string{"--kind", policy.KindGoogleLogin}, 0, ""},
-		{"removal stale", policy.KindGoogleLogin, []string{"--kind", "none"}, 1, "serves LOGIN_KEY as " + policy.KindGoogleLogin + ", not a stored secret"},
-		{"removal read", "", []string{"--kind", "none"}, 0, ""},
+		{"stale: still stored", "", []string{"--type", policy.TypeGoogleLogin}, 1, "serves LOGIN_KEY as a stored secret, not " + policy.TypeGoogleLogin},
+		{"stale: the other type", policy.TypeGitHubApp, []string{"--type", policy.TypeGoogleLogin}, 1, "serves LOGIN_KEY as " + policy.TypeGitHubApp + ", not " + policy.TypeGoogleLogin},
+		{"read", policy.TypeGoogleLogin, []string{"--type", policy.TypeGoogleLogin}, 0, ""},
+		{"removal stale", policy.TypeGoogleLogin, []string{"--type", "none"}, 1, "serves LOGIN_KEY as " + policy.TypeGoogleLogin + ", not a stored secret"},
+		{"removal read", "", []string{"--type", "none"}, 0, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := secrets.NewLocal(policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policytest.KindValue(policy.KindGoogleLogin)))
+			local := secrets.NewLocal(policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleLogin)))
 			if row.args[1] == "none" {
-				local = secrets.NewLocal(policytest.KindSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin)))
+				local = secrets.NewLocal(policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
 			}
-			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true, Kind: row.served} })
+			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true, Type: row.served} })
 			useAWS(t, local, testAccount, adaSignIn)
 			stdout, stderr, code := runSecret(append([]string{"retag", "LOGIN_KEY"}, row.args...)...)
 			if code != row.code {
-				t.Fatalf("retag %v with the broker serving kind %q: exit %d, stdout %q, stderr %q; want %d", row.args, row.served, code, stdout, stderr, row.code)
+				t.Fatalf("retag %v with the broker serving type %q: exit %d, stdout %q, stderr %q; want %d", row.args, row.served, code, stdout, stderr, row.code)
 			}
 			stale := strings.Contains(stderr, "it still sees the old tags") && strings.Contains(stderr, "Run this retag again") && strings.Contains(stderr, "store no value in LOGIN_KEY")
 			if stale != (row.code == 1) {
-				t.Fatalf("stderr %q; want the stale-tags message exactly when the kind is stale", stderr)
+				t.Fatalf("stderr %q; want the stale-tags message exactly when the type is stale", stderr)
 			}
 			if row.refusal != "" && !strings.Contains(stderr, row.refusal) {
-				t.Fatalf("stderr %q does not say %q: the refusal has to name the kind the broker serves, which is what tells an operator whether to run the retag again", stderr, row.refusal)
+				t.Fatalf("stderr %q does not say %q: the refusal has to name the type the broker serves, which is what tells an operator whether to run the retag again", stderr, row.refusal)
 			}
-			if row.served != "" && (!strings.Contains(stdout, "broker: serving LOGIN_KEY from ") || !strings.Contains(stdout, "(kind "+row.served+")")) {
-				t.Fatalf("stdout %q does not name the served kind and the store it is in", stdout)
+			if row.served != "" && (!strings.Contains(stdout, "broker: serving LOGIN_KEY from ") || !strings.Contains(stdout, "(type "+row.served+")")) {
+				t.Fatalf("stdout %q does not name the served type and the store it is in", stdout)
 			}
 		})
 	}

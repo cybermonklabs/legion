@@ -417,9 +417,9 @@ for want in "airlock-judged-token=$approver" "airlock-unjudged-token=$approver" 
   "airlock-shared-token=shared" "airlock-admin-token=$approver"; do
   name="${want%=*}"
   owner="${want#*=}"
-  got="$(jq -r --arg name "$name" '.secrets[] | select(.name | endswith($name)) | "\(.tags.owner) \(.tags.tier) \(.tags.kind // "none") \(.value | length > 0)"' "$fake_secrets")"
+  got="$(jq -r --arg name "$name" '.secrets[] | select(.name | endswith($name)) | "\(.tags.owner) \(.tags.tier) \(.tags.type // "none") \(.value | length > 0)"' "$fake_secrets")"
   if [[ "$got" != "$owner human none true" ]]; then
-    echo "FAIL: the store holds $name as [$got]; want it owned by $owner at human tier, with no kind and a value" >&2
+    echo "FAIL: the store holds $name as [$got]; want it owned by $owner at human tier, with no type and a value" >&2
     exit 1
   fi
 done

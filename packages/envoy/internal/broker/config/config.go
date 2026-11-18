@@ -360,7 +360,7 @@ type Config struct {
 	// projected token, for example AZURE_LOGIN. Empty (the default) disables azure-login
 	// releases. Must be an uppercase agent-secret name, not its store id or slug. That secret
 	// must be human tier in the policy snapshot checked for each release, with a person's
-	// approval recorded for that name in its grant. Another secret with kind=azure-login,
+	// approval recorded for that name in its grant. Another secret with type=azure-login,
 	// the named secret retagged to agent tier, or an automatic grant releases no token.
 	AzureLoginSecret string
 	// BROKER_SERVICE_ACCOUNT_SECRETS: the one Google service account each google-service-account
@@ -389,7 +389,7 @@ type Config struct {
 	// between this build and the apply that writes its bindings, and it is deliberately the
 	// safe side of the change: a broker that went on minting on the stored value alone until
 	// the setting arrived is the very thing the setting exists to stop. Nothing else needs it:
-	// a broker with no binding still boots and still serves every other kind. The policy loader
+	// a broker with no binding still boots and still serves every other type. The policy loader
 	// reads it as well (policy.Loader.ServiceAccounts), for one rule — a secret bound to a
 	// dev-<name> account is one person's own, so it may list no registered service among its
 	// requesters.
@@ -702,8 +702,8 @@ const noRulesFile = "the broker reads each secret's owner and tier from the secr
 // secret carries default-grant=session.
 const noGrantCap = "a request's --ttl chooses a shorter grant lifetime, otherwise its grant lasts 12 hours, or until the requesting session ends for a secret tagged default-grant=session"
 
-// noMintTargets is why BROKER_MINT_TARGETS is gone: each secret's kind tag names its minter.
-const noMintTargets = "the broker no longer reads one list of mint targets; each secret's kind tag names the minter it is served by"
+// noMintTargets is why BROKER_MINT_TARGETS is gone: each secret's type tag names its minter.
+const noMintTargets = "the broker no longer reads one list of mint targets; each secret's type tag names the minter it is served by"
 
 // removedVars are environment variables the broker no longer reads. A stale deployment still
 // setting one must fail loudly rather than silently running on configuration that means nothing

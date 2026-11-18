@@ -589,7 +589,7 @@ func TestListIssuesAnswersTheMoveOnlyWhenAsked(t *testing.T) {
 		if moved.MovedAt == nil || !moved.MovedAt.Equal(wantAt) {
 			t.Fatalf("?%s says %s was moved at %v, want %v, its move into icebox", query, twice, moved.MovedAt, wantAt)
 		}
-		if moved.MovedBy == nil || *moved.MovedBy != (model.Actor{Kind: "user", ID: "alice"}) {
+		if moved.MovedBy == nil || *moved.MovedBy != (model.Actor{Kind: "user", ID: "alice", Proven: true}) {
 			t.Fatalf("?%s says %s was moved by %v, want alice, who moved it into icebox", query, twice, moved.MovedBy)
 		}
 		for _, key := range []string{unrecorded, returned, never} {
@@ -699,7 +699,7 @@ func TestTheListingAnswersTheFaultLists(t *testing.T) {
 	if got := advanceEntries(parkedRow(t, body, parkedChild).Advances); !slices.Equal(got, []string{"park-the-bus inherited"}) {
 		t.Fatalf("the parked list says %s advances %v, want park-the-bus inherited from its parent", parkedChild, got)
 	}
-	if row := rows[parkedChild]; row.MovedBy == nil || *row.MovedBy != (model.Actor{Kind: "user", ID: "bob"}) {
+	if row := rows[parkedChild]; row.MovedBy == nil || *row.MovedBy != (model.Actor{Kind: "user", ID: "bob", Proven: true}) {
 		t.Fatalf("%s says %s was moved by %v, want bob, so the comparison above is of a recorded move", parkedListing, parkedChild, row.MovedBy)
 	}
 	if row := rows[unrecorded]; row.MovedAt != nil || row.MovedBy != nil {

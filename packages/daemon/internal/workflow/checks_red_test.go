@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -350,12 +351,21 @@ func TestAConflictingHeadSendsTheIssueBackToImplementingFromEveryLaterPhase(t *t
 			}
 			want := "the head conflicts with main: GitHub runs no checks on it; merge main forward"
 			reason, from := checksRedNotice(t, pool)
-			var status string
-			if err := pool.QueryRow(context.Background(), "select payload->>'status' from outbox where kind = 'dispatch_status'").Scan(&status); err != nil {
+			var status, posted string
+			if err := pool.QueryRow(context.Background(),
+				"select payload->>'status', coalesce(payload->>'reason', '') from outbox where kind = 'dispatch_status'").Scan(&status, &posted); err != nil {
 				t.Fatalf("read the status write: %v", err)
 			}
 			if task := implementerTask(t, pool); !strings.Contains(task, want) || !strings.Contains(reason, want) || from != tc.from || status != "in_progress" {
 				t.Fatalf("task %q, notice %q from %q, status %q; want both to say %q, from %s, and the issue in_progress", task, reason, from, status, want, tc.from)
+			}
+			// The move is the daemon's own, so no worker's act on Dispatch says why the issue went
+			// back: the status write posts the reason on the issue first, naming the phase it left,
+			// the pull request and head that conflict, and the base.
+			wantPosted := fmt.Sprintf("Legion moved this issue from %s back to implementing, because pull request #42 at head head conflicts with main. "+
+				"GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward.", tc.from)
+			if posted != wantPosted {
+				t.Fatalf("the status write posts %q on the issue, want %q", posted, wantPosted)
 			}
 			// The return is a pass and no review round: the implementer answers a conflict with a
 			// forward merge nobody asked it for, so it costs the issue nothing against

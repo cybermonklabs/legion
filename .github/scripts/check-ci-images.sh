@@ -374,11 +374,11 @@ FETCHES_NOTHING = "a CI job runs it, and it fetches nothing"
 # `no CI job runs it`: the devbox live proofs and their libraries, the compose files, the
 # walkthrough recorder, the corpus copy a developer restores on a devbox, and documentation.
 # `a CI job runs it, and it fetches nothing`: a script a CI job runs whose mirror.gcr.io text no
-# job ever hands to a registry — dev-postgres.test.sh, which the envoy-go job runs, installs a
-# fake `docker` on PATH; the load test's cluster copy (packages/envoy/loadtest/cluster/), whose
-# cluster.test.sh the envoy-go job runs with a fake `kubectl` on PATH, sources cluster.sh,
-# templates nats.yaml and runs render-nats.sh --pin-from, which takes each digest from the
-# committed nats.yaml; the images are pulled only by a cluster an operator points cluster.sh at.
+# job ever hands to a registry — dev-postgres.test.sh, which the envoy-go-checks job runs,
+# installs a fake `docker` on PATH; the load test's cluster copy (packages/envoy/loadtest/cluster/),
+# whose cluster.test.sh the envoy-go-checks job runs with a fake `kubectl` on PATH, sources
+# cluster.sh, templates nats.yaml and runs render-nats.sh --pin-from, which takes each digest from
+# the committed nats.yaml; the images are pulled only by a cluster an operator points cluster.sh at.
 EXCEPTIONS = {
     "AGENTS.md": NO_CI_JOB,
     "docs/kubernetes.md": NO_CI_JOB,

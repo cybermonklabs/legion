@@ -129,6 +129,7 @@ func TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgai
 	t.Logf("with both awaiting an ack the server reports the ack floor as %d, the last delivery as %d and the start sequence as %d; the floor this package reads from that is %d",
 		info.AckFloor.Stream, info.Delivered.Stream, info.Config.OptStartSeq, ackFloor(info))
 
+	waitForStoredState(t, owner, session)
 	restarted, err := consumers.RestartAtFloor(ctx, session, filters)
 	if err != nil {
 		t.Fatalf("restart at floor: %v", err)

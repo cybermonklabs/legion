@@ -12,9 +12,12 @@ An issue pod runs no heavy build and no whole test suite. The pod's six roles sh
 limit. Near that limit the launcher's memory guard, where the deployment runs it (it is on by
 default), stops, with SIGKILL, the largest process that is neither Legion's own nor an agent's own,
 which in practice is a command an agent ran: a build, a test binary, a Python or JavaScript kernel.
-It then tells that process's role why, in a message on the role's topic. The command fails and the
-turn goes on. A command that fills the memory faster than the guard can stop it still takes the pod
-past its limit, and that ends every role's turn, not only yours.
+It then tells that process's role why, in a message on the role's topic. In a pod that runs in a
+microVM, the pod's own kernel stops such a command in place of the guard where each of the pod's
+requests equals its limit, and the role is told the same way; in a pod that requests less, it can
+stop an agent instead. The command fails and the turn goes on. In a gVisor pod, a command that
+fills the memory faster than the guard can stop it still takes the pod past its limit, and that
+ends every role's turn, not only yours.
 
 In the pod you compile the packages your change touches, run by name the tests you added or
 changed (`go test -run '<TestName>' ./internal/<package>/`, or `bun test` with their files), build

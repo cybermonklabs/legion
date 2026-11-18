@@ -132,6 +132,7 @@ func TestARestoredConsumerDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 			t.Errorf("write the record of %s back as the registration that raced its delete does: %v", sessionID, err)
 		}
 	})
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	if !rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil) {
 		t.Fatalf("the delete of %s's consumer reported it standing; want it gone, the bucket holding no record when the delete read it", sessionID)
 	}
@@ -238,6 +239,7 @@ func TestASessionThatRacesADeleteThroughItsEntryWriteIsOfferedNothingItAcked(t *
 			t.Errorf("the entry write that raced the delete of %s: %v", sessionID, err)
 		}
 	})
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	if !rig.deps.consumers.deleteConsumer(ctx, deleteDeps, sessionID, nil) {
 		t.Fatalf("the delete of %s's consumer reported it standing; want it gone, the bucket holding no record when the delete read it", sessionID)
 	}
@@ -307,6 +309,7 @@ func TestARegistrationsOwnRepairDoesNotOfferTheAckedFramesAgain(t *testing.T) {
 			}
 		})
 	}
+	awaitSessionConsumerStored(t, registering.harness.client.Conn, sessionID)
 	registering.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 	registering.deps.consumers.afterRegisterFilter = nil
 
