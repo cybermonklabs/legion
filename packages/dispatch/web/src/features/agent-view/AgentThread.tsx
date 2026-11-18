@@ -401,6 +401,7 @@ export function AgentThread({
   front,
   held,
   initialPlace,
+  notice,
   onPlace,
   ownSendCount,
   placeholder,
@@ -425,6 +426,9 @@ export function AgentThread({
   /** Where this session's reader was when its view last reported, which the view's entry in
    *  `live-views.ts` holds while the view sleeps, or `null` for one that was following. */
   initialPlace: LivePlace | null;
+  /** A line above the transcript saying why it holds only what Dispatch keeps, or undefined for
+   *  none. It shows only while the transcript holds a turn: with none, `empty` says it. */
+  notice: string | undefined;
   /** Reports the place the transcript holds, for that entry to keep. */
   onPlace: (place: LivePlace | null) => void;
   /** Bumped once per message this viewer sent that the session accepted. */
@@ -454,6 +458,9 @@ export function AgentThread({
     replayCount,
     viewport,
   });
+  // What `ThreadPrimitive.Empty` below reads, so the line above the transcript and the empty slot
+  // turn on the same commit.
+  const threadEmpty = useAuiState((state) => state.thread.isEmpty);
   // An empty box is the one thing that refuses Send (INFRA-442): a message still out, late or
   // refused is a turn of its own, and the next message goes out behind it. A pending switch
   // disables Send and names why instead. A turn still streaming does not refuse: the session
@@ -476,6 +483,18 @@ export function AgentThread({
             it changes neither `scrollHeight` nor `scrollTop`, the composer does not move, and it
             can never cover the composer's controls. */}
         <div className="relative flex min-h-0 flex-1 flex-col">
+          {/* Above the scroller and outside it, so it stays in view however far the reader
+              scrolls, and the viewport's first element child is still the transcript the follow
+              hook measures. assistant-ui's own `thread.isEmpty` decides it, as it decides the
+              empty slot below, so exactly one of the two says why while the session does not
+              answer. `contentIds` would not do: they carry a transcript one commit before
+              assistant-ui applies it in a passive effect (`useExternalStoreRuntime`), and for that
+              commit the line showed beside the empty slot. */}
+          {notice === undefined || threadEmpty ? null : (
+            <p className={`mt-3 text-sm ${textMutedOnCanvas}`} data-testid="agent-not-answering">
+              {notice}
+            </p>
+          )}
           {/* `mt-3`: the scroller clips a turn at its top edge, and without a gap that clipped
               line sat against the page's note above it and read as overlapping text. `pl-1`
               matches `pr-1` for the same reason on the left: a turn's numbered list hangs its

@@ -23,7 +23,7 @@ import {
 } from "../../theme/classes";
 import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { useMarkRepliesRead } from "../agents/unread";
-import { MODE_LABELS } from "../conversation/delivery";
+import { deliveryModesOf, MODE_LABELS, noDeliveryLine } from "../conversation/delivery";
 import { useAgents } from "../conversation/useAgents";
 import { useSessionSends } from "../conversation/useSessionSends";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
@@ -38,14 +38,54 @@ import { SessionSettings, SessionSwitchLines } from "./SessionSettings";
 import { type SwitchRequest, switchMessageInput, useSessionSwitch } from "./use-session-switch";
 import { type AgentStreamStatus, useAgentStream } from "./useAgentStream";
 
-/** What the stream-status dot says about the relay connection (not whether the agent is
- *  running, which the header's `AgentName` mark shows), and how it reads to a screen reader. */
+/** What the stream-status dot says, and how it reads to a screen reader: the relay connection,
+ *  and whether the session answers it, from the relay's own answer and from the registry's facts
+ *  about the session (`livePresence`). Not whether the agent is running, which the header's
+ *  `AgentName` mark shows. */
 const STATUS: Record<AgentStreamStatus, { dot: string; label: string }> = {
   connecting: { dot: connectionDotConnecting, label: "Connecting to the session" },
   live: { dot: liveDotBg, label: "Live" },
+  "not-answering": { dot: connectionDotFailed, label: "Not answering" },
   reconnecting: { dot: connectionDotConnecting, label: "Reconnecting" },
   unavailable: { dot: connectionDotFailed, label: "This session's conversation is unavailable" },
 };
+
+/** What the registry says of the session, from a current list alone: a list that is refilling,
+ *  loading or unreachable says neither. */
+interface RegistryFacts {
+  /** The list holds the session as missing its heartbeats. */
+  readonly unresponsive: boolean;
+  /** The list no longer holds the session, which this view has seen it hold: it left the
+   *  registry. */
+  readonly gone: boolean;
+}
+
+/**
+ * The header's state of the session's conversation: the relay's, raised to `not-answering` when
+ * the registry says the session is silent. The relay and the registry each see a session fall
+ * silent in their own time - the relay when nobody answers its control subject, the registry on
+ * its poll - so either is enough, and a session that stops while its view is open reads as silent
+ * once the first of them notices. A refusal and a lost socket are the view's own connection, which
+ * the registry knows nothing of, so they stand as they are.
+ */
+function livePresence(status: AgentStreamStatus, facts: RegistryFacts): AgentStreamStatus {
+  if (status !== "live" && status !== "connecting") return status;
+  return facts.unresponsive || facts.gone ? "not-answering" : status;
+}
+
+/** Why a silent session shows nothing it streams, which both of the texts below open with. */
+const NOT_ANSWERING_WHY =
+  "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running.";
+
+/** What an empty transcript says while the session does not answer the view (`emptyText`). */
+export const NOT_ANSWERING_EMPTY_TEXT = `${NOT_ANSWERING_WHY} Nothing appears here until it answers.`;
+
+/** The line above a transcript that holds turns while the session does not answer the view: what
+ *  shows is what Dispatch keeps, and nothing the session streams arrives until it answers. */
+export const NOT_ANSWERING_NOTICE = `${NOT_ANSWERING_WHY} Only the messages Dispatch keeps show here until it answers.`;
+
+/** What an empty transcript says of a session that answers the view, or has not said yet. */
+export const NOTHING_YET_TEXT = "Nothing yet. This session's next turn appears here as it happens.";
 
 /** Where each mode stands in the composer. Send comes first wherever the session takes it, since
  *  that is Enter at its terminal, and Aside next, so a session that advertises Aside and no Send
@@ -53,30 +93,31 @@ const STATUS: Record<AgentStreamStatus, { dot: string; label: string }> = {
 const MODE_ORDER: Record<MessageDeliveryMode, number> = { aside: 1, btw: 2, steer: 0 };
 
 /** The modes a human can talk to a session in, narrowed to the ones it advertises, in
- *  `MODE_ORDER`; the first is what the composer sends until the human picks. */
+ *  `MODE_ORDER`; the first is what the composer sends until the human picks. A session that lists
+ *  no delivery mode is still offered Aside, so a send to it records a failed attempt, which the
+ *  page warns of above the thread. */
 function deliveryModes(capabilities: readonly string[]): MessageDeliveryMode[] {
-  const advertised = DELIVERY_CAPABILITIES.filter((mode) => capabilities.includes(mode)).sort(
+  const advertised = deliveryModesOf(capabilities).sort(
     (left, right) => MODE_ORDER[left] - MODE_ORDER[right]
   );
   return advertised.length === 0 ? ["aside"] : advertised;
 }
 
 /**
- * What an empty transcript means for this session, which only the session can say: it answers
- * the relay on its control subject, or nobody is there. Saying "the next turn appears here" to a
- * viewer of a session that answers nothing was a promise the page could not keep. A silent
- * session is not always one with a newer plugin to install - it may have been started without
- * its plugin, or have ended - so the text names what is true of the session rather than telling
- * its reader to upgrade. The relay keeps asking, so a session that starts answering turns this
- * around without a reload, and the wording stays neutral until the first answer arrives. A
+ * What an empty transcript means for this session: it answers the view, or it is silent - the
+ * relay hears nobody on its control subject, or a current registry list holds it as unresponsive
+ * or no longer holds it (`livePresence`). Saying "the next turn appears here" to a viewer of a
+ * silent session was a promise the page could not keep. A silent session is not always one with a
+ * newer plugin to install - it may have been started without its plugin, or have ended - so the
+ * text names what is true of the session rather than telling its reader to upgrade. The relay
+ * keeps asking and the registry is read again on its poll, so a session that answers again turns
+ * this around without a reload, and the wording stays neutral until either says it is silent. A
  * resumed session answers with the conversation since its process started, so this text is also
- * what a reader sees until such a session takes its next turn.
+ * what a reader sees until such a session takes its next turn. A transcript holding turns says
+ * the same above them (`NOT_ANSWERING_NOTICE`).
  */
-function emptyText(responding: boolean | undefined): string {
-  if (responding === false) {
-    return "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running. Nothing appears here until it answers.";
-  }
-  return "Nothing yet. This session's next turn appears here as it happens.";
+function emptyText(silent: boolean): string {
+  return silent ? NOT_ANSWERING_EMPTY_TEXT : NOTHING_YET_TEXT;
 }
 
 export function AgentConversationPage({
@@ -94,6 +135,11 @@ export function AgentConversationPage({
 }): ReactNode {
   const { agents, current, isPending, refilling } = useAgents(true, true);
   const agent = agents.find((candidate) => candidate.session_id === sessionId);
+  // The session a current list has held, while this view shows it: only a session the view has
+  // seen listed can leave the list. One the list never held may still answer the relay, and its
+  // view reads live. Kept by id, so a view moved to another session starts with nothing seen.
+  const [seenListed, setSeenListed] = useState<string | null>(null);
+  if (current && agent !== undefined && seenListed !== sessionId) setSeenListed(sessionId);
   // The page knows the session id and the registry, not a stamped title: the agent is named by
   // its registry title, else its short id. Only the view in front names the tab.
   const label = useAgentText().sessionText(sessionId, undefined);
@@ -104,6 +150,13 @@ export function AgentConversationPage({
   const writePin = useAgentPinWrite();
 
   const { conversation, replays, responding, status } = useAgentStream(sessionId);
+  // What the header says of the conversation, and the one value that says the session is silent:
+  // the relay's word, or a current list holding the session as unresponsive or no longer at all.
+  const shown = livePresence(status, {
+    gone: current && agent === undefined && seenListed === sessionId,
+    unresponsive: current && agent?.state === "unresponsive",
+  });
+  const silent = shown === "not-answering";
   // The model and thinking level the session runs now (INFRA-195), next to its title: what its
   // newest `settings` frame reports, or, for a session that reports none, the most recent
   // assistant turn's own model (LEGION-548), nothing guessed for a client that never sends one.
@@ -118,6 +171,9 @@ export function AgentConversationPage({
   // Which panel of the footer row stands open, since both open upwards over the transcript from
   // the same corner: one at a time, as a `MultiSelect`'s host holds its list.
   const [panel, setPanel] = useState<"context" | "help" | null>(null);
+  // The ring's panel goes with the ring: a session that stops reporting its window takes the ring
+  // away, and its next reading draws the ring closed rather than reopening a panel by itself.
+  if (panel === "context" && conversation.context === undefined) setPanel(null);
   // The slash commands the composer completes (LEGION-394). The session runs typed input only
   // from a Send or an Aside, so a BTW, a side question it answers, offers none; nor does a
   // session that sent no list, whose host cannot run typed input.
@@ -192,7 +248,10 @@ export function AgentConversationPage({
   const switchPending =
     sessionSwitch.pending ||
     (switchWrite.isPending && switchWrite.variables?.session === sessionId);
-  const presence = STATUS[status];
+  const presence = STATUS[shown];
+  // The warning of a session whose capabilities hold no delivery mode; undefined for one that
+  // takes a mode.
+  const noDelivery = noDeliveryLine(agent?.capabilities ?? []);
 
   // The shell hands this route the viewport below its header as a flex column; the page takes
   // all of it and the thread is its only scroller, so the header and composer never leave the
@@ -217,7 +276,7 @@ export function AgentConversationPage({
         >
           <span
             aria-hidden="true"
-            className={`inline-block h-2 w-2 rounded-full ${status === "unavailable" ? connectionDotFailed : presence.dot}`}
+            className={`inline-block h-2 w-2 rounded-full ${presence.dot}`}
           />
           <span className={`text-xs ${textMutedOnCanvas}`}>
             <span className="sr-only">Connection: </span>
@@ -262,10 +321,10 @@ export function AgentConversationPage({
           This Dispatch cannot reach the session's conversation.
         </p>
       ) : null}
-      {current && agent !== undefined && (agent.capabilities ?? []).length === 0 ? (
+      {/* A line of the page, not of a send, so it stays after a send to the session fails. */}
+      {current && agent !== undefined && noDelivery !== undefined ? (
         <p className={`mt-2 text-sm ${dangerText}`} data-testid="agent-takes-no-messages">
-          This session advertises no delivery mode, so a message sent here records a failed attempt.
-          A session advertises none while its plugin cannot reach its conversation.
+          {noDelivery}
         </p>
       ) : null}
       {switchRefusal === null ? null : (
@@ -286,8 +345,9 @@ export function AgentConversationPage({
         <AgentRuntimeThread
           commands={commands}
           conversation={conversation}
-          empty={emptyText(responding)}
+          empty={emptyText(silent)}
           front={front}
+          notice={silent ? NOT_ANSWERING_NOTICE : undefined}
           onSend={onSend}
           ownSendCount={ownSendCount}
           sends={sends}
