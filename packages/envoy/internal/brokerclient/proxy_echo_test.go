@@ -29,6 +29,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
 // echoedCredentialFields are the form fields where these requests carry a credential.
@@ -89,8 +90,10 @@ func (e *proxyEcho) credentials() []string {
 // assertNamedWithoutCredentials fails the row when err's text holds any of bare (the credentials
 // the page showed on lines of their own) or of others, or, where the rule read the page and printed
 // it (it did not print redact.WordsNotReadable in its place), redacts fewer places than bare holds.
-// bare must not be empty: a row that saw none could not have failed.
-func assertNamedWithoutCredentials(t *testing.T, err error, bare []string, others ...string) {
+// bare must not be empty: a row that saw none could not have failed. It captures err's text under
+// capture and fails a credential it holds with `REDACT-ASSERT <capture>`, the check's designated
+// assertion (redacttest.Capture); each credential carries -RDX-, the check's marker for them.
+func assertNamedWithoutCredentials(t *testing.T, capture string, err error, bare []string, others ...string) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("the call through the stand-in succeeded")
@@ -99,10 +102,10 @@ func assertNamedWithoutCredentials(t *testing.T, err error, bare []string, other
 		t.Fatal("the stand-in showed no credential, so this row could not fail")
 	}
 	printed := err.Error()
-	t.Logf("the error: %s", printed)
+	redacttest.Capture(t, capture, printed)
 	for _, credential := range append(others, bare...) {
 		if strings.Contains(printed, credential) {
-			t.Errorf("the error carries the credential %q the request sent:\n%s", credential, printed)
+			t.Errorf("REDACT-ASSERT %s: the error carries the credential %q the request sent:\n%s", capture, credential, printed)
 		}
 	}
 	if n := strings.Count(printed, "[redacted]"); n < len(bare) && !strings.Contains(printed, redact.WordsNotReadable) {
@@ -161,7 +164,7 @@ func TestProxyEchoExternalAccountMintNamesThePageWithoutItsCredentials(t *testin
 			ServiceAccount:  "robot@example.iam.gserviceaccount.com", Audience: testAudience, IAMCredentialsURL: "http://127.0.0.1:1",
 		}
 		_, _, err := identity.Token(context.Background())
-		assertNamedWithoutCredentials(t, err, stand.credentials(), subject, secret)
+		assertNamedWithoutCredentials(t, "brokerclient.proxy-echo-sts", err, stand.credentials(), subject, secret)
 	})
 	t.Run("impersonation", func(t *testing.T) {
 		const minted = "sts-minted-access-RDX-6e2a90c4"
@@ -178,7 +181,7 @@ func TestProxyEchoExternalAccountMintNamesThePageWithoutItsCredentials(t *testin
 			ServiceAccount:  "robot@example.iam.gserviceaccount.com", Audience: testAudience, IAMCredentialsURL: "http://127.0.0.1:1",
 		}
 		_, _, err := identity.Token(context.Background())
-		assertNamedWithoutCredentials(t, err, stand.credentials(), minted, subject, secret)
+		assertNamedWithoutCredentials(t, "brokerclient.proxy-echo-impersonation", err, stand.credentials(), minted, subject, secret)
 	})
 }
 
@@ -211,7 +214,7 @@ func TestProxyEchoDeviceSignInNamesThePageWithoutItsCredentials(t *testing.T) {
 		flow := &DeviceFlow{Issuer: issuer, ClientID: "device-client", ClientSecret: secret}
 		const deviceCode = "device-code-RDX-8d7e6f50"
 		_, err := flow.Wait(context.Background(), &oauth2.DeviceAuthResponse{DeviceCode: deviceCode, Interval: 1, Expiry: time.Now().Add(time.Minute)})
-		assertNamedWithoutCredentials(t, err, stand.credentials(), secret, deviceCode)
+		assertNamedWithoutCredentials(t, "brokerclient.proxy-echo-wait", err, stand.credentials(), secret, deviceCode)
 		var re *oauth2.RetrieveError
 		if !errors.As(err, &re) || re.Response.StatusCode != http.StatusBadGateway {
 			t.Errorf("Wait = %v, which no longer unwraps to the token endpoint's RetrieveError", err)
@@ -222,7 +225,7 @@ func TestProxyEchoDeviceSignInNamesThePageWithoutItsCredentials(t *testing.T) {
 		flow := &DeviceFlow{Issuer: issuer, ClientID: "device-client", ClientSecret: secret}
 		const refresh = "person-refresh-RDX-2f9c0b77"
 		_, err := flow.Refresh(context.Background(), refresh)
-		assertNamedWithoutCredentials(t, err, stand.credentials(), secret, refresh)
+		assertNamedWithoutCredentials(t, "brokerclient.proxy-echo-refresh", err, stand.credentials(), secret, refresh)
 		if errors.Is(err, ErrSignInEnded) {
 			t.Error("a gateway's page reads as a sign-in the issuer ended")
 		}

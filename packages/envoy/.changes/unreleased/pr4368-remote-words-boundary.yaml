@@ -9,7 +9,12 @@ body: |-
   sign-in refresh's (`brokerclient.DeviceFlow.Refresh`), a discovery error's, which quoted the
   issuer's body, and the external-account exchange's, which quoted the security token service's.
   A token source handed to another library crosses the same boundary (`redact.TokenSource`), and
-  `agent-secrets`' userinfo refusal and gcloud's standard error print as the rule reads them. The
+  a refusal's body and reason phrase are read with every credential its own request carried
+  redacted first, so a gateway's page in a token endpoint's place that echoes the request no
+  longer prints the refresh token, client secret or minted access token it shows
+  (`redact.Tokens`; `redact.RefusalClient` for the external-account exchange, whose library
+  prints a refusal as text alone). `agent-secrets`' userinfo refusal and gcloud's standard error
+  print as the rule reads them. The
   broker's token client reads its answer only through the box, with four changes a caller can
   see: a `token_type` of
   `dpop` in any case is `Token.TokenType` `DPoP` rather than the spelling the broker wrote; an

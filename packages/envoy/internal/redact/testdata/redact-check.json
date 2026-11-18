@@ -9,6 +9,7 @@
       "github.com/sjawhar/envoy/internal/redact.Cause",
       "github.com/sjawhar/envoy/internal/redact.Error",
       "github.com/sjawhar/envoy/internal/redact.AnswerText",
+      "github.com/sjawhar/envoy/internal/redact.Tokens",
       "(github.com/sjawhar/envoy/brokeraddr.Address).Words",
       "(github.com/sjawhar/envoy/brokeraddr.Address).Cause",
       "(github.com/sjawhar/envoy/brokeraddr.Address).Error"
@@ -317,6 +318,24 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.secret-manager-token"
+      },
+      {
+        "row": "leak-proxy-echo-refresh",
+        "base": "c40c4751f9",
+        "files": [
+          "packages/envoy/internal/brokerclient/proxy_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokerclient.proxy-echo-refresh"
+      },
+      {
+        "row": "leak-proxy-echo-impersonation",
+        "base": "c40c4751f9",
+        "files": [
+          "packages/envoy/internal/brokerclient/proxy_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "brokerclient.proxy-echo-impersonation"
       }
     ],
     "required": [
@@ -948,6 +967,132 @@
       "production": "gcpCredentialsFile, gcpClientDial, redact.TokenSource"
     },
     {
+      "id": "leak-proxy-echo-refresh",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestProxyEchoDeviceSignInNamesThePageWithoutItsCredentials/Refresh",
+      "production": "brokerclient.DeviceFlow.Refresh, redact.OAuth2's answer"
+    },
+    {
+      "id": "leak-proxy-echo-impersonation",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestProxyEchoExternalAccountMintNamesThePageWithoutItsCredentials/impersonation",
+      "production": "brokerclient.ExternalAccountIdentity.Token, redact.RefusalClient"
+    },
+    {
+      "id": "site-proxy-echo-wait",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestProxyEchoDeviceSignInNamesThePageWithoutItsCredentials/Wait",
+      "production": "brokerclient.DeviceFlow.Wait, redact.OAuth2's answer"
+    },
+    {
+      "id": "site-proxy-echo-sts",
+      "requirement": "r3-each-site",
+      "package": "./internal/brokerclient",
+      "test": "TestProxyEchoExternalAccountMintNamesThePageWithoutItsCredentials/security_token_service",
+      "production": "brokerclient.ExternalAccountIdentity.Token, redact.RefusalClient"
+    },
+    {
+      "id": "tokens-every-piece",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestTokensRedactsEveryPieceOfTheToken",
+      "production": "redact.Tokens"
+    },
+    {
+      "id": "tokens-short-and-every",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestTokensRedactsAShortTokenWholeAndEveryTokenGiven",
+      "production": "redact.Tokens"
+    },
+    {
+      "id": "tokens-limit",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestTokensReadsAtMostTheLimit",
+      "production": "redact.Tokens"
+    },
+    {
+      "id": "tokens-bounded",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestTokensIsBoundedForAHostileTextOrToken",
+      "production": "redact.Tokens"
+    },
+    {
+      "id": "tokens-request",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRequestTokensReadsEveryCredentialARequestCarries",
+      "production": "redact.requestTokens"
+    },
+    {
+      "id": "tokens-refusal-client",
+      "requirement": "r1-fail-closed",
+      "package": "./internal/redact",
+      "test": "TestRefusalClientRedactsOnlyARefusalsEchoOfItsRequest",
+      "production": "redact.RefusalClient"
+    },
+    {
+      "id": "tokens-answer-body",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestARefusalsEchoOfItsRequestPrintsNoCredentialItCarried/answer",
+      "production": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "function": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "capture": "redact.tokens-answer-body",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "preimage": "Tokens(string(re.Body), -1, carried...)",
+        "replacement": "string(re.Body)"
+      }
+    },
+    {
+      "id": "tokens-answer-status",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestARefusalsEchoOfItsRequestPrintsNoCredentialItCarried/answer",
+      "production": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "function": "github.com/sjawhar/envoy/internal/redact.newOAuthAnswer",
+      "capture": "redact.tokens-answer-status",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/oauth2.go",
+        "preimage": "Tokens(r.Status, -1, carried...)",
+        "replacement": "r.Status"
+      }
+    },
+    {
+      "id": "tokens-refusal-body",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestARefusalsEchoOfItsRequestPrintsNoCredentialItCarried/refusal_client",
+      "production": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
+      "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
+      "capture": "redact.tokens-refusal-body",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/tokens.go",
+        "preimage": "Tokens(string(body), -1, tokens...)",
+        "replacement": "string(body)"
+      }
+    },
+    {
+      "id": "tokens-refusal-status",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestARefusalsEchoOfItsRequestPrintsNoCredentialItCarried/refusal_client",
+      "production": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
+      "function": "(github.com/sjawhar/envoy/internal/redact.refusalTransport).RoundTrip",
+      "capture": "redact.tokens-refusal-status",
+      "mutation": {
+        "file": "packages/envoy/internal/redact/tokens.go",
+        "preimage": "Tokens(response.Status, -1, tokens...)",
+        "replacement": "response.Status"
+      }
+    },
+    {
       "id": "print-redact.LibraryError",
       "requirement": "r2-held",
       "package": "./internal/redact",
@@ -1458,6 +1603,16 @@
       "site": "agent-secrets secret forms, the credentials' token refusal inside the Secret Manager client's error (the auth library prints the answer's body)",
       "source": "the token-source hand-off census at a87a6767ca",
       "guard": "site-gcp-secret-manager-token"
+    },
+    {
+      "site": "brokerclient DeviceFlow.Refresh, a page in the token endpoint's place echoing the refresh token and the client secret",
+      "source": "the proxy-echo rows at c40c4751f9",
+      "guard": "leak-proxy-echo-refresh"
+    },
+    {
+      "site": "brokerclient external_account impersonation, a page in the call's place echoing the access token the exchange minted",
+      "source": "the proxy-echo rows at c40c4751f9",
+      "guard": "leak-proxy-echo-impersonation"
     },
     {
       "site": "the refusal sentence's rows watched a capture their test never wrote",

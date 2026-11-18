@@ -45,8 +45,10 @@ import (
 
 const module = "github.com/sjawhar/envoy"
 
-// markers are the probe's made-up credentials; a row's evidence is one of them in captured output.
-var markers = []string{"not-a-secret-user", "not-a-secret-password", "not-a-secret-token"}
+// markers are the made-up credentials a row's evidence is one of in captured output: the probe's,
+// and -RDX-, which each credential the proxy-echo rows' requests carry holds
+// (internal/brokerclient/proxy_echo_test.go).
+var markers = []string{"not-a-secret-user", "not-a-secret-password", "not-a-secret-token", "-RDX-"}
 
 type inventory struct {
 	Gate   gateConfig    `json:"gate"`
