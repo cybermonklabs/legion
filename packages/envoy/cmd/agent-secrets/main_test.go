@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -491,6 +492,39 @@ func writeKeyDir(t *testing.T, key *ecdsa.PrivateKey, enrollmentID string) strin
 		t.Fatalf("write enrollment: %v", err)
 	}
 	return dir
+}
+
+// proofKey is a session key that signs as testEnrollmentID, with the key dir that holds both, for
+// a fake broker that checks each proof as the broker does.
+type proofKey struct {
+	thumbprint string
+	keyDir     string
+}
+
+func newProofKey(t *testing.T) *proofKey {
+	t.Helper()
+	key, err := proof.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &proofKey{thumbprint: thumbprint, keyDir: writeKeyDir(t, key, testEnrollmentID)}
+}
+
+// verify checks r's proof as the broker's proof.Verifier does, for this key's enrollment alone,
+// with the htu rebuilt from publicURL and r's path, never its query, as the broker rebuilds it
+// from BROKER_PUBLIC_URL. A client that signed anything else is refused.
+func (k *proofKey) verify(r *http.Request, publicURL string) error {
+	verifier := &proof.Verifier{Skew: time.Minute,
+		Lookup: func(_ context.Context, id string) (string, bool, error) {
+			return k.thumbprint, id == testEnrollmentID, nil
+		},
+		Replay: func(context.Context, string, time.Time) (bool, error) { return true, nil }}
+	_, err := verifier.Verify(r.Context(), r.Header.Get("Proof"), r.Method, publicURL+r.URL.Path, time.Now())
+	return err
 }
 
 // runAgentSecrets runs the built binary against broker and keyDir, returning its separate
