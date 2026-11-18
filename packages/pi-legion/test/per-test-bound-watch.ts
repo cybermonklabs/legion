@@ -17,7 +17,9 @@ const [pidArgument = "", boundArgument = ""] = process.argv.slice(2);
 const bunPid = Number(pidArgument);
 const boundMs = Number(boundArgument);
 if (!Number.isSafeInteger(bunPid) || !Number.isSafeInteger(boundMs)) {
-  throw new Error(`usage: per-test-bound-watch.ts <bun test pid> <bound ms>, not ${process.argv.slice(2).join(" ")}`);
+  throw new Error(
+    `usage: per-test-bound-watch.ts <bun test pid> <bound ms>, not ${process.argv.slice(2).join(" ")}`
+  );
 }
 
 /** Field `index` (1-based, as proc(5) numbers them) of `/proc/<pid>/stat`, or undefined when the
@@ -60,7 +62,10 @@ function descendants(pid: number): { pid: number; command: string }[] {
     } catch {
       continue;
     }
-    found.push({ pid: next, command: command.length > 200 ? `${command.slice(0, 200)}…` : command });
+    found.push({
+      pid: next,
+      command: command.length > 200 ? `${command.slice(0, 200)}…` : command,
+    });
     queue.push(...(children.get(next) ?? []));
   }
   return found;

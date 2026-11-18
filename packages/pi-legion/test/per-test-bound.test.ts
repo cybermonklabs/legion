@@ -31,7 +31,13 @@ async function run(files: Record<string, string>, env: Record<string, string> = 
   for (const [name, source] of Object.entries(files)) writeFileSync(path.join(dir, name), source);
   const { GITHUB_ACTIONS: _, ...inherited } = process.env;
   const child = Bun.spawn(
-    [process.execPath, "test", "--preload", preload, ...Object.keys(files).map((name) => `./${name}`)],
+    [
+      process.execPath,
+      "test",
+      "--preload",
+      preload,
+      ...Object.keys(files).map((name) => `./${name}`),
+    ],
     {
       cwd: dir,
       env: { ...inherited, ...env, LEGION_TEST_BOUND_MS: String(BOUND_MS) },
@@ -78,7 +84,9 @@ test(
   "a test file whose module body never settles is named by the end of the file before it",
   async () => {
     const { code, signal, output } = await run({
-      "first.test.ts": ['import { test } from "bun:test";', 'test("ends at once", () => {});'].join("\n"),
+      "first.test.ts": ['import { test } from "bun:test";', 'test("ends at once", () => {});'].join(
+        "\n"
+      ),
       // A module body is no test: Bun's per-test timeout never starts for it.
       "stuck.test.ts": [
         'import { test } from "bun:test";',
@@ -107,7 +115,9 @@ test(
     expect({ code, signal }).toEqual({ code: 1, signal: null });
     expect(output).toContain("this test timed out after 1000ms");
     expect(output).not.toContain("the per-test bound is");
-    expect(output).toMatch(/per-test bound: the slowest test was test 2 of settles\.test\.ts, 1 s of the 5 s bound/);
+    expect(output).toMatch(
+      /per-test bound: the slowest test was test 2 of settles\.test\.ts, 1 s of the 5 s bound/
+    );
   },
   ROW_MS
 );
