@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
@@ -322,12 +323,12 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 }
 
 // The ask is published and marked under the claim's own lock, and that lock is taken without
-// waiting (supervise's Machine.PublishUpdateAsk). The role-message lane runs one row at a time,
-// and a Sandbox relaunch holds a claim's lock for minutes while the runtime waits out its pod, so
-// a row that waited for that lock would hold every phase-ended message, hook prompt and ask of
-// every issue behind one relaunch. Here the claim's machine is held inside a Resume: the row
-// returns a wait at once, having published nothing and marked nothing, and the row's next attempt
-// once the relaunch is over publishes the ask, which is delivered once in all.
+// waiting (supervise's Machine.PublishUpdateAsk). An issue's role-message lane runs one row at a
+// time (record.LaneKey), and a Sandbox relaunch holds a claim's lock for minutes while the runtime
+// waits out its pod, so a row that waited for that lock would hold every phase-ended message, hook
+// prompt and ask of that issue behind one relaunch. Here the claim's machine is held inside a
+// Resume: the row returns a wait at once, having published nothing and marked nothing, and the
+// row's next attempt once the relaunch is over publishes the ask, which is delivered once in all.
 //
 // The negative control is a row that takes the lock with waiting: the run below does not return
 // while the relaunch is held inside its Resume. On 74ab1cd3, which published with no lock held,
@@ -395,5 +396,52 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 	}
 	if n := rig.askedOf(claim.RoleImplementer); n != 1 {
 		t.Errorf("the implementer was asked %d times, want once", n)
+	}
+}
+
+// stoppingPublisher delivers through the listener and then cancels the context its row runs
+// under, as a daemon stop does while a row is in its publish.
+type stoppingPublisher struct {
+	inner  notify.Publisher
+	cancel context.CancelFunc
+}
+
+func (p stoppingPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) error {
+	err := p.inner.Publish(ctx, topic, message, payload, key)
+	p.cancel()
+	return err
+}
+
+// A daemon stop that cancels the lane while its row is in a delivered publish still leaves the
+// mark written: the mark's write runs under context.WithoutCancel, bounded by the claim-write
+// deadline (supervise's Machine.PublishUpdateAsk), as the outbox's own settle takes a fresh
+// context. Otherwise every ordinary stop after a delivered publish would leave the stored claim
+// unmarked, and the next boot would ask the role again. The negative control is dc009ea4, which
+// wrote the mark under the lane's context: the store refused the write as cancelled, the row
+// answered an error and the stored claim held no mark.
+func TestPodUpdateAskDeliveredAsTheDaemonStopsIsStillMarked(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	row := rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
+	rig.settleAll()
+
+	stopping, stop := context.WithCancel(rig.ctx)
+	defer stop()
+	rig.lane.notices = stoppingPublisher{inner: rig.listener, cancel: stop}
+	if err := rig.lane.execute(stopping, row); err != nil {
+		t.Fatalf("the ask delivered as the daemon stopped = %v, want the row finished", err)
+	}
+	if n := rig.deliveredTo(claim.RoleImplementer); n != 1 {
+		t.Fatalf("the implementer's topic was delivered %d asks, want one", n)
+	}
+	var marked *time.Time
+	if err := rig.pool.QueryRow(rig.ctx, "select update_tasked_at from claims where token = $1",
+		string(rig.tokens[claim.RoleImplementer])).Scan(&marked); err != nil {
+		t.Fatalf("read the implementer's stored claim: %v", err)
+	}
+	if marked == nil {
+		t.Fatal("the ask reached the implementer as the daemon stopped, and the stored claim records no mark; want it marked, so the next boot does not ask again")
 	}
 }

@@ -2057,9 +2057,10 @@ Left in place, the row would then publish the ask it was queued with, which name
 The roll forward does not need the row: it resets every pod round that the earlier release opened or kept open, as the first deploy did, and then asks again each role of such a round that has not answered.
 The `update` clears the ask mark (`update_tasked_at`) of every claim of a pod round that has not answered.
 The earlier release reads that mark as the moment it queued its own task, and it asks the role again only once its re-ask bound has passed since that moment, 1 hour by default (`askForUpdate` and `updateReaskDue` in `internal/supervise/table.go` on that release).
-This release writes the mark when it queues its Envoy ask, before the ask is published, so a role whose `update_ask` row the `delete from outbox` above removes was never asked.
+This release writes the mark only once its Envoy ask reached a session (`Machine.PublishUpdateAsk`), so a role whose `update_ask` row the `delete from outbox` above removes has no mark of that ask.
 With the mark cleared, the earlier release queues its task at once for each role of an open pod round that has not answered.
 A claim that has answered keeps its mark, and the earlier release asks no claim that has answered.
+A rollback to a release that writes the mark when it queues its ask (any release before migration `20261117200337`) asks once more each role whose ask of an open round is still queued at the rollback: that release reads such a claim as unasked and queues its own ask beside the row, so the role can read the ask twice.
 
 **Every daemon sharing the database moves together.**
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `claims` is one table for all of them, with the project in a column of each row (`store/migrations/0002_claims.up.sql`).

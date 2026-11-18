@@ -1641,28 +1641,38 @@ const (
 //
 //  1. The lock is taken without waiting. A decision in flight holds it — a Sandbox relaunch for
 //     minutes while the runtime waits out the pod — and the caller runs on the outbox's
-//     role-message lane, one row at a time, so a caller that waited would hold every role message
-//     of every issue behind that decision. Held, the call answers ErrMachineBusy having published
-//     nothing, and the row's next attempt is still the first publish.
+//     role-message lane of this claim's issue, one row at a time (record.LaneKey), so a caller
+//     that waited would hold every role message of that issue behind that decision. Held, the
+//     call answers ErrMachineBusy having published nothing, and the row's next attempt is still
+//     the first publish.
 //  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
 //     is one an earlier ask of round already reached. Two rows of one round — a row left by an
 //     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
 //     order they run in and whichever of them finds a holder.
 //  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
-//     between the publish and the mark. The lock is held for one publish at most, which the
-//     publisher bounds (notify's request timeout); the claim's other decisions wait that long.
+//     between the publish and the mark. The section holds the lock for at most the owed write's
+//     repair, the publish and the mark's write: the claim-write deadline twice and notify's
+//     request timeout once, about 20 seconds, and the claim's other decisions wait that long.
 //  4. The mark is set in memory and written before the section ends, and before the row can end.
-//     A write the store does not take is owed (persist) and the mark stays in memory, and the call
-//     answers UpdateAskDelivered with the store's error: the row stays queued, its next attempt
-//     makes the owed write at its head (repair), finds the mark and publishes nothing, and it
-//     answers an error for as long as the write stays owed.
+//     The write runs under context.WithoutCancel, still bounded by the claim-write deadline
+//     (write), so a daemon stop that cancels the lane during or just after a delivered publish
+//     does not leave the mark unwritten; the outbox's own settle takes a fresh context for the
+//     same reason (outboxSettleTimeout). A write the store does not take, for a reason that judged
+//     no statement, is owed (persist) and the mark stays in memory, and the call answers
+//     UpdateAskDelivered with the store's error: the row stays queued, its next attempt makes the
+//     owed write at its head (repair), finds the mark and publishes nothing, and it answers an
+//     error for as long as the write stays owed. A write the store refuses outright is not owed
+//     (writeOwed): the mark stays in memory alone, the row's next attempt finds it and finishes,
+//     and after a restart, which loads the claim without it, the sweep asks the role again under
+//     a new row's dedupe key.
 //
-// What is left is a daemon that stops between a delivered publish and the write of its mark. It
-// boots with the row still queued and the claim unmarked, so the row publishes once more, under
-// the row's own dedupe key (record.OutboxKey), which the listener answers as a repeat, forwarding
-// nothing, to a holder it already forwarded that key to within its dedupe window (ten minutes, in
-// the listener's memory). Past that window, or across a listener restart, the role reads the ask
-// twice: one message more, never an ask lost.
+// What is left is a daemon that dies between a delivered publish and the write of its mark, a
+// crash rather than a stop, which the write outlives. It boots with the row still queued and the
+// claim unmarked, so the row publishes once more, under the row's own dedupe key
+// (record.OutboxKey), which the listener answers as a repeat, forwarding nothing, to a holder it
+// already forwarded that key to within its dedupe window (ten minutes, in the listener's memory).
+// Past that window, or across a listener restart, the role reads the ask twice: one message more,
+// never an ask lost (dispatch://INFRA-4109 R4 accepts it).
 //
 // It is no event, as PodUpdateTold is none: the outbox's publish is what reaches the role, and the
 // mark is bookkeeping of it.
@@ -1689,7 +1699,7 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 	}
 	at := m.deps.Clock.Now()
 	m.claim.UpdateTaskedAt = &at
-	return UpdateAskDelivered, m.persist(ctx)
+	return UpdateAskDelivered, m.persist(context.WithoutCancel(ctx))
 }
 
 // markRound stamps mark, one of this claim's own update-round marks, at the clock, for round

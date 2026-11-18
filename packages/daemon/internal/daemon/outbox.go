@@ -1657,10 +1657,11 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // ask nor gives one twice. In short: the machine's lock is taken without waiting, the claim is
 // read under it, the ask is published, and the claim is marked asked only once the publish
 // reached a session, all before the row can end. A machine whose lock is held is a wait: this
-// lane runs one row at a time, and a Sandbox relaunch holds that lock for minutes, so waiting for
-// it would hold every role message of every issue behind one decision. The row keeps its place,
-// nothing was published, and its next attempt is the first publish. A claim an earlier ask of the
-// round already reached is published nothing, so a second row of one round asks no role twice.
+// issue's role-message lane runs one row at a time (record.LaneKey), and a Sandbox relaunch holds
+// that lock for minutes, so waiting for it would hold every role message of this issue behind one
+// decision. The row keeps its place, nothing was published, and its next attempt is the first
+// publish. A claim an earlier ask of the round already reached is published nothing, so a second
+// row of one round asks no role twice.
 //
 // A topic with no live holder (notify.ErrNoHolder) is logged on one line and ends the row with
 // nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
