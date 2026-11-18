@@ -270,12 +270,15 @@ func (w *window) sendJetStream(subject, msgID string, data []byte) (func() error
 	if msgID != "" {
 		options = append(options, nats.MsgId(msgID))
 	}
+	// The refusal signal is taken before the message goes out, so a violation of this send closes
+	// it whenever it is recorded (acknowledged).
+	signal := w.client.refusalSignal()
 	sentAt := time.Now()
 	future, err := w.js.PublishMsgAsync(&nats.Msg{Subject: subject, Data: data}, options...)
 	if err != nil {
 		return nil, w.unsent(err, len(data))
 	}
-	return func() error { return w.acknowledged(future, subject, sentAt) }, nil
+	return func() error { return w.acknowledged(future, subject, sentAt, signal) }, nil
 }
 
 // requestReplies is how many replies to one Request wait to be read: it expects the stream's
@@ -355,7 +358,10 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	deadline := time.Now().Add(cmp.Or(opts.Timeout, publishAcknowledgementTimeout))
 	before := observe(w.conn)
 	// Read right before the send, so the request takes only a violation the server reported of
-	// its own message and never one an earlier send of the subject earned (deniedPublish).
+	// its own message and never one an earlier send of the subject earned (deniedPublish); the
+	// refusal signal is taken first, so a violation of this send closes it whenever it is
+	// recorded.
+	signal := w.client.refusalSignal()
 	sentAt := time.Now()
 	if err := w.conn.PublishMsg(msg); err != nil {
 		_ = inboxSub.Unsubscribe()
@@ -450,12 +456,8 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		defer timer.Stop()
 		// The record answers the request as soon as the violation is recorded too
 		// (refusalSignal), so a refusal the flush could not name is not left to the timeout. The
-		// signal is taken before the record is first read, so a violation recorded between the two
-		// still wakes the wait, and taken again on each wake before the record is read.
-		signal := w.client.refusalSignal()
-		if denial := denied(); denial != nil {
-			return denial
-		}
+		// signal was taken before the message went out, so a violation recorded since closes it,
+		// and it is taken again on each wake before the record is read.
 		for {
 			select {
 			case <-signal:
@@ -556,24 +558,22 @@ func (w *window) Probe(timeout time.Duration) error {
 //
 // A denied publish is acknowledged by nothing, so the violation the connection reported
 // (deniedPublish) is the only evidence of it, read under this send's own subject and its own send
-// time, and it answers the publish as soon as it is recorded (refusalSignal) rather than at the end
-// of the acknowledgement's own wait. The signal is taken before the record is first read, so a
-// violation recorded between the two still wakes the wait, and taking it is one atomic load, so
-// a window's publish the stream acknowledges pays nothing for it.
-func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt time.Time) error {
+// time, and it answers the publish as soon as it is recorded rather than at the end of the
+// acknowledgement's own wait: signal is the refusal signal sendJetStream took before it put the
+// message on the wire (refusalSignal), so any violation recorded since closes it, and the record is
+// read only then and on the error arm. A publish the stream acknowledges reads no record, as at
+// main.
+func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt time.Time, signal <-chan struct{}) error {
 	for {
-		signal := w.client.refusalSignal()
-		// A window sends every destination of one event on one connection, so a grant that
-		// denies several of them has the server report a violation of each: the record answers
-		// each send with its own, where the connection's one last error held only the one that
-		// landed last and left every other denied send to report the ErrUnavailable below.
-		if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
-			return denied
-		}
 		select {
 		case <-future.Ok():
 			return nil
 		case err := <-future.Err():
+			// A window sends every destination of one event on one connection, so a grant that
+			// denies several of them has the server report a violation of each: the record
+			// answers each send with its own, where the connection's one last error held only the
+			// one that landed last and left every other denied send to report the ErrUnavailable
+			// below.
 			if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
 				return denied
 			}
@@ -585,6 +585,10 @@ func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt tim
 			}
 			return streamFull(err)
 		case <-signal:
+			signal = w.client.refusalSignal()
+			if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
+				return denied
+			}
 		}
 	}
 }

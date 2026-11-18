@@ -279,14 +279,14 @@ func clientOwning(conn *nats.Conn) *Client {
 	return nil
 }
 
-// refusedSend is send's answer, or the server's refusal of one of subjects, the subjects send
-// publishes to, when the client owning conn records one of them at or after the moment this send
-// began, whichever comes first. The server reports such a refusal on the connection and never in
-// the request's own answer (publishRefusal), so a request it refused reads exactly like one it is
-// still working on until its wait runs out; the record is what tells the two apart, and the signal
-// the record gives (refusalSignal) is what answers the send as soon as the refusal arrives, where
-// reading the record only after send returned spent the request's whole wait, RequestTimeout for
-// a start, on a request refused at once.
+// refusedBy is send's answer, or the server's refusal of one of subjects, the subjects send
+// publishes to, when owner, the client that owns the connection send goes out on, records one of
+// them at or after the moment this send began, whichever comes first. The server reports such a
+// refusal on the connection and never in the request's own answer (publishRefusal), so a request
+// it refused reads exactly like one it is still working on until its wait runs out; the record is
+// what tells the two apart, and the signal the record gives (refusalSignal) is what answers the
+// send as soon as the refusal arrives, where reading the record only after send returned spent the
+// request's whole wait, RequestTimeout for a start, on a request refused at once.
 //
 // A request the connection's grant does not cover is refused however often it is sent, so naming
 // the refusal is also what keeps it from being sent again: sentAgain stops at the first answer
@@ -302,17 +302,13 @@ func clientOwning(conn *nats.Conn) *Client {
 // request the bus serves take refusedAfter, which costs nothing when the server answers. The
 // signal is taken and the time read before send, because deniedPublish takes only a violation
 // recorded at or after the moment the caller's own message went out and send's message goes out
-// after this. A connection no client owns records nothing, so its send is answered as it was
-// before.
-func refusedSend[T any](conn *nats.Conn, subjects []string, send func() (T, error)) (T, error) {
-	return refusedBy(clientOwning(conn), subjects, send)
-}
-
-// refusedBy is refusedSend with the client whose record is read named by the caller: owner, and
-// none when it is nil. A caller that makes many requests finds its owner once (readsRefusals, the
-// KeyValue handle); the client's own JetStream context and stream ensure name the client itself
-// (Client.readsOwnRefusals), since the constructor ensures the stream before the client is
-// registered (install).
+// after this.
+//
+// The caller names owner, found once for the many requests it makes (readsRefusals and the
+// KeyValue handle look it up with clientOwning); the client's own JetStream context and stream
+// ensure name the client itself (Client.readsOwnRefusals), since the constructor ensures the
+// stream before the client is registered (install). owner nil, a connection no client owns,
+// records nothing, so its send is answered as it was before.
 func refusedBy[T any](owner *Client, subjects []string, send func() (T, error)) (T, error) {
 	if owner == nil {
 		return send()

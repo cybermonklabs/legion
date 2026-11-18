@@ -244,7 +244,7 @@ func namedRequest(request string, err error) error {
 // A request the server refuses under the connection's grant is not sent again, since it would be
 // refused again: the server answers such a request with nothing and reports the refusal on the
 // connection instead, where the client that owns conn records it (recordPublishDenial), and the
-// send reads that record rather than take the silence for a member still working (refusedSend).
+// send reads that record rather than take the silence for a member still working (refusedBy).
 // A step whose request is refused therefore costs one send and ends with an error naming
 // ErrPublishDenied and the subject, `KV_legion_agents STREAM.INFO: bus: NATS denied the publish
 // to "$JS.API.STREAM.INFO.KV_legion_agents": ...`, where it would otherwise be sent again until
@@ -326,7 +326,7 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 		// configuration the stream already holds: it changes nothing when it lands twice, while
 		// the replica or age change updateStream guards is a write another one can race. A
 		// request of the step the server refuses under the connection's grant ends the step at
-		// that send instead (refusedSend): it would be refused again.
+		// that send instead (refusedBy): it would be refused again.
 		kv, err = sentAgain(ctx, create, func() (nats.KeyValue, error) { return js.CreateKeyValue(config) })
 		if errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			// The bucket was created between this start's lookup and its create, by another start
@@ -706,7 +706,7 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	request := "KV_" + kv.Bucket() + " handle open"
 	owner := clientOwning(conn)
 	// The open is one STREAM.INFO of the bucket's stream, read for the server's refusal as every
-	// request of a start is (refusedSend): the jetstream API has no context to wrap, so the send is.
+	// request of a start is (refusedBy): the jetstream API has no context to wrap, so the send is.
 	open := func() (jetstream.KeyValue, error) {
 		ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 		defer cancel()

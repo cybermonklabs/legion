@@ -287,7 +287,7 @@ func TestAStreamEnsureTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
 
 // A start whose lookup of a bucket draws no answer is not ended by the server's refusal of a
 // subject that lookup never published to: a refusal of another subject is not this send's
-// answer, so the lookup is sent again, and the start ends at its hang guard. refusedSend reads
+// answer, so the lookup is sent again, and the start ends at its hang guard. refusedBy reads
 // the record under the subjects the step publishes to, and that list is what keeps the two apart:
 // a read of whatever refusal the connection holds would end this start at its first send with
 // another subject's violation, and every other row of this package would still pass, since no
@@ -297,7 +297,7 @@ func TestAStreamEnsureTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
 // is refused, and the relay drops every send of the lookup, so the call draws no answer at all.
 // The refusal the row plants beside it is of the delete of the bucket's stream, which no step of
 // EnsureKeyValue publishes to. The row reads that record itself before it reads the call's
-// error, because a row that never saw the refusal recorded would pass whatever refusedSend read.
+// error, because a row that never saw the refusal recorded would pass whatever refusedBy read.
 func TestARefusalOfAnotherSubjectDoesNotAnswerAnUnansweredLookup(t *testing.T) {
 	const bucket = "envoy_denied_other_subject"
 	// The delete of the bucket's own stream: a subject no step of this call publishes to, and

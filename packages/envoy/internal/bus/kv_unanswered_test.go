@@ -219,7 +219,7 @@ func (r *unansweredRelay) filter(server, client net.Conn) {
 // connection, and the dropped request is sent again only because that client recorded no refusal
 // of it. The denied row holds the other half of that path, where the record names a refusal and
 // the send is not made again (TestADeniedBucketLookupIsNotSentAgain). A connection no client owns
-// returns refusedSend at its early exit, so a row on one would never reach the record at all.
+// returns refusedBy at its early exit, so a row on one would never reach the record at all.
 func relayedJetStream(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.JetStreamContext) {
 	t.Helper()
 	client, err := Connect([]string{relay.url})
@@ -375,7 +375,7 @@ func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 // unansweredKeyValue creates the bucket on a connection through relay and returns that connection
 // with the legacy handle a start holds when it comes to open the jetstream handle of it. The
 // connection is relayedJetStream's, a client's, so a row that drives the whole of EnsureKeyValue
-// on it reads the refusal record that call reads (refusedSend, clientOwning) rather than the
+// on it reads the refusal record that call reads (refusedBy, clientOwning) rather than the
 // early exit a connection no client owns takes.
 func unansweredKeyValue(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.JetStreamContext, nats.KeyValue) {
 	t.Helper()
