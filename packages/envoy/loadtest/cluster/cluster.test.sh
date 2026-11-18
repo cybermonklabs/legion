@@ -241,6 +241,11 @@ for a in "$@"; do
 done
 $has_ns || printf '%s\n' "$*" >>"$FAKE_DIR/kubectl-no-ns.log"
 c=${cmd[*]:-}
+# credential_reader JOB DIR LOG: the job a call that carries the copy's credentials starts here
+# (runner_start -c, replay_checksum) in place of loadgen: one line per file of DIR, "JOB FILE MODE
+# DIR-MODE CONTENT", appended to LOG -- what the job would read, and how the runner kept it.
+# shellcheck disable=SC2016 # expanded by the runner's sh
+credential_reader='for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$(stat -c %a "$2")" "$(cat "$f")"; done >>"$3"'
 case $verb in
   get)
     case "$*" in
@@ -335,7 +340,31 @@ case $verb in
           printf 'usage_usec 123456\nthrottled_usec 0\ncpu_max 1600000 100000\nmemory_current 1048576\ninactive_file 4096\nend\n'
         fi
         ;;
-      "sh -c name="*) printf '%s\n' "${cmd[*]:4}" >>"$FAKE_DIR/runner-starts" ;;
+      # A runner job's start (runner_start). One started with the copy's credentials (-c) runs the
+      # runner's own script here, on the fake runner's /work with this call's standard input, so
+      # the script itself writes the credentials and its job's EXIT trap removes them; the job it
+      # starts is credential_reader, in place of the loadgen command the start line names.
+      "sh -c name="*)
+        printf '%s\n' "${cmd[*]:4}" >>"$FAKE_DIR/runner-starts"
+        if [[ ${cmd[2]} == *'read -r v'* ]]; then
+          mkdir -p "$FAKE_DIR/runner/work"
+          sh -c "${cmd[2]//\/work/$FAKE_DIR/runner/work}" sh "${cmd[4]}" \
+            sh -c "$credential_reader" sh "${cmd[4]}" "$FAKE_DIR/runner/work/secrets/${cmd[4]}" "$FAKE_DIR/runner-credentials" || exit $?
+        fi
+        ;;
+      # replay_checksum: the runner's own script too, with credential_reader and then the checksum
+      # line standing in for loadgen replay-checksum.
+      'sh -c secrets=$1; '*)
+        if [ "${cmd[5]:-} ${cmd[6]:-}" != "/work/loadgen replay-checksum" ]; then
+          echo "fake kubectl exec: unexpected command given the copy's credentials: $c" >&2
+          exit 1
+        fi
+        mkdir -p "$FAKE_DIR/runner/work"
+        sh -c "${cmd[2]//\/work/$FAKE_DIR/runner/work}" sh "$FAKE_DIR/runner${cmd[4]}" \
+          sh -c "$credential_reader"' && echo "{\"issues\": 1047, \"md5\": \"fakemd5\"}"' \
+          sh replay-checksum "$FAKE_DIR/runner${cmd[4]}" "$FAKE_DIR/runner-credentials"
+        exit $?
+        ;;
       # The job a stop names (runner_stop, runner_wait's bound, typing_stop) and, in a file of
       # its own so that every exact check of runner-stops keeps reading one job name per line,
       # the job a SIGKILL names (runner_wait past its grace), with the second that SIGKILL was
@@ -383,7 +412,6 @@ case $verb in
       # A replay step: the runner's directories, the bundle copied in and verified there.
       "sh -c rm -rf /work/bundle"*) ;;
       "tar -C /work -xf -") cat >/dev/null ;;
-      "/work/loadgen replay-checksum "*) echo '{"issues": 1047, "md5": "fakemd5"}' ;;
       "/work/loadgen replay-verify-bundle "*) echo '{"files": 28}' ;;
       *"/healthz")
         echo '{"ok":true,"nats":true,"schema_version":121}'
@@ -970,7 +998,7 @@ write_pods() {
 }
 
 reset_fake() {
-  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/seeded" "$fake/runner-starts" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
+  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/seeded" "$fake/runner-starts" "$fake/runner-credentials" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
     "$fake/runner-stops" "$fake/runner-kills" "$fake/runner-kill-times" "$fake/rc-polls" "$fake/rc-kill-polls" "$fake/df-seq" "$fake/runner-heap-kept" "$fake/lock-get-fails" "$fake/lock-get-oks" \
     "$fake/sleep.log" "$fake/apply-errors" "$fake/replay-template" "$fake/restores" "$fake/pod-dump" \
     "$fake/stored-order.log" "$fake/go-dispatch.log" "$fake/go-browsertype.log" "$fake/git.log" \
@@ -1278,6 +1306,48 @@ jq -e '.browsertype == null' "$run_dir/state.json" >/dev/null || fail "state.jso
   fail "up did not copy envoy-dispatch into the runner"
 pg_password=$(jq -r .secrets.pg_password "$run_dir/state.json")
 
+# copy_credentials: the three credentials of the run in run_dir as a runner job reads them, one a
+# line in RUNNER_CREDENTIALS' order and with its file's name: dispatch-token, listener-token,
+# pg-url. A run whose state.json lacks one fails here, so no check below compares against nothing.
+copy_credentials() {
+  local dt lt pw
+  dt=$(jq -r '.secrets.dispatch_token // empty' "$run_dir/state.json")
+  lt=$(jq -r '.secrets.listener_token // empty' "$run_dir/state.json")
+  pw=$(jq -r '.secrets.pg_password // empty' "$run_dir/state.json")
+  [ -n "$dt" ] && [ -n "$lt" ] && [ -n "$pw" ] || fail "$run_dir/state.json lacks a credential of the copy"
+  printf '%s\n' "dispatch-token $dt" "listener-token $lt" "pg-url postgres://dispatch:$pw@postgres.$ns.svc:5432/dispatch?sslmode=disable"
+}
+
+# job_credentials JOB: the runner job JOB read the copy's three credentials from files of mode 600
+# in a directory of mode 700 of its own, each holding the copy's own value (credential_reader's
+# record), and that directory is gone once the job has ended: the EXIT trap of the runner sh that
+# waited on the job removed it. A detached job's removal lands a moment after its start returned.
+job_credentials() {
+  local job=$1 dir=$fake/runner/work/secrets/$1 naps=0 file value creds
+  creds=$(copy_credentials)
+  until [ ! -e "$dir" ]; do
+    ((++naps <= 200)) || fail "runner job $job's credentials are still in the runner after it ended: $(ls -l "$dir")"
+    sleep 0.05
+  done
+  while read -r file value; do
+    grep -qxF -- "$job $file 600 700 $value" "$fake/runner-credentials" 2>/dev/null ||
+      fail "runner job $job read no $file of mode 600, in a directory of mode 700, holding the copy's own value: $(grep "^$job " "$fake/runner-credentials" 2>/dev/null)"
+  done <<<"$creds"
+}
+
+# no_credential_in_kubectl_args: no kubectl call so far carries a credential of the copy among its
+# arguments, where every user of this pod can read it (/proc/<pid>/cmdline).
+no_credential_in_kubectl_args() {
+  local file value creds
+  creds=$(copy_credentials)
+  while read -r file value; do
+    # The Postgres URL's password alone: the rest of the URL is no secret.
+    [ "$file" != pg-url ] || value=$(jq -r .secrets.pg_password "$run_dir/state.json")
+    ! grep -qF -- "$value" "$fake/kubectl.log" ||
+      fail "a kubectl call carries the copy's $file on its command line: $(grep -m1 -F -- "$value" "$fake/kubectl.log")"
+  done <<<"$creds"
+}
+
 run_cluster seed --namespace "$ns"
 ((RC == 0)) || fail "seed exited $RC"
 [ -f "$run_dir/seed.json" ] || fail "seed kept no seed.json in the run directory"
@@ -1289,6 +1359,23 @@ for k in artifact_versions ref_targets ref_target_versions ref_sources artifact_
   jq -e --arg k "$k" '.counts | has($k)' "$run_dir/seed.meta.json" >/dev/null ||
     fail "seed.meta.json's counts lack $k, which common.sh's SEED_COUNTS_SQL counts: $(jq -c .counts "$run_dir/seed.meta.json" 2>/dev/null)"
 done
+# Each of the seed's loadgen jobs is given the -…-file forms of its credentials, naming files the
+# runner wrote for that job alone, and no kubectl call carries a credential.
+for job in seed seed-refs seed-finish; do
+  start=$(grep "^$job /work/loadgen " "$fake/runner-starts") || fail "the seed started no loadgen $job in the runner"
+  wants=("-pg-file /work/secrets/$job/pg-url ")
+  [ "$job" = seed-finish ] ||
+    wants+=("-token-file /work/secrets/$job/dispatch-token " "-listener-token-file /work/secrets/$job/listener-token ")
+  for want in "${wants[@]}"; do
+    [[ "$start " == *" $want"* ]] || fail "loadgen $job is not given '$want': $start"
+  done
+  for gone in "-token " "-listener-token " "-pg "; do
+    [[ "$start " != *" $gone"* ]] || fail "loadgen $job is still given ${gone% } as a value: $start"
+  done
+  job_credentials "$job"
+done
+no_credential_in_kubectl_args
+pass "seed's loadgen jobs read the copy's credentials from files of mode 600 the runner writes for each job alone and removes when it ends, and no kubectl call carries one"
 
 run_cluster step --namespace "$ns" smoke 1 --duration 1m
 ((RC == 0)) || fail "step exited $RC"
@@ -1302,9 +1389,12 @@ cmp -s "$fake/stepdir/heap.txt" "$run_dir/steps/smoke/heap.txt" || fail "heap.tx
 grep -q -- 'gzip -1 -c /work/steps/smoke/heap.txt' "$fake/kubectl.log" || fail "heap.txt did not come back by its own stream"
 start=$(grep '^step-smoke ' "$fake/runner-starts") || fail "the step started no loadgen run in the runner"
 for want in "run -allow-foreign" "-events 4 " "-sessions 400 " "-requests 60 " "-duration 1m " "-warmup 30s " "-grace 20s " \
-  "-rng-seed 1 " "-copy-meta /work/meta/smoke.json" "-nats-server-name nats-0" "-pg postgres://dispatch:"; do
+  "-rng-seed 1 " "-copy-meta /work/meta/smoke.json" "-nats-server-name nats-0" "-token-file /work/secrets/step-smoke/dispatch-token " \
+  "-listener-token-file /work/secrets/step-smoke/listener-token " "-pg-file /work/secrets/step-smoke/pg-url "; do
   [[ $start == *"$want"* ]] || fail "the step's loadgen run lacks '$want': $start"
 done
+job_credentials step-smoke
+no_credential_in_kubectl_args
 jq -e '.namespace == "'"$ns"'" and .postgres.version != "" and .postgres.settings_sha256 != "" and .node_cpu_model.dispatch == "Fake CPU @ 2.00GHz" and (.pods | length) == 8' \
   "$run_dir/steps/smoke/copy-meta.json" >/dev/null || fail "copy-meta.json lacks a field: $(cat "$run_dir/steps/smoke/copy-meta.json")"
 # The phase and the reads-only flag, which loadgen curves reads to place the step in the curves.
@@ -1464,9 +1554,19 @@ grep -qF 'stored-order: open database: failed to connect' "$run_dir/steps/r16/st
 start=$(grep '^replay-r16 ' "$fake/runner-starts") || fail "replay r16 started no loadgen run in the runner"
 for want in "env LOADTEST_ROOT=/work/root LOADTEST_GOMAXPROCS=16 /work/loadgen run -allow-foreign -source replay " \
   "-events 0 -requests 0 -replay-inputs /work/bundle -replay-rate 1 -replay-from 0 -replay-to 39m -rng-seed 1 -warmup 30s " \
-  "-copy-meta /work/meta/r16.json" "-pprof http://dispatch-pprof.$ns.svc:6061" "-nats-server-name nats-0"; do
+  "-copy-meta /work/meta/r16.json" "-pprof http://dispatch-pprof.$ns.svc:6061" "-nats-server-name nats-0" \
+  "-token-file /work/secrets/replay-r16/dispatch-token " "-listener-token-file /work/secrets/replay-r16/listener-token " \
+  "-pg-file /work/secrets/replay-r16/pg-url "; do
   [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
 done
+# The replay and the checksums replay-prepare and its reset read (replay_checksum) take the copy's
+# credentials as the seed and the step do, and still no kubectl call carries one.
+job_credentials replay-r16
+job_credentials replay-checksum
+grep -qF -- "sh /work/secrets/replay-checksum /work/loadgen replay-checksum -allow-foreign -url http://dispatch.$ns.svc:8766 -token-file /work/secrets/replay-checksum/dispatch-token " "$fake/kubectl.log" ||
+  fail "no loadgen replay-checksum was given its credentials' files: $(grep -F 'replay-checksum' "$fake/kubectl.log" | tail -n1)"
+no_credential_in_kubectl_args
+pass "replay and replay-checksum read the copy's credentials from files the runner writes for each and removes when it ends, and no kubectl call of up, seed, step, replay-prepare or replay carries one"
 for f in reset.json replay-prepared.json last-reset.json envoy-dispatch.json pg-stats-before.json pg-stats-after.json summary.json CODEPATHS.md; do
   [ -f "$run_dir/steps/r16/$f" ] || fail "the replay step directory has no $f"
 done
@@ -1779,10 +1879,14 @@ bt_start=$(grep -F 'typing-10x-typing /work/browsertype ' "$fake/runner-starts")
   fail "a kubectl call of the typing path wrote a token into the runner: $(grep -F 'cat >"$1/token"' "$fake/kubectl.log" | tail -n1)"
 [ ! -e "$fake/runner/work/typing/token" ] ||
   fail "the typing path left a token in the runner: $(cat "$fake/runner/work/typing/token")"
-# (loadgen run's own command line carries -token; browsertype's calls are those naming it, its
-# job or its runner directory.)
+# (browsertype's calls are those naming it, its job or its runner directory.) The step's own
+# loadgen run reads the copy's credentials from the runner, which shows the record below can hold
+# a job's; browser typing reads none (runner_start without -c).
 grep -E 'browsertype|/work/typing|sh typing-' "$fake/kubectl.log" >"$tmp/typing-calls" || fail "kubectl.log holds no browsertype call"
 ! grep -qF -- "$dispatch_token" "$tmp/typing-calls" || fail "a browsertype kubectl call carries the agent token on its command line"
+job_credentials step-10x-typing
+! grep -q '^typing-' "$fake/runner-credentials" ||
+  fail "a browsertype job was given the copy's credentials: $(grep '^typing-' "$fake/runner-credentials")"
 ! grep -rqF -- "$dispatch_token" "$tdir" || fail "a file under the step directory holds the agent token: $(grep -rlF -- "$dispatch_token" "$tdir")"
 ! grep -qF -- "$dispatch_token" "$tmp/out" || fail "step --typing printed the agent token"
 # The order in kubectl.log: the document list copied in, browsertype's start, loadgen's start
