@@ -17,7 +17,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/sjawhar/envoy/steptext"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -687,9 +687,9 @@ func (w *workflowRuntime) wakeOutbox(issue string, kind record.OutboxKind) {
 // the end is the record's one write of either, so that record then names no model.
 //
 // Both come from the agent's own frames, so each is held here to the form Dispatch holds a step's
-// agent text to (steptext.Holds), and one outside it is left out of the record rather than sent:
-// Dispatch would refuse the whole record over it, and a space or a newline in it would shift the
-// columns of `dispatch steps` or forge a line of it.
+// agent text to (steprecord.AgentTextHolds), and one outside it is left out of the record rather
+// than sent: Dispatch would refuse the whole record over it, and a space or a newline in it would
+// shift the columns of `dispatch steps` or forge a line of it.
 func (w *workflowRuntime) stepAgent(token claim.Token) workflow.StepAgent {
 	r := w.outboxWake.Load()
 	if r == nil || r.supervisor == nil {
@@ -707,11 +707,11 @@ func (w *workflowRuntime) stepAgent(token claim.Token) workflow.StepAgent {
 	return workflow.StepAgent{Session: w.agentText(token, "session", session), Model: w.agentText(token, "model", model)}
 }
 
-// agentText is text when it is in the form of a step's agent text (steptext.Holds), and "" when it
-// is not, logged with its length and its first 256 bytes, quoted, so an operator can see what the
-// record leaves out without the log carrying text of any length.
+// agentText is text when it is in the form of a step's agent text (steprecord.AgentTextHolds), and
+// "" when it is not, logged with its length and its first 256 bytes, quoted, so an operator can see
+// what the record leaves out without the log carrying text of any length.
 func (w *workflowRuntime) agentText(token claim.Token, field, text string) string {
-	if text == "" || steptext.Holds(text) {
+	if text == "" || steprecord.AgentTextHolds(text) {
 		return text
 	}
 	w.log.Warn("legion step record leaves out an agent's text outside its form", "claim", string(token), "field", field,

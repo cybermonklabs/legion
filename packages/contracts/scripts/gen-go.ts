@@ -58,6 +58,11 @@ import {
   SEARCH_QUERY_MAX,
   STEP_AGENT_TEXT_PATTERN,
   STEP_AGENT_TEXT_RULE_WORDS,
+  STEP_INPUT_CODE,
+  STEP_KINDS,
+  STEP_OTHER_ISSUE_CODE,
+  STEP_RESULTS,
+  STEP_WRITER_CODE,
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
 import {
@@ -513,10 +518,27 @@ const HandoffPhaseRule = ${JSON.stringify(HANDOFF_PHASE_RULE_WORDS)}
 // same phases.
 const HandoffPhasePattern = ${JSON.stringify(HANDOFF_PHASE_PATTERN.source)}
 
+// The kinds of a run a step record names: a step a plan names, at its place from 1, and the retro
+// and the merge, which no plan names, at the place 0. The results of a run that ended. The codes of
+// the step write's refusals that no retry changes. Generated from STEP_KINDS, STEP_RESULTS and the
+// STEP_*_CODE constants in packages/contracts: Dispatch's store and route use them, and the Legion
+// daemon reads them through github.com/sjawhar/envoy/steprecord, so no word is written twice.
+const (
+	StepKindStep       = ${JSON.stringify(STEP_KINDS[0])}
+	StepKindRetro      = ${JSON.stringify(STEP_KINDS[1])}
+	StepKindMerge      = ${JSON.stringify(STEP_KINDS[2])}
+	StepResultPassed   = ${JSON.stringify(STEP_RESULTS[0])}
+	StepResultFailed   = ${JSON.stringify(STEP_RESULTS[1])}
+	StepResultStopped  = ${JSON.stringify(STEP_RESULTS[2])}
+	StepInputCode      = ${JSON.stringify(STEP_INPUT_CODE)}
+	StepWriterCode     = ${JSON.stringify(STEP_WRITER_CODE)}
+	StepOtherIssueCode = ${JSON.stringify(STEP_OTHER_ISSUE_CODE)}
+)
+
 // StepAgentTextPattern is the form of the agent, the session and the model a step record names:
 // printable ASCII with no space, from 1 to 128 characters. Generated from STEP_AGENT_TEXT_PATTERN in
 // packages/contracts: Dispatch's step write refuses text outside it, and the Legion daemon, through
-// github.com/sjawhar/envoy/steptext, leaves such text out of the records it writes.
+// github.com/sjawhar/envoy/steprecord, leaves such text out of the records it writes.
 const StepAgentTextPattern = ${JSON.stringify(STEP_AGENT_TEXT_PATTERN.source)}
 
 // StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.

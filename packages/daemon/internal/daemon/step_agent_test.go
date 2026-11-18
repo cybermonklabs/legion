@@ -107,11 +107,11 @@ func TestAnAnswerWithNoModelLeavesTheStepWithNone(t *testing.T) {
 }
 
 // The model and the session reach the daemon from the agent's own frames, and the record of a step
-// takes neither unless it is in the form Dispatch holds a step's agent text to (steptext.Holds):
-// printable ASCII with no space, at most 128 characters. One outside it is left out where the
-// daemon reads it, so the end names no model, or no session, and is still written whole: it never
-// shifts the columns of `dispatch steps`, forges a line of it, or has Dispatch refuse the record.
-// A model and a session inside the form are kept, which is the control.
+// takes neither unless it is in the form Dispatch holds a step's agent text to
+// (steprecord.AgentTextHolds): printable ASCII with no space, at most 128 characters. One outside it
+// is left out where the daemon reads it, so the end names no model, or no session, and is still
+// written whole: it never shifts the columns of `dispatch steps`, forges a line of it, or has
+// Dispatch refuse the record. A model and a session inside the form are kept, which is the control.
 func TestAStepsAgentLeavesOutTextOutsideTheForm(t *testing.T) {
 	ctx := context.Background()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -48,19 +49,19 @@ func stepOf(p phase.Phase) (place record.StepPlace, role stepRole, typ stepType,
 	}
 	switch p {
 	case phase.Planning:
-		return at("step", 1, "planner", "planning")
+		return at(steprecord.KindStep, 1, "planner", "planning")
 	case phase.Implementing:
-		return at("step", 2, "implementer", "implementation")
+		return at(steprecord.KindStep, 2, "implementer", "implementation")
 	case phase.Testing:
-		return at("step", 3, "tester", "testing")
+		return at(steprecord.KindStep, 3, "tester", "testing")
 	case phase.Reviewing:
-		return at("step", 4, "reviewer", "review")
+		return at(steprecord.KindStep, 4, "reviewer", "review")
 	case phase.Accepting:
-		return at("step", 5, "acceptance", "review")
+		return at(steprecord.KindStep, 5, "acceptance", "review")
 	case phase.Retro:
-		return at("retro", 0, "implementer", "")
+		return at(steprecord.KindRetro, 0, "implementer", "")
 	case phase.Merging:
-		return at("merge", 0, "merger", "")
+		return at(steprecord.KindMerge, 0, "merger", "")
 	}
 	return record.StepPlace{}, "", "", false
 }
@@ -90,21 +91,21 @@ func stepAt(issue record.Issue, at phase.Phase) (standing, bool) {
 }
 
 // StepResult is how a run of a step ended: one of the three results Dispatch takes for a step
-// record. Any other text is refused there as 400 STEP_INPUT, which the outbox drops for good
-// (internal/daemon's stepRecordRefused), so every end names its result by one of the three
-// constants below.
+// record, each the word contracts gives it (steprecord). Any other text is refused there as
+// 400 STEP_INPUT, which the outbox drops for good (internal/daemon's stepRecordRefused), so every
+// end names its result by one of the three constants below.
 type StepResult string
 
 const (
 	// ResultPassed is a run whose step's work was done: the move that ended it went forward, or
 	// its merge landed in a lingering tree (closeMerged).
-	ResultPassed StepResult = "passed"
+	ResultPassed StepResult = steprecord.ResultPassed
 	// ResultFailed is a run a role or a report sent back: the tester's fail, a review's request
 	// for changes, a role's or the architect's backward move.
-	ResultFailed StepResult = "failed"
+	ResultFailed StepResult = steprecord.ResultFailed
 	// ResultStopped is a run that ended under its role with neither: a head that conflicts with
 	// its base, or an end no move of the table wrote (stepStopped).
-	ResultStopped StepResult = "stopped"
+	ResultStopped StepResult = steprecord.ResultStopped
 )
 
 // endOf is how a transition on trigger ends the step it moves the issue out of. A move back a role

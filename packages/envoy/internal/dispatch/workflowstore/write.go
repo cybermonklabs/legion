@@ -217,9 +217,10 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		switch {
 		case place < 0:
 			return "", nil, inputError("step %d is no place: a step's place is 0 or more", place)
-		case kind == StepKindStep && place < 1:
-			return "", nil, inputError("step %d is no place of a step of kind step: a plan's steps count from 1", place)
-		case kind != "" && kind != StepKindStep && place != 0:
+		case kind != "" && !contracts.StepPlaceHolds(kind, place):
+			if kind == StepKindStep {
+				return "", nil, inputError("step %d is no place of a step of kind step: a plan's steps count from 1", place)
+			}
 			return "", nil, inputError("step %d is no place of a %s: no plan names it, so its step is 0", place, kind)
 		}
 		number(AttributeStep, int64(place))

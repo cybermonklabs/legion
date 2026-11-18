@@ -140,7 +140,7 @@ on:
       - 'packages/envoy/sessiontiming/*'
       - 'packages/envoy/subjectforms/*'
       - 'packages/envoy/natsversion/*'
-      - 'packages/envoy/steptext/*'
+      - 'packages/envoy/steprecord/*'
       # ci.yaml's *dispatch_server:
       - 'packages/envoy/cmd/dispatch/*'
       - 'packages/envoy/going/*'

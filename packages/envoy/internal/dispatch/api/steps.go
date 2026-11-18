@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
@@ -28,22 +29,24 @@ import (
 // facts it caused; and it reads the issue with no open check, because the merge that closes an
 // issue ends a step of it.
 
-// The refusals of a step write, beside the package's own decode error and 404 ISSUE_NOT_FOUND.
+// The refusals of a step write, beside the package's own decode error and 404 ISSUE_NOT_FOUND,
+// each the code contracts gives it, which the Legion daemon reads to end a row on.
 const (
 	// codeStepInput is a value outside its form, or a first write of a run that does not name
 	// its identity; the message names the field (workflowstore.ErrStepInput).
-	codeStepInput = "STEP_INPUT"
+	codeStepInput = contracts.StepInputCode
 	// codeStepWriter is a writer that is not the session of the issue's project's daemon.
-	codeStepWriter = "STEP_WRITER"
+	codeStepWriter = contracts.StepWriterCode
 	// codeStepOtherIssue is an id whose record is a run of another issue.
-	codeStepOtherIssue = "STEP_OTHER_ISSUE"
+	codeStepOtherIssue = contracts.StepOtherIssueCode
 )
 
 // stepRecordInput is the body PUT /api/v1/issues/{key}/steps/{id} takes: the writer, and each
 // field of the run the write states. A field the body leaves out, or sends null or "", states
 // nothing, so the write leaves it to the write that knows it. A first write of a run names its
 // task, step, kind, role and generation. returned_to 0 is place 0 and states it
-// (workflowstore.StepWrite).
+// (workflowstore.StepWrite). The enum tags are the words of contracts' STEP_KINDS and
+// STEP_RESULTS, which a tag cannot name; TestTheStepRouteNamesContractsWords holds them to those.
 type stepRecordInput struct {
 	Actor      *model.Actor `json:"actor"`
 	Task       *string      `json:"task"`

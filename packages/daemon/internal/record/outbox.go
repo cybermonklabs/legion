@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -1849,6 +1850,14 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.Task == "" || value.Kind == "" || value.Role == "" {
 			return fmt.Errorf("a step record carries its task, kind and role on every write; it carries %q, %q and %q", value.Task, value.Kind, value.Role)
+		}
+		// The words and the place rule are Dispatch's own (steprecord, from contracts): one it
+		// refuses is a 400 STEP_INPUT that ends the row, and the run would have no record.
+		if !steprecord.PlaceHolds(value.Kind, value.Step) {
+			return fmt.Errorf("a step record's step %d is no place of a run of kind %q", value.Step, value.Kind)
+		}
+		if value.Result != nil && !slices.Contains([]string{steprecord.ResultPassed, steprecord.ResultFailed, steprecord.ResultStopped}, *value.Result) {
+			return fmt.Errorf("a step record's result %q is no result of a run", *value.Result)
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)

@@ -402,16 +402,6 @@ const (
 	noRouteMessagePrefix = "no route for "
 )
 
-// StepInput, StepWriter and StepOtherIssue are Dispatch's own spellings of three refusals of a step
-// record's write, each final: a value outside what the route takes (400), a writer that is not the
-// session of the issue's project's daemon (403), and an id that is a record of another issue (409).
-// No mechanism shares a value between this module and Dispatch's, so the spellings change together.
-const (
-	StepInput      = "STEP_INPUT"
-	StepWriter     = "STEP_WRITER"
-	StepOtherIssue = "STEP_OTHER_ISSUE"
-)
-
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
 // the issue is gone, or what it carries is something Dispatch will not take. Only a refusal
 // Dispatch itself made counts, which is a 4xx carrying one of its error codes.

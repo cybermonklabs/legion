@@ -467,6 +467,27 @@ const ASK_BOUND_RULE =
  */
 export const DISPATCH_HANDOFF_BODY_MAX = 262144;
 
+/** The words of a step record, written once for Dispatch's store and the Legion daemon, a Go module
+ *  of its own that reads them through `github.com/sjawhar/envoy/steprecord`. A word one side drifts
+ *  on is a `400 STEP_INPUT` the daemon's outbox ends the row on, and the record is lost.
+ *
+ *  The kinds of a run: a step a plan names, at its place from 1, and the retro and the merge,
+ *  acts of Legion that no plan names, at the place 0. Generated into Go as
+ *  `contracts.StepKindStep`, `contracts.StepKindRetro` and `contracts.StepKindMerge`. */
+export const STEP_KINDS = ["step", "retro", "merge"] as const;
+
+/** The results of a run that ended: generated into Go as `contracts.StepResultPassed`,
+ *  `contracts.StepResultFailed` and `contracts.StepResultStopped`. A run that still runs has none. */
+export const STEP_RESULTS = ["passed", "failed", "stopped"] as const;
+
+/** The codes of the step write's refusals that no retry changes: a value outside its form, a writer
+ *  that is not the daemon's session, and an id whose record is a run of another issue. Generated
+ *  into Go as `contracts.StepInputCode`, `contracts.StepWriterCode` and
+ *  `contracts.StepOtherIssueCode`, which the route answers and the daemon ends a row on. */
+export const STEP_INPUT_CODE = "STEP_INPUT";
+export const STEP_WRITER_CODE = "STEP_WRITER";
+export const STEP_OTHER_ISSUE_CODE = "STEP_OTHER_ISSUE";
+
 /** The form of the agent, the session and the model a step record names: printable ASCII with no
  *  space, from 1 to 128 characters. The session and the model come from the agent's own frames,
  *  and `dispatch steps` joins a record's fields with spaces, so a space or a control character in

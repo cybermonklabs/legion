@@ -152,7 +152,9 @@ func stepRecordFields(r StepRecord) string {
 // A record the workflow builds without its id or its identity is a defect of the daemon, refused
 // where it is queued: an id that is empty would address the route's parent path, which Dispatch's
 // router answers NOT_FOUND, the one answer the row retries for ever, and a record without its
-// task, kind or role is one Dispatch cannot make a node of.
+// task, kind or role is one Dispatch cannot make a node of. So is a kind, a place or a result
+// outside the words and the rule Dispatch holds (steprecord, from contracts): Dispatch would refuse
+// it 400 STEP_INPUT, which ends the row, and the run would have no record.
 func TestAStepRecordWithoutItsIDOrIdentityIsRefusedWhereItIsQueued(t *testing.T) {
 	whole := StepRecord{ID: stepRecordID, Task: "default", Step: 2, Kind: "step", Role: "implementer",
 		Type: "implementation", Agent: "legion-leg-leg-1-implementer", Generation: 1}
@@ -169,6 +171,13 @@ func TestAStepRecordWithoutItsIDOrIdentityIsRefusedWhereItIsQueued(t *testing.T)
 		{name: "no task", change: func(r *StepRecord) { r.Task = "" }, reason: "task, kind and role"},
 		{name: "no kind", change: func(r *StepRecord) { r.Kind = "" }, reason: "task, kind and role"},
 		{name: "no role", change: func(r *StepRecord) { r.Role = "" }, reason: "task, kind and role"},
+		{name: "a kind no run has", change: func(r *StepRecord) { r.Kind = "phase" }, reason: "is no place of"},
+		{name: "a retro at a place a plan names", change: func(r *StepRecord) { r.Kind, r.Type = "retro", "" }, reason: "is no place of"},
+		{name: "a step at the place 0", change: func(r *StepRecord) { r.Step = 0 }, reason: "is no place of"},
+		{name: "a result no run has", change: func(r *StepRecord) {
+			at := time.Now()
+			r.Result, r.EndedAt = new("done"), &at
+		}, reason: "is no result"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			record := whole

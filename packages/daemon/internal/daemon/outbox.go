@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/steprecord"
+
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
@@ -1304,9 +1306,9 @@ func stepRecordRefused(err error) bool {
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
 	case http.StatusForbidden:
-		return refusal.Code == dispatch.StepWriter
+		return refusal.Code == steprecord.CodeWriter
 	case http.StatusConflict:
-		return refusal.Code == dispatch.StepOtherIssue
+		return refusal.Code == steprecord.CodeOtherIssue
 	}
 	return false
 }
