@@ -72,13 +72,17 @@ type standing struct {
 	at    phase.Phase
 }
 
-// standingStep is the one place that decides which step issue stands in and whether its runs are
-// recorded: the step of the phase it stands in (record.StandsAt, so a held issue's is the step of
-// the phase its hold is from), and false for a phase that runs no step — admitted, awaiting a
-// person, held, done — or a record key that is no issue key (recordsSteps). Every writer of a
-// step's record takes the step it found.
+// standingStep is the step issue stands in: stepAt the phase it stands in (record.StandsAt, so a
+// held issue's is the step of the phase its hold is from). Every writer of a step's record takes
+// the step it found, or, for a phase the issue has left, stepAt's (reportEndedStep).
 func standingStep(issue record.Issue) (standing, bool) {
-	at := record.StandsAt(issue)
+	return stepAt(issue, record.StandsAt(issue))
+}
+
+// stepAt is the one place that decides the step issue runs at phase at and whether its runs are
+// recorded: the step of at (stepOf), and false for a phase that runs no step — admitted, awaiting
+// a person, held, done — or a record key that is no issue key (recordsSteps).
+func stepAt(issue record.Issue, at phase.Phase) (standing, bool) {
 	place, role, typ, ok := stepOf(at)
 	return standing{place: place, role: role, typ: typ, at: at}, ok && recordsSteps(issue)
 }
@@ -237,15 +241,15 @@ func (e *Engine) endStep(ctx context.Context, tx pgx.Tx, before record.Issue, en
 // earlier release started after a rollback, whose record this release has not written — nor a
 // record key that is no issue key.
 func (e *Engine) reportEndedStep(ctx context.Context, tx pgx.Tx, issue record.Issue, at phase.Phase, report string) error {
-	place, role, typ, ok := stepOf(at)
-	if !ok || report == "" || !recordsSteps(issue) {
+	step, ok := stepAt(issue, at)
+	if !ok || report == "" {
 		return nil
 	}
-	latest, err := e.store.StepStarts(ctx, tx, issue.Key, place)
+	latest, err := e.store.StepStarts(ctx, tx, issue.Key, step.place)
 	if err != nil || latest.Run != record.RunEnded {
 		return err
 	}
-	write := stepWrite(issue, place, role, typ, latest.Agent, latest.Starts)
+	write := stepWrite(issue, step.place, step.role, step.typ, latest.Agent, latest.Starts)
 	write.Report = new(report)
 	return e.enqueue(ctx, tx, issue.Key, write)
 }
