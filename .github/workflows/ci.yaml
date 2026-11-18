@@ -1652,8 +1652,10 @@ jobs:
               - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
               - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
               # Its last case hashes each script AUDITED_SCRIPTS reads, so a pull request that
-              # edits one runs it and is told to read the script again.
+              # edits one runs it and is told to read the script again, and it imports
+              # ci_job_reads.py to hold each such script to this gate's declared reads.
               - 'packages/envoy/scripts/database-skips.sh'
+              - '.github/scripts/ci_job_reads.py'
 
             # The test job: the Claude Code plugin build, the changelog fold, the script
             # harnesses above and the Bun suites of scripts/. The daemon's Go tests are the

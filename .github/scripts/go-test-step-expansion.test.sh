@@ -137,13 +137,24 @@ done
 # the pull request that edits an audited script: #2856 changed database-skips.sh's
 # EXPECTED_SKIPS, the pin went stale, and the next by-hand run ended at exit 2 with no verdict.
 # ci.yaml's go_test_step_expansion_test filter names each audited script, so this case runs on
-# that pull request.
+# that pull request. It also holds each audited script to the reads ci_job_reads.py declares for
+# this harness's gate, which ci-filters holds to that filter, so a new AUDITED_SCRIPTS entry fails
+# here until its script selects this harness. Both lists are read into variables first: a
+# failed read then stops the harness under `set -e`, where a process substitution's failure
+# would leave the loop with nothing to check.
 echo "case: each script AUDITED_SCRIPTS reads still has the text its entry was read from"
 repo=$(cd "$script_dir/../.." && pwd)
+pins=$(py 'for path, audited in ex.AUDITED_SCRIPTS.items(): print(path + "\t" + audited.sha256)')
+check "AUDITED_SCRIPTS names at least one script" "$(is "$([ -n "$pins" ] && echo yes || echo no)" yes)"
+declared=$(cd "$repo" && py 'import ci_job_reads
+print("\n".join(read.glob for gate in ci_job_reads.SCRIPT_TEST_GATES
+                if gate.filter == "go_test_step_expansion_test" for read in gate.reads))')
 while IFS=$'\t' read -r path pinned; do
   actual=$(sha256sum "$repo/$path" | cut -d' ' -f1)
   check "$path has its entry's SHA-256 (read the script again, then update its AuditedScript entry in go-test-step-expansion.py)" \
     "$(is "$actual" "$pinned")"
-done < <(py 'for path, audited in ex.AUDITED_SCRIPTS.items(): print(path + "\t" + audited.sha256)')
+  check "$path is among the reads ci_job_reads.py declares for the go_test_step_expansion_test gate (add it there and to that ci.yaml filter)" \
+    "$(is "$(grep -Fxq -- "$path" <<<"$declared" && echo yes || echo no)" yes)"
+done <<<"$pins"
 
 summary "go-test-step-expansion.py reads a go command behind the variables and wrapper a step writes"
