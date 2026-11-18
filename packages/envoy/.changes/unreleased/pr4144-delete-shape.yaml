@@ -1,0 +1,8 @@
+kind: Removed
+body: |-
+  `agent-secrets secret create` and `secret retag` take no `--shape` (it is a usage error now), the
+  broker reads no `shape` tag, and nothing is refused `shape-malformed`. One rule reads every stored
+  value: the trailing run of carriage returns and line feeds is removed only where what remains is
+  not empty and holds no line ending inside it, so a one-line token loses its newline and a PEM
+  block keeps every one of its own. A `shape` tag a writer left on a secret is read by nothing and
+  is in no policy version. `secret show` and `secret list` print no shape.

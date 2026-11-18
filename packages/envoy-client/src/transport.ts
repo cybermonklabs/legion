@@ -78,6 +78,15 @@ const DeliveryAnswerWireSchema = z.object({
   consumer_start: z.number().int().nonnegative().optional(),
 });
 
+// A list the listener may write as null (a session with no interest record, dispatch://INFRA-742),
+// as an absent key (a listener that predates the field), or as a real array. The reader answers []
+// for the first two and still refuses a wrong element type, so listSessions refuses such a row
+// rather than reading it as empty.
+const StringListWireSchema = z
+  .array(z.string())
+  .nullish()
+  .transform((list) => list ?? []);
+
 const SessionWireSchema = z.object({
   session_id: z.string(),
   machine_id: z.string(),
@@ -92,9 +101,9 @@ const SessionWireSchema = z.object({
   dir: z.string(),
   port: z.number().int(),
   title: z.string(),
-  topics: z.array(z.string()),
-  roles: z.array(z.string()).optional(),
-  capabilities: z.array(z.string()).optional(),
+  topics: StringListWireSchema,
+  roles: StringListWireSchema,
+  capabilities: StringListWireSchema,
   self_subscribed: z.boolean(),
   last_seen: z.number().int().optional(),
   state: WireStateSchema,

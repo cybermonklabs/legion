@@ -1699,9 +1699,10 @@ reads included.
 `XMLHttpRequest/web` interceptors, which are the ones that reach this runtime), and both
 transports are intercepted apart, because happy-dom's `XMLHttpRequest` — which an upload goes
 through — has a `Fetch` of its own rather than `globalThis.fetch`.
-A request no handler answers is errored and recorded with its method and path, and the preload's
-`afterEach` and `afterAll` fail the test with what was recorded, so a read the page swallowed in
-a `catch`, and a write still retrying after a file's last test, are reported all the same.
+A request no handler answers is errored and recorded with its method and path; the preload's
+`afterEach(reportReachedNetwork)` fails the test with what was recorded, and its one `afterAll`, at
+the end of `setup.ts` beside the act check, fails the file, so a read the page swallowed in a
+`catch`, and a write still retrying after a file's last test, are reported all the same.
 The module answers six routes with the API's empty shape: the five the application shell reads on
 every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
 `/api/v1/credential-requests`, `/api/v1/me/agents/state`), and `/api/v1/projects`.
@@ -1727,6 +1728,55 @@ none but its own), and drops what the page kept (`resetWriteStorage`): a store o
 that made it, and a write it left out would go on retrying, once that test's spies are restored,
 into the tests and files after it, which one process running every file reports as failures of
 whichever test is running then.
+
+The preload's act rule fails a row in which React printed one of its five act messages: an update
+outside `act`, an `act(async () => ...)` left unawaited, overlapping `act` calls, a component
+suspended inside an `act` left unawaited, or an update inside `act` while the act environment is
+off.
+An update outside `act` lands at a moment the row did not choose, so what the row asserts may be
+a state the person in front of the page never sees, and a warning that only prints is read by
+nobody and survives every run.
+`installActMessageRecorder` in `web/src/__tests__/act-warnings.ts` prints every `console.error`
+call it receives as it was made and records each act message among them.
+A recorded message fails a row, reported as printed "in or before this row", or, once the last
+row's check has run, the file, reported as printed "in or after this file's last row", which Bun
+lists as `(fail) (unnamed)` under the file; the hook order this rests on, and when a message is
+charged to the next row or to the file rather than to the row that printed it, are in the comment
+above the last block of `web/src/__tests__/setup.ts`.
+`__tests__/act-warnings.test.ts` proves the rule through the `test:web` command: it runs each of
+the five `__tests__/act-rule*.fixture.tsx` files in a child of its own and reads each failure by
+its row; four draw React's act messages, and `act-rule-quiet-restore.fixture.tsx` proves that the
+preload puts back a spy of `quietConsoleError()` that a row leaves in place.
+The failure names each message's kind, its component when React names one, and up to three
+frames when the stack holds them, the test's own first (a `*.test.*` file or one under
+`web/src/__tests__/`) and then the product code under `web/src/`, as
+`<kind> in <component> at <path>:<line> (<function>)`; its test frames lead to the call to wrap,
+and an update a timer makes carries none.
+A call whose update React sees at once goes inside `act(() => { ... })`, whose callback returns
+nothing, as `indicatorWrite` in `features/writes/PendingWritesIndicator.test.tsx` does; a call
+whose update lands a few microtasks later, in a promise it returns or one it starts, goes inside
+`await act(async () => { ... })`, as `refetchAgents` in `features/agents/AgentsPage.test.tsx` and
+`sync()` in `__tests__/proof-document.tsx` do; and never an unawaited `act(() => promiseCall())`,
+which React takes for an async `act` that nobody awaits.
+Under a held clock (`jest.useFakeTimers()`) the answer to a request a press sends is held on a
+`Promise.withResolvers()` and given inside `await act(async () => { ... })` once the press is out,
+as `mintLostWith` in `features/settings/AgentTokensSection.test.tsx` does: user-event runs each
+press in Testing Library's `asyncWrapper` (`@testing-library/react` 16.3.3, `dist/pure.js`), which
+ends by waiting for a zero-delay timer and, on a held clock, fires that timer at once with
+`jest.advanceTimersByTime(0)`, so an answer already given when the press lands updates the page
+after that wait, outside `act`.
+Silencing is not a fix: a row whose code logs on purpose keeps `console.error` quiet only through
+`quietConsoleError()` in `__tests__/act-warnings.ts`, which drops the row's output until the preload
+puts `console.error` back after the row, and still records each act message, so the rule still
+fails the row; after a row in which an `afterEach` before the preload's restore throws (the row's
+own, or the preload's `reportReachedNetwork`), `console.error` comes back only when the next row
+starts, and when that row is a file's last, it stays quiet through that file's `afterAll`, yet the
+act messages are still recorded, so the file still fails; any other replacement of
+`console.error`, or a spy on it with a `mockImplementation`, is not allowed, because it drops the
+message before the rule reads it.
+Setting `IS_REACT_ACT_ENVIRONMENT` or calling `setReactActEnvironment` is not a fix either, and
+neither is a `user-event` call inside `act`: React then prints "The current testing environment
+is not configured to support act(...)" and the row fails on that.
 
 An interaction is performed with `@testing-library/user-event`, never dispatched with
 `fireEvent`: a `user.click` focuses what it clicks, leaves the pointer over it and refuses a
