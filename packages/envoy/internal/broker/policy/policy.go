@@ -198,25 +198,26 @@ var ErrGitHubOwnersMissing = errors.New("github-owners names at least one GitHub
 var ErrGitHubOwnersComma = errors.New(`github-owners separates GitHub logins with spaces, not commas ("<login> <login>")`)
 
 // ErrGitHubOwnersLogin is a github-owners entry that cannot be a GitHub login: one that does not
-// start with an ASCII letter or digit, holds anything but ASCII letters, digits and hyphens, is
-// longer than 39 characters, or is the word none.
-var ErrGitHubOwnersLogin = errors.New("github-owners names GitHub logins: up to 39 ASCII letters, digits and hyphens, starting with a letter or digit")
+// start with an ASCII letter or digit, holds anything but ASCII letters, digits, hyphens and
+// underscores, is longer than 39 characters, or is the word none.
+var ErrGitHubOwnersLogin = errors.New("github-owners names GitHub logins: up to 39 ASCII letters, digits, hyphens and underscores, starting with a letter or digit")
 
-// gitHubLogin is what a GitHub login can be: an ASCII letter or digit, then ASCII letters, digits
-// and hyphens. It is matched against the entry as written, before it is lowercased, since Unicode
-// lowercasing maps some non-ASCII letters onto ASCII ones (U+212A KELVIN SIGN to `k`, U+0130 to
-// `i` with a combining dot). GitHub's sign-up rule today also refuses a trailing or doubled hyphen,
-// but accounts made under its older rules keep them (`x-` is an organization from 2011), so this
-// refuses only what no login can hold. A login is at most 39 characters (maxGitHubLogin), which
-// the pattern does not check.
-var gitHubLogin = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*$`)
+// gitHubLogin is what a GitHub login can be: an ASCII letter or digit, then ASCII letters, digits,
+// hyphens and underscores. It is matched against the entry as written, before it is lowercased,
+// since Unicode lowercasing maps some non-ASCII letters onto ASCII ones (U+212A KELVIN SIGN to `k`,
+// U+0130 to `i` with a combining dot). GitHub's sign-up rule today also refuses an underscore and
+// a trailing or doubled hyphen, but accounts made under its older rules keep their hyphens (`x-`
+// is an organization from 2011), and a managed user's login ends in `_<shortcode>`
+// (`mona-cat_octo`), so this refuses only what no login can hold. A login is at most 39
+// characters (maxGitHubLogin), which the pattern does not check.
+var gitHubLogin = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 
 const maxGitHubLogin = 39
 
-// ParseGitHubLogin reads one GitHub account login, as written: up to 39 ASCII letters, digits and
-// hyphens, starting with a letter or digit, and not the word none (ErrGitHubOwnersLogin). It
-// answers it lowercased, since GitHub compares logins without regard to case. White space is no
-// part of a login, so "ada ada" is refused rather than read as one.
+// ParseGitHubLogin reads one GitHub account login, as written: up to 39 ASCII letters, digits,
+// hyphens and underscores, starting with a letter or digit, and not the word none
+// (ErrGitHubOwnersLogin). It answers it lowercased, since GitHub compares logins without regard to
+// case. White space is no part of a login, so "ada ada" is refused rather than read as one.
 func ParseGitHubLogin(raw string) (string, error) {
 	if len(raw) > maxGitHubLogin || !gitHubLogin.MatchString(raw) {
 		return "", fmt.Errorf("%w, not %q", ErrGitHubOwnersLogin, raw)
