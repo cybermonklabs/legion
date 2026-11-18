@@ -222,6 +222,8 @@ export interface Overflowing {
 export async function boxesPastTheirCard(page: Page): Promise<Overflowing[]> {
   const read = await readCards(page, ({ card, issuePage: issue }) => {
     const describe = (element: Element): string => {
+      // This runs in the page over a view the caller has already settled, and only names the
+      // element.
       const id = element.closest(card)?.getAttribute("data-node-id") ?? "";
       const own = (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 40);
       return `${element.tagName.toLowerCase()}${id === "" ? "" : ` in ${id}`} "${own}"`;
@@ -449,6 +451,7 @@ export async function paintedMarks(page: Page): Promise<MarkPaint> {
     ]);
     const unseen: string[] = [];
     for (const mark of marks) {
+      // This runs in the page over a view the caller has already settled, and only names each mark.
       const glyph = mark.getAttribute("data-glyph");
       const id = mark.closest(card)?.getAttribute("data-node-id") ?? "";
       const what =
@@ -517,6 +520,7 @@ export function tabWalk(
   let left = presses;
   return async (target, message) => {
     for (let pressed = 0; ; pressed += 1) {
+      // Tab moves the focus within the press itself, so one reading after each press is settled.
       const reached = await target.evaluateAll((found) =>
         found.some((element) => element === document.activeElement)
       );

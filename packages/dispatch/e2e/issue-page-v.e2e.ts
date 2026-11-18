@@ -638,8 +638,10 @@ test("the Verification view draws a check's links, its agent's role and a child'
       // viewport, in the frame after it comes there, so A is brought there before its cut is read.
       await statementA.scrollIntoViewIfNeeded();
       await expect(more, `statement A draws no "more" at ${width} px`).toHaveText(cut);
+      // The line has just matched its cut words above, so one reading of it is settled.
+      const heldBack = Number(/[\d,]+/u.exec(await more.innerText())?.[0]?.replace(/,/g, ""));
       expect(
-        Number(/[\d,]+/u.exec(await more.innerText())?.[0]?.replace(/,/g, "")),
+        heldBack,
         `statement A's cut holds back 20 words or fewer at ${width} px`
       ).toBeGreaterThan(20);
       // The words of A are set on 24 px lines, so six of them are more than five lines' height
@@ -1120,6 +1122,8 @@ test("the Verification view says nothing of a check's statements before the Veri
       const end = Date.now() + ms;
       const seen = new Set<string>();
       while (Date.now() < end) {
+        // One reading at one instant is the point here: a contradiction drawn at any moment
+        // fails the row.
         for (const one of contradictions(truth, await readServed(page, ids))) seen.add(one);
         // The gap between two readings of the view: a contradiction must not be drawn at any reading of the window, and the held or refused read keeps one on screen for the whole window, so a reading every 100 ms cannot miss it.
         await page.waitForTimeout(100);
@@ -1255,8 +1259,10 @@ test("the Verification view gives no tab stop to a link its cut statement hides"
     let reached = false;
     for (let pressed = 0; pressed < 20 && !reached; pressed += 1) {
       await page.keyboard.press("Tab");
+      // Tab moves the focus within the press itself, so the focus read just after it is settled.
       const held = await focusHidden();
       if (held !== null) hidden.push(held);
+      // Tab moves the focus within the press itself, so this one reading of it is settled.
       reached = await more.evaluate((element) => element === document.activeElement);
     }
     expect(hidden, "Tab puts the focus on a link the cut statement hides").toEqual([]);
