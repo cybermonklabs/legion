@@ -29,10 +29,13 @@ var listenerKVWatchers = []string{"interest registry", "role claims", "session r
 // returned, or, on a connection lost before or during the end, `<name> watcher's consumer was left
 // to the server`. Every row requires one of the two of every watcher, and no ERROR. The second is
 // taken only where internal/bus, independently of the ends, recorded the main client's connection
-// lost (`envoy nats disconnected` with its error). A NATS that falls silent for a few seconds at the
-// SIGTERM loses that connection in any row: the drain then finds it reconnecting, or it is made
-// again first and every watcher with it (the reconnect hook's rewatch). Either way the ends meet
-// none of the row's consumers, so such a run reads only that each end said what it did.
+// still lost at the drain: a disconnect carrying the error that ended it came after its last
+// reconnect (mainConnection). A NATS that falls silent for a few seconds near the SIGTERM
+// loses that connection in any row. Still lost at the drain, the ends can delete nothing, so such a
+// run reads only that each said so. Made again before the drain, the connection makes every
+// watcher again with it (the reconnect hook's rewatch): each end then must say `watcher ended`, and
+// the buckets must carry none of the listener's consumers, as in any row, but the lost row's WARN,
+// whose consumer the rewatch replaced, is not required.
 //
 // The rows differ in what End finds:
 //   - With every consumer present it deletes them, and the buckets carry none afterwards.
@@ -90,12 +93,15 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 				t.Fatalf("admin JetStream: %v", err)
 			}
 			buckets := []string{bus.InterestBucket, bus.SessionBucket}
-			var holds []*testnats.ConsumerHold
+			// The cache watcher of each bucket, named as its end names it.
+			cacheWatcher := map[string]string{bus.InterestBucket: "interest registry", bus.SessionBucket: "session registry"}
+			// holds is each held consumer's hold, by the watcher whose consumer it is.
+			holds := map[string]*testnats.ConsumerHold{}
 			for _, bucket := range buckets {
 				stream := "KV_" + bucket
 				switch {
 				case test.lost:
-					holds = append(holds, testnats.HoldConsumerLost(t, admin, stream, cacheWatcherConsumer(t, js, stream)))
+					holds[cacheWatcher[bucket]] = testnats.HoldConsumerLost(t, admin, stream, cacheWatcherConsumer(t, js, stream))
 				case test.replaced:
 					watcher := cacheWatcherConsumer(t, js, stream)
 					if err := js.DeleteConsumer(t.Context(), stream, watcher); err != nil {
@@ -115,7 +121,7 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 				// The client pings every second and calls the connection stale at the second
 				// ping unanswered (bus/connect.go), and then reconnects, which a frozen server
 				// never completes.
-				lost := func() bool { return mainConnectionLost(listener.Output.String()) }
+				lost := func() bool { lostAtDrain, _ := mainConnection(listener.Output.String()); return lostAtDrain }
 				if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, lost) {
 					t.Fatalf("the listener's connection never read as lost under a frozen server:\n%s", listener.Output.String())
 				}
@@ -133,13 +139,13 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 				}
 			}
 			everyRecord := func(map[string]any) bool { return true }
-			connectionLost := mainConnectionLost(output)
+			lostAtDrain, remade := mainConnection(output)
 			leftToServer := 0
 			for _, watcher := range listenerKVWatchers {
 				ended := countRecords(listener, watcher+" watcher ended", everyRecord) > 0
 				left := countRecords(listener, watcher+" watcher's consumer was left to the server: the connection was lost before its delete", everyRecord) > 0
 				switch {
-				case left && connectionLost:
+				case left && lostAtDrain:
 					leftToServer++
 				case ended && !left:
 				default:
@@ -157,10 +163,8 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 				}
 				return
 			}
-			if connectionLost {
-				// The connection was lost, and perhaps made again, which re-makes every watcher
-				// (the reconnect hook's rewatch): what the ends met is no longer the row's consumers.
-				t.Logf("the listener's main connection was lost during the row, so the row reads only that each watcher's end said so")
+			if lostAtDrain {
+				t.Logf("the listener's main connection was still lost at the drain, so the row reads only that each watcher's end said its consumer was left to the server")
 				return
 			}
 			gone := func(watcher string) bool {
@@ -174,14 +178,17 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 				}
 				return
 			}
-			if test.lost {
-				if slices.ContainsFunc(holds, func(hold *testnats.ConsumerHold) bool { return hold.Replaced(t) }) {
-					t.Logf("nats.go replaced a held consumer: the row reads the replacement's end")
-				} else {
-					for _, watcher := range []string{"interest registry", "session registry"} {
-						if !gone(watcher) {
-							t.Fatalf("the %s watcher's end did not find its consumer gone:\n%s", watcher, output)
-						}
+			if test.lost && remade {
+				t.Logf("the listener's main connection was lost and made again before the drain, which made every watcher again: the row does not require its consumers found gone")
+			} else if test.lost {
+				for _, bucket := range buckets {
+					watcher := cacheWatcher[bucket]
+					if holds[watcher].Replaced(t) {
+						t.Logf("nats.go replaced the %s watcher's held consumer: the row reads that replacement's end", watcher)
+						continue
+					}
+					if !gone(watcher) {
+						t.Fatalf("the %s watcher's end did not find its consumer gone:\n%s", watcher, output)
 					}
 				}
 			}
@@ -199,54 +206,102 @@ func TestTheListenerShutdownEndsItsKVWatchersBeforeTheDrain(t *testing.T) {
 // message and its fields.
 var busTextLine = regexp.MustCompile(`^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} (?:DEBUG|INFO|WARN|ERROR) (.*)$`)
 
-// busRecords is the fields of every line internal/bus wrote in output whose message is msg. A line
-// is read as slog's default handler writes it: the message, then a space and key=value for each
-// field, a value slog quoted read whole and unquoted (strconv.QuotedPrefix), an unquoted one up to
-// the next space. A line whose text after the message is no such sequence is not one of them.
-func busRecords(output, msg string) []map[string]string {
+// busRecords is the fields of every line internal/bus wrote in output whose message is one of msgs,
+// in the order the lines were written, each with its message under "msg". A line is read as slog's
+// default handler writes it: the message, then a space and key=value for each field, a value slog
+// quoted read whole and unquoted (strconv.QuotedPrefix), an unquoted one up to the next space. A
+// line whose text after the message is no such sequence is not one of them.
+func busRecords(output string, msgs ...string) []map[string]string {
 	var records []map[string]string
 	for line := range strings.SplitSeq(output, "\n") {
 		match := busTextLine.FindStringSubmatch(strings.TrimSpace(line))
 		if match == nil {
 			continue
 		}
-		rest, found := strings.CutPrefix(match[1], msg)
-		if !found || (rest != "" && !strings.HasPrefix(rest, " ")) {
-			continue
-		}
-		fields := map[string]string{}
-		for rest = strings.TrimPrefix(rest, " "); rest != ""; {
-			key, after, found := strings.Cut(rest, "=")
-			if !found || key == "" || strings.ContainsAny(key, ` "`) {
-				fields = nil
-				break
+		for _, msg := range msgs {
+			rest, found := strings.CutPrefix(match[1], msg)
+			if !found || (rest != "" && !strings.HasPrefix(rest, " ")) {
+				continue
 			}
-			value, next, _ := strings.Cut(after, " ")
-			if strings.HasPrefix(after, `"`) {
-				literal, err := strconv.QuotedPrefix(after)
-				if err != nil {
+			fields := map[string]string{}
+			for rest = strings.TrimPrefix(rest, " "); rest != ""; {
+				key, after, found := strings.Cut(rest, "=")
+				if !found || key == "" || strings.ContainsAny(key, ` "`) {
 					fields = nil
 					break
 				}
-				value, _ = strconv.Unquote(literal)
-				next = strings.TrimPrefix(after[len(literal):], " ")
+				value, next, _ := strings.Cut(after, " ")
+				if strings.HasPrefix(after, `"`) {
+					literal, err := strconv.QuotedPrefix(after)
+					if err != nil {
+						fields = nil
+						break
+					}
+					value, _ = strconv.Unquote(literal)
+					next = strings.TrimPrefix(after[len(literal):], " ")
+				}
+				fields[key], rest = value, next
 			}
-			fields[key], rest = value, next
-		}
-		if fields != nil {
-			records = append(records, fields)
+			if fields != nil {
+				fields["msg"] = msg
+				records = append(records, fields)
+			}
+			break
 		}
 	}
 	return records
 }
 
-// mainConnectionLost says whether internal/bus recorded, in output, the listener's main client's
-// connection lost: a disconnect of the client named envoy that carries the error ending it. The
-// close of a drain that went as it should carries none.
-func mainConnectionLost(output string) bool {
-	return slices.ContainsFunc(busRecords(output, "envoy nats disconnected"), func(fields map[string]string) bool {
-		return fields["name"] == "envoy" && fields["error"] != ""
-	})
+// mainConnection reads the listener's main client's connection (the client named envoy) from
+// internal/bus's own records in output, in the order it wrote them. lostAtDrain: a disconnect
+// carrying the error that ended the connection came after its last reconnect, so the connection was
+// still lost when the shutdown drained it. A disconnect with no error is a close, which leaves a
+// lost connection lost: nats.go's close reports one whenever the connection has a socket (nats.go
+// v1.53.1 nats.go, close), and a reconnect to a frozen server has one, since the kernel still
+// accepts the dial, so the drain's close of a connection still reconnecting can log one after the
+// loss. remade: it reconnected at least once, which makes every KV watcher again (the reconnect
+// hook's rewatch).
+func mainConnection(output string) (lostAtDrain, remade bool) {
+	for _, fields := range busRecords(output, "envoy nats disconnected", "envoy nats reconnected") {
+		switch {
+		case fields["name"] != "envoy":
+		case fields["msg"] == "envoy nats reconnected":
+			lostAtDrain, remade = false, true
+		case fields["error"] != "":
+			lostAtDrain = true
+		}
+	}
+	return lostAtDrain, remade
+}
+
+// mainConnection reads the main connection's state from the bus's records alone: the error a
+// disconnect carries, the order of the lines and the client's name, not a line's text elsewhere.
+func TestTheShutdownTestReadsTheMainConnectionAtTheDrain(t *testing.T) {
+	const (
+		mainLost   = `2026/11/18 07:00:01 INFO envoy nats disconnected name=envoy error="nats: stale connection"`
+		mainClosed = `2026/11/18 07:00:02 INFO envoy nats disconnected name=envoy`
+		mainBack   = `2026/11/18 07:00:03 INFO envoy nats reconnected name=envoy url=nats://127.0.0.1:4222`
+		laneLost   = `2026/11/18 07:00:01 INFO envoy nats disconnected name=envoy-role-lane error="nats: stale connection"`
+		jsonQuote  = `{"time":"2026-11-18T07:00:01Z","level":"INFO","msg":"envoy nats disconnected name=envoy error=x"}`
+	)
+	for _, row := range []struct {
+		name                string
+		lines               []string
+		lostAtDrain, remade bool
+	}{
+		{name: "closed by a drain", lines: []string{mainClosed}},
+		{name: "only another client's connection lost", lines: []string{laneLost, mainClosed}},
+		{name: "a JSON line quoting the text", lines: []string{jsonQuote}},
+		{name: "lost, and the drain found it reconnecting", lines: []string{mainLost}, lostAtDrain: true},
+		{name: "lost, then closed by the drain while still reconnecting", lines: []string{mainLost, mainClosed}, lostAtDrain: true},
+		{name: "lost and made again before the drain", lines: []string{mainLost, mainBack, mainClosed}, remade: true},
+		{name: "made again, then lost again at the drain", lines: []string{mainLost, mainBack, mainLost, mainClosed}, lostAtDrain: true, remade: true},
+	} {
+		lostAtDrain, remade := mainConnection(strings.Join(row.lines, "\n"))
+		if lostAtDrain != row.lostAtDrain || remade != row.remade {
+			t.Errorf("%s: mainConnection = lost at the drain %t, remade %t; want %t, %t", row.name, lostAtDrain, remade, row.lostAtDrain, row.remade)
+		}
+	}
 }
 
 // streamConsumerInfos is every consumer stream carries, as the server reports them. A listing that

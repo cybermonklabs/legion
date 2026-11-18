@@ -3,6 +3,7 @@ package testnats
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -24,6 +25,11 @@ type ConsumerHold struct {
 	once    sync.Once
 	stopped chan struct{}
 	done    chan struct{}
+	// startSeq and the filters are what nats.go's replacement of the lost consumer carries: it
+	// starts at the lost one's next stream sequence, and keeps its filter (Replaced).
+	startSeq uint64
+	filter   string
+	filters  []string
 	// replaced counts the creates read so far that put a consumer in the lost one's place.
 	replaced int
 }
@@ -62,11 +68,14 @@ func HoldConsumerLost(t testing.TB, conn *natsgo.Conn, stream, consumer string) 
 		t.Fatalf("the consumer %s on %s has no deliver subject: it is no ordered consumer", consumer, stream)
 	}
 	hold := &ConsumerHold{
-		conn:    conn,
-		stream:  stream,
-		creates: make(chan *natsgo.Msg, 1024),
-		stopped: make(chan struct{}),
-		done:    make(chan struct{}),
+		conn:     conn,
+		stream:   stream,
+		creates:  make(chan *natsgo.Msg, 1024),
+		stopped:  make(chan struct{}),
+		done:     make(chan struct{}),
+		startSeq: info.Delivered.Stream + 1,
+		filter:   info.Config.FilterSubject,
+		filters:  info.Config.FilterSubjects,
 	}
 	// Every consumer create on the stream is a request to the server's JetStream API, which a
 	// subscriber of the API's subject is sent a copy of; nats.go's replacement is one that starts
@@ -120,10 +129,13 @@ func (h *ConsumerHold) Release() {
 	})
 }
 
-// Replaced says whether, since the hold began, a client asked the server to put a consumer in the
-// lost one's place on the stream: a create that starts at a given sequence, as nats.go's ordered
-// consumer makes one, where a watcher's own consumer and a scan's start at each key's last record.
-// It first waits for every create the server sent before its call, so none is left unread.
+// Replaced says whether, since the hold began, the client asked the server to put a consumer in the
+// lost one's place. nats.go's ordered consumer makes its replacement from the lost one's own
+// configuration, changing only where it delivers and where it starts (js.go, resetOrderedConsumer):
+// by start sequence, at the sequence after the last it was delivered, with the same filter. So a
+// create counts only where it carries all three: another consumer made on the stream by start
+// sequence, a scan's or a test's own, is not this one's replacement. It first waits for every create
+// the server sent before its call, so none is left unread.
 func (h *ConsumerHold) Replaced(t testing.TB) bool {
 	t.Helper()
 	// nats.go's flush takes only a context that carries a deadline; the minute is a guard on a
@@ -138,13 +150,18 @@ func (h *ConsumerHold) Replaced(t testing.TB) bool {
 		case msg := <-h.creates:
 			var request struct {
 				Config struct {
-					DeliverPolicy string `json:"deliver_policy"`
+					DeliverPolicy  string   `json:"deliver_policy"`
+					OptStartSeq    uint64   `json:"opt_start_seq"`
+					FilterSubject  string   `json:"filter_subject"`
+					FilterSubjects []string `json:"filter_subjects"`
 				} `json:"config"`
 			}
 			if err := json.Unmarshal(msg.Data, &request); err != nil {
 				t.Fatalf("read a consumer create on %s (%s): %v", h.stream, msg.Subject, err)
 			}
-			if request.Config.DeliverPolicy == "by_start_sequence" {
+			config := request.Config
+			if config.DeliverPolicy == "by_start_sequence" && config.OptStartSeq == h.startSeq &&
+				config.FilterSubject == h.filter && slices.Equal(config.FilterSubjects, h.filters) {
 				h.replaced++
 			}
 		default:
