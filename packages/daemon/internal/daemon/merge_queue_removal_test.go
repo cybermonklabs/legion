@@ -397,9 +397,7 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		if held := rig.lastError(t, issue.key, record.OutboxKindMergeQueueRemoval); !strings.Contains(held, "to be recorded") {
 			t.Fatalf("the message's row waits on %q, want what changed in the approved design to be recorded", held)
 		}
-		if resumed, resumes := rig.podResumes(t, issue.key), len(resumesOf(rig.rt, issue.merger)); resumed != 0 || resumes != 0 {
-			t.Fatalf("while what changed is not recorded %d resumes are recorded and the runtime resumed the merger %d times, want neither", resumed, resumes)
-		}
+		rig.nobodyWoken(t, issue)
 		rig.nothingPublished(t, issue)
 		rig.recordChanges(t, issue)
 		rig.await(t, "the merger woken for the message once what changed is recorded", func() bool {
