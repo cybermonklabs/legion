@@ -16,8 +16,9 @@
  *  gave back can be handed by the kernel to the next listener any concurrent row, or any other
  *  test file, starts, and the closed target would then read REACHED.
  *  The script lets `http` through only with `OUTSIDE_PATH_ALLOW_HTTP=1` and a `127.0.0.1` origin,
- *  which these rows set. HOME is a directory of the run's own, so no `~/.curlrc` of the host's
- *  reaches the script's curl unless a row writes one.
+ *  which these rows set. HOME is a directory of the run's own, or of the `driveEach` call's own
+ *  for the runs that call starts, so no `~/.curlrc` of the host's reaches the script's curl unless
+ *  a row writes one.
  *
  *  Where a row needs an answer no real listener gives (an https origin on port 443, a probe exit
  *  curl gives only on a broken network), it puts a `curl` of its own first on PATH that answers
@@ -31,7 +32,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess, udp } from "bun";
 import type { Answers, Seen } from "./outside-path-reach-origin";
 
@@ -334,12 +335,55 @@ const listFeeder = [
   "esac",
 ].join("\n");
 
+/** The bash wrapper `driveEach` runs: the script once for each run in its arguments, each with the
+ *  variables its run names on top of the wrapper's own environment, `together` runs at a time, and
+ *  each run's stdout, stderr and exit code in the files `<n>.out`, `<n>.err` and `<n>.code` of the
+ *  directory it is given, `n` counted from 0. Its arguments: the shell, the script, the directory
+ *  and `together`, then for each run the count of its variables and each variable as
+ *  `NAME=VALUE`. */
+const eachRunner = [
+  "shell=$1 script=$2 out=$3 together=$4",
+  "shift 4",
+  "n=0",
+  'while [ "$#" -gt 0 ]; do',
+  "  count=$1",
+  "  shift",
+  "  (",
+  "    (",
+  '      while [ "$count" -gt 0 ]; do export "$1"; shift; count=$((count - 1)); done',
+  '      exec "$shell" "$script" </dev/null >"$out/$n.out" 2>"$out/$n.err"',
+  "    )",
+  '    printf "%s" "$?" >"$out/$n.code"',
+  "  ) &",
+  '  shift "$count"',
+  "  n=$((n + 1))",
+  "  [ $((n % together)) -ne 0 ] || wait",
+  "done",
+  "wait",
+].join("\n");
+
 /** Reserves the calling test file's scratch directory and returns it with the helpers that write
  *  there. Call it at the test file's module scope: `temporaryDirectory` registers the hooks that
  *  make and remove the directory in the scope it is called from, and this module is evaluated
  *  once per process, so a directory reserved in its own body would belong to the first file. */
 export function reachFixtures() {
-  const scratch = temporaryDirectory("outside-path-reach");
+  // The rows write more than 800 files here and the removal hook removes them inside its 60 s. On
+  // a disk other programs share one creation took up to 84 ms, so the directory is on tmpfs where
+  // the host has one that allows exec, which the `curl` and `sleep` the rows write here need.
+  const scratch = temporaryDirectory("outside-path-reach", { root: memoryRoot() });
+
+  /** The environment every run of the script starts with, whether `drive` or `driveEach` starts
+   *  it: HOME `home`, PATH the host's unless `path` names another, TMPDIR this process's, and the
+   *  flag that lets the script take the harness's http origin. A change to how a run is started
+   *  goes here, so the two helpers cannot drift apart. */
+  function runEnvironment(home: string, path: string | undefined): Record<string, string> {
+    return {
+      HOME: home,
+      PATH: path ?? process.env.PATH ?? "",
+      TMPDIR: tmpdir(),
+      OUTSIDE_PATH_ALLOW_HTTP: "1",
+    };
+  }
 
   /** One run of the script with `env`, over a HOME of its own holding `curlrc` as `.curlrc` when
    *  given, PATH the host's unless given, and run by bash unless `shell` names another program.
@@ -390,13 +434,7 @@ export function reachFixtures() {
             script,
           ];
     const child = Bun.spawn(argv, {
-      env: {
-        HOME: home,
-        PATH: options.path ?? process.env.PATH ?? "",
-        TMPDIR: tmpdir(),
-        OUTSIDE_PATH_ALLOW_HTTP: "1",
-        ...env,
-      },
+      env: { ...runEnvironment(home, options.path), ...env },
       stdin: "ignore",
       stderr: "pipe",
       stdout: "pipe",
@@ -407,6 +445,56 @@ export function reachFixtures() {
       new Response(child.stderr).text(),
     ]);
     return { code, stdout, stderr };
+  }
+
+  /** One run of the script for each of `runs`, each with its own variables on top of
+   *  `runEnvironment`, all started by one bash child of the test process, `together` of them at a
+   *  time (all of them unless given), and the results in the order of `runs`. Bun.spawn returns
+   *  only once its child has started its program, and that wait holds the test process's event
+   *  loop, which every row of the file shares: on a loaded host one spawn held it 13 s. A row that
+   *  starts one child for its runs holds the loop once, where a child of its own for each run held
+   *  it once for each, and waited behind every other row's spawns before each.
+   *  A run started here differs from one `drive` starts in four ways, none of which the script
+   *  reads or traps: it inherits SHLVL, PWD and `_` from the runner's bash, where `drive`'s run
+   *  sets its own, so under bash 5.2 its SHLVL is 2, not 1; it is a background job of a
+   *  non-interactive shell, which bash 3.2 starts with SIGINT and SIGQUIT ignored (bash 5.2
+   *  restores them at the `exec`); the runs of one call share one HOME, in which none is given a
+   *  `.curlrc`; and its stdout and stderr are files, not pipes. */
+  async function driveEach(
+    runs: Record<string, string>[],
+    options: { path?: string; together?: number } = {}
+  ): Promise<Run[]> {
+    const out = join(scratch, `each-${randomUUID()}`);
+    mkdirSync(out);
+    const child = Bun.spawn(
+      [
+        bash,
+        "-c",
+        eachRunner,
+        "each",
+        bash,
+        script,
+        out,
+        String(options.together ?? runs.length),
+        ...runs.flatMap((env) => [
+          String(Object.keys(env).length),
+          ...Object.entries(env).map(([name, value]) => `${name}=${value}`),
+        ]),
+      ],
+      {
+        env: runEnvironment(join(scratch, `home-${randomUUID()}`), options.path),
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "pipe",
+      }
+    );
+    const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    if (code !== 0) throw new Error(`the runner of ${runs.length} runs exited ${code}:\n${stderr}`);
+    return runs.map((_, n) => ({
+      code: Number(readFileSync(join(out, `${n}.code`), "utf8")),
+      stdout: readFileSync(join(out, `${n}.out`), "utf8"),
+      stderr: readFileSync(join(out, `${n}.err`), "utf8"),
+    }));
   }
 
   /** A target file holding `lines`, under the run's scratch directory. */
@@ -517,5 +605,16 @@ export function reachFixtures() {
   const v6Only = () =>
     pathWithCurl(`case "$*" in *'telnet://['*) printf '0.000010 0.000000'; exit 7 ;; esac`);
 
-  return { scratch, drive, targets, written, list, pathOf, pathWithCurl, pathRounds, v6Only };
+  return {
+    scratch,
+    drive,
+    driveEach,
+    targets,
+    written,
+    list,
+    pathOf,
+    pathWithCurl,
+    pathRounds,
+    v6Only,
+  };
 }
