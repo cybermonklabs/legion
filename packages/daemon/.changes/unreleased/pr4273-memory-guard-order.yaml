@@ -73,7 +73,9 @@ body: |-
     choosing by the band's sizes put it 1.3 to 71.8 ms after it in 9 of 9 runs. So the first kill
     comes within one interval of the reading at the mark, past it by no more than the read in hand
     where the guard reads on for memory of its own, and within two where a stall of the throttled
-    pod's CPU, measured at 100 to 200 ms, delays one of the guard's reads. Where the band holds no
+    pod's CPU, measured at 100 to 200 ms, delays one of the guard's reads, or where it must search
+    for a process started after the band's last reading, which took 13.5 to 108.4 ms in 13 such
+    first kills at 4 GiB. Where the band holds no
     size, where the process it would end first has exited, its pid names another process or its
     kill fails, or where the band's sizes or the sizes read again are under the floor, the guard
     reads every size at that reading and acts on them, as before. After a kill the guard waits only

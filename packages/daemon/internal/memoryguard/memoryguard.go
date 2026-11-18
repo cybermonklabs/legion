@@ -114,8 +114,10 @@
 // read one at all and one interval from the reading at the mark has passed; and once it has, it
 // reads nothing more past the budget. Where that interval passes with only forks that rank at
 // nothing read, the tiers below the new decide. So the first kill comes within one interval of the
-// reading reaching the mark, also where the pod's CPU is throttled (INFRA-3531 R1 of spec version
-// 25, T16): under gVisor, with six growers faulting their pages in, the host throttles the whole pod
+// reading reaching the mark, also where the pod's CPU is throttled, and within two where a stall
+// delays a read or the first kill must search for a process started after the band's last reading
+// (INFRA-3531 R1 of spec version 35, T16): under gVisor, with six growers faulting their pages in,
+// the host throttles the whole pod
 // by its CFS quota, so a band reading that costs about 2 ms of work took 80 to 270 ms of wall time,
 // and a read of a growing process's /proc files at times waits on its memory locks. This issue's
 // tester measured 194 ms from the reading at the mark to the first kill, where R1 asks for one
@@ -838,7 +840,9 @@ func (g *Guard) sample() (reading, limit uint64, reason string) {
 // first reads after the kill of the processes the decision did not hold; the sizes as of the kill
 // are the ones the decision read (keepKillSizes). tick runs nothing of the hourly line but its
 // rollover before decide returns. That is the cut of INFRA-3531 T16, so the first kill comes within
-// one interval of the reading reaching the mark: with six growers on the pod's CPU the host
+// one interval of the reading reaching the mark, and within two where it must search for a process
+// started after the band's last reading (R1 of spec version 35): with six growers on the pod's CPU
+// the host
 // throttles the whole pod, a band reading of about 2 ms of work took 80 to 270 ms of wall time, and
 // a mark reading that read every size again put its kill 194 ms after the reading, where one that
 // decided on the band's reads put it 1.3 to 71.8 ms after it in 9 of 9 runs. Where nothing is held
