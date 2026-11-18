@@ -6,12 +6,14 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -98,6 +100,122 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 		})
 	}
 }
+
+// A refresh writes a claim again only while the claim it names is live, so a refresh whose answer
+// is lost never revives a claim that lapsed: one it revived would be more than a lease past the
+// claim the sender records, which the re-read cannot tell from another sender's
+// (model.DeliveryClaimSinceSQL), so the sender would go on trusting the lapsed claim, its parked
+// send's take would find the revived one live and refuse the send as another sender's, and the
+// owner's next comment would reach s1 first. A parked send's claim lapses after a lease with no
+// committed refresh: here a database the sender cannot reach for that long, its refresh failing
+// before it commits and its re-read failing too, or two leases with no refresh at all. Then a
+// refresh's answer is lost after its statement commits, the owner's next comment is posted, the
+// earlier events are sent, and the parked send goes: s1 must take it first, and the sender must
+// never trust a claim its row does not carry. The server, its statements and its database are the
+// real ones, its connections running through lossyConns; each control row's answer arrives.
+func TestALostRefreshNeverRevivesALapsedClaim(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// outage fails a refresh before it commits, and its re-read, before the claim ages.
+		outage bool
+		age    time.Duration
+		lose   bool
+	}{
+		{name: "control: an outage of a lease, then the refresh's answer arrives", outage: true, age: model.DeliveryClaimLapse + time.Second},
+		{name: "an outage of a lease, then the refresh's answer is lost after it commits", outage: true, age: model.DeliveryClaimLapse + time.Second, lose: true},
+		{name: "control: two leases with no refresh, then the refresh's answer arrives", age: 2 * model.DeliveryClaimLapse},
+		{name: "two leases with no refresh, then the refresh's answer is lost after it commits", age: 2 * model.DeliveryClaimLapse, lose: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			database := storetest.Open(t)
+			lossy := &lossyConns{}
+			config := database.Pool.Config()
+			config.ConnConfig.DialFunc = lossy.dial
+			pool, err := pgxpool.NewWithConfig(ctx, config)
+			if err != nil {
+				t.Fatalf("open a pool through lossy connections: %v", err)
+			}
+			t.Cleanup(pool.Close)
+			listener, state := newMentionListener(t)
+			handler, _, _, served := newRegisteredTestServer(t, testServerOptions{
+				store: &store.Store{Pool: store.NewPool(pool)}, envoyURL: listener.URL,
+				envoyTimeout: 30 * time.Second, outboxPublishes: true,
+			})
+			served.mentions.wait()
+			var down atomic.Bool
+			sender := newMentionSender(served.lifetime, time.Hour, served.sendCommentMention,
+				func(ctx context.Context, queued []mentionClaim) ([]mentionClaim, error) {
+					if down.Load() {
+						return nil, errDatabaseUnreachable
+					}
+					return served.refreshMentionClaims(ctx, queued)
+				},
+				func(ctx context.Context, named []mentionClaim) ([]mentionClaim, error) {
+					if down.Load() {
+						return nil, errDatabaseUnreachable
+					}
+					return served.rereadMentionClaims(ctx, named)
+				},
+				served.releaseMentionClaims)
+			timers := make(chan func(), 4)
+			sender.mu.Lock()
+			sender.after = func(_ time.Duration, f func()) { timers <- f }
+			sender.mu.Unlock()
+			served.mentions = sender
+
+			// No outbox runs, so the issue's earlier events stay unsent and the comment's send
+			// parks under the claim its first try took, its timer left to the test.
+			issue := createInteractionIssue(t, handler, "TEST", "A lost refresh after a lapse", "before")
+			parkedOne := postMentionOfS1(t, handler, issue.Key, "the parked one")
+			unpark := <-timers
+			key := mentionKey{comment: parkedOne, target: "session:s1", attempt: 1}
+			if tc.outage {
+				down.Store(true)
+				sender.refreshHeldClaims(ctx)
+				down.Store(false)
+				if _, unsure := recordedClaim(sender, key); !unsure {
+					t.Fatal("a refresh that failed before it committed left the parked send's claim known")
+				}
+			}
+			ageClaimAndRecord(t, database, sender, key, tc.age)
+			aged := attemptClaimedAt(t, database, parkedOne, "session:s1")
+
+			lossy.armed.Store(tc.lose)
+			sender.refreshHeldClaims(ctx)
+			lossy.armed.Store(false)
+			if want := int32(map[bool]int{false: 0, true: 1}[tc.lose]); lossy.dropped.Load() != want {
+				t.Fatalf("%d connections dropped after the refresh's statement, want %d", lossy.dropped.Load(), want)
+			}
+			row := attemptClaimedAt(t, database, parkedOne, "session:s1")
+			recorded, unsure := recordedClaim(sender, key)
+			t.Logf("the claim aged to %v; after the refresh the row carries %v, and the sender records %v (unsure %t)",
+				aged, row, recorded, unsure)
+			if tc.lose && row.After(aged) {
+				t.Errorf("the refresh whose answer was lost wrote %v over the lapsed claim %v it named: it revived a claim more than a lease past the one the sender records",
+					row, aged)
+			}
+			if !unsure && !recorded.Equal(row) {
+				t.Errorf("the sender trusts claim %v for the parked send while its row carries %v", recorded, row)
+			}
+
+			later := postMentionOfS1(t, handler, issue.Key, "the later one")
+			publishIssueEvents(t, database, issue.Key)
+			unpark()
+			settledCommentDeliveries(t, database, later)
+			states := attemptStates(t, database, "comment_deliveries", "comment_id", parkedOne)
+			bodies := state.bodiesTo("s1")
+			t.Logf("the parked one's attempts %v; s1 took %q", states, bodies)
+			if !slices.Equal(states, []string{"1:sent"}) || !slices.Equal(bodies, []string{"the parked one", "the later one"}) {
+				t.Errorf("the parked one's attempts are %v and s1 took %q, want the parked one sent, before the later one", states, bodies)
+			}
+		})
+	}
+}
+
+// errDatabaseUnreachable is a statement's answer while the database cannot be reached: it failed
+// before it committed anything.
+var errDatabaseUnreachable = errors.New("the database cannot be reached")
 
 // lossyConns dials the database through connections that, once armed, let the next refresh
 // statement of the mention sender (refreshMentionClaims, named by its text) commit, and then drop
