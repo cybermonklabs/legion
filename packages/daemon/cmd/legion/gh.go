@@ -809,16 +809,35 @@ var ghChildNames = map[string]bool{
 	"LEGION_ROLE": true, "LEGION_ISSUE": true,
 }
 
-// ghForcedGitConfig is what the git gh runs gets on its command line after the runtime's pairs:
-// http.sslVerify on, which git reads after every file and which a repository's own generic
-// `http.sslVerify=false` then loses to (measured with git 2.43: through a man-in-the-middle proxy
-// whose CA nothing trusts, the request failed verification and carried nothing). An empty
-// http.sslCAInfo or http.sslCAPath is no part of it: git 2.43 then fails every HTTPS request with
-// "Problem with the SSL CA cert", github.com's own included, so gh's clone and `pr checkout` would
-// break. A URL-scoped http.<url>.sslVerify, sslCAInfo or proxy, in the repository's own
-// configuration, wins over any entry here, so runGh refuses a repository that sets one
-// (ghRepoGitConfigRefusal).
-var ghForcedGitConfig = [][2]string{{"http.sslVerify", "true"}}
+// ghForcedGitConfig is what the git gh runs gets on its command line after the runtime's pairs,
+// which git reads after every file, so each of these wins over the same key a repository's own
+// configuration sets:
+//
+//   - http.sslVerify on, which a repository's generic `http.sslVerify=false` then loses to
+//     (measured with git 2.43: through a man-in-the-middle proxy whose CA nothing trusts, the
+//     request failed verification and carried nothing). An empty http.sslCAInfo or http.sslCAPath
+//     is no part of it: git 2.43 then fails every HTTPS request with "Problem with the SSL CA
+//     cert", github.com's own included, so gh's clone and `pr checkout` would break. A URL-scoped
+//     http.<url>.sslVerify, sslCAInfo or proxy in the repository's own configuration wins over
+//     any entry here, so runGh refuses a repository that sets one (ghRepoGitConfigRefusal).
+//   - submodule.recurse, fetch.recurseSubmodules and push.recurseSubmodules off, so the fetch,
+//     pull, checkout, merge, reset and push gh runs never recurse into a submodule, whose own
+//     configuration (.git/modules/<name>/config) no check of this command reads. git's default
+//     fetch.recurseSubmodules is on-demand: measured with git 2.43, a plain `git fetch origin`,
+//     and `git pull --ff-only`, whose fetched commit moved a populated submodule's gitlink,
+//     fetched that submodule too, and a URL-scoped http.sslVerify=false in the submodule's own
+//     configuration handed a man-in-the-middle proxy the credential helper's token. With these
+//     three on the command line no fetch recursed, whatever the repository set: submodule.recurse
+//     and fetch.recurseSubmodules true in its own configuration, submodule.<name>
+//     .fetchRecurseSubmodules true there, or in the .gitmodules of HEAD or of the fetched commit.
+//     An explicit recursion, which no configuration turns off, is refused by name: `gh pr
+//     checkout --recurse-submodules` (ghRefusedOptions) and a clone's git flags (ghCloneGitFlags).
+var ghForcedGitConfig = [][2]string{
+	{"http.sslVerify", "true"},
+	{"submodule.recurse", "false"},
+	{"fetch.recurseSubmodules", "false"},
+	{"push.recurseSubmodules", "no"},
+}
 
 // ghChildGitConfig is the GIT_CONFIG_COUNT block the git gh runs reads, as it reads `-c`: of the
 // caller's GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> pairs, only those that are one of the pairs the
@@ -873,44 +892,62 @@ func gitConfigKey(key string) string {
 // ghRepoGitConfigRefusal refuses the call when the configuration of the repository the git gh runs
 // works in (the current directory's, as gh's own git finds it, with env, the environment gh gets)
 // names something that would let that git's token reach anyone but github.com: any http.*ssl* or
-// http.*proxy* key, generic or URL-scoped, and any credential helper but none or `legion
-// git-credential` (workspace.GitHubCredentialHelper), the one a Legion clone names. git reads these
-// before the command line, but a URL-scoped `http.https://github.com/<owner>/.sslVerify=false`, or
-// one an `include.path` of the repository's config brings in, beats any command-line entry, and
-// was measured to hand a man-in-the-middle proxy the credential helper's token (git 2.43). It reads
-// what git reads (`git config --show-origin --show-scope --get-regexp`, includes followed), leaves
-// the command line's own entries alone, and names the key and the file, never the value. Outside a
-// repository there is nothing to read. A read git cannot make is refused, since gh's git would then
-// read a configuration this one could not see.
+// http.*proxy* key, generic or URL-scoped, but an http.*sslVerify that git reads as true, which
+// only keeps the check on; and any credential helper but none or `legion git-credential`
+// (workspace.GitHubCredentialHelper), the one a Legion clone names. git reads these before the
+// command line, but a URL-scoped `http.https://github.com/<owner>/.sslVerify=false`, or one an
+// `include.path` of the repository's config brings in, beats any command-line entry, and was
+// measured to hand a man-in-the-middle proxy the credential helper's token (git 2.43). It reads
+// what git reads (`git config --show-origin --null --get-regexp`, includes followed), leaves the
+// command line's own entries alone (their origin is "command line:", which no file's is), and
+// names the key and the file, never the value. It needs no --show-scope, which git 2.26 added, so
+// an older git reads the same; git has printed origins since 2.8. Outside a repository there is
+// nothing to read. With no git on PATH, nothing is read and nothing refused: gh finds its git on
+// the same PATH, so it runs none, and no configuration of one can send anything. Any other read
+// git cannot make is refused, since gh's git would then read a configuration this one could not
+// see.
+//
+// It refuses as well an include whose condition the git gh runs can switch on after this read:
+// `includeIf.onbranch:<branch>`, which takes effect once that git checks out the branch (`pr
+// checkout`, `pr merge`, `repo sync` do), and `includeIf.hasconfig:remote.*.url:<url>`, which
+// takes effect once it adds a matching remote (`pr checkout` of a fork's branch, `repo fork`, a
+// fork's `repo clone` do). Measured with git 2.43: either one, naming a file with a URL-scoped
+// http.sslVerify=false, passed this read while inactive, and the fetch after the checkout or the
+// remote handed a man-in-the-middle proxy the token. No Legion clone names either.
 //
 // Its limit is ghConfigShape's: it reads the configuration before gh's git does, so a pane that
 // writes it between the two wins that race, and that pane can already read the token itself.
 func ghRepoGitConfigRefusal(env []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "config", "--show-origin", "--show-scope", "--null", "--get-regexp", `^(http|credential)\.`)
+	cmd := exec.CommandContext(ctx, "git", "config", "--show-origin", "--null", "--get-regexp", `^(http|credential)\.|^includeif\.(onbranch|hasconfig):`)
 	cmd.Env = append(slices.Clone(env), "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
 	var exit *exec.ExitError
 	switch {
+	case errors.Is(err, exec.ErrNotFound):
+		return nil
 	case errors.As(err, &exit) && exit.ExitCode() == 1 && stdout.Len() == 0:
 		return nil
 	case err != nil:
 		return fmt.Errorf("cannot read the repository's git configuration (%v: %s), which gh's git would read, so it sends nothing", err, strings.TrimSpace(stderr.String()))
 	}
-	// Each entry is scope NUL origin NUL key LF value NUL.
+	// Each entry is origin NUL key, then LF and the value where the key has one, NUL.
 	fields := strings.Split(strings.TrimSuffix(stdout.String(), "\x00"), "\x00")
-	for i := 0; i+2 < len(fields); i += 3 {
-		scope, origin := fields[i], fields[i+1]
-		key, value, _ := strings.Cut(fields[i+2], "\n")
-		if scope == "command" {
+	for i := 0; i+1 < len(fields); i += 2 {
+		origin := fields[i]
+		key, value, hasValue := strings.Cut(fields[i+1], "\n")
+		if origin == "command line:" {
 			continue
 		}
 		key = gitConfigKey(key)
 		name := key[strings.LastIndex(key, ".")+1:]
 		switch {
+		case strings.HasPrefix(key, "includeif.onbranch:") || strings.HasPrefix(key, "includeif.hasconfig:"):
+			return fmt.Errorf("the repository's git configuration (%s) sets %s, an include that takes effect only once the git gh runs checks out the branch or adds the remote it names, after this call has read the configuration, so it sends nothing; unset it with `git config --unset-all %s`", origin, key, key)
+		case strings.HasPrefix(key, "http.") && name == "sslverify" && gitConfigTrue(value, hasValue):
 		case strings.HasPrefix(key, "http.") && (strings.HasPrefix(name, "ssl") || strings.HasPrefix(name, "proxy")):
 			return fmt.Errorf("the repository's git configuration (%s) sets %s, which would let the git gh runs send its token past a certificate check or to a proxy this call cannot see, so it sends nothing; unset it with `git config --unset-all %s`", origin, key, key)
 		case strings.HasPrefix(key, "credential.") && name == "helper" && value != "" && value != workspace.GitHubCredentialHelper:
@@ -918,6 +955,21 @@ func ghRepoGitConfigRefusal(env []string) error {
 		}
 	}
 	return nil
+}
+
+// gitConfigTrue is whether git reads a boolean's value as true: a key with no value at all, or
+// true, yes or on in any case, or a nonzero integer (git's git_parse_maybe_bool). Anything else,
+// false, no, off, 0, the empty string and a word git would refuse, is not.
+func gitConfigTrue(value string, hasValue bool) bool {
+	if !hasValue {
+		return true
+	}
+	switch strings.ToLower(value) {
+	case "true", "yes", "on":
+		return true
+	}
+	n, err := strconv.Atoi(value)
+	return err == nil && n != 0
 }
 
 // ghWrapperFile says whether the file at path is, whole, a script ghWrapperScript accepts
@@ -1184,7 +1236,9 @@ type ghArgs struct {
 // the reading there. After `--` every argument is positional, but for a leaf whose usage passes
 // them on (`gh repo clone <repository> [<directory>] [-- <gitflags>...]`), where gh, as cobra
 // hands it every positional, takes the first one as the repository even after the dash and passes
-// the rest on: so the first argument after `--` is positional when none came before it.
+// the rest on: so the first argument after `--` is positional when none came before it. What such
+// a leaf passes on to git clone, every positional but its first, is judged whole
+// (ghCloneGitFlags).
 func (c *ghCommand) parse(args []string) (ghArgs, error) {
 	api, leaf := c.isAPI(), c.quoted()
 	parsed := ghArgs{values: map[string][]string{}}
@@ -1193,6 +1247,11 @@ func (c *ghCommand) parse(args []string) (ghArgs, error) {
 		switch {
 		case arg == "--":
 			rest := args[i+1:]
+			if c.passesGitFlags {
+				if err := ghCloneGitFlags(leaf, ghPassedOn(append(slices.Clone(parsed.positionals), rest...))); err != nil {
+					return ghArgs{}, err
+				}
+			}
 			if c.passthrough && len(parsed.positionals) > 0 {
 				rest = nil
 			} else if c.passthrough && len(rest) > 1 {
@@ -1272,7 +1331,73 @@ func (c *ghCommand) parse(args []string) (ghArgs, error) {
 			parsed.positionals = append(parsed.positionals, arg)
 		}
 	}
+	if c.passesGitFlags {
+		if err := ghCloneGitFlags(leaf, ghPassedOn(parsed.positionals)); err != nil {
+			return ghArgs{}, err
+		}
+	}
 	return parsed, nil
+}
+
+// ghPassedOn is what gh hands git clone of a leaf's positionals: every one but the first, the
+// repository (cli/cli v2.104.0 pkg/cmd/repo/clone/clone.go:88, repo/fork/fork.go:114).
+func ghPassedOn(positionals []string) []string {
+	if len(positionals) == 0 {
+		return nil
+	}
+	return positionals[1:]
+}
+
+// ghCloneGitFlagTakes are the git clone flags a leaf passing `<gitflags>` on may hand it, each by
+// its exact spelling, with whether it takes a value: what the clone fetches (its depth, its
+// branches, its tags, a filter), how it is laid out (bare, a mirror, sparse, no checkout, the
+// remote's name) and how much it prints. None sets the clone's configuration, its template, its
+// submodules, or where its objects come from.
+var ghCloneGitFlagTakes = map[string]bool{
+	"--quiet": false, "-q": false, "--verbose": false, "-v": false, "--progress": false, "--no-progress": false,
+	"--single-branch": false, "--no-single-branch": false, "--no-tags": false, "--sparse": false,
+	"--no-checkout": false, "-n": false, "--bare": false, "--mirror": false,
+	"--depth": true, "--shallow-since": true, "--shallow-exclude": true,
+	"--branch": true, "-b": true, "--origin": true, "-o": true, "--filter": true,
+}
+
+// ghCloneGitFlags refuses what the leaf hands git clone (passed, ghPassedOn) unless it is, after a
+// directory gh takes as the clone's target when it comes first (cli/cli v2.104.0 git/client.go,
+// parseCloneArgs), only flags of ghCloneGitFlagTakes, each spelled exactly, a value-taking one
+// with its value as `--name=value` or as the next argument, which git takes whatever it says.
+// It is an allowlist because git clone's other flags hand the token on, and git takes any
+// unambiguous abbreviation of each: measured with git 2.43 under the environment `legion gh`
+// gives gh's git, `--config http.https://github.com/.sslVerify=false`, and the same spelled
+// `--conf`, sent a man-in-the-middle proxy the credential helper's token; `--recurse-submodules`
+// and `--recursive` clone every submodule with its own configuration; `--template` installs hooks
+// and configuration; `--reference` and `--separate-git-dir` take objects or the git directory from
+// a path the call names. A joined short flag (`-qn`, `-bmain`) and a stray argument are refused
+// too, so nothing reaches git that this has not read the way git reads it.
+func ghCloneGitFlags(leaf string, passed []string) error {
+	i := 0
+	if len(passed) > 0 && !strings.HasPrefix(passed[0], "-") {
+		i = 1
+	}
+	for ; i < len(passed); i++ {
+		arg := passed[i]
+		name, _, joined := strings.Cut(arg, "=")
+		takes, known := ghCloneGitFlagTakes[name]
+		switch {
+		case !known, joined && (!takes || !strings.HasPrefix(name, "--")):
+			return fmt.Errorf("%s hands %q to git clone, which takes only %s from a call: its other flags set the clone's configuration (--config), its hooks (--template), its submodules (--recurse-submodules) or where its objects come from (--reference), and git takes an abbreviation of any of them, so it sends nothing; clone without it, then run git in the clone", leaf, arg, ghCloneGitFlagList())
+		case takes && !joined:
+			if i+1 == len(passed) {
+				return fmt.Errorf("%s hands %q to git clone with no value, so it sends nothing", leaf, arg)
+			}
+			i++
+		}
+	}
+	return nil
+}
+
+// ghCloneGitFlagList is ghCloneGitFlagTakes' names, sorted, for a refusal to name.
+func ghCloneGitFlagList() string {
+	return strings.Join(slices.Sorted(maps.Keys(ghCloneGitFlagTakes)), ", ")
 }
 
 // set records value given the option name: --help's as a boolean, any other's taking a value in
@@ -1307,9 +1432,17 @@ func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) erro
 //     then serves: an image up to 10 MiB, an SVG's text among them, or a video up to 100 MiB
 //     (cli/cli v2.104.0 internal/attachments). It has no short spelling. The leak guard reads no
 //     such file.
+//   - --recurse-submodules, `gh pr checkout`'s, runs `git submodule update --init --recursive`
+//     after the checkout (cli/cli v2.104.0 pkg/cmd/pr/checkout/checkout.go:172-180), and that
+//     update fetches each submodule with the submodule's own configuration
+//     (.git/modules/<name>/config), which no check of this command reads: measured with git 2.43,
+//     a URL-scoped http.sslVerify=false there and the caller's proxy handed a man-in-the-middle
+//     proxy the token. No configuration turns an explicit update off, as ghForcedGitConfig turns
+//     off the recursion a fetch or a checkout would make by itself.
 var ghRefusedOptions = map[string]string{
-	"editor": "runs an editor program after the leak guard has read the call and posts the text that program wrote, which the guard never read; write the text in --body or --body-file, which it reads",
-	"attach": "uploads the file it names to GitHub, which the leak guard does not read; write the text in --body or --body-file, which the guard reads",
+	"editor":             "runs an editor program after the leak guard has read the call and posts the text that program wrote, which the guard never read; write the text in --body or --body-file, which it reads",
+	"attach":             "uploads the file it names to GitHub, which the leak guard does not read; write the text in --body or --body-file, which the guard reads",
+	"recurse-submodules": "runs `git submodule update --init --recursive`, which fetches each submodule with the submodule's own git configuration, which `legion gh` does not read; check out without it, then run `git submodule update` yourself",
 }
 
 // ghRefusedCommands are the gh commands `legion gh` runs for nobody, by the path their help names,

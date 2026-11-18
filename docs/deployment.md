@@ -173,15 +173,28 @@ editor after the leak guard has read the call and posts what it wrote; `gh gist 
 an editor unless a file is named; `gh agent-task`, which sends the token to the Copilot API host
 GitHub names; `gh auth login`, `logout`, `refresh` and `switch`, which write the gh directory the
 daemon alone writes; `gh auth setup-git`, which writes git's global configuration, a file the git
-`legion gh` runs never reads; a gh directory whose `hosts.yml` or `config.yml` is no regular file
+`legion gh` runs never reads; `--recurse-submodules` on any command (`gh pr checkout`'s), which
+runs `git submodule update`, whose fetch reads each submodule's own configuration; and any git
+flag `gh repo clone`, `gh repo fork` or `gh gist clone` would hand git clone after `--` but a
+directory and these, spelled exactly: `--quiet`/`-q`, `--verbose`/`-v`, `--progress`,
+`--no-progress`, `--depth`, `--shallow-since`, `--shallow-exclude`, `--single-branch`,
+`--no-single-branch`, `--no-tags`, `--branch`/`-b`, `--origin`/`-o`, `--filter`, `--sparse`,
+`--no-checkout`/`-n`, `--bare` and `--mirror`. A clone's other flags set its configuration
+(`-c`/`--config`, which git also takes abbreviated, and a URL-scoped `sslVerify=false` given so
+sent the token to a proxy), its hooks (`--template`), its submodules or where its objects come
+from (`--reference`, `--separate-git-dir`, `--upload-pack`). It refuses as well a gh directory
+whose `hosts.yml` or `config.yml` is no regular file
 (a named pipe, a symbolic link, a directory) or is larger than any the daemon writes, which it
 reads without following a link or waiting on a pipe, or names `api_host` or `http_unix_socket`
 anywhere gh would read it as a key, a list's items among them; a `config.yml` that holds a `hosts`
 block or an alias named `help`, which gh would run on `legion gh help`; and a working directory
 whose repository configuration, or a file it includes, sets an `http` ssl or proxy key, generic
-or for a URL, or a credential helper other than `legion git-credential`, since git reads it before
-the command line and a URL-scoped `sslVerify=false` there beats every entry the command line
-forces.
+or for a URL, but an `sslVerify` that is true, or a credential helper other than `legion
+git-credential`, since git reads it before the command line and a URL-scoped `sslVerify=false`
+there beats every entry the command line forces, or an `includeIf.onbranch:` or
+`includeIf.hasconfig:` include, which takes effect only once gh's git checks out that branch or
+adds that remote, after the check. With no `git` on `PATH` that check reads nothing, since gh then
+runs no git either.
 `legion gh` starts the real gh for a command's help only the first time:
 it keeps each help in `$XDG_STATE_HOME/legion-gh/help`, one file for each command path and each set of values of the `GH_*`, `CLICOLOR`, `CLICOLOR_FORCE`, `NO_COLOR`, `TERM` and `COLORTERM` variables gh is handed, which nothing removes.
 It writes each copy as a file of mode 0600 in a directory of mode 0700, and reads a copy only where neither it nor its directory is a link and the role's user owns both, with no permission for their group or for others.
@@ -211,7 +224,12 @@ with a CA of its own must install that CA in the system's trust store, which gh,
 by default; naming it in `SSL_CERT_FILE` or `SSL_CERT_DIR` reaches a pane, but not the gh `legion
 gh` runs, and gh's requests then fail certificate verification. The git gh runs reads no global
 or system configuration file (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`), takes of
-the caller's `GIT_CONFIG_*` pairs only those the runtime sets, and gets `http.sslVerify=true`.
+the caller's `GIT_CONFIG_*` pairs only those the runtime sets, and gets `http.sslVerify=true` and
+submodule recursion off (`submodule.recurse=false`, `fetch.recurseSubmodules=false`,
+`push.recurseSubmodules=no`): git's default fetch recurses on demand into a submodule whose
+gitlink the fetched commits move, with that submodule's own configuration, which no check reads.
+With the global and system files out, a clone of a Git LFS repository through `legion gh` gets no
+`filter.lfs` (git-lfs registers it there) and leaves pointer files; no Legion caller clones one.
 The saved help its tests read is the image's gh's,
 with that gh's whole command reference, every argument and every repository-naming option of
 which the wrapper's tables know (`packages/daemon/cmd/legion/testdata`, with the script that

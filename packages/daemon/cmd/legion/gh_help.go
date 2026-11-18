@@ -34,8 +34,10 @@ type ghSlot struct {
 
 // ghCommand is what gh's help of one command says: its canonical path (an alias resolved) and the
 // cobra aliases it lists for itself; for a group of subcommands, every subcommand and help topic it
-// lists, and the gh aliases and extensions among them; and, for a leaf, its options, its arguments
-// and whether its USAGE passes on the arguments after `--`.
+// lists, and the gh aliases and extensions among them; and, for a leaf, its options, its arguments,
+// whether its USAGE passes on the arguments after `--`, and whether what it passes on are git
+// clone's flags (`[-- <gitflags>...]`: repo clone, repo fork, gist clone), which ghCloneGitFlags
+// judges.
 type ghCommand struct {
 	path                          []string
 	aliases                       map[string]bool
@@ -44,7 +46,7 @@ type ghCommand struct {
 	flags                         map[string]ghFlag
 	shorts                        map[byte]string
 	slots                         []ghSlot
-	passthrough                   bool
+	passthrough, passesGitFlags   bool
 }
 
 var (
@@ -176,6 +178,7 @@ func parseGhHelp(requested []string, text string) (ghCommand, error) {
 		cmd.flags[name] = flag
 	}
 	cmd.slots, cmd.passthrough = ghSlots(cmd.path, args)
+	cmd.passesGitFlags = cmd.passthrough && strings.Contains(args, "<gitflags>")
 	return cmd, nil
 }
 

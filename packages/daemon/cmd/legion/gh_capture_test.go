@@ -73,11 +73,37 @@ type captureProxy struct {
 	connects    []capturedConnect
 	// visibility is whether the next repository read is the guard's, to be answered.
 	visibility bool
+	// answers are the bodies a row has the proxy answer with, by `<METHOD> <path>` for a REST
+	// request and `graphql <operation>` for a GraphQL one (answer), so a command reaches the git
+	// it runs after them.
+	answers map[string]string
 }
 
 var capturedRESTOwner = regexp.MustCompile(`^/repos/([^/]+)/`)
 var capturedGitOwner = regexp.MustCompile(`^/([^/]+)/[^/]+/info/refs$`)
 var capturedRepository = regexp.MustCompile(`^/repos/[^/]+/[^/]+$`)
+
+// capturedOperation finds a GraphQL request's operation in its JSON body, where the query's text
+// is escaped, so `\tquery Name(` has no word boundary before `query`.
+var capturedOperation = regexp.MustCompile(`(?:query|mutation)\s+([A-Za-z_]\w*)\s*[({]`)
+
+// answer has the proxy answer the request key names (captureProxy's answers) with body, until
+// clearAnswers.
+func (p *captureProxy) answer(key, body string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.answers == nil {
+		p.answers = map[string]string{}
+	}
+	p.answers[key] = body
+}
+
+// clearAnswers drops every answer a row set.
+func (p *captureProxy) clearAnswers() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.answers = nil
+}
 
 func startCaptureProxy(t *testing.T) *captureProxy {
 	t.Helper()
@@ -198,10 +224,20 @@ func (p *captureProxy) serve(w http.ResponseWriter, r *http.Request) {
 	if guardsRead {
 		p.visibility = false
 	}
+	key := r.Method + " " + r.URL.Path
+	if match := capturedOperation.FindStringSubmatch(string(body)); r.URL.Path == "/graphql" && match != nil {
+		key = "graphql " + match[1]
+	}
+	answer, answered := p.answers[key]
 	p.mu.Unlock()
 	if guardsRead {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"visibility":"private"}`)
+		return
+	}
+	if answered {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, answer)
 		return
 	}
 	if r.URL.Path == "/graphql" && strings.Contains(string(body), "DiscussionCategoryList") {
@@ -931,12 +967,158 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		// caller's GIT_DIR, which gh's git never sees, cannot route the call to another owner's
 		// directory than the repository gh then acts on.
 		row{issueWorkspace, []string{"GIT_DIR=" + filepath.Join(otherClone, ".git")}, []string{"pr", "view", "1", "--json", "title"}, "acme", ""},
+		// An explicit submodule recursion, which no configuration turns off, is refused by name:
+		// `pr checkout --recurse-submodules` runs `git submodule update --init --recursive`. A
+		// clone's git flags are judged against an allowlist (ghCloneGitFlags): a flag that sets the
+		// clone's configuration, in full or abbreviated, its hooks, its submodules or where its
+		// objects come from is refused and sends nothing; the flags a fixture clone of
+		// scripts/e2e passes reach GitHub with the owner's token.
+		row{issueWorkspace, nil, []string{"pr", "checkout", "1", "--recurse-submodules"}, "", `"--recurse-submodules" runs`},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--config", "http.https://github.com/.sslVerify=false"}, "", `hands "--config" to git clone`},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--conf", "http.https://github.com/.sslVerify=false"}, "", `hands "--conf" to git clone`},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--recursive"}, "", `hands "--recursive" to git clone`},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "widgets-dir", "--", "--recurse-submodules=lib"}, "", `hands "--recurse-submodules=lib" to git clone`},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--template", "/tmp/example-template"}, "", `hands "--template" to git clone`},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--reference", "/tmp/example-reference"}, "", `hands "--reference" to git clone`},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--separate-git-dir", "/tmp/example-git-dir"}, "", `hands "--separate-git-dir" to git clone`},
+		row{home, nil, []string{"repo", "fork", "acme/widgets", "--clone", "--", "--recurse-submodules"}, "", `hands "--recurse-submodules" to git clone`},
+		row{home, nil, []string{"gist", "clone", "0123456789abcdef", "--", "--config", "core.hooksPath=/tmp/example-hooks"}, "", `hands "--config" to git clone`},
+		row{home, nil, []string{"repo", "clone", "acme/widgets", filepath.Join(t.TempDir(), "widgets"), "--", "--quiet", "--depth", "1", "--branch", "main"}, "acme", ""},
 	)
 	for _, scheme := range []string{"git+https://github.com/sjawhar/legion.git", "ftp://github.com/sjawhar/legion", "ftps://github.com/sjawhar/legion", "file://github.com/sjawhar/legion", "github.com://sjawhar/legion", "git@github.com/sjawhar:legion"} {
 		rows = append(rows, row{workspace([][]string{origin, {"remote", "add", "upstream", scheme}}), nil, []string{"pr", "list", "--json", "title"}, "", "more than one owner"})
 	}
 	for _, tc := range rows {
 		check(tc.dir, tc.env, tc.args, tc.owner, tc.refuse)
+	}
+
+	// Every git gh runs gets ghForcedGitConfig, submodule recursion off among it, whatever the
+	// command: gh's git client sets no environment of its own (cli/cli v2.104.0 git/client.go), so
+	// each git it starts takes gh's, which runGh builds. A git that records its arguments and its
+	// GIT_CONFIG_* environment, then runs the real git, is first on gh's PATH, and the proxy
+	// answers what each command asks GitHub before its git runs. Each row reads the git that
+	// command ran: gist clone, repo clone and repo fork --clone a clone, pr checkout and repo sync a
+	// fetch. pr create runs no push: with prompts off, which `legion gh` forces, gh 2.104.0 stops
+	// when the branch is on no remote (pkg/cmd/pr/create/create.go:1005-1009), so its row reads that
+	// it ran no push.
+	gitRecord := filepath.Join(t.TempDir(), "git-record")
+	recorder := t.TempDir()
+	recordingGit := "#!/bin/sh\n{ printf '%s\\t' \"$*\"; env | grep '^GIT_CONFIG_' | sort | tr '\\n' ' '; echo; } >>'" + gitRecord + "'\nexec '" + git + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(recorder, "git"), []byte(recordingGit), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repositoryInfo := `{"data":{"repository":{"id":"R_1","databaseId":1,"name":"widgets","owner":{"login":"acme"},"sshUrl":"git@github.com:acme/widgets.git","hasIssuesEnabled":true,"description":"","hasWikiEnabled":false,"viewerPermission":"WRITE","defaultBranchRef":{"name":"main"},"parent":null,"mergeCommitAllowed":true,"rebaseMergeAllowed":true,"squashMergeAllowed":true}}}`
+	forkAnswer := `{"node_id":"R_2","name":"widgets-fork","created_at":"` + time.Now().UTC().Format(time.RFC3339) + `","owner":{"login":"acme"}}`
+	unpushed := workspace([][]string{origin, {"checkout", "-q", "-b", "feature"}, {"-c", "user.name=Legion test", "-c", "user.email=legion-test@example.invalid", "commit", "-q", "--allow-empty", "-m", "unpushed"}})
+	for _, tc := range []struct {
+		name    string
+		dir     string
+		args    []string
+		answers map[string]string
+		ran     string // the git subcommand the command must have run; "" for none
+		said    string // what gh must have printed; "" for anything
+	}{
+		{"gh gist clone", t.TempDir(), []string{"gist", "clone", "0123456789abcdef"}, nil, "clone", ""},
+		{"gh repo clone", t.TempDir(), []string{"repo", "clone", "acme/widgets"}, map[string]string{"graphql RepositoryInfo": repositoryInfo}, "clone", ""},
+		{"gh repo fork --clone", t.TempDir(), []string{"repo", "fork", "acme/widgets", "--clone"}, map[string]string{"POST /repos/acme/widgets/forks": forkAnswer}, "clone", ""},
+		{"gh pr checkout", issueWorkspace, []string{"pr", "checkout", "1"}, map[string]string{
+			"graphql PullRequestByNumber": `{"data":{"repository":{"pullRequest":{"number":1,"headRefName":"feature","headRepository":{"id":"R_1","name":"widgets"},"headRepositoryOwner":{"id":"U_1","login":"acme"},"isCrossRepository":false,"maintainerCanModify":false}}}}`,
+		}, "fetch", ""},
+		{"gh repo sync", issueWorkspace, []string{"repo", "sync", "--source", "acme/widgets", "--branch", "main"}, nil, "fetch", ""},
+		{"gh pr create", unpushed, []string{"pr", "create", "--title", "a title", "--body", "a body"}, map[string]string{"graphql RepositoryInfo": repositoryInfo}, "", "you must first push the current branch"},
+	} {
+		if err := os.WriteFile(gitRecord, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for key, body := range tc.answers {
+			proxy.answer(key, body)
+		}
+		recordedPath := "PATH=" + bin + ":" + recorder + ":" + filepath.Dir(git) + ":/usr/bin:/bin"
+		code, out := runIn(tc.dir, append(append([]string{}, ghEnv...), recordedPath), os.Args[0], append([]string{"gh"}, tc.args...)...)
+		proxy.clearAnswers()
+		for _, r := range proxy.take() {
+			if r.auth != "" && r.auth != "token "+tokens["acme"] && r.auth != "Basic "+base64.StdEncoding.EncodeToString([]byte(ghconfig.GitUser+":"+tokens["acme"])) {
+				t.Errorf("%s sent %s%s with %q, want acme's token or none", tc.name, r.host, r.path, r.auth)
+			}
+		}
+		if tc.said != "" && !strings.Contains(out, tc.said) {
+			t.Errorf("%s = exit %d, %q; want it to say %q", tc.name, code, out, tc.said)
+		}
+		recorded, err := os.ReadFile(gitRecord)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ran := false
+		for _, line := range strings.Split(strings.TrimSpace(string(recorded)), "\n") {
+			argv, environ, _ := strings.Cut(line, "\t")
+			if tc.ran != "" && strings.Contains(" "+argv+" ", " "+tc.ran+" ") {
+				ran = true
+			}
+			if strings.Contains(" "+argv+" ", " push ") {
+				t.Errorf("%s ran git %q, want no push", tc.name, argv)
+			}
+			pairs := map[string]string{}
+			values := map[string]string{}
+			for _, pair := range strings.Fields(environ) {
+				name, value, _ := strings.Cut(pair, "=")
+				if index, ok := strings.CutPrefix(name, "GIT_CONFIG_KEY_"); ok {
+					pairs[index] = value
+				} else if index, ok := strings.CutPrefix(name, "GIT_CONFIG_VALUE_"); ok {
+					values[index] = value
+				}
+			}
+			got := map[string]string{}
+			for index, key := range pairs {
+				got[key] = values[index]
+			}
+			// Named here rather than read from ghForcedGitConfig, so a change that drops one
+			// fails this row instead of changing what it checks.
+			for _, forced := range [][2]string{{"http.sslVerify", "true"}, {"submodule.recurse", "false"}, {"fetch.recurseSubmodules", "false"}, {"push.recurseSubmodules", "no"}} {
+				if got[forced[0]] != forced[1] {
+					t.Errorf("%s ran git %q with %s=%q, want %q", tc.name, argv, forced[0], got[forced[0]], forced[1])
+				}
+			}
+		}
+		if tc.ran != "" && !ran {
+			t.Errorf("%s = exit %d, %q, and ran no git %s; the git it ran: %q", tc.name, code, out, tc.ran, recorded)
+		}
+	}
+
+	// A clone's git flags are its own configuration: `-c http.<url>.sslVerify=false` and `-c
+	// http.<url>.proxy=<proxy>` after `--` send the clone, and the token gh's credential helper
+	// answers, to that proxy, whatever runGh forces, since a URL-scoped key beats a generic one
+	// (the second review's reproduction, with real gh 2.98.0 and git 2.47.3). Each clone leaf's
+	// call is refused before gh runs, so the proxy, one whose CA nothing trusts, is sent nothing,
+	// not even a CONNECT. The proxy answers what each leaf asks GitHub first, so a call this did
+	// not refuse would reach its git clone.
+	cloneFlags := func(host string) []string {
+		return []string{"-c", "http.https://" + host + "/.sslVerify=false", "-c", "http.https://" + host + "/.proxy=" + induced.url}
+	}
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		answers map[string]string
+	}{
+		{"gh repo clone", append([]string{"repo", "clone", "acme/widgets", "w2", "--"}, cloneFlags("github.com")...), map[string]string{"graphql RepositoryInfo": repositoryInfo}},
+		{"gh repo fork --clone", append([]string{"repo", "fork", "acme/widgets", "--clone", "--"}, cloneFlags("github.com")...), map[string]string{"POST /repos/acme/widgets/forks": forkAnswer}},
+		{"gh gist clone", append([]string{"gist", "clone", "0123456789abcdef", "--"}, cloneFlags("gist.github.com")...), nil},
+	} {
+		for key, body := range tc.answers {
+			proxy.answer(key, body)
+		}
+		induced.take()
+		induced.takeConnects()
+		code, out := runIn(t.TempDir(), ghEnv, os.Args[0], append([]string{"gh"}, tc.args...)...)
+		proxy.clearAnswers()
+		if code != 2 || !strings.Contains(out, `hands "-c" to git clone`) {
+			t.Errorf("%s with -c flags after -- = exit %d, %q; want exit 2 naming -c", tc.name, code, out)
+		}
+		if connects, requests := induced.takeConnects(), induced.take(); len(connects) != 0 || len(requests) != 0 {
+			t.Errorf("%s sent the proxy its -c flags name %+v and %+v, want nothing", tc.name, connects, requests)
+		}
+		if sent := proxy.take(); len(sent) != 0 {
+			t.Errorf("%s sent %+v, want nothing", tc.name, sent)
+		}
 	}
 	// gh's own help, its topics and its version still answer, exit 0, and send nothing.
 	for _, args := range [][]string{{"help"}, {"help", "pr", "view"}, {"help", "environment"}, {"pr", "view", "--help"}, {"--version"}} {
