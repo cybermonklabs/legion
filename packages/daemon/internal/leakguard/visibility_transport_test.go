@@ -34,11 +34,11 @@ const theToken = "invented-token-not-a-secret"
 
 // transportGh is a stand-in gh. Each REST read appends a line to reads and then does what rest
 // says. The GraphQL read does what graphql says. `gh auth git-credential get` writes its request to
-// credential and answers theToken, as `legion gh` answers from the bundle's hosts.yml.
-func transportGh(reads, rest, graphql, credential string) string {
+// credential and answers password, as `legion gh` answers from the bundle's hosts.yml.
+func transportGh(reads, rest, graphql, credential, password string) string {
 	return "if [ \"$1\" = auth ]; then\n" +
 		"cat > " + shQuote(credential) + "\n" +
-		"printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=%s\\n' " + shQuote(theToken) + "\nexit 0\nfi\n" +
+		"printf 'protocol=https\\nhost=github.com\\nusername=x-access-token\\npassword=%s\\n' " + shQuote(password) + "\nexit 0\nfi\n" +
 		ghStandIn("echo read >> "+shQuote(reads)+"\n"+rest, graphql)
 }
 
@@ -48,22 +48,17 @@ func noGraphQL(record string) string {
 }
 
 // curlStandIn is a stand-in curl. It appends a line to record with its arguments and with the
-// GH_TOKEN and GITHUB_TOKEN it was given (readCalls reads it), writes its standard input to stdin,
-// and then does what then says.
+// GH_TOKEN, GITHUB_TOKEN and SSLKEYLOGFILE it was given (readCalls reads it), writes its standard
+// input to stdin, and then does what then says.
 func curlStandIn(record, stdin, then string) string {
-	return `printf 'argv=%s\tghtoken=%s\tgithubtoken=%s\n' "$*" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" >> ` + shQuote(record) + "\n" +
-		"cat > " + shQuote(stdin) + "\n" + then
+	return `printf 'argv=%s\tghtoken=%s\tgithubtoken=%s\tsslkeylog=%s\n' "$*" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "${SSLKEYLOGFILE-unset}" >> ` +
+		shQuote(record) + "\n" + "cat > " + shQuote(stdin) + "\n" + then
 }
 
-// curlPrints is a curl that prints the status line, the headers, a blank line and body, as
-// `curl --include` prints a response, and exits 0, which curl does whatever the status.
+// curlPrints is a curl that prints a response as `curl --include` prints one (printsResponse) and
+// exits 0, which curl does whatever the status.
 func curlPrints(status string, headers []string, body string) string {
-	lines := append(append([]string{status}, headers...), "")
-	quoted := make([]string, len(lines))
-	for i, line := range lines {
-		quoted[i] = shQuote(line)
-	}
-	return "printf '%s\\r\\n' " + strings.Join(quoted, " ") + "\nprintf '%s' " + shQuote(body) + "\nexit 0\n"
+	return printsResponse(status, headers, body) + "exit 0\n"
 }
 
 // curlAnswers is a curl to which GitHub answered 200 with visibility as theRepo's visibility.
@@ -85,11 +80,18 @@ var curlNotFound = curlPrints("HTTP/2 404", []string{"content-type: application/
 // curlTimesOut is a curl whose TLS handshake did not finish within its --max-time.
 var curlTimesOut = printsToStderr("curl: (28) SSL connection timeout") + "exit 28\n"
 
-// transportRig is one guard whose gh, curl and git are stand-ins, the files they record to, and
-// the sources the guard reported.
+// curlHeardThenFailed is a curl that heard GitHub's status line and headers and then lost the
+// connection while it received the body: exit 56, which is also an exit of a curl that heard
+// nothing (curlTransportExits).
+var curlHeardThenFailed = printsResponse("HTTP/2 200", []string{"content-type: application/json; charset=utf-8"}, `{"full_name":"`) +
+	printsToStderr("curl: (56) Recv failure: Connection reset by peer") + "exit 56\n"
+
+// transportRig is one guard whose gh, curl and git are stand-ins, the directory they are in, the
+// files they record to, and the sources the guard reported.
 type transportRig struct {
 	guard                           *Guard
 	sources                         []VisibilitySource
+	bin                             string
 	reads, graphql, credential, git string
 	curl, curlStdin                 string
 }
@@ -101,6 +103,7 @@ func newTransportRig(t *testing.T, rest string, graphql func(record string) stri
 	t.Helper()
 	bin, records := t.TempDir(), t.TempDir()
 	rig := &transportRig{
+		bin:        bin,
 		reads:      filepath.Join(records, "reads"),
 		graphql:    filepath.Join(records, "graphql"),
 		credential: filepath.Join(records, "credential"),
@@ -108,7 +111,7 @@ func newTransportRig(t *testing.T, rest string, graphql func(record string) stri
 		curl:       filepath.Join(records, "curl"),
 		curlStdin:  filepath.Join(records, "curl-stdin"),
 	}
-	writeProgram(t, bin, "gh", transportGh(rig.reads, rest, graphql(rig.graphql), rig.credential))
+	writeProgram(t, bin, "gh", transportGh(rig.reads, rest, graphql(rig.graphql), rig.credential, theToken))
 	writeProgram(t, bin, "curl", curlStandIn(rig.curl, rig.curlStdin, curl))
 	writeProgram(t, bin, "git", recordsItsCall(rig.git)+git)
 	rig.guard = New(Options{
@@ -136,11 +139,13 @@ func (r *transportRig) kept(t *testing.T) bool {
 
 // When gh's REST read fails with `net/http: TLS handshake timeout`, the guard makes the same REST
 // read through curl, with the token `gh auth git-credential get` answers for the repository, and
-// makes no GraphQL read, which goes through gh too. curl's public, private and internal are the
-// answer, reported as rest-curl, and its public is kept as gh's is. A rate limit that curl meets
-// goes on to the rate-limit reads (here GraphQL answers). A curl that fails on its connection too
-// sends the read on to ls-remote, whose refs read public and whose `could not read Username` at
-// exit 128 refuses the call. Any other curl answer refuses the call with no ls-remote.
+// makes no GraphQL read, which goes through gh too, unless curl meets a spent core limit. curl's
+// public, private and internal are the answer, reported as rest-curl, and its public is kept as
+// gh's is. A rate limit that curl meets goes on to the rate-limit reads, whose first is GraphQL's
+// (here it answers). A curl that fails on its connection too sends the read on to ls-remote, whose
+// refs read public and whose `could not read Username` at exit 128 refuses the call. Any other curl
+// answer refuses the call with no ls-remote, a curl that heard GitHub's status line and then lost
+// its connection among them.
 func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -202,6 +207,13 @@ func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
 			curl:    curlNotFound,
 			git:     answersTheRefs,
 			fails:   []string{"gh could not reach GitHub", "curl could not answer", "answered the status 404", "Not Found"},
+		},
+		{
+			name:    "curl hears GitHub and then loses its connection",
+			graphql: noGraphQL,
+			curl:    curlHeardThenFailed,
+			git:     answersTheRefs,
+			fails:   []string{"gh could not reach GitHub", "curl could not answer", "exited 56", "Recv failure"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -265,12 +277,7 @@ func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
 // status line, beside another line, for another repository's URL or at exit 0.
 func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 	included := func(status string, body string, headers ...string) string {
-		lines := append(append([]string{status, "Content-Type: application/json; charset=utf-8"}, headers...), "")
-		quoted := make([]string, len(lines))
-		for i, line := range lines {
-			quoted[i] = shQuote(line)
-		}
-		return "printf '%s\\r\\n' " + strings.Join(quoted, " ") + "\nprintf '%s\\n' " + shQuote(body) + "\n"
+		return printsResponse(status, append([]string{"Content-Type: application/json; charset=utf-8"}, headers...), body)
 	}
 	tlsLine := `Get "https://api.github.com/repos/` + theRepo + `": net/http: TLS handshake timeout`
 	for _, tc := range []struct {
@@ -354,7 +361,8 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 // and never in its argv or its environment. The token is the caller's GH_TOKEN, else its
 // GITHUB_TOKEN, which gh would have sent, and else what `gh auth git-credential get` answers, which
 // is asked only then. curl reads no .curlrc (-q first) and no netrc, takes https alone, and asks
-// GitHub's REST API for the repository with GitHub's media type.
+// GitHub's REST API for the repository with GitHub's media type. The caller's SSLKEYLOGFILE, a file
+// OpenSSL would write the connection's keys to, does not reach curl.
 func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -368,7 +376,8 @@ func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 		{name: "the caller's GITHUB_TOKEN", extra: []string{"GITHUB_TOKEN=other-not-a-secret"}, token: "other-not-a-secret"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs, tc.extra...)
+			keys := "SSLKEYLOGFILE=" + filepath.Join(t.TempDir(), "keys")
+			rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs, append(tc.extra, keys)...)
 			if visibility, err := rig.guard.Visibility(bound(t), theRepo); err != nil || visibility != Private {
 				t.Fatalf("read %q, %v; want curl's private", visibility, err)
 			}
@@ -394,13 +403,57 @@ func TestCurlCarriesTheTokenOnItsStandardInput(t *testing.T) {
 					t.Errorf("curl ran as %q, want %q in it", argv, want)
 				}
 			}
-			for _, key := range []string{"ghtoken", "githubtoken"} {
+			for _, key := range []string{"ghtoken", "githubtoken", "sslkeylog"} {
 				if got := calls[0][key]; got != "unset" {
 					t.Errorf("curl ran with %s=%q, want it unset", key, got)
 				}
 			}
 			if stdin, err := os.ReadFile(rig.curlStdin); err != nil || string(stdin) != "Authorization: Bearer "+tc.token+"\n" {
 				t.Errorf("curl's standard input held %q (%v), want the token's one header", stdin, err)
+			}
+		})
+	}
+}
+
+// A token that holds a line break, a carriage return included, is never sent: curl reads the
+// header on its standard input a line at a time, so the break would put a header of the token's
+// own on the request. The caller's GH_TOKEN or GITHUB_TOKEN, and the password `gh auth
+// git-credential get` answers, are each refused, and the read goes on to ls-remote as it does for
+// a read with no token. GitHub asks ls-remote for a credential here, so the call is refused, naming
+// the line break and never the token.
+func TestTransportTokenWithALineBreakIsNeverSent(t *testing.T) {
+	const injected = "X-Injected: not-a-secret"
+	for _, tc := range []struct {
+		name  string
+		extra []string
+		// password is what gh auth git-credential get answers; fails what the refusal says.
+		password, fails string
+	}{
+		{name: "a newline in GH_TOKEN", extra: []string{"GH_TOKEN=caller-not-a-secret\n" + injected}, password: theToken, fails: "GH_TOKEN holds a line break"},
+		{name: "a carriage return in GITHUB_TOKEN", extra: []string{"GITHUB_TOKEN=other-not-a-secret\r" + injected}, password: theToken, fails: "GITHUB_TOKEN holds a line break"},
+		{
+			name:     "a carriage return in the credential's password",
+			password: "invented-not-a-secret\r" + injected,
+			fails:    "gh auth git-credential get answered a password that holds a line break",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), asksForACredential, tc.extra...)
+			writeProgram(t, rig.bin, "gh", transportGh(rig.reads, ghTLSTimeout, noGraphQL(rig.graphql), rig.credential, tc.password))
+			visibility, err := rig.guard.Visibility(bound(t), theRepo)
+			if err == nil {
+				t.Fatalf("read %q, want the call refused", visibility)
+			}
+			for _, want := range []string{tc.fails, "the read through curl could not be made", "git ls-remote could not answer"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the failure %q does not say %q", err, want)
+				}
+			}
+			if strings.Contains(err.Error(), injected) {
+				t.Errorf("the failure %q quotes the token", err)
+			}
+			if _, graphql, curl, git := rig.runs(t); curl != 0 || graphql != 0 || git != 1 {
+				t.Errorf("curl ran %d times, GraphQL %d and git %d; want 0, 0 and 1", curl, graphql, git)
 			}
 		})
 	}
@@ -558,10 +611,30 @@ func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
 	}
 }
 
+// A gh REST read that heard GitHub's status line and then hung is no transport failure when the
+// guard's own bound stops it: GitHub answered, so the call is refused as gh's stop, and neither
+// curl nor git runs. The guard's bound is shortened to 1 s inside the caller's minute.
+func TestTransportBoundRefusesAGhThatHeardGitHub(t *testing.T) {
+	shorten(t, &ghReadBound, time.Second)
+	rig := newTransportRig(t, "printf 'HTTP/2.0 200 OK\\r\\n'\nsleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+	began := time.Now()
+	visibility, err := rig.guard.Visibility(bound(t), theRepo)
+	answeredWithin10s(t, began)
+	if err == nil {
+		t.Fatalf("read %q, want the call refused", visibility)
+	}
+	if got := stopBound(t, err); got > 1 {
+		t.Errorf("gh was stopped by a bound of %d s, want the guard's own 1 s", got)
+	}
+	if _, graphql, curl, git := rig.runs(t); curl != 0 || graphql != 0 || git != 0 {
+		t.Errorf("curl ran %d times, GraphQL %d and git %d, want none", curl, graphql, git)
+	}
+}
+
 // Where less than curlLeast of the caller's bound is left after gh's transport failure, the call
-// is refused as it was before the reads after gh existed, naming gh's failure, and neither curl nor
-// git runs. The caller's deadline is 1 s away, and its context does not end before the guard
-// answers, so the refusal is the guard's own and not a stop.
+// is refused as it was before the reads after gh existed, naming gh's failure, and neither the
+// token read, nor curl, nor git runs. The caller's deadline is 1 s away, and its context does not
+// end before the guard answers, so the refusal is the guard's own and not a stop.
 func TestTransportFailureWithNoTimeLeftForCurlRefuses(t *testing.T) {
 	rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs)
 	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -578,17 +651,100 @@ func TestTransportFailureWithNoTimeLeftForCurlRefuses(t *testing.T) {
 	if _, graphql, curl, git := rig.runs(t); curl != 0 || graphql != 0 || git != 0 {
 		t.Errorf("curl ran %d times, GraphQL %d and git %d, want none", curl, graphql, git)
 	}
+	if _, err := os.Stat(rig.credential); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("gh auth git-credential get was asked (%v), want no token read with no time left for curl", err)
+	}
+}
+
+// maskedRepo is a repository whose name the private-name rules mask, and that name. The name is
+// built out of two pieces for the reason TestTheReportMasksAPathComponent gives.
+func maskedRepo(t *testing.T) (slug, name string) {
+	t.Helper()
+	name = "agen" + "t-c"
+	slug = "invented-org/" + name
+	if maskPath(slug) == slug {
+		t.Fatalf("the rules mask nothing of %q, so no test of masking can fail", slug)
+	}
+	return slug, name
 }
 
 // ghTransportFailure names the failure with the repository's name masked, and reads nothing else
 // as one.
 func TestTransportFailureSaysGhsLine(t *testing.T) {
-	line := `Get "https://api.github.com/repos/` + theRepo + `": net/http: TLS handshake timeout`
-	unreached := ghTransportFailure(1, line+"\n", theRepo)
+	slug, name := maskedRepo(t)
+	line := `Get "https://api.github.com/repos/` + slug + `": net/http: TLS handshake timeout`
+	unreached := ghTransportFailure(1, line+"\n", slug)
 	if unreached == nil {
 		t.Fatal("gh's TLS handshake timeout is no transport failure")
 	}
-	if want := fmt.Sprintf("gh could not reach GitHub: Get %q: net/http: TLS handshake timeout", "https://api.github.com/repos/"+maskPath(theRepo)); unreached.Error() != want {
+	if want := fmt.Sprintf("gh could not reach GitHub: Get %q: net/http: TLS handshake timeout", "https://api.github.com/repos/"+maskPath(slug)); unreached.Error() != want {
 		t.Errorf("the failure says %q, want %q", unreached, want)
+	}
+	if strings.Contains(unreached.Error(), name) {
+		t.Errorf("the failure %q holds the name the rules mask", unreached)
+	}
+}
+
+// Each failure of the reads after gh's transport failure that quotes what a program printed masks
+// the repository's name there: gh stopped by the guard's own bound, curl that could not connect,
+// curl's error answer, curl's answer with no visibility, and a `gh auth git-credential get` that
+// refused. A refusal a role posts can then name a private repository only masked.
+func TestTransportFailuresMaskTheRepository(t *testing.T) {
+	slug, name := maskedRepo(t)
+	bin := t.TempDir()
+	writeProgram(t, bin, "gh", printsToStderr("legion gh: no credential for https://github.com/"+slug+".git")+"exit 1\n")
+	guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), pathWith(bin))})
+	for _, tc := range []struct {
+		name string
+		read func() error
+	}{
+		{
+			name: "gh stopped by the guard's own bound",
+			read: func() error {
+				if unreached := ghStoppedByItsBound(context.Background(), &stoppedError{program: "gh", ran: time.Second, bound: time.Second},
+					"Get \"https://api.github.com/repos/"+slug+"\": waiting", slug); unreached != nil {
+					return unreached
+				}
+				return nil
+			},
+		},
+		{
+			name: "curl that could not connect",
+			read: func() error {
+				_, err := curlAnswer(7, "", "curl: (7) Failed to connect for https://api.github.com/repos/"+slug, slug)
+				return err
+			},
+		},
+		{
+			name: "curl's error answer",
+			read: func() error {
+				_, err := curlAnswer(0, "HTTP/2 404\r\n\r\n"+`{"message":"Not Found: repos/`+slug+`"}`, "", slug)
+				return err
+			},
+		},
+		{
+			name: "curl's answer with no visibility",
+			read: func() error {
+				_, err := curlAnswer(0, "HTTP/2 200\r\n\r\n"+`{"full_name":"`+slug+`"}`, "", slug)
+				return err
+			},
+		},
+		{
+			name: "gh auth git-credential get that refused",
+			read: func() error {
+				_, err := guard.ghToken(bound(t), slug)
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.read()
+			if err == nil {
+				t.Fatal("the read answered, want a failure")
+			}
+			if !strings.Contains(err.Error(), maskPath(slug)) || strings.Contains(err.Error(), name) {
+				t.Errorf("the failure %q does not name %s masked, as %s", err, slug, maskPath(slug))
+			}
+		})
 	}
 }
