@@ -302,6 +302,51 @@ func TestWorkerTLSInventoryHoldsGNUWgetAndGit(t *testing.T) {
 	}
 }
 
+// redis-cli is a TLS client on the floor: the capability check's toolchain row requires it on PATH
+// (packages/daemon/internal/capabilities/image.go), and `redis-cli --tls` reaches any host and port
+// a role names, verifying its peer against OpenSSL's default store. It reaches a verdict at each
+// site, measured on 2026-11-18 on the pull request's image (sha256:25d2edfc…, redis-cli 8.0.2) as
+// `redis-cli --tls --sni <host> -h <host> -p 443 PING`: the emSign and AAA sites refuse at the
+// handshake, example.com answers past it with HTTP, and with --insecure the compromised sites
+// close the connection only after the handshake. So, as wget, go and kubectl, it is a floor client
+// the inventory holds, and an answer past the handshake at a compromised site reads as accepting
+// the chain rather than as unavailable.
+func TestWorkerTLSInventoryHoldsRedisCLI(t *testing.T) {
+	var client tlsCommandClient
+	found := false
+	for _, candidate := range imageTLSClients("omp", nil, "", t.TempDir()) {
+		if candidate.name() != "redis-cli" {
+			continue
+		}
+		command, ok := candidate.(tlsCommandClient)
+		if !ok {
+			t.Fatalf("the redis-cli TLS client is a %T, want a floor command client: the toolchain capability row requires redis-cli on PATH", candidate)
+		}
+		client, found = command, true
+	}
+	if !found {
+		t.Fatalf("the TLS client inventory %q holds no redis-cli client, although redis-cli is a TLS client on the floor's toolchain row", workerTLSClientNames())
+	}
+	for _, testCase := range []struct {
+		name, stderr string
+		want         tlsStatus
+	}{
+		{"refusal", "Could not connect to Redis at dv-g3b-emudhra.we-have-a-problem.com:443: SSL_connect failed: certificate verify failed", tlsCertificateRefused},
+		{"control", `Error: Protocol error, got "H" as reply type byte`, tlsConnectionAccepted},
+		{"accepting a compromised chain", "Error: Server closed the connection", tlsConnectionAccepted},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			probe := client
+			probe.command = func(tlsSite) (string, []string, []string) {
+				return "sh", []string{"-c", `printf %s "$1" >&2; exit 1`, "sh", testCase.stderr}, nil
+			}
+			if outcome := probe.probe(context.Background(), emSignTLSSite); outcome.status != testCase.want {
+				t.Fatalf("redis-cli probe of %q = %+v, want status %q", testCase.stderr, outcome, testCase.want)
+			}
+		})
+	}
+}
+
 // imageFloorTLSClients returns the image's command clients that are not optional, by name, each of
 // wget, git, go and kubectl present.
 func imageFloorTLSClients(t *testing.T, workDir, stateDir string) map[string]tlsCommandClient {
