@@ -371,8 +371,8 @@ func resolveAskAs(kind string) func(t *testing.T, handler http.Handler, issueKey
 // retracted, declined by a person, or withdrawn by its issue's close. A reply naming the ask joins
 // its thread, a person's and an agent's alike, and records no turn even when the request asks for
 // one, since only an open ask has a turn to hand over (commentThreadTarget.replyTurn): the reply
-// carries none, its comment.created names the ask's state and no ask_waiting_on, and the ask waits
-// on nobody. The ask stays closed as it was.
+// carries none, its comment.created names the ask's state and no ask_waiting_on, and the ask's
+// WaitingOn stays empty. The ask stays closed as it was.
 func TestAReplyUnderAClosedAskJoinsItsThreadAndRecordsNoTurn(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -475,7 +475,7 @@ func TestAReplyUnderAClosedAskJoinsItsThreadAndRecordsNoTurn(t *testing.T) {
 				kind = thread.Ask.Resolution.Kind
 			}
 			if thread.Ask.State != row.state || kind != row.kind || thread.Ask.WaitingOn != "" {
-				t.Fatalf("the ask after its replies = state %q resolution kind %q waiting_on %q, want state %q kind %q waiting on nobody",
+				t.Fatalf("the ask after its replies = state %q resolution kind %q waiting_on %q, want state %q kind %q waiting_on empty",
 					thread.Ask.State, kind, thread.Ask.WaitingOn, row.state, row.kind)
 			}
 			if len(thread.Replies) != len(replyIDs) {
