@@ -290,13 +290,17 @@ var tlsSiteHosts = map[tlsSite]string{
 	controlTLSSite: "example.com",
 }
 
-// wget, git, go, kubectl and redis-cli are each classified from the output and exit status their
-// program gave: the control's answer is an acceptance and the emSign site's refusal a refusal. git,
-// go and redis-cli fail at the control as well, so each needs the response marker its client
-// reads, and the same marker reads the answer each gives at a compromised site whose chain it
-// accepted.
+// wget, git, go, kubectl, redis-cli and uv are each classified from the output and exit status
+// their program gave: the control's answer is an acceptance and the emSign site's refusal a
+// refusal. git, go, redis-cli and uv fail at the control as well, so each needs the response
+// marker its client reads, and the same marker reads the answer each gives at a compromised site
+// whose chain it accepted. uv's three lines were measured on 2026-11-18 on the image of 841974e9
+// (sha256:37018eaa…, uv 0.13.5) in `legion probe-image`: an image whose /etc/uv/uv.toml allows
+// the emSign and AAA hosts made uv accept both chains, and the probe failed naming uv as unable
+// to verify a refusal rather than as accepting the chain, because the site's text/plain page is
+// not an answer uvResponseSeen read.
 func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
-	clients := imageTLSClientsOf[tlsCommandClient](t, nil, t.TempDir(), "wget", "git", "go", "kubectl", "redis-cli")
+	clients := imageTLSClientsOf[tlsCommandClient](t, nil, t.TempDir(), "wget", "git", "go", "kubectl", "redis-cli", "uv")
 	for _, testCase := range []struct {
 		client, name, stderr, exit string
 		want                       tlsStatus
@@ -314,6 +318,9 @@ func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 		{client: "redis-cli", name: "control", exit: "1", stderr: redisControlAnswer, want: tlsConnectionAccepted},
 		{client: "redis-cli", name: "refusal", exit: "1", stderr: redisEmSignRefusal, want: tlsCertificateRefused},
 		{client: "redis-cli", name: "accepting a compromised chain", exit: "1", stderr: redisEmSignAccepted, want: tlsConnectionAccepted},
+		{client: "uv", name: "control", exit: "1", stderr: "Using Python 3.13.5 environment at: /usr\nerror: No solution found when resolving dependencies:\n  ╰─▶ Because legion-tls-probe-not-a-package was not found in the package registry and you require legion-tls-probe-not-a-package, we can conclude that your requirements are unsatisfiable.", want: tlsConnectionAccepted},
+		{client: "uv", name: "refusal", exit: "2", stderr: "Using Python 3.13.5 environment at: /usr\nerror: Failed to fetch: `https://dv-g3b-emudhra.we-have-a-problem.com/legion-tls-probe-not-a-package/`\n  Caused by: client error (Connect)\n  Caused by: invalid peer certificate: Other(OtherError(CertDistrusted))", want: tlsCertificateRefused},
+		{client: "uv", name: "accepting a compromised chain", exit: "1", stderr: "Using Python 3.13.5 environment at: /usr\nerror: Unsupported `Content-Type` \"text/plain\" for `https://dv-g3b-emudhra.we-have-a-problem.com/legion-tls-probe-not-a-package/`. Expected JSON or HTML.", want: tlsConnectionAccepted},
 	} {
 		t.Run(testCase.client+" "+testCase.name, func(t *testing.T) {
 			client := clients[testCase.client]
