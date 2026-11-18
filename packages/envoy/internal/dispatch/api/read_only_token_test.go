@@ -502,7 +502,7 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	issueKey := decodeBody[struct {
 		Key string `json:"key"`
 	}](t, issue).Key
-	putStepOK(t, rig.handler, issueKey, "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0b", implementerStart(daemonSession(project)))
+	putStepOK(t, rig.handler, issueKey, "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0b", implementerStart(daemonSessionOf(project)))
 	marked.take()
 	request = caller.presenting(t, http.MethodGet, "/api/v1/issues/"+issueKey+"/steps", token, nil)
 	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))

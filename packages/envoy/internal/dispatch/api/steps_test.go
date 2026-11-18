@@ -30,11 +30,6 @@ var (
 	stepEnd   = stepStart.Add(25 * time.Minute)
 )
 
-// daemonSession is the writer the Legion daemon of project names on every step write.
-func daemonSession(project string) map[string]any {
-	return map[string]any{"kind": "session", "id": legionDaemonSessionPrefix + project}
-}
-
 // stepIdentity is what every write of the implementing step of an issue's first run names, its
 // start's and its end's alike: the task, the place, the kind, the role, the type and the run.
 func stepIdentity(actor map[string]any) map[string]any {
@@ -126,11 +121,11 @@ func TestTheDaemonWritesAStepAndAReaderReadsIt(t *testing.T) {
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id := uuid.NewString()
 
-	started := putStepOK(t, handler, issue, id, implementerStart(daemonSession("LEG")))
+	started := putStepOK(t, handler, issue, id, implementerStart(daemonSessionOf("LEG")))
 	if started.StartedAt == nil || !started.StartedAt.Equal(stepStart) || started.Result != "" || started.EndedAt != nil {
 		t.Fatalf("the start's answer is %s, want the run started at %s and not ended", asJSON(t, started), stepStart)
 	}
-	ended := putStepOK(t, handler, issue, id, implementerEnd(daemonSession("LEG"), "passed", stepEnd))
+	ended := putStepOK(t, handler, issue, id, implementerEnd(daemonSessionOf("LEG"), "passed", stepEnd))
 
 	read := readSteps(t, handler, issue)
 	if read.Issue != issue || len(read.Tasks) != 1 || read.Tasks[0].Task != "default" || len(read.Tasks[0].Steps) != 1 {
@@ -165,7 +160,7 @@ func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id, report := uuid.NewString(), uuid.NewString()
-	identity := withStepFields(stepIdentity(daemonSession("LEG")), map[string]any{"generation": 2})
+	identity := withStepFields(stepIdentity(daemonSessionOf("LEG")), map[string]any{"generation": 2})
 	started := putStepOK(t, handler, issue, id, withStepFields(identity, map[string]any{
 		"agent": "legion-leg-leg-1-implementer", "started_at": stepStart,
 	}))
@@ -203,7 +198,7 @@ func TestARunsSessionReportAndGenerationComeBackAsWritten(t *testing.T) {
 func TestASecondRunOfAStepAnswersAttemptTwo(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
-	daemon := daemonSession("LEG")
+	daemon := daemonSessionOf("LEG")
 	first, second := uuid.NewString(), uuid.NewString()
 	putStepOK(t, handler, issue, first, implementerStart(daemon))
 	putStepOK(t, handler, issue, first, implementerEnd(daemon, "stopped", stepEnd))
@@ -233,7 +228,7 @@ func TestASecondRunOfAStepAnswersAttemptTwo(t *testing.T) {
 func TestTheReadListsTasksInTheOrderOfTheirFirstStep(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
-	daemon := daemonSession("LEG")
+	daemon := daemonSessionOf("LEG")
 	run := func(task string, place int, at time.Time) string {
 		id := uuid.NewString()
 		putStepOK(t, handler, issue, id, map[string]any{
@@ -277,7 +272,7 @@ func TestAWriteThatNamesAnotherSessionIsRefused(t *testing.T) {
 	}
 
 	id := uuid.NewString()
-	putStepOK(t, handler, issue, id, implementerStart(daemonSession("LEG")))
+	putStepOK(t, handler, issue, id, implementerStart(daemonSessionOf("LEG")))
 	if steps := stepsOf(t, handler, issue); len(steps) != 1 || steps[0].ID != id {
 		t.Fatalf("the daemon's write left %+v, want the one record %s", steps, id)
 	}
@@ -293,7 +288,7 @@ func TestAClosedIssueTakesItsMergeRecord(t *testing.T) {
 	assertRefusedOnClosedIssue(t, "a handoff", postHandoff(t, handler, issue, "implement", `{}`))
 	id := uuid.NewString()
 	merged := putStepOK(t, handler, issue, id, map[string]any{
-		"actor": daemonSession("LEG"), "task": "default", "step": 0, "kind": "merge", "role": "merger",
+		"actor": daemonSessionOf("LEG"), "task": "default", "step": 0, "kind": "merge", "role": "merger",
 		"generation": 1, "result": "passed", "ended_at": stepEnd,
 	})
 	if merged.Kind != "merge" || merged.Step != 0 || merged.Agent != "" || merged.Result != "passed" || merged.Attempt != 1 {
@@ -311,10 +306,10 @@ func TestAnUnknownIssueIsIssueNotFound(t *testing.T) {
 	handler := newTestHandler(t)
 	createTestIssue(t, handler, "LEG", "A run of steps")
 
-	missing := putStep(t, handler, "LEG-999", uuid.NewString(), implementerStart(daemonSession("LEG")))
+	missing := putStep(t, handler, "LEG-999", uuid.NewString(), implementerStart(daemonSessionOf("LEG")))
 	expectRefusal(t, "a write to LEG-999", missing, http.StatusNotFound, "ISSUE_NOT_FOUND", "LEG-999")
 	unrouted := sessionRequest(t, handler, http.MethodPut, "/api/v1/issues/LEG-999/no-such-records/"+uuid.NewString(),
-		implementerStart(daemonSession("LEG")))
+		implementerStart(daemonSessionOf("LEG")))
 	if unrouted.Code != http.StatusNotFound || strings.Contains(unrouted.Body.String(), "ISSUE_NOT_FOUND") {
 		t.Fatalf("a write to a route no row serves: status=%d body=%s, want a 404 without ISSUE_NOT_FOUND", unrouted.Code, unrouted.Body.String())
 	}
@@ -353,8 +348,8 @@ func TestAStepWriteAppendsNoEvent(t *testing.T) {
 	before := issueEventTypes(t, handler, issue)
 
 	id := uuid.NewString()
-	putStepOK(t, handler, issue, id, implementerStart(daemonSession("LEG")))
-	putStepOK(t, handler, issue, id, implementerEnd(daemonSession("LEG"), "failed", stepEnd))
+	putStepOK(t, handler, issue, id, implementerStart(daemonSessionOf("LEG")))
+	putStepOK(t, handler, issue, id, implementerEnd(daemonSessionOf("LEG"), "failed", stepEnd))
 	if after := issueEventTypes(t, handler, issue); !slices.Equal(before, after) {
 		t.Fatalf("the issue's events went from %v to %v, want no event for a step write", before, after)
 	}
@@ -372,7 +367,7 @@ func TestAStepWriteAppendsNoEvent(t *testing.T) {
 func TestAStepWriteRefusesItsBadValues(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
-	daemon := daemonSession("LEG")
+	daemon := daemonSessionOf("LEG")
 	start := implementerStart(daemon)
 	without := func(field string) map[string]any {
 		body := maps.Clone(start)
@@ -448,7 +443,7 @@ func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
 		{"9999-12-31T22:59:59-01:00", "9999-12-31T23:59:59Z"},
 	} {
 		id := uuid.NewString()
-		written := putStepOK(t, handler, issue, id, withStepFields(implementerStart(daemonSession("LEG")), map[string]any{"started_at": row.input}))
+		written := putStepOK(t, handler, issue, id, withStepFields(implementerStart(daemonSessionOf("LEG")), map[string]any{"started_at": row.input}))
 		if written.StartedAt == nil || written.StartedAt.Format(time.RFC3339Nano) != row.want {
 			t.Fatalf("the write of %s answers %s, want start %s", row.input, asJSON(t, written), row.want)
 		}
@@ -463,7 +458,7 @@ func TestAStepMomentAtTheUTCYearBoundsIsReadable(t *testing.T) {
 func TestTwoPutsOfOneStepAtOneTimeKeepBoth(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
-	daemon := daemonSession("LEG")
+	daemon := daemonSessionOf("LEG")
 	start := implementerStart(daemon)
 	end := implementerEnd(daemon, "passed", stepEnd)
 
@@ -522,10 +517,10 @@ func TestAnEndPutTwiceKeepsItsFirstEnd(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
 	id := uuid.NewString()
-	putStepOK(t, handler, issue, id, implementerStart(daemonSession("LEG")))
-	putStepOK(t, handler, issue, id, implementerEnd(daemonSession("LEG"), "stopped", stepEnd))
+	putStepOK(t, handler, issue, id, implementerStart(daemonSessionOf("LEG")))
+	putStepOK(t, handler, issue, id, implementerEnd(daemonSessionOf("LEG"), "stopped", stepEnd))
 
-	again := putStepOK(t, handler, issue, id, implementerEnd(daemonSession("LEG"), "passed", stepEnd.Add(time.Hour)))
+	again := putStepOK(t, handler, issue, id, implementerEnd(daemonSessionOf("LEG"), "passed", stepEnd.Add(time.Hour)))
 	if again.Result != "stopped" || again.EndedAt == nil || !again.EndedAt.Equal(stepEnd) {
 		t.Fatalf("the second end answers %s, want the first end, stopped at %s", asJSON(t, again), stepEnd)
 	}
@@ -543,7 +538,7 @@ func TestAStepReturnedToRetroKeepsPlaceZero(t *testing.T) {
 		t.Run(strconv.FormatBool(endFirst), func(t *testing.T) {
 			id := uuid.NewString()
 			identity := map[string]any{
-				"actor": daemonSession("LEG"), "task": "default", "step": 0, "kind": "merge",
+				"actor": daemonSessionOf("LEG"), "task": "default", "step": 0, "kind": "merge",
 				"role": "merger", "type": "", "agent": "legion-leg-leg-1-merger", "generation": 1,
 			}
 			start := withStepFields(identity, map[string]any{"started_at": stepStart})
@@ -580,9 +575,9 @@ func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 		createAdvancingIssue(t, handler, map[string]any{"project": "LEG", "title": "Another run of steps"}, "alice").Key,
 	}
 	id := uuid.NewString()
-	putStepOK(t, handler, issues[0], id, implementerStart(daemonSession("LEG")))
+	putStepOK(t, handler, issues[0], id, implementerStart(daemonSessionOf("LEG")))
 
-	other := putStep(t, handler, issues[1], id, implementerEnd(daemonSession("LEG"), "passed", stepEnd))
+	other := putStep(t, handler, issues[1], id, implementerEnd(daemonSessionOf("LEG"), "passed", stepEnd))
 	expectRefusal(t, "the same id on "+issues[1], other, http.StatusConflict, codeStepOtherIssue, issues[0], issues[1])
 	if steps := stepsOf(t, handler, issues[1]); len(steps) != 0 {
 		t.Fatalf("%s lists %+v, want nothing", issues[1], steps)
@@ -616,10 +611,10 @@ func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
 	own, other := issueOf(brokerTestProject), issueOf("OTH")
 
 	refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+other+"/steps/"+uuid.NewString(), token,
-		implementerStart(daemonSession("OTH"))))
+		implementerStart(daemonSessionOf("OTH"))))
 	expectRefusal(t, "a write to "+other, refused, http.StatusForbidden, codeProjectScope, brokerTestProject, "OTH")
 	answered := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+own+"/steps/"+uuid.NewString(), token,
-		implementerStart(daemonSession(brokerTestProject))))
+		implementerStart(daemonSessionOf(brokerTestProject))))
 	if answered.Code != http.StatusOK {
 		t.Fatalf("the same write to %s: status=%d body=%s, want 200", own, answered.Code, answered.Body.String())
 	}
