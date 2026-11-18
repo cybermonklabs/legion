@@ -2,6 +2,7 @@ package kvwatch_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +39,43 @@ func endedLines(records []map[string]any, name string) int {
 		}
 	}
 	return count
+}
+
+// End's wait for a stop's result, or for a watch still starting, takes a result sent by the moment
+// it reads its context as ended: a result that came as the context ended is a stop that returned,
+// and saying it was unanswered would be a false ERROR. ended sends the result at exactly that
+// moment, after the wait has read the context as ended and before its last read. Every way it can
+// meet the two is held: the result before an ended context, the result at the context's end, a
+// context ended with no result, and a closed channel, as End's wait for a watch sees one.
+func TestEndsWaitTakesAResultSentAsItsContextEnded(t *testing.T) {
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	for attempt := range 1000 {
+		before := make(chan error, 1)
+		before <- nil
+		if _, taken := kvwatch.TakeWithinAfter(ended, before, nil); !taken {
+			t.Fatalf("attempt %d: a result sent before the wait was not taken once its context had ended", attempt)
+		}
+		at := make(chan error, 1)
+		if _, taken := kvwatch.TakeWithinAfter(ended, at, func() { at <- nil }); !taken {
+			t.Fatalf("attempt %d: a result sent as the wait read its context as ended was not taken", attempt)
+		}
+	}
+	if _, taken := kvwatch.TakeWithinAfter(ended, make(chan error, 1), nil); taken {
+		t.Fatal("a wait whose context ended with no result said it had one")
+	}
+	closed := make(chan struct{})
+	close(closed)
+	if _, taken := kvwatch.TakeWithinAfter(ended, closed, nil); !taken {
+		t.Fatal("a wait for a channel closed before its context ended said the channel was open")
+	}
+	live, stop := context.WithCancel(context.Background())
+	defer stop()
+	sent := make(chan error, 1)
+	sent <- errors.New("the stop's own error")
+	if err, taken := kvwatch.TakeWithinAfter(live, sent, nil); !taken || err == nil || err.Error() != "the stop's own error" {
+		t.Fatalf("a wait under a live context read %v, %t; want the stop's own error", err, taken)
+	}
 }
 
 // testConsumers lists the test bucket's consumers.

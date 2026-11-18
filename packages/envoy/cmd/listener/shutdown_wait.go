@@ -48,10 +48,14 @@ func (f *inflight) Add() {
 	f.n++
 }
 
-// Done counts one piece of work finished.
+// Done counts one piece of work finished. A Done with no work counted is a caller's fault, and it
+// panics, as sync.WaitGroup's does: counted on, it would read work still running as finished.
 func (f *inflight) Done() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.n == 0 {
+		panic("inflight: Done with no work counted")
+	}
 	f.n--
 	if f.n == 0 {
 		close(f.idle)

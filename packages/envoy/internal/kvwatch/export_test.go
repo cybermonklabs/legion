@@ -37,3 +37,9 @@ func Generation(w *Watcher) uint64 {
 func RereadOn(w *Watcher, kv bus.KeyValue, generation uint64) error {
 	return w.watch(context.Background(), kv, generation)
 }
+
+// TakeWithinAfter is End's wait for a stop's result or a watch's end (takeWithinAfter): ended runs
+// once the wait has read ctx as ended, before its last read of c.
+func TakeWithinAfter[T any](ctx context.Context, c <-chan T, ended func()) (T, bool) {
+	return takeWithinAfter(ctx, c, ended)
+}

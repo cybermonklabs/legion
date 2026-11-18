@@ -85,19 +85,9 @@ func (w *Watcher) end(ctx context.Context) {
 	w.mu.Unlock()
 	var gaveUp error
 	if idle != nil {
-		// A watch that has finished is read before ctx, and again once ctx has ended, since a
-		// select on both picks either when both are ready, and ctx can already be done: a hook's
-		// context ends the moment the connection is lost, and a drain of a connection already
-		// reconnecting runs the hooks on one that has.
-		select {
-		case <-idle:
-		case <-ctx.Done():
-			select {
-			case <-idle:
-			default:
-				gaveUp = context.Cause(ctx)
-				w.logUnfinished(w.name+" watcher end found a watch still starting", gaveUp)
-			}
+		if _, finished := takeWithin(ctx, idle); !finished {
+			gaveUp = context.Cause(ctx)
+			w.logUnfinished(w.name+" watcher end found a watch still starting", gaveUp)
 		}
 	}
 	w.mu.Lock()
@@ -112,23 +102,45 @@ func (w *Watcher) end(ctx context.Context) {
 	}
 	stopped := 0
 	for range retired {
-		// As above: a stop that has returned is taken before ctx, and again once ctx has ended.
-		select {
-		case err := <-results:
+		if err, returned := takeWithin(ctx, results); returned {
 			w.logEnd(err)
 			stopped++
-		case <-ctx.Done():
-			select {
-			case err := <-results:
-				w.logEnd(err)
-				stopped++
-			default:
-				w.logEnd(fmt.Errorf("delete its consumer: %w", context.Cause(ctx)))
-			}
+		} else {
+			w.logEnd(fmt.Errorf("delete its consumer: %w", context.Cause(ctx)))
 		}
 	}
 	if gaveUp == nil && stopped == len(retired) {
 		w.logger().Info(w.name+" watcher ended", slog.String("bucket", w.bucket), slog.Int("stopped", stopped))
+	}
+}
+
+// takeWithin waits within ctx for a value on c, or for c's close, and reports whether it got one.
+// A value sent, or a close made, by the moment it reads ctx as ended is taken all the same: a
+// select on c and ctx picks either when both are ready, and ctx can already be done, since a
+// hook's context ends the moment the connection is lost and a drain of a connection already
+// reconnecting runs the hooks on one that has. So End never says that a stop or a watch had not
+// finished when it had.
+func takeWithin[T any](ctx context.Context, c <-chan T) (T, bool) {
+	return takeWithinAfter(ctx, c, nil)
+}
+
+// takeWithinAfter is takeWithin, running ended, when not nil, once it has read ctx as ended and
+// before it reads c that last time: a test sends there what a stop would send at that moment.
+func takeWithinAfter[T any](ctx context.Context, c <-chan T, ended func()) (T, bool) {
+	select {
+	case value := <-c:
+		return value, true
+	case <-ctx.Done():
+	}
+	if ended != nil {
+		ended()
+	}
+	select {
+	case value := <-c:
+		return value, true
+	default:
+		var none T
+		return none, false
 	}
 }
 

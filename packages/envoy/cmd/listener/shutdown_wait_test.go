@@ -55,6 +55,17 @@ func TestAShutdownWaitReadsWorkThatEndedAsEndedWhenItsContextHasEndedToo(t *test
 	if !work.wait(endedContext()) {
 		t.Fatal("a goroutine that returned read as still running")
 	}
+
+	// A Done with nothing counted panics, as sync.WaitGroup's does, rather than read work that
+	// is still running as finished.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("a Done with no work counted did not panic")
+			}
+		}()
+		work.Done()
+	}()
 }
 
 // A shutdown whose HTTP window was spent says nothing of consumer deletes when none ran: before,

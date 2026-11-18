@@ -61,12 +61,13 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			client.AddDrainHook(watcher.End)
 
 			admin := testnats.Connect(t, uri)
+			var hold *testnats.ConsumerHold
 			if consumers := consumerNames(t, admin, "KV_drain_kv_watcher"); len(consumers) != 1 {
 				t.Fatalf("consumers before the drain = %v, want the watcher's one", consumers)
 			} else if test.consumerGone {
 				// Delete the watcher's consumer from a second connection, as the server does when it
 				// loses it, and keep nats.go from replacing it until the test ends.
-				testnats.HoldConsumerLost(t, admin, "KV_drain_kv_watcher", consumers[0])
+				hold = testnats.HoldConsumerLost(t, admin, "KV_drain_kv_watcher", consumers[0])
 			}
 
 			watcher.Stop()
@@ -76,10 +77,19 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			// nats.go runs an async error report after the drain's close only if it queued it before
 			// closing its callback queue; the wait gives one queued in time the moment to log.
 			time.Sleep(200 * time.Millisecond)
-			if got := strings.Join(warnOrErrorRecords(t, logs, name), ", "); got != test.want {
-				t.Fatalf("the drain logged %q, want %q", got, test.want)
+			want, replaced := test.want, hold != nil && hold.Replaced(t)
+			if replaced {
+				// A stall past a whole heartbeat check let nats.go replace the lost consumer, which
+				// the hold's own record of the server's creates says, so the end met the replacement
+				// and has no loss to warn of; and a replacement still in flight when the end ran is
+				// left for the server to remove.
+				t.Logf("nats.go replaced the held consumer: the row reads the replacement's end")
+				want = ""
 			}
-			if consumers := consumerNames(t, admin, "KV_drain_kv_watcher"); len(consumers) != 0 {
+			if got := strings.Join(warnOrErrorRecords(t, logs, name), ", "); got != want {
+				t.Fatalf("the drain logged %q, want %q", got, want)
+			}
+			if consumers := consumerNames(t, admin, "KV_drain_kv_watcher"); len(consumers) != 0 && !replaced {
 				t.Fatalf("consumers after the drain = %v, want none", consumers)
 			}
 		})
