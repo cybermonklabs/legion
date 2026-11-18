@@ -12,6 +12,7 @@ import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
 import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
+import { resetTimestampTick } from "../features/refs/Timestamp";
 import { resetWriteStorage } from "../features/writes/write-storage";
 import { type Writes, watchWriteStores } from "../features/writes/write-store";
 import {
@@ -195,6 +196,10 @@ afterEach(resetPinState);
 // Whether Dispatch could be reached is the page's to learn afresh: a request one test failed would
 // otherwise make the next test's first answer start every waiting write's backoff over.
 afterEach(resetReachability);
+// Every `<Timestamp>` shares one tick (`Timestamp.tsx`) that outlives the row that armed it, and a
+// tick a row did not start must not land in another row as an update outside act. It is called
+// off before the clock restore below, so a tick armed on a fake clock is cleared on that clock.
+afterEach(resetTimestampTick);
 
 // A fake clock a test installed is put back here as well as in that test's own `finally` or its
 // file's `afterEach`, because Bun keeps it across files: a test that installs it and then fails

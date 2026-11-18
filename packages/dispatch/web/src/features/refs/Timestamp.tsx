@@ -18,10 +18,11 @@ const TICK_INTERVAL_MS = 30_000;
 // pays for exactly one timer.
 const listeners = new Set<() => void>();
 let scheduled = false;
+let pendingTick: ReturnType<typeof setTimeout> | undefined;
 
 function scheduleTick(): void {
   scheduled = true;
-  setTimeout(() => {
+  pendingTick = setTimeout(() => {
     if (listeners.size === 0) {
       scheduled = false;
       return;
@@ -41,6 +42,16 @@ function subscribe(listener: () => void): () => void {
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** Calls off the shared tick, so the next `<Timestamp>` to mount arms a fresh one. The unit-test
+ *  preload calls it after each test, since the tick outlives the test that armed it: it would
+ *  fire inside whichever later test has a `<Timestamp>` mounted then, and one armed on a fake clock
+ *  that test put back never fires, so no later `<Timestamp>` would tick at all. */
+export function resetTimestampTick(): void {
+  clearTimeout(pendingTick);
+  pendingTick = undefined;
+  scheduled = false;
 }
 
 /** "4 minutes ago", "just now": the relative form every `<Timestamp>` shows, for a caller that
