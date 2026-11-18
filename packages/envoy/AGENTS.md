@@ -5844,7 +5844,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
 
 - A settlement also carries `statuses` where the record holds a commit status (`cistore.Summary.Statuses`): each `{context, state, created_at}` (`cistore.StatusRef`), in context order, with `state` one of `success`, `failure` and `error` and `created_at` GitHub's RFC 3339 text of when it created the status, as the record keeps it, and no `statuses` field where the record holds none, so a head with no status settles in the same bytes as before the record held statuses.
   A commit status is an entry of its own kind: `check_runs`, the status groups and the failing names hold check runs alone, a status and a check run of one name are two entries, and a status is in no attempt set and takes no part in whether a head is ready to settle.
-  The record keeps the newest status of each context in one of those three states, by GitHub's `created_at`, and only Dispatch's CI reconcile writes one (`cmd/dispatch/README.md`, "CI reconcile"): the listener drops GitHub's `status` event (`githubSkip`), which carries a commit and no pull request.
+  The record keeps the newest status of each context in one of those three states, by GitHub's `created_at`, and only Dispatch's CI reconcile writes one (`cmd/dispatch/README.md`, "CI reconcile"): the listener publishes GitHub's `status` event nowhere, since it normalizes no such event (above), and the event carries a commit and no pull request.
   A new context or a changed state moves the record's `snapshot` and `generation` and settles the head again;
   a new time, link or description in the same state is recorded and settles nothing.
   The settlement's summary line adds `; statuses: <n> passed, <m> failed`, and `; failing statuses: <context>, …` where one failed, after the failing check runs.
@@ -5858,6 +5858,13 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   A consumer merges the `statuses` of each settlement it applies into the statuses it keeps for that commit, one context at a time: the entry with the later `created_at` stands, so a context the settlement leaves out stays as kept and an older settlement never puts back a state a later one replaced.
   On an equal `created_at` the settlement's entry stands where the settlement is applied whole, and the kept one where it changes those statuses alone, since it is then the older view.
   The Legion daemon applies this rule (`classify.ClassifySettlement` and its `statusNews`, `classify.ApplySettlement` and its `mergedStatuses`).
+
+- The listener publishes a GitHub webhook event only when it normalizes it: an event `githubEventKinds` names, carrying the JSON object `githubPayload` writes (`GithubEnvelopes` publishes no envelope whose payload is empty).
+  Every other event a webhook delivers (a commit status, a branch or tag created or deleted, a label, a review thread resolved, a webhook's ping, and the rest of GitHub's list) is answered `200` and published nowhere.
+  Such an event was once published on the repository's own `comment` topic with no `payload`, which every Legion daemon that hears the repository terminates as poison (`Envoy envelope payload is not JSON`), one ERROR line per delivery.
+  GitHub delivers a sub-issue added or removed to each issue's repository (`sub_issue_*` to the parent's, `parent_issue_*` to the child's), and each delivery is published on `issue.<n>.sub_issue` of the issue in the webhook's own repository: the parent for `sub_issue_*`, the child for `parent_issue_*`.
+  Its payload of kind `sub_issue` carries that `number`, the parent (`parent_number`, `parent_title`, `parent_url`, `parent_repo`), the sub-issue (`sub_issue_number`, `sub_issue_title`, `sub_issue_url`, `sub_issue_repo`) and the `sender`; each repository is the one GitHub names for that issue, else the webhook's own.
+  `TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload` publishes every event the table names from a body of its own, and fails for one added without a normalizer.
 
 - A live settlement is a possibly incomplete view of the head (a missed webhook, a record recreated after the KV TTL):
   it decides the outcome of every name it reports

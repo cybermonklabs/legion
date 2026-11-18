@@ -2173,6 +2173,10 @@ jobs:
               - 'packages/contracts/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
+              # The one corpus both clients read: src/__tests__/wire.test.ts:23-29 reads the Go
+              # package's own testdata by relative path, that file itself and never a copy, so a
+              # field added there must start this job.
+              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
             # The private workspace package both Oh My Pi plugins import, and the jj
             # .github/actions/install-jj installs for the one case of src/jj-attribution.test.ts
             # that runs the real jj.
@@ -3442,8 +3446,8 @@ jobs:
               - *bun_install
               - 'packages/envoy-client/**'
               # src/broker-credential.ts:21-22 imports @legion/broker-client/environment and
-              # @legion/broker-client/token-client, and this job runs that package's own typecheck
-              # and tests.
+              # @legion/broker-client/token-client, so this job's typecheck and tests compile them.
+              # That package's own typecheck and tests are the broker-client job's.
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
               # src/broker-credential.ts:21-22 imports @legion/broker-client/*.
@@ -3484,10 +3488,6 @@ jobs:
               # src/__tests__/dispatch-who-waits.test.ts:783,791 reads the CLI guide's sentence on
               # an assignee move, which must name the project's default assignee.
               - 'packages/envoy/cmd/dispatch/README.md'
-              # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
-              # reads the Go package's own testdata by relative path, that file itself and never a
-              # copy, so a field added there must start this job.
-              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
               # src/__tests__/stream-topics.test.ts:118-121,131 reads the listener's own cases of
               # which topics reach a private stream subject, the file
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
