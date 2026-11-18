@@ -59,6 +59,10 @@ type KeyValue struct {
 	// handle over), so two reads of one handle at once -- a watcher's stream probe beside its
 	// completion check -- race on it.
 	streams jetstream.JetStream
+	// owner is the client that owns the connection streams is on, found once when the handle is
+	// built (clientOwning), whose record of the server's refusals every call of the handle reads
+	// (refusedOn); nil on a connection no client owns.
+	owner *Client
 }
 
 // RequestTimeout bounds one send of a read through the jetstream handle whose caller holds no
@@ -514,7 +518,7 @@ func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, step, stre
 // read in flight when ctx ends is abandoned too.
 func awaitStream(ctx context.Context, js nats.JetStreamContext, step, stream, want, waiting string, short func(*nats.StreamInfo) string) error {
 	behind := "no read of the stream answered yet"
-	limit := firstReadLimit
+	limit := firstReadLimitOf(ctx)
 	for attempt := 1; ; attempt++ {
 		readCtx, cancelRead := context.WithTimeout(ctx, limit)
 		info, answered, err := Bounded(readCtx, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
@@ -687,12 +691,13 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 		return KeyValue{}, err
 	}
 	request := "KV_" + kv.Bucket() + " handle open"
+	owner := clientOwning(conn)
 	// The open is one STREAM.INFO of the bucket's stream, read for the server's refusal as every
 	// request of a start is (refusedSend): the jetstream API has no context to wrap, so the send is.
 	open := func() (jetstream.KeyValue, error) {
 		ctx, cancel := context.WithTimeout(ctx, RequestTimeout)
 		defer cancel()
-		return refusedSend(conn, []string{jsAPI("STREAM.INFO", "KV_"+kv.Bucket())}, func() (jetstream.KeyValue, error) {
+		return refusedBy(owner, []string{jsAPI("STREAM.INFO", "KV_"+kv.Bucket())}, func() (jetstream.KeyValue, error) {
 			return js.KeyValue(ctx, kv.Bucket())
 		})
 	}
@@ -709,26 +714,26 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	if err != nil {
 		return KeyValue{}, fmt.Errorf("open the jetstream handle of KV bucket %s: %w", kv.Bucket(), err)
 	}
-	return KeyValue{legacy: kv, watch: watch, streams: js}, nil
+	return KeyValue{legacy: kv, watch: watch, streams: js, owner: owner}, nil
 }
 
 // NewKeyValue pairs kv with watch, a jetstream handle of the same bucket, and streams, the jetstream
 // context its stream is read through, without a round trip: for a test that wraps any of them to
 // inject a fault.
 func NewKeyValue(kv nats.KeyValue, watch jetstream.KeyValue, streams jetstream.JetStream) KeyValue {
-	return KeyValue{legacy: kv, watch: watch, streams: streams}
+	var owner *Client
+	if streams != nil {
+		owner = clientOwning(streams.Conn())
+	}
+	return KeyValue{legacy: kv, watch: watch, streams: streams, owner: owner}
 }
 
 // refusedOn is call, a request kv makes of its bucket's stream or a write of one of its keys,
-// read for the server's refusal of subjects as it arrives (refusedSend), on the connection kv's
-// stream is read through. A handle built without one (NewKeyValue with no streams) sends as call
-// does.
+// read for the server's refusal of subjects as it arrives (refusedBy), in the record of the client
+// that owns kv's connection, found when kv was built. A handle on a connection no client owns
+// sends as call does.
 func refusedOn[T any](kv KeyValue, subjects []string, call func() (T, error)) (T, error) {
-	var conn *nats.Conn
-	if kv.streams != nil {
-		conn = kv.streams.Conn()
-	}
-	return refusedSend(conn, subjects, call)
+	return refusedBy(kv.owner, subjects, call)
 }
 
 // keySubjects is the subject a write of key publishes to: "$KV.<bucket>.<key>" (nats.go@v1.53.1
@@ -737,12 +742,21 @@ func (kv KeyValue) keySubjects(key string) []string {
 	return []string{"$KV." + kv.Bucket() + "." + key}
 }
 
-// getSubjects are the requests a read of key can send: a direct get of the key's last message or
-// of a revision, on a bucket that allows direct gets, and a get from the stream's leader on one
-// that does not (nats.go@v1.53.1 kv.go getRevision, js.go apiDirectMsgGetLastBySubjectT).
+// getSubjects are the requests a read of key's last value can send: a direct get of the key's
+// last message, on a bucket that allows direct gets, and a get from the stream's leader on one
+// that does not (nats.go@v1.53.1 kv.go getRevision, js.go apiDirectMsgGetLastBySubjectT). Only
+// the subjects the read sends are listed: a send takes the refusal of any subject it lists, and
+// one it does not send is another call's to answer.
 func (kv KeyValue) getSubjects(key string) []string {
 	stream := "KV_" + kv.Bucket()
-	return []string{jsAPI("DIRECT.GET", stream, "$KV."+kv.Bucket()+"."+key), jsAPI("DIRECT.GET", stream), jsAPI("STREAM.MSG.GET", stream)}
+	return []string{jsAPI("DIRECT.GET", stream, "$KV."+kv.Bucket()+"."+key), jsAPI("STREAM.MSG.GET", stream)}
+}
+
+// revisionSubjects are the requests a read of one revision can send: a direct get by sequence
+// and a get from the stream's leader (nats.go@v1.53.1 kv.go getRevision, js.go apiDirectMsgGetT).
+func (kv KeyValue) revisionSubjects() []string {
+	stream := "KV_" + kv.Bucket()
+	return []string{jsAPI("DIRECT.GET", stream), jsAPI("STREAM.MSG.GET", stream)}
 }
 
 // watchSubjects are the requests a watch sends to create its consumer, whose name nats.go picks as
@@ -937,7 +951,7 @@ func natsKeyValid(key string) bool {
 // GetRevision gets key by revision, which names the revision rather than the key in its subject, so
 // only nats.go's alphabet check refuses a key here.
 func (kv KeyValue) GetRevision(key string, revision uint64) (nats.KeyValueEntry, error) {
-	entry, err := refusedOn(kv, kv.getSubjects(key), func() (nats.KeyValueEntry, error) { return kv.legacy.GetRevision(key, revision) })
+	entry, err := refusedOn(kv, kv.revisionSubjects(), func() (nats.KeyValueEntry, error) { return kv.legacy.GetRevision(key, revision) })
 	return entry, invalidKey(key, err)
 }
 

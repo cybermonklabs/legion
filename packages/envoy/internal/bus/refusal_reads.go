@@ -32,31 +32,29 @@ func readsRefusals(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamCont
 	if _, ok := js.(refusalReads); ok {
 		return js
 	}
-	return refusalReads{JetStreamContext: js, conn: conn}
+	return refusalReads{JetStreamContext: js, owner: clientOwning(conn)}
 }
 
 // readsOwnRefusals is readsRefusals with c named as the client whose record is read, for c's own
-// stream ensure: the constructor ensures the stream on the connection it is installing before c
-// owns it (install), when clientOwning cannot find c yet.
-func (c *Client) readsOwnRefusals(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamContext {
+// JetStream context and its stream ensure: the constructor ensures the stream on the connection it
+// is installing before c owns it (install), when clientOwning cannot find c yet.
+func (c *Client) readsOwnRefusals(js nats.JetStreamContext) nats.JetStreamContext {
 	if wrapped, ok := js.(refusalReads); ok {
 		js = wrapped.JetStreamContext
 	}
-	return refusalReads{JetStreamContext: js, conn: conn, owner: c}
+	return refusalReads{JetStreamContext: js, owner: c}
 }
 
+// refusalReads is a JetStream context whose requests read the record of owner, the client that
+// owns its connection, found once when it is built; nil when no client owns it.
 type refusalReads struct {
 	nats.JetStreamContext
-	conn  *nats.Conn
 	owner *Client
 }
 
-// refusedVia is refusedSend through r: its named owner, or the client owning its connection.
+// refusedVia is refusedBy through r's owner.
 func refusedVia[T any](r refusalReads, subjects []string, send func() (T, error)) (T, error) {
-	if r.owner != nil {
-		return refusedBy(r.owner, subjects, send)
-	}
-	return refusedSend(r.conn, subjects, send)
+	return refusedBy(r.owner, subjects, send)
 }
 
 func (r refusalReads) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {

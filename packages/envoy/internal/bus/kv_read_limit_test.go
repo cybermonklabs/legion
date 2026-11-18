@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -8,6 +9,13 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
+
+// countedReads is ctx with the first read limit at the caller's whole wait (firstReadLimitKey),
+// for a row that counts a start's requests: a read a loaded machine answers past firstReadLimit is
+// then waited for rather than abandoned and read again, so the count is the requests' own.
+func countedReads(ctx context.Context) context.Context {
+	return context.WithValue(ctx, firstReadLimitKey{}, RequestTimeout)
+}
 
 // heldReplyJetStream answers its first read of a stream as a read of a stream with no leader yet,
 // and holds the reply of its second read for RequestTimeout before answering nats.ErrTimeout, as

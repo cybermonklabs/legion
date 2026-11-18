@@ -452,14 +452,14 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		// (watchPublishDenials), so a refusal the flush could not name is not left to the timeout.
 		// The watch is taken before the record is first read, so a violation recorded between the
 		// two still wakes the wait.
-		refused, stopWatch := w.client.watchPublishDenials([]string{subject})
-		defer stopWatch()
+		watch := w.client.watchPublishDenials([]string{subject})
+		defer w.client.unwatchPublishDenials(watch)
 		if denial := denied(); denial != nil {
 			return denial
 		}
 		for {
 			select {
-			case <-refused:
+			case <-watch.signal:
 				if denial := denied(); denial != nil {
 					return denial
 				}
@@ -560,8 +560,8 @@ func (w *window) Probe(timeout time.Duration) error {
 // the end of the acknowledgement's own wait. The watch is taken before the record is first read,
 // so a violation recorded between the two still wakes the wait.
 func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt time.Time) error {
-	refused, stop := w.client.watchPublishDenials([]string{topic})
-	defer stop()
+	watch := w.client.watchPublishDenials([]string{topic})
+	defer w.client.unwatchPublishDenials(watch)
 	for {
 		// A window sends every destination of one event on one connection, so a grant that
 		// denies several of them has the server report a violation of each: the record answers
@@ -584,7 +584,7 @@ func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt tim
 				return fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err)
 			}
 			return streamFull(err)
-		case <-refused:
+		case <-watch.signal:
 		}
 	}
 }

@@ -293,11 +293,12 @@ type Client struct {
 	// record retention has spent and anything past publishDenialDepth are dropped when the next
 	// one is recorded, and a read takes the violation it answers with out.
 	deniedPublishes map[string][]publishViolation
-	// denialWatchers are the sends waiting on an answer right now, each a channel under each
-	// subject it publishes to (watchPublishDenials): recordPublishDenial signals every channel of
-	// the subject it records, so a refused send is answered as the refusal arrives rather than at
-	// the end of its own wait. c.mu guards it, as it guards deniedPublishes.
-	denialWatchers map[string]map[chan struct{}]struct{}
+	// denialWatches are the sends waiting on an answer right now, each with the subjects it
+	// publishes to (watchPublishDenials): recordPublishDenial signals every watch of the subject it
+	// records, so a refused send is answered as the refusal arrives rather than at the end of its
+	// own wait. denialWatchMu guards it, apart from c.mu, since every request takes a watch.
+	denialWatchMu sync.Mutex
+	denialWatches []denialWatch
 	// installing is the connection install ensures the stream on before it becomes Conn, whose
 	// refusals are recorded as Conn's are (recordPublishDenial); nil outside that ensure. c.mu
 	// guards it.
@@ -584,7 +585,7 @@ func (c *Client) install(nc *nats.Conn, ensure bool) error {
 		}
 	}
 	c.mu.Lock()
-	c.Conn, c.js = nc, readsRefusals(nc, js)
+	c.Conn, c.js = nc, c.readsOwnRefusals(js)
 	c.connectionChangedLocked()
 	// install runs only from the constructor, before any connection is c.Conn, so the record holds
 	// at most what the stream's ensure on nc left unread (recordPublishDenial records for the
@@ -654,7 +655,7 @@ func (c *Client) ensureStreamReported(versionCtx, ctx context.Context, conn *nat
 	if err != nil {
 		return err
 	}
-	return c.ensureStream(ctx, c.readsOwnRefusals(conn, js), defaultsAnUnsetCap)
+	return c.ensureStream(ctx, c.readsOwnRefusals(js), defaultsAnUnsetCap)
 }
 
 // lookOnce is a context already done, for a read of the server version that must not wait: given
@@ -1637,7 +1638,7 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 			continue
 		}
 		c.Conn = nc
-		c.js = readsRefusals(nc, js)
+		c.js = c.readsOwnRefusals(js)
 		c.markHooksDueLocked()
 		c.connectionChangedLocked()
 		c.mu.Unlock()

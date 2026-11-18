@@ -82,7 +82,7 @@ func TestAStreamReadTheServerLeavesUnansweredIsSentAgainAndTheStartGoesOn(t *tes
 	losing := &unansweredJetStream{JetStreamContext: js, unansweredReads: 1}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	if _, err := ensureStreamWithConfig(t.Context(), losing, &cfg, capsAnUnsetStream); err != nil {
+	if _, err := ensureStreamWithConfig(countedReads(t.Context()), losing, &cfg, capsAnUnsetStream); err != nil {
 		t.Fatalf("a start whose first stream read drew no answer = %v, want it to go on", err)
 	}
 

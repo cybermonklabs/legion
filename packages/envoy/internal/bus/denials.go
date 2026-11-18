@@ -97,19 +97,7 @@ func (c *Client) recordPublishDenial(nc *nats.Conn, violation error) bool {
 		queue = slices.Delete(queue, 0, len(queue)-publishDenialDepth)
 	}
 	c.deniedPublishes[subject] = queue
-	for pattern, watchers := range c.denialWatchers {
-		if !subjectMatches(pattern, subject) {
-			continue
-		}
-		for watcher := range watchers {
-			// Each watcher's channel holds one signal, which is enough: a woken send reads the
-			// record itself (deniedPublishOf), so a second signal before it reads adds nothing.
-			select {
-			case watcher <- struct{}{}:
-			default:
-			}
-		}
-	}
+	c.signalPublishDenial(subject)
 	return true
 }
 
@@ -187,34 +175,65 @@ func subjectMatches(pattern, subject string) bool {
 	return pattern == subject
 }
 
-// watchPublishDenials is a channel that receives a signal when the server's refusal of a publish
-// to one of subjects is recorded from now on (recordPublishDenial), and the stop that ends the
-// watch. A send takes it before its message goes out and selects on it beside its own answer, so
-// the refusal answers the send the moment nats.go hands the server's report over, where a send that
-// read the record only once its own wait ran out spent that whole wait on a request the server had
-// refused at once. The signal says only that a refusal of one of subjects arrived: the send reads
-// which (deniedPublishOf), and goes on waiting when the refusal was another send's.
-func (c *Client) watchPublishDenials(subjects []string) (<-chan struct{}, func()) {
-	watcher := make(chan struct{}, 1)
-	c.mu.Lock()
-	if c.denialWatchers == nil {
-		c.denialWatchers = make(map[string]map[chan struct{}]struct{})
-	}
-	for _, subject := range subjects {
-		if c.denialWatchers[subject] == nil {
-			c.denialWatchers[subject] = make(map[chan struct{}]struct{})
+// denialWatch is one send's watch of the server's refusals of subjects: signal receives when a
+// refusal of one of them is recorded (watchPublishDenials).
+type denialWatch struct {
+	subjects []string
+	signal   chan struct{}
+}
+
+// watchPublishDenials is a watch whose signal receives when the server's refusal of a publish to
+// one of subjects is recorded from now on (recordPublishDenial); the caller ends it with
+// unwatchPublishDenials. A send takes it before its message goes out and selects on it beside its
+// own answer, so the refusal answers the send the moment nats.go hands the server's report over,
+// where a send that read the record only once its own wait ran out spent that whole wait on a
+// request the server had refused at once. The signal says only that a refusal of one of subjects
+// arrived: the send reads which (deniedPublishOf), and goes on waiting when the refusal was
+// another send's.
+//
+// The watches are a list of their own under denialWatchMu, not under c.mu, since every request
+// of the bus takes one and gives it back: the list holds the sends in flight, and a watch costs
+// its one channel.
+func (c *Client) watchPublishDenials(subjects []string) denialWatch {
+	watch := denialWatch{subjects: subjects, signal: make(chan struct{}, 1)}
+	c.denialWatchMu.Lock()
+	c.denialWatches = append(c.denialWatches, watch)
+	c.denialWatchMu.Unlock()
+	return watch
+}
+
+// unwatchPublishDenials ends watch.
+func (c *Client) unwatchPublishDenials(watch denialWatch) {
+	c.denialWatchMu.Lock()
+	defer c.denialWatchMu.Unlock()
+	for index, held := range c.denialWatches {
+		if held.signal != watch.signal {
+			continue
 		}
-		c.denialWatchers[subject][watcher] = struct{}{}
+		last := len(c.denialWatches) - 1
+		c.denialWatches[index] = c.denialWatches[last]
+		c.denialWatches[last] = denialWatch{}
+		c.denialWatches = c.denialWatches[:last]
+		return
 	}
-	c.mu.Unlock()
-	return watcher, func() {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-		for _, subject := range subjects {
-			delete(c.denialWatchers[subject], watcher)
-			if len(c.denialWatchers[subject]) == 0 {
-				delete(c.denialWatchers, subject)
+}
+
+// signalPublishDenial signals every watch of a subject that matches subject, just recorded.
+// Each watch's channel holds one signal, which is enough: a woken send reads the record itself
+// (deniedPublishOf), so a second signal before it reads adds nothing.
+func (c *Client) signalPublishDenial(subject string) {
+	c.denialWatchMu.Lock()
+	defer c.denialWatchMu.Unlock()
+	for _, watch := range c.denialWatches {
+		for _, pattern := range watch.subjects {
+			if !subjectMatches(pattern, subject) {
+				continue
 			}
+			select {
+			case watch.signal <- struct{}{}:
+			default:
+			}
+			break
 		}
 	}
 }
@@ -322,8 +341,8 @@ func refusedBy[T any](owner *Client, subjects []string, send func() (T, error)) 
 	if owner == nil {
 		return send()
 	}
-	refused, stop := owner.watchPublishDenials(subjects)
-	defer stop()
+	watch := owner.watchPublishDenials(subjects)
+	defer owner.unwatchPublishDenials(watch)
 	sentAt := time.Now()
 	type answer struct {
 		value T
@@ -345,7 +364,7 @@ func refusedBy[T any](owner *Client, subjects []string, send func() (T, error)) 
 				}
 			}
 			return got.value, got.err
-		case <-refused:
+		case <-watch.signal:
 			if denial := owner.deniedPublishOf(subjects, sentAt); denial != nil {
 				var none T
 				return none, denial

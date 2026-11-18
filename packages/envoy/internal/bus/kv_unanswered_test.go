@@ -253,7 +253,7 @@ func TestAnUnansweredBucketLookupIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	relay.arm(1)
 	// Replicas is left at one copy, so no raise is attempted and every send the relay counts from
 	// here is a read of the bucket's stream this call made.
-	handle, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	handle, err := EnsureKeyValue(countedReads(t.Context()), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("a start whose first bucket lookup drew no answer = %v, want it to go on", err)
 	}
@@ -398,7 +398,7 @@ func TestAnUnansweredHandleOpenIsSentAgainAndTheStartGoesOn(t *testing.T) {
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(1)
-	handle, err := wrapKeyValue(context.Background(), conn, kv, true, startSendsAgain)
+	handle, err := wrapKeyValue(countedReads(context.Background()), conn, kv, true, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start whose first handle open drew no answer = %v, want it to go on", err)
 	}
@@ -423,7 +423,7 @@ func TestAnUnansweredHandleOpenOfAFoundBucketIsSentAgainAndTheStartGoesOn(t *tes
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(1)
-	handle, err := wrapKeyValue(context.Background(), conn, kv, false, startSendsAgain)
+	handle, err := wrapKeyValue(countedReads(context.Background()), conn, kv, false, startSendsAgain)
 	if err != nil {
 		t.Fatalf("a start that found its bucket and lost its first handle open = %v, want it to go on", err)
 	}
@@ -443,7 +443,7 @@ func TestAnAnsweredHandleOpenIsSentOnce(t *testing.T) {
 	conn, _, kv := unansweredKeyValue(t, relay)
 
 	relay.arm(0)
-	if _, err := wrapKeyValue(context.Background(), conn, kv, true, startSendsAgain); err != nil {
+	if _, err := wrapKeyValue(countedReads(context.Background()), conn, kv, true, startSendsAgain); err != nil {
 		t.Fatalf("a start whose handle open the server answered = %v, want it to go on", err)
 	}
 
@@ -491,7 +491,7 @@ func TestAStartThatOpensAFoundBucketThroughEnsureKeyValueSendsTheOpenAgain(t *te
 	config := &nats.KeyValueConfig{Bucket: unansweredBucket, Storage: nats.MemoryStorage}
 
 	relay.arm(0)
-	if _, err := EnsureKeyValue(t.Context(), conn, js, config); err != nil {
+	if _, err := EnsureKeyValue(countedReads(t.Context()), conn, js, config); err != nil {
 		t.Fatalf("a start whose every request the server answered = %v, want it to go on", err)
 	}
 	answered := relay.sent()
@@ -500,7 +500,7 @@ func TestAStartThatOpensAFoundBucketThroughEnsureKeyValueSendsTheOpenAgain(t *te
 	}
 
 	relay.passThenDrop(answered-1, 1)
-	if _, err := EnsureKeyValue(t.Context(), conn, js, config); err != nil {
+	if _, err := EnsureKeyValue(countedReads(t.Context()), conn, js, config); err != nil {
 		t.Fatalf("a start that found its bucket and lost its handle open = %v, want it to go on", err)
 	}
 	if sends := relay.sent(); sends != answered+1 {

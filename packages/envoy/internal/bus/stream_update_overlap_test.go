@@ -45,7 +45,7 @@ func TestAnUpdateRefusedAsOverlappingItsOwnStreamIsSettledFromTheStream(t *testi
 			js := &scriptedUpdateJetStream{config: nats.StreamConfig{Name: Stream, Replicas: 1}, answers: test.answers, landed: test.landed}
 			update := nats.StreamConfig{Name: Stream, Replicas: 3}
 
-			err := updateStream(t.Context(), js, &update, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= 3 })
+			err := updateStream(countedReads(t.Context()), js, &update, func(again *nats.StreamInfo) bool { return again.Config.Replicas >= 3 })
 
 			if !errors.Is(err, test.want) {
 				t.Fatalf("updateStream = %v, want %v", err, test.want)
@@ -130,7 +130,7 @@ func TestConcurrentUpdatesOfOneStreamEndWithTheStreamHoldingThem(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				sent := update
-				errs[i] = updateStream(t.Context(), member, &sent, func(again *nats.StreamInfo) bool {
+				errs[i] = updateStream(countedReads(t.Context()), member, &sent, func(again *nats.StreamInfo) bool {
 					return again.Config.MaxBytes >= update.MaxBytes
 				})
 			}()

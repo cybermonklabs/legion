@@ -1257,6 +1257,21 @@ func sentAgain[T any](ctx context.Context, request string, send func() (T, error
 // guard ends the wait.
 const firstReadLimit = 630 * time.Millisecond
 
+// firstReadLimitKey is the context key a test that counts a start's requests sets its first read
+// limit under (withFirstReadLimit, in this package's tests), at the caller's whole wait, so a read
+// a loaded machine answers past firstReadLimit is not read again and the count is the requests'
+// own. Nothing outside the tests sets it.
+type firstReadLimitKey struct{}
+
+// firstReadLimitOf is the first read limit of the reads made under ctx: firstReadLimit, unless a
+// test set another (firstReadLimitKey).
+func firstReadLimitOf(ctx context.Context) time.Duration {
+	if first, ok := ctx.Value(firstReadLimitKey{}).(time.Duration); ok {
+		return first
+	}
+	return firstReadLimit
+}
+
 // nextReadLimit is the limit of the read after one the server left unanswered within limit.
 func nextReadLimit(limit time.Duration) time.Duration {
 	return min(2*limit, RequestTimeout)
@@ -1270,7 +1285,7 @@ func nextReadLimit(limit time.Duration) time.Duration {
 // start makes: EnsureKeyValue's lookup, its read of a found bucket's stream and its handle open
 // (wrapKeyValue), the stream ensure's read (ensureStreamWithConfig) and SetKeyValueMaxAge's read.
 func readAgain[T any](ctx context.Context, request string, read func() (T, error)) (T, error) {
-	limit := firstReadLimit
+	limit := firstReadLimitOf(ctx)
 	return sentAgain(ctx, request, func() (T, error) {
 		readCtx, cancel := context.WithTimeout(ctx, limit)
 		defer cancel()

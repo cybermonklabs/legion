@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -132,24 +133,37 @@ func TestARefusedCreateFailsAtOnceRatherThanWaitingOutTheDeadline(t *testing.T) 
 // raise do, is answered as it is: a copy is behind its leader only once there is one. With
 // laggedThen set, the read after the first lagging answer calls it first, so a row can end the
 // caller's context once the start has read a copy as behind, on that fact and not on a clock.
+// Its counts are atomic, because a read the start abandons at its read limit runs on beside the
+// read sent after it.
 type raiseWatcher struct {
 	nats.JetStreamContext
 	replicas   int
-	behind     int
-	lagged     int
+	behind     atomic.Int64
+	lagged     atomic.Int64
 	laggedThen func()
 }
 
+// newRaiseWatcher is a raiseWatcher over js for a stream of replicas copies whose first behind
+// reads lag.
+func newRaiseWatcher(js nats.JetStreamContext, replicas int, behind int64, laggedThen func()) *raiseWatcher {
+	watcher := &raiseWatcher{JetStreamContext: js, replicas: replicas, laggedThen: laggedThen}
+	watcher.behind.Store(behind)
+	return watcher
+}
+
 func (r *raiseWatcher) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	if r.lagged > 0 && r.laggedThen != nil {
+	if r.lagged.Load() > 0 && r.laggedThen != nil {
 		r.laggedThen()
 	}
 	info, err := r.JetStreamContext.StreamInfo(stream, opts...)
-	if err != nil || info.Config.Replicas != r.replicas || r.behind == 0 || info.Cluster == nil || info.Cluster.Leader == "" || len(info.Cluster.Replicas) == 0 {
+	if err != nil || info.Config.Replicas != r.replicas || info.Cluster == nil || info.Cluster.Leader == "" || len(info.Cluster.Replicas) == 0 {
 		return info, err
 	}
-	r.behind--
-	r.lagged++
+	if r.behind.Add(-1) < 0 {
+		r.behind.Add(1)
+		return info, nil
+	}
+	r.lagged.Add(1)
 	lagging := *info
 	cluster := *info.Cluster
 	peers := make([]*nats.PeerInfo, len(cluster.Replicas))
@@ -177,13 +191,13 @@ func TestARaiseAnswersOnlyOnceTheCopiesAreCurrent(t *testing.T) {
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	watcher := &raiseWatcher{JetStreamContext: js, replicas: 3, behind: 2}
+	watcher := newRaiseWatcher(js, 3, 2, nil)
 	kv, err := EnsureKeyValue(t.Context(), conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
 	if err != nil {
 		t.Fatalf("raise the bucket to three copies: %v", err)
 	}
-	if watcher.behind != 0 {
-		t.Fatalf("the raise answered with %d catching-up reads still to come, want it to wait for every copy to be current", watcher.behind)
+	if behind := watcher.behind.Load(); behind != 0 {
+		t.Fatalf("the raise answered with %d catching-up reads still to come, want it to wait for every copy to be current", behind)
 	}
 	if _, err := kv.ReadStreamState(context.Background()); err != nil {
 		t.Fatalf("read the raised bucket's stream: %v", err)
@@ -195,7 +209,9 @@ func TestARaiseAnswersOnlyOnceTheCopiesAreCurrent(t *testing.T) {
 // the raise leaves the bucket alone, and the stream reads answer as a cluster with a copy that
 // never catches up does, for more reads than any run could take. The raise's own read of the
 // stream is the one read the start makes through the watcher: a wait for the copies would read it
-// again and again, until the context below ended, and this row counts the reads.
+// again and again, until the context below ended, and this row counts the reads, under a first
+// read limit of the caller's whole wait (countedReads), so a read a loaded machine answers late is
+// not counted twice.
 func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
@@ -204,14 +220,14 @@ func TestAStartThatRaisesNothingWaitsForNothing(t *testing.T) {
 		t.Fatalf("create the three-copy bucket: %v", err)
 	}
 	const unlimited = 1 << 30
-	watcher := &raiseWatcher{JetStreamContext: js, replicas: 3, behind: unlimited}
+	watcher := newRaiseWatcher(js, 3, unlimited, nil)
 	// A hang guard: a start that waited for the copies would wait until this context ended.
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+	ctx, cancel := context.WithTimeout(countedReads(t.Context()), time.Minute)
 	defer cancel()
 	if _, err := EnsureKeyValue(ctx, conn, watcher, config); err != nil {
 		t.Fatalf("ensure the bucket a start raises nothing on: %v", err)
 	}
-	if reads := unlimited - watcher.behind; reads != 1 {
+	if reads := unlimited - watcher.behind.Load(); reads != 1 {
 		t.Fatalf("the start that raised nothing read the stream %d times through the watcher, want once: it waits for no copy", reads)
 	}
 }
@@ -254,7 +270,7 @@ func TestARaiseWhoseCopiesNeverCatchUpFailsTheStart(t *testing.T) {
 	}
 	ctx, end := context.WithCancelCause(t.Context())
 	defer end(nil)
-	watcher := &raiseWatcher{JetStreamContext: js, replicas: 3, behind: 1 << 30, laggedThen: func() { end(context.DeadlineExceeded) }}
+	watcher := newRaiseWatcher(js, 3, 1<<30, func() { end(context.DeadlineExceeded) })
 	_, err := EnsureKeyValue(ctx, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
 	if err == nil {
 		t.Fatal("the raise answered with a copy that never caught up, want it to fail the start")
@@ -281,7 +297,7 @@ func TestARaiseThatNeverSettlesEndsAtTheHangGuard(t *testing.T) {
 	if _, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 1}); err != nil {
 		t.Fatalf("create the one-copy bucket: %v", err)
 	}
-	watcher := &raiseWatcher{JetStreamContext: js, replicas: 3, behind: 1 << 30}
+	watcher := newRaiseWatcher(js, 3, 1<<30, nil)
 	_, err := ensureKeyValue(context.Background(), 5*time.Second, conn, watcher, &nats.KeyValueConfig{Bucket: catchupBucket, Storage: nats.FileStorage, Replicas: 3})
 	if !errors.Is(err, errHangGuard) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("the error = %v, want the start's hang guard, with context.DeadlineExceeded", err)

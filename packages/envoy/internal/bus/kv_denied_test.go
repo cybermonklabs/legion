@@ -37,7 +37,7 @@ func TestADeniedBucketLookupIsNotSentAgain(t *testing.T) {
 
 	relay.arm(0)
 	started := time.Now()
-	_, err := EnsureKeyValue(t.Context(), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	_, err := EnsureKeyValue(countedReads(t.Context()), conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 	took := time.Since(started)
 
 	if !errors.Is(err, ErrPublishDenied) {
