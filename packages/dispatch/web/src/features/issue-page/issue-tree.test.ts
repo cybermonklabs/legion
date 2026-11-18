@@ -2905,9 +2905,9 @@ function readingOf(words: string): DisplayTree {
 
 // R20: a read that sends the server's reading of a node's text hands that reading to the node,
 // which draws it (`NodeRow.tsx`); the record the text is goes with it, so its references link
-// as they do on every other surface. A read that sends none - a statement's and a check's from a
-// server that predates `text_tree`, and every result's - leaves its node holding none: the page
-// parses no stored markdown to make one up.
+// as they do on every other surface. A read that sends none - a statement's, a check's and a
+// result's from a server that predates `text_tree` and `observed_tree` - leaves its node holding
+// none: the page parses no stored markdown to make one up.
 test("a node holds the server's reading of its text where its read sends one", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
@@ -3269,4 +3269,36 @@ test("an issue addresses a node as its tree does, from the issue alone", () => {
   ]);
   const context = treeContext({ issue }, () => "");
   expect(references.map(context.nodeIdOf)).toEqual(references.map(alone));
+});
+
+// A results read that carries each result's reading of its observed text (`observed_tree`) hands
+// that reading to the result's node, so its line is the reading's first block and the page parses
+// no result's stored text; the node names no source, since a result is no record the reference
+// graph indexes. A result whose read sends none - a server of the build before - keeps its stored
+// text's line.
+test("a result node holds the server's reading of its observed text where the read sends one", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const root = buildIssueTree({
+    issue: issueDetails([spec, checks]),
+    results: checkedResults([
+      {
+        blockId: "c1",
+        results: [
+          recorded("res-read", "A control.", {
+            observed: "stored words",
+            observed_tree: readingOf("Server words."),
+          }),
+          recorded("res-stored", "A control.", { observed: "Stored **words** only." }),
+        ],
+      },
+    ]),
+  });
+  const read = nodeOf(root, "res-read");
+  expect(read?.tree).toEqual(readingOf("Server words."));
+  expect(read?.source).toBeUndefined();
+  expect(read === undefined ? "" : lineWords(read)).toBe("Server words.");
+  const stored = nodeOf(root, "res-stored");
+  expect(stored?.tree).toBeUndefined();
+  expect(stored === undefined ? "" : lineWords(stored)).toBe("Stored words only.");
 });

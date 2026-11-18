@@ -385,15 +385,18 @@ export function blockWords(name: string): string {
  * and a mark after a sentence's end (`today.**`) would hide that end from `firstLineOf`.
  *
  * They are the words of the text's reading (`storedReading`) - the text parsed by CommonMark
- * with GFM and front matter, its lists and quotes held to the server's nesting bound, as the
- * page's markdown engine parses it short of that engine's own extensions, in the shape of the
- * server's reading - taken by the walk that takes the words of the server's reading (`wordsOf`).
- * They are so what the server's reading holds for every text that holds neither of two things
- * the engine's own extensions read and this parse does not: a container directive (a typed
- * block such as `:::ask`), which reads here as its literal fence lines and content, and a Proof
- * mark span (`<span data-proof=…>`), which reads here as HTML around its text. An escape is the
- * character it escapes (`1\.` is `1.`), a code span's content reads as written, a link reads as
- * its words and an autolink as its address. An image, an HTML comment or tag, a table's pipes
+ * with GFM less its autolink literals and with front matter, its lists and quotes held to the
+ * server's nesting bound, as the page's markdown engine parses it short of that engine's own
+ * extensions, in the shape of the server's reading - taken by the walk that takes the words of
+ * the server's reading (`wordsOf`). They are so what the server's reading holds for every text
+ * that holds none of three things: a container directive (a typed block such as `:::ask`), which
+ * the engine's own extensions read and which reads here as its literal fence lines and content;
+ * a Proof mark span (`<span data-proof=…>`), which they read too and which reads here as HTML
+ * around its text; and a bare address holding markup - a `*` pair inside a bare URL, say - whose
+ * characters the server's reading keeps as written and which reads here as that markup, since
+ * this parse leaves autolink literals out. An escape is the character it escapes (`1\.` is `1.`),
+ * a code span's content reads as written, a link reads as its words and an autolink in angle
+ * brackets as its address. An image, an HTML comment or tag, a table's pipes
  * and rule, a thematic break and the markers of a heading, a quote and a list are no word, and
  * each block's words stand apart from the next block's. Every character the author wrote as a
  * word, a private-use one included, reads as written. White space collapses to single spaces.
@@ -1099,6 +1102,12 @@ function requirementGaps(
  * fold's frontier, the Verification filter's failing count and its body read one state, and the
  * row reads what its result's own fact reads. The check's `serves` is no part of this read
  * (`CheckBlock` carries none), so its placement is the block's own pointer, below.
+ *
+ * A result is drawn from the server's reading of its observed text (`observed_tree`) where the
+ * read carries one, so the page parses no result's text; only from a server that sends none, a
+ * build before it, is that text parsed from its stored markdown (`storedReading`). Its node names
+ * no `source`: a result is no record the reference graph indexes a text under (`TextSource`), so
+ * a `#id` in its observed text declares nothing.
  */
 function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
   for (const check of reads.results?.checks ?? []) {
@@ -1125,6 +1134,7 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
       row.facts = resultFacts(result);
       row.parents = [id];
       row.text = result.observed;
+      if (result.observed_tree !== undefined) row.tree = result.observed_tree;
     });
   }
 }

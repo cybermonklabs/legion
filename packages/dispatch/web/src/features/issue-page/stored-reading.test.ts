@@ -13,12 +13,12 @@ import { plainWords, plainWordsRaw, withShortAddresses } from "./tree-drafts";
 const NESTING_BUDGET_MS = 3_000;
 
 /** A wall-clock budget for drawing again the lines of an issue's stored texts, each read once
- *  already. A result has no reading, so its line is read from its stored text, and an issue
- *  under review holds hundreds of results: the redesign's own root issue held 431 results and
- *  492 distinct stored texts on 2026-11-18. Reading 900 such texts again from what the first
- *  draw read costs tens of milliseconds; parsing each again, as a first draw does, costs about
- *  a second on a pod's CPU. So a budget far above the first and far below the second fails only
- *  a draw that parses every text again. */
+ *  already. A result whose read carries no reading - a server of the build before sends none -
+ *  has its line read from its stored text, and an issue under review holds hundreds of results:
+ *  the redesign's own root issue held 431 results and 492 distinct stored texts on 2026-11-18.
+ *  Reading 900 such texts again from what the first draw read costs tens of milliseconds; parsing
+ *  each again, as a first draw does, costs about a second on a pod's CPU. So a budget far above
+ *  the first and far below the second fails only a draw that parses every text again. */
 const REDRAW_BUDGET_MS = 300;
 
 // sjawhar/legion#2519: a stored text is read on the page's own thread, and micromark gives every
@@ -53,10 +53,11 @@ test("a stored text's front matter reads as its fenced lines, and an unclosed fe
 });
 
 // A page draws its rows again on every read that lands and every event, and a row's line is read
-// from its stored text where the node has no reading, a result's always. The readings of the texts
-// a draw read are remembered so that the next draw reads them rather than parses them again: an
-// issue with more distinct stored texts than the memo holds must still draw again within the
-// budget, the second draw in the same order as the first, as a page draws its rows.
+// from its stored text where the node has no reading, as a result's is from a server that sends
+// none. The readings of the texts a draw read are remembered so that the next draw reads them
+// rather than parses them again: an issue with more distinct stored texts than the memo holds
+// must still draw again within the budget, the second draw in the same order as the first, as a
+// page draws its rows.
 test("the lines of more stored texts than the memo holds are drawn again without parsing them again", () => {
   const texts = Array.from(
     { length: 900 },
