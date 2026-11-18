@@ -577,9 +577,11 @@ type outcome struct {
 	until *time.Time
 	// owed is what the event still owes once the batch settled it (owedKeys), which the record
 	// writes to events.owed_keys, and nil for an outcome that does not read the event's list - an
-	// event a batch chose and did not read (deferPastWindow) - whose owed_keys the record leaves as
-	// it is. owedSeq is the owner's last_seq the batch's read saw (pendingEvent.ownerSeq), which
-	// the record writes to events.owed_seq beside owed, and only beside it.
+	// event a batch chose and did not read (deferPastWindow), and a row that did not scan
+	// (pendingEvent.unread), of which nothing beyond its id is known - whose owed_keys and owed_seq
+	// the record leaves as they are: null, or what an earlier record wrote. owedSeq is the owner's
+	// last_seq the batch's read saw (pendingEvent.ownerSeq), which the record writes to
+	// events.owed_seq beside owed, and only beside it.
 	owed    []string
 	owedSeq int
 }
@@ -597,9 +599,11 @@ type outcome struct {
 // role route reached with nothing to send (roleForward.skip) are not: planChains reads neither as
 // holding anything back. An event whose list ends at a recipient read that failed owes
 // model.OwedAnySession beside its list, the sessions that read would name, as planChains holds the
-// owner's later events from every session key it does not name. An event that cannot be read owes
-// nothing, as it holds nothing back. The answer is never nil: an empty list is an event that owes
-// nothing, which the record writes as such.
+// owner's later events from every session key it does not name. An event whose row scanned but
+// cannot be published - its list holds a null, or its actor or payload does not decode
+// (pendingEvent.failure) - owes nothing, as it holds nothing back; a row that did not scan is not
+// asked (publishBatch), so its record keeps what it had. The answer is never nil: an empty list
+// is an event that owes nothing, which the record writes as such.
 func owedKeys(event *batchEvent, reached []string) []string {
 	owed := []string{}
 	if event.failure != nil {

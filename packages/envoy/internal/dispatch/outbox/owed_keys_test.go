@@ -22,7 +22,8 @@ import (
 // holder that changes before the next record is still asked about; a copy that waits on a mention
 // as its key; and nothing for a destination already reached, by an earlier batch or this one, a
 // copy a fallback row owns, or a role route reached with nothing to send. An event whose recipient
-// read failed owes model.OwedAnySession besides; one that cannot be read owes nothing.
+// read failed owes model.OwedAnySession besides; one whose row scanned but whose payload does not
+// decode owes nothing (a row that did not scan is never asked, publishBatch).
 func TestOwedKeysRecordWhatEachDestinationStillOwes(t *testing.T) {
 	topic := "notifications.dispatch.issue.T-1.message.created"
 	s1 := contracts.LegacyAgentSubject("s1")
@@ -84,7 +85,7 @@ func TestOwedKeysRecordWhatEachDestinationStillOwes(t *testing.T) {
 			want:  []string{model.OwedAnySession, model.OwedTopicFamily},
 		},
 		{
-			name: "an event that cannot be read",
+			name: "an event whose payload does not decode",
 			event: batchEvent{
 				pendingEvent:   pendingEvent{failure: errors.New("the payload does not decode")},
 				destinationsOf: []destination{{subject: topic}},

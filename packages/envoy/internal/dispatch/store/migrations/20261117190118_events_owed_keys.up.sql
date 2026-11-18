@@ -9,9 +9,12 @@
 --               The owner's topic family is spelled model.OwedTopicFamily, a session's own
 --               subject and a role with no known holder by their subjects, and an event whose
 --               list ends at a recipient read that failed owes model.OwedAnySession beside
---               them. An event the outbox cannot read, and a published one, owe nothing (an
---               empty array). Null is an event no record has written it for yet, which owes
---               at least its owner's topic family, the first destination of every event.
+--               them. A published event owes nothing (an empty array), and so does one whose
+--               row the outbox read but cannot publish: its list holds a null, or its actor or
+--               payload does not decode. A row the outbox cannot scan is not recorded at all,
+--               and keeps null or what an earlier record wrote. Null is an event no record has
+--               written it for yet, which owes at least its owner's topic family, the first
+--               destination of every event.
 --
 --   owed_seq    the owner's last_seq (issues, artifacts or projects) as the batch that wrote
 --               owed_keys read it, in the same statement as the routing those keys come from,
