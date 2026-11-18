@@ -7,7 +7,7 @@
 // order, with an error that says which row and what it found.
 import { afterAll, describe, jest, test } from "bun:test";
 import { act, render } from "@testing-library/react";
-import { type ComponentType, useState } from "react";
+import type { ComponentType } from "react";
 
 import {
   relativeTimeLabel,
@@ -16,6 +16,7 @@ import {
   Timestamp,
 } from "../features/refs/Timestamp";
 import { quietConsoleError } from "./act-warnings";
+import { type HeldCount, heldCount, useHeldCount } from "./held-count";
 
 /** What each row found at its start that an earlier row left, by the row's name. */
 const startedWith = new Map<string, string[]>();
@@ -67,25 +68,6 @@ function row(name: string, body: () => Promise<void> | void): void {
     if (found.length > 0) startedWith.set(name, found);
     await body();
   });
-}
-
-/** The setter of the count a row's component shows, which the row calls with no event between. */
-interface HeldCount {
-  set: (count: number) => void;
-}
-
-function heldCount(): HeldCount {
-  return {
-    set: () => {
-      throw new Error("the component has not rendered");
-    },
-  };
-}
-
-function useHeldCount(held: HeldCount): string {
-  const [count, setCount] = useState(0);
-  held.set = setCount;
-  return `count ${count}`;
 }
 
 function CountOneRowLeaves({ held }: { held: HeldCount }) {
