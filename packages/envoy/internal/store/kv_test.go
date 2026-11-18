@@ -495,7 +495,7 @@ func TestOpen_WatchPopulatesExistingKeys(t *testing.T) {
 	putInterest(t, kv, Interest{SessionID: "ses_preload", MachineID: "m1", Topics: []string{"notifications.>"}})
 
 	// Open registry — watch() populates cache asynchronously
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -511,7 +511,7 @@ func TestWatch_PropagatesUpsert(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestWatch_PropagatesDelete(t *testing.T) {
 	}
 	putInterest(t, kv, Interest{SessionID: "ses_del", MachineID: "m1", Topics: []string{"notifications.>"}})
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -581,7 +581,7 @@ func TestWatch_PropagatesPurge(t *testing.T) {
 	}
 	putInterest(t, kv, Interest{SessionID: "ses_purge", MachineID: "m1", Topics: []string{"notifications.>"}})
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -615,7 +615,7 @@ func TestMatch_IndependentOfKVAfterStartup(t *testing.T) {
 	}
 	putInterest(t, kv, Interest{SessionID: "ses_survive", MachineID: "m1", Topics: []string{"notifications.>"}})
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestOpen_EmptyBucketSucceeds(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed on empty bucket: %v", err)
 	}
@@ -1125,7 +1125,7 @@ func clockedRegistry(t *testing.T, clock *manualClock) (*Registry, natsgo.KeyVal
 	t.Helper()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
-	reg, err := Open(conn, WithReplicas(1), WithClock(clock.Now))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -1313,7 +1313,7 @@ func TestRemove_ColdCacheReadsFromKV(t *testing.T) {
 func TestPlanInterestKeepsTheControllerLaneAHeartbeatOmits(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1392,7 +1392,7 @@ func storedInterest(t *testing.T, conn *natsgo.Conn, sessionID string) Interest 
 func TestUpsertPlannedKeepsAnUnsubscribeThatOutranItsPlan(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -2208,7 +2208,7 @@ func TestPing_HealthyConnReturnsNil(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -2224,7 +2224,7 @@ func TestPing_ClosedConnReturnsError(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -2250,7 +2250,7 @@ func TestWaitForCacheReady_ReturnsAfterInitialScan(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -2271,7 +2271,7 @@ func TestWaitForCacheReady_PrePopulatedKVIsVisibleAfterReady(t *testing.T) {
 
 	// Pre-populate KV via a temporary registry, then Close conn to release
 	// any watcher state.
-	reg1, err := Open(conn, WithReplicas(1))
+	reg1, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("first Open failed: %v", err)
 	}
@@ -2286,7 +2286,7 @@ func TestWaitForCacheReady_PrePopulatedKVIsVisibleAfterReady(t *testing.T) {
 
 	// Second registry on the same bucket — simulates listener restart against
 	// existing KV state.
-	reg2, err := Open(conn, WithReplicas(1))
+	reg2, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("second Open failed: %v", err)
 	}
@@ -2550,7 +2550,7 @@ func TestWatcherEvictsMalformedValue(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -2924,7 +2924,7 @@ func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -3095,7 +3095,7 @@ func TestTheRegistryClockStampsWhatItRecords(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	at := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	reg, err := Open(conn, WithReplicas(1), WithClock(func() time.Time { return at }))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(func() time.Time { return at }))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -3190,7 +3190,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 func TestARewatchThatCannotOpenTheRoleBucketMovesNothing(t *testing.T) {
 	first, closeFirst := connectNATS(t)
 	defer closeFirst()
-	reg, err := Open(first, WithReplicas(1))
+	reg, err := Open(t.Context(), first, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -3232,7 +3232,7 @@ func TestARewatchThatCannotOpenTheRoleBucketMovesNothing(t *testing.T) {
 func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 	first, closeFirst := connectNATS(t)
 	defer closeFirst()
-	reg, err := Open(first, WithReplicas(1))
+	reg, err := Open(t.Context(), first, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -3319,7 +3319,7 @@ func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T)
 		t.Fatalf("flush the watches: %v", err)
 	}
 
-	registry, err := Open(conn, WithReplicas(1))
+	registry, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -3416,7 +3416,7 @@ func TestOpeningTheRegistryLogsHowManyRoleClaimsItRestored(t *testing.T) {
 	}
 
 	logs := captureRegistryLogs(t)
-	registry, err := Open(conn, WithReplicas(1))
+	registry, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -3698,7 +3698,7 @@ func TestOpenFailsWhenTheRoleRevisionScanStalls(t *testing.T) {
 	stalled := testnats.Connect(t, proxy.String())
 	defer stalled.Close()
 
-	registry, err := Open(stalled, WithReplicas(1))
+	registry, err := Open(t.Context(), stalled, WithReplicas(1))
 	// The link has to have come back before Open's outcome means anything: a stall that stays down
 	// fails every build, main by its per-key Gets timing out, so this run could not tell them
 	// apart. Assert it rather than trusting the hold, since load can end a run before the release

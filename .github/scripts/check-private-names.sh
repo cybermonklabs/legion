@@ -49,8 +49,8 @@
 # over a pull request's title, body, branch name, commits (each one's message, author and
 # committer), issue comments, reviews and review comments through check-pr-text.sh (ci.yaml's lint
 # job at each push to a pull request that is not a draft, when a draft is marked ready and on the
-# merge queue's group, and pr-title.yaml when the pull request is edited or a review on it is
-# submitted or edited), and its tests in ci.yaml's test job.
+# merge queue's group, and pr-title.yaml when the pull request is edited), and its tests in
+# ci.yaml's test job.
 set -euo pipefail
 
 # A relative path argument is read from the caller's directory, so it is prefixed with that

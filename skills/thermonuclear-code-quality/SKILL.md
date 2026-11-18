@@ -28,7 +28,7 @@ Then one entry per finding: `path:line`, the smell, the cost it adds, and the re
 
 ## Steps
 
-1. Read the diff and each changed file around its hunks. Flag lines the diff adds or changes, and existing code it makes harder to follow, such as a function it lengthens or adds a branch or parameter to. A finding on code the diff leaves alone blocks the PR for work it did not cause.
+1. Read the diff and each changed file around its hunks. Flag lines the pull request (the current branch against its base) adds or changes, and existing code it makes harder to follow, such as a function it lengthens or adds a branch or parameter to. A finding on code the pull request leaves alone blocks it for work it did not cause. A range limits what you must read, never what you flag: a smell you see in code the pull request changed before the range starts is a finding.
 2. Look for the code-judo move first: a restructure onto the existing architecture that deletes whole branches, helpers, modes, conditionals or layers. A structural fix often removes the line-level findings with it.
 3. For a refactor, count the concepts (the types, functions, flags and modes) a reader must know before and after. A move that keeps the count is not a simplification: say so, rather than accept a cleaner version of the same idea. When the problem is structural, do not suggest a rename, which hides the finding that matters.
 4. Check every hunk against the table below, because each row is a smell this review blocks on. For file size, compare `git show <base>:<path> | wc -l` with `wc -l <path>`; `<base>` is the range start your brief names, else `git merge-base HEAD origin/<default branch>`.

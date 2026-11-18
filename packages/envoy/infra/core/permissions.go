@@ -152,8 +152,8 @@ func ListenerHostPermissions(machineID string) Permissions {
 // redelivery bucket. Beside them is the update of the bucket's stream: a start, and the program's
 // keeper every 30 seconds after it, raises a bucket found with fewer copies than the deployment's
 // replica count (bus.ReplicasEnvVar) with a stream update (bus.EnsureKeyValue,
-// bus.WithKeptBuckets). Without that grant the raise times out and the start stops naming the
-// bucket.
+// bus.WithKeptBuckets). Without that grant the server refuses the raise and the start stops
+// naming the bucket, the setting and the refusal.
 func bucketPermissions(bucket string) []string {
 	stream := kvStream + bucket
 	return []string{

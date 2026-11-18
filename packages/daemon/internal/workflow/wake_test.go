@@ -117,10 +117,13 @@ func claimSuspendedBy(t *testing.T, pool *pgxpool.Pool, role claim.Role, source 
 	}
 }
 
-// wakeStart is one supervise start row a wake wrote: the role it starts and the task it carries.
+// wakeStart is one supervise start row a wake wrote: the role it starts, the task it carries, and
+// whether the row says its task holds the daemon's two sentences of the review round
+// (record.SuperviseRequest.RoundNamed).
 type wakeStart struct {
-	Role claim.Role
-	Task string
+	Role       claim.Role
+	Task       string
+	RoundNamed bool
 }
 
 // wakeStarts is every supervise `start` row in the outbox, oldest first.
@@ -144,7 +147,7 @@ func wakeStarts(t *testing.T, pool *pgxpool.Pool) []wakeStart {
 		if request.Op != "start" {
 			continue
 		}
-		starts = append(starts, wakeStart{Role: request.Role, Task: request.Task})
+		starts = append(starts, wakeStart{Role: request.Role, Task: request.Task, RoundNamed: request.RoundNamed})
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the supervise rows: %v", err)
