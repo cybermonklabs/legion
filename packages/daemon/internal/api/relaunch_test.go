@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // relaunchHarness is the API with the daemon's relaunch answering what a case sets, recording the
@@ -52,7 +53,9 @@ func TestTheControllersRelaunchReachesTheClaimItsTokenNames(t *testing.T) {
 }
 
 // Each refusal is answered with the code the controller acts on, and the five a person must
-// handle say so in the sentence.
+// handle say so in the sentence. The tree lifecycle's refusal reaches the route as the machine
+// refuses it, a refusal of the claim in its state, and is answered with its own code rather than
+// the one of a claim between states.
 func TestTheControllersRelaunchNamesEachRefusal(t *testing.T) {
 	for _, tc := range []struct {
 		err    error
@@ -67,6 +70,8 @@ func TestTheControllersRelaunchNamesEachRefusal(t *testing.T) {
 		{fmt.Errorf("relaunch refused: %w", runtime.ErrLauncherNotConnected), "LAUNCHER_NOT_CONNECTED", true},
 		{fmt.Errorf("relaunch refused: %w", runtime.ErrRelaunchReplacesPod), "RELAUNCH_REPLACES_POD", true},
 		{fmt.Errorf("relaunch refused: %w", runtime.ErrProcessOutlivedStop), "PROCESS_OUTLIVED_STOP", true},
+		{&supervise.RefusedError{State: supervise.StateWorking, Request: "relaunch", Reason: "tree cleanup is reserved",
+			Err: fmt.Errorf("%w: %w", supervise.ErrTreeRefusesLaunch, treelifecycle.ErrCleanupReserved)}, "TREE_REFUSES_LAUNCH", false},
 		{errors.New("the store did not answer"), "RELAUNCH_FAILED", false},
 		{fmt.Errorf("%w; %w: the store did not answer", fmt.Errorf("%w: its open call is bash", supervise.ErrRelaunchGuard),
 			supervise.ErrReachUnwritten), "RELAUNCH_FAILED", false},

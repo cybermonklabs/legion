@@ -32,12 +32,13 @@ Each of them but `envoy-no-live-session`, which is about no one claim, names the
 `relaunch` stops the claim's process through its launcher and starts it again on the same session, which keeps its context, its workspace and the task it owes.
 It is no fresh session, it charges the claim nothing, and the resumed session is told that its turn was cut, so it reads what that turn did before it acts again.
 It reaches a claim in a turn as well as an idle one.
+A relaunch answered `{}` may still wait for the daemon's store after the stop; the daemon then starts the claim itself at its probe interval.
 
 The daemon refuses it `RELAUNCH_GUARD`, and leaves the claim exactly as it found it, unless its worker stream has shown no step in the last 20 minutes, it is in no turn or its session has sent no activity report in that turn in the last 20 minutes, its open call, if it has one, is a `wait`, and its last activity report since its launch shows no background job and no subagent running.
 A claim that has sent no activity report since its launch is refused `RELAUNCH_GUARD` too.
 A session in a turn sends its activity report every 5 minutes whatever it says, so a turn whose process still runs is refused, a `wait` on a named `bash` service among them, and a process that has frozen is let through 20 minutes after its last report.
 That guard is what keeps a relaunch off a turn that is still doing work it cannot tell you about.
-It also refuses a claim the daemon no longer marks unreachable (`CLAIM_REACHABLE`), and your own claim (`CLAIM_IS_CONTROLLER`), which only the daemon relaunches, and only where it runs the controller (`controller: daemon`).
+It also refuses a claim the daemon no longer marks unreachable (`CLAIM_REACHABLE`), your own claim (`CLAIM_IS_CONTROLLER`), which only the daemon relaunches, and only where it runs the controller (`controller: daemon`), and one whose tree allows it no launch, because the tree's cleanup is reserved or the tree was opened again since (`TREE_REFUSES_LAUNCH`), which that tree's close or its next start decides.
 It refuses `CLAIM_UNSETTLED` a claim that is between states:
 
 - a claim that is not ready, idle or working;

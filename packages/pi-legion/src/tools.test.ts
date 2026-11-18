@@ -244,10 +244,14 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "a claim again after a death, and charges it nothing: claim is the claim's token, as the daemon's notice of an " +
   "unreachable claim and the claim's locator in read_state name it. It reaches a claim in a turn: the daemon stops " +
   "the old process through the role's launcher, and the resumed session reads what its cut turn did. The answer is " +
-  "empty. The daemon refuses it, stopping nothing, for a grant that is not the controller's (CONTROLLER_REQUIRED), " +
+  "empty, also where the daemon's store did not answer the launch after the stop: the daemon then starts the claim " +
+  "itself at its probe interval. " +
+  "The daemon refuses it, stopping nothing, for a grant that is not the controller's (CONTROLLER_REQUIRED), " +
   "for a token it holds no claim under (NO_CLAIM), for a claim Envoy can reach (CLAIM_REACHABLE), for a claim " +
   "between states (CLAIM_UNSETTLED), for the project's controller, which only the daemon relaunches, and only " +
-  "where it runs the controller itself (controller: daemon in legion.yaml) (CLAIM_IS_CONTROLLER), and for a " +
+  "where it runs the controller itself (controller: daemon in legion.yaml) (CLAIM_IS_CONTROLLER), for a claim " +
+  "whose tree allows it no launch, because the tree's cleanup is reserved or the tree was opened again since " +
+  "(TREE_REFUSES_LAUNCH), which that tree's close or its next start decides, and for a " +
   "claim whose worker stream showed a step in the last 20 minutes, which is in " +
   "a turn whose session sent an activity report in that turn in the last 20 minutes, whose open call is not a " +
   "wait, or whose last activity report since its launch is missing or shows a background job or a " +

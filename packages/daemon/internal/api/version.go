@@ -2225,16 +2225,19 @@ package api
 // knows no such key. The `legion` tool's controller gains `relaunch`, which posts
 // `POST /legion/v1/claims/relaunch` (`api.RelaunchRequest`: `grantId` and `claim`, the claim's
 // token as the notices name it). Its answers (api.claimRelaunch, relaunchRefusal) are: 200
-// `api.RelaunchResponse`, `{}`; an uncoded 400 for a body that does not decode, and 400
-// MISSING_FIELD for an empty `grantId` or `claim`; 403 GRANT_EXPIRED, GRANT_UNAVAILABLE or
-// GRANT_REVOKED for a grant that is expired, unknown or no longer held by its claim, 409
-// STALE_PLUGIN_CONTRACT for a worker grant whose claim speaks another contract, and 403
-// CONTROLLER_REQUIRED for every other worker grant; 409 CLAIM_IS_CONTROLLER for the project's own
-// controller claim; 404 NO_CLAIM for a claim this daemon does not supervise; an uncoded 503 once
-// the daemon's stop has begun; 409 CLAIM_REACHABLE, CLAIM_UNSETTLED, RELAUNCH_GUARD,
-// RELAUNCHED_RECENTLY, POD_UNREACHABLE, LAUNCHER_NOT_CONNECTED, RELAUNCH_REPLACES_POD or
-// PROCESS_OUTLIVED_STOP for a relaunch the daemon refuses; and 500 RELAUNCH_FAILED for a daemon
-// with no relaunch, a refusal whose record it could not write, and every other failure.
+// `api.RelaunchResponse`, `{}`, also for a relaunch whose launch after the stop waits for the
+// daemon's store, which the daemon then makes itself at the probe interval; an uncoded 400 for a
+// body that does not decode, and 400 MISSING_FIELD for an empty `grantId` or `claim`; 403
+// GRANT_EXPIRED, GRANT_UNAVAILABLE or GRANT_REVOKED for a grant that is expired, unknown or no
+// longer held by its claim, 409 STALE_PLUGIN_CONTRACT for a worker grant whose claim speaks another
+// contract, and 403 CONTROLLER_REQUIRED for every other worker grant; 409 CLAIM_IS_CONTROLLER for
+// the project's own controller claim; 404 NO_CLAIM for a claim this daemon does not supervise; an
+// uncoded 503 once the daemon's stop has begun; 409 CLAIM_REACHABLE, CLAIM_UNSETTLED,
+// RELAUNCH_GUARD, RELAUNCHED_RECENTLY, POD_UNREACHABLE, LAUNCHER_NOT_CONNECTED,
+// RELAUNCH_REPLACES_POD, PROCESS_OUTLIVED_STOP or TREE_REFUSES_LAUNCH (the claim's tree cleanup is
+// reserved, or its bound epoch is no longer open, so nothing was stopped) for a relaunch the daemon
+// refuses; and 500 RELAUNCH_FAILED for a daemon with no relaunch, a refusal whose record it could
+// not write, and every other failure.
 // `packages/contracts/src/legion-claim-recovery.ts` mirrors the request and the `{}`. The
 // controller's plugin starts to post `POST /legion/v1/claims/activity` as a worker's does, under
 // the registration a daemon-launched controller holds, which the relaunch guard reads. Every

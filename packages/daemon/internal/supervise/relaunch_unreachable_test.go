@@ -426,7 +426,9 @@ func TestARelaunchTheRuntimeRefusesStopsNothing(t *testing.T) {
 // one. The relaunch asks it before the stop, as it asks the runtime's own refusals, so a relaunch
 // it refuses stops nothing, takes nothing back and records no relaunch. Asked only after the stop,
 // the refusal would leave the process gone with no launch after it, the claim still recording it,
-// and the controller's next try refused as a relaunch made within 6 hours.
+// and the controller's next try refused as a relaunch made within 6 hours. It is a refusal of the
+// claim as the others are (RefusedError), which the API answers with the code that says nothing
+// was stopped, rather than a failure the controller must read as a claim that may be stopped.
 func TestARelaunchTheTreeLifecycleRefusesStopsNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -447,6 +449,10 @@ func TestARelaunchTheTreeLifecycleRefusesStopsNothing(t *testing.T) {
 
 			if err == nil || !strings.Contains(err.Error(), tc.says) {
 				t.Fatalf("relaunch = %v, want the lifecycle's refusal saying %q", err, tc.says)
+			}
+			var refused *RefusedError
+			if !errors.As(err, &refused) || refused.State != StateWorking || refused.Request != "relaunch" {
+				t.Fatalf("relaunch = %v (%T), want the relaunch refused at working, as every refusal that stops nothing is", err, err)
 			}
 			h.wantCalls("Suspend", 0)
 			h.wantCalls("Resume", 0)
@@ -469,7 +475,11 @@ func TestARelaunchTheTreeLifecycleRefusesStopsNothing(t *testing.T) {
 // meets a claim that records no process and is answered as a retirement's is (relaunchRefused): a
 // reserved cleanup suspends the claim for the tree's close, its session kept, and a check the
 // store did not answer is tried again at the probe interval, which then resumes the same session.
-// Neither leaves the claim recording a process that is gone with nothing to launch it.
+// Neither leaves the claim recording a process that is gone with nothing to launch it. The second
+// is a relaunch still going on, not a refusal: the process is stopped, the relaunch recorded, and
+// the daemon makes the launch itself, so it answers as a relaunch that ran. Answered as a failure,
+// it sent the controller to read a claim that may be stopped, and a second try met the refusal of
+// a relaunch made within 6 hours, which is a case for a person.
 func TestARelaunchRefusedAfterItsStopLeavesNoClaimRecordingAStoppedProcess(t *testing.T) {
 	t.Run("its tree's cleanup reserved while the stop waits", func(t *testing.T) {
 		store := &epochStore{epoch: 1}
@@ -502,8 +512,8 @@ func TestARelaunchRefusedAfterItsStopLeavesNoClaimRecordingAStoppedProcess(t *te
 		generation := h.generation()
 		h.m.deps.Runtime = &unansweredSuspend{Runtime: h.rt, store: store, checks: 1}
 
-		if err := h.handle(h.relaunchOf(false)); !errors.Is(err, errUnanswered) {
-			t.Fatalf("relaunch = %v, want the check the store did not answer", err)
+		if err := h.handle(h.relaunchOf(false)); err != nil {
+			t.Fatalf("relaunch whose launch waits for the store = %v, want it answered as a relaunch that ran", err)
 		}
 		h.wantCalls("Suspend", 1)
 		h.wantCalls("Resume", 0)

@@ -117,18 +117,22 @@ export const LegionCompactResponse = z.object({
  * since its launch is missing or shows background work (`RELAUNCH_GUARD`), one it relaunched in
  * the last 6 hours (`RELAUNCHED_RECENTLY`), one whose pod holds two or more claims none of which
  * is reachable (`POD_UNREACHABLE`), one whose launcher is not connected
- * (`LAUNCHER_NOT_CONNECTED`), and one whose launch would replace the pod and end every other role
- * in it (`RELAUNCH_REPLACES_POD`); and every relaunch while the daemon is stopping, with a 503 that
- * carries no code. It refuses with nothing more done a claim whose process outlived its stop
- * (`PROCESS_OUTLIVED_STOP`). `RELAUNCH_FAILED` (500) is a relaunch that failed, or whose record
- * the daemon could not write, and the claim may already be stopped. `RELAUNCHED_RECENTLY`,
- * `POD_UNREACHABLE`, `LAUNCHER_NOT_CONNECTED`, `RELAUNCH_REPLACES_POD` and `PROCESS_OUTLIVED_STOP`
- * are cases for a person. */
+ * (`LAUNCHER_NOT_CONNECTED`), one whose launch would replace the pod and end every other role in
+ * it (`RELAUNCH_REPLACES_POD`), and one whose tree allows it no launch, because the tree's cleanup
+ * is reserved or the epoch the claim is bound to is no longer open (`TREE_REFUSES_LAUNCH`), which
+ * that tree's close or its next start decides; and every relaunch while the daemon is stopping,
+ * with a 503 that carries no code. It refuses with nothing more done a claim whose process
+ * outlived its stop (`PROCESS_OUTLIVED_STOP`). `RELAUNCH_FAILED` (500) is a relaunch that failed,
+ * or whose record the daemon could not write, and the claim may already be stopped.
+ * `RELAUNCHED_RECENTLY`, `POD_UNREACHABLE`, `LAUNCHER_NOT_CONNECTED`, `RELAUNCH_REPLACES_POD` and
+ * `PROCESS_OUTLIVED_STOP` are cases for a person. */
 export const LegionRelaunchRequest = z.strictObject({
   grantId: nonEmptyString,
   claim: nonEmptyString,
 });
 
 /** `api.RelaunchResponse`, the answer to a relaunch that ran: empty, since what the relaunch did
- * is the claim's to show, in `read_state`, once its new process registers. */
+ * is the claim's to show, in `read_state`, once its new process registers. A relaunch whose launch
+ * after the stop the daemon's store did not answer is one that ran too: the daemon starts the
+ * claim itself at its probe interval. */
 export const LegionRelaunchResponse = z.object({});

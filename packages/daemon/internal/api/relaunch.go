@@ -19,8 +19,9 @@ type RelaunchRequest struct {
 }
 
 // RelaunchResponse confirms the relaunch: the claim's process was stopped and its same session is
-// being resumed. It says nothing else, since what the claim does next the controller reads in the
-// state.
+// being resumed, now or, where the daemon's store did not answer the launch, by the daemon itself
+// at the probe interval. It says nothing else, since what the claim does next the controller reads
+// in the state.
 type RelaunchResponse struct{}
 
 // casePerson ends the sentence of each refusal only a person can resolve: the controller asks one
@@ -30,12 +31,15 @@ const casePerson = " This is a case for a person."
 // claimRelaunch is the controller's door onto the relaunch of a claim Envoy cannot reach, on its
 // same session (R5). The daemon checks what only it knows — the claim is marked out of reach, its
 // last relaunch is 6 hours old, and its pod holds a claim Envoy can still reach — and the machine
-// checks the guard and asks the runtime before it stops anything (Options.Relaunch,
-// supervise.RequestRelaunch). Every refusal is answered with the code the controller acts on: the
-// guard's refusal and a claim not out of reach are tried again later, and the five a relaunch
-// cannot get past — the launcher not connected, a launch that would replace the pod, a process that
-// outlived its stop, a pod whose every claim is out of reach, and a relaunch in the last 6 hours —
-// say they are a case for a person.
+// checks the guard, asks the runtime and rechecks the tree lifecycle before it stops anything
+// (Options.Relaunch, supervise.RequestRelaunch). Every refusal is answered with the code the
+// controller acts on: the guard's refusal and a claim not out of reach are tried again later, a
+// claim whose tree allows it no launch is its tree's close's or its next admission's to decide,
+// and the five a relaunch cannot get past — the launcher not connected, a launch that would replace
+// the pod, a process that outlived its stop, a pod whose every claim is out of reach, and a
+// relaunch in the last 6 hours — say they are a case for a person. A relaunch whose launch waits
+// for the daemon's store after the stop is one that ran: the machine answers it as made, and the
+// daemon makes the launch itself (supervise's launchOrWait).
 //
 // The project's controller is refused: nobody else can relaunch it, so the daemon relaunches it
 // itself, once in 6 hours (internal/daemon's reach keeper).
@@ -113,6 +117,8 @@ func relaunchRefusal(err error) (status int, code string, person bool) {
 		return http.StatusConflict, "RELAUNCH_REPLACES_POD", true
 	case errors.Is(err, runtime.ErrProcessOutlivedStop):
 		return http.StatusConflict, "PROCESS_OUTLIVED_STOP", true
+	case errors.Is(err, supervise.ErrTreeRefusesLaunch):
+		return http.StatusConflict, "TREE_REFUSES_LAUNCH", false
 	case errors.As(err, &refused):
 		return http.StatusConflict, claimUnsettled, false
 	}
