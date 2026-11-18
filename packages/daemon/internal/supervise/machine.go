@@ -285,10 +285,11 @@ type Claim struct {
 	// (turnStartedWhileBusy); the busy answer that said the agent is in a turn whose start the
 	// daemon never read (recordBusyTurn), which that turn's own agent_start, read later, moves to
 	// its own moment; or the agent's answer that it is streaming, which puts a ready or idle claim
-	// a restart restored in working (sendPending's askFirst branch, answerAskFirstAfterDrop). They
-	// are persisted, so a restart keeps them: they are what a reader has to tell a worker still
-	// making progress from one wedged in a turn or idle since yesterday, and a claim rebuilt
-	// without them would look as if it had never worked.
+	// a restart restored in working (sendPending's askFirst branch, answerAskFirstAfterDrop), and
+	// which dates the turn of a working claim a restart restored with no turn start after its last
+	// end (askTurnOver). They are persisted, so a restart keeps them: they are what a reader has to
+	// tell a worker still making progress from one wedged in a turn or idle since yesterday, and a
+	// claim rebuilt without them would look as if it had never worked.
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer

@@ -1295,9 +1295,15 @@ const unansweredAsksWarn = 3
 // send the task into the busy agent every interval.
 //
 // An agent that says it is streaming answers askFirst's question for good: the agent is still in
-// the turn an earlier daemon saw start, and that turn's own end ends it (turnEnded). It does not
-// answer busyTurn's: the record stands on the daemon's reading of a refusal, and the turn may
-// send no frame this daemon reads, so the question stays armed and the next sweep asks again,
+// the turn an earlier daemon saw start, and that turn's own end ends it (turnEnded). Where the
+// record holds no turn running — its last turn start is not after its last end — the answer is
+// this daemon's first word of the turn, which began while no daemon read the stream, as a turn
+// begun under a compaction whose start the daemon before never wrote: the turn is dated from the
+// answer (Claim.LastTurnStart), as sendPending's askFirst branch dates a restored ready or idle
+// claim's, and written, so the relaunch guard and the record of a let-go read the claim in it. A
+// start the record holds is kept: the daemon before read it. It does not answer busyTurn's: the
+// record stands on the daemon's reading of a refusal, which dated the turn already, and the turn
+// may send no frame this daemon reads, so the question stays armed and the next sweep asks again,
 // until the turn's own start disarms it (turnStartedWhileBusy) or the agent says it is in no
 // prompt. At the pin a session counts as streaming from a prompt's admission through its turn,
 // pre-turn work such as a memory recall included, so the ask does not end a turn still being
@@ -1340,8 +1346,15 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 		// Streaming answers askFirst's question for good: the agent is still in the turn an
 		// earlier daemon saw start, and its agent_end ends it (turnEnded). It leaves busyTurn's
 		// armed, as the doc above says.
+		dates := m.askFirst && !m.claim.LastTurnStart.After(m.claim.LastTurnEnd)
 		m.askFirst = false
-		return nil
+		if !dates {
+			return nil
+		}
+		m.claim.LastTurnStart = m.deps.Clock.Now()
+		m.log.Info("supervise: the agent is in a turn no start of which this claim records; the turn is dated from its answer",
+			"generation", m.claim.Generation)
+		return m.persist(ctx)
 	}
 	if m.awaitsResult() {
 		m.log.Info(over, "outstanding", m.outstanding)
@@ -1878,14 +1891,16 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // compacted — is recorded on the compaction: its end would otherwise reach an idle claim, where it
 // means nothing, and the compaction's end would send the owed task into a running agent
 // (compactEnded). It is a turn of the claim's as any other, so the claim records when it began
-// (Claim.LastTurnStart), as turnEnded records the end of a turn that ends under a compaction
-// (Claim.LastTurnEnd), and the compaction's end writes both (compactEnded). A claim that end
-// leaves working for this turn is in it as its own record reads (inTurn), which the relaunch
-// guard reads: dated from the start of the turn before the compaction, which has ended, the claim
-// would read as in no turn, and a relaunch would cut this one while it runs. That turn's start
-// line is written here (startTurn), because its end writes the end line (turnEnded): an operator
-// reads an end with no start as a turn the daemon never saw begin, and the daemon saw this one.
-// The daemon prompted nothing for it, so it is no task's turn and its line names no delivery.
+// (Claim.LastTurnStart), and writes it here, where the turn starts: a daemon that restarts before
+// the compaction's end restores the claim from the store, and a start held in memory alone would
+// be lost with it. A claim the compaction's end leaves working for this turn, or a restart
+// restores in it, is in it as its own record reads (inTurn), which the relaunch guard reads:
+// dated from the start of the turn before the compaction, which has ended, the claim would read
+// as in no turn, and a relaunch would cut this one while it runs. That turn's start line is
+// written here (startTurn), because its end writes the end line (turnEnded): an operator reads an
+// end with no start as a turn the daemon never saw begin, and the daemon saw this one. The daemon
+// prompted nothing for it, so it is no task's turn and its line names no delivery. A write the
+// store refuses is owed, and the claim's next write carries it (persist).
 //
 // The two never meet: a compaction is taken only from a ready or idle claim (compactStart), and a
 // busy answer records only a ready or idle one.
@@ -1902,7 +1917,7 @@ func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
 		"generation", m.claim.Generation)
 	m.compacting.inTurn, m.compacting.back = true, StateIdle
-	return nil
+	return m.persist(ctx)
 }
 
 // busyTurnBegun is the line of the agent_start of a turn a busy answer recorded

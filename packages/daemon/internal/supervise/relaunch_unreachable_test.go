@@ -300,6 +300,90 @@ func TestTheRelaunchGuardRefusesAClaimInATurnThatBeganUnderACompaction(t *testin
 	}
 }
 
+// compactingIdle takes an idle claim, whose last turn has ended, for a compaction that Oh My Pi
+// is still writing, and returns the machine that asked for it: the claim stored working with no
+// turn begun under the compaction yet.
+func (h *harness) compactingIdle() *Machine {
+	h.t.Helper()
+	h.reach(StateIdle)
+	h.advance(time.Minute)
+	h.conn.HoldCompact()
+	asked := h.m
+	go func() { _ = asked.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(h.t, h)
+	return asked
+}
+
+// wantRelaunchGuardedInTurn walks the claim through a `wait` on a named `bash` service 25 minutes
+// old whose session reported in its turn 4 minutes ago, and wants the relaunch refused by the
+// guard's rule for a report in the turn, both by the machine and by the guard read of the stored
+// claim the daemon's sweep makes.
+func (h *harness) wantRelaunchGuardedInTurn(what string) {
+	h.t.Helper()
+	h.stepped("wait", "toolu_wait_0", `{"jobs":["activity-service"]}`, false)
+	h.advance(21 * time.Minute)
+	h.reportActivity()
+	stamp := h.clock.Now().UTC().Format(time.RFC3339)
+	h.advance(4 * time.Minute)
+	generation := h.generation()
+
+	err := h.handle(h.relaunchOf(false))
+
+	if !errors.Is(err, ErrRelaunchGuard) || !strings.Contains(err.Error(), stamp) {
+		h.t.Fatalf("relaunch of %s whose session reported 4 minutes ago in its turn = %v, want the guard's refusal naming the report at %s", what, err, stamp)
+	}
+	h.wantCalls("Suspend", 0)
+	if h.generation() != generation {
+		h.t.Fatalf("generation = %d, want it unmoved at %d", h.generation(), generation)
+	}
+	if why := RelaunchGuard(h.store.load(h.token), time.Time{}, h.clock.Now()); !strings.Contains(why, stamp) {
+		h.t.Fatalf("RelaunchGuard of the stored claim = %q, want a refusal naming the report at %s", why, stamp)
+	}
+}
+
+// The start of a turn begun under a compaction is written when the turn starts, not only at the
+// compaction's end: a daemon that restarts in between restores the claim from the store, and a
+// start held in memory alone is lost with that daemon. Restored with the start of the turn before
+// the compaction, which has ended, the claim reads as in no turn, and the guard lets a relaunch
+// cut the live `wait`.
+func TestATurnBegunUnderACompactionKeepsItsStartAcrossARestart(t *testing.T) {
+	h := newHarness(t)
+	h.compactingIdle()
+	h.must(StreamTurnStart{Claim: h.token})
+	started := h.clock.Now()
+	if stored := h.store.load(h.token).LastTurnStart; !stored.Equal(started) {
+		t.Errorf("the store dates the turn begun under the compaction from %v, want its start %v", stored, started)
+	}
+
+	h.restart()
+
+	h.wantState(StateWorking)
+	h.wantRelaunchGuardedInTurn("a claim restored in a turn begun under a compaction")
+}
+
+// An agent that says it is streaming when a restarted daemon asks it of a claim stored working is
+// in a turn, and that answer is the restarted daemon's first word of it, as it is for a restored
+// ready or idle claim (sendPending's askFirst branch): a turn that began while no daemon read the
+// stream, a turn under a compaction among them, is dated nowhere else. So the answer dates the
+// turn where the record holds none running, and the guard reads the claim in it.
+func TestAStreamingAnswerDatesATurnTheRecordHoldsNoStartOf(t *testing.T) {
+	h := newHarness(t)
+	h.compactingIdle()
+	h.restart()
+	h.conn.SetStreaming(true)
+
+	h.connect()
+
+	h.wantState(StateWorking)
+	answered := h.clock.Now()
+	for where, start := range map[string]time.Time{"the machine": h.claim().LastTurnStart, "the store": h.store.load(h.token).LastTurnStart} {
+		if !start.Equal(answered) {
+			t.Errorf("%s dates the turn the agent says it is in from %v, want the answer's %v", where, start, answered)
+		}
+	}
+	h.wantRelaunchGuardedInTurn("a claim whose agent answered it is streaming")
+}
+
 // A process that froze sends no report from then on, since its heartbeat runs on its own event
 // loop: 20 minutes after the turn's last report the guard lets the claim through, as it let every
 // quiet wait through before the heartbeat.
