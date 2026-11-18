@@ -531,20 +531,20 @@ const startTries = 5
 // monitoring ports on a loopback address of its own and ports the kernel chose there
 // (loopbackPorts), so a client another test left dialing an earlier container's port cannot reach
 // this one, and tries again on a fresh address and ports, up to startTries starts, when Docker
-// refuses the publish because a probed port was taken in between; the error names every attempt.
-// It waits for the line nats-server logs once its listeners are up, in place of the NATS module's
-// own wait, a dial of the client port at localhost, where the port is not published; each caller's
-// own connect (connect, ready, answering) is the proof a client reaches the server. A container
-// Docker created and never saw ready (a readiness wait that timed out under load, or a refused
-// publish) comes back beside the error, and is removed before start returns: no test's end would
-// remove a container the package shares.
+// refuses the publish because a probed port was taken in between; an error names every refusal
+// before it as well as its own failure. It waits for the line nats-server logs once its listeners
+// are up, in place of the NATS module's own wait, a dial of the client port at localhost, where
+// the port is not published; each caller's own connect (connect, ready, answering) is the proof a
+// client reaches the server. A container Docker created and never saw ready (a readiness wait that
+// timed out under load, or a refused publish) comes back beside the error, and is removed before
+// start returns: no test's end would remove a container the package shares.
 func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats.NATSContainer, error) {
 	var refused []error
 	var started *tcnats.NATSContainer
 	for range startTries {
 		host, ports, err := loopbackPorts(2)
 		if err != nil {
-			return started, fmt.Errorf("choose loopback ports to publish NATS on: %w", err)
+			return started, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
 		}
 		attempt := append([]testcontainers.ContainerCustomizer{
 			tcnats.WithArgument("http_port", monitorPort.Port()),
@@ -555,11 +555,11 @@ func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats
 		if err == nil {
 			return started, nil
 		}
-		err = errors.Join(err, testcontainers.TerminateContainer(started))
+		err = fmt.Errorf("%s ports %d and %d: %w", host, ports[0], ports[1], errors.Join(err, testcontainers.TerminateContainer(started)))
 		if !addressInUse(err) {
-			return started, err
+			return started, errors.Join(append(refused, err)...)
 		}
-		refused = append(refused, fmt.Errorf("%s ports %d and %d: %w", host, ports[0], ports[1], err))
+		refused = append(refused, err)
 	}
 	return started, fmt.Errorf("every one of %d published addresses was refused as in use: %w", startTries, errors.Join(refused...))
 }
