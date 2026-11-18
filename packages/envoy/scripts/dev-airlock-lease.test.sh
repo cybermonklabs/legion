@@ -121,13 +121,15 @@ demo_value="$(jq -r '.secrets[] | select(.name | endswith("airlock-demo-token"))
 
 # call_s calls S's /ok through the proxy front with the grant's placeholder, and answers the
 # status, or curl's own words when there was none, followed by the Authorization S recorded for
-# the call, shaped.
+# the call, shaped. The proxy's password and the placeholder reach curl in a config on its
+# standard input (-K -), never as arguments, which every process of the machine can read.
 call_s() {
   local before status recorded
   before="$(curl -sS "$AIRLOCK_S_RECORDS" | jq 'length')"
-  status="$(curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
-    --proxy "http://agent-secrets:$proxy_password@${AIRLOCK_PROXY_URL#*://}" \
-    -H "Authorization: Bearer $placeholder" "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')" || true
+  status="$(printf 'proxy = "http://agent-secrets:%s@%s"\nheader = "Authorization: Bearer %s"\n' \
+      "$proxy_password" "${AIRLOCK_PROXY_URL#*://}" "$placeholder" |
+    curl -sS -K - -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
+      "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')" || true
   recorded="$(curl -sS "$AIRLOCK_S_RECORDS" | jq -r --argjson n "$before" '.[$n:] | map(.header.Authorization // [] | .[0]) | .[0] // ""')"
   CALL_STATUS="$status"
   CALL_AUTHORIZATION="$recorded"
