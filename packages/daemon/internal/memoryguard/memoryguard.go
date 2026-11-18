@@ -435,8 +435,9 @@ type sizeRead struct {
 // procReads is what the guard keeps of one process's reads (keepSize): window, its reads within
 // growthWindow before the newest, oldest first, which its growth is measured by; and readings, how
 // many readings of this stay in a row, up to the newest, read it, which say whether it is new to
-// the stay (candidate.newToStay). A reading that does not read the process drops both (keepSizes),
-// so its count starts again from the next one that does.
+// the stay (candidate.newToStay). A reading that does not read a process its table still lists
+// keeps its window and restarts its count, so the count starts again from the next one that reads
+// it; a reading whose table no longer lists the process drops both (keepSizes, INFRA-3531 R1).
 type procReads struct {
 	window   []sizeRead
 	readings int
@@ -454,7 +455,8 @@ type killSize struct {
 
 // bandStay is what a process's reads in the band of this stay say (keepStays): the least of them,
 // whether one of them is growthNoise or more above an earlier one, and the reading by the guard's
-// clock it was last read at, by which the guard drops a process it no longer reads.
+// clock it was last read at. A band reading that does not read a process its table still lists
+// leaves its stay as it was; one whose table no longer lists it drops it (INFRA-3531 R1).
 type bandStay struct {
 	least uint64
 	grew  bool
@@ -920,7 +922,7 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 	case reading < mark:
 		g.sinceStayKill(now, a.endable, a.table)
 		g.held, g.heldTable = a.endable, a.table
-		g.keepStays(now, a.endable)
+		g.keepStays(now, a.endable, a.table)
 	default:
 		// A first kill of a rise that the band's reads did not decide: growth since the stay's
 		// first kill orders it as it does every later kill.
@@ -1883,7 +1885,7 @@ func (g *Guard) assess(now time.Time) (assessment, error) {
 	addHeldMemfds(a.endable, g.proc, g.memfdLink, g.memfds, shmem)
 	// addHeldMemfds ranked them by size alone; keepSizes sets the growth and whether each is new
 	// to the stay, which rank orders by first.
-	g.keepSizes(now, a.endable)
+	g.keepSizes(now, a.endable, t)
 	var cache argsCache
 	g.discountForks(a.endable, t, &cache)
 	rank(a.endable)
@@ -1894,19 +1896,31 @@ func (g *Guard) assess(now time.Time) (assessment, error) {
 	return a, nil
 }
 
-// keepSizes keeps the size of each of cs as read at now, and sets each one's growth and whether it
-// is new to the stay (keepSize). The reads of each process cs does not hold, one that has ended,
-// whose pid another process took (a read is kept by pid and start time) or that the guard may no
-// longer end, are dropped, so the reads kept are bounded by the processes the guard may end and the
-// readings one window holds. Each process's reads keep their storage from one reading to the next,
-// so the reads of a process the guard has read before allocate nothing.
-func (g *Guard) keepSizes(now time.Time, cs []candidate) {
+// keepSizes keeps the size of each of cs as read at now, the processes the guard may end at a
+// reading whose table is t, and sets each one's growth and whether it is new to the stay
+// (keepSize). A process t lists that this reading did not read, its smaps or its executable
+// unreadable at it, or one the guard may no longer end, keeps its window reads, so its growth over
+// the window counts again once it is read within growthWindow of them, and its count of readings
+// in a row restarts at none, so it is new to the stay again (INFRA-3531 R1: growth is a process's
+// size less its oldest read within the window, and new to the stay is read at most once since the
+// band's second-to-last reading, which counts reads). The reads of a process t no longer lists,
+// one that has ended or whose pid another process took (a read is kept by pid and start time),
+// are dropped, so the reads kept are bounded by the processes the pod runs and the readings one
+// window holds; keepSize drops a read older than the window when it next reads the process. Each
+// process's reads keep their storage from one reading to the next, so the reads of a process the
+// guard has read before allocate nothing.
+func (g *Guard) keepSizes(now time.Time, cs []candidate, t *Table) {
 	for i := range cs {
 		g.keepSize(now, &cs[i])
 	}
 	for key, r := range g.sizes {
-		if !r.window[len(r.window)-1].at.Equal(now) {
+		switch {
+		case r.window[len(r.window)-1].at.Equal(now):
+		case !lists(t, key):
 			delete(g.sizes, key)
+		case r.readings != 0:
+			r.readings = 0
+			g.sizes[key] = r
 		}
 	}
 }
@@ -1919,11 +1933,11 @@ func (g *Guard) keepSizes(now time.Time, cs []candidate) {
 // in the window has not grown: a fresh fork reads its parent's shared pages as its own.
 //
 // It counts the reading as one more that read c (procReads.readings) and sets c's newToStay where
-// fewer than two readings before now read it in a row: none, or only the one before. The reads of
-// each process are dropped at a reading that does not read it (keepSizes), and all of them wherever
-// the guard reads none (forgetSizes), where a stay ends, so the count is of the readings of this
-// stay, and two of them in a row that read c are the band's last two at the reading at the mark,
-// and the two before the one decided on at any later reading of the rise.
+// fewer than two readings before now read it in a row: none, or only the one before. A reading
+// that does not read a process its table still lists restarts its count (keepSizes), and the
+// guard drops all of them wherever it reads none (forgetSizes), where a stay ends, so the count is
+// of the readings of this stay, and two of them in a row that read c are the band's last two at
+// the reading at the mark, and the two before the one decided on at any later reading of the rise.
 func (g *Guard) keepSize(now time.Time, c *candidate) bool {
 	key := procKey{pid: c.PID, start: c.StartTime}
 	r := g.sizes[key]
@@ -1938,13 +1952,16 @@ func (g *Guard) keepSize(now time.Time, c *candidate) bool {
 	return c.growth > 0
 }
 
-// keepStays counts each of cs's reads at the armed guard's reading in the band taken at now as one
-// of its stay in the band (stays), and keeps whether it has grown by growthNoise or more between
-// two of them: above the least of its earlier reads of the stay, so a grower whose steps are wider
-// apart than the window, or slower than growthNoise from one reading to the next, counts. The
-// stays of each process cs does not hold are dropped, so those kept are bounded by the processes
-// the guard may end, and a process read before allocates nothing.
-func (g *Guard) keepStays(now time.Time, cs []candidate) {
+// keepStays counts each of cs's reads at the armed guard's reading in the band taken at now, whose
+// table is t, as one of its stay in the band (stays), and keeps whether it has grown by growthNoise
+// or more between two of them: above the least of its earlier reads of the stay, so a grower whose
+// steps are wider apart than the window, or slower than growthNoise from one reading to the next,
+// counts. A process t lists that this reading did not read keeps its stay as it was: a read that
+// failed between two reads of the stay does not undo the growth between them (INFRA-3531 R1:
+// "grew in the band" is by two of its reads in the band). The stays of each process t no longer
+// lists are dropped, so those kept are bounded by the processes the pod runs, and a process read
+// before allocates nothing.
+func (g *Guard) keepStays(now time.Time, cs []candidate, t *Table) {
 	for _, c := range cs {
 		key := procKey{pid: c.PID, start: c.StartTime}
 		stay, known := g.stays[key]
@@ -1958,7 +1975,7 @@ func (g *Guard) keepStays(now time.Time, cs []candidate) {
 		g.stays[key] = stay
 	}
 	for key, stay := range g.stays {
-		if !stay.seen.Equal(now) {
+		if !stay.seen.Equal(now) && !lists(t, key) {
 			delete(g.stays, key)
 		}
 	}
@@ -2117,10 +2134,20 @@ func (g *Guard) sinceStayKill(now time.Time, cs []candidate, t *Table) bool {
 // size kept after the drop.
 func dropEnded(kept map[procKey]killSize, t *Table) {
 	for key := range kept {
-		if p, listed := t.byPID[key.pid]; !listed || p.StartTime != key.start {
+		if !lists(t, key) {
 			delete(kept, key)
 		}
 	}
+}
+
+// lists is whether t, the table of a reading, lists the process key by its pid and its start
+// time: one t does not has ended, or its pid names another process. What the guard keeps of a
+// process, its reads (keepSizes), its stay in the band (keepStays) and its sizes as of a kill
+// (dropEnded), it drops for a process its reading's table no longer lists, and keeps for one it
+// lists that the reading did not read (INFRA-3531 R1).
+func lists(t *Table, key procKey) bool {
+	p, listed := t.byPID[key.pid]
+	return listed && p.StartTime == key.start
 }
 
 // keepGrowth is how much size, the size of the process key read at now, grew since the kill whose

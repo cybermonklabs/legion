@@ -2153,14 +2153,16 @@ func TestMemoryGuardSearchReadsPastTheBudgetUntilOneProcessItMayEnd(t *testing.T
 func TestMemoryGuardKeepsBandStaysAllocatingNothingForAProcessReadBefore(t *testing.T) {
 	h := newHarness(t, newFakePod(t), nil)
 	cs := make([]candidate, 50)
+	table := &Table{byPID: make(map[int]*Process, len(cs))}
 	for i := range cs {
 		cs[i] = candidate{Process: &Process{PID: 1000 + i, StartTime: uint64(i)}, size: uint64(i) * mib}
+		table.byPID[cs[i].PID] = cs[i].Process
 	}
 	now := testStart
-	h.g.keepStays(now, cs)
+	h.g.keepStays(now, cs, table)
 	allocs := testing.AllocsPerRun(100, func() {
 		now = now.Add(Defaults().Interval)
-		h.g.keepStays(now, cs)
+		h.g.keepStays(now, cs, table)
 	})
 	if allocs != 0 {
 		t.Fatalf("a reading's band stays allocate %v times, want none", allocs)
@@ -2181,18 +2183,20 @@ func TestMemoryGuardKeepsBandStaysAllocatingNothingForAProcessReadBefore(t *test
 func TestMemoryGuardCountsTheReadingsOfAStayAllocatingNothingForAProcessReadBefore(t *testing.T) {
 	h := newHarness(t, newFakePod(t), nil)
 	cs := make([]candidate, 50)
+	table := &Table{byPID: make(map[int]*Process, len(cs))}
 	for i := range cs {
 		cs[i] = candidate{Process: &Process{PID: 1000 + i, StartTime: uint64(i)}, size: uint64(i) * mib}
+		table.byPID[cs[i].PID] = cs[i].Process
 	}
 	now := testStart
 	for range int(growthWindow/Defaults().Interval) + 1 {
 		now = now.Add(Defaults().Interval)
-		h.g.keepSizes(now, cs)
+		h.g.keepSizes(now, cs, table)
 	}
 	const runs = 100
 	allocs := testing.AllocsPerRun(runs, func() {
 		now = now.Add(Defaults().Interval)
-		h.g.keepSizes(now, cs)
+		h.g.keepSizes(now, cs, table)
 	})
 	if allocs != 0 {
 		t.Fatalf("a reading's reads and counts allocate %v times, want none", allocs)
@@ -4382,6 +4386,86 @@ func TestMemoryGuardKeepsTheSizeAsOfTheStaysFirstKillOfAHeldProcessItCannotReadA
 	key := procKey{pid: 301, start: 3010}
 	if got, kept := h.g.atFirstKill[key]; !kept || got.size != 300*mib {
 		t.Fatalf("pid 301's size as of the stay's first kill is %+v (kept %t), want %d", got, kept, 300*mib)
+	}
+}
+
+// A band reading that cannot read a process its table still lists leaves its stay in the band as
+// it was (keepStays, INFRA-3531 R1: "grew in the band" is by two of its reads in the band). Band
+// readings come 200 ms apart. Pid 310, python3 slow.py, reads 300 MiB at the band's first reading,
+// cannot be read at the second, and reads 302 MiB at the third, 2 MiB above its least, as pid 320,
+// python3 new.py of 500 MiB, starts; pid 330 sleeps at 600 MiB. At the reading at the mark, where
+// each smaps read takes 60 ms, pid 310 has stepped 64 MiB: the guard reads it first, as the band's
+// grower, before pid 320, the larger and newer process new to the stay, sees its step and ends it.
+// A guard that dropped its stay at the reading that could not read it read pid 320 first, spent
+// the half interval on it, and ended it.
+func TestMemoryGuardReadsAgainFirstAtTheMarkABandGrowerOneBandReadingCouldNotRead(t *testing.T) {
+	pod := newFakePod(t)
+	slow := fakeProcess{pid: 310, ppid: 100, start: 3010, args: []string{"python3", "slow.py"}, anon: 300 * mib}
+	pod.add(agent(2*gib), slow, fakeProcess{pid: 330, ppid: 100, start: 3030, args: []string{"python3", "idle.py"}, anon: 600 * mib})
+	pod.setAnon(3200 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	reads := recordReads(h)
+	_, perRead := slowMark(h)
+	h.run()
+	const apart = 200*time.Millisecond - 100*time.Millisecond
+
+	slow.unreadableSmaps = true
+	pod.resize(&slow, 301*mib)
+	pod.setAnon(3300 * mib)
+	h.tickAfter(apart)
+	slow.unreadableSmaps = false
+	pod.resize(&slow, 302*mib)
+	pod.add(fakeProcess{pid: 320, ppid: 100, start: 3040, args: []string{"python3", "new.py"}, anon: 500 * mib})
+	pod.setAnon(3400 * mib)
+	h.tickAfter(apart)
+	h.requireKilled()
+	inTheBand := len(reads())
+
+	pod.resize(&slow, 366*mib)
+	pod.setAnon(3500 * mib)
+	perRead.Store(int64(60 * time.Millisecond))
+	h.tickAfter(apart)
+	if got, want := readOrderBeforeTheKill(reads()[inTheBand:]), []int{310}; !slices.Equal(got, want) {
+		t.Fatalf("before the kill the guard read the smaps of %v in that order, want %v", got, want)
+	}
+	requireMarkKill(h, 310, 366*mib)
+	requireChosenBy(h, 310, "grew", "reread")
+}
+
+// A reading that cannot read a process its table still lists keeps its reads within the window,
+// so its growth over the window counts once it is read again within growthWindow of them, and
+// restarts its count of readings, so it is new to the stay again (keepSizes, INFRA-3531 R1).
+// Readings come 100 ms apart. At the first reading, at the mark, the guard ends pid 300, of 900
+// MiB, the largest, which exits and frees nothing. At the next reading pid 301, python3 grow.py of
+// 300 MiB, cannot be read, and pid 303, python3 new.py of 700 MiB, starts. At the reading after,
+// not fallen, pid 301 reads 364 MiB, 64 MiB above its read 200 ms before: it ranks by its growth
+// over the window ahead of pid 303, the larger process new to the stay, and ends. A guard that
+// dropped its reads at the reading that could not read it saw no growth over the window and ended
+// pid 303.
+func TestMemoryGuardRanksByItsGrowthOverTheWindowAGrowerOneReadingCouldNotRead(t *testing.T) {
+	pod := newFakePod(t)
+	grower := fakeProcess{pid: 301, ppid: 100, start: 3010, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+	pod.add(agent(2*gib), grower,
+		fakeProcess{pid: 300, ppid: 100, start: 3000, args: []string{"python3", "big.py"}, anon: 900 * mib},
+		fakeProcess{pid: 302, ppid: 100, start: 3020, args: []string{"python3", "idle.py"}, anon: 600 * mib})
+	pod.setAnon(3600 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	h.requireKilled(300)
+
+	grower.unreadableSmaps = true
+	pod.add(grower, fakeProcess{pid: 303, ppid: 100, start: 3030, args: []string{"python3", "new.py"}, anon: 700 * mib})
+	h.tick()
+	h.requireKilled(300)
+	grower.unreadableSmaps = false
+	pod.resize(&grower, 364*mib)
+	h.tick()
+	h.requireKilled(300, 301)
+	requireChosenBy(h, 301, "grew", "reading")
+	r := h.g.sizes[procKey{pid: 301, start: 3010}]
+	if len(r.window) != 2 || r.window[0].size != 300*mib || r.readings != 1 {
+		t.Fatalf("pid 301's reads are %+v, want its read before the reading that could not read it, its read since, and one reading of the stay in a row", r)
 	}
 }
 
