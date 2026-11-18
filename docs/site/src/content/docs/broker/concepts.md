@@ -871,11 +871,14 @@ method, the path and the answer's status. A call it refused writes its refusal r
 `broker: answer refused`, with the grant and enrollment as its caller, the secret, the host, the
 method, the path, the reason and the answer id
 ([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). A tunnel is
-read by nobody, so it writes a line of its own instead: `airlock proxy: a tunnel`, with the
-grant, its enrollment, the session and the runtime behind it, the host and port asked for and the
-address the broker dialled. A dial the proxy refused or could not make writes
-`airlock proxy: a dial that did not happen`, with those fields, the class of the failure and the
-reason. Neither line holds a value or a placeholder. A path that
+read by nobody, and a plain-HTTP request is forwarded with nothing decided, so each socket the
+proxy opens for one writes a line of its own instead: `airlock proxy: a tunnel`, with the
+grant, its enrollment, the session and the runtime behind it, the host and port asked for and
+the address the broker dialled. A dial the proxy refused or could not make writes
+`airlock proxy: a dial that did not happen`, with those fields, how many addresses the host
+resolved to, the class of the failure and the reason. No field of either line is read from a
+request's headers or its body; the host is the one asked for, lowercased, and cut to 256 bytes,
+and the port is the number it names. A path that
 holds a `.` or `..` segment is refused outright
 (`path has a dot segment`), whatever the entry's paths allow, because a reader that resolves
 such a path first — which is what RFC 3986 says it means — reads it as a path the prefix does

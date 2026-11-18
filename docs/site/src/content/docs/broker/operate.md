@@ -1167,34 +1167,59 @@ shows both). A `429` that the Azure token endpoint answers and the proxy forward
 it keeps its call line at INFO, which names its answer id and its status, and writes no refusal
 line.
 
-Beside those, the proxy writes one line for each tunnel it opens and one for each dial it does
-not make, which is the whole of what the broker records about where a command went: a tunnel
-carries bytes the proxy never reads, so no call line is written for one.
+Beside those, the proxy writes one line for each socket it opens for a tunnel or a plain-HTTP
+request and one for each dial it does not make, which is the whole of what the broker records
+about where a command went: a tunnel carries bytes the proxy never reads, and a plain-HTTP
+request is forwarded with nothing decided and nothing put into it, so no call line is written for
+either.
 
-- `airlock proxy: a tunnel`, at INFO, once a tunnel is open. It names the caller — `enrollment`,
-  `grant`, and `session` and `runtime`, the session the grant belongs to and the runtime it runs
-  as — the `issue` the grant's reason named, the `host` and `port` the `CONNECT` asked for, and
-  the `address` the broker opened the socket to, which is the address its own check read rather
-  than a second lookup's.
+- `airlock proxy: a tunnel`, at INFO, as soon as the socket is open and before the command is
+  answered, so a command that goes away before its `200` still leaves the line. A `CONNECT`
+  tunnel writes it, and so does each plain-HTTP request the proxy forwards, an upgrade among
+  them: the proxy keeps no connection for a plain-HTTP request, so each one opens a socket of its
+  own and writes its own line. It names the caller — `enrollment`, `grant`, and `session` and
+  `runtime`, the session the grant belongs to and the runtime it runs as, which is the
+  enrollment's runtime id — the `issue` the grant's reason named, the `host` and `port` asked
+  for, and the `address` the broker opened the socket to, as `ip:port`, which is the address its
+  own check read rather than a second lookup's.
 - `airlock proxy: a dial that did not happen`, at WARNING, for a dial the proxy refused or could
   not make, on a `CONNECT`, a bound host's request and a plain-HTTP request alike. It names the
-  same fields and two more: `failure`, which is `refused` (an address this proxy never dials,
-  a private one or one inside `BROKER_AIRLOCK_CLUSTER_RANGES`), `unresolved` (a host that
-  resolves to no address) or `unreachable` (every address was dialled and none answered); and
-  `reason`, the broker's own words. A refused address writes this line beside the refusal's own,
-  the first saying where the command asked to go and the second how it was answered.
+  same fields and three more. `resolved` is how many addresses the host resolved to. `failure`
+  is `refused` (an address this proxy never dials, a private one or one inside
+  `BROKER_AIRLOCK_CLUSTER_RANGES`), `unresolved` (a host the resolver answered no address or an
+  error for), `unreachable` (every address was dialled and none answered), or `cancelled` (the
+  command closed its connection while the proxy looked its host up or dialled it, so the lookup
+  or the dial was given up, and its error says nothing about the service). `reason` is the
+  broker's own words. The `address` is the one refused, as `ip:port`, for `refused`; empty for
+  `unresolved` and for a lookup that was `cancelled`; and for `unreachable` and a dial that was
+  `cancelled`, the addresses dialled, as `ip:port` each, separated by spaces, in the order they
+  were dialled, as many whole addresses as fit in the field — `resolved` says how many there
+  were in all. A dial the check stops — a refused address, a host that resolved to nothing, a
+  lookup given up — writes this line beside the refusal's own, the first saying where the command
+  asked to go and the second how it was answered.
+
+The proxy reads the port a command asks for once, as the number it names, and writes it as that
+number: a port written with leading zeros is dialled and logged as its number, a URL that names
+no port is read with its scheme's (`80`, or `443` for `https`), and a port that is no number from
+1 to 65535 — `0`, a number past 16 bits, a service name such as `https`, a sign — is refused
+`400` before any lookup or dial: `CONNECT_TARGET_INVALID` on a `CONNECT` and
+`PROXY_TARGET_INVALID` on a plain-HTTP request, with a reason that names the host and not the
+port.
 
 Each field whose text the caller chose is cut to its first 256 bytes, so whatever a caller sends,
 each line stays within one Cloud Logging entry. On the refusal line those are the method, the
 host, a reason that names the host, the path and the correlation id; on the call line, the
 method, the host and the path, which is all of the caller's text it names; on a tunnel's line and
-a failed dial's, the host and that dial's reason, which names it.
+a failed dial's, the host, the port, the address and that dial's reason, which names the host.
 
-No refusal line holds a secret's value or a placeholder, and no tunnel's or failed dial's line
-does either: neither reads a byte of what a command sent. The API port's line holds no message
-text either: it names the code. Each answer, a refusal or not, also counts in
-`broker_answers_total` ([Metrics](#metrics)), which is the one record of the API port's `429` and
-of a device grant's poll answers.
+No refusal line holds a secret's value or a placeholder as it was minted, and no tunnel's or
+failed dial's line does either: no field of any of them is read from a request's headers or its
+body, which is where a command puts a placeholder. The host and the port are the command's own
+text, though: the host is the one asked for, lowercased, with no zone, and cut to 256 bytes, and
+the port is the number it names, so a host a command made of its placeholder is written only
+lowercased. The API port's line holds no message text either: it names the code. Each answer, a
+refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is the one
+record of the API port's `429` and of a device grant's poll answers.
 
 On the API port, an answer that no refusal line records names its id in no line: a `429`, the two
 answers of a device login's poll, and every answer of 500 and above. `agent-secrets` prints the id
