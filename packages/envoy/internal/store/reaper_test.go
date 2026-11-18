@@ -261,7 +261,7 @@ func restoredRoleClaimRegistry(t *testing.T, seed func(roles natsgo.KeyValue, st
 	start := time.Date(2026, 11, 6, 9, 30, 0, 0, time.UTC)
 	seed(raw, start)
 	var elapsed atomic.Int64
-	reg, err := Open(conn, WithReplicas(1), WithClock(func() time.Time { return start.Add(time.Duration(elapsed.Load())) }))
+	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(func() time.Time { return start.Add(time.Duration(elapsed.Load())) }))
 	if err != nil {
 		t.Fatalf("open a registry over the stored claims: %v", err)
 	}

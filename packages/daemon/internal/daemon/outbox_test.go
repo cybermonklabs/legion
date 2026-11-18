@@ -2198,14 +2198,12 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			}); err != nil {
 				t.Fatalf("put the pull request: %v", err)
 			}
-			// The reviewer's claim, which the daemon started it on: its completion arrives after
-			// its own review has moved the issue, and is recorded on its row (workflow's
-			// leftItsPhase).
-			if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-				values ('reviewer', 'LEGION', 'LEGION-208', 'LEGION-208', 'reviewer', 1, '', '', 'working', 0, 0, 0, 0)`); err != nil {
-				t.Fatalf("seed the reviewer's claim: %v", err)
-			}
+			// The reviewer's claim, which the daemon started it on, under the token it names the
+			// claim by, holding the session its agent registered, which the review's footer names
+			// (workflow's ReviewerSession): its completion arrives after its own review has moved
+			// the issue, and is recorded on its row (workflow's leftItsPhase).
+			const reviewerClaim = "legion-legion-legion-208-reviewer"
+			seedReviewerSession(t, pool, "LEGION", "LEGION-208", "ses-reviewer")
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 			sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
 			const reviewApp = "legion-reviewer[bot]"
@@ -2251,7 +2249,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			// The review itself ended the round; the reviewer's completion follows it, recorded on
 			// the reviewer's own row with the issue already in implementing.
 			apply("handoff:reviewer:reviewing:1", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
-				Claim: "reviewer", HandoffRecord: "review-round-1", HandoffVersion: 1})
+				Claim: reviewerClaim, HandoffRecord: "review-round-1", HandoffVersion: 1})
 			due("the round-2 start")
 			machine, found := sup.Machine(implementer)
 			if !found {
@@ -2304,7 +2302,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			review.Body += legionFooter("ses-reviewer", head)
 			apply("review:after-round-2", review)
 			apply("handoff:reviewer:reviewing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
-				Claim: "reviewer", HandoffRecord: "review-round-2", HandoffVersion: 2})
+				Claim: reviewerClaim, HandoffRecord: "review-round-2", HandoffVersion: 2})
 			if tc.accept {
 				apply("signoff", intake.SignOff{Issue: issue.Key})
 			}

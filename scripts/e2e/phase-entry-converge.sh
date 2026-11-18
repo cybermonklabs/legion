@@ -26,7 +26,8 @@
 #     the shipped binary keeps entrySweepInterval's minute;
 #   - one read of GET /legion/v1/state, which carries the issue's `phaseEntry` and `givenEntry`.
 #
-# Run it from a checkout on a Linux host with go, awk and python3, as
+# Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses
+# to start without them), awk and python3, as
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     bash scripts/e2e/phase-entry-converge.sh
 # LEGION_TEST_PG_DSN is required and names the PostgreSQL the daemon migrates and runs on; the run

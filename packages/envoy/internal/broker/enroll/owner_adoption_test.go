@@ -273,7 +273,7 @@ func TestALiveEnrollmentOfTheSameOwnerKeepsItsGrants(t *testing.T) {
 	})
 }
 
-// TestAnEnrollmentWithNoOwnerKeepsTodaysRule: every enrollment live when migration 0034 applies
+// TestAnEnrollmentWithNoOwnerKeepsTodaysRule: every enrollment live when migration 0035 applies
 // records no owner, and a null owner is owned by its own enrollment alone. A dormant pod of a claim
 // whose row records none is taken by no later pod of the claim: its grant waits for its own
 // session's next enrollment, or for the carry sweep, as before.

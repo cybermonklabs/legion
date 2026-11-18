@@ -196,6 +196,19 @@ on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the r
 path git asks about — of the owner a configured rename moved that repository to where a pair
 names it — and nothing else.
 
+Oh My Pi itself holds that `PATH` when `omp_invocation` runs it through mise. `mise x` rewrites the
+`PATH` of the program it starts: it puts the tool's own directories and each `_.path` entry of the
+mise config it reads ahead of the rest, and such an entry, a dotfiles `shims` directory for example,
+can hold a `gh`, `git` or `jj` of its own. So the daemon has `mise x` start `/bin/sh` in place of
+`omp`, and that shell puts the first entry of the `PATH` the launch ran under, the state directory's
+`bin/`, back in front, then execs the tool's own `bin/omp`, so the process mise started is Oh My Pi
+itself (`keepPathHead`, `packages/daemon/internal/omplaunch`). The rest of the `PATH` stays as mise
+made it, with `bin/` in it a second time where mise left the daemon's own. Every boot probe runs Oh
+My Pi the same way. So does `legion controller start`, whose launch `PATH` begins with the `bin/` of
+its own state directory, and whose mise reads the operator's own config, since the controller keeps
+the operator's `HOME` and `XDG_CONFIG_HOME`. `LEGION_OMP_PATH` names `omp` directly, with nothing
+between the launch and Oh My Pi, so Oh My Pi holds the launch's `PATH` unchanged.
+
 The `git` in `bin/` runs `legion git --after <state_dir>/bin` (`packages/daemon/cmd/legion/git.go`).
 The daemon writes it at boot, unless the first `git` on the daemon's own `PATH` is the worker
 image's wrapper, `/opt/legion/bin/git`, which hands a commit to `legion git` itself. In that case
@@ -269,6 +282,15 @@ wrapper would answer in place of the role's App token. Set `LEGION_GH_PATH` to t
 install path (`mise which gh` or `asdf which gh` prints it). The check reads scripts only: mise's
 shim is compiled and passes, and where mise has no gh for the directory it runs the next `gh` on
 `PATH`, which in a pane is the pane's own `legion gh`, so a shims directory is no real gh either.
+`legion gh` refuses such a gh itself too: a `LEGION_GH_PATH` that is not an absolute path, that is
+the pane's wrapper, or that is another `legion gh` wrapper script, exits 2 before anything runs, and
+every real gh it runs carries `LEGION_GH_RUN_BY_REAL_GH`, under which a `legion gh` that gh leads
+back to exits 2 and runs nothing.
+The leak guard blanks that variable for every child it runs, so a push the real gh makes still
+passes the pre-push hook's visibility read, whose own real gh carries the variable again. Its help
+read of the real gh runs in a process group of its own, which a read past its timeout stops whole,
+and a SIGINT, SIGTERM or SIGHUP that comes before the real gh starts stops that group and the leak
+guard's children whole.
 
 The daemon runs tmux itself: the first `tmux` on its `PATH`, with the pane environment, whose XDG
 directories are under the state directory. A mise shim, or a wrapper script that hands the call to

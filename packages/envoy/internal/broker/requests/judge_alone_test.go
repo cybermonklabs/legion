@@ -19,18 +19,89 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
-// listedFor is the record ids GET /v1/pending lists for login.
+// listedFor is the record ids GET /v1/pending lists for login. It reads both of
+// PendingForApprover's statements, the one with no state and the one for the pending state, and
+// fails when they list different records: the judge's hold keeps a record off both.
 func listedFor(t *testing.T, m *Machine, login string) []string {
 	t.Helper()
-	pending, err := m.PendingForApprover(t.Context(), login)
-	if err != nil {
-		t.Fatalf("PendingForApprover(%s): %v", login, err)
+	read := func(states PendingStates) []string {
+		pending, err := m.PendingForApprover(t.Context(), login, states)
+		if err != nil {
+			t.Fatalf("PendingForApprover(%s, %+v): %v", login, states, err)
+		}
+		ids := make([]string, len(pending))
+		for i, p := range pending {
+			ids[i] = p.RecordID
+		}
+		return ids
 	}
-	ids := make([]string, len(pending))
-	for i, p := range pending {
-		ids[i] = p.RecordID
+	ids, byState := read(PendingStates{}), read(PendingStates{Pending: true})
+	if !slices.Equal(ids, byState) {
+		t.Fatalf("PendingForApprover(%s) lists %v with no state and %v for the pending state; want the same records", login, ids, byState)
 	}
 	return ids
+}
+
+// listedAs is the state the stateful list (Dispatch's, pending and expired) gives recordID for
+// login, and "" where it does not list it.
+func listedAs(t *testing.T, m *Machine, login, recordID string) string {
+	t.Helper()
+	pending, err := m.PendingForApprover(t.Context(), login, PendingStates{Pending: true, Expired: true})
+	if err != nil {
+		t.Fatalf("PendingForApprover(%s, pending and expired): %v", login, err)
+	}
+	for _, p := range pending {
+		if p.RecordID == recordID {
+			return p.State
+		}
+	}
+	return ""
+}
+
+// TestTheJudgesHoldIsARecordStateEveryListReads: recordStateSQL, the one rule Dispatch's list,
+// Dismiss and ReadRecord read, applies the judge's hold. A request the judge holds before its
+// deadline is on no list, pending or expired, and cannot be dismissed, since it may still be
+// decided; once the hold ends before the deadline it is listed pending; a request still held past
+// its deadline is listed expired, as every request past its deadline is, and its decision stays
+// refused.
+func TestTheJudgesHoldIsARecordStateEveryListReads(t *testing.T) {
+	t.Run("held before its deadline, then the hold ends", func(t *testing.T) {
+		m, enr, key := newJudgeFixture(t)
+		req := pendingJudgeable(t, m, enr, key, "post the release notes", 600, "DEEL_API_KEY")
+		if got := listedAs(t, m, fixtureOperator, *req.RecordID); got != "" {
+			t.Errorf("a request the judge holds is listed %q on Dispatch's list; want it on no list", got)
+		}
+		if slices.Contains(listedFor(t, m, fixtureOperator), *req.RecordID) {
+			t.Error("a request the judge holds is on the person's pending list; want it on none")
+		}
+		if _, err := m.Dismiss(t.Context(), *req.RecordID, fixtureOperator); !errors.Is(err, ErrNotExpired) {
+			t.Errorf("Dismiss of a request the judge holds = %v; want ErrNotExpired, since it may still be decided", err)
+		}
+		if detail, err := m.ReadRecord(t.Context(), *req.RecordID); err != nil || detail.State != "pending" || !detail.JudgeDeciding {
+			t.Errorf("ReadRecord of a request the judge holds = %q judge_deciding %v, %v; want pending with the judge deciding", detail.State, detail.JudgeDeciding, err)
+		}
+		endHold(t, m, req.ID)
+		if got := listedAs(t, m, fixtureOperator, *req.RecordID); got != "pending" {
+			t.Errorf("a request whose hold ended before its deadline is listed %q; want pending", got)
+		}
+	})
+	t.Run("held past its deadline", func(t *testing.T) {
+		m, enr, key := newJudgeFixture(t)
+		req := pendingJudgeable(t, m, enr, key, "post the release notes", 600, "DEEL_API_KEY")
+		if _, err := m.Store.Pool.Exec(t.Context(), `update requests set pending_expires_at = now() - interval '1 second',
+			judge_until = now() + interval '1 minute' where id=$1`, req.ID); err != nil {
+			t.Fatalf("move the deadline into the past with the hold ahead: %v", err)
+		}
+		if got := listedAs(t, m, fixtureOperator, *req.RecordID); got != "expired" {
+			t.Errorf("a request held past its deadline is listed %q; want expired", got)
+		}
+		if _, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator); err == nil {
+			t.Error("a person's approval of a request held past its deadline was made; want it refused")
+		}
+		if got := readDecided(t, m, *req.RecordID); got.events != 0 {
+			t.Errorf("the refused approval left %+v; want no event", got)
+		}
+	})
 }
 
 // judgeHold is how long after the request was written its hold runs, and false for a request

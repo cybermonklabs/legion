@@ -1259,7 +1259,7 @@ func TestEveryRequesterIsDecidedByOwnerAndTier(t *testing.T) {
 			if listedFor == record.AnyoneApprover {
 				listedFor = "carol@example.com"
 			}
-			pending, err := m.PendingForApprover(ctx, listedFor)
+			pending, err := m.PendingForApprover(ctx, listedFor, PendingStates{})
 			if err != nil || !slices.ContainsFunc(pending, func(p PendingSummary) bool { return p.RecordID == *req.RecordID }) {
 				t.Errorf("%s asking for %s: %s's pending list %+v, %v; want the record listed", who, name, listedFor, pending, err)
 			}
@@ -1279,7 +1279,7 @@ func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 		t.Fatalf("Create = %+v, %v, want pending with a record", req, err)
 	}
 	for _, person := range []string{"bob@example.com", "carol@example.com", fixtureOperator} {
-		pending, err := m.PendingForApprover(ctx, person)
+		pending, err := m.PendingForApprover(ctx, person, PendingStates{})
 		if err != nil || len(pending) != 1 || pending[0].RecordID != *req.RecordID {
 			t.Fatalf("PendingForApprover(%s) = %+v, %v, want the shared record", person, pending, err)
 		}
@@ -1307,7 +1307,7 @@ func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 	if err != nil || len(grants) != 1 || grants[0].GrantID != dec.GrantID || grants[0].Approver != "bob@example.com" {
 		t.Fatalf("GrantsForApprover(bob) = %+v, %v, want the grant bob approved", grants, err)
 	}
-	if pending, err := m.PendingForApprover(ctx, "carol@example.com"); err != nil || len(pending) != 0 {
+	if pending, err := m.PendingForApprover(ctx, "carol@example.com", PendingStates{}); err != nil || len(pending) != 0 {
 		t.Fatalf("PendingForApprover(carol) after bob decided = %+v, %v, want nothing", pending, err)
 	}
 }

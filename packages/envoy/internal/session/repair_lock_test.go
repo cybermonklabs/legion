@@ -31,7 +31,7 @@ func TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt(t *testing.T) {
 			name: "a store whose watcher is open",
 			open: func(t *testing.T) (*KnownSessions, *nats.Conn) {
 				client := setupNATS(t)
-				known, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1), withKnownSessionRetry(time.Hour, time.Hour))
+				known, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1), withKnownSessionRetry(time.Hour, time.Hour))
 				if err != nil {
 					t.Fatalf("open the known-session store: %v", err)
 				}
@@ -56,7 +56,7 @@ func TestTheHooksMoveDoesNotWaitOutTheRetrysAttempt(t *testing.T) {
 					t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
 				}
 				t.Cleanup(conn.Close)
-				known, err := OpenKnownSessions(conn,
+				known, err := OpenKnownSessions(t.Context(), conn,
 					WithKnownSessionReplicas(1),
 					WithKnownSessionLogger(slog.New(slog.NewTextHandler(&lockedWriter{}, nil))),
 					// The retry the open arms waits an hour, so only the Rewatch's wake moves it.

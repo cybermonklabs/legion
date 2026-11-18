@@ -83,6 +83,12 @@ export interface WriteBase<D = unknown> {
  *  or discarded. */
 export type Write<D = unknown> = WriteBase<D> & WriteState;
 
+/** Whether `write` may still reach Dispatch: waiting its turn, or out, within its deadline or
+ *  past it and still being tried. A refused or discarded write is not. */
+export function isLive(write: Write): boolean {
+  return write.status === "queued" || write.status === "sending" || write.status === "late";
+}
+
 /** `write` apart from where it stands, for a new state to be put on. */
 function baseOf<D>(write: Write<D>): WriteBase<D> {
   const { detail, id, inline, joined, key, kind, label, login, presentation, pressedAt } = write;
@@ -139,8 +145,12 @@ export interface WriteKind<D, K = D> {
   /** What a write of this kind undoes once it is refused, discarded or dropped. */
   readonly undone?: (client: QueryClient, write: Write<D>) => void;
   /** What a kind lets go of once whoever is signed in changes, or the person signs out: what it
-   *  remembered of their answers, which the next person's writes must not build on. */
+   *  remembered of their answers, which the next person's writes must not build on. The writes
+   *  that change drops are undone first (`undone`), from what the kind still remembers. */
   readonly reset?: () => void;
+  /** Told once of each store as it is made, with the client it lives with: what a kind keeps of
+   *  that client for its whole life, from before the first write of the kind. */
+  readonly opened?: (client: QueryClient, writes: Writes) => void;
   /** Whether a write of this kind Dispatch made and answered stays, `made`, until its surface lets
    *  it go (`letGo`); one made with no answer to give has nothing to show, and goes. */
   readonly keepsMade?: boolean;
@@ -372,10 +382,18 @@ export class Writes {
     this.#kept = kept;
     this.#files = files;
     watcher?.(this);
+    for (const kind of kinds.values()) kind.opened?.(client, this);
   }
 
   /** Every write held, in press order: one array until a write changes. */
   readonly rows = (): readonly Write[] => this.#rows;
+
+  /** The request the write `id` makes - the one its press named, or the one it last went out as
+   *  - or undefined where the store holds no such write or it names none yet (one made by an
+   *  attempt of its own that has not gone out). What a reader of a line asks of the writes on it:
+   *  which change each one makes (`issue-field-writes.ts`). */
+  readonly requestOf = (id: number): WriteRequest | undefined =>
+    this.#entries.get(id)?.request ?? undefined;
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
@@ -605,17 +623,16 @@ export class Writes {
    * lands; so has another tab's sign-out of the person whose session lapsed, while it still holds
    * their writes here (`holdFor`): the lapse is that sign-out landing, whether it reaches this
    * page before or after that tab's hold ends, so their writes go (`dropLogin`) rather than wait
-   * for a sign-in they were discarded before. A lapse with no such hold keeps them. Each kind lets
-   * go of what it remembered of the person before (`reset`) whenever who is signed in changes,
-   * and so does every hold this page's sign-out put on writes; another tab's hold is that tab's
-   * to end (`holdFor`), or this lapse's.
+   * for a sign-in they were discarded before. A lapse with no such hold keeps them. Whenever who
+   * is signed in changes, every hold this page's sign-out put on writes ends, and each kind lets
+   * go of what it remembered of the person before (`reset`) - once the writes the change drops
+   * are gone, so each of those is undone (`undone`) from what its kind still remembers of that
+   * person's answers. Another tab's hold is that tab's to end (`holdFor`), or this lapse's.
    */
   signedIn(login: string | undefined): void {
     const before = this.#login;
-    if (login !== before) {
-      this.#resetKinds();
-      this.#signingOut.clear();
-    }
+    const changed = login !== before;
+    if (changed) this.#signingOut.clear();
     this.#login = login;
     if (login === undefined) {
       this.#lapsed = true;
@@ -626,6 +643,7 @@ export class Writes {
         (this.#signingOutElsewhere.has(before) ||
           (unsettledUntil !== undefined && Date.now() <= unsettledUntil));
       if (landed) this.dropLogin(before);
+      if (changed) this.#resetKinds();
       for (const entry of [...this.#entries.values()]) this.#hold(entry);
       return;
     }
@@ -633,6 +651,7 @@ export class Writes {
     this.#unsettledSignOuts.clear();
     this.#lapsed = false;
     this.#take([...this.#entries.values()].filter((entry) => entry.write.login !== login));
+    if (changed) this.#resetKinds();
     void this.#files.keepOnly(login);
     this.#advanceEvery();
   }
@@ -1034,7 +1053,10 @@ export class Writes {
   }
 
   /** The write `entry` landed with `answer` (`null` for a landing with none): it leaves, or stays
-   *  made for its kind to show, and its kind refreshes what it wrote. */
+   *  made for its kind to show, and its kind refreshes what it wrote. The landing is told before
+   *  the store reads anything again for it, so every read it starts was sent after it: a listener
+   *  that orders Dispatch's answers by when each read went out (`issue-field-writes.ts`) counts
+   *  those reads as newer than the landing. */
   #landed(entry: Entry, answer: unknown): void {
     const kind = kinds.get(entry.write.kind);
     const awaited = entry.press !== undefined;
@@ -1048,8 +1070,10 @@ export class Writes {
       this.#remove(entry);
     }
     if (kind?.landed !== undefined) kind.landed(this.#client, entry.write, answer, awaited);
-    else if (!awaited || answer === null) void this.#client.invalidateQueries();
     this.#emit({ answer, kind: "landed", write: entry.write });
+    if (kind?.landed === undefined && (!awaited || answer === null)) {
+      void this.#client.invalidateQueries();
+    }
     this.#advance(entry.write.target);
   }
 

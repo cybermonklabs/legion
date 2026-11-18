@@ -69,7 +69,10 @@ var (
 	ErrTerminal          = errors.New("request is already decided")
 	// ErrExpired is ApplyDecision's refusal for a record that expired undecided: the sweeper
 	// expired its request, or its pending_expires_at has passed before the sweeper got to it.
-	ErrExpired      = errors.New("request expired before its approver acted on it")
+	ErrExpired = errors.New("request expired before its approver acted on it")
+	// ErrNotExpired is Dismiss's refusal for a record nobody has decided whose deadline has not
+	// passed: it may still be decided, so there is nothing to dismiss yet.
+	ErrNotExpired   = errors.New("request has not expired; it can still be decided")
 	ErrGrantNotLive = errors.New("grant is expired, revoked, or its session ended")
 	// ErrGrantChainInvalid: re-verifying a grant's whole approval chain (record hash, requester
 	// signature, one approval by the record's approver) failed — a row written by anyone but the
@@ -121,7 +124,7 @@ func (notOwnerError) Is(target error) bool { return target == ErrNotYours }
 // the two of airlock.go. A sentinel added to this package belongs in it, which is why it sits
 // beside them rather than in a caller that reads them.
 var refusals = []error{
-	ErrNotYours, ErrNotOwner, ErrNotApprover, ErrTerminal, ErrExpired, ErrGrantNotLive, ErrGrantChainInvalid,
+	ErrNotYours, ErrNotOwner, ErrNotApprover, ErrTerminal, ErrExpired, ErrNotExpired, ErrGrantNotLive, ErrGrantChainInvalid,
 	ErrSecretNotInStore, ErrMixedApprovers, ErrGrantRequiresLifetime, ErrMintFailed,
 	ErrNarrowingNotApplicable, ErrNarrowingOwnerNotListed, ErrNarrowingBehindAirlock,
 	ErrRequestPending, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape,
@@ -1076,6 +1079,106 @@ func (m *Machine) Cancel(ctx context.Context, id, enrollmentID string) error {
 	}
 	store.LogGrantEvent(endedRequestLogEvent(end, requestEnrollment, id))
 	return nil
+}
+
+// DismissedMessage is logged, at INFO, once for each call of Dismiss that dismissed a record or
+// found it dismissed already, followed by record_id=<the record>, kind=<agent_secret or
+// launcher_credential>, login=<the canonical login that asked> and wrote=<whether this call wrote
+// the dismissal, false when an earlier one had>. A refused dismissal logs nothing.
+const DismissedMessage = "broker: an expired credential request was dismissed"
+
+// Dismissal is the one dismissal of an expired credential-request record: the record, who
+// dismissed it (a person's canonical login, or broker for a record migration 0033 found already
+// out of the lists), and when.
+type Dismissal struct {
+	RecordID    string
+	DismissedBy string
+	DismissedAt time.Time
+	// Wrote is whether this call wrote the dismissal. It is false when an earlier dismissal had,
+	// whose values the fields above then are.
+	Wrote bool
+}
+
+// Dismiss takes an expired record out of every approver's list (PendingForApprover with
+// PendingStates.Expired) for good, on the word of login, and answers the record's one dismissal:
+// the one this call wrote, or, for a record dismissed already, the earlier one, unchanged. An
+// expired record is one whose deadline passed before anybody decided it (recordStateSQL, the
+// rule the list reads), of either kind: nothing is left to decide on it, and its agent asks again
+// with a new request. A record is dismissed once, for every list that holds it, so a shared
+// request one person dismisses leaves everybody's list.
+//
+// Its refusals are pgx.ErrNoRows for an id that names no record; record.ErrNotApprover when the
+// record's approver is neither record.CanonicalLogin(login) nor record.AnyoneApprover, which is
+// the list's own rule for whose list holds a record, and for an empty login or one that is
+// record.AnyoneApprover itself, which name nobody; ErrNotExpired for a record nobody has decided
+// whose deadline has not passed; and ErrTerminal for every other record, one approved, denied or
+// revoked, and a secret request cancelled before its deadline. A secret request cancelled after
+// its deadline is expired, and is dismissed like any other.
+//
+// It is one transaction, and it reads the record's state under a share lock taken before the read:
+// on the requests row for a secret request, which waits for ApplyDecision's `for update` of that
+// row, and on the credential_requests row for a machine login, which waits for machine's
+// ApplyDecision's `for no key update` of it. So a decision that holds that lock first, one that
+// began before the deadline and commits after it included, is read as what it decided, and the
+// dismissal is refused ErrTerminal rather than written under it. The state is read by a statement
+// of its own, after the lock, so it sees what the decision it waited for committed. A decision
+// that takes the lock after this read waits for this transaction and then compares the deadline
+// with its own now(), the moment its own transaction began: one that began after the deadline
+// answers its expiry, and one that began before it may still decide the record. That record is
+// then decided with a dismissal row beside it, which nothing reads: the list reads a dismissal
+// only for a record recordStateSQL reads as expired, and a later Dismiss refuses a decided record
+// ErrTerminal before it reads one. Two dismissals of one record meet on the table's primary key:
+// the first's insert returns the row it wrote, and the second inserts nothing and reads the first
+// one's row back.
+func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissal, error) {
+	tx, err := m.Store.Pool.Begin(ctx)
+	if err != nil {
+		return Dismissal{}, err
+	}
+	defer tx.Rollback(ctx)
+	var kind, approver string
+	if err := tx.QueryRow(ctx, `select kind, approver from credential_requests where id=$1`, recordID).Scan(&kind, &approver); err != nil {
+		return Dismissal{}, err
+	}
+	login = record.CanonicalLogin(login)
+	if login == "" || login == record.AnyoneApprover || approver != login && approver != record.AnyoneApprover {
+		return Dismissal{}, record.ErrNotApprover
+	}
+	lock := `select 1 from credential_requests where id=$1 for share`
+	if kind == record.KindAgentSecret {
+		lock = `select 1 from requests where record_id=$1 for share`
+	}
+	if _, err := tx.Exec(ctx, lock, recordID); err != nil {
+		return Dismissal{}, err
+	}
+	var state *string
+	if err := tx.QueryRow(ctx, `select `+recordStateSQL+` from credential_requests cr
+		left join requests req on req.record_id = cr.id where cr.id=$1`, recordID).Scan(&state); err != nil {
+		return Dismissal{}, err
+	}
+	switch {
+	case state == nil:
+		return Dismissal{}, ErrTerminal
+	case *state != "expired":
+		return Dismissal{}, ErrNotExpired
+	}
+	d := Dismissal{RecordID: recordID}
+	err = tx.QueryRow(ctx, `insert into credential_request_dismissals (record_id, dismissed_by) values ($1, $2)
+		on conflict (record_id) do nothing returning dismissed_by, dismissed_at`, recordID, login).
+		Scan(&d.DismissedBy, &d.DismissedAt)
+	d.Wrote = err == nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `select dismissed_by, dismissed_at from credential_request_dismissals where record_id=$1`, recordID).
+			Scan(&d.DismissedBy, &d.DismissedAt)
+	}
+	if err != nil {
+		return Dismissal{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Dismissal{}, err
+	}
+	slog.Info(DismissedMessage, "record_id", recordID, "kind", kind, "login", login, "wrote", d.Wrote)
+	return d, nil
 }
 
 // ExpirePending expires every pending request past its deadline, writing the state transition,

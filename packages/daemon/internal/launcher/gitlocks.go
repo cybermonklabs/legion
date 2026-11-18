@@ -59,6 +59,15 @@ var gitLockRecheck = 2 * time.Second
 // worktree entry's gitdir that is a fifo among them (internal/workspace's readGitdir).
 var gitLockRemove = os.Remove
 
+// gitLockProc is the /proc newGitLockSweep gives the sweep (gitLockSweep.proc): the container's
+// own, where PID 1 of the container sees every process that may hold a lock. It is a variable for
+// the rows that drive a real launcher, which builds its sweep here and so takes no field of its
+// own. Such a row points it at a /proc of its own (useSweepingLauncher), as it points the memory
+// guard at a pod of its own: the /proc of the machine a test runs on lists processes the row knows
+// nothing of, and on a machine several users share, any git or jj of another user is one whose
+// open files the test cannot read, which keeps every lock the row planted (holders).
+var gitLockProc = "/proc"
+
 // gitLockFirstPassBound is how long the launcher's first pass may spend between the locks it
 // decides. It exists for the reason testPGBound exists: the first pass runs before the launcher
 // serves any role, the daemon's boot timeout for a pod is 120 s by default, and a pass that goes
@@ -214,15 +223,15 @@ func serveGitLockSweep(ctx context.Context, managers []*manager) <-chan struct{}
 // person reading the pod's log sees which clone every pass of the pod walks, or which one it
 // would not walk and why.
 //
-// The two numbers a test shortens, the interval and the recheck, and the removal a test holds are
-// read here, in the caller's own goroutine, and never inside the ticker's: they are package
-// variables, and a goroutine still reading one after the test restored it is a data race the race
-// detector fails the test for (serveTestPG reads its interval the same way). The guard and the
-// first pass's bound are constants nothing writes; a test that varies the guard writes the
-// sweep's own field.
+// The two numbers a test shortens, the interval and the recheck, the removal a test holds and the
+// /proc a test points the sweep at are read here, in the caller's own goroutine, and never inside
+// the ticker's: they are package variables, and a goroutine still reading one after the test
+// restored it is a data race the race detector fails the test for (serveTestPG reads its
+// interval the same way). The guard and the first pass's bound are constants nothing writes; a
+// test that varies the guard writes the sweep's own field.
 func newGitLockSweep(log func(format string, args ...any)) *gitLockSweep {
 	s := &gitLockSweep{
-		proc: "/proc", guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,
+		proc: gitLockProc, guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,
 		remove: gitLockRemove, now: time.Now, log: log,
 	}
 	dir, err := os.Getwd()

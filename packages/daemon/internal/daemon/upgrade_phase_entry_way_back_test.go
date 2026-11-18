@@ -57,6 +57,7 @@ const (
 	architectUpgradeMigrationFile        = "internal/store/migrations/20261113182000_architect_entry_upgrade.up.sql"
 	claimHandshakeMigrationFile          = "internal/store/migrations/20261114020537_claim_entry_handshake.up.sql"
 	entryVerbatimMigrationFile           = "internal/store/migrations/20261114061900_phase_entry_verbatim.up.sql"
+	reviewedHeadMigrationFile            = "internal/store/migrations/20261116234034_phase_reviewed_head.up.sql"
 	// wayBackExtract, the copy of the phase entry's block, and architectEntryWayBackExtract, the
 	// copy of contract 146's, are read from this package's own directory, where each file sits
 	// beside the code it is about and needs no declared read of its own.
@@ -360,6 +361,14 @@ func wayBackBlockDifference(header, extract string) string {
 func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Token, issue string) {
 	t.Helper()
 	ctx := context.Background()
+	// A rollback past the phase entry runs, before the phase entry's own block, the way back of
+	// the reviewed commit's migration (docs/kubernetes.md, the migrations recorded above this
+	// one): it deletes the key this release writes on a reviewer's start row (`roundNamed`),
+	// which the release before decodes strictly and would refuse.
+	newer := strings.Split(strings.TrimSuffix(wayBackBlockOfTheHeader(t, reviewedHeadMigrationFile), "\n"), "\n")
+	if _, err := pool.Exec(ctx, strings.Join(newer[1:len(newer)-1], "\n"), pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatalf("run the way back's block of %s as the one transaction an operator runs: %v", reviewedHeadMigrationFile, err)
+	}
 	recovery := wayBackRecovery(t, wayBackBlockOfTheHeader(t, phaseEntryMigrationFile))
 	if _, err := pool.Exec(ctx, recovery, pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatalf("run the way back's block of %s as the one transaction an operator runs: %v\nthe block is:\n%s",
@@ -498,9 +507,10 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 	if err := pool.QueryRow(ctx, "select count(*) from schema_version").Scan(&recorded); err != nil {
 		t.Fatalf("count the versions recorded after the recovery: %v", err)
 	}
-	if recorded != len(all)-1 {
-		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: the delete names one version, and store.apply decides each migration on its own row",
-			recorded, len(all)-1)
+	// The two deletes are the phase entry block's and the reviewed commit's way back, run before it.
+	if recorded != len(all)-2 {
+		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: the two ways back each delete one version, and store.apply decides each migration on its own row",
+			recorded, len(all)-2)
 	}
 }
 
@@ -584,8 +594,8 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 	if err != nil {
 		t.Fatalf("roll forward onto the record the older daemon left: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration run a second time: the way back deletes its version row, and store.apply decides each migration on its own row",
+	if applied != 2 {
+		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration and the reviewed commit's run a second time: each way back deletes its version row, and store.apply decides each migration on its own row",
 			applied)
 	}
 	var entry int64

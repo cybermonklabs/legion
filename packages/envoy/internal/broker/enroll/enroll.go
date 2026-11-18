@@ -811,7 +811,7 @@ var claimPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,127}$`)
 
 // claimOwnerPrefix opens every owner ownerKey reads from a claim: the one kind of owner adopt moves
 // grants by (adopt's claim rule), and the predicate of the partial index that serves it
-// (migration 0034).
+// (migration 0035).
 const claimOwnerPrefix = "claim:"
 
 // ownerKey is whose the requests an enrollment makes are, which the insert writes into
@@ -844,7 +844,7 @@ const claimOwnerPrefix = "claim:"
 //     thumbprint (exchange.MachineSubject), which neither a pod uid nor a slot holds, so no two of
 //     these spell one owner.
 //
-// Anything else, and every row from before migration 0034, records none, and a request of an
+// Anything else, and every row from before migration 0035, records none, and a request of an
 // enrollment with no owner is that enrollment's alone. Unlike carryPrincipal, an owner needs no
 // session name: a person's request is the person's whether or not their session named itself.
 func ownerKey(cred Credential, in Enrollment) *string {
@@ -997,7 +997,7 @@ func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, actor string) error {
 	// left something on gives up its grants and requests as well as its withheld names, one that
 	// matched the withheld clause alone gives up the names, and a claim-rule row gives up its
 	// grants and requests. The claim arm spells the partial index's own predicate, which is what
-	// lets it read enrollments_claim_owner_dormant (migration 0034).
+	// lets it read enrollments_claim_owner_dormant (migration 0035).
 	rows, err := tx.Query(ctx, `select e.id, e.dormant_since is not null,
 			coalesce(e.carry_principal=$1 and e.session_id=$2, false),
 			coalesce(e.carry_principal=$1 and e.session_id=$2, false) and `+carriesForItsSession+`
@@ -1302,7 +1302,7 @@ func endEnrollment(ctx context.Context, tx pgx.Tx, id, actor, kind, reason strin
 // The pod is locked before anything moves onto it, so its own end cannot read what it holds
 // before the move and miss the rows moved here. One held by another transaction — its own end, or
 // its renewal — is passed over (skip locked): two pods of one claim ending at once would each
-// otherwise wait on the other's row. enrollments_claim_owner_live (migration 0034) serves the
+// otherwise wait on the other's row. enrollments_claim_owner_live (migration 0035) serves the
 // lookup, which spells its predicate.
 func handOver(ctx context.Context, tx pgx.Tx, id, owner, actor, kind, reason string) (endedEnrollment, error) {
 	var to uuid.UUID
