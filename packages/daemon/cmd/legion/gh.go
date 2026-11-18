@@ -18,6 +18,9 @@ import (
 	"syscall"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
@@ -127,6 +130,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			return 2
 		}
 	}
+	// The directory gh will run with must not send its requests anywhere but github.com: a pane
+	// can write its own gh files between two of the daemon's refreshes (ghRoutingKey).
+	if err := ghRoutingKey(ghCallDir(env, target)); err != nil {
+		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		return 2
+	}
 	commandPath = target.command
 	if target.owner != "" && target.repo != "" {
 		repo = target.owner + "/" + target.repo
@@ -222,6 +231,10 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// picks a directory any other way.
 	if target.dir != "" {
 		dir = target.dir
+	}
+	if err := ghRoutingKey(dir); err != nil {
+		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		return 2
 	}
 	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, "GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1"}
 	// A call no private-name pass read runs no program the environment names: such a program
@@ -855,6 +868,9 @@ func ghTargetOf(argv []string, env map[string]string, help func(path []string) (
 	if err != nil || parsed.help {
 		return ghTarget{}, err
 	}
+	if why, refused := ghRefusedLeaves[strings.Join(cmd.path, " ")]; refused {
+		return ghTarget{}, fmt.Errorf("`gh %s` %s, so it sends nothing", strings.Join(cmd.path, " "), why)
+	}
 	sel := selectors{api: cmd.isAPI()}
 	if err := sel.fromCommand(cmd, parsed); err != nil {
 		return ghTarget{}, err
@@ -1028,4 +1044,78 @@ func readGhHelp(gh string, path []string) (string, error) {
 		return "", errors.New("gh printed no help")
 	}
 	return stdout.String(), nil
+}
+
+// ghRefusedLeaves are the gh commands `legion gh` refuses whatever their arguments, each with
+// why. `gh config set` writes the gh directory the call runs with, and gh 2.104.0 sends every
+// API request for github.com, with its token, to the host its `api_host` key names; its
+// `http_unix_socket` sends them through a socket; and gh writes a key it does not know all the
+// same, a token's `oauth_token` among them. No Legion role, skill or prompt runs it, and the
+// daemon is the one writer of these directories (ghconfig.WriteBundle).
+var ghRefusedLeaves = map[string]string{
+	"config set": "writes the gh directory's configuration, where api_host or http_unix_socket would send the token's requests somewhere other than github.com and any other key is written all the same; the daemon writes that directory, and no Legion role runs this command",
+}
+
+// ghRoutingKeys are the keys of a gh directory's files that send gh's requests, with the
+// directory's token, somewhere other than github.com: gh 2.104.0's api_host, read from a host's
+// block of hosts.yml, and http_unix_socket, read globally or per host. gh writes both with
+// `gh config set`, which ghRefusedLeaves refuses, but a pane's user can write its own gh files
+// between two of the daemon's refreshes, which put them back a minute later at most
+// (ghconfig.WriteBundle, the runtimes' gitHubRefreshInterval).
+var ghRoutingKeys = []string{"api_host", "http_unix_socket"}
+
+// ghCallDir is the gh directory a call runs with: the one its repositories route to, or the
+// pane's own GH_CONFIG_DIR for a call that names none.
+func ghCallDir(env map[string]string, target ghTarget) string {
+	if target.dir != "" {
+		return target.dir
+	}
+	return env["GH_CONFIG_DIR"]
+}
+
+// ghRoutingKey refuses the gh directory dir when its hosts.yml or config.yml holds a key of
+// ghRoutingKeys at any depth, naming the file and the key and never a value, so gh never runs with
+// a directory that would send its token elsewhere. A file that is not there holds none, and one
+// that does not parse is refused, since gh's reading of it is then not this one's.
+//
+// Its limit: it reads the files before gh does, so a pane that writes them between this check and
+// gh's own read wins that race. Such a pane can already read the token in the same files, so the
+// check guards against an induced `config set` or a stray edit, not against the pane itself.
+func ghRoutingKey(dir string) error {
+	for _, name := range []string{ghconfig.HostsFile, ghconfig.ConfigFile} {
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("cannot read %s: %w; it sends nothing", path, err)
+		}
+		var doc yaml.Node
+		if err := yaml.Unmarshal(data, &doc); err != nil {
+			return fmt.Errorf("%s does not parse as YAML, so it cannot be read for a key that sends gh's requests elsewhere; it sends nothing", path)
+		}
+		if key := ghRoutingKeyIn(&doc); key != "" {
+			return fmt.Errorf("%s sets %s, which sends gh's requests with this directory's token somewhere other than github.com, so it sends nothing; the daemon rewrites this file within a minute", path, key)
+		}
+	}
+	return nil
+}
+
+// ghRoutingKeyIn is the first key of ghRoutingKeys a mapping of node holds, at any depth, and "" for
+// none.
+func ghRoutingKeyIn(node *yaml.Node) string {
+	if node.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if slices.Contains(ghRoutingKeys, node.Content[i].Value) {
+				return node.Content[i].Value
+			}
+		}
+	}
+	for _, child := range node.Content {
+		if key := ghRoutingKeyIn(child); key != "" {
+			return key
+		}
+	}
+	return ""
 }
