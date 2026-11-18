@@ -1232,23 +1232,29 @@ host and the port it asked for, the address that host resolved to, and a `reason
 quotes them — an upstream failure's `error` can quote the names a service's certificate holds,
 which the service chose. A host is written as the command sent it, lowercased: a client that
 sends a Unicode name as its punycode (`xn--…`) form, as Go's and curl's do, has the punycode
-written, and the proxy converts no name of its own. A cut to 256 bytes keeps a line small, and
-lowercasing a host keeps it one spelling; neither is redaction. What keeps a placeholder off
-every line the airlock's proxy port writes, a refusal line among them, is that each text the
-line holds has each placeholder written whole — `agent-secrets-placeholder-` and the letters and
-digits after it, in any case — replaced by `[placeholder]` before the line is written. So no line
-holds a placeholder as it was minted or lowercased: a command that writes its placeholder into
-its request's path, its `X-Correlation-Id` or the host it asks for, or a service that names it in
-its certificate, has `[placeholder]` written there. A placeholder encoded on purpose — its
-characters percent-escaped, written in fullwidth letters, or its 32 characters after the prefix
-written without it — is text the proxy cannot tell from any other, and is written as it came;
-that is out of the mask's scope, since a command that wants its placeholder sent somewhere can
-send it through a tunnel, and the mask is for a placeholder written as it is. No line holds a
-secret's value: no field is read from a request's body or from a header the swap puts a value
-in. The API port's refusal line takes its `correlation_id` from the caller's `X-Correlation-Id`
-too, and masks no placeholder; its line holds no message text, and names the code. Each answer,
-a refusal or not, also counts in `broker_answers_total` ([Metrics](#metrics)), which is the one
-record of the API port's `429` and of a device grant's poll answers.
+written. A plain-HTTP request whose URL names a Unicode host is the one place the proxy's side
+converts it: net/http's transport dials the punycode form, so the line of the transport's dial —
+the tunnel's, or a failed dial's when the transport's own check or dial fails — names
+`xn--caf-dma.example.net`, while the line of the proxy's own check before it, the refusal line
+and `airlock proxy: upstream` name `café.example.net`. A cut to 256 bytes keeps a line small,
+and lowercasing a host keeps it one spelling; neither is redaction. What keeps a placeholder off
+every line the airlock's proxy port writes — a refusal line, and net/http's and httputil's own
+`airlock proxy: net/http` lines, among them — is that each text the line holds has each
+placeholder written whole — `agent-secrets-placeholder-` and the letters and digits after it, in
+any case — replaced by `[placeholder]` before the line is written. So no line holds a placeholder
+as it was minted or lowercased: a command that writes its placeholder into its request's path,
+its `X-Correlation-Id` or the host it asks for, or a service that names it in its certificate or
+in a trailer of its answer, has `[placeholder]` written there. A placeholder encoded on purpose —
+its characters percent-escaped, written in fullwidth letters, a separator written after the
+prefix, an invisible character written inside it, or its 32 characters after the prefix written
+alone — is text the proxy cannot tell from any other, and is written as it came; that is out of
+the mask's scope, since a command that wants its placeholder sent somewhere can send it through
+a tunnel, and the mask is for a placeholder written as it is. No line holds a secret's value: no
+field is read from a request's body or from a header the swap puts a value in. The API port's
+refusal line takes its `correlation_id` from the caller's `X-Correlation-Id` too, and masks no
+placeholder; its line holds no message text, and names the code. Each answer, a refusal or not,
+also counts in `broker_answers_total` ([Metrics](#metrics)), which is the one record of the API
+port's `429` and of a device grant's poll answers.
 
 On the API port, an answer that no refusal line records names its id in no line: a `429`, the two
 answers of a device login's poll, and every answer of 500 and above. `agent-secrets` prints the id

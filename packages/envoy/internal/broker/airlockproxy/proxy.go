@@ -222,6 +222,12 @@ type Server struct {
 	// forwards, a socket of its own for each (New).
 	upstream *http.Transport
 	forward  *http.Transport
+	// errorLog is the log.Logger net/http and httputil write their own lines through: both
+	// servers' ErrorLog and both ReverseProxies' (servePlain, serveBound). It writes into log, so
+	// each of those lines is masked (maskedHandler) and cut (slogWriter) as every line of this
+	// package is; a ReverseProxy left without one writes to the standard logger, neither masked
+	// nor cut, and an error it logs can quote what the service sent, its trailers among it.
+	errorLog *log.Logger
 	serveOne sync.Once
 
 	// conns is the CONNECT target and the grant of each decrypted connection, which
@@ -365,7 +371,7 @@ func New(o Options) *Server {
 	// net/http writes a line of its own through ErrorLog: for example for a connection that fails
 	// before a handler sees it, for a handler's panic it recovers, or for an accept that failed;
 	// routing it through the broker's logger keeps it out of a bare stderr write.
-	errorLog := log.New(slogWriter{log: s.log}, "", 0)
+	s.errorLog = log.New(slogWriter{log: s.log}, "", 0)
 	s.outer = &http.Server{
 		// Every answer a handler of this server writes is recorded (record): a CONNECT the
 		// proxy takes over answers 200 on the connection itself. net/http's own answers, which
@@ -374,7 +380,7 @@ func New(o Options) *Server {
 		Handler:           s.record(http.StatusOK, s.serveProxy),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       o.Idle,
-		ErrorLog:          errorLog,
+		ErrorLog:          s.errorLog,
 	}
 	s.inner = &http.Server{
 		// Every answer a handler of this server writes is recorded (record): an upgrade
@@ -385,7 +391,7 @@ func New(o Options) *Server {
 		Handler:           s.record(http.StatusSwitchingProtocols, s.serveBound),
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       o.Idle,
-		ErrorLog:          errorLog,
+		ErrorLog:          s.errorLog,
 		// The two protocols connectBound's TLS offers, named rather than left to net/http's
 		// default, which a TLSNextProto map set beside it would narrow to HTTP/1 alone. The
 		// one switch that still takes HTTP/2 away is GODEBUG=http2server=0, which net/http
@@ -870,6 +876,9 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 	proxy := &httputil.ReverseProxy{
 		Transport:     s.forward,
 		FlushInterval: -1,
+		// httputil's own lines - a body copy that failed, which quotes what the service sent -
+		// go through this package's log rather than the standard logger (Server.errorLog).
+		ErrorLog: s.errorLog,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = r.URL
 			pr.Out.Header.Del("Proxy-Authorization")

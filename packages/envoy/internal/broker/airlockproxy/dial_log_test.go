@@ -31,6 +31,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestATunnelWritesOneLineNamingItsCallerAndAddress: a tunnel carries bytes the proxy never reads, so the
@@ -531,13 +532,16 @@ func TestAFailedDialWritesOneLineNamingItsClass(t *testing.T) {
 // whose authority is its Host header, the port of such a Host header, the host and the zone of a
 // plain-HTTP URL, the Host header of a plain-HTTP request and of a request on a bound connection,
 // the path of a refused call and of a carried one, the method of a request that is no proxy
-// request, and the name a forwarded https service's certificate holds, which the upstream line's
-// error quotes in its own case. Between them they write every line the proxy writes about a
-// request: a tunnel's, a forwarded plain-HTTP request's, each class of failed dial, an upstream
-// failure's, a refusal of the outer server and of a bound call, and a carried call's. It reads
-// every record the proxy wrote, its message and each of its fields, and
-// no line may hold the placeholder in any case: the host is written lowercased, and lowercasing
-// is no redaction, so every line writes placeholderMark where its text held one (maskedHandler).
+// request, the name a forwarded https service's certificate holds, which the upstream line's
+// error quotes in its own case, and the trailer line a forwarded service sends, which the error
+// httputil logs when it cannot read it quotes. Between them they write every line the proxy
+// writes about a request: a tunnel's, a forwarded plain-HTTP request's, each class of failed
+// dial, an upstream failure's, httputil's own, a refusal of the outer server and of a bound call,
+// and a carried call's. It reads every record the proxy wrote, its message and each of its
+// fields, and everything written to the standard logger while it ran, and no line may hold the
+// placeholder in any case: the host is written lowercased, and lowercasing is no redaction, so
+// every line writes placeholderMark where its text held one (maskedHandler), and nothing of the
+// proxy's may reach the standard logger, which nothing masks.
 func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 	const (
 		plantedHeader = "planted-header-value-nothing-may-log"
@@ -545,7 +549,12 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 		zoned         = "2001:db8::1"
 		plainHost     = "plain.example.net"
 		certHost      = "cert.example.net"
+		trailerHost   = "trailer.example.net"
 	)
+	// The standard logger, captured as cmd/broker routes it, into the default slog handler: a
+	// line the proxy wrote there would be written as it came.
+	var stdlog logtest.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&stdlog, nil))
 	r := newRig(t, Options{})
 	unwired := netip.MustParseAddr("93.184.216.44")
 	placeholderHost := workerPlaceholder + ".example.net"
@@ -619,6 +628,52 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 	if answer, body := r.requestRaw(http.MethodGet, "https://"+certHost+"/x", certHost, basic(workerPlaceholder), correlation); answer.StatusCode != http.StatusBadGateway {
 		t.Fatalf("the forward to a service whose certificate names another host answered %d %q; want 502", answer.StatusCode, body)
 	}
+	// A forwarded plain-HTTP request to a service whose chunked answer ends in a trailer line
+	// that is the placeholder and no header at all: the transport cannot read it, and httputil
+	// logs the error, which quotes the line.
+	trailers, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("bind the trailer service: %v", err)
+	}
+	t.Cleanup(func() { trailers.Close() })
+	go func() {
+		for {
+			conn, err := trailers.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				if _, err := http.ReadRequest(bufio.NewReader(conn)); err != nil {
+					return
+				}
+				io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n"+workerPlaceholder+"\r\n\r\n")
+			}()
+		}
+	}()
+	r.addresses[trailerHost] = []netip.Addr{netip.MustParseAddr("93.184.216.41")}
+	r.dialTo[net.JoinHostPort(trailerHost, "80")] = trailers.Addr().String()
+	trailed, err := net.Dial("tcp", r.addr)
+	if err != nil {
+		t.Fatalf("dial the proxy: %v", err)
+	}
+	trailed.SetDeadline(time.Now().Add(20 * time.Second))
+	if _, err := io.WriteString(trailed, "GET http://"+trailerHost+"/x HTTP/1.1\r\nHost: "+trailerHost+"\r\n"+basic(workerPlaceholder)+correlation+"Connection: close\r\n\r\n"); err != nil {
+		t.Fatalf("write the request to the trailer service: %v", err)
+	}
+	// The answer is cut short when the copy fails, so it is read to its end and not parsed.
+	io.Copy(io.Discard, trailed)
+	trailed.Close()
+	copyFailed := func() bool {
+		return strings.Contains(stdlog.String(), "during body copy") || slices.ContainsFunc(r.logs.lines(netHTTPMessage), func(line logLine) bool {
+			return strings.Contains(fmt.Sprint(line.fields["error"]), "during body copy")
+		})
+	}
+	for deadline := time.Now().Add(10 * time.Second); !copyFailed(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("no line says the copy of the trailer service's answer failed")
+		}
+	}
 	// The placeholder as the method of a request that is no proxy request at all.
 	r.requestRaw(workerPlaceholder, "/x", "proxy.example.net", correlation)
 	r.logs.tunnelsAtLeast(t, 2)
@@ -665,6 +720,16 @@ func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
 		return line.fields["host"] == certHost && strings.Contains(fmt.Sprint(line.fields["error"]), placeholderMark+".example.net")
 	}) {
 		t.Errorf("no upstream line for %s quotes the certificate's name as %q: %v", certHost, placeholderMark+".example.net", upstream)
+	}
+	netHTTP := r.logs.lines(netHTTPMessage)
+	if !slices.ContainsFunc(netHTTP, func(line logLine) bool {
+		text := fmt.Sprint(line.fields["error"])
+		return strings.Contains(text, "during body copy") && strings.Contains(text, placeholderMark)
+	}) {
+		t.Errorf("no net/http line says the body copy failed with the trailer written as %q: %v", placeholderMark, netHTTP)
+	}
+	if written := stdlog.String(); strings.Contains(strings.ToLower(written), lowered) {
+		t.Errorf("the standard logger was written the placeholder, which nothing masks: %q", written)
 	}
 
 	// The control: the planted values really were sent, so a line that held one would have had
@@ -835,6 +900,47 @@ func TestADialWhoseCommandLeftWritesOneLine(t *testing.T) {
 			if got := lines[0].fields[field]; got != want {
 				t.Errorf("the dial's line's %s = %v; want %v (whole line: %v)", field, got, want, lines[0].fields)
 			}
+		}
+	})
+
+	// The same with a first address that times out on its own: the dialer's own Timeout, whose
+	// error is context.DeadlineExceeded, as the production dialer's is (New). A timeout is the
+	// service's failure, not the command's going, so the line keeps unreachable.
+	t.Run("a dial whose first address timed out before its command left", func(t *testing.T) {
+		const slowHost = "slow.example.net"
+		slow := netip.MustParseAddr("93.184.216.45")
+		r := newRig(t, Options{})
+		r.addresses[slowHost] = []netip.Addr{slow, r.addresses[echoHost][0]}
+		first := net.JoinHostPort(slow.String(), "443")
+		r.dialTo[first] = r.dialTo[net.JoinHostPort(echoHost, "443")]
+		r.dialTimeout = map[string]time.Duration{first: time.Nanosecond}
+		held := make(chan struct{})
+		wait := until(held)
+		var dials atomic.Int64
+		r.holdDial = func(ctx context.Context) context.Context {
+			// The first address times out at once; the second is held.
+			if dials.Add(1) == 2 {
+				wait(ctx)
+			}
+			return ctx
+		}
+		leaveFor(t, r, held, net.JoinHostPort(slowHost, "443"))
+		lines := r.logs.dialFailuresAtLeast(t, 1)
+		if len(lines) != 1 {
+			t.Fatalf("the proxy wrote %d failed-dial lines for one dial; want one: %v", len(lines), lines)
+		}
+		for field, want := range map[string]any{
+			"host": slowHost, "failure": dialUnreachable, "resolved": int64(2),
+			"address": first + " " + net.JoinHostPort(r.addresses[echoHost][0].String(), "443"),
+		} {
+			if got := lines[0].fields[field]; got != want {
+				t.Errorf("the dial's line's %s = %v; want %v (whole line: %v)", field, got, want, lines[0].fields)
+			}
+		}
+		// The control: the first dial did time out, so the row is about a timeout and not
+		// about a dial that failed some other way.
+		if reason, _ := lines[0].fields["reason"].(string); !strings.Contains(reason, "i/o timeout") {
+			t.Errorf("the dial's reason %q names no timeout; want the first address's i/o timeout", reason)
 		}
 	})
 }

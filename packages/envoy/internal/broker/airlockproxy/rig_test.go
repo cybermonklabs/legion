@@ -457,6 +457,10 @@ type rig struct {
 	// open as one that won that race does.
 	holdResolve func(ctx context.Context)
 	holdDial    func(ctx context.Context) context.Context
+	// dialTimeout is the dialer's own Timeout for each address a row names it for, as the
+	// production dialer has one (New): how a row has a dial time out on its own, with the error
+	// net.Dialer itself answers, rather than end because its command went away.
+	dialTimeout map[string]time.Duration
 	// dialledFor is the grant each socket the proxy opened was dialled for, as the lines of that
 	// dial name it (callerOfContext), by the socket's own local address, which is the remote
 	// address the service it reached reads each request on it as: how a row reads which caller a
@@ -589,7 +593,7 @@ func (r *rig) dial(ctx context.Context, network, addr string) (net.Conn, error) 
 	if !ok {
 		return nil, fmt.Errorf("this test dials no %s", addr)
 	}
-	var dialer net.Dialer
+	dialer := net.Dialer{Timeout: r.dialTimeout[addr]}
 	conn, err := dialer.DialContext(ctx, network, to)
 	if err != nil {
 		return nil, err

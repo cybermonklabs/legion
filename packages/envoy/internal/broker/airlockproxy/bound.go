@@ -458,6 +458,9 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	refusedByCut := false
 	proxy := &httputil.ReverseProxy{
 		Transport: s.upstream,
+		// httputil's own lines - a body copy that failed, which quotes what the service sent -
+		// go through this package's log rather than the standard logger (Server.errorLog).
+		ErrorLog: s.errorLog,
 		// -1: every write is flushed as it arrives, so a streamed answer - a long poll, a
 		// server-sent event stream, a large download - reaches the command as the service
 		// sends it rather than in buffers. An answer with no body is the one exception
