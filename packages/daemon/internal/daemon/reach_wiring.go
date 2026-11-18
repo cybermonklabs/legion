@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -45,6 +47,39 @@ func (w *workflowRuntime) reachNotify() reachNotify {
 		return reachNotify{}
 	}
 	return reachNotify{tell: w.tellControllerQueued, enqueue: w.enqueueReachNotice}
+}
+
+// projectMark is the mark of a controller notice whose told record is the project's own
+// (reachMark.project): n, which its caller fills field by field, with notice encoded into it as
+// the controller is told it. It is nil, and marks nothing, for a notice that does not encode.
+func projectMark(log *slog.Logger, n store.ReachProjectNotice, notice record.ControllerNotice) []reachMark {
+	encoded, err := json.Marshal(notice)
+	if err != nil {
+		log.Error("controller notice: a notice did not encode, so its record is not written with it", "kind", notice.Kind, "error", err)
+		return nil
+	}
+	n.Notice = encoded
+	return []reachMark{{project: &n}}
+}
+
+// tellQueued queues notice on issue through tell, with the records marks says it marks told
+// written in the same transaction, and answers whether it queued it: false for a deployment with
+// no workflow (tell nil), a controller not registered, a notice of the same kind still waiting, and
+// a store that refused either write, each of which marks nothing and which the caller tells again
+// at a later sweep. The reach keeper and the lock-out notices both tell through it.
+func tellQueued(ctx context.Context, log *slog.Logger, tell func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error),
+	notice record.ControllerNotice, issue string, marks ...reachMark) bool {
+	if tell == nil {
+		return false
+	}
+	told, err := tell(ctx, notice, issue, marks)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Error("controller notice: a notice was not written; telling it again at the next sweep", "kind", notice.Kind, "error", err)
+		}
+		return false
+	}
+	return told
 }
 
 // tellControllerQueued queues one controller notice in a transaction of its own and answers

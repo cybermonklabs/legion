@@ -79,11 +79,12 @@ func relaunchGeneration(generation uint64) *int64 {
 	return &g
 }
 
-// ReachProjectNotice is the project's own record of one of the reach keeper's notices that speak
-// for no claim's reach record (R3, R5): the notice that Envoy lists no live session, one for the
-// project, and the notice of a claim's newer process locked out by an older one, one for each claim
-// (the table reach_project_notices). A per-claim notice's told mark is the claim's reach record
-// (PutClaimReachTx); these have no such record, so they have this one.
+// ReachProjectNotice is the project's own record of a controller notice that speaks for no claim's
+// reach record (R3, R5): the reach keeper's notice that Envoy lists no live session, one for the
+// project, and the lock-out notices' notice of a claim's newer process locked out by an older one,
+// one for each claim (the table reach_project_notices). A claim's own reach notice has its told
+// mark in the claim's reach record (PutClaimReachTx); these have no such record, so they have this
+// one.
 //
 // Told is whether the controller's notice was queued, written in that notice's own transaction
 // (PutReachProjectNoticeTx), so a daemon that ends after it never tells it again. A lock-out

@@ -125,11 +125,11 @@ func (l *lockOutNotices) resend(ctx context.Context) {
 	if l.load(ctx) {
 		for token, untold := range l.kept {
 			if !l.open(token, untold) {
-				l.log.Info("reach: a lock-out ended before the controller's notice of it was queued; it is told no more", "claim", token)
+				l.log.Info("lock-out: a lock-out ended before the controller's notice of it was queued; it is told no more", "claim", token)
 				delete(l.kept, token)
 				if l.records != nil {
 					if err := l.records.DeleteReachProjectNotice(ctx, l.project, string(record.WorkerLockedOutNotice), token); err != nil && ctx.Err() == nil {
-						l.log.Error("reach: the record of a lock-out that ended untold was not deleted", "claim", token, "error", err)
+						l.log.Error("lock-out: the record of a lock-out that ended untold was not deleted", "claim", token, "error", err)
 					}
 				}
 				continue
@@ -149,12 +149,16 @@ func (l *lockOutNotices) resend(ctx context.Context) {
 // written to the project's record as kept where keep says so. The caller holds mu.
 func (l *lockOutNotices) tellNow(ctx context.Context, token claim.Token, untold untoldLockOut, keep bool) {
 	if l.told[token] == [2]uint64{untold.newer, untold.older} {
-		l.log.Info("reach: the controller was told of this lock-out already; it is not told again", "claim", token,
+		l.log.Info("lock-out: the controller was told of this lock-out already; it is not told again", "claim", token,
 			"newer", untold.newer, "older", untold.older)
 		delete(l.kept, token)
 		return
 	}
-	if tellQueued(ctx, l.log, l.tell, untold.notice, untold.issue, projectNoticeRecord(l.log, l.project, untold.notice, untold.issue, token, untold.newer, untold.older, true)...) {
+	kept := store.ReachProjectNotice{Project: l.project, Kind: string(untold.notice.Kind), Claim: token,
+		Newer: untold.newer, Older: untold.older, Issue: untold.issue}
+	told := kept
+	told.Told = true
+	if tellQueued(ctx, l.log, l.tell, untold.notice, untold.issue, projectMark(l.log, told, untold.notice)...) {
 		l.told[token] = [2]uint64{untold.newer, untold.older}
 		delete(l.kept, token)
 		return
@@ -162,12 +166,12 @@ func (l *lockOutNotices) tellNow(ctx context.Context, token claim.Token, untold 
 	if !keep || l.records == nil {
 		return
 	}
-	kept := projectNoticeRecord(l.log, l.project, untold.notice, untold.issue, token, untold.newer, untold.older, false)
-	if len(kept) == 0 {
+	marks := projectMark(l.log, kept, untold.notice)
+	if len(marks) == 0 {
 		return
 	}
-	if err := l.records.PutReachProjectNotice(ctx, *kept[0].project); err != nil && ctx.Err() == nil {
-		l.log.Error("reach: a lock-out notice the controller's lane did not queue was not kept in the project's record; this daemon still keeps it",
+	if err := l.records.PutReachProjectNotice(ctx, *marks[0].project); err != nil && ctx.Err() == nil {
+		l.log.Error("lock-out: a lock-out notice the controller's lane did not queue was not kept in the project's record; this daemon still keeps it",
 			"claim", token, "error", err)
 	}
 }
@@ -188,7 +192,7 @@ func (l *lockOutNotices) load(ctx context.Context) bool {
 	records, err := l.records.ReachProjectNotices(ctx, l.project)
 	if err != nil {
 		if ctx.Err() == nil {
-			l.log.Error("reach: the project's lock-out records could not be read; no lock-out notice is told until they are", "error", err)
+			l.log.Error("lock-out: the project's lock-out records could not be read; no lock-out notice is told until they are", "error", err)
 		}
 		return false
 	}
@@ -203,7 +207,7 @@ func (l *lockOutNotices) load(ctx context.Context) bool {
 		}
 		var notice record.ControllerNotice
 		if err := json.Unmarshal(n.Notice, &notice); err != nil {
-			l.log.Error("reach: a kept lock-out notice did not decode; it is told no more", "claim", n.Claim, "error", err)
+			l.log.Error("lock-out: a kept lock-out notice did not decode; it is told no more", "claim", n.Claim, "error", err)
 			continue
 		}
 		if _, kept := l.kept[n.Claim]; !kept {
@@ -228,40 +232,6 @@ func (l *lockOutNotices) held(token claim.Token) (stream.LockOut, bool) {
 		return stream.LockOut{}, false
 	}
 	return l.lockedOut(token)
-}
-
-// projectNoticeRecord is the project's own record of notice, a notice that speaks for no claim's
-// reach record, told or kept untold: of claim token ("" for the no-live notice), naming the
-// lock-out of generations newer and older (none for the no-live notice), and queued on issue. It
-// is nil, and marks nothing, for a notice that does not encode.
-func projectNoticeRecord(log *slog.Logger, project string, notice record.ControllerNotice, issue string, token claim.Token, newer, older uint64, told bool) []reachMark {
-	encoded, err := json.Marshal(notice)
-	if err != nil {
-		log.Error("reach: a notice did not encode, so its record is not written with it", "kind", notice.Kind, "error", err)
-		return nil
-	}
-	return []reachMark{{project: &store.ReachProjectNotice{Project: project, Kind: string(notice.Kind), Claim: token,
-		Newer: newer, Older: older, Issue: issue, Notice: encoded, Told: told}}}
-}
-
-// tellQueued queues notice on issue through tell, with the records marks says it marks told
-// written in the same transaction, and answers whether it queued it: false for a deployment with
-// no workflow (tell nil), a controller not registered, a notice of the same kind still waiting, and
-// a store that refused either write, each of which marks nothing and which the caller tells again
-// at a later sweep.
-func tellQueued(ctx context.Context, log *slog.Logger, tell func(context.Context, record.ControllerNotice, string, []reachMark) (bool, error),
-	notice record.ControllerNotice, issue string, marks ...reachMark) bool {
-	if tell == nil {
-		return false
-	}
-	told, err := tell(ctx, notice, issue, marks)
-	if err != nil {
-		if ctx.Err() == nil {
-			log.Error("reach: a controller notice was not written; telling it again at the next sweep", "kind", notice.Kind, "error", err)
-		}
-		return false
-	}
-	return told
 }
 
 // supervisedClaimOf is sup's claim of a token, as its machine holds it, for the lock-out
