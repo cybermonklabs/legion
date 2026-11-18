@@ -353,8 +353,9 @@ var routeAuthError = regexp.MustCompile(`^(\S+) - rid:(\d+) - authentication err
 
 // routeClosed finds the message a server logs, at INF, when a route connection closes, with the
 // connection's id and its reason (client.go:2128-2130). The reason ends with "- Remote: <name>"
-// once the peer's INFO named a server, which a connection that formed no route never did: a login
-// the credential refused, a peer that waited out the auth timeout, or one that closed at once.
+// once the peer's INFO named a server with a name that is not empty; a login the credential
+// refused, a peer that waited out the auth timeout or closed at once, and a peer that named itself
+// with an empty name end without it.
 var routeClosed = regexp.MustCompile(`^\S+ - rid:(\d+) - Router connection closed: (.+)$`)
 
 // remoteTag is in a route's close line once its peer named a server.
@@ -582,8 +583,8 @@ func checkRoutes(ctx context.Context, r *Report, src Source, s server, ips map[s
 // the container's start; every other line in the logger's form carries the start line's process
 // id and a time that agrees with the runtime's, or it was forged; no reload failed and no INF line
 // the server wrote of itself holds a URL with a user and password; from the reload that loaded
-// authorization on, every route connection it names has a pod IP, or else formed no route (the
-// credential refused its login, or it closed before its peer named a server); and, when split, it
+// authorization on, every route connection it names has a pod IP, or else its peer named no server
+// (the credential refused its login, or its close line names no server); and, when split, it
 // names the failed route logins from pod IPs that split the mesh. With no reload that changed the
 // cluster block in the log, the whole log is judged when sinceStart says authorization was in
 // force from the server's start (or that is not known), and no route connection when it was never
@@ -684,8 +685,10 @@ func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[stri
 	}
 	window := lines[start:]
 
-	// Each connection that formed no route, by its id: the credential refused its login, or it
-	// closed before its peer named a server. A close line that names one means a route formed.
+	// Each connection whose peer named no server, by its id: the credential refused its login, or
+	// its close line names no server. A close line that names one means a route formed. One that
+	// names none may have formed one too: a peer can send an empty server name, and nats-server tags
+	// the close line only with a name that is not empty (client.go:2124).
 	refused, named, unnamed := map[string]bool{}, map[string]bool{}, map[string]bool{}
 	logins := map[string]int{}
 	var loginOrder []string
@@ -747,11 +750,12 @@ func checkLog(ctx context.Context, r *Report, src Source, s server, ips map[stri
 			accepted[host], host, host)
 	}
 	for _, host := range noRouteOrder {
-		r.add(pod, Unknown, "its log names %d route connection(s) with %s since it loaded authorization that formed no route (%d whose login the "+
-			"route credential refused, %d that closed before its peer named a server), and %s is no pod of the hub: one a peer opened carried no "+
-			"password, but the log does not say which side opened a connection, and on one the hub opened it sent the password before the peer "+
-			"named itself (route.go:2087-2094), so the check cannot clear %s; find what ran there, and treat the password as read unless it is "+
-			"accounted for", refusedFrom[host]+unnamedFrom[host], host, refusedFrom[host], unnamedFrom[host], host, host)
+		r.add(pod, Unknown, "its log names %d route connection(s) with %s since it loaded authorization whose peer named no server (%d whose login "+
+			"the route credential refused, %d whose close line names no server), and %s is no pod of the hub: such a connection can still have "+
+			"carried the password, since on one the hub opened it sent the password before the peer named itself (route.go:2087-2094), and a "+
+			"peer can name itself with an empty name, which the close line does not show; and the log does not say which side opened it, so the "+
+			"check neither condemns nor clears %s. Find what ran there, and treat the password as read unless it is accounted for",
+			refusedFrom[host]+unnamedFrom[host], host, refusedFrom[host], unnamedFrom[host], host, host)
 	}
 	if split && len(loginOrder) > 0 {
 		var counts []string

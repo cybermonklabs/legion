@@ -22,7 +22,7 @@ const usageText = `usage: envoy-infra routes record --namespace <ns> --statefuls
     or may have been handed the password, or a log line may hold it (treat the route password as
     read, cut its reach, rotate the password, then record and check again); 2 when it could not read
     all it needs, when authorization is not in force, when the mesh is not whole or the servers do
-    not hold one password, when a route connection from another address formed no route, when the
+    not hold one password, when a route connection from another address named no server, when the
     log holds a line in the server's form the server did not write, or when a pod changed during
     the check.
 `

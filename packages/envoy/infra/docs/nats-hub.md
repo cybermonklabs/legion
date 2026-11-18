@@ -1158,7 +1158,7 @@ port-forward to 8222, its route port through a port-forward to 6222, and its nat
 log as `kubectl logs --timestamps` gives it, then reads the pods again. It exits 0 when every
 rule below holds; 1 when one shows the password may be read; and 2 when it could not read all it
 needs, when authorization is not yet in force, when the mesh is not whole or the servers do not
-hold one password, when a route connection from another address formed no route, when the log
+hold one password, when a route connection from another address named no server, when the log
 holds a line the server did not write, or when a pod changed during the check. It prints no
 password, since it never has one. So anything that can reach a pod's port 6222 can keep the
 check from reaching 0, though not make it pass.
@@ -1181,9 +1181,14 @@ timed at the container's start, and with the log cut at it the check said clean.
 reads the time the container runtime read each line at, which no process in the pod sets, and a
 line in the logger's form is the server's only when it carries the start line's process id and
 its logger time is within 2 s of the runtime's. Any other is exit 2, and no rule reads it. A peer
-that guesses the process id and writes the current time passes that test; such a line can make
+that guesses the process id and writes the current time passes that test. Such a line can make
 the check stricter, and can turn exit 1 for that peer's own connections into exit 2, but cannot
-make it pass.
+make it pass, on one condition: authorization loads more than 10 s after each pod's container
+started, which the `env` roll and the two applies after it give, each one after the one before
+has finished. Within those 10 s a reader with the password could forge a start line the start
+rule takes. Measured in this change's review: env, the record, routes, authorization and the
+reader within 4 s of the start let a forged start line pass; the same line written more than
+11 s after the start gave exit 1.
 
 - **Every route is the hub's own.** Every route's `ip` is one of the pod IPs and every `remote_id`
   another pod's `server_id`, and each pod has a route to each of its peers. A route's
@@ -1203,15 +1208,21 @@ make it pass.
   and the `env` roll gives each new pod a new IP, so the logs of the pods it rolled first name
   the old IPs of the ones it rolled after. A log in which no reload loaded authorization is
   judged whole when the route port requires authorization, since the server then had it from its
-  start. A connection from another address that formed no route is exit 2, not 1: one whose
-  login the credential refused (`authentication error` on its `rid`), or one that closed before
-  its peer named a server, whose close line has no `- Remote:` (it closed at once, waited out the
-  auth timeout, or sent only part of a CONNECT). A connection a peer opens and that forms no route
-  carries no password, but the log does not say which side opened a connection, and on one the
-  hub opens it sends the password before the peer names itself (`server/route.go:2087-2094`), so
-  the check cannot clear it. Find what ran at that address, and treat the password as read unless
-  it is accounted for. Exit 1 there would let any process that reaches 6222 force a rotation,
-  whose `env` and `routes` applies open the routes to it again.
+  start. A connection from another address whose peer named no server is exit 2, not 1: one
+  whose login the credential refused (`authentication error` on its `rid`), or one whose close
+  line names no server, with no `- Remote:` (it closed at once, waited out the auth timeout, sent
+  only part of a CONNECT, or named itself with an empty name, which the close line does not show,
+  `server/client.go:2124`). Such a connection can still have carried the password: on one the
+  hub opens it sends the password before the peer names itself (`server/route.go:2087-2094`), and
+  a peer that names itself with an empty name holds a route like any other; measured in this
+  change's review, such a peer the hub dialed got the password 4 times. The log does not say
+  which side opened a connection, so the check neither condemns nor clears it. Find what ran at
+  that address, and treat the password as read unless it is accounted for. Exit 1 there would let
+  any process that reaches 6222 force a rotation, whose `env` and `routes` applies open the routes
+  to it again. One exception: during `env` and `routes`, a process that reaches 6222 and guesses a
+  server's process id can still force exit 1, by a forged `Removed route` line with a password in
+  it, which the server's process id and the current time let the check read as the server's
+  (above).
 - **The log reaches back to the `env` roll.** Each pod's `uid`, `restartCount` and `startedAt`
   are the ones `routes record` saved, its log begins with `Starting nats-server`
   (`server/server.go:2295`) in the logger's form, and the container runtime read that line from
@@ -1311,9 +1322,11 @@ and no password joins that hub; a restart during the check fails; and a refused 
 rotated log and a restart since the record each fail. A route peer's lines written through its
 server name before `authorization` are exit 2, not 1; a reader's start line written through its
 name and first in a cut log fails, whether it is timed at the container's start or now; three
-connections from other addresses that formed no route (closed at once, silent until the auth
-timeout, a partial CONNECT) are exit 2; a client's line naming a refusal of a held route with the
-password leaves exit 1; and a route peer whose name ends as a route connection's line passes. The
+connections from other addresses whose peer named no server (closed at once, silent until the
+auth timeout, a partial CONNECT) are exit 2, and so is a route peer with the password that names
+itself with an empty name, though a hub server held its route; a client's line naming a refusal
+of a held route with the password leaves exit 1; and a route peer whose name ends as a route
+connection's line passes. The
 staged servers' log lines are stamped with the time the test first saw each, as a container
 runtime stamps them.
 

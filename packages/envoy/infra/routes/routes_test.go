@@ -37,7 +37,9 @@ type fakeHub struct {
 	onLog     map[string]func()
 	unstamped map[string]bool
 	closed    bool
-	// mu guards infos, which atEnv sets while a fake route port's goroutine may read it.
+	// mu guards infos, answers and refused, which a fake route port's goroutine reads through
+	// RouteExchange while the test may set them (atEnv, setInfo, setAnswer): the race detector sees
+	// no order between the test's write and the goroutine's read, which a TCP connection orders.
 	mu sync.Mutex
 }
 
@@ -116,12 +118,12 @@ func stampedAt(at time.Time, line string) string {
 }
 
 func (h *fakeHub) RouteExchange(_ context.Context, pod string, send []byte) ([]byte, []byte, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	if err := h.refused[pod+" info"]; err != nil {
 		return nil, nil, err
 	}
-	h.mu.Lock()
 	info := []byte(h.infos[pod])
-	h.mu.Unlock()
 	if len(send) == 0 {
 		return info, nil, nil
 	}
@@ -136,6 +138,21 @@ func (h *fakeHub) RouteExchange(_ context.Context, pod string, send []byte) ([]b
 		return info, []byte(answer + "\r\n"), nil
 	}
 	return info, []byte("-ERR 'Authorization Violation'\r\n"), nil
+}
+
+// setInfo sets pod's route port INFO, under the lock a fake route port reads it with.
+func (h *fakeHub) setInfo(pod, info string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.infos[pod] = info
+}
+
+// setAnswer sets the answer to a route login ("<pod> no user" or "<pod> empty password"), under
+// the lock a fake route port reads it with.
+func (h *fakeHub) setAnswer(key, answer string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.answers[key] = answer
 }
 
 func (h *fakeHub) Close() error {
@@ -348,13 +365,13 @@ func TestCheckJudgesEachRouteAndLog(t *testing.T) {
 			routes.PasswordRead, "envoy-nats-0", "does not begin with the server's start line"},
 		{"a refused route login from another address since authorization", func(h *fakeHub) {
 			h.logs["envoy-nats-0"] += createdAs("10.9.9.5:50000", "21") + "\n" + refusedAs("10.9.9.5:50000", "21") + "\n"
-		}, routes.Unknown, "envoy-nats-0", "1 route connection(s) with 10.9.9.5 since it loaded authorization that formed no route (1 whose login the route credential refused, 0 that closed before its peer named a server)"},
+		}, routes.Unknown, "envoy-nats-0", "1 route connection(s) with 10.9.9.5 since it loaded authorization whose peer named no server (1 whose login the route credential refused, 0 whose close line names no server)"},
 		{"a route connection from another address that closed before its peer named a server", func(h *fakeHub) {
 			h.logs["envoy-nats-0"] += createdAs("10.9.9.6:50000", "23") + "\n" + closedAs("10.9.9.6:50000", "23", "Client Closed") + "\n"
-		}, routes.Unknown, "envoy-nats-0", "1 route connection(s) with 10.9.9.6 since it loaded authorization that formed no route (0 whose login the route credential refused, 1 that closed before its peer named a server)"},
+		}, routes.Unknown, "envoy-nats-0", "1 route connection(s) with 10.9.9.6 since it loaded authorization whose peer named no server (0 whose login the route credential refused, 1 whose close line names no server)"},
 		{"a route connection from another address that waited out the auth timeout", func(h *fakeHub) {
 			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n" + closedAs("10.9.9.7:50000", "24", "Authentication Timeout") + "\n"
-		}, routes.Unknown, "envoy-nats-1", "1 that closed before its peer named a server"},
+		}, routes.Unknown, "envoy-nats-1", "1 whose close line names no server"},
 		{"a route connection from another address that named a server before it closed", func(h *fakeHub) {
 			h.logs["envoy-nats-1"] += createdAs("10.9.9.7:50000", "24") + "\n" + closedAs("10.9.9.7:50000", "24", "Client Closed - Remote: rogue") + "\n"
 		}, routes.PasswordRead, "envoy-nats-1", "1 route connection(s) with 10.9.9.7 since it loaded authorization, and"},

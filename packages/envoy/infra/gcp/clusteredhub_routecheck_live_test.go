@@ -906,7 +906,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		}
 	})
 
-	t.Run("route connections from other addresses that formed no route", func(t *testing.T) {
+	t.Run("route connections from other addresses that named no server", func(t *testing.T) {
 		h, rec := staged(t, password)
 		report := routes.Check(ctx, h, rec)
 		require.Equal(t, routes.Clean, report.Verdict(), "control: before them; findings: %v", report.Findings)
@@ -936,8 +936,42 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		report = routes.Check(ctx, h, rec)
 		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
 		for s, host := range closes {
-			require.True(t, findingNames(report, routes.Unknown, s.name, "1 route connection(s) with "+host+" since it loaded authorization that formed no route",
-				"1 that closed before its peer named a server"), "%s: findings: %v", host, report.Findings)
+			require.True(t, findingNames(report, routes.Unknown, s.name, "1 route connection(s) with "+host+" since it loaded authorization whose peer named no server",
+				"1 whose close line names no server"), "%s: findings: %v", host, report.Findings)
+		}
+	})
+
+	t.Run("a route peer with the password that names itself with an empty name", func(t *testing.T) {
+		h, rec := staged(t, password)
+		s := h.servers[0]
+		f := dialFakeRoute(t, "127.0.0.5", s.route, "route", password, "")
+		f.awaitPong(t)
+		within(t, 10*time.Second, "the route in the server's /routez", func() error {
+			if ok, err := routedBy(s, "127.0.0.5", ""); err != nil || !ok {
+				return fmt.Errorf("%s does not hold the route yet (%v)", s.name, err)
+			}
+			return nil
+		})
+		f.close()
+		within(t, 10*time.Second, "the route's close", func() error {
+			if !slices.ContainsFunc(strings.Split(s.proc.Output.String(), "\n"), func(l string) bool {
+				return strings.Contains(l, "] 127.0.0.5:"+f.localPort()+" - rid:") && strings.Contains(l, "Router connection closed: ")
+			}) {
+				return fmt.Errorf("%s has not closed the route yet", s.name)
+			}
+			return nil
+		})
+		for _, l := range strings.Split(s.proc.Output.String(), "\n") {
+			if strings.Contains(l, "] 127.0.0.5:"+f.localPort()+" - rid:") && strings.Contains(l, "Router connection closed: ") {
+				require.NotContains(t, l, " - Remote: ", "control: the close line of a route that formed names no server")
+			}
+		}
+		report := routes.Check(ctx, h, rec)
+		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
+		require.True(t, findingNames(report, routes.Unknown, s.name, "1 route connection(s) with 127.0.0.5 since it loaded authorization whose peer named no server",
+			"can still have carried the password"), "findings: %v", report.Findings)
+		for _, finding := range report.Findings {
+			require.NotContains(t, finding.Detail, "formed no route", "the route formed, and %s held it: %v", s.name, finding)
 		}
 	})
 
@@ -969,7 +1003,7 @@ func TestRouteCheckRefusesARouteThatIsNotTheHubs(t *testing.T) {
 		require.True(t, findingNames(report, routes.PasswordRead, s.name, "1 route connection(s) with 127.0.0.5 since it loaded authorization, and"),
 			"findings: %v", report.Findings)
 		for _, finding := range report.Findings {
-			require.NotContains(t, finding.Detail, "formed no route", "the client's line is no refusal of the route's login: %v", finding)
+			require.NotContains(t, finding.Detail, "named no server", "the client's line is no refusal of the route's login: %v", finding)
 		}
 	})
 

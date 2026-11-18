@@ -232,7 +232,7 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 		src, _ := fakeKubeHub(t, h)
 		defer src.Close()
 		rec := recordOf(t, h)
-		h.infos["envoy-nats-1"] = authInfo("NSERVER1", false)
+		h.setInfo("envoy-nats-1", authInfo("NSERVER1", false))
 		report := routes.Check(context.Background(), src, rec)
 		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
 		require.Contains(t, fmt.Sprint(report.Findings), "envoy-nats-1: unknown: authorization is not in force: its route port's INFO has no auth_required")
@@ -242,7 +242,7 @@ func TestKubectlReadsTheHubThroughKubectl(t *testing.T) {
 		src, _ := fakeKubeHub(t, h)
 		defer src.Close()
 		rec := recordOf(t, h)
-		h.answers["envoy-nats-2 empty password"] = `-ERR 'Rejecting connection from gateway "envoy-infra-routes-probe" on the Route port'`
+		h.setAnswer("envoy-nats-2 empty password", `-ERR 'Rejecting connection from gateway "envoy-infra-routes-probe" on the Route port'`)
 		report := routes.Check(context.Background(), src, rec)
 		require.Equal(t, routes.Unknown, report.Verdict(), "findings: %v", report.Findings)
 		require.Contains(t, fmt.Sprint(report.Findings), "envoy-nats-2: unknown: authorization is not in force: its route port took a route login with the user route and no password")
