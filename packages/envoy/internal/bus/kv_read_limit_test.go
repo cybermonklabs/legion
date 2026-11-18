@@ -219,3 +219,43 @@ func TestAnAnsweredReadSetsTheReadLimitBack(t *testing.T) {
 			after.Round(time.Millisecond), heldReadBound, firstReadLimit)
 	}
 }
+
+// slowReads answers every read of a stream after delay: as a three-copy stream with no leader for a
+// read that began before leaderFrom, and with a leader for one that began after it. No server is
+// behind it.
+type slowReads struct {
+	nats.JetStreamContext
+	delay      time.Duration
+	leaderFrom time.Time
+}
+
+func (s *slowReads) StreamInfo(stream string, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
+	began := time.Now()
+	time.Sleep(s.delay)
+	info := &nats.StreamInfo{Config: nats.StreamConfig{Name: stream, Replicas: 3}, Cluster: &nats.ClusterInfo{Leader: "n1"}}
+	if began.Before(s.leaderFrom) {
+		info.Cluster.Leader = ""
+	}
+	return info, nil
+}
+
+// A server that answers every read late is waited for at a limit above its delay once it has
+// answered one read, so no later read is cut and read again: the limit after an answered read is
+// three times that read's time. Here every read takes 3 s, the stream has a leader for the reads
+// that begin 6 s in, and the wait has 13 s: the first answered read, at 7.5 s, finds no leader, and
+// the next, at 10.5 s, finds it. A limit set back to 630 ms after that first answer would cut the
+// next three reads (630 ms, 1.26 s, 2.52 s) and answer at 15 s, after the wait ended.
+func TestAServerThatAnswersEveryReadLateKeepsALimitAboveItsDelay(t *testing.T) {
+	start := time.Now()
+	reads := &slowReads{delay: 3 * time.Second, leaderFrom: start.Add(6 * time.Second)}
+	ctx, cancel := context.WithTimeout(t.Context(), 13*time.Second)
+	defer cancel()
+	err := awaitStreamLeader(ctx, reads, "open", "KV_envoy_slow_reads_test")
+	took := time.Since(start)
+	if err != nil {
+		t.Fatalf("a wait on a server that answers every read 3 s late = %v after %s, want the leader: the limit after an answered read stays above the server's delay", err, took.Round(time.Millisecond))
+	}
+	if took < 7*time.Second {
+		t.Fatalf("the wait answered after %s, before its first answered read could have found no leader: this row holds nothing", took.Round(time.Millisecond))
+	}
+}

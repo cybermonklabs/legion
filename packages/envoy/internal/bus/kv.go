@@ -299,8 +299,9 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 	// to name it. The name wraps the server's answer with %w (namedRequest), so awaitBucketApplied
 	// still reads the member's "bucket not found" through it (bucketMissing) and the switch below
 	// still reads nats.ErrBucketNotFound.
+	lookupLimits := newReadLimit(ctx)
 	lookUpBucket := func() (nats.KeyValue, error) {
-		kv, err := readAgain(ctx, lookup, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+		kv, err := readAgain(ctx, lookup, lookupLimits, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
 		return kv, namedRequest(lookup, err)
 	}
 	kv, err := lookUpBucket()
@@ -362,7 +363,7 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			step = "raise"
 		}
 		var info *nats.StreamInfo
-		info, err = readAgain(ctx, lookup, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+		info, err = readAgain(ctx, lookup, lookupLimits, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 		if err != nil {
 			err = fmt.Errorf("%s %s: %w", step, stream, namedRequest(lookup, err))
 			break
@@ -514,35 +515,38 @@ func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, step, stre
 // of the stream, so it is read again, as sentAgain sends a request again. Each read is waited for
 // up to its read limit and then abandoned, its answer dropped (Bounded), so one lost read costs the
 // start a fraction of a second rather than the caller's whole ten second wait after the fact it
-// waits for is true; a read in flight when ctx ends is abandoned too. The limit is firstReadLimit,
-// doubled after each read left unanswered (nextReadLimit), so a server that answers late is still
-// waited for, and back at firstReadLimit after each read the server answered, so lost reads early
-// in a wait do not make a lost read later in it cost more.
+// waits for is true; a read in flight when ctx ends is abandoned too. The limit starts at
+// firstReadLimit, doubles after each read left unanswered, so a server that answers late is still
+// waited for, and after each read the server answered is three times that read's time and never
+// under firstReadLimit (readLimit), so lost reads early in a wait do not make a lost read later in
+// it cost more, and a server that answers every read late is not cut and read again.
 func awaitStream(ctx context.Context, js nats.JetStreamContext, step, stream, want, waiting string, short func(*nats.StreamInfo) string) error {
 	behind := "no read of the stream answered yet"
-	first := firstReadLimitOf(ctx)
-	limit := first
+	limits := newReadLimit(ctx)
 	for attempt := 1; ; attempt++ {
-		readCtx, cancelRead := context.WithTimeout(ctx, limit)
+		wait := limits.limit
+		readCtx, cancelRead := context.WithTimeout(ctx, wait)
+		sent := time.Now()
 		info, answered, err := Bounded(readCtx, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+		took := time.Since(sent)
 		cancelRead()
 		switch {
 		case !answered && ctx.Err() != nil:
 			return fmt.Errorf("%s %s: %s when the wait ended, a read in flight: %s: %w", step, stream, want, behind, context.Cause(ctx))
 		case !answered:
-			behind = fmt.Sprintf("the stream's read drew no answer within %s", limit)
-			limit = nextReadLimit(limit)
+			behind = fmt.Sprintf("the stream's read drew no answer within %s", wait)
+			limits.lost()
 		case unanswered(err):
 			behind = "the stream's read drew no answer: " + err.Error()
-			limit = nextReadLimit(limit)
+			limits.lost()
 		case step == "create" && bucketMissing(err):
 			behind = "the member has not applied the create yet: " + err.Error()
-			limit = first
+			limits.answered(took)
 		case err != nil:
 			return fmt.Errorf("%s %s: read the stream: %w", step, stream, err)
 		default:
 			behind = short(info)
-			limit = first
+			limits.answered(took)
 		}
 		if behind == "" {
 			return nil
@@ -612,7 +616,7 @@ func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamCo
 	js = readsRefusals(conn, js)
 	stream := "KV_" + bucket
 	read := stream + " STREAM.INFO"
-	info, err := readAgain(ctx, read, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+	info, err := readAgain(ctx, read, newReadLimit(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 	if err != nil {
 		return 0, fmt.Errorf("set %s max age: %w", stream, namedRequest(read, err))
 	}
@@ -709,7 +713,8 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	}
 	if sendAgain {
 		send := open
-		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, request, send) }
+		openLimits := newReadLimit(ctx)
+		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, request, openLimits, send) }
 	}
 	var watch jetstream.KeyValue
 	if created {

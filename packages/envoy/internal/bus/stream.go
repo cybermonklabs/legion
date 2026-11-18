@@ -863,7 +863,8 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	defer cancel()
 	read, create := Stream+" STREAM.INFO", Stream+" STREAM.CREATE"
 	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
-	info, err := readAgain(ctx, read, readStream)
+	readLimits := newReadLimit(ctx)
+	info, err := readAgain(ctx, read, readLimits, readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = stampGeneration(cfg.Metadata)
@@ -890,7 +891,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return nil, refusedSettings(err, nil, &created)
 		}
-		info, err = readAgain(ctx, read, readStream)
+		info, err = readAgain(ctx, read, readLimits, readStream)
 	}
 	if unanswered(err) || ctx.Err() != nil {
 		return nil, namedRequest(read, err)
@@ -1094,8 +1095,9 @@ func keptSubjects(deployed, own []string) []string {
 // sent while the stream's group elects a leader can draw no answer, and a read sent then can be
 // lost too, so a read sent once could leave a raise that landed reported as one that failed.
 func updateStream(ctx context.Context, js nats.JetStreamContext, update *nats.StreamConfig, holds func(*nats.StreamInfo) bool) error {
+	readLimits := newReadLimit(ctx)
 	settled := func() bool {
-		again, err := readAgain(ctx, update.Name+" STREAM.INFO", func() (*nats.StreamInfo, error) { return js.StreamInfo(update.Name) })
+		again, err := readAgain(ctx, update.Name+" STREAM.INFO", readLimits, func() (*nats.StreamInfo, error) { return js.StreamInfo(update.Name) })
 		return err == nil && holds(again)
 	}
 	var err error
@@ -1248,11 +1250,13 @@ func sentAgain[T any](ctx context.Context, request string, send func() (T, error
 // the slowest answered took 209 ms, and 153 drew no answer within ten seconds, in 150 of the 448
 // rounds. Three times 209 ms is 627 ms.
 //
-// The limit decides no result: each read the server leaves unanswered doubles the next one's
-// limit, up to RequestTimeout (nextReadLimit), so a server that answers slower than the
+// The limit decides no result. Each read the server leaves unanswered doubles the next one's
+// limit, up to RequestTimeout (readLimit.lost), so a server that answers slower than the
 // measurement is waited for at the caller's own wait after a few reads, and only the start's hang
-// guard ends the wait. A read the server answers sets the limit back to this one (awaitStream),
-// so lost reads early in a wait do not make a lost read later in it cost more.
+// guard ends the wait. Each read the server answers sets the next one's limit to three times that
+// read's own time, the same sizing, and never under this one (readLimit.answered): lost reads early
+// in a run of reads do not make a lost read later in it cost more, and a server that answers every
+// read late keeps a limit above its delay, so no read of it is cut and read again.
 const firstReadLimit = 630 * time.Millisecond
 
 // firstReadLimitKey is the context key a test that counts a start's requests sets its first read
@@ -1270,29 +1274,56 @@ func firstReadLimitOf(ctx context.Context) time.Duration {
 	return firstReadLimit
 }
 
-// nextReadLimit is the limit of the read after one the server left unanswered within limit.
-func nextReadLimit(limit time.Duration) time.Duration {
-	return min(2*limit, RequestTimeout)
+// readLimit is the limit of the next read of one stream's state in a run of reads of it: the reads
+// of one wait (awaitStream), or the sends of one request sent again (readAgain) and the calls of a
+// step that reads again until a member has applied a create (awaitBucketApplied over readAgain),
+// which share one readLimit so that the next call starts where the last one left off.
+type readLimit struct {
+	first, limit time.Duration
+}
+
+// newReadLimit is a run of reads made under ctx, starting at its first read limit
+// (firstReadLimitOf).
+func newReadLimit(ctx context.Context) *readLimit {
+	first := firstReadLimitOf(ctx)
+	return &readLimit{first: first, limit: first}
+}
+
+// lost records a read the server left unanswered within the limit: the next one waits twice as
+// long, up to RequestTimeout.
+func (r *readLimit) lost() {
+	r.limit = min(2*r.limit, RequestTimeout)
+}
+
+// answered records a read the server answered in took: the next one waits three times that, never
+// less than the first limit and never more than RequestTimeout.
+func (r *readLimit) answered(took time.Duration) {
+	r.limit = min(max(r.first, 3*took), RequestTimeout)
 }
 
 // readAgain is sentAgain for read, a read of a stream's state, each send of which is waited for
-// up to its read limit (firstReadLimit, nextReadLimit) rather than up to the caller's whole wait:
-// a read past its limit is abandoned, its answer dropped (Bounded), and read again, as an
-// unanswered one is. A create keeps the caller's wait (sentAgain): its first send is answered only
-// at the stream's first leader election, seconds after it is sent. Its callers are the reads a
-// start makes: EnsureKeyValue's lookup, its read of a found bucket's stream and its handle open
-// (wrapKeyValue), the stream ensure's read (ensureStreamWithConfig) and SetKeyValueMaxAge's read.
-func readAgain[T any](ctx context.Context, request string, read func() (T, error)) (T, error) {
-	limit := firstReadLimitOf(ctx)
+// up to its read limit (limit) rather than up to the caller's whole wait: a read past its limit is
+// abandoned, its answer dropped (Bounded), and read again, as an unanswered one is. A create keeps
+// the caller's wait (sentAgain): its first send is answered only at the stream's first leader
+// election, seconds after it is sent. Its callers are the reads a start makes: EnsureKeyValue's
+// lookup, its read of a found bucket's stream and its handle open (wrapKeyValue), the stream
+// ensure's read (ensureStreamWithConfig), SetKeyValueMaxAge's read and updateStream's read after an
+// update that drew no answer.
+func readAgain[T any](ctx context.Context, request string, limit *readLimit, read func() (T, error)) (T, error) {
 	return sentAgain(ctx, request, func() (T, error) {
-		readCtx, cancel := context.WithTimeout(ctx, limit)
+		wait := limit.limit
+		readCtx, cancel := context.WithTimeout(ctx, wait)
 		defer cancel()
+		sent := time.Now()
 		value, answered, err := Bounded(readCtx, read)
-		if !answered {
-			err = fmt.Errorf("no answer within %s: %w", limit, context.DeadlineExceeded)
-		}
-		if unanswered(err) {
-			limit = nextReadLimit(limit)
+		switch {
+		case !answered:
+			err = fmt.Errorf("no answer within %s: %w", wait, context.DeadlineExceeded)
+			limit.lost()
+		case unanswered(err):
+			limit.lost()
+		default:
+			limit.answered(time.Since(sent))
 		}
 		return value, err
 	})
