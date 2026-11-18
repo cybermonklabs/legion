@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
 	"reflect"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // What the watch reports after a sequence of readings. One empty reading of a wait that named its
@@ -447,7 +447,7 @@ func TestExecReadsAMigrationAsTheCensusReadsIt(t *testing.T) {
 // transaction. Postgres lets only a session whose login is a superuser set session
 // authorization, so the server is asked whether the test database's login is one (rolsuper), and
 // the two rows that set it skip when it is not, except on GitHub Actions, where they fail
-// (skipOutsideCI).
+// (testdb.SkipOutsideCI).
 func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 	ctx := context.Background()
 	url := testpg.URL(t)
@@ -503,7 +503,7 @@ func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			if row.superuser && !superuser {
-				skipOutsideCI(t, "%q needs the test database's login, %s, to be a superuser, which the server says it is not (rolsuper): Postgres lets only a superuser's session set session authorization", row.set, config.User)
+				testdb.SkipOutsideCI(t, "%q needs the test database's login, %s, to be a superuser, which the server says it is not (rolsuper): Postgres lets only a superuser's session set session authorization", row.set, config.User)
 			}
 			runnerConfig := config.Copy()
 			if row.user != "" {
@@ -544,18 +544,6 @@ func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 			}
 		})
 	}
-}
-
-// skipOutsideCI skips a test whose test server lacks what the test needs, saying what is missing,
-// and fails it with the same words on GitHub Actions, where GITHUB_ACTIONS is "true" in each step
-// of each job: the job there is given a server with what the test needs, so a skip would hide the
-// one run that counts. CI is not read, since an agent's shell sets CI=true too.
-func skipOutsideCI(t *testing.T, format string, args ...any) {
-	t.Helper()
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Fatalf(format, args...)
-	}
-	t.Skipf(format, args...)
 }
 
 // stringConstants appends to found every string constant of a parse tree, read from libpg_query's

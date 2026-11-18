@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	neturl "net/url"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 var censusBase = fstest.MapFS{
@@ -726,7 +726,7 @@ func TestCensusNeverPrintsARowValueAnInputFunctionQuotes(t *testing.T) {
 // Granting that role pg_read_all_stats lets it read the age, and a young holder passes and is not
 // listed. Only a login that holds pg_read_all_stats with ADMIN, as a superuser does, can make that
 // grant: the server is asked by making it in a transaction that is rolled back, and a login that
-// cannot skips the test, except on GitHub Actions, where it fails (skipOutsideCI).
+// cannot skips the test, except on GitHub Actions, where it fails (testdb.SkipOutsideCI).
 func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 	ctx := context.Background()
 	store, base := migratedToOne(t)
@@ -763,7 +763,7 @@ func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 	var pgErr *pgconn.PgError
 	switch {
 	case errors.As(err, &pgErr) && pgErr.Code == "42501":
-		skipOutsideCI(t, "the test server's login cannot grant pg_read_all_stats, which the census's role needs to read the age of another role's transaction (the login must be a superuser or hold pg_read_all_stats with ADMIN): %v", err)
+		testdb.SkipOutsideCI(t, "the test server's login cannot grant pg_read_all_stats, which the census's role needs to read the age of another role's transaction (the login must be a superuser or hold pg_read_all_stats with ADMIN): %v", err)
 	case err != nil:
 		t.Fatalf("grant pg_read_all_stats to the census's role, in a transaction rolled back: %v", err)
 	}
@@ -818,18 +818,6 @@ func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 	if slices.ContainsFunc(report.LongTransactions, isHolder) {
 		t.Errorf("a young holder listed with the long transactions once the census could read its age: %v", report.LongTransactions)
 	}
-}
-
-// skipOutsideCI skips a test whose test server lacks what the test needs, saying what is missing,
-// and fails it with the same words on GitHub Actions, where GITHUB_ACTIONS is "true" in each step
-// of each job: the job there is given a server with what the test needs, so a skip would hide the
-// one run that counts. CI is not read, since an agent's shell sets CI=true too.
-func skipOutsideCI(t *testing.T, format string, args ...any) {
-	t.Helper()
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Fatalf(format, args...)
-	}
-	t.Skipf(format, args...)
 }
 
 // A WAL sender holding a lock on a touched table in a transaction older than the bound refuses,

@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"net"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +14,7 @@ import (
 	"testing/fstest"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // mintCall is one token a fakeMinter minted: the endpoint and user it was asked for.
@@ -109,18 +109,6 @@ func endpointOf(t *testing.T, databaseURL string) string {
 	return net.JoinHostPort(parsed.Hostname(), cmp.Or(parsed.Port(), "5432"))
 }
 
-// skipOutsideCI skips a test whose test server lacks what the test needs, saying what is missing,
-// and fails it with the same words on GitHub Actions, where GITHUB_ACTIONS is "true" in each step
-// of each job: the job there is given a server with what the test needs, so a skip would hide the
-// one run that counts. CI is not read, since an agent's shell sets CI=true too.
-func skipOutsideCI(t *testing.T, format string, args ...any) {
-	t.Helper()
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		t.Fatalf(format, args...)
-	}
-	t.Skipf(format, args...)
-}
-
 // TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken pins the IAM sign-in: with a token
 // minter, every new pooled connection signs in with a token minted for it, for the URL's
 // host:port and user, rather than one minted at startup, since an RDS token is good for 15
@@ -129,13 +117,13 @@ func skipOutsideCI(t *testing.T, format string, args ...any) {
 // opened without the minter is refused, so the token is what signed in. That refusal is asked
 // for first: a server that signs the role in without its password, as one whose pg_hba trusts
 // the connection does, cannot tell the token from no password, and the test skips there, except
-// on GitHub Actions, where it fails (skipOutsideCI).
+// on GitHub Actions, where it fails (testdb.SkipOutsideCI).
 func TestOpenSignsEveryNewConnectionInWithAFreshlyMintedToken(t *testing.T) {
 	ctx := context.Background()
 	role, _, databaseURL := passwordRole(t, "fake-iam-token-1")
 	if s, err := Open(ctx, databaseURL); err == nil {
 		s.Pool.Close()
-		skipOutsideCI(t, "the test server signed the role %s in with no password (its pg_hba trusts the connection), so it cannot tell a minted token from no password: the test needs a server that asks the role for its password", role)
+		testdb.SkipOutsideCI(t, "the test server signed the role %s in with no password (its pg_hba trusts the connection), so it cannot tell a minted token from no password: the test needs a server that asks the role for its password", role)
 	} else if !strings.Contains(err.Error(), "authentication failed") {
 		t.Fatalf("Open without the token minter = %v, want Postgres to refuse the password", err)
 	}
