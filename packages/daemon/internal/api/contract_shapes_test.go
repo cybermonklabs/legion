@@ -1258,14 +1258,14 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 	for _, path := range served.paths {
 		if !described[path] {
 			problems = append(problems, fmt.Sprintf(
-				"contract %d, the %s answer: the body carries `%s` and the contract does not describe it. Serve the key down to this contract (shaping.go's shapeState) or, where the contract's own reader takes it, record it here beside the version.go entry that adds it.",
+				"contract %d, the %s answer: the body carries `%s` and the contract does not describe it. Write a band that leaves the key out below the contract that adds it (shaping.go's stateNarrowings). Recording the key here applies only to the daemon's own contract, while the base does not carry that contract yet.",
 				key.contract, key.answer, path))
 		}
 	}
 	for _, path := range record.KeyPaths {
 		if !carried[path] {
 			problems = append(problems, fmt.Sprintf(
-				"contract %d, the %s answer: the body lacks `%s` and the contract describes it. A reader at %d requires the key, so write a stand-in back for it (shaping.go's withFixAttempts is one) or, where this contract never read it, correct the record and say why in the version.go entry.",
+				"contract %d, the %s answer: the body lacks `%s` and the contract describes it. Serve the key to this contract with a stand-in (shaping.go's withFixAttempts is one): the record of %d is fixed once the base carries it, whether or not a reader requires the key.",
 				key.contract, key.answer, path, key.contract))
 		}
 	}
@@ -1275,7 +1275,7 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 				continue
 			}
 			problems = append(problems, fmt.Sprintf(
-				"contract %d, the %s answer: the body carries `%s` at `%s` and the contract admits no such value. A reader at %d parses the field with a strict enumeration and refuses the whole body for a value it does not name, as it refuses a key it does not know, so serve the value down to this contract (shaping.go's shapeIssue) or, where the contract's own reader admits it, record its arrival in answers.go's EnumeratedFields beside the version.go entry that adds it.",
+				"contract %d, the %s answer: the body carries `%s` at `%s` and the contract admits no such value. A reader at %d parses the field with a strict enumeration and refuses the whole body for a value it does not name, as it refuses a key it does not know, so serve the value down to this contract (shaping.go's shapeIssue). Recording its arrival in answers.go's EnumeratedFields applies only to the daemon's own contract, while the base does not carry that contract yet.",
 				key.contract, key.answer, value, path, key.contract))
 		}
 	}
