@@ -646,7 +646,7 @@ func readAdvertiseHost(value *yaml.Node, key string) (*string, error) {
 // readKubernetes reads the `runtime.kubernetes` block, refusing any member it does not model and
 // any value a pod could not run with. A key an earlier shape of the block had (tree_volume, the
 // TypeScript daemon's role_profiles and gateway) is known so that its refusal names what replaced
-// it, which is what `legion start --check-config` shows the operator to edit. The sandbox's rules
+// it, which is what `legion config check` shows the operator to edit. The sandbox's rules
 // that read the block's scheduling, pod and agent_secrets too are checked once all four are read
 // (checkSandboxAgainstTheBlock). What depends on keys outside the block is checked once the whole
 // file is read (checkKubernetesKeys), and the reservations the file leaves out are filled when the
@@ -1318,7 +1318,7 @@ func unfilledPlaceholder(key, value, put string) error {
 // One variable is read for its content and not its name alone: runtime.SpendAttributesVariable,
 // the operator's own resource attributes, which the runtime appends the launch's issue and role
 // to. runtime.SpendAttributesRefusal holds the detector's measured rules, and what it refuses is
-// refused here, where a person reads the refusal — under `legion start --check-config` as at boot
+// refused here, where a person reads the refusal — under `legion config check` as at boot
 // — rather than at a launch nobody watches.
 func readPodEnv(value *yaml.Node) (map[string]string, error) {
 	const key = podKey + ".env"
@@ -1552,7 +1552,7 @@ type objectSource struct {
 // `config_map`, which take default_mode, and a projected source's two, which do not, Kubernetes
 // setting the mode of a projected volume's files for the whole volume and never per source. The
 // group decides which names the mapping may carry, so deriving it from one of the four, as this
-// read did, left the other three's keys out of `legion config-reference` and the page generated
+// read did, left the other three's keys out of `legion config reference` and the page generated
 // from it.
 func readObjectSource(value *yaml.Node, key string, described func(*yaml.Node, string) (map[string]*yaml.Node, error)) (objectSource, error) {
 	if value.Kind != yaml.MappingNode {
@@ -1602,7 +1602,7 @@ func readObjectSource(value *yaml.Node, key string, described func(*yaml.Node, s
 // The four members readers a source's place names (readObjectSource): a volume's own `secret` and
 // `config_map`, which take default_mode, and a projected source's `secret` and `config_map`,
 // which do not. Each names its group as a constant of its own, which is what carries every one of
-// those keys into `legion config-reference` and holds the four to the key table
+// those keys into `legion config reference` and holds the four to the key table
 // (TestNoKeyBypassesTheKeyTable).
 
 func volumeSecretMembers(value *yaml.Node, key string) (map[string]*yaml.Node, error) {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -99,10 +98,17 @@ var roleCoverFlags = []struct {
 	},
 }
 
+// CoverFlagSet is where RoleCoverFlags registers the cover's flags: cobra's pflag.FlagSet, which
+// the two hidden subcommands read their flags with, and the standard library's flag.FlagSet, which
+// a test reads a command line back with, each have this StringVar.
+type CoverFlagSet interface {
+	StringVar(p *string, name, value, usage string)
+}
+
 // RoleCoverFlags registers the cover's flags on flags and answers what they were set to: the one
 // registration both hidden subcommands make, so neither can be given a directory the other is not
 // (cmd/legion/launcher.go).
-func RoleCoverFlags(flags *flag.FlagSet) func() RoleCover {
+func RoleCoverFlags(flags CoverFlagSet) func() RoleCover {
 	var cover RoleCover
 	for _, named := range roleCoverFlags {
 		flags.StringVar(named.at(&cover), named.flag, named.def(), named.usage)
