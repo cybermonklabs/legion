@@ -66,7 +66,10 @@ test("signing out shows the sign-in page without a reload and ends the event fee
 
   try {
     await screen.findByText("Signed in as alice");
-    const socket = sockets.latest();
+    // The shell is drawn once the draft stores have loaded for its person (`shellFor` in
+    // `AuthGate`), a render after the sign-in check answers, and the event feed opens its socket
+    // in the shell's own effect: so the socket is waited for, not read the moment the text shows.
+    const socket = await waitFor(() => sockets.latest());
     act(() => socket.open());
     const { sub } = socket.subscribed("events");
     expect(socket.closedWith).toBeUndefined();
@@ -1031,6 +1034,9 @@ test("the connection pill follows the live socket: none while it connects, Recon
     kind: "user",
     login: "alice",
   }));
+  // The shell is drawn a render after the sign-in check answers, once the draft stores have loaded
+  // (`shellFor` in `AuthGate`), and its event feed opens the socket in an effect of its own.
+  await waitFor(() => expect(sockets.sockets).toHaveLength(1));
   // Every timer the socket sets from here on runs on the test's clock.
   jest.useFakeTimers();
   const random = spyOn(Math, "random").mockReturnValue(0.5);
@@ -1084,6 +1090,7 @@ test("a live socket refused once the person is signed out takes the page to sign
     if (!signedIn) throw new ApiError(401, { error: "unauthorized" });
     return { event_head: "0", kind: "user", login: "alice" };
   });
+  await waitFor(() => expect(sockets.sockets).toHaveLength(1));
   try {
     act(() => sockets.latest().open());
     signedIn = false;
