@@ -137,6 +137,11 @@ func stubEmbedRefuse(status int, code string) stubEmbedAnswer {
 	return stubEmbedAnswer{status: status, body: body}
 }
 
+// ServeHTTP writes the answer's log line before the answer itself. Dispatch's client decodes the
+// JSON and closes the body without reading the chunked end, so it can have its whole answer, and
+// send its next request on another connection, while this handler is still between its write and
+// its return; a line logged after the write could reach the log after the caller had read it, or
+// after a later request's own line.
 func (s *stubEmbedder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	answer := s.answer(r)
 	payload, err := json.Marshal(answer.body)
@@ -144,12 +149,12 @@ func (s *stubEmbedder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		answer = stubEmbedRefuse(http.StatusInternalServerError, "encode_failed")
 		payload, _ = json.Marshal(answer.body)
 	}
+	s.lg.Printf("%s %s: %d texts, %d bytes, HTTP %d", r.Method, r.URL.Path, answer.texts, answer.bytes, answer.status)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(answer.status)
 	if _, err := w.Write(payload); err != nil {
 		s.lg.Printf("write the answer: %v", err)
 	}
-	s.lg.Printf("%s %s: %d texts, %d bytes, HTTP %d", r.Method, r.URL.Path, answer.texts, answer.bytes, answer.status)
 }
 
 // answer is what the stub replies to one request, and what that request carried. It refuses in
