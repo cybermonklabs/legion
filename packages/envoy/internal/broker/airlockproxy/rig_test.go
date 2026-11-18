@@ -17,6 +17,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -37,7 +38,9 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/logmask"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -333,9 +336,44 @@ type logLine struct {
 
 // logCapture is the slog handler the rows install: logtest.Recorder keeps every record with the
 // attributes the proxy wrote it with, and the methods here are this package's own reading of
-// those records.
+// those records. Each record is also written as the broker writes it - the broker's JSON handler
+// (logging.NewCloudHandler) through its placeholder mask (logmask.Writer) - into written, the
+// bytes a row that asks what reaches the broker's log reads (writtenLines).
 type logCapture struct {
 	logtest.Recorder
+	written logtest.Buffer
+	once    sync.Once
+	broker  slog.Handler
+}
+
+func (c *logCapture) Handle(ctx context.Context, record slog.Record) error {
+	c.once.Do(func() { c.broker = logging.NewCloudHandler(logmask.Writer(&c.written)) })
+	if err := c.Recorder.Handle(ctx, record); err != nil {
+		return err
+	}
+	return c.broker.Handle(ctx, record)
+}
+
+// The proxy logs with no attribute or group of a logger's own, and Recorder keeps none.
+func (c *logCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *logCapture) WithGroup(string) slog.Handler      { return c }
+
+// writtenLines is every line written so far as the broker writes it, each decoded as the JSON
+// object it is.
+func (c *logCapture) writtenLines(t *testing.T) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for _, text := range strings.Split(strings.TrimSpace(c.written.String()), "\n") {
+		if text == "" {
+			continue
+		}
+		var line map[string]any
+		if err := json.Unmarshal([]byte(text), &line); err != nil || line == nil {
+			t.Fatalf("a line the broker would write is no JSON object: %q: %v", text, err)
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }
 
 // calls is every line one call to a bound host logged that the airlock carried or failed. Records

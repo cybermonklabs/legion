@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/broker/logmask"
 )
 
 // echoingTokenEndpoint is a token endpoint of the row's own at the bound host, at address, speaking
@@ -92,15 +94,15 @@ func noFederatedToken(t *testing.T, r *rig, answer string) {
 	if holdsARunOf(answer, azureRealFederated) {
 		t.Errorf("the answer the command was given holds the real federated token: %q", answer)
 	}
-	if !strings.Contains(answer, peerBytesShown) {
-		t.Errorf("the answer the command was given is %q; want %s where the endpoint's bytes were", answer, peerBytesShown)
+	if !strings.Contains(answer, logmask.PeerBytesShown) {
+		t.Errorf("the answer the command was given is %q; want %s where the endpoint's bytes were", answer, logmask.PeerBytesShown)
 	}
 	shown := false
 	for _, record := range r.logs.Records() {
 		text := record.Message
 		record.Attrs(func(a slog.Attr) bool {
 			text += " " + a.Key + "=" + a.Value.String()
-			shown = shown || a.Key == "reason" && strings.Contains(a.Value.String(), peerBytesShown)
+			shown = shown || a.Key == "reason" && strings.Contains(a.Value.String(), logmask.PeerBytesShown)
 			return true
 		})
 		if holdsARunOf(text, azureRealFederated) {
@@ -108,7 +110,7 @@ func noFederatedToken(t *testing.T, r *rig, answer string) {
 		}
 	}
 	if !shown {
-		t.Errorf("no line gives as its reason that the endpoint's answer was %s: %v", peerBytesShown, r.logs.Records())
+		t.Errorf("no line gives as its reason that the endpoint's answer was %s: %v", logmask.PeerBytesShown, r.logs.Records())
 	}
 }
 

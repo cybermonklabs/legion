@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/logmask"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -772,8 +773,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			}},
 		{name: "Go's HTTP server's error: a TLS handshake on a bound connection whose ClientHello offers no protocol the proxy speaks", message: netHTTPMessage, field: "error",
 			// The error quotes each protocol the client offered, which the line writes as
-			// peerBytesShown (hidePeerBytes), one for each: still past the cut.
-			heldBy: func() string { return hidePeerBytes(handshakeError) }, status: http.StatusOK,
+			// logmask.PeerBytesShown (logmask.HidePeerBytes), one for each: still past the cut.
+			heldBy: func() string { return logmask.HidePeerBytes(handshakeError) }, status: http.StatusOK,
 			send: func(t *testing.T, r *rig) *http.Response {
 				response, conn, _ := r.connectRaw(boundHost+":443", basic(workerPlaceholder))
 				// net/http names the client by the address its CONNECT came from, this end of the

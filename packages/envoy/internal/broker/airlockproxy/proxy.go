@@ -43,6 +43,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/logmask"
 	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -125,7 +126,9 @@ type Options struct {
 	// of megabytes the real budget takes to fill.
 	HashBudget int64
 	// Log is where the line for each call to a bound host goes, and the line for each refusal of
-	// this port. Nil is slog.Default().
+	// this port. Nil is slog.Default(), which in the broker writes through the placeholder mask
+	// (cmd/broker's setUpLogging, logmask.Writer): a line can name a placeholder a command wrote
+	// into its own text, so a logger given here must write through that mask too.
 	Log *slog.Logger
 	// Answers is broker_answers_total (answer.NewAnswers), which each answer a handler of this
 	// port writes is counted on under caller class airlock, beside the API port's answers; an
@@ -236,12 +239,12 @@ type Server struct {
 	forward  *http.Transport
 	// errorLog is the log.Logger both servers' ErrorLog and both ReverseProxies' (servePlain,
 	// serveBound) are: the lines net/http's servers and httputil write of their own go through
-	// log, so each is the airlock's own line, masked (maskedHandler) and cut (slogWriter), and an
-	// error httputil logs can quote what a service sent, its trailers among it. net/http's
+	// log, so each is the airlock's own line, cut and with its peer bytes hidden (slogWriter), and
+	// an error httputil logs can quote what a service sent, its trailers among it. net/http's
 	// Transport has no ErrorLog: what it logs - what a service sent on an idle connection, which
-	// it quotes - it writes with log.Printf to the standard logger, which cmd/broker masks and
-	// cuts as a whole (SetDefaultLog), and which is the one place a line of the proxy's goes that
-	// is not this logger.
+	// it quotes - it writes with log.Printf to the standard logger, which cmd/broker writes through
+	// its own handler in the same way (logmask.StandardLog), and which is the one place a line of
+	// the proxy's goes that is not this logger.
 	errorLog *log.Logger
 	serveOne sync.Once
 
@@ -336,9 +339,6 @@ func New(o Options) *Server {
 	if s.log == nil {
 		s.log = slog.Default()
 	}
-	// Every line this package writes - net/http's through slogWriter among them - is written
-	// with each placeholder in its text masked (maskedHandler).
-	s.log = slog.New(maskedHandler{s.log.Handler()})
 	if s.resolve == nil {
 		s.resolve = ResolveHost
 	}
@@ -918,14 +918,14 @@ const upstreamMessage = "airlock proxy: upstream"
 // logs and counts, and no refusal. The error is the transport's own and carries no header of the
 // request, so nothing of the grant is in it, but it can quote what the service sent - a status
 // line it could not read, which a bound service may write with the real value the swap sent it -
-// so each run of the service's bytes it quotes with %q is written as peerBytesShown
-// (hidePeerBytes), in the line and in the answer the command is given alike. The path, and on a
-// plain request the host, are the caller's, and the error may quote the host, so the line passes
-// answer.ClipFields as a call's line does, and stays one Cloud Logging entry whatever the caller
-// sent.
+// so its text from the first quotation mark of each of its lines on, where %q's runs of the
+// service's bytes start, is written as logmask.PeerBytesShown (logmask.HidePeerBytes), in the line
+// and in the answer the command is given alike. The path, and on a plain request the host, are
+// the caller's, and the error may quote the host, so the line passes answer.ClipFields as a
+// call's line does, and stays one Cloud Logging entry whatever the caller sent.
 func (s *Server) badGateway(host, path string) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, _ *http.Request, err error) {
-		reason := hidePeerBytes(err.Error())
+		reason := logmask.HidePeerBytes(err.Error())
 		s.log.Warn(upstreamMessage, answer.ClipFields([]any{"host", host, "path", path, "error", reason})...)
 		fail(w, http.StatusBadGateway, codeUpstream, host+": "+reason)
 	}
@@ -978,14 +978,15 @@ const netHTTPMessage = "airlock proxy: net/http"
 // the client sent. No handler of the airlock panics with a value that holds a newline: a panic
 // value that did, and quoted the client, would put that text in this field uncut. Every run of a
 // peer's bytes net/http and httputil quote with %q - a client's ALPN list, a trailer line a
-// service sent - is written as peerBytesShown first (hidePeerBytes), since a bound service is
-// sent the real value the swap put in and the placeholder mask cannot see it.
+// service sent - is hidden first (logmask.LibraryLines, as the broker's standard logger reads its
+// writes), since a bound service is sent the real value the swap put in and the placeholder mask
+// cannot see it.
 type slogWriter struct{ log *slog.Logger }
 
 func (w slogWriter) Write(p []byte) (int, error) {
-	text, stack, stacked := strings.Cut(hidePeerBytes(strings.TrimSuffix(string(p), "\n")), "\n")
-	fields := answer.ClipFields([]any{"error", text})
-	if stacked {
+	first, stack := logmask.LibraryLines(p)
+	fields := answer.ClipFields([]any{"error", first})
+	if stack != "" {
 		fields = append(fields, "stack", stack)
 	}
 	w.log.Warn(netHTTPMessage, fields...)

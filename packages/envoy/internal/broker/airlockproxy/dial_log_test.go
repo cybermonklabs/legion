@@ -12,16 +12,17 @@ package airlockproxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -31,7 +32,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // TestATunnelWritesOneLineNamingItsCallerAndAddress: a tunnel carries bytes the proxy never reads, so the
@@ -524,409 +524,6 @@ func TestAFailedDialWritesOneLineNamingItsClass(t *testing.T) {
 	})
 }
 
-// TestNoProxyLineHoldsAValueOrPlaceholder: the airlock exists so that a secret
-// is never written down, and a log line is the first place one would leak. This row plants
-// made-up values where a command really puts them - the proxy password, a request header and a
-// body - and the placeholder itself in every place a line reads the command's own text: the
-// X-Correlation-Id of every request it sends, the host of a CONNECT's authority and of a CONNECT
-// whose authority is its Host header, the port of such a Host header, the host and the zone of a
-// plain-HTTP URL, the Host header of a plain-HTTP request and of a request on a bound connection,
-// the path of a refused call and of a carried one, the method of a request that is no proxy
-// request, the name a forwarded https service's certificate holds, which the upstream line's
-// error quotes in its own case, the trailer line a forwarded service and a bound one send, which
-// the error httputil logs when it cannot read it quotes, and bytes a bound service sends after a
-// whole answer, which net/http's transport quotes on the standard logger. Between them they write
-// every line the proxy writes about a request: a tunnel's, a forwarded plain-HTTP request's, each
-// class of failed dial, an upstream failure's, httputil's own, the transport's, a refusal of the
-// outer server and of a bound call, and a carried call's. It reads every record the proxy wrote,
-// its message and each of its fields, and everything written to the standard logger while it
-// ran, routed as cmd/broker routes it (SetDefaultLog), and no line in any of them may hold the
-// placeholder in any case: the host is written lowercased, and lowercasing is no redaction, so
-// every line writes placeholderMark where its text held one (maskedHandler).
-func TestNoProxyLineHoldsAValueOrPlaceholder(t *testing.T) {
-	const (
-		plantedHeader = "planted-header-value-nothing-may-log"
-		plantedBody   = "planted-body-value-nothing-may-log"
-		zoned         = "2001:db8::1"
-		plainHost     = "plain.example.net"
-		certHost      = "cert.example.net"
-		trailerHost   = "trailer.example.net"
-	)
-	// The standard logger, captured as cmd/broker routes it: SetDefaultLog, into a handler of the
-	// row's own, so a line any package writes there passes what it passes in the broker.
-	var stdlog logtest.Buffer
-	logtest.SetDefault(t, slog.NewTextHandler(&stdlog, nil))
-	SetDefaultLog(slog.NewTextHandler(&stdlog, nil))
-	r := newRig(t, Options{})
-	unwired := netip.MustParseAddr("93.184.216.44")
-	placeholderHost := workerPlaceholder + ".example.net"
-	r.answers["nowhere.example.net"] = [][]netip.Addr{{}}
-	r.addresses["unreachable.example.net"] = []netip.Addr{unwired}
-	// The placeholder's host resolves, lowercased, to a public address wired to no service, so
-	// a CONNECT to it and a plain-HTTP request to it each reach a dial that fails.
-	r.addresses[strings.ToLower(placeholderHost)] = []netip.Addr{unwired}
-	// A plain service the proxy forwards to, so a forwarded request writes its tunnel line.
-	service := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		io.WriteString(w, "the plain service answered")
-	}))
-	t.Cleanup(service.Close)
-	r.addresses[plainHost] = []netip.Addr{netip.MustParseAddr("93.184.216.37")}
-	r.dialTo[net.JoinHostPort(plainHost, "80")] = service.Listener.Addr().String()
-	correlation := "X-Correlation-Id: " + workerPlaceholder + "\r\n"
-
-	// A tunnel that opened, with the planted value in a header of the CONNECT itself.
-	answer, conn, _ := r.connectRaw(net.JoinHostPort(echoHost, "443"),
-		basic(workerPlaceholder), "X-Planted: "+plantedHeader+"\r\n", correlation)
-	if answer.StatusCode != http.StatusOK {
-		t.Fatalf("CONNECT %s = %d; want 200", echoHost, answer.StatusCode)
-	}
-	defer conn.Close()
-	// A refused address, a name that resolves nowhere, a service that cannot be reached, and a
-	// host that is the placeholder, as the CONNECT's authority and as the Host header of a
-	// CONNECT whose target is a path, which net/http reads its authority from.
-	r.connectRaw(net.JoinHostPort("10.1.2.3", "443"), basic(workerPlaceholder), correlation)
-	r.connectRaw(net.JoinHostPort("nowhere.example.net", "443"), basic(workerPlaceholder), correlation)
-	r.connectRaw(net.JoinHostPort("unreachable.example.net", "443"), basic(workerPlaceholder), correlation)
-	r.connectRaw(net.JoinHostPort(placeholderHost, "443"), basic(workerPlaceholder), correlation)
-	r.requestRaw(http.MethodConnect, "/x", net.JoinHostPort(placeholderHost, "443"), basic(workerPlaceholder), correlation)
-	// The placeholder as a port, in such a Host header, which net/http does not read as a URL.
-	if answer, body := r.requestRaw(http.MethodConnect, "/x", echoHost+":"+workerPlaceholder, basic(workerPlaceholder), correlation); answer.StatusCode == http.StatusOK {
-		t.Fatalf("a CONNECT whose port is the placeholder answered 200 %q; want it refused", body)
-	}
-	// A carried call to the bound host with the placeholder in the header the entry allows and
-	// the planted value in its body; a call whose Host header is the placeholder's host, which
-	// the decision refuses; and a call whose path holds the placeholder, which no rule allows.
-	client := r.client(workerPlaceholder)
-	r.do(client, http.MethodPost, "https://"+boundHost+"/v1/things", plantedBody,
-		"Authorization", "Bearer "+workerPlaceholder, "X-Planted", plantedHeader, "X-Correlation-Id", workerPlaceholder)
-	r.do(client, http.MethodGet, "https://"+boundHost+"/v1/things", "",
-		"Authorization", "Bearer "+workerPlaceholder, "Host", placeholderHost, "X-Correlation-Id", workerPlaceholder)
-	r.do(client, http.MethodGet, "https://"+boundHost+"/v2/"+workerPlaceholder, "",
-		"Authorization", "Bearer "+workerPlaceholder, "X-Correlation-Id", workerPlaceholder)
-	r.do(client, http.MethodGet, "https://"+boundHost+"/v1/"+workerPlaceholder, "",
-		"Authorization", "Bearer "+workerPlaceholder, "X-Correlation-Id", workerPlaceholder)
-	// The placeholder as a plain-HTTP host, in its own case, as the zone of a plain-HTTP
-	// address literal, and as the Host header of a plain-HTTP request the proxy forwards.
-	r.plainRaw(placeholderHost, "/x", basic(workerPlaceholder), correlation)
-	r.plainRaw("["+zoned+"%25"+workerPlaceholder+"]", "/x", basic(workerPlaceholder), correlation)
-	if answer, body := r.requestRaw(http.MethodGet, "http://"+plainHost+"/status", placeholderHost, basic(workerPlaceholder), correlation); answer.StatusCode != http.StatusOK {
-		t.Fatalf("the forwarded plain-HTTP request answered %d %q; want 200", answer.StatusCode, body)
-	}
-	// A forwarded https request to a service whose certificate names the placeholder's host in
-	// its own case: the proxy's transport refuses the certificate, and the error the upstream
-	// line writes quotes the names it holds.
-	certLeaf, _, err := r.service.Authority().Leaf([]string{placeholderHost})
-	if err != nil {
-		t.Fatalf("the certificate naming the placeholder: %v", err)
-	}
-	certService := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		io.WriteString(w, "the service whose certificate names another host answered")
-	}))
-	certService.TLS = &tls.Config{Certificates: []tls.Certificate{*certLeaf}}
-	certService.StartTLS()
-	t.Cleanup(certService.Close)
-	r.addresses[certHost] = []netip.Addr{netip.MustParseAddr("93.184.216.40")}
-	r.dialTo[net.JoinHostPort(certHost, "443")] = certService.Listener.Addr().String()
-	if answer, body := r.requestRaw(http.MethodGet, "https://"+certHost+"/x", certHost, basic(workerPlaceholder), correlation); answer.StatusCode != http.StatusBadGateway {
-		t.Fatalf("the forward to a service whose certificate names another host answered %d %q; want 502", answer.StatusCode, body)
-	}
-	// A forwarded plain-HTTP request to a service whose chunked answer ends in a trailer line
-	// that is the placeholder and no header at all: the transport cannot read it, and httputil
-	// logs the error, which quotes the line.
-	trailers, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("bind the trailer service: %v", err)
-	}
-	t.Cleanup(func() { trailers.Close() })
-	go func() {
-		for {
-			conn, err := trailers.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer conn.Close()
-				if _, err := http.ReadRequest(bufio.NewReader(conn)); err != nil {
-					return
-				}
-				io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n"+workerPlaceholder+"\r\n\r\n")
-			}()
-		}
-	}()
-	r.addresses[trailerHost] = []netip.Addr{netip.MustParseAddr("93.184.216.41")}
-	r.dialTo[net.JoinHostPort(trailerHost, "80")] = trailers.Addr().String()
-	trailed, err := net.Dial("tcp", r.addr)
-	if err != nil {
-		t.Fatalf("dial the proxy: %v", err)
-	}
-	trailed.SetDeadline(time.Now().Add(20 * time.Second))
-	if _, err := io.WriteString(trailed, "GET http://"+trailerHost+"/x HTTP/1.1\r\nHost: "+trailerHost+"\r\n"+basic(workerPlaceholder)+correlation+"Connection: close\r\n\r\n"); err != nil {
-		t.Fatalf("write the request to the trailer service: %v", err)
-	}
-	// The answer is cut short when the copy fails, so it is read to its end and not parsed.
-	io.Copy(io.Discard, trailed)
-	trailed.Close()
-	copyFailed := func() bool {
-		return strings.Contains(stdlog.String(), "during body copy") || slices.ContainsFunc(r.logs.lines(netHTTPMessage), func(line logLine) bool {
-			return strings.Contains(fmt.Sprint(line.fields["error"]), "during body copy")
-		})
-	}
-	for deadline := time.Now().Add(10 * time.Second); !copyFailed(); time.Sleep(time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatal("no line says the copy of the trailer service's answer failed")
-		}
-	}
-	// The placeholder as the method of a request that is no proxy request at all.
-	r.requestRaw(workerPlaceholder, "/x", "proxy.example.net", correlation)
-	r.logs.tunnelsAtLeast(t, 2)
-	failures := r.logs.dialFailuresAtLeast(t, 7)
-	r.logs.callsAtLeast(t, 2)
-
-	// A second proxy, whose bound host is a service of the row's own, speaking HTTP/1.1 over TLS
-	// with the certificate the proxy trusts, that answers six ways. Its trailer answer ends in
-	// a trailer line that is the placeholder, which httputil logs serveBound's copy of failing
-	// (its ErrorLog, Server.errorLog). Its four answers that end in bytes after a whole answer, in
-	// the same write - the placeholder, the request's own path, which holds the placeholder, the
-	// Authorization header it was sent, which holds the real value the swap put in, and that
-	// header inside a JSON fragment - leave those bytes on a connection the transport keeps for
-	// the next request, and net/http's transport quotes them with log.Printf, which no ErrorLog
-	// reaches and the masked standard logger does (SetDefaultLog). Its last answer is a status
-	// line made of that real value, which the transport refuses quoting it, and the upstream line
-	// logs that error and the 502 the command is answered holds it (badGateway). Every run of
-	// bytes a library quotes from a peer is written as peerBytesShown (hidePeerBytes), since the
-	// placeholder mask cannot see a real value. A forwarded plain-HTTP service that writes before
-	// it reads the request can leave the same bytes on Server.forward's connection by a race,
-	// which the same standard logger covers.
-	bound := newRig(t, Options{})
-	leaf, _, err := bound.service.Authority().Leaf([]string{boundHost})
-	if err != nil {
-		t.Fatalf("the bound service's certificate: %v", err)
-	}
-	answers, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{*leaf}})
-	if err != nil {
-		t.Fatalf("bind the bound service: %v", err)
-	}
-	t.Cleanup(func() { answers.Close() })
-	var heldMu sync.Mutex
-	var held []net.Conn
-	t.Cleanup(func() {
-		heldMu.Lock()
-		defer heldMu.Unlock()
-		for _, conn := range held {
-			conn.Close()
-		}
-	})
-	// unsolicitedClosed hears once from each connection whose answer ended in bytes after it, when
-	// the proxy's transport closes that connection: net/http's transport writes the unsolicited
-	// line before it closes the connection (readLoopPeekFailLocked), so a row that has heard from
-	// every such connection reads every such line. Each of those answers is one write, so its
-	// bytes after the answer are on the connection when the transport reads the answer's end,
-	// before the next request could take the connection up.
-	unsolicitedClosed := make(chan string, 8)
-	go func() {
-		for {
-			conn, err := answers.Accept()
-			if err != nil {
-				return
-			}
-			heldMu.Lock()
-			held = append(held, conn)
-			heldMu.Unlock()
-			go func() {
-				reader := bufio.NewReader(conn)
-				unsolicited := ""
-				for {
-					request, err := http.ReadRequest(reader)
-					if err != nil {
-						conn.Close()
-						if unsolicited != "" {
-							unsolicitedClosed <- unsolicited
-						}
-						return
-					}
-					io.Copy(io.Discard, request.Body)
-					const two = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
-					switch path := request.URL.Path; path {
-					case "/v1/trailer":
-						io.WriteString(conn, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n"+workerPlaceholder+"\r\n\r\n")
-					case "/v1/unsolicited":
-						io.WriteString(conn, two+workerPlaceholder)
-						unsolicited = path
-					case "/v1/echo-value":
-						io.WriteString(conn, two+"echo "+request.Header.Get("Authorization")+"\r\n")
-						unsolicited = path
-					case "/v1/echo-json":
-						// The value inside a JSON fragment, whose quotation marks the transport's
-						// %q writes escaped: a reading of the quoted run that stopped at the first
-						// escaped quotation mark would show the value after it.
-						io.WriteString(conn, two+`{"authorization":"`+request.Header.Get("Authorization")+`"}`+"\r\n")
-						unsolicited = path
-					case "/v1/echo-status":
-						io.WriteString(conn, "echo-"+strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer ")+"\r\n\r\n")
-						conn.Close()
-						return
-					default:
-						io.WriteString(conn, two+"echo "+path+"\r\n")
-						unsolicited = path
-					}
-				}
-			}()
-		}
-	}()
-	bound.dialTo[net.JoinHostPort(boundHost, "443")] = answers.Addr().String()
-	boundClient := bound.client(workerPlaceholder)
-	paths := []string{"/v1/trailer", "/v1/unsolicited", "/v1/" + workerPlaceholder, "/v1/echo-value", "/v1/echo-json", "/v1/echo-status"}
-	answered := map[string]string{}
-	for _, path := range paths {
-		request, err := http.NewRequest(http.MethodGet, "https://"+boundHost+path, nil)
-		if err != nil {
-			t.Fatalf("build the request for %s: %v", path, err)
-		}
-		request.Header.Set("Authorization", "Bearer "+workerPlaceholder)
-		// The trailer answer is cut short when the copy fails, so an answer is read to its end
-		// and not parsed.
-		if answer, err := boundClient.Do(request); err == nil {
-			body, _ := io.ReadAll(answer.Body)
-			answer.Body.Close()
-			answered[path] = string(body)
-		}
-	}
-	// The four answers that end in bytes after them, each heard from as its connection closes;
-	// the deadline only bounds a run that would otherwise hang.
-	for heard := map[string]bool{}; len(heard) < 4; {
-		select {
-		case path := <-unsolicitedClosed:
-			heard[path] = true
-		case <-time.After(2 * time.Minute):
-			t.Fatalf("the proxy's transport closed %d of the four connections whose answers ended in bytes after them: %v (standard logger: %q)", len(heard), heard, stdlog.String())
-		}
-	}
-	written := func(record slog.Record) string {
-		text := record.Message
-		record.Attrs(func(a slog.Attr) bool {
-			text += " " + a.Key + "=" + fmt.Sprint(a.Value.Any())
-			return true
-		})
-		return text
-	}
-	// The bound copy's failure is on the bound proxy's own log, or - with no ErrorLog on
-	// serveBound's ReverseProxy - on the standard logger, where the control below finds it
-	// absent. httputil logs it before the handler returns, so it is written by the time the
-	// command's answer has ended.
-	if !strings.Contains(stdlog.String(), "during body copy") && !slices.ContainsFunc(bound.logs.lines(netHTTPMessage), func(line logLine) bool {
-		return strings.Contains(fmt.Sprint(line.fields["error"]), "during body copy")
-	}) {
-		t.Fatalf("no line says the copy of the bound service's trailer answer failed (standard logger: %q)", stdlog.String())
-	}
-	// The 502 the command was answered for the status line made of the real value holds the
-	// fixed phrase where the service's bytes were, and none of the value.
-	if status := answered["/v1/echo-status"]; !strings.Contains(status, peerBytesShown) {
-		t.Errorf("the answer to the status line made of the real value is %q; want %s where the service's bytes were", status, peerBytesShown)
-	}
-
-	never := []string{workerPlaceholder, workerValue, plantedHeader, plantedBody}
-	lowered := strings.ToLower(workerPlaceholder)
-	for _, record := range append(r.logs.Records(), bound.logs.Records()...) {
-		text := written(record)
-		for _, secret := range never {
-			if strings.Contains(text, secret) {
-				t.Errorf("a line the proxy wrote holds a planted value or a placeholder: %q", text)
-			}
-		}
-		if strings.Contains(strings.ToLower(text), lowered) {
-			t.Errorf("a line the proxy wrote holds the placeholder, in some case: %q", text)
-		}
-	}
-	// The controls: each place the placeholder was planted reached a line, which wrote the mark
-	// where the placeholder was, so a line that kept that text as it came would hold it.
-	refusals := r.logs.refusals()
-	for _, control := range []struct {
-		what, field, want string
-		lines             []logLine
-	}{
-		{"a failed dial's host", "host", placeholderMark + ".example.net", failures},
-		{"a failed dial's host, the zone gone", "host", zoned, failures},
-		{"a refusal's correlation id", "correlation_id", placeholderMark, refusals},
-		{"a refusal's method", "method", placeholderMark, refusals},
-		{"a refusal's path", "path", "/v2/" + placeholderMark, refusals},
-		{"a carried call's path", "path", "/v1/" + placeholderMark, r.logs.calls()},
-	} {
-		if !slices.ContainsFunc(control.lines, func(line logLine) bool { return line.fields[control.field] == control.want }) {
-			t.Errorf("no line names %s %q: %v", control.what, control.want, control.lines)
-		}
-	}
-	upstream := r.logs.lines(upstreamMessage)
-	if !slices.ContainsFunc(upstream, func(line logLine) bool {
-		return line.fields["host"] == certHost && strings.Contains(fmt.Sprint(line.fields["error"]), placeholderMark+".example.net")
-	}) {
-		t.Errorf("no upstream line for %s quotes the certificate's name as %q: %v", certHost, placeholderMark+".example.net", upstream)
-	}
-	netHTTP := r.logs.lines(netHTTPMessage)
-	if !slices.ContainsFunc(netHTTP, func(line logLine) bool {
-		text := fmt.Sprint(line.fields["error"])
-		return strings.Contains(text, "during body copy") && strings.Contains(text, peerBytesShown)
-	}) {
-		t.Errorf("no net/http line says the body copy failed with the trailer written as %s: %v", peerBytesShown, netHTTP)
-	}
-	// The bound trailer's line is the bound proxy's own, which serveBound's ErrorLog makes it: a
-	// ReverseProxy without one writes it to the standard logger instead.
-	boundNetHTTP := bound.logs.lines(netHTTPMessage)
-	if !slices.ContainsFunc(boundNetHTTP, func(line logLine) bool {
-		text := fmt.Sprint(line.fields["error"])
-		return strings.Contains(text, "during body copy") && strings.Contains(text, peerBytesShown)
-	}) {
-		t.Errorf("no net/http line of the bound proxy says its body copy failed with the trailer written as %s: %v", peerBytesShown, boundNetHTTP)
-	}
-	// The control for the status line: the bound proxy's upstream line says the answer was
-	// malformed, with the fixed phrase where the service's status line was.
-	boundUpstream := bound.logs.lines(upstreamMessage)
-	if !slices.ContainsFunc(boundUpstream, func(line logLine) bool {
-		return strings.Contains(fmt.Sprint(line.fields["error"]), "malformed HTTP response "+peerBytesShown)
-	}) {
-		t.Errorf("no upstream line of the bound proxy says the answer was malformed with its status line written as %s: %v", peerBytesShown, boundUpstream)
-	}
-	stdText := stdlog.String()
-	if strings.Contains(strings.ToLower(stdText), lowered) {
-		t.Errorf("the standard logger was written the placeholder, in some case: %q", stdText)
-	}
-	// No byte of the real value the echo answers sent back reaches any sink: no run of eight of
-	// its bytes is in a line of either proxy, on the standard logger, or in an answer the
-	// command was given by the proxy itself (badGateway's 502).
-	sinks := []string{stdText, answered["/v1/echo-status"]}
-	for _, record := range append(r.logs.Records(), bound.logs.Records()...) {
-		sinks = append(sinks, written(record))
-	}
-	for i := 0; i+8 <= len(workerValue); i++ {
-		run := workerValue[i : i+8]
-		for _, sink := range sinks {
-			if strings.Contains(sink, run) {
-				t.Errorf("a sink holds %q of the real value: %q", run, sink)
-			}
-		}
-	}
-	// The control for the standard logger: the transport did write the four unsolicited
-	// answers to it, each with the fixed phrase where the service's bytes were; the text handler
-	// writes the quotation marks escaped.
-	if shown := strings.Count(stdText, `starting with \"[service bytes not shown]\"`); shown < 4 {
-		t.Errorf("the standard logger writes %d unsolicited answers as %s; want four: %q", shown, peerBytesShown, stdText)
-	}
-
-	// The control: the planted values really were sent, so a line that held one would have had
-	// it to hold. The service saw the body and the header, and the swap put the real value in
-	// the request it forwarded.
-	seen := r.requests()
-	posted := slices.IndexFunc(seen, func(request seenRequest) bool { return request.Body == plantedBody })
-	if posted < 0 {
-		t.Fatalf("the service never saw the call carrying the planted body: %v", seen)
-	}
-	if seen[posted].Header.Get("X-Planted") != plantedHeader {
-		t.Fatalf("the service saw X-Planted %q; want the planted header", seen[posted].Header.Get("X-Planted"))
-	}
-	if got, want := seen[posted].Header.Get("Authorization"), "Bearer "+workerValue; got != want {
-		t.Fatalf("the service saw Authorization %q; want %q, the real value the swap put in", got, want)
-	}
-}
-
 // TestADialWhoseCommandLeftWritesOneLine: a command can give up while the proxy is still looking
 // its host up or dialling it - it resets its socket, and the request's context ends. A lookup or a
 // dial given up that way says nothing about the service or the resolver, so its line is classed
@@ -1267,6 +864,21 @@ func TestAnAzureAccessExchangeNamesTheGrantItsRequestRead(t *testing.T) {
 	} {
 		if got := lines[0].fields[field]; got != want {
 			t.Errorf("the access exchange's failed dial's %s = %v; want %v (whole line: %v)", field, got, want, lines[0].fields)
+		}
+	}
+}
+
+// TestTheDialLogTestsStayUnderAThousandLines holds this file and the masking rows split out of it
+// (log_masking_test.go) to a size one reader can hold: a file past 1,000 lines is split by what
+// its rows are about, as the masking rows were, rather than grown.
+func TestTheDialLogTestsStayUnderAThousandLines(t *testing.T) {
+	for _, file := range []string{"dial_log_test.go", "log_masking_test.go"} {
+		text, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if lines := bytes.Count(text, []byte("\n")); lines > 1000 {
+			t.Errorf("%s is %d lines; want at most 1,000, split by what its rows are about", file, lines)
 		}
 	}
 }

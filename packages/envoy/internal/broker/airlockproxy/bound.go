@@ -824,8 +824,9 @@ func (s *Server) refuse(w http.ResponseWriter, r *http.Request, c call, status i
 // host, the path and the correlation id (X-Correlation-Id) are the caller's own text, and a reason
 // may quote the host (serveConnect's target that is no host and port, and checkedAddresses' name
 // that does not resolve): RefusalLine.Fields cuts each of them, as it cuts every text field of the
-// line (answer.ClipFields), and the line is written through maskedHandler, which writes each
-// placeholder such text holds as placeholderMark, since a cut is no redaction.
+// line (answer.ClipFields), and the broker writes the line through its placeholder mask
+// (logmask.Writer), which writes each placeholder such text holds as logmask.Mark, since a cut is
+// no redaction.
 func (s *Server) refusalFields(id string, c call, r *http.Request, status int, code, reason string) []any {
 	line := answer.RefusalLine{ID: id, Status: status, Code: code, Method: r.Method,
 		CallerClass: answer.CallerAirlock, Caller: callerOf(c.grant), Correlation: answer.CorrelationID(r)}

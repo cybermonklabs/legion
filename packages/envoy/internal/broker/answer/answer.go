@@ -735,7 +735,7 @@ func CorrelationID(r *http.Request) string {
 // first FieldBytes, dropping every invalid UTF-8 run in the bytes it keeps (strings.ToValidUTF8),
 // a rune the cut splits among them: what a line written for an answer keeps of each text field
 // (ClipFields), a refusal's line of each secret name (SecretNames), and the broker's standard
-// logger of the first line of each write to it (airlockproxy's SetDefaultLog).
+// logger of the first line of each write to it (logmask.StandardLog).
 func Clip(text string) string {
 	if len(text) <= FieldBytes {
 		return text

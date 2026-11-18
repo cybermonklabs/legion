@@ -251,6 +251,7 @@ on:
       - 'packages/envoy/internal/fileowner/*'
       - 'packages/envoy/internal/ratelimit/*'
       - 'packages/envoy/internal/broker/rulehost/*'
+      - 'packages/envoy/internal/broker/logmask/*'
       - 'packages/envoy/internal/weborigin/*'
       - 'packages/dispatch/**'
       - 'scripts/e2e/lib/held-port.py'

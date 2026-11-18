@@ -277,7 +277,8 @@ func callerOfContext(ctx context.Context) requests.AirlockConnection {
 // the number it names (portNumber), and the address is the resolver's answer with that port.
 // Lowercasing and the cut every field passes (answer.ClipFields, which keeps the line one Cloud
 // Logging entry) are no redaction: what keeps a placeholder the command wrote into its host off
-// the line is maskedHandler, which every line of this package is written through.
+// the line is the broker's placeholder mask, which every line it writes passes (logmask.Writer,
+// under cmd/broker's handler).
 func dialFields(grant requests.AirlockConnection, host, port, address string) []any {
 	return []any{
 		"enrollment", grant.EnrollmentID,

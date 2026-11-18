@@ -1242,55 +1242,56 @@ the tunnel's, or a failed dial's when the transport's own check or dial fails �
 `xn--caf-dma.example.net`, while the line of the proxy's own check before it, the refusal line
 and `airlock proxy: upstream` name `café.example.net`. A cut to 256 bytes keeps a line small,
 and lowercasing a host keeps it one spelling; neither is redaction. What keeps a placeholder off
-a line is that each text the line holds, in each form a handler writes it, has each placeholder
-written whole — `agent-secrets-placeholder-` and the letters and digits after it, in any case —
-replaced by `[placeholder]` before the line is written. That holds for every line the broker
-writes through slog or Go's `log` package: every line of the airlock's proxy port, a refusal line
-and net/http's and httputil's own `airlock proxy: net/http` lines among them, the API port's
-lines, the standard logger's, the AWS SDK's, which the broker writes as `broker: aws sdk` at
-`WARNING`, grpc's, written as `broker: grpc` (its errors at `ERROR`; its infos and warnings, which
-grpc drops by default, at `DEBUG`, which the broker drops too), and OpenTelemetry's internal
-errors. grpc's own `GRPC_GO_LOG_SEVERITY_LEVEL` and `GRPC_GO_LOG_VERBOSITY_LEVEL` therefore change
-nothing the broker writes. net/http's transport has no error log of its own: when a service
-sends bytes after a whole answer on a connection the proxy keeps, the transport writes them to
-the standard logger, which the broker writes as one line for each write, its first line cut to
-256 bytes and the rest kept as `stack`. So no such line holds a placeholder as it was minted or
-lowercased: a command that writes its placeholder into its request's path, its
-`X-Correlation-Id` or the host it asks for, or a service that names it in its certificate, has
-`[placeholder]` written there. The mask writes only what the handler behind it writes, masked:
-over the broker's JSON handler it reads a value in the form that handler writes it, an error's
-text or the value's JSON as that handler encodes it, and never in a form the handler does not
-write, such as an error's `MarshalText` or a struct's `String`, which could quote a real value
-the written form leaves out.
-A value whose written form holds no placeholder is written as it is. A value the mask reads that
-is nil, or one whose methods fail or panic, is written as slog writes it — `<nil>`, `null`,
-`!ERROR:…` or `!PANIC: …`, with a placeholder in that text masked too — and the mask never ends
-the call: where slog alone would panic printing a failure whose text holds a placeholder, the
-mask writes that text, masked. Two kinds of text are not masked.
-A library that writes to stderr or stdout itself writes past it — the Anthropic SDK's warnings,
-go-retryablehttp's default client, the pg_query WebAssembly module's stdout and stderr, and the
-Google client libraries' own logger when `GOOGLE_SDK_GO_LOGGING_LEVEL` is set and a client was
-given no logger (the broker's Secret Manager client is given one that drops every line, since at
-debug it prints each response, and a read's response holds the value) — as does the Go runtime's
-report of a fatal error or a panic no handler recovered, and anything written before `main`
-runs. And a `[]byte` inside a struct, map or slice field is written by the JSON handler in
-base64, which the mask does not decode. A placeholder encoded on purpose — its characters
-percent-escaped, written in
-fullwidth letters, a separator written after the prefix, an invisible character written inside
-it, or its 32 characters after the prefix written alone — is text the proxy cannot tell from any
-other, and is written as it came; that is out of the mask's scope, since a command that wants its
+a line is the broker's mask, which reads each line its JSON handler writes, after the handler has
+written it: it decodes each string of the line — each value, each key, each group's name — and
+writes again each string whose decoded text holds a placeholder, with each placeholder written
+whole — `agent-secrets-placeholder-` and the letters and digits after it, in any case — replaced
+by `[placeholder]`, and leaves every other byte as the handler wrote it. So a value is masked in
+the one form the line holds it, and a name a command chose changes no other field of its line,
+whatever bytes it holds. That holds for every line the broker writes through slog or Go's `log`
+package: every line of the airlock's proxy port, a refusal line and net/http's and httputil's own
+`airlock proxy: net/http` lines among them, the API port's lines, the standard logger's, the AWS
+SDK's, which the broker writes as `broker: aws sdk` at `WARNING`, grpc's, written as
+`broker: grpc` (its errors at `ERROR`; its infos and warnings, which grpc drops by default, at
+`DEBUG`, which the broker drops too), and OpenTelemetry's internal errors. grpc's own
+`GRPC_GO_LOG_SEVERITY_LEVEL` and `GRPC_GO_LOG_VERBOSITY_LEVEL` therefore change nothing the broker
+writes. net/http's transport has no error log of its own: when a service sends bytes after a
+whole answer on a connection the proxy keeps, the transport writes them to the standard logger,
+which the broker writes as one line for each write, its first line cut to 256 bytes and the rest
+kept as `stack`. So no such line holds a placeholder as it was minted or lowercased: a command
+that writes its placeholder into its request's path, its `X-Correlation-Id` or the host it asks
+for, or a service that names it in its certificate, has `[placeholder]` written there. A line the
+mask cannot read as one JSON object is written as a fixed line in its place, and none of its text
+is written. A value whose methods fail or panic is written as slog writes that failure —
+`!ERROR:…` or `!PANIC: …`, with a placeholder in that text masked too; the mask calls no method
+of a value and so cannot panic for one, though slog itself can panic for a value whose failure
+it cannot print. Two kinds of text are not masked. A library that writes to stderr or stdout
+itself writes past it — the Anthropic SDK's warnings, go-retryablehttp's default client, the
+pg_query WebAssembly module's stdout and stderr, and the Google client libraries' own logger when
+`GOOGLE_SDK_GO_LOGGING_LEVEL` is set and a client was given no logger (the broker's Secret
+Manager client is given one that drops every line, since at debug it prints each response, and a
+read's response holds the value) — as does the Go runtime's report of a fatal error or a panic no
+handler recovered, and anything written before `main` runs. And a placeholder the line holds in
+another spelling: a `[]byte`, which the JSON handler writes in base64 wherever it is in a line,
+and a placeholder encoded on purpose — its characters percent-escaped, written in fullwidth
+letters, a separator written after the prefix, an invisible character written inside it, or its
+32 characters after the prefix written alone — is text the mask cannot tell from any other, and
+is written as it came; that is out of the mask's scope, since a command that wants its
 placeholder sent somewhere can send it through a tunnel, and the mask is for a placeholder
 written as it is.
 
 No field of a line is read from a request's body or from a header the swap puts a value in. A
 bound service is sent the real value, though, and can send it back, and the token endpoint of an
-Azure exchange is sent the real federated token; the placeholder mask can see neither. So each run
-of bytes net/http, net/textproto and httputil quote from a peer — an answer's bytes on an idle
-connection, a header, trailer or status line they could not read, a client's ALPN list — is
+Azure exchange is sent the real federated token; the placeholder mask can see neither. net/http,
+net/textproto and httputil quote each run of bytes they repeat from a peer — an answer's bytes on
+an idle connection, a header, trailer or status line they could not read, a client's ALPN list —
+so a library's text from the first quotation mark of each of its lines to that line's end is
 written as `"[service bytes not shown]"`: in the lines those libraries write (the standard
 logger's and `airlock proxy: net/http`), in the `error` of `airlock proxy: upstream` and in the
 `502` the proxy answers with it, and in the reason, line and answer of an Azure exchange the
-endpoint's answer failed. A service's text a library writes without quotes is written as it came,
+endpoint's answer failed. The whole rest of the line goes, not only the quoted run, since a stray
+quotation mark before a run would otherwise pair with the run's opening one and leave the run in
+clear. A service's text a library writes without quotes is written as it came,
 so a line or a `502` holds a secret's value where a service writes it into such text: for
 example, the `error` of `airlock proxy: upstream` for a certificate that names another host lists
 the names in the service's certificate. The API port's refusal line takes its `correlation_id` from
