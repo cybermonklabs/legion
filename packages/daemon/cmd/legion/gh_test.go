@@ -2264,18 +2264,22 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 
 // A signal that reaches `legion gh` before it has armed its own forwarding ends the command
 // there, with the status a shell reads a death by that signal as, and gh is never started.
-// Until that arming the signal's only reader is main's own signal.NotifyContext, which cancels
-// the command's context, names the signal as the cause and raises it no further, and the
-// context the child is given has that cancellation taken off: without the read of that cause gh
-// would start and run to the end as if nothing had been sent, and `legion gh` would answer with
-// gh's own status.
+// Until that arming the signal's reader is main's own signal.NotifyContext for a SIGINT or a
+// SIGTERM, and hangupCancels for a SIGHUP: each cancels the command's context with a cause naming
+// the signal and raises it no further, and the context the child is given has that cancellation
+// taken off. Without the read of that cause gh would start and run to the end as if nothing had
+// been sent, and `legion gh` would answer with gh's own status.
 //
-// The window is everything this command does before the child, and here it is held open in the
-// resolver's read of the leaf's help (GH_STANDIN_HOLD), which runs before the guard and under a
-// context of its own, so the signal lands inside it rather than in a race. The call is the
-// shared check's own visibility read, the one call the guard never sees, so the whole of the
-// held work is this command's own: the check of these runs refuses everything, and a run that
-// reached it would exit 2 rather than on the signal.
+// The window is everything this command does before the child. The call here is the shared
+// check's own visibility read, which this command answers itself (answerVisibilityRead) through
+// the guard's REST read, under beforeGh; that read runs `gh` from PATH, the pane's wrapper, and so
+// a second `legion gh`, whose resolver reads gh api's help, under its own beforeGh, before it
+// would run the real gh. The run is held in that help read (GH_STANDIN_HOLD), so the signal lands
+// inside the window rather than in a race. The signal ends this command's context, the guard
+// stops the second `legion gh`'s process group, and that command, on the SIGTERM the stop sends,
+// stops its help read's group. The guard never checks this call, so the whole of the held work is
+// this command's own: the check of these runs refuses everything, and a run that reached it would
+// exit 2 rather than on the signal.
 func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
