@@ -1525,7 +1525,7 @@ Two pull requests open at once used to take one number each and collide only whe
 — nothing conflicts in git — while two timestamps taken a moment apart belong to their own authors.
 The version is the file name's leading digits read as a number, as before, so every timestamp orders after every number and timestamps order among themselves by time.
 A 14-digit version is past what an `integer` column holds, so `schema_migrations.version` is a `bigint`.
-A database created before the change keeps its `integer` column until a boot whose set holds a timestamped migration, which widens it once, in the same locked transaction that creates the table (`createVersionTable`):
+A database created before the change keeps its `integer` column until a boot whose set holds a timestamped migration, which widens it once, in the same locked transaction that creates the table (`prepareVersionTable`):
 a boot with no timestamped migration leaves it alone, because the release before this change reads `max(version)` uncast and would fail that read once on every connection that prepared it while it still serves.
 So this release is rolled out before any release that carries a timestamped migration:
 a deployment that skips it costs the release it replaces one failed `/healthz` schema read on each connection that prepared the uncast read, which pgx then drops.
@@ -1541,7 +1541,7 @@ If T2 deploys before T1 merges, that database applies T2 then T1 while a fresh o
 So a migration must not depend on its order relative to one written in a concurrent pull request, another branch open at the same time;
 one that needs another's effect is written after that one has merged.
 
-The runner records a migration by its version alone, so before it touches the database it reads the whole directory (`pgmigrate.Load`) and refuses to start, applying nothing and naming every file concerned, when two migrations share a version (it would apply the first and skip the rest as already applied;
+The runner applies every version it has not recorded, so before it touches the database it reads the whole directory (`pgmigrate.Load`) and refuses to start, applying nothing and naming every file concerned, when two migrations share a version (it would apply the first and skip the rest as already applied;
 keep the version on the file that merged to `main` first, since a database may already have applied it, and give each of the rest the UTC moment it was created), when a file is named other than `<version>_<name>.up.sql`, `<version>_<name>.down.sql` or `<version>_<name>.census.sql` (a `.down.sql` is a rollback script an operator runs by hand, and a `.census.sql` is the migration's census, "Pre-deploy census" below;
 each needs its `.up.sql`), when a census is not one `select` or calls a function it may not (below), when a version is not decimal digits of a positive number the `bigint` column holds, and when a file cannot be read.
 The directory is embedded with `all:`, which keeps a name beginning with `_` or `.`, so such a name is refused like any other.
@@ -1550,11 +1550,49 @@ Vim writes its swap file beside the file it edits by default.
 What no directive embeds, such as a symlink, a `.git` or a hidden name Go's module paths refuse, never reaches the runner, so only the store's tests catch it (`pgmigrate/pgmigratetest.CheckEmbedsEveryFile` names each cause).
 Versions are applied by their number, not by file name, and the store's tests require every file on disk to be embedded (`TestEveryMigrationFileIsEmbedded`) and the identifiers to be the numbered migrations 1 to the number the series closed at (recorded once in `migrationid`), each taken once with none above it, and a real UTC instant above them (`TestMigrationSetTakesNumbersThenTimestamps`, `migrationid.Check`), both reading file names alone.
 
+**A recorded version under another file.**
+`schema_migrations` records each applied migration's version and its identity: the file's name, without its directory, in `name`, and the sha256 of its whole text, in lower-case hex, in `checksum`.
+The runner adds the two nullable columns itself to a table an earlier runner made, in the locked transaction that creates the table (`prepareVersionTable`), reading the columns first so that the `alter table` runs once per database:
+it takes `ACCESS EXCLUSIVE` on `schema_migrations` for a catalog change that rewrites no row, and its wait is bounded by `pgmigrate.LockTimeout`, five seconds.
+Every statement the release before it sends on the table names its columns, so that release serves beside it while it rolls, and the rows it writes record no name.
+In the same transaction, before it applies anything, the runner reads every row and judges it against this build's file of the row's version (`pgmigrate.Reconcile`):
+
+- A row with no name, which is every row a runner before this one wrote, and one written by hand, is filled with the file's identity and never refused.
+  Each fill logs `pgmigrate: recorded the identity of a migration applied before the runners recorded identities` at INFO, with the table, the version, the name and the checksum.
+
+- A row that records the file's own identity passes.
+
+- A row that records, name and checksum both, an identity the file declares in a `-- replaces: <name> sha256:<hex>` line moves to the file's own identity, and logs `pgmigrate: moved a migration's recorded identity to the file that replaces it` at INFO with `from` and `to`.
+
+- A version no file of the build has is left as it is, as before: an image rolled back meets the versions a later one recorded.
+
+- Any other row refuses the boot, and the runner applies nothing.
+
+The refusal names the version, what the database records and what the build's file is, and both ways out:
+
+```text
+migrations refused, none applied: version 20261117022936 is recorded as 20261117022936_legion_current.up.sql sha256:<recorded>, and this build's file of version 20261117022936 is 20261117022936_legion_current.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended, add this line to 20261117022936_legion_current.up.sql: -- replaces: 20261117022936_legion_current.up.sql sha256:<recorded>
+```
+
+A file whose replaces lines name other identities adds `, whose replaces lines name only <identity>` after its own.
+A row another process records between the boot's first judgment and the migration of its version is judged the same way when the runner comes to that migration, and its refusal reads `apply migration <version>: check migration: version …`.
+What the operator does:
+
+- A database that ran another branch's or an earlier commit's migration, such as a development database or a preview stack's, holds a schema this build never wrote: reset it, by dropping the database, creating it empty, and starting the server, which migrates it from the first file.
+
+- A file edited or renamed on purpose, whose schema the database already holds, takes the line the refusal names, alone on a line of its own, anywhere in the file; the next boot moves the row and logs both identities.
+  The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way.
+  A file may carry several, one for each identity a database may record.
+
+Every row production holds was written before the runners recorded identities, so its first boot of this runner fills each from the file the release ships and refuses none.
+A migration edited in place that reaches a database before this runner does is filled with its edited identity there; one edited after this runner's first boot needs its replaces line.
+`DATABASE_URL=<url> go run ./internal/pgmigrate/cmd/versions dispatch`, from `packages/envoy`, reads in a read-only transaction what the next boot would do with each row, and exits 1 when a recorded version has no file or a row would be refused (`pgmigrate.CheckVersions`).
+
 A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside a transaction (`pgmigrate.ExecNonTransactional`).
 The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.
 The runner owns and closes that connection and holds the session-level advisory lock on the same migration key through the build and its separate version insert, excluding transactional runners and schema-version readers too.
 Every runner takes that key by polling `pg_try_advisory_lock` as statements of its own, with nothing open between two tries, and never by a blocking call: a backend blocked on a lock keeps the snapshot its statement took, and a concurrent index build waits for every older snapshot, so a blocking wait and the build that holds the key deadlock (SQLSTATE 40P01, measured on PostgreSQL 18.6).
-That holds at each of the three places a boot waits for the key (`createVersionTable`, `applyMigrationOnce`, `applyNonTransactionalMigration`) and at the auto-deployer's schema read.
+That holds at each of the three places a boot waits for the key (`prepareVersionTable`, `applyMigrationOnce`, `applyNonTransactionalMigration`) and at the auto-deployer's schema read.
 If recording the version fails after a successful build, the next boot safely repeats the idempotent statement.
 An INVALID index of the migration's own index name, on the table the migration builds on, is the runner's own leftover, from a build its lock bound cancelled or a boot that was killed mid-build: the runner drops it with `drop index concurrently if exists`, logged at WARN, and builds the index again, so one failed build no longer stops every later boot.
 An index of that name on another table, valid or INVALID, is refused with a schema-qualified `DROP INDEX CONCURRENTLY` recovery command, because `IF NOT EXISTS` skips on any relation of that name in the schema and the index would never be built on the target table.

@@ -237,7 +237,10 @@ Each item below names a task and where its code is, then notes on it.
   Dispatch's and the secrets broker's runners:
   the set loader that refuses a set before anything applies (`Load`), the lock bound on every migration (`LockTimeout`), the watch that names the lock a timed-out migration wanted, and the pre-deploy census of pending migrations (`Census`, and `CensusTables`, its one reading of what a migration locks;
   the `<version>_<name>.census.sql` a migration declares;
-  `envoy-dispatch census`); a migration runs while the build before it is still serving, which is what it may add and what it must split across two releases (`cmd/dispatch/README.md`, "Database migrations")
+  `envoy-dispatch census`); a migration runs while the build before it is still serving, which is what it may add and what it must split across two releases (`cmd/dispatch/README.md`, "Database migrations").
+  Each runner records an applied migration's identity beside its version, the file's name and the sha256 of its text (`Identity`, in the `name` and `checksum` columns the runner adds to its own version table), and judges every recorded row against the file of its version under its advisory lock before it applies anything (`Reconcile`):
+  a row with no name is filled from the file, a row naming an identity the file declares in a `-- replaces: <name> sha256:<hex>` line moves to the file's own, and any other mismatch refuses the boot, naming both identities and the two remedies (`cmd/dispatch/README.md`, "A recorded version under another file").
+  `go run ./internal/pgmigrate/cmd/versions dispatch|broker` reads, writing nothing, what the next boot would do with each row of a database (`CheckVersions`)
 
 - **Postgres LISTEN loop's shared rules**: `internal/pglisten/`
 

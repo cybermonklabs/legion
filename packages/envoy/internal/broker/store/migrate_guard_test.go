@@ -156,59 +156,68 @@ func TestMigrateBoundsTheWaitForALockAnotherTransactionHolds(t *testing.T) {
 }
 
 // The runner pins its transaction (pgmigrate.Pin) right after its advisory lock, so the statements
-// it runs before the first migration's own pin are bounded by LockTimeout too: the create table of
-// broker_schema_migrations and the first applied check. Here another connection holds ACCESS
-// EXCLUSIVE on an existing broker_schema_migrations in an open transaction. The first applied
-// check is the statement that waits: on PostgreSQL 18.6, create table if not exists takes no lock
-// on a table that exists, and the check reads the table under ACCESS SHARE. migrate gives up after
-// LockTimeout with a lock-timeout error (SQLSTATE 55P03) rather than wait for as long as the holder
-// lives.
+// it runs on broker_schema_migrations before the first migration's own pin are bounded by
+// LockTimeout too. Here another connection holds ACCESS EXCLUSIVE on an existing
+// broker_schema_migrations in an open transaction. On PostgreSQL 18.6, create table if not exists
+// takes no lock on a table that exists, and neither does the read of its columns from
+// information_schema, so the statement that waits is the next one: on a table an earlier runner
+// created, the ALTER TABLE that adds the identity columns, under ACCESS EXCLUSIVE; on a table this
+// runner created, the read of every recorded row, under ACCESS SHARE. Either way migrate gives up
+// after LockTimeout with a lock-timeout error (SQLSTATE 55P03) rather than wait for as long as the
+// holder lives.
 //
 // Control: remove the pgmigrate.Pin call after the advisory lock in migrate, and migrate waits
 // until the test's own deadline cancels it.
 func TestMigrateBoundsTheWaitOfItsFirstAppliedCheck(t *testing.T) {
-	lockTimeout := pgmigrate.LockTimeout
-	ctx := context.Background()
-	s := emptySchemaStore(t)
-	if _, err := s.Pool.Exec(ctx, "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())"); err != nil {
-		t.Fatalf("create the version table: %v", err)
-	}
-	holder, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
-	if err != nil {
-		t.Fatalf("connect the holder: %v", err)
-	}
-	t.Cleanup(func() { holder.Close(context.Background()) })
-	held, err := holder.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the holder's transaction: %v", err)
-	}
-	defer held.Rollback(ctx)
-	if _, err := held.Exec(ctx, "lock table broker_schema_migrations in access exclusive mode"); err != nil {
-		t.Fatalf("hold the version table: %v", err)
-	}
-	set := fstest.MapFS{
-		"migrations/0001_guard_first.up.sql": {Data: []byte("create table guard_first (id integer)")},
-	}
+	for name, table := range map[string]string{
+		"an earlier runner's table": "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now())",
+		"this runner's table":       "create table broker_schema_migrations (version integer primary key, applied_at timestamptz not null default now(), " + pgmigrate.IdentityColumns + ")",
+	} {
+		t.Run(name, func(t *testing.T) {
+			lockTimeout := pgmigrate.LockTimeout
+			ctx := context.Background()
+			s := emptySchemaStore(t)
+			if _, err := s.Pool.Exec(ctx, table); err != nil {
+				t.Fatalf("create the version table: %v", err)
+			}
+			holder, err := pgx.ConnectConfig(ctx, s.Pool.Config().ConnConfig)
+			if err != nil {
+				t.Fatalf("connect the holder: %v", err)
+			}
+			t.Cleanup(func() { holder.Close(context.Background()) })
+			held, err := holder.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the holder's transaction: %v", err)
+			}
+			defer held.Rollback(ctx)
+			if _, err := held.Exec(ctx, "lock table broker_schema_migrations in access exclusive mode"); err != nil {
+				t.Fatalf("hold the version table: %v", err)
+			}
+			set := fstest.MapFS{
+				"migrations/0001_guard_first.up.sql": {Data: []byte("create table guard_first (id integer)")},
+			}
 
-	bound := 6 * lockTimeout
-	bounded, cancel := context.WithTimeout(ctx, bound)
-	defer cancel()
-	started := time.Now()
-	err = s.migrate(bounded, set)
-	waited := time.Since(started)
-	if bounded.Err() != nil {
-		t.Fatalf("migrate waited %s for the held version table, until the test's own %s bound cancelled it (%v): nothing bounds the runner's first applied check", waited.Round(time.Millisecond), bound, err)
-	}
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
-		t.Fatalf("migrate returned %v after %s; want a lock-timeout error (SQLSTATE 55P03)", err, waited.Round(time.Millisecond))
-	}
-	if waited < lockTimeout || waited > lockTimeout+10*time.Second {
-		t.Errorf("migrate gave up after %s, want about the %s lock timeout", waited.Round(time.Millisecond), lockTimeout)
-	}
-	t.Logf("migrate gave up after %s: %v", waited.Round(time.Millisecond), err)
-	if left := existingTables(t, s, "guard_first"); len(left) != 0 {
-		t.Errorf("the run that gave up committed %v; want its whole transaction rolled back", left)
+			bound := 6 * lockTimeout
+			bounded, cancel := context.WithTimeout(ctx, bound)
+			defer cancel()
+			started := time.Now()
+			err = s.migrate(bounded, set)
+			waited := time.Since(started)
+			if bounded.Err() != nil {
+				t.Fatalf("migrate waited %s for the held version table, until the test's own %s bound cancelled it (%v): nothing bounds the runner's first applied check", waited.Round(time.Millisecond), bound, err)
+			}
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+				t.Fatalf("migrate returned %v after %s; want a lock-timeout error (SQLSTATE 55P03)", err, waited.Round(time.Millisecond))
+			}
+			if waited < lockTimeout || waited > lockTimeout+10*time.Second {
+				t.Errorf("migrate gave up after %s, want about the %s lock timeout", waited.Round(time.Millisecond), lockTimeout)
+			}
+			t.Logf("migrate gave up after %s: %v", waited.Round(time.Millisecond), err)
+			if left := existingTables(t, s, "guard_first"); len(left) != 0 {
+				t.Errorf("the run that gave up committed %v; want its whole transaction rolled back", left)
+			}
+		})
 	}
 }
 

@@ -741,7 +741,7 @@ const migrationKeyQueueBound = 2 * migrationLockMaxPause
 // so both runners finish.
 //
 // The two runners call applyMigration rather than migrate because migrate's first wait for the
-// key is createVersionTable's: with a third session holding the key both boots would queue
+// key is prepareVersionTable's: with a third session holding the key both boots would queue
 // there instead, and the winner would then hold the key from that wait right through its build,
 // so the loser could never be waiting at the site this test is about.
 func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testing.T) {

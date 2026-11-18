@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -126,10 +127,15 @@ func declaresPoolSize(databaseURL string) (bool, error) {
 // version record in one transaction; marked concurrent indexes run outside a transaction under
 // the same advisory key until their version is recorded. Every wait for that key polls, for the
 // reason lockMigrations gives. It refuses a set pgmigrate.Load refuses before touching the
-// database and bounds every migration's lock waits by LockTimeout.
+// database, refuses a database whose schema_migrations records a version under another file's
+// identity before applying anything (prepareVersionTable), and bounds every migration's lock
+// waits by LockTimeout.
 func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
 }
+
+// versionTable is the table this runner records each applied migration in.
+const versionTable = "schema_migrations"
 
 func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	if s == nil || s.Pool == nil {
@@ -139,9 +145,7 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	if err != nil {
 		return fmt.Errorf("migrations refused, none applied: %w", err)
 	}
-	// Only a set holding a version past an integer widens the column: see createVersionTable.
-	widen := slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version > math.MaxInt32 })
-	if err := s.createVersionTable(ctx, widen); err != nil {
+	if err := s.prepareVersionTable(ctx, migrations); err != nil {
 		return err
 	}
 	for _, migration := range migrations {
@@ -153,7 +157,7 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 }
 
 // migrationLockKey is the advisory key every Dispatch runner takes, session-level, on a
-// connection that serves nothing else while it is held: createVersionTable and
+// connection that serves nothing else while it is held: prepareVersionTable and
 // applyMigrationOnce through inMigrationLockTx, applyNonTransactionalMigration on its own
 // hijacked connection. The auto-deployer (deploy/scripts/autodeploy.sh, schema_applied) polls the
 // same key before reading schema_migrations and reads only once a try of its own is granted, so a
@@ -296,59 +300,88 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 	_ = conn.Close(cleanup)
 }
 
-// createVersionTable creates schema_migrations under the runner's advisory lock
-// (inMigrationLockTx), as the broker's runner creates its own, and, when widen is set, widens
-// the version column of a database that has the table from before the versions became
-// timestamps. Created outside the lock, two processes booting at once against an empty database
-// race `create table if not exists` on the catalog, and the loser exits on pg_type's unique index.
+// prepareVersionTable readies schema_migrations before the runner applies anything, in one
+// transaction that inMigrationLockTx opens on the connection that holds the runner's advisory key,
+// and judges every version it records against the set.
 //
-// The table and its widening commit in one transaction, the one inMigrationLockTx opens on the
-// connection that holds the key.
+// It creates the table, as the broker's runner creates its own, with the columns that hold each
+// applied migration's identity (pgmigrate.IdentityColumns). Created outside the lock, two processes
+// booting at once against an empty database race `create table if not exists` on the catalog, and
+// the loser exits on pg_type's unique index.
+//
+// On a table an earlier runner created, it adds the identity columns the table lacks
+// (pgmigrate.AddIdentityColumns), and, when widen is set, widens the version column of a table
+// from before the versions became timestamps: one ALTER TABLE does both, so the table's ACCESS
+// EXCLUSIVE lock is taken once, and only where a column is owed, which the columns are read
+// first to say. Pin's lock_timeout bounds that lock's wait at pgmigrate.LockTimeout (5 s), and
+// the lock is held to the commit of this short transaction: adding a nullable column with no
+// default writes the catalog alone, and widening rewrites a table of a few hundred rows. Every
+// statement an earlier runner sends on the table names its columns, so its prepared statements
+// keep their result types when the columns are added, and a release before this one rolls beside
+// it, its rows recording no name until this runner's next boot fills them.
 //
 // The column is a bigint because a migration added since the set stopped being numbered is named
 // for the UTC moment it was created, 14 digits, which is past the 2147483647 an integer column
-// holds. A database created before this change has the integer the statement below used to create.
+// holds. A database created before that change has the integer the statement used to create.
 // It is widened only by a boot whose set holds such a version (widen), as the daemon widens its
 // own in the first timestamped migration's transaction, and not by a boot that records nothing past
-// an integer: the release before this change reads `max(version)` uncast, so a widening while its
+// an integer: the release before that change reads `max(version)` uncast, so a widening while its
 // processes still serve fails that read once on every connection that prepared it ("cached plan
 // must not change result type"). A release whose set first holds a timestamped migration is rolled
-// out over processes of this one, which read the version cast. The type is read before the ALTER
-// TABLE, which on a column already bigint rewrites nothing but still takes ACCESS EXCLUSIVE.
+// out over processes of that one, which read the version cast.
+//
+// It then reads every row and judges it (pgmigrate.ReconcileRecorded): it fills a row that records
+// no name from the set's file of its version, moves a row that records an identity the file
+// replaces, and refuses a row that records any other identity, writing nothing and applying
+// nothing. The fills and moves commit with the table, and each is logged once they have
+// (pgmigrate.LogFixes).
 //
 // The callback pins its transaction first (pgmigrate.Pin), as applyMigrationOnce's does, so every
 // statement the runner sends on its version table runs under one set of values:
 // session_authorization, role and search_path at the values that RESET gives them, under which
 // schema_migrations and information_schema.columns resolve as the version check and the census
-// resolve them, and lock_timeout at LockTimeout, which bounds the widen's ACCESS EXCLUSIVE lock.
-func (s *Store) createVersionTable(ctx context.Context, widen bool) error {
-	return s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+// resolve them, and lock_timeout at LockTimeout.
+func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.Migration) error {
+	// Only a set holding a version past an integer widens the column.
+	widen := slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version > math.MaxInt32 })
+	var fixes []pgmigrate.Fix
+	err := s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		if err := pgmigrate.Pin(ctx, tx); err != nil {
 			return fmt.Errorf("pin the runner's settings: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `
 			create table if not exists schema_migrations (
 				version bigint primary key,
-				applied_at timestamptz not null default now()
+				applied_at timestamptz not null default now(),
+				`+pgmigrate.IdentityColumns+`
 			)
 		`); err != nil {
 			return fmt.Errorf("create schema migrations table: %w", err)
 		}
-		if !widen {
-			return nil
+		columns, err := pgmigrate.VersionTableColumns(ctx, tx, versionTable)
+		if err != nil {
+			return err
 		}
-		var dataType string
-		if err := tx.QueryRow(ctx, `select data_type from information_schema.columns
-			where table_schema = current_schema() and table_name = 'schema_migrations' and column_name = 'version'`).Scan(&dataType); err != nil {
-			return fmt.Errorf("read the type of schema_migrations.version: %w", err)
+		alter := pgmigrate.AddIdentityColumns(columns)
+		if widen && columns["version"] == "integer" {
+			alter = append(alter, "alter column version type bigint")
 		}
-		if dataType == "integer" {
-			if _, err := tx.Exec(ctx, "alter table schema_migrations alter column version type bigint"); err != nil {
-				return fmt.Errorf("widen schema_migrations.version to bigint: %w", err)
+		if len(alter) > 0 {
+			if _, err := tx.Exec(ctx, "alter table schema_migrations "+strings.Join(alter, ", ")); err != nil {
+				return fmt.Errorf("give schema_migrations the identity columns and a bigint version (%s): %w", strings.Join(alter, ", "), err)
 			}
+		}
+		_, fixes, err = pgmigrate.ReconcileRecorded(ctx, tx, versionTable, migrations)
+		if err != nil {
+			return fmt.Errorf("migrations refused, none applied: %w", err)
 		}
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+	pgmigrate.LogFixes(versionTable, fixes)
+	return nil
 }
 
 // applyMigration applies one migration, trying it again while its lock wait outlasts
@@ -371,7 +404,8 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migr
 	// connection the transaction then runs on (inMigrationLockTx), so the migration and its
 	// version record still commit together, and it is released before RetryLockTimeouts pauses
 	// between attempts.
-	return s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+	var fixes []pgmigrate.Fix
+	err := s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
 		// The check below and the insert of the version name schema_migrations without its
 		// schema. Pin gives the transaction the values that RESET gives session_authorization,
 		// role and search_path, under which the census reads, whatever session the pooled
@@ -381,25 +415,29 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migr
 		if err := pgmigrate.Pin(ctx, tx); err != nil {
 			return fmt.Errorf("pin the runner's settings: %w", err)
 		}
-		var applied bool
-		// The parameter is cast, here and in the insert below, because pgx encodes it for the
-		// column it finds: a database whose column this boot is about to widen, or one widened by
-		// a boot whose statement this connection has not prepared again, would otherwise refuse a
-		// 14-digit version as too large for an int4.
-		if err := tx.QueryRow(ctx, "select exists(select 1 from schema_migrations where version = $1::bigint)", migration.Version).Scan(&applied); err != nil {
+		// The key was released after prepareVersionTable judged the table, so another process may
+		// have recorded this version since: RecheckRecorded judges that row as prepareVersionTable
+		// judged the rest. Both statements cast the version, because pgx encodes it for the column
+		// it finds: a database widened by a boot whose statement this connection has not prepared
+		// again would otherwise refuse a 14-digit version as too large for an int4.
+		applied, recorded, err := pgmigrate.RecheckRecorded(ctx, tx, versionTable, migration)
+		if err != nil {
 			return fmt.Errorf("check migration: %w", err)
 		}
 		if applied {
+			fixes = recorded
 			return nil
 		}
 		if err := pgmigrate.Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
 			return fmt.Errorf("execute migration: %w", err)
 		}
-		if _, err := tx.Exec(ctx, "insert into schema_migrations (version) values ($1::bigint)", migration.Version); err != nil {
-			return fmt.Errorf("record migration: %w", err)
-		}
-		return nil
+		return pgmigrate.Record(ctx, tx, versionTable, migration)
 	})
+	if err != nil {
+		return err
+	}
+	pgmigrate.LogFixes(versionTable, fixes)
+	return nil
 }
 
 // applyNonTransactionalMigration owns its connection so a cancellation or failed cleanup cannot
@@ -436,18 +474,17 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migration pg
 	if err := pgmigrate.PinSession(ctx, conn); err != nil {
 		return fmt.Errorf("pin the runner's settings: %w", err)
 	}
-	var applied bool
-	if err := conn.QueryRow(ctx, "select exists(select 1 from schema_migrations where version = $1::bigint)", migration.Version).Scan(&applied); err != nil {
+	// As in applyMigrationOnce; a fill or a move commits as its own statement here.
+	applied, fixes, err := pgmigrate.RecheckRecorded(ctx, conn, versionTable, migration)
+	if err != nil {
 		return fmt.Errorf("check migration: %w", err)
 	}
 	if applied {
+		pgmigrate.LogFixes(versionTable, fixes)
 		return nil
 	}
 	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
 		return err
 	}
-	if _, err := conn.Exec(ctx, "insert into schema_migrations (version) values ($1::bigint)", migration.Version); err != nil {
-		return fmt.Errorf("record migration: %w", err)
-	}
-	return nil
+	return pgmigrate.Record(ctx, conn, versionTable, migration)
 }

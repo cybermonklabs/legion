@@ -1579,6 +1579,52 @@ the token before you put the machine back: the latest `token_expires_at` above s
 copied token ends, at most an hour after it was minted. Rotate any secret the copy may have read;
 the broker cannot take back a value it released.
 
+## A migration recorded under another file
+
+The broker records each migration it applies in `broker_schema_migrations` with its version, the
+file's name and the sha256 of the file's text. At every start, before it applies anything, it
+compares each recorded version with the file of that version in its own image:
+
+- A version recorded with no name, as every one a broker before this check wrote, takes the
+  file's name and checksum, and the broker logs
+  `pgmigrate: recorded the identity of a migration applied before the runners recorded identities`
+  for each. It is never refused. The first start of the release that brings the check writes one
+  such line for each migration, and refuses none.
+- A version recorded under the file's own name and checksum passes.
+- A version recorded under a name and checksum that the file names in a
+  `-- replaces: <name> sha256:<hex>` line takes the file's own, and the broker logs
+  `pgmigrate: moved a migration's recorded identity to the file that replaces it` with both.
+- A version no file of the image has is left as it is, as an image rolled back finds them.
+- Any other version stops the start: the broker applies nothing, logs `broker: fatal` and exits 1.
+
+The refusal names the version, what the database records and what the image's file is:
+
+```text
+migrations refused, none applied: version 32 is recorded as 0032_another_branch.up.sql sha256:<recorded>, and this build's file of version 32 is 0032_oauth_pod_sessions_binding.up.sql sha256:<file>: if this database ran another branch's or an earlier commit's migration, reset it (drop it, create it empty and let the server migrate it); if the edit is intended, add this line to 0032_oauth_pod_sessions_binding.up.sql: -- replaces: 0032_another_branch.up.sql sha256:<recorded>
+```
+
+What you do depends on how the database came to hold another file:
+
+- **It ran another branch's or an earlier commit's migration** (a development, test or preview
+  database): its schema is not the one this image's files make. Reset it: drop the database,
+  create it empty, and start the broker, which migrates it from the first file. Never reset the
+  production database this way; a refusal there is a release to stop and investigate.
+- **The file was edited or renamed on purpose**, and the database already holds the schema it
+  means: add the line the refusal names, alone on a line of its own, to the file, and ship it. The
+  next start moves the row to the file's own name and checksum. The line names a file of the same
+  version and 64 lower-case hex digits; a line that begins `-- replaces:` and is written any other
+  way stops every start, naming the file and the line.
+
+The check that a start makes reads what the database records without changing it, so you can take
+it before a deploy from a checkout of the release you mean to ship, in `packages/envoy`:
+
+```sh
+DATABASE_URL='<the broker database URL>' go run ./internal/pgmigrate/cmd/versions broker
+```
+
+It prints what the next start would do with each version, and exits 1 when a version would be
+refused or has no file in that release.
+
 ## The audit record
 
 Requests, records, decisions and the audit trail live in the broker's Postgres database

@@ -480,6 +480,20 @@ starting together take turns, so a migration runs once. Each migration waits at 
 for a lock. When something holds the table longer, the start fails and names the migration and
 what it waited on; end the holder, or let it finish, and start again.
 
+Dispatch records each migration it applies with the file's name and the sha256 of its text. At
+every start, before it applies anything, it compares each recorded migration with the file of the
+same version in the release it runs. A migration recorded before this check, with no name, takes
+the file's name and checksum and is never refused, so the first start of the release that brings
+the check refuses nothing. When the database records another file, or another text, under a
+version, the start fails and applies nothing, and the log names the version, what the database
+records and what the release's file is. A database that ran another branch's or an earlier
+commit's migration, such as a test or preview database, is reset: drop it, create it empty, and
+start Dispatch, which migrates it from the first file. A migration edited or renamed on purpose
+takes the `-- replaces: <name> sha256:<hex>` line the refusal gives, and the next start records
+the new file. To see what a start would do, without changing the database, run
+`DATABASE_URL='<your database URL>' go run ./internal/pgmigrate/cmd/versions dispatch` from
+`packages/envoy` in a checkout of the release.
+
 Before you roll a new version out, you can see what its migrations will touch:
 
 ```sh
