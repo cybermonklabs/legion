@@ -641,7 +641,8 @@ func TestImageTLSProbeFailsAPodTrustSettingThatAcceptsTheEmSignChain(t *testing.
 // Four more variables name a file or a token a probed client sends to the site it reaches, and the
 // pod's value of each must not reach a client. Measured on 2026-11-18 on the pull request's image
 // (sha256:8f30d2f0…, with the legion of 1af3e416) against a local listener, each client run with
-// every tlsCredentialVariables name unset and its own variables set, as the probe runs it:
+// every name of the removal list that legion used then unset and its own variables set, as the
+// probe ran it then:
 // SYSTEM_WGETRC naming a wgetrc whose `header = Authorization: Bearer …` GNU wget 1.25.0 then sent;
 // GIT_CONFIG_SYSTEM naming a configuration whose http.extraHeader git 2.47.3 then sent with `git
 // ls-remote`; CLOUDSDK_AUTH_AUTHORIZATION_TOKEN_FILE naming a file whose contents gcloud 594.0.0
@@ -913,6 +914,60 @@ func TestTLSPositiveControlsRequireTheExpectedChain(t *testing.T) {
 				t.Fatalf("verifyTLSPositiveControls() = %v, want error containing %q", err, testCase.want)
 			}
 		})
+	}
+}
+
+// Every curl the probe runs reads no curlrc: the curl client and the positive controls each reach a
+// test site, and curl sends a curlrc's headers to every host it reaches. A HOME of its own does not
+// keep curl from the pod's: where the curlrc is in none of CURL_HOME, XDG_CONFIG_HOME and HOME, curl
+// 8.14.1 reads it from the home the passwd database names for its user (findfile, curl's
+// tool_findfile.c). Measured on 2026-11-18 on the head's image (sha256:40cd7424…, the legion of
+// d56fa735) against a local listener, with /home/legion/.curlrc holding an Authorization header: the
+// curl client, run with HOME in the state directory, and the positive controls' curl, run with the
+// pod's HOME, each sent that header. curl reads no curlrc only where -q (--disable) is its first
+// argument (measured: `curl -q -s …` sent no header from a CURL_HOME curlrc, `curl -s -q …` sent it).
+func TestTLSProbeCurlReadsNoCurlrc(t *testing.T) {
+	found := false
+	for _, client := range imageTLSClients("omp", nil, t.TempDir(), t.TempDir()) {
+		command, ok := client.(interface {
+			commandLine(tlsSite) (string, []string, []string)
+		})
+		if !ok || client.name() != "curl" {
+			continue
+		}
+		found = true
+		for _, site := range tlsSites {
+			if _, args, _ := command.commandLine(site); len(args) == 0 || (args[0] != "-q" && args[0] != "--disable") {
+				t.Errorf("the curl client at %s runs curl %q, whose first argument is not -q", site.name, args)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("imageTLSClients() has no curl client")
+	}
+
+	bin := t.TempDir()
+	record := filepath.Join(bin, "first-arguments")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '" + record + "'\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// The stand-in curl accepts every site, the isolation endpoint included, so the controls fail;
+	// only the arguments they ran curl with matter here.
+	_ = probeTLSPositiveControls(context.Background(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir())
+	data, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("the positive controls never ran curl: %v", err)
+	}
+	firsts := strings.Fields(string(data))
+	if len(firsts) == 0 {
+		t.Fatal("the positive controls never ran curl")
+	}
+	for _, first := range firsts {
+		if first != "-q" && first != "--disable" {
+			t.Errorf("a positive control ran curl with first argument %q, not -q", first)
+		}
 	}
 }
 
