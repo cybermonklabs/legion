@@ -978,13 +978,7 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 	guard := &pidGuard{pids: map[int]bool{guarded.Process.Pid: true}}
 	// Every one has exited and waits as a zombie for whoever reaps it.
 	for _, cmd := range []*exec.Cmd{tester, reviewer, orphan, guarded} {
-		deadline := time.Now().Add(5 * time.Second)
-		for !zombie(cmd.Process.Pid) {
-			if time.Now().After(deadline) {
-				t.Fatalf("process %d never exited", cmd.Process.Pid)
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
+		awaitZombie(t, cmd.Process.Pid)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	signals := make(chan os.Signal, 1)
@@ -1005,6 +999,86 @@ func TestTheReaperSparesEveryManagersGenerationAndReapsTheRest(t *testing.T) {
 		if err := cmd.Wait(); cmd.ProcessState == nil || cmd.ProcessState.ExitCode() != want {
 			t.Errorf("a manager's generation reads %v (%v), want its own exit %d: the reaper took it", cmd.ProcessState, err, want)
 		}
+	}
+}
+
+// awaitZombie waits for pid, a child of the test that exits at once, to have exited and to wait as
+// a zombie for whoever reaps it.
+func awaitZombie(t *testing.T, pid int) {
+	t.Helper()
+	testwait.WithinPolling(t, 5*time.Second, testwait.Poll, fmt.Sprintf("process %d to exit", pid), func() bool { return zombie(pid) })
+}
+
+// reapedByAnother is whether err is a child's own wait answering that another wait of the process
+// reaped it first: Linux answers ECHILD (`waitid: no child processes`), and gVisor, which a pod
+// runs under, answers ESRCH (`waitid: no such process`) for about half of them.
+func reapedByAnother(err error) bool {
+	return errors.Is(err, syscall.ECHILD) || errors.Is(err, syscall.ESRCH)
+}
+
+// A reap through the guard (pidGuard.reap, which the orphan reaper and the controller pod's drain
+// both run) leaves an exited child the launcher holds for a wait of its own (the leak-check
+// install's run, say) to that wait, which reads its own exit, and reaps any other exited child.
+func TestTheGuardsReapLeavesItsChildrenToTheirWaits(t *testing.T) {
+	guard := &pidGuard{}
+	held := exec.Command("/bin/sh", "-c", "exit 5")
+	if _, err := guard.start(held); err != nil {
+		t.Fatal(err)
+	}
+	other := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := other.Start(); err != nil {
+		t.Fatal(err)
+	}
+	awaitZombie(t, held.Process.Pid)
+	awaitZombie(t, other.Process.Pid)
+	if _, err := guard.reap(); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.Wait(); !reapedByAnother(err) {
+		t.Errorf("the unheld child's own wait answered %v, want ECHILD or ESRCH: the reap left it unreaped", err)
+	}
+	if err := held.Wait(); held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
+		t.Errorf("the held child reads %v (%v), want its own exit 5: the reap took it", held.ProcessState, err)
+	}
+}
+
+// The controller pod's launcher is its container's PID 1, and once a generation has exited it
+// drains the namespace of what the generation left (cleanExitedGeneration): SIGTERM to every
+// process, then a reap until nothing is left. That drain reaps through the guard, so a child the
+// launcher holds for a wait of its own keeps its exit for that wait, and any other exited child is
+// reaped. It runs as PID 1 of a PID namespace of its own, since off PID 1 the drain does nothing
+// (TestControllerDrainPIDOneHelper).
+func TestTheControllerPodsDrainLeavesTheGuardsChildrenToTheirWaits(t *testing.T) {
+	t.Logf("%s", runAsPIDOne(t, "TestControllerDrainPIDOneHelper"))
+}
+
+// TestControllerDrainPIDOneHelper is TestTheControllerPodsDrainLeavesTheGuardsChildrenToTheirWaits's
+// body, run as PID 1.
+func TestControllerDrainPIDOneHelper(t *testing.T) {
+	if os.Getenv(pidOneHelperEnv) != "1" {
+		return
+	}
+	if os.Getpid() != 1 {
+		t.Fatal("the drain helper is not PID 1")
+	}
+	guard := &pidGuard{}
+	m := &manager{cfg: Config{StopGrace: time.Second}, guard: guard}
+	held := exec.Command("/bin/sh", "-c", "exit 5")
+	if _, err := guard.start(held); err != nil {
+		t.Fatal(err)
+	}
+	other := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := other.Start(); err != nil {
+		t.Fatal(err)
+	}
+	awaitZombie(t, held.Process.Pid)
+	awaitZombie(t, other.Process.Pid)
+	m.cleanExitedGeneration()
+	if err := other.Wait(); !reapedByAnother(err) {
+		t.Errorf("the unheld child's own wait answered %v, want ECHILD or ESRCH: the drain left it unreaped", err)
+	}
+	if err := held.Wait(); held.ProcessState == nil || held.ProcessState.ExitCode() != 5 {
+		t.Errorf("the held child reads %v (%v), want its own exit 5: the drain took it", held.ProcessState, err)
 	}
 }
 

@@ -24,25 +24,23 @@ import (
 )
 
 // provisioningTokenRequest is one installation token request a provisioning mint made: the
-// installation it was addressed to, and the repositories and permissions its body named. Every
-// mint of this daemon names permissions, so they are never nil in a request a provisioning mint
-// made; no mint names a repository, the installation deciding what its token reaches
-// (INFRA-2543), so repositories is nil in every one.
+// installation it was addressed to, and the permissions its body named. Every mint of this
+// daemon names permissions, so they are never nil in a request a provisioning mint made; no
+// mint names a repository, the installation deciding what its token reaches (INFRA-2543).
 type provisioningTokenRequest struct {
 	installation string
-	repositories []string
 	permissions  map[string]string
 }
 
 // provisioningInstallation is one owner's installation on the stand-in: the id installation
 // discovery gives for owner, what owner's account has granted the App (granted, which the
 // permissions read answers and every mint cuts its request down to), and how that installation's
-// token exchange answers a request, given the repositories and the permissions its body named.
+// token exchange answers a request, given the permissions its body named.
 type provisioningInstallation struct {
 	id      string
 	owner   string
 	granted map[string]string
-	answer  func(w http.ResponseWriter, repositories []string, permissions map[string]string)
+	answer  func(w http.ResponseWriter, permissions map[string]string)
 }
 
 // provisioningGitHub is a GitHub stand-in over the App endpoints a provisioning mint calls —
@@ -103,11 +101,11 @@ func provisioningStandIn(t *testing.T, installations ...provisioningInstallation
 				http.NotFound(w, r)
 				return
 			}
-			repositories, permissions := exchangeBody(t, r)
+			permissions := exchangeBody(t, r)
 			github.mu.Lock()
-			github.requests = append(github.requests, provisioningTokenRequest{installation: id, repositories: repositories, permissions: permissions})
+			github.requests = append(github.requests, provisioningTokenRequest{installation: id, permissions: permissions})
 			github.mu.Unlock()
-			installation.answer(w, repositories, permissions)
+			installation.answer(w, permissions)
 		// The permissions read every mint makes before its exchange: what the owner's account
 		// has granted the App, which the request is cut down to (appauth's exchangeGranted).
 		case strings.HasPrefix(r.URL.Path, "/app/installations/"):
@@ -138,42 +136,37 @@ func provisioningStandIn(t *testing.T, installations ...provisioningInstallation
 	return github
 }
 
-// exchangeBody is the repositories and the permissions a token request's body named, each nil
-// where the body named none. Every stand-in GitHub of this package answers from it, as GitHub
-// answers a token request from the body it was sent (mintedToken).
-func exchangeBody(t *testing.T, r *http.Request) ([]string, map[string]string) {
+// exchangeBody is the permissions a token request's body named, nil where the body named none.
+// Every stand-in GitHub of this package answers from it, as GitHub answers a token request from
+// the body it was sent (mintedToken).
+func exchangeBody(t *testing.T, r *http.Request) map[string]string {
 	t.Helper()
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		t.Errorf("read a token request's body: %v", err)
-		return nil, nil
+		return nil
 	}
 	if len(body) == 0 {
-		return nil, nil
+		return nil
 	}
 	var payload struct {
-		Repositories []string          `json:"repositories"`
-		Permissions  map[string]string `json:"permissions"`
+		Permissions map[string]string `json:"permissions"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		t.Errorf("decode the token request body %q: %v", body, err)
 	}
-	return payload.Repositories, payload.Permissions
+	return payload.Permissions
 }
 
-// mintedToken answers a token request with token, as GitHub's own answer is shaped: the selection
-// of the repositories the request named, which no mint of this daemon names, and the permissions
-// it asked for, which GitHub names in every answer it makes and the mint holds its answer to
-// (appauth's narrowedTo).
-func mintedToken(w http.ResponseWriter, token string, repositories []string, permissions map[string]string) {
-	named := make([]string, 0, len(repositories))
-	for _, repository := range repositories {
-		named = append(named, fmt.Sprintf(`{"name":%q}`, repository))
-	}
+// mintedToken answers a token request with token, as GitHub's own answer is shaped: the
+// permissions it asked for, which GitHub names in every answer it makes and the mint holds its
+// answer to (appauth's narrowedTo), over the whole installation, which is what GitHub answers a
+// body naming no repository with.
+func mintedToken(w http.ResponseWriter, token string, permissions map[string]string) {
 	// A map of strings always marshals, and json.Marshal sorts its keys.
 	held, _ := json.Marshal(permissions)
-	fmt.Fprintf(w, `{"token":%q,"expires_at":%q,"repository_selection":"selected","repositories":[%s],"permissions":%s}`,
-		token, time.Now().Add(time.Hour).Format(time.RFC3339), strings.Join(named, ","), held)
+	fmt.Fprintf(w, `{"token":%q,"expires_at":%q,"repository_selection":"all","permissions":%s}`,
+		token, time.Now().Add(time.Hour).Format(time.RFC3339), held)
 }
 
 // provisioningRefusal is GitHub's 422 to a token request for a permission the installation is
@@ -241,32 +234,32 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 
 	github := provisioningStandIn(t,
 		provisioningInstallation{id: readingInstallation, owner: readingOwner, granted: writeSet,
-			answer: func(w http.ResponseWriter, repositories []string, permissions map[string]string) {
-				mintedToken(w, "reading-lease", repositories, permissions)
+			answer: func(w http.ResponseWriter, permissions map[string]string) {
+				mintedToken(w, "reading-lease", permissions)
 			}},
 		// An installation whose account has not granted the App Actions: the permissions read
 		// says so, and the mint leaves actions out of its request rather than be refused with it.
 		provisioningInstallation{id: narrowInstallation, owner: narrowOwner, granted: withoutActionsGranted,
-			answer: func(w http.ResponseWriter, repositories []string, permissions map[string]string) {
+			answer: func(w http.ResponseWriter, permissions map[string]string) {
 				if permissions["actions"] != "" {
 					provisioningRefusal(w)
 					return
 				}
-				mintedToken(w, "narrowed-lease", repositories, permissions)
+				mintedToken(w, "narrowed-lease", permissions)
 			}},
 		// An installation that refuses the narrowed read — a grant that changed between the
 		// permissions read and the exchange reaches the adapter as a 422 — and would mint the
 		// App's own write token if asked, which the adapter never does.
 		provisioningInstallation{id: refusedInstallation, owner: refusedOwner, granted: writeSet,
-			answer: func(w http.ResponseWriter, repositories []string, permissions map[string]string) {
+			answer: func(w http.ResponseWriter, permissions map[string]string) {
 				if allRead(permissions) {
 					provisioningRefusal(w)
 					return
 				}
-				mintedToken(w, "own-installation-token", repositories, permissions)
+				mintedToken(w, "own-installation-token", permissions)
 			}},
 		provisioningInstallation{id: flakyInstallation, owner: flakyOwner, granted: writeSet,
-			answer: func(w http.ResponseWriter, _ []string, _ map[string]string) {
+			answer: func(w http.ResponseWriter, _ map[string]string) {
 				w.WriteHeader(http.StatusInternalServerError)
 				fmt.Fprint(w, `{"message":"Server Error"}`)
 			}},
@@ -336,16 +329,6 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 			t.Fatalf("a token request for %s asked for %v, want no mint of the App's write token: %+v", flakyRepo, request.permissions, requests)
 		}
 	}
-
-	// No request names a repository: the installation decides what the lease reaches
-	// (INFRA-2543), and the repository the pod clones keys the lease alone.
-	for _, installation := range []string{readingInstallation, narrowInstallation, refusedInstallation, flakyInstallation} {
-		for _, request := range github.requestsTo(installation) {
-			if request.repositories != nil {
-				t.Fatalf("a token request to installation %s named %v, want no repository", installation, request.repositories)
-			}
-		}
-	}
 }
 
 // A 422 carrying GitHub's rate limit is GitHub's trouble and not its answer about the
@@ -363,7 +346,7 @@ func TestARateLimited422OfTheProvisioningReadIsNoFallbackToTheWriteToken(t *test
 
 	github := provisioningStandIn(t,
 		provisioningInstallation{id: limitedInstallation, owner: limitedOwner, granted: writeSet,
-			answer: func(w http.ResponseWriter, _ []string, _ map[string]string) {
+			answer: func(w http.ResponseWriter, _ map[string]string) {
 				// GitHub's secondary rate limit, which it answers 422 to a token request with.
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				fmt.Fprint(w, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`)
@@ -382,9 +365,6 @@ func TestARateLimited422OfTheProvisioningReadIsNoFallbackToTheWriteToken(t *test
 	for _, request := range github.requestsTo(limitedInstallation) {
 		if request.permissions["contents"] != "read" {
 			t.Fatalf("a token request asked for %v, want the reading lease and no second mint", request.permissions)
-		}
-		if request.repositories != nil {
-			t.Fatalf("a token request named %v, want no repository", request.repositories)
 		}
 	}
 }

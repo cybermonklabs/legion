@@ -89,13 +89,14 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		loginAccount = "system:serviceaccount:example-system:example-service-login"
 		podAccount   = "system:serviceaccount:example:example-worker"
 		secretName   = "AIRLOCK_TOKEN"
-		// boundHost is the name the entry binds: a rules host is a host name, since a client
-		// sends no TLS server name for an address. BROKER_AIRLOCK_TEST_RESOLVE reads it as
-		// boundAddress, RFC 5737's TEST-NET-1, so the CONNECT this row makes depends on no
-		// resolver this process may not have and is refused as no local address, and the proxy
-		// signs the bound host's certificate with that name, which the client sends as its TLS
-		// server name.
-		boundHost    = "bound.airlock.test"
+		// boundHost is a name no resolver answers, which BROKER_AIRLOCK_TEST_RESOLVE gives
+		// boundAddress, RFC 5737's TEST-NET-1, so that the CONNECT this row makes is neither
+		// refused as a local address nor dependent on a resolver this process may not have, and
+		// no request of this test can reach the internet. The entry binds the name rather than
+		// the address, since the rules validation refuses an address literal: a TLS client sends
+		// no server name for one, and the airlock refuses a request whose server name is not its
+		// CONNECT host.
+		boundHost    = "reread.airlock.test"
 		boundAddress = "192.0.2.1"
 	)
 	databaseURL := storetest.URL(t)
@@ -120,9 +121,9 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		"BROKER_AIRLOCK_CA_CERT_FILE=" + certFile,
 		"BROKER_AIRLOCK_CA_KEY_FILE=" + keyFile,
 		"BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_AIRLOCK_TEST_RESOLVE=" + boundHost + "=" + boundAddress,
 		"BROKER_AIRLOCK_RULES_FILE=" + airlockRulesFile(t,
 			`{"secrets": [{"name": "`+secretName+`", "hosts": ["`+boundHost+`"], "headers": ["authorization"], "allow": []}]}`),
-		"BROKER_AIRLOCK_TEST_RESOLVE=" + boundHost + "=" + boundAddress,
 	}})
 	requireHealthy(t, broker.Addr)
 	proxyAddr := airlockProxyAddr(t, broker)

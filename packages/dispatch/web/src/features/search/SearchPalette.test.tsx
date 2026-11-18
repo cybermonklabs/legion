@@ -565,7 +565,9 @@ test("a refetch that re-ranks the hits leaves the highlight on the hit the reade
     // A focus refetch, or the refresh after a gap in the live socket, answers the same query
     // re-ranked.
     search.mockResolvedValue(searchAnswer([second, first]));
-    await view.queryClient.refetchQueries();
+    await act(async () => {
+      await view.queryClient.refetchQueries();
+    });
     await waitFor(() => expect(screen.getAllByRole("option")[0]?.id).not.toBe(shown));
     expect(input).toHaveAttribute("aria-activedescendant", shown);
   } finally {
@@ -667,7 +669,9 @@ test("a background refresh that fails keeps the hits the query has, and the high
 
     // The tab-return refresh fails; TanStack keeps the answer it already has.
     search.mockRejectedValue(new Error("503"));
-    await view.queryClient.refetchQueries();
+    await act(async () => {
+      await view.queryClient.refetchQueries();
+    });
     await waitFor(() =>
       expect(
         view.queryClient.getQueryState(["search", "astrolabe", { keywords_only: true }])?.status

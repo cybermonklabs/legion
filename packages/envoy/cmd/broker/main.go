@@ -681,15 +681,16 @@ func main() {
 			// refuses to dial beside every private address. config.Load has already refused a
 			// start in a cluster whose ranges miss its Service range.
 			ClusterRanges: cfg.AirlockClusterRanges,
-			// The local stack's four settings for the proxy, every one of them refused on a
+			// The local stack's settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
-			// addresses it may dial anyway, the roots it trusts upstream, and the two
-			// negative controls.
-			Resolve:       airlockTestResolver(cfg.AirlockTestResolve),
-			UpstreamRoots: airlockTestUpstreamRoots,
-			DialAllow:     cfg.AirlockTestDialAllow,
-			KeepValues:    cfg.AirlockTestKeepValues,
-			NoKind:        cfg.AirlockTestNoKind,
+			// addresses it may dial anyway, the roots it trusts upstream, the two negative
+			// controls, and the stand-in token authority the azure exchange is held to.
+			Resolve:        airlockTestResolver(cfg.AirlockTestResolve),
+			UpstreamRoots:  airlockTestUpstreamRoots,
+			DialAllow:      cfg.AirlockTestDialAllow,
+			KeepValues:     cfg.AirlockTestKeepValues,
+			NoKind:         cfg.AirlockTestNoKind,
+			AzureAuthority: cfg.AirlockTestAzureAuthority,
 		})
 		airlockProxy.Store(proxy)
 	}
@@ -891,7 +892,7 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
-// settings, the airlock's seven and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
+// settings, the airlock's eight and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
 // a local run, as the port-0 refusal above does and for the same reason: each of them points
 // the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
 // a check the airlock or the judge is made of, so one reaching a real deployment must fail
@@ -914,6 +915,7 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_RESOLVE", len(cfg.AirlockTestResolve) > 0},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
+		{"BROKER_AIRLOCK_TEST_AZURE_AUTHORITY", cfg.AirlockTestAzureAuthority != ""},
 		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
@@ -984,10 +986,17 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 }
 
 // validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
-// that the boot and airlock-check refuse the same file in the same words: airlock.Validate's
-// answer, which is the Lean model's, and then the two refusals that are this program's own and
-// not that model's — an entry whose name is not a name a session can ask for, and a host the
-// proxy never compares a request's host with (ruleHostRefusal).
+// that the boot and airlock-check refuse the same file in the same words: a host the proxy
+// never compares a request's host with (ruleHostRefusal), then airlock.Validate's answer, which
+// is the Lean model's, then an entry whose name is not a name a session can ask for. The hosts
+// come first because ruleHostRefusal names each host's reason and repeats no text of the file,
+// where Validate's refusal of a host HostShapeOK refuses quotes the host as written; and because
+// every host ruleHostRefusal accepts HostShapeOK accepts too, Validate then refuses no host. So a
+// file with two faults reports its first bad host ahead of any other fault Validate finds (a
+// repeated name, an entry with no host, a judge above 900 seconds, another kind). Two of the host
+// refusals are this program's own and not the Lean model's: a last label that is 0x and hex
+// digits (0x1f, a.0x7f000001), which HostShapeOK accepts as no all-digit label but clients read
+// as an IPv4 address, and a wildcard over one.
 //
 // Rules.Lookup compares an entry's name with a released name exactly, and a released name is
 // always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
@@ -996,17 +1005,19 @@ func parseRulesFile(path string) (airlock.Rules, error) {
 // in airlock.Validate because the airlock knows nothing of how a secret is named under the
 // policy's prefix, and config.go refuses BROKER_AZURE_LOGIN_SECRET by the same NameToSlug.
 func validateRulesFile(rules airlock.Rules) error {
+	for i, s := range rules.Secrets {
+		for j, h := range s.Hosts {
+			if why := ruleHostRefusal(fold.ASCII(h)); why != "" {
+				return fmt.Errorf("secrets[%d] %q: hosts[%d] %s", i, s.Name, j, why)
+			}
+		}
+	}
 	if err := airlock.Validate(rules); err != nil {
 		return err
 	}
 	for i, s := range rules.Secrets {
 		if _, err := policy.NameToSlug(s.Name); err != nil {
 			return fmt.Errorf("secrets[%d] %q: %w, so the entry matches no name a session can ask for and holds nothing back", i, s.Name, err)
-		}
-		for j, h := range s.Hosts {
-			if why := ruleHostRefusal(h); why != "" {
-				return fmt.Errorf("secrets[%d] %q: hosts[%d] %s", i, s.Name, j, why)
-			}
 		}
 	}
 	return nil

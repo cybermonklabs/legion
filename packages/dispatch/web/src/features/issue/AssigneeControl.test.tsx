@@ -330,7 +330,9 @@ test("AssigneeControl keeps focus while a save is in flight and saves a pick mad
     .mockImplementationOnce(() => second.promise);
   const { queryClient, unmount, user } = renderControl();
   try {
-    select().focus();
+    act(() => {
+      select().focus();
+    });
     await waitFor(() => expect(select().options.length).toBe(3));
     await user.selectOptions(select(), "bob");
     await waitFor(() =>

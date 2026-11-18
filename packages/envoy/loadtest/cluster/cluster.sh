@@ -518,7 +518,8 @@ registry_digest() {
     [ -n "$realm" ] || return 1
     token=$(curl -fsS --max-time 30 "$realm?service=$service&scope=repository:$repo:pull" | jq -r '.token // .access_token // empty') || return 1
     [ -n "$token" ] || return 1
-    headers=$(curl -sSI --max-time 30 -H "Authorization: Bearer $token" -H "Accept: $MANIFEST_TYPES" "$url" | tr -d '\r') || return 1
+    # The token reaches curl on standard input from printf, a shell builtin, in no command line.
+    headers=$(printf 'Authorization: Bearer %s' "$token" | curl -sSI --max-time 30 -H @- -H "Accept: $MANIFEST_TYPES" "$url" | tr -d '\r') || return 1
     first=${headers%%$'\n'*}
   fi
   [[ $first =~ ^HTTP/[0-9.]+\ 200 ]] || return 1

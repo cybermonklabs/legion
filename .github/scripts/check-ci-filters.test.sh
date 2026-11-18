@@ -17,7 +17,8 @@
 # github.ref with a branch ref, every job's if: but those two jobs' must hold the term that skips
 # it on a re-run attempt of a merge-group run and theirs must not, ci-caches.yaml's save of a
 # cache family must carry
-# the key and the paths ci.yaml's restore of that family names, its own restores being lookups,
+# the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
+# its own restores being lookups,
 # ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
 # DAEMON_RACE_PACKAGES names,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
@@ -73,7 +74,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/mod/cmd/app" "$root/mod/lib" \
     "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"
@@ -1909,6 +1910,65 @@ check "fails" "$(is "$status" 1)"
 check "names the family nothing restores" \
   "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
 
+# release_restore <root> <key>: a workflow ci.yaml does not call - a release build, as
+# release.yaml and release-envoy-infra.yaml are here - restoring the go-app entry ci-caches.yaml
+# fills, under <key>. Its restore misses as silently as one of ci.yaml's when its key drifts, so
+# the save is held to it too; only the existence check stays ci.yaml's.
+release_restore() {
+  cat > "$1/.github/workflows/release.yaml" <<YAML
+name: Release
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: $2
+          restore-keys: go-app-\${{ runner.os }}-
+YAML
+}
+
+echo "case: a release workflow restoring a filled family under the key ci-caches.yaml saves"
+root=$(fixture cache-release-same)
+cache_workflow "$root"
+release_restore "$root" 'go-app-${{ runner.os }}'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a release workflow's restore key that drifted from the key ci-caches.yaml saves"
+root=$(fixture cache-release-drift)
+cache_workflow "$root"
+release_restore "$root" 'go-app-${{ runner.os }}-v2'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the release workflow's job and both keys" \
+  "$(contains "$out" 'job fill saves family go-app under key .*, but job build of .github/workflows/release.yaml restores it under .*-v2')"
+
+echo "case: a family only a release workflow restores"
+root=$(fixture cache-release-only)
+cache_workflow "$root"
+release_restore "$root" 'go-app-${{ runner.os }}'
+replace "$root/.github/workflows/ci.yaml" 'key: go-app-${{ runner.os }}' 'key: go-other-${{ runner.os }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "still names the family ci.yaml restores nowhere" \
+  "$(contains "$out" 'job fill saves cache family go-app, which no actions/cache/restore of .github/workflows/ci.yaml or of a workflow it calls reads')"
+
+echo "case: a lookup of ci-caches.yaml whose key drifted from the key its own save writes"
+root=$(fixture cache-lookup-drift)
+cache_workflow "$root"
+replace "$root/.github/workflows/ci-caches.yaml" $'          key: go-app-${{ runner.os }}\n          lookup-only: true' $'          key: go-app-${{ runner.os }}-v2\n          lookup-only: true'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the lookup's job and both keys" \
+  "$(contains "$out" 'job fill saves family go-app under key .*, but job fill of .github/workflows/ci-caches.yaml restores it under .*-v2')"
+
 echo "case: a lookup of ci-caches.yaml that downloads the entry"
 root=$(fixture cache-lookup-only)
 cache_workflow "$root"
@@ -1928,10 +1988,10 @@ check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
 
 # A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
-# real dispatch-browser job restores the browser and apt archive families in the shard and alone
-# jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it reads ci.yaml's
-# own, and names the file that holds them. Read over ci.yaml alone, the fill below would be a
-# family nothing restores.
+# real dispatch-browser job restores go-envoy and go-envoy-test in the binaries, multiprocess,
+# embedder and visual jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it
+# reads ci.yaml's own, and names the file that holds them. Read over ci.yaml alone, the fill below
+# would be a family nothing restores.
 #
 # suite_cache <root>: a second family, go-suite, that ci-caches.yaml's fill job saves and only
 # the called workflow's `rows` job restores. Call it after cache_workflow and calls_workflow.
@@ -2017,6 +2077,137 @@ check "names the workflow and what it no longer builds" \
 check "and the packages the race step then links from nothing" \
   "$(contains "$out" "that step links ./lib/ from nothing on every run")"
 
+# Rule 20. darwin_vet <root> <set>...: a step of the app job that vets ./... of mod for
+# darwin/arm64 once per <set> (an empty one is no tag), pinned as an exact entry with one Run
+# per set carrying that platform and those tags, as ci_job_reads.py's darwin_vet pins this
+# repository's three. lib gets a file under the build tag probe, and three no tag choice brings
+# to darwin/arm64: one under linux, one under race, which the toolchain sets, and one under
+# amd64.v1, an architecture feature. The app filter takes all of mod, which `./...` reads.
+darwin_vet() {
+  local root=$1 runs="" set
+  shift
+  for set in "$@"; do
+    runs+="        run(\"mod\", [\"./...\"], \"the darwin vet\", tags=\"$set\", mode=\"vet\", env={\"GOOS\": \"darwin\", \"GOARCH\": \"arm64\"}),"$'\n'
+  done
+  printf '//go:build probe\n\npackage lib\n\nfunc Probe() {}\n' > "$root/mod/lib/probe.go"
+  printf '//go:build linux\n\npackage lib\n\nfunc Linux() {}\n' > "$root/mod/lib/linux_only.go"
+  printf '//go:build race\n\npackage lib\n\nconst Race = true\n' > "$root/mod/lib/race_on.go"
+  printf '//go:build amd64.v1\n\npackage lib\n\nconst Feature = true\n' > "$root/mod/lib/feature.go"
+  replace "$root/.github/workflows/ci.yaml" "              - 'mod/lib/*'" "              - 'mod/**'"
+  replace "$root/.github/workflows/ci.yaml" "      - name: Test the app" \
+    "      - name: Vet the library for darwin"$'\n'"        run: GOOS=darwin GOARCH=arm64 go vet ./..."$'\n'"        working-directory: mod"$'\n'"      - name: Test the app"
+  replace "$root/.github/scripts/ci_job_reads.py" "from ci_filter_coverage import Read, at, gate, run" \
+    "from ci_filter_coverage import Read, at, exact, gate, run"
+  replace "$root/.github/scripts/ci_job_reads.py" '    ], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]),' \
+    "    ], exact=[exact(\"Vet the library for darwin\", \"mod\", \"GOOS=darwin GOARCH=arm64 go vet ./...\", ["$'\n'"$runs    ])], reads=[Read(\".github/workflows/ci.yaml\", \"a job reads its own definition\")]),"
+}
+
+echo "case: a darwin vet whose tag set names every tag its module's files are built under"
+root=$(fixture vet-tags-whole)
+darwin_vet "$root" probe
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and reports what it judged" \
+  "$(contains "$out" 'report: job app step "Vet the library for darwin": vets mod for darwin/arm64 under -tags probe; go list compiles 5 of the 8 .go files on disk there, 0 of the rest name a tag, and 0 of those build for darwin/arm64 under tags no set holds')"
+
+echo "case: a darwin vet whose tag set leaves out a tag a file of its module is built under"
+root=$(fixture vet-tags-missing)
+darwin_vet "$root" ""
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and the tags that would compile it" \
+  "$(contains "$out" '::error file=mod/lib/probe.go::job app step "Vet the library for darwin" vets mod for darwin/arm64 under -tags (none), and none of them compiles mod/lib/probe.go, which go builds for darwin/arm64 with -tags probe')"
+check "and passes over the platform's, the toolchain's and the feature's files" \
+  "$(is "$(contains "$out" 'compiles mod/lib/linux_only.go\|compiles mod/lib/race_on.go\|compiles mod/lib/feature.go')" false)"
+
+echo "case: one tag set beside a file under the negated tag"
+root=$(fixture vet-tags-negated)
+darwin_vet "$root" probe
+printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file the set leaves out and the empty set that builds it" \
+  "$(contains "$out" '::error file=mod/lib/noprobe.go::job app step "Vet the library for darwin" vets mod for darwin/arm64 under -tags probe, and none of them compiles mod/lib/noprobe.go, which go builds for darwin/arm64 with -tags (none)')"
+
+echo "case: two tag sets, one with the tag and one without, beside the negated file"
+root=$(fixture vet-tags-negated-covered)
+darwin_vet "$root" probe ""
+printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a package whose every file is under a tag, a tag in another script, a +build line, and headers gofmt would rewrite"
+root=$(fixture vet-tags-unlisted)
+darwin_vet "$root" probe
+mkdir -p "$root/mod/only"
+printf '//go:build hidden\n\npackage only\n' > "$root/mod/only/only.go"
+printf '//go:build probe_\xce\xb2\n\npackage lib\n\nfunc Beta() {}\n' > "$root/mod/lib/beta.go"
+printf '// +build legacy\n\npackage lib\n\nfunc Legacy() {}\n' > "$root/mod/lib/legacy.go"
+# Three headers go/build reads a constraint from although gofmt would rewrite each: one behind a
+# block comment, one indented, one after a byte-order mark.
+printf '/* A block comment. */\n//go:build blocked\n\npackage lib\n\nfunc Blocked() {}\n' > "$root/mod/lib/blocked.go"
+printf '  //go:build indented\n\npackage lib\n\nfunc Indented() {}\n' > "$root/mod/lib/indented.go"
+printf '\xef\xbb\xbf//go:build marked\n\npackage lib\n\nfunc Marked() {}\n' > "$root/mod/lib/marked.go"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file of the package go list ./... leaves out" \
+  "$(contains "$out" '::error file=mod/only/only.go::.*which go builds for darwin/arm64 with -tags hidden')"
+check "names the file under the tag a byte-wise reader would cut short" \
+  "$(contains "$out" $'::error file=mod/lib/beta.go::.*which go builds for darwin/arm64 with -tags probe_\xce\xb2:')"
+check "names the file whose only constraint is a +build line" \
+  "$(contains "$out" '::error file=mod/lib/legacy.go::.*which go builds for darwin/arm64 with -tags legacy')"
+check "names the file whose constraint follows a block comment" \
+  "$(contains "$out" '::error file=mod/lib/blocked.go::.*which go builds for darwin/arm64 with -tags blocked')"
+check "names the file whose constraint is indented" \
+  "$(contains "$out" '::error file=mod/lib/indented.go::.*which go builds for darwin/arm64 with -tags indented')"
+check "names the file whose constraint follows a byte-order mark" \
+  "$(contains "$out" '::error file=mod/lib/marked.go::.*which go builds for darwin/arm64 with -tags marked')"
+
+# go_build_tags.py, the script the vet steps take their sets from, over a module holding each
+# shape above: the first set is every tag, and the file under the negated tag adds a set
+# without it, which also builds the file whose +build line wants legacy and not probe. No set
+# names the platform's, the toolchain's or the feature's names. go list decides every answer,
+# so a go command that fails fails the script, and the step that takes its sets stops there.
+echo "case: go_build_tags.py's sets for a module with a negated tag, a tag-only package and +build lines"
+root=$(fixture vet-tags-sets)
+darwin_vet "$root" probe
+mkdir -p "$root/mod/only"
+printf '//go:build hidden\n\npackage only\n' > "$root/mod/only/only.go"
+printf '//go:build probe_\xce\xb2\n\npackage lib\n\nfunc Beta() {}\n' > "$root/mod/lib/beta.go"
+printf '// +build legacy,!probe\n\npackage lib\n\nfunc Legacy() {}\n' > "$root/mod/lib/legacy.go"
+printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/lib/noprobe.go"
+sets=$(cd "$root" && python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)
+check "prints every tag, then the set without probe, each as a whole -tags= flag" \
+  "$(is "$sets" $'-tags=hidden,legacy,probe,probe_\xce\xb2\n-tags=hidden,legacy,probe_\xce\xb2')"
+status=0
+sets=$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
+check "and fails when go list fails" "$(is "$status" 1)"
+check "naming the go command" "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed')"
+
+# The typecheck step's own run text, taken from its workflow, over a module with one tag and a
+# file under its negation that does not compile: the script's last set is the one with no tag,
+# and a shell's command substitution drops a trailing empty line, so a transport of bare sets
+# would vet only -tags=feature and pass. The module sits two directories deep, as
+# packages/daemon does, so the step's ../../.github/scripts path reaches the fixture's script.
+echo "case: the typecheck step's own loop vets the file under a negated tag"
+root=$(fixture vet-tags-loop)
+mkdir -p "$root/deep/module"
+printf 'module example.com/deep\n\ngo 1.21\n' > "$root/deep/module/go.mod"
+printf '//go:build feature\n\npackage module\n\nvar On = 1\n' > "$root/deep/module/on.go"
+printf '//go:build !feature\n\npackage module\n\nvar _ = notDefined\n' > "$root/deep/module/off.go"
+PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci-job-typecheck.yaml" "$root/step.sh" <<'PY'
+import sys, yaml
+jobs = yaml.safe_load(open(sys.argv[1]))["jobs"].values()
+step = next(s for j in jobs for s in j["steps"] if s.get("name", "").startswith("Vet the Go daemon for darwin"))
+open(sys.argv[2], "w").write(step["run"])
+PY
+status=0
+loop=$(cd "$root/deep/module" && GOWORK=off bash -e "$root/step.sh" 2>&1) || status=$?
+check "fails" "$(is "$status" 1)"
+check "vets under both sets" \
+  "$(is "$(grep -c '^Vetting for darwin with -tags=' <<<"$loop")" 2)"
+check "and names the file only the set with no tag compiles" "$(contains "$loop" 'off.go:5:9: undefined: notDefined')"
+
 # No case runs this rule, or any other rule of check-ci-filters.sh, over this repository's own
 # tree: ci.yaml's ci-filters job runs the whole check there (.github/workflows/ci-job-ci-filters.yaml,
 # "Check every CI filter matches every file its job reads"), so such a case would only reach the
@@ -2078,7 +2269,7 @@ COMPILERS = (
 # (measured: zero claude-envoy files in packages/pi-legion's program), and check-ts-filters.sh
 # cannot hold the filter to it.
 READS = (
-    ("envoy_client", "packages/envoy/internal/brokerclient/testdata/wire.json",
+    ("broker_client", "packages/envoy/internal/brokerclient/testdata/wire.json",
      "packages/broker-client/src/__tests__/wire.test.ts:25-26"),
     ("contracts", "packages/envoy/internal/dispatch/text/testdata/dispatch-block-id-encodings.json",
      "packages/contracts/src/dispatch-block-ref.test.ts:98-102"),
