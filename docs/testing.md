@@ -351,18 +351,22 @@ The three session windows a check may move are its options
 check that must watch a session read `unresponsive` in seconds says so rather than waiting out
 production's five minutes.
 The helper's own tests run this checkout's listener (`EnvoyBinary(t, "./cmd/listener")`).
-The checks of this change run the listener production pins instead
+The live checks w1 to w5 of this change run on the rig that
+`packages/daemon/internal/daemon/RIG.md` describes: a listener that `scripts/e2e/lib/live-rig.sh`
+builds from a detached worktree and names in `LEGION_E2E_ENVOY_LISTENER`, a real nats-server with
+the grants that listener's commit renders, and the whole daemon with real Oh My Pi workers. The
+driver takes the listener from `testenvoy.RigBinary`.
+w1, w3, w4 and w5, and the rig's own smoke check, run the listener production pins
 (`testenvoy.PinnedBinary`): `pinned.go` records the image the deployment repository's
 `envoy-cluster/Pulumi.prod.yaml` pins, the commit its revision label names and the build, and
 refuses a binary whose Go build information names another commit or a modified tree.
-`scripts/e2e/lib/live-rig.sh` builds that binary from a detached worktree of that commit and names
-it in `LEGION_E2E_ENVOY_LISTENER`.
-Those checks run the pinned listener because a fix in the session's plugin has to work with the
+They run the pinned listener because a fix in the session's plugin has to work with the
 listener production runs, and because the daemon reads that listener's own session list to say
 which of its claims are out of reach.
-They run on the rig that `packages/daemon/internal/daemon/RIG.md` describes: that listener, a
-real nats-server with the grants production renders, and the whole daemon with real Oh My Pi
-workers.
+w2 (`scripts/e2e/cut-turn-note.sh`) sets `LEGION_E2E_LISTENER_FROM_CHECKOUT=1` and runs the
+listener of the checkout's own commit instead, built the same way: it tests this change's plugins
+and listener together, and the pinned listener predates the one that lets a controller register
+its notice lane.
 
 A test changes no server setting (`fsync`, `full_page_writes`, `max_wal_size`): the server
 `DISPATCH_TEST_DATABASE_URL` names can hold other databases, such as the local Dispatch's on
