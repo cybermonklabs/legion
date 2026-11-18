@@ -103,6 +103,11 @@ func TestSchemaServesTheListenerComponentWithASecretSeed(t *testing.T) {
 	// WatchdogArgs would reach consumers as WatchdogArgsArgs.
 	require.Equal(t, "#/types/envoy-infra:host:Watchdog", listener.InputProperties["watchdog"].Ref)
 	require.Equal(t, "#/types/envoy-infra:host:Adopt", listener.InputProperties["adopt"].Ref)
+	// The sender limit is two optional integers: unset is no limit.
+	for _, input := range []string{"senderMessagesPerMinute", "senderMessageBurst"} {
+		require.Equal(t, "integer", listener.InputProperties[input].Type, input)
+		require.NotContains(t, listener.RequiredInputs, input)
+	}
 }
 
 func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
@@ -127,8 +132,10 @@ func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
 	require.Equal(t, "boolean", hub.InputProperties["privateProjects"].Type)
 	// The listener's whole property set is pinned, not its required inputs alone, so a property
 	// added to it cannot stay invisible here.
-	require.ElementsMatch(t, []string{"image", "seedSecret", "nkey", "allowedHosts", "agentSecretsUrl", "agentSecretsAudience", "publicUrl"},
-		slices.Collect(maps.Keys(s.Types["envoy-infra:gcp:HubListener"].Properties)))
+	require.ElementsMatch(t, []string{
+		"image", "seedSecret", "nkey", "allowedHosts", "senderMessagesPerMinute", "senderMessageBurst",
+		"agentSecretsUrl", "agentSecretsAudience", "publicUrl",
+	}, slices.Collect(maps.Keys(s.Types["envoy-infra:gcp:HubListener"].Properties)))
 	require.ElementsMatch(t, []string{"image", "seedSecret", "nkey"}, s.Types["envoy-infra:gcp:HubListener"].Required)
 	require.ElementsMatch(t, []string{"name", "nkey"}, s.Types["envoy-infra:gcp:SessionUser"].Required)
 	require.ElementsMatch(t, []string{"natsUrl", "instanceGroup"}, slices.Collect(maps.Keys(hub.Properties)))
@@ -186,8 +193,10 @@ func TestSchemaServesTheClusteredNatsHubComponent(t *testing.T) {
 	require.ElementsMatch(t, []string{"serviceName", "tailnetDnsName", "tags", "tailscaleImage", "listener"}, tailnet.Required)
 	require.Equal(t, "integer", tailnet.Properties["replicas"].Type)
 	listener := s.Types["envoy-infra:gcp:ClusteredHubListener"]
-	require.ElementsMatch(t, []string{"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "allowedHosts", "cpu", "memory"},
-		slices.Collect(maps.Keys(listener.Properties)))
+	require.ElementsMatch(t, []string{
+		"image", "machineId", "nkey", "seedSecretName", "seedSecretKey", "allowedHosts",
+		"senderMessagesPerMinute", "senderMessageBurst", "cpu", "memory",
+	}, slices.Collect(maps.Keys(listener.Properties)))
 	require.ElementsMatch(t, []string{"image", "nkey", "seedSecretName", "seedSecretKey"}, listener.Required)
 
 	require.ElementsMatch(t, []string{"serviceUrl", "podSelector", "statefulSetName", "tailnetNatsUrl", "tailnetEnvoyUrl"},
@@ -254,15 +263,16 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 		require.NotContains(t, dispatch.RequiredInputs, input)
 	}
 	// The pods' disruption protection, the front door's and the listener's replica counts, the
-	// database's availability and the image cert-publish runs on are optional plain strings and
-	// integers. Every input that configures Dispatch is optional in the schema: a generated Go
-	// SDK's constructor refuses a nil required input, so a cluster-only consumer could not call
-	// the component at all while one stayed required, and the resolver is what requires it with
-	// clusterOnly off.
+	// listener's sender limit, the database's availability and the image cert-publish runs on are
+	// optional plain strings and integers. Every input that configures Dispatch is optional in the
+	// schema: a generated Go SDK's constructor refuses a nil required input, so a cluster-only
+	// consumer could not call the component at all while one stayed required, and the resolver is
+	// what requires it with clusterOnly off.
 	for input, typ := range map[string]string{
 		"priorityClassName": "string", "appPdbMinAvailable": "integer",
 		"frontDoorPdbMinAvailable": "integer", "listenerPdbMinAvailable": "integer",
 		"frontDoorReplicas": "integer", "listenerReplicas": "integer",
+		"senderMessagesPerMinute": "integer", "senderMessageBurst": "integer",
 		"databaseAvailabilityType": "string", "frontDoorToolsImage": "string",
 	} {
 		require.Equal(t, typ, dispatch.InputProperties[input].Type, input)
@@ -319,9 +329,10 @@ func TestSchemaServesTheWebhookListenerComponentWithNoSecretInput(t *testing.T) 
 	for name, input := range listener.InputProperties {
 		require.False(t, input.Secret, "%s is not a secret input", name)
 	}
-	// Every input is required but the seed, each webhook's inputs and adopt.
+	// Every input is required but the seed, each webhook's inputs, adopt and the sender limit.
 	require.ElementsMatch(t, []string{
 		"seedSecretArn", "githubWebhookSecretArn", "slackSigningSecretArn", "reviewerAppId", "mentionTrigger", "adopt",
+		"senderMessagesPerMinute", "senderMessageBurst",
 	}, optionalInputs(listener.InputProperties, listener.RequiredInputs))
 }
 
@@ -367,9 +378,10 @@ func TestConstructRefusesAFractionInEveryIntegerInput(t *testing.T) {
 			})
 		}
 	}
-	// aws:NatsService logRetentionDays; aws:WebhookListener logRetentionDays and natsReplicas;
-	// gcp:Dispatch replicas, pprofPort and azureEmbedTokensPerMinute; gcp:NatsHub diskSizeGb;
-	// gcp:ClusteredNatsHub natsReplicas, streamMaxBytes, maxFileStoreGb and diskSizeGb; host:Listener
-	// port.
-	require.GreaterOrEqual(t, covered, 12)
+	// aws:NatsService logRetentionDays; aws:WebhookListener logRetentionDays, natsReplicas,
+	// senderMessagesPerMinute and senderMessageBurst; gcp:Dispatch replicas, pprofPort,
+	// azureEmbedTokensPerMinute, senderMessagesPerMinute and senderMessageBurst; gcp:NatsHub
+	// diskSizeGb; gcp:ClusteredNatsHub natsReplicas, streamMaxBytes, maxFileStoreGb and diskSizeGb;
+	// host:Listener port, senderMessagesPerMinute and senderMessageBurst.
+	require.GreaterOrEqual(t, covered, 18)
 }

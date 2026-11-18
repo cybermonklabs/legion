@@ -324,7 +324,8 @@ function madeTitles(
 /**
  * Checks that every reference in scope to a target this world made reads as its title. A
  * one-line preview cuts a title that does not fit and ends it with an ellipsis, so what is
- * shown is the title or its own opening.
+ * shown is the title or its own opening. It lists the references once, so its caller waits
+ * first until the references in scope are the row's links.
  */
 async function expectMadeTitles(
   scope: Locator,
@@ -337,12 +338,24 @@ async function expectMadeTitles(
     if (title === undefined) {
       continue;
     }
+    // Every caller first polls the scope's references until they are the row's links, so the
+    // references this link names are all drawn when they are read here.
     for (const each of await scope.locator(selector(link)).all()) {
-      const shown = (await each.textContent()) ?? "";
-      const opening = shown.endsWith("…") ? shown.slice(0, -1) : shown;
-      expect(title.startsWith(opening) && (shown === title || shown.endsWith("…")), {
-        message: `${rowName(item)}: ${link} reads ${JSON.stringify(shown)}, not ${JSON.stringify(title)}`,
-      }).toBe(true);
+      // A reference is drawn before its target's title reaches it, so what it reads is polled
+      // until it is the title or the title's opening. The poll answers the title for either,
+      // and otherwise what the reference shows, which is what a failure prints.
+      await expect
+        .poll(
+          async () => {
+            const shown = (await each.textContent()) ?? "";
+            const opening = shown.endsWith("…") ? shown.slice(0, -1) : shown;
+            return title.startsWith(opening) && (shown === title || shown.endsWith("…"))
+              ? title
+              : shown;
+          },
+          { message: `${rowName(item)}: ${link} reads as its title or the title's opening` }
+        )
+        .toBe(title);
     }
   }
 }
@@ -574,6 +587,8 @@ test("the live editor draws each reference the shared table links whose target e
         item
       );
     }
+    // The poll of every row's drawn references above waited for each of these, so one read
+    // lists them all.
     for (const title of await documentEditor(page).locator("a.dispatch-reference").all()) {
       await expect(title).toBeVisible();
     }

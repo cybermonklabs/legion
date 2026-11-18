@@ -334,8 +334,9 @@ echo "github-narrowing-check: enrolled pod session $ENROLLMENT_ID (pod $DEV_BROK
 # --- The child the checks run ---------------------------------------------------------------
 #
 # It reads the token out of the variable whose name it is given - the released value never
-# reaches a command line - and prints one line per repository: the repository and the status
-# GitHub answered it, and no part of the answer's body.
+# reaches a command line, curl reading its header on standard input from printf, a shell builtin -
+# and prints one line per repository: the repository and the status GitHub answered it, and no
+# part of the answer's body.
 cat >"$READ_REPOSITORIES" <<'EOF'
 #!/usr/bin/env bash
 set -u
@@ -343,7 +344,7 @@ name="$1"
 base="$2"
 shift 2
 for target in "$@"; do
-	printf '%s %s\n' "$target" "$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer ${!name}" "$base/repos/$target")"
+	printf '%s %s\n' "$target" "$(printf 'Authorization: Bearer %s' "${!name}" | curl -s -o /dev/null -w '%{http_code}' -H @- "$base/repos/$target")"
 done
 EOF
 chmod +x "$READ_REPOSITORIES"
@@ -418,9 +419,9 @@ asked_repositories() { # <index, from 0> <the repositories asked for, as a JSON 
 
 # standin_read is the status the stand-in answers a repository read with one token, and no part
 # of the answer's body. It is the one read this check makes with a token of its own rather than
-# through a child.
+# through a child, and it sends it on curl's standard input, in no command line.
 standin_read() { # <token> <owner/repository>
-	curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $1" "$DEV_BROKER_GITHUB_URL/repos/$2"
+	printf 'Authorization: Bearer %s' "$1" | curl -s -o /dev/null -w '%{http_code}' -H @- "$DEV_BROKER_GITHUB_URL/repos/$2"
 }
 
 # pending_records is how many credential-request records the broker holds. That is the record a
@@ -475,9 +476,11 @@ approve_record() { # <record id>
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
 	local field
 	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
-	curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
+	# The page's form token reaches curl on standard input (`--data-urlencode token@-`), in no
+	# command line.
+	printf '%s' "$(field token)" | curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
 		--data-urlencode "decision=approve" --data-urlencode "record=$(field record)" \
-		--data-urlencode "printed=$(field printed)" --data-urlencode "token=$(field token)" \
+		--data-urlencode "printed=$(field printed)" --data-urlencode token@- \
 		--data-urlencode "expires=$(field expires)" "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
 	echo >>"$d/decisions"
 }

@@ -11640,7 +11640,7 @@
         "x-write-scope": "deployment"
       },
       "delete": {
-        "description": "Remove a repository mapping no issue names as its repo.",
+        "description": "Remove a repository mapping, whether or not an issue names the repository as its repo: an issue's own repository needs no mapping, so such an issue keeps it. An issue that resolved to the mapping as its project's default resolves to no repository until the project has another default.",
         "operationId": "deleteApiV1SettingsRepoProjectsByOwnerByRepo",
         "parameters": [
           {

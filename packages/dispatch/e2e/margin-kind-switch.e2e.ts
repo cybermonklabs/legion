@@ -119,6 +119,8 @@ test("switching an anchored composer from Comment to Ask retypes its mark and as
       await composer(alicePage).locator('button[type="submit"]').click();
       const askCard = needsYouCards(alicePage).filter({ hasText: "Why brown?" });
       await expect(askCard).toBeVisible();
+      // A needs-you card carries `data-margin-item` beside its section (`CommentsTab.tsx`), so
+      // this read of the card the wait above saw is never null; the check only narrows the type.
       const askId = await askCard.getAttribute("data-margin-item");
       if (askId === null) {
         throw new Error("The switched ask has no margin id.");
