@@ -280,7 +280,7 @@ func TestGhCallModeDecidesTheUncheckedCallsBeforeTheReadGrammar(t *testing.T) {
 // against (ghPinnedCheckPortSHA256, gh_pinned_check_test.go). A bump of the pin fails here until
 // the tag, the sha256 and that port all move.
 func TestGhReadsAreProvenAgainstThePinnedCheck(t *testing.T) {
-	const prove = "port the check's gh_guard, is_read, collect and api_read into ghPinnedCheckReads and its sha256 into ghPinnedCheckPortSHA256 (gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ghReadsProvenCheck"
+	const prove = "follow the steps in ghReadsProvenCheck's comment (gh_reads.go): read the definitions it lists and every definition they reach in the new check, port each change to what they read as a read into ghPinnedCheckReads and the new sha256 into ghPinnedCheckPortSHA256 (gh_pinned_check_test.go), run INFRA-3562's xcheck4069 harness (xcheck4069.tar.gz) against the check with 0 mismatching rows, then name its tag and the sha256 of its public_leak_check.py in ghReadsProvenCheck"
 	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "docker", "worker.Dockerfile"))
 	if err != nil {
 		t.Fatal(err)
