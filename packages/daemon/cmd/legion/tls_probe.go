@@ -739,12 +739,13 @@ var workerTLSClients = []tlsClientSpec{
 	// which declares only a workspace (newTLSStateDir), makes the state directory that root, so uv
 	// reads no parent's pyproject.toml or uv.toml; it still reads the image's system uv.toml
 	// (/etc/uv/uv.toml, or uv/uv.toml under XDG_CONFIG_DIRS) and merges it under that file, which
-	// overrides none of its settings. --no-config would skip the system file too. Measured on
-	// 2026-11-18, uv 0.13.5, with a parent's pyproject.toml declaring a project and offline = true:
-	// with an empty uv.toml in place of this file, uv took the parent as its workspace root and
-	// resolved offline; with this file, it took the state directory and failed at the fetch,
-	// reading neither that pyproject.toml nor a broken uv.toml added beside it; and it read a
-	// system uv.toml given through XDG_CONFIG_DIRS.
+	// overrides none of its settings, and it asks an index that system file names before the site,
+	// whose answer the probe may then read as the site's (uvResponseSeen). --no-config would skip
+	// the system file too. Measured on 2026-11-18, uv 0.13.5, with a parent's pyproject.toml
+	// declaring a project and offline = true: with an empty uv.toml in place of this file, uv took
+	// the parent as its workspace root and resolved offline; with this file, it took the state
+	// directory and failed at the fetch, reading neither that pyproject.toml nor a broken uv.toml
+	// added beside it; and it read a system uv.toml given through XDG_CONFIG_DIRS.
 	{
 		name: "uv", program: "uv", timeout: tlsDefaultProbeTimeout, applicationSeen: uvResponseSeen,
 		command: func(site tlsSite, _, _ string) ([]string, []string) {
@@ -1003,6 +1004,13 @@ func tlsAnyMarker(markers ...string) func(string) bool {
 // 2026-11-18 with uv 0.13.5 on the image of 841974e9 in `legion probe-image`, with an
 // /etc/uv/uv.toml allowing both hosts and with UV_INSECURE_HOST naming them). Reading both keeps a
 // uv that accepted a compromised chain reported as accepting it rather than as unavailable.
+// Either answer can instead come from an index the image's system uv.toml names (extra-index-url,
+// [[index]]), which uv asks before the --index-url site: measured on 2026-11-18 with uv 0.13.5,
+// such an index answering 401 or 403 made uv print "No solution found when resolving
+// dependencies", one answering a 200 text/plain page made it print "Unsupported `Content-Type`"
+// naming that index's URL, and in both uv never contacted the site. The probe then reads uv as
+// accepting the compromised chain of a site it never reached: it still fails, but names that
+// index's answer as uv accepting the chain.
 var uvResponseSeen = tlsAnyMarker("No solution found when resolving dependencies", "Unsupported `Content-Type`")
 
 var awsResponseSeen = tlsAnyMarker("An error occurred", "InvalidResponse", "invalid XML", "ResponseParserError")
