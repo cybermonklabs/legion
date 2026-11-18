@@ -83,6 +83,28 @@ func withTriggersOff(t *testing.T, database *store.Store, fn func(q querier)) {
 	fn(conn)
 }
 
+// withTableTriggersOff runs fn in one transaction that disables every user trigger of table
+// before it and enables them again after it, then commits: what fn writes to table fires none of
+// table's triggers, the embedding triggers included, as a restore's or a replication's writes do.
+// No other session sees the triggers off, since the two ALTERs commit with the writes. It needs
+// only ownership of table, which the test login holds over every table of the database
+// storetest.Open makes, where withTriggersOff's session_replication_role needs a superuser.
+func withTableTriggersOff(t *testing.T, database *store.Store, table string, fn func(q querier)) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that turns %s's triggers off: %v", table, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	mustExec(t, tx, "alter table "+table+" disable trigger user")
+	fn(tx)
+	mustExec(t, tx, "alter table "+table+" enable trigger user")
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the writes to %s with its triggers off: %v", table, err)
+	}
+}
+
 func mustExec(t *testing.T, q querier, sql string, args ...any) {
 	t.Helper()
 	if _, err := q.Exec(context.Background(), sql, args...); err != nil {

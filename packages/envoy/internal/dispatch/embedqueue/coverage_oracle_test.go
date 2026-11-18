@@ -1,0 +1,418 @@
+package embedqueue
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+)
+
+// mainCoverageQuery is the search coverage statement byte for byte as the Go of commit
+// 948aeca5515454dbf0f194cd5de9aa382e9de5f0, the base of dispatch://INFRA-4241, built it as
+// coverageQuery: the before text, kept as the oracle that the statement which replaced it is
+// compared against, by the equality test below (TestCoverageAnswersWhatMainsStatementAnswers) and
+// by the measurement of the two at production's size. It must never be edited to follow a schema
+// change: a copy edited to fit answers for nothing that was ever served. If the schema stops
+// answering it, the oracle is retired with the tests that read it.
+const mainCoverageQuery = `
+		with items as (select 'issue'::text as kind, item.id, item.hash, item.written_at from (select s.id, s.text, encode(sha256(convert_to(s.text, 'UTF8')), 'hex') as hash, s.written_at
+	from (select i.key as id, issue_embedding_text(i.title, issue_embedding_spec(i.key)) as text, i.created_at as written_at from issues i) s where not (s.text !~ '[^[:space:]]')) item
+ union all select 'document_block'::text as kind, item.id, item.hash, item.written_at from (select s.id, s.text, s.hash, s.written_at from (
+		select e.id, e.text_snapshot as text, e.content_hash as hash, e.pending_since as written_at
+		from embeddings e where e.kind = 'document_block') s where not (s.text !~ '[^[:space:]]')) item
+ union all select 'comment_block'::text as kind, item.id, item.hash, item.written_at from (select s.id, s.text, s.hash, s.written_at from (
+		select e.id, e.text_snapshot as text, e.content_hash as hash, e.pending_since as written_at
+		from embeddings e where e.kind = 'comment_block') s where not (s.text !~ '[^[:space:]]')) item
+ union all select 'message_block'::text as kind, item.id, item.hash, item.written_at from (select s.id, s.text, s.hash, s.written_at from (
+		select e.id, e.text_snapshot as text, e.content_hash as hash, e.pending_since as written_at
+		from embeddings e where e.kind = 'message_block') s where not (s.text !~ '[^[:space:]]')) item
+ union all select 'ask_part'::text as kind, item.id, item.hash, item.written_at from (select s.id, s.text, s.hash, s.written_at from (
+		select e.id, e.text_snapshot as text, e.content_hash as hash, e.pending_since as written_at
+		from embeddings e where e.kind = 'ask_part') s where not (s.text !~ '[^[:space:]]')) item),
+		judged as (
+			select item.kind, item.written_at, e.pending_since, coalesce(e.dead, false) as dead,
+			       coalesce($1::text <> '' and e.embedding is not null and e.model = $1::text and e.embedded_hash = item.hash, false) as current
+			from items item
+			left join embeddings e on e.kind = item.kind and e.id = item.id
+		)
+		select kind, true, count(*), count(*) filter (where current), count(*) filter (where dead and not current),
+		       floor(extract(epoch from now() - min(greatest(pending_since, written_at)) filter (where not current and not dead)))::bigint
+		from judged
+		group by kind
+		union all select 'component'::text, false, ((select count(*) from components))::bigint, 0::bigint, 0::bigint, null::bigint
+ union all select 'session'::text, false, (coalesce((select jsonb_array_length(sessions) from route_roster), 0))::bigint, 0::bigint, 0::bigint, null::bigint
+ union all select 'document_version'::text, false, ((select count(*) from artifact_versions))::bigint, 0::bigint, 0::bigint, null::bigint
+ union all select 'result'::text, false, ((select count(*) from check_results))::bigint, 0::bigint, 0::bigint, null::bigint
+ union all select 'handoff'::text, false, ((select count(*) from handoffs))::bigint, 0::bigint, 0::bigint, null::bigint`
+
+// coverageRow is one row of a coverage statement, all six of its columns: the kind, whether the
+// report covers it, its items, how many are current and how many failed, and its oldest lacking
+// age in seconds (null when nothing of it lacks).
+type coverageRow struct {
+	kind                   string
+	indexed                bool
+	items, current, failed int64
+	oldest                 *int64
+}
+
+func (r coverageRow) String() string {
+	oldest := "null"
+	if r.oldest != nil {
+		oldest = strconv.FormatInt(*r.oldest, 10)
+	}
+	return fmt.Sprintf("%s indexed=%t items=%d current=%d failed=%d oldest=%s", r.kind, r.indexed, r.items, r.current, r.failed, oldest)
+}
+
+// coverageRowsOf reads every row statement answers for identity ($1) in tx: each whole row
+// rendered, in sorted order, so two answers compare as sets of rows, and the rows by kind.
+func coverageRowsOf(t *testing.T, tx pgx.Tx, statement, identity string) ([]string, map[string]coverageRow) {
+	t.Helper()
+	rows, err := tx.Query(context.Background(), statement, identity)
+	if err != nil {
+		t.Fatalf("run the coverage statement for %q: %v", identity, err)
+	}
+	defer rows.Close()
+	var rendered []string
+	byKind := map[string]coverageRow{}
+	for rows.Next() {
+		var row coverageRow
+		if err := rows.Scan(&row.kind, &row.indexed, &row.items, &row.current, &row.failed, &row.oldest); err != nil {
+			t.Fatalf("scan a coverage row: %v", err)
+		}
+		rendered = append(rendered, row.String())
+		byKind[row.kind] = row
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the coverage statement for %q: %v", identity, err)
+	}
+	slices.Sort(rendered)
+	return rendered, byKind
+}
+
+// requireMainsAnswer reads mainCoverageQuery and coverageQuery in one REPEATABLE READ, read-only
+// transaction, so both read one snapshot and one now(), for the configured identity, for none
+// ("") and for another identity, and fails the test wherever their answers differ as sets of
+// whole rows, printing both. It answers the rows each gave for the configured identity, by kind.
+func requireMainsAnswer(t *testing.T, database *store.Store, stage string) (mains, heads map[string]coverageRow) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatalf("%s: begin the snapshot both statements read: %v", stage, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, identity := range []string{configuredIdentity, "", foreignIdentity} {
+		mainRows, mainKinds := coverageRowsOf(t, tx, mainCoverageQuery, identity)
+		headRows, headKinds := coverageRowsOf(t, tx, coverageQuery, identity)
+		if !slices.Equal(mainRows, headRows) {
+			t.Errorf("%s, identity %q: coverageQuery answers other rows than main's statement in one snapshot:\nmain's statement:\n  %s\ncoverageQuery:\n  %s",
+				stage, identity, strings.Join(mainRows, "\n  "), strings.Join(headRows, "\n  "))
+		}
+		if identity == configuredIdentity {
+			mains, heads = mainKinds, headKinds
+		}
+	}
+	return mains, heads
+}
+
+// updateRow sets set (whose arguments are $3 on) on the embeddings row of kind and id ($1 and
+// $2), failing unless it wrote exactly that one row.
+func updateRow(t *testing.T, q querier, kind, id, set string, args ...any) {
+	t.Helper()
+	tag, err := q.Exec(context.Background(), `update embeddings set `+set+` where kind = $1 and id = $2`, append([]any{kind, id}, args...)...)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("update %s %s set %s: %v (rows %d)", kind, id, set, err, tag.RowsAffected())
+	}
+}
+
+// embedRowAs commits to the row of kind and id a vector of identity at the row's current text,
+// as commitEmbeddings commits one.
+func embedRowAs(t *testing.T, q querier, kind, id, identity string) {
+	t.Helper()
+	updateRow(t, q, kind, id, `embedding = $3::vector, model = $4, embedded_hash = content_hash, embedded_at = now()`,
+		embed.Literal(oneVector()), identity)
+}
+
+// seedWindowStates writes, for each window kind, one row in each state a window row can be in
+// that the report tells apart, as the writer of windows writes it (enqueueWindow) and the queue
+// then leaves it: embedded at its text by the configured identity, by another, or at an older
+// text; waiting for its first vector; dead with no vector or with an older one; and the three
+// shapes of text the blank test reads - white space alone, embedded or waiting, and text that
+// begins with white space or outside ASCII. Each kind's rows waited a time of their own, so each
+// kind's oldest lacking age is its own, and a blank row waited longest of all, so counting one
+// would move that age.
+func seedWindowStates(t *testing.T, q querier) {
+	t.Helper()
+	for position, kind := range []string{"document_block", "comment_block", "message_block", "ask_part"} {
+		owner := kind + "/oracle"
+		window := func(state, text string) string {
+			t.Helper()
+			enqueueWindow(t, q, kind, owner, state, text, "b1")
+			return owner + "#" + state
+		}
+		waited := func(hours int) string { return strconv.Itoa(position+hours) + " hours" }
+		embedRowAs(t, q, kind, window("current", "A window embedded at its current text"), configuredIdentity)
+		updateRow(t, q, kind, window("pending", "A window waiting for its first vector"), `pending_since = now() - $3::interval`, waited(1))
+		updateRow(t, q, kind, window("dead", "A window whose text the model refused"),
+			`dead = true, confirmed_failures = 10, attempt_count = 12, dead_model = $3`, configuredIdentity)
+		older := window("dead-older", "A window that died at a text after the one it was embedded at")
+		embedRowAs(t, q, kind, older, configuredIdentity)
+		updateRow(t, q, kind, older, `embedded_hash = 'an older text', dead = true, confirmed_failures = 10, dead_model = $3`, configuredIdentity)
+		embedRowAs(t, q, kind, window("foreign", "A window another identity embedded"), foreignIdentity)
+		stale := window("stale", "A window embedded at an older text")
+		embedRowAs(t, q, kind, stale, configuredIdentity)
+		updateRow(t, q, kind, stale, `embedded_hash = 'an older text', pending_since = now() - $3::interval`, waited(2))
+		updateRow(t, q, kind, window("blank", " \n\t "), `pending_since = now() - $3::interval`, waited(30))
+		embedRowAs(t, q, kind, window("blank-embedded", "\t"), configuredIdentity)
+		embedRowAs(t, q, kind, window("leading-space", "\n  A window that begins with white space"), configuredIdentity)
+		updateRow(t, q, kind, window("non-ascii", "Ünïcödé, a window that begins outside ASCII"), `pending_since = now() - $3::interval`, waited(5))
+	}
+}
+
+// coverageStates names what seedEveryCoverageState wrote that changeInputsAfterRecording changes.
+type coverageStates struct {
+	// titleRestored and specRestored are issues whose inputs change with their triggers off: a
+	// title, and the markdown of the latest version of specRestoredDocument, in place.
+	titleRestored, specRestored, specRestoredDocument string
+	// titleEdited and specVersioned are issues whose inputs change with their triggers on: a title
+	// edit, and a new version of specVersionedDocument.
+	titleEdited, specVersioned, specVersionedDocument string
+	// rowGone is an issue whose embeddings row is deleted.
+	rowGone string
+}
+
+// seedEveryCoverageState writes every state an item can be in, the windows' (seedWindowStates)
+// and the issue's: embedded at its title and spec, with no primary document, with a primary
+// document that has no version, with a spec that is blank, with a blank or white-space title and
+// a spec, with a blank or white-space title and none (no item), with a title that begins with
+// white space or outside ASCII, dead, waiting for its first vector, embedded by another identity,
+// embedded at an older text, and with no embeddings row at all; and the issues whose inputs
+// changeInputsAfterRecording changes, each embedded at its current text.
+func seedEveryCoverageState(t *testing.T, database *store.Store) coverageStates {
+	t.Helper()
+	const project = "ORCL"
+	q := database.Pool
+	number := 0
+	issue := func(title, spec string) (key, document string) {
+		t.Helper()
+		number++
+		key = fmt.Sprintf("%s-%d", project, number)
+		seedIssue(t, database, project, key, title)
+		if spec != "" {
+			document = seedSpec(t, q, project, key, spec)
+		}
+		return key, document
+	}
+	current := func(title, spec string) string {
+		t.Helper()
+		key, _ := issue(title, spec)
+		embedRowAs(t, q, "issue", key, configuredIdentity)
+		return key
+	}
+
+	current("An issue embedded at its title and spec", "## Summary\n\nThe spec it was embedded at.\n")
+	current("An issue with no primary document", "")
+	noVersion, _ := issue("An issue whose primary document has no version", "")
+	mustExec(t, q, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ($1, $2, 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')`, noVersion, project)
+	embedRowAs(t, q, "issue", noVersion, configuredIdentity)
+	current("An issue whose spec is blank", " \n\t\n")
+	current("", "A spec under a blank title")
+	current("\t", "A spec under a white-space title")
+	issue("", "")
+	issue(" \t ", "")
+	current("  A title that begins with white space", "")
+	current("Ünïcödé, a title that begins outside ASCII", "## Summary\n\nNaïve café.\n")
+	dead, _ := issue("An issue whose text the model refused", "")
+	updateRow(t, q, "issue", dead, `dead = true, confirmed_failures = 10, attempt_count = 12, dead_model = $3`, configuredIdentity)
+	pending, _ := issue("An issue waiting for its first vector", "")
+	updateRow(t, q, "issue", pending, `pending_since = now() - interval '3 hours'`)
+	foreign, _ := issue("An issue another identity embedded", "")
+	embedRowAs(t, q, "issue", foreign, foreignIdentity)
+	older := current("An issue embedded at an older text", "")
+	updateRow(t, q, "issue", older, `embedded_hash = 'an older text'`)
+	// With no row the item ages from its write, which is the oldest of any issue's.
+	noRow, _ := issue("An issue the queue holds no row of", "")
+	mustExec(t, q, `delete from embeddings where kind = 'issue' and id = $1`, noRow)
+	mustExec(t, q, `update issues set created_at = now() - interval '7 hours' where key = $1`, noRow)
+
+	var states coverageStates
+	states.titleRestored = current("A title the trigger saw", "## Summary\n\nA spec.\n")
+	states.specRestored, states.specRestoredDocument = issue("A spec changed in place", "## Summary\n\nThe first version.\n")
+	addVersion(t, q, states.specRestoredDocument, 2, "## Summary\n\nThe latest version, as it was embedded.\n")
+	embedRowAs(t, q, "issue", states.specRestored, configuredIdentity)
+	states.titleEdited = current("A title its trigger sees edited", "")
+	states.specVersioned, states.specVersionedDocument = issue("A spec that takes a new version", "## Summary\n\nThe first version.\n")
+	embedRowAs(t, q, "issue", states.specVersioned, configuredIdentity)
+	states.rowGone = current("An issue whose row goes once its source is recorded", "")
+
+	seedWindowStates(t, q)
+	return states
+}
+
+// changeInputsAfterRecording changes, after the record step has recorded every issue's source,
+// each input an issue's text is built from: a title and the latest version's markdown, in place,
+// each with its table's triggers off (withTableTriggersOff), which leave the issue's row embedded
+// at its old text; a title edit and a new spec version with the triggers on, which make the row
+// wait for its new text; and an issue's row deleted. It also adds an issue embedded at its text
+// that no record run has seen, and rewrites a window at a new text, as its writer would.
+func changeInputsAfterRecording(t *testing.T, database *store.Store, states coverageStates) {
+	t.Helper()
+	withTableTriggersOff(t, database, "issues", func(q querier) {
+		mustExec(t, q, `update issues set title = 'A title restored with its trigger off' where key = $1`, states.titleRestored)
+	})
+	withTableTriggersOff(t, database, "artifact_versions", func(q querier) {
+		mustExec(t, q, `update artifact_versions set markdown = $2 where artifact_id = $1 and number = 2`,
+			states.specRestoredDocument, "## Summary\n\nThe latest version, changed in place.\n")
+	})
+	mustExec(t, database.Pool, `update issues set title = 'A title edited with its trigger on' where key = $1`, states.titleEdited)
+	addVersion(t, database.Pool, states.specVersionedDocument, 2, "## Summary\n\nA new version.\n")
+	mustExec(t, database.Pool, `delete from embeddings where kind = 'issue' and id = $1`, states.rowGone)
+	seedIssue(t, database, "ORCL", "ORCL-UNRECORDED", "An issue embedded after the record run")
+	embedRowAs(t, database.Pool, "issue", "ORCL-UNRECORDED", configuredIdentity)
+	enqueueWindow(t, database.Pool, "document_block", "document_block/oracle", "current", "A window rewritten at a new text", "b1")
+}
+
+// trustedIssues counts the issue items (issues whose text has something to embed) whose row
+// holds a vector of identity at that row's content_hash: the issues a statement that took
+// content_hash for the hash of the issue's current text would count current. stale is how many
+// of them have a content_hash that is not that hash, the issues whose inputs changed with their
+// triggers off. It is spelled from the pass's own text and hash expressions (issueText,
+// contentHash, nothingToEmbed), not from the report's.
+func trustedIssues(t *testing.T, database *store.Store, identity string) (trusted, stale int64) {
+	t.Helper()
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*), count(*) filter (where e.content_hash <> `+contentHash(issueText)+`)
+		from issues i join embeddings e on e.kind = 'issue' and e.id = i.key
+		where not `+nothingToEmbed(issueText)+`
+		  and e.embedding is not null and e.model = $1 and e.embedded_hash = e.content_hash`, identity,
+	).Scan(&trusted, &stale); err != nil {
+		t.Fatalf("count the issues whose row holds a vector of %q at its content_hash: %v", identity, err)
+	}
+	return trusted, stale
+}
+
+// The coverage statement answers what main's statement (mainCoverageQuery) answered, row for row,
+// over every state an item can be in (seedEveryCoverageState), for the configured identity, for
+// none and for another, read in one snapshot: before any record run, when every issue builds and
+// hashes its text; once the record step has recorded every issue's source, when the report reads
+// most issues' hashes from their rows; and once every input an issue's text is built from has
+// changed after its source was recorded (changeInputsAfterRecording). This is the report
+// unchanged against the base on a seeded corpus.
+//
+// The last stage is not vacuous: the two issues whose inputs changed with their triggers off still
+// hold a vector of the configured identity at their rows' content_hash, so a report that trusted a
+// recorded source beyond the inputs it names would count them current. Both statements count
+// them lacking.
+func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	states := seedEveryCoverageState(t, database)
+	requireIssuesCurrent := func(stage string, mains, heads map[string]coverageRow, want int64) {
+		t.Helper()
+		for name, rows := range map[string]map[string]coverageRow{"main's statement": mains, "coverageQuery": heads} {
+			if got := rows["issue"].current; got != want {
+				t.Errorf("%s: %s counts %d issues current, want %d: %v", stage, name, got, want, rows["issue"])
+			}
+		}
+	}
+
+	var sources int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from embedding_issue_sources`).Scan(&sources); err != nil || sources != 0 {
+		t.Fatalf("embedding_issue_sources holds %d rows before any record run (%v), want none", sources, err)
+	}
+	requireMainsAnswer(t, database, "before any record run")
+
+	var recorded int64
+	if err := recordSources(ctx, Deps{Store: database}, &recorded); err != nil {
+		t.Fatalf("record the issues' sources: %v", err)
+	}
+	if recorded == 0 {
+		t.Fatal("the record step recorded no issue's source, so the report would read no hash from a row")
+	}
+	mains, heads := requireMainsAnswer(t, database, "after the record step")
+	trusted, stale := trustedIssues(t, database, configuredIdentity)
+	if stale != 0 {
+		t.Fatalf("after the record step %d issues hold a vector at a content_hash that is not their text's, want none yet", stale)
+	}
+	requireIssuesCurrent("after the record step", mains, heads, trusted)
+
+	changeInputsAfterRecording(t, database, states)
+	mains, heads = requireMainsAnswer(t, database, "after the inputs changed")
+	trusted, stale = trustedIssues(t, database, configuredIdentity)
+	if stale != 2 {
+		t.Fatalf("after the inputs changed %d issues hold a vector at a content_hash that is not their text's, want the 2 changed with their triggers off", stale)
+	}
+	requireIssuesCurrent("after the inputs changed", mains, heads, trusted-stale)
+}
+
+// planNode is a node of a plan as EXPLAIN (FORMAT JSON) writes it, with what this file reads.
+type planNode struct {
+	NodeType  string     `json:"Node Type"`
+	IndexName string     `json:"Index Name"`
+	Plans     []planNode `json:"Plans"`
+}
+
+// indexOnlyScans adds the index of every Index Only Scan node of node's tree to scans.
+func indexOnlyScans(node planNode, scans map[string]bool) {
+	if node.NodeType == "Index Only Scan" {
+		scans[node.IndexName] = true
+	}
+	for _, child := range node.Plans {
+		indexOnlyScans(child, scans)
+	}
+}
+
+// The coverage statement reads the window kinds from the two indexes the migrations build for it,
+// by index-only scans: each half of the window arm (windowEmbedded, windowUnembedded) repeats its
+// index's predicate, so the planner proves the index applies and reads kind, model, dead and
+// pending_since from it with no window's text. This fails the day the kinds, the regex or either
+// half's predicate stop matching the migrations, which would leave the answer right and the
+// statement reading every window's text again.
+//
+// The table is vacuumed first, which sets the visibility map an index-only scan relies on, and
+// sequential and bitmap scans are turned off, so that the plan of a few dozen rows is the plan
+// of a corpus where the indexes win on cost.
+func TestCoverageReadsTheWindowKindsFromTheirIndexes(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedEveryCoverageState(t, database)
+	// VACUUM runs outside any transaction.
+	if _, err := database.Pool.Exec(ctx, `vacuum (analyze) embeddings`); err != nil {
+		t.Fatalf("vacuum embeddings: %v", err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction the plan is read in: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	mustExec(t, tx, `set local enable_seqscan = off`)
+	mustExec(t, tx, `set local enable_bitmapscan = off`)
+	var plan string
+	if err := tx.QueryRow(ctx, `explain (format json) `+coverageQuery, configuredIdentity).Scan(&plan); err != nil {
+		t.Fatalf("explain the coverage statement: %v", err)
+	}
+	var explained []struct {
+		Plan planNode `json:"Plan"`
+	}
+	if err := json.Unmarshal([]byte(plan), &explained); err != nil || len(explained) != 1 {
+		t.Fatalf("decode the plan (%v): %s", err, plan)
+	}
+	scans := map[string]bool{}
+	indexOnlyScans(explained[0].Plan, scans)
+	for _, index := range []string{"embeddings_window_embedded", "embeddings_window_unembedded"} {
+		if !scans[index] {
+			t.Errorf("the coverage statement's plan holds no Index Only Scan on %s:\n%s", index, plan)
+		}
+	}
+}
