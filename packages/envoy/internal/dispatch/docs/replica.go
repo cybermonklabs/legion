@@ -58,7 +58,7 @@ import (
 // refused drain of 5,000 newlines left the room rendering 300,603 bytes and the replica rendering
 // 1,285,603, and the replica's next rendering, of its own document, published a size the next
 // keystroke into prose was refused against
-// (TestARefusedDrainLeavesTheReplicaParkingWhatTheRoomParks). So the replica's document refuses
+// (TestARefusedDrainLeavesTheReplicaHoldingWhatTheRoomHolds). So the replica's document refuses
 // every drain that lands anything (holdParked), and discards it as the room did (leaveParkedOut):
 // ygo checks a drain only where it lands a struct or a deletion. The replica therefore
 // integrates exactly what each commit's update carries; its drain stands only where it lands
@@ -538,6 +538,9 @@ func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.Lo
 		// The commit is the replica's next position, which note counts it at.
 		contentChanged, asks := r.changedBy(room, published, rendering, report.checkedAt(r.seq+1))
 		note(update, contentChanged, asks)
+		// The replica stands as this commit left the room: the senders whose parked frames it
+		// holds all of landed here (coverParked, parked_resync.go).
+		r.applies().coverParked(r.doc, r.seq)
 		r.touched.reset()
 		r.publishRendered()
 	}

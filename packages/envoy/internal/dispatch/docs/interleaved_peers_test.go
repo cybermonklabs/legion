@@ -61,8 +61,11 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 	seedServiceText(t, service, artifactID, "before")
 	server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(server.Close)
-	alpha := connectPeer(t, server.URL, artifactID, "alice")
-	beta := connectPeer(t, server.URL, artifactID, "alice")
+	// Pages of this build, each given its own client id: a page of the earlier build would claim
+	// the id it drew on its first edit, and a claim waits for the room's appends to land
+	// (claimable, waitForDurableAppends), which the held hand-over keeps from landing.
+	alpha := openPage(t, server.URL, artifactID, "alice")
+	beta := openPage(t, server.URL, artifactID, "alice")
 	first.Store(uint64(alpha.Doc.ClientID()))
 	// A peer holds the room's document once it has applied the room's sync step 2, which comes
 	// after the step 1 it answers, so each peer's answer reaches the room ahead of its keystroke
@@ -147,24 +150,24 @@ func TestARoomWhosePeersUpdatesReachItsPersistenceOutOfOrderSettlesBoth(t *testi
 }
 
 // cutFrameClient writes the frame whose delete set the truncated row of
-// TestARoomsParkedOnlyCommitIsStoredAndReplaysFromItsLog cuts, a client of its own so the room
-// holding nothing of it says the refused frame left nothing behind.
+// TestARoomsParkedOnlyCommitStoresNothingAndLandsWithItsPredecessor cuts, a client of its own so
+// the room holding nothing of it says the refused frame left nothing behind.
 const cutFrameClient = 9
 
 // A peer's update that waits on an item the room lacks parks every byte the room kept, and changes
 // nothing, so ygo logs it with an empty Update and its bytes in LoggedUpdate.Parked but calls no
-// OnUpdate for it. Dispatch drains the log after the peer's apply (onPeerUpdate) and stores the
-// parked bytes then, on their own, so the edit survives a restart before its predecessor arrives:
-// the store's load parks them again and integrates them once the predecessor comes. No class is
-// queued for the entry, since no OnUpdate hands it to the room's persistence, so nothing is left
-// pending. The replica applies Update then Parked, so a replica rebuilt from the log alone holds
-// everything the live room holds.
-func TestARoomsParkedOnlyCommitIsStoredAndReplaysFromItsLog(t *testing.T) {
-	t.Run("valid", func(t *testing.T) { parkedOnlyCommitSurvivesReload(t, false) })
-	t.Run("truncated_delete_set", func(t *testing.T) { parkedOnlyCommitSurvivesReload(t, true) })
+// OnUpdate for it. What parks is no part of the document until it lands (leaveParkedOut): the
+// room stores nothing of it, marks no settlement owed, leaves its stored history awaiting nothing,
+// and answers the peer not applied, so the editor keeps the frame and sends it again
+// (AnswerParkedNotApplied). The commit that brings the predecessor integrates what waited, so its
+// own update carries both, which the room stores and the replica, following the log's updates
+// alone, holds as the room does.
+func TestARoomsParkedOnlyCommitStoresNothingAndLandsWithItsPredecessor(t *testing.T) {
+	t.Run("valid", func(t *testing.T) { parkedOnlyCommitLandsWithItsPredecessor(t, false) })
+	t.Run("truncated_delete_set", func(t *testing.T) { parkedOnlyCommitLandsWithItsPredecessor(t, true) })
 }
 
-func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
+func parkedOnlyCommitLandsWithItsPredecessor(t *testing.T, truncated bool) {
 	t.Helper()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -234,28 +237,20 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 	if err := peer.Write(ygsync.EncodeUpdate(parked)); err != nil {
 		t.Fatalf("send the later update ahead of its predecessor: %v", err)
 	}
-	// A peer update that only parks has no OnUpdate, so the peer path drains the log itself and
-	// stores the parked bytes (onPeerUpdate). A shutdown in that window must not lose an edit the
-	// room accepted.
-	waitFor(t, 10*time.Second, "the parked peer update to become durable", func() bool {
-		return storedUpdateCount(t, service.store, artifactID) > stored
+	waitFor(t, 10*time.Second, "the room to park the later update", func() bool { return room.PendingStats().Items > 0 })
+	waitFor(t, 10*time.Second, "the room to count no update its persistence has not taken", func() bool {
+		return !service.hasPendingUpdates(artifactID) && !service.hasDurableAppend(artifactID)
 	})
 	if updates.Load() != 0 {
 		t.Fatalf("the parked-only commit called OnUpdate %d time(s), want none", updates.Load())
 	}
-	if pending := room.PendingStats(); pending.Items == 0 {
-		t.Fatalf("the room parked no item after its later update: %+v", pending)
+	if after := storedUpdateCount(t, service.store, artifactID); after != stored {
+		t.Fatalf("the room stored %d updates after the parked-only commit, want the %d it held: it stores nothing it parks", after, stored)
 	}
-	if after := storedUpdateCount(t, service.store, artifactID); after != stored+1 {
-		t.Fatalf("the room stored %d updates, want the %d it held and the one row its parked bytes make", after, stored)
-	}
-	if service.hasPendingUpdates(artifactID) || service.hasDurableAppend(artifactID) {
-		t.Fatal("the parked-only commit left the room counting a store write")
-	}
-	// Parked bytes change nothing a settlement reads, so storing them marks no settlement owed:
-	// the commit that integrates them marks it.
+	// Parked bytes change nothing a settlement reads, and the commit that integrates them marks
+	// the document owed.
 	if owed := copyOwed(t, service, artifactID); owed != 0 {
-		t.Fatal("storing the parked bytes marked the document owing a settlement")
+		t.Fatal("the parked-only commit marked the document owing a settlement")
 	}
 	replica := service.replicaOf(room)
 	if replica == nil {
@@ -264,17 +259,14 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 	var applyErr error
 	loaded, err := service.persistence.Load(context.Background(), artifactID)
 	if err != nil {
-		t.Fatalf("load the parked update before its predecessor arrives: %v", err)
+		t.Fatalf("load the history before the predecessor arrives: %v", err)
 	}
 	restarted := newDocumentCopy()
 	if err := crdt.ApplyUpdateV1(restarted, loaded.Update, nil); err != nil {
-		t.Fatalf("open the parked update after restart: %v", err)
+		t.Fatalf("open the stored history: %v", err)
 	}
-	if err := crdt.ApplyUpdateV1(restarted, base, nil); err != nil {
-		t.Fatalf("send the predecessor after restart: %v", err)
-	}
-	if got, err := renderDocument(restarted); err != nil || !strings.Contains(got, "base later") {
-		t.Fatalf("the restart then predecessor renders %q (%v), want the parked successor's text too", got, err)
+	if pending := restarted.PendingStats(); pending.Items != 0 || pending.DeleteRanges != 0 {
+		t.Fatalf("the stored history parks %+v before the predecessor arrives, want nothing the room parked stored", pending)
 	}
 	if truncated {
 		if clock := room.StateVector()[cutFrameClient]; clock != 0 {
@@ -284,10 +276,8 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 			t.Fatalf("the stored history holds client %d at clock %d, want nothing of the refused frame stored", cutFrameClient, clock)
 		}
 	}
-	// The stored-order check reads the stored parked edit as one awaiting its predecessor, not as
-	// a row stored out of order: nothing the store holds disagrees with what the room accepted.
-	if report := assertStoredOrder(t, service, artifactID); report.UpdatesAwaitingPredecessor != 1 {
-		t.Fatalf("stored-order report before the predecessor = %+v, want one update awaiting its predecessor", report)
+	if report := assertStoredOrder(t, service, artifactID); report.UpdatesAwaitingPredecessor != 0 {
+		t.Fatalf("stored-order report before the predecessor = %+v, want nothing awaiting: nothing parked is stored", report)
 	}
 
 	if err := service.srv.Apply(context.Background(), artifactID, func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) {
@@ -301,8 +291,8 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 	waitFor(t, 10*time.Second, "the room to count no persistence update after its parked-only commit", func() bool {
 		return !service.hasPendingUpdates(artifactID) && !service.hasDurableAppend(artifactID)
 	})
-	// The predecessor's commit stores the successor's structs again, in its own update: a load of
-	// the whole history holds each once.
+	// The predecessor's commit carries the successor's structs its drain landed, in its own
+	// update: a load of the whole history holds each once.
 	history, err := service.persistence.Load(context.Background(), artifactID)
 	if err != nil {
 		t.Fatalf("load the history once the predecessor is stored: %v", err)
@@ -317,8 +307,8 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 	if pending := reloaded.PendingStats(); pending.Items != 0 {
 		t.Fatalf("the stored history still parks %+v once the predecessor is stored", pending)
 	}
-	// The predecessor's commit carries the parked edit again, so the check finds the history
-	// replays: no row out of order and nothing left awaiting.
+	// The predecessor's commit carries the parked edit, so the check finds the history replays: no
+	// row out of order and nothing left awaiting.
 	if report := assertStoredOrder(t, service, artifactID); report.UpdatesAwaitingPredecessor != 0 {
 		t.Fatalf("stored-order report once the predecessor is stored = %+v, want nothing awaiting", report)
 	}
@@ -339,10 +329,12 @@ func parkedOnlyCommitSurvivesReload(t *testing.T, truncated bool) {
 
 // A peer's update can change the room and park at once: one client's structs integrate, another's
 // wait for an edit the room lacks. ygo hands OnUpdate, and so the room's persistence, only what the
-// commit integrated, and logs what it parked in LoggedUpdate.Parked. Dispatch stores those parked
-// bytes too, as it stores a commit that only parked, so a restart before the predecessor arrives
-// keeps both clients' edits.
-func TestAPeerUpdateThatChangesTheRoomAndParksKeepsBothAcrossARestart(t *testing.T) {
+// commit integrated, and what parked is no part of the document until it lands (leaveParkedOut):
+// the room stores the integrated part alone and answers the peer not applied, so the editor keeps
+// the whole frame (AnswerParkedNotApplied). Across a restart the parked edit is the editor's: it
+// sends the frame again to the room that replaces the closed one, and once the predecessor arrives
+// that room holds and stores both clients' edits.
+func TestAPeerUpdateThatChangesTheRoomAndParksStoresWhatItIntegratedAndLandsTheRestWhenResent(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -352,7 +344,7 @@ func TestAPeerUpdateThatChangesTheRoomAndParksKeepsBothAcrossARestart(t *testing
 	}
 
 	// Both clients write the editor's own shape, a paragraph under the document's fragment, so
-	// the peer update hook's walk admits the frame that carries them (update_walk.go).
+	// the peer update hook's allowance admits the frame that carries them.
 	now := newDocumentCopy(crdt.WithClientID(7))
 	now.Transact(typeParagraph(now, "now"))
 	integrates := crdt.EncodeStateAsUpdateV1(now, nil)
@@ -375,8 +367,8 @@ func TestAPeerUpdateThatChangesTheRoomAndParksKeepsBothAcrossARestart(t *testing
 	if err := peer.Write(ygsync.EncodeUpdate(mixed)); err != nil {
 		t.Fatalf("send an update that changes the room and parks: %v", err)
 	}
-	waitFor(t, 10*time.Second, "both parts of the peer's update to be stored", func() bool {
-		return storedUpdateCount(t, service.store, artifactID) >= stored+2
+	waitFor(t, 10*time.Second, "the integrated part of the peer's update to be stored", func() bool {
+		return storedUpdateCount(t, service.store, artifactID) > stored
 	})
 	if pending := service.srv.GetDoc(artifactID).PendingStats(); pending.Items == 0 {
 		t.Fatalf("the room parked nothing of the update: %+v", pending)
@@ -384,27 +376,55 @@ func TestAPeerUpdateThatChangesTheRoomAndParksKeepsBothAcrossARestart(t *testing
 	waitFor(t, 10*time.Second, "the room to count no persistence update", func() bool {
 		return !service.hasPendingUpdates(artifactID) && !service.hasDurableAppend(artifactID)
 	})
-
+	if after := storedUpdateCount(t, service.store, artifactID); after != stored+1 {
+		t.Fatalf("the room stored %d updates, want the %d it held and the one its commit integrated", after, stored)
+	}
 	loaded, err := service.persistence.Load(context.Background(), artifactID)
 	if err != nil {
 		t.Fatalf("load the history before the predecessor arrives: %v", err)
 	}
-	restarted := newDocumentCopy()
-	if err := crdt.ApplyUpdateV1(restarted, loaded.Update, nil); err != nil {
-		t.Fatalf("open the stored history after a restart: %v", err)
+	storedBefore := newDocumentCopy()
+	if err := crdt.ApplyUpdateV1(storedBefore, loaded.Update, nil); err != nil {
+		t.Fatalf("open the stored history: %v", err)
 	}
-	if err := crdt.ApplyUpdateV1(restarted, predecessor, nil); err != nil {
-		t.Fatalf("send the predecessor after the restart: %v", err)
+	if rendered, err := renderDocument(storedBefore); err != nil || !strings.Contains(rendered, "now") || strings.Contains(rendered, "later") {
+		t.Fatalf("the stored history renders %q (%v), want the integrated edit's text and nothing of the parked one", rendered, err)
 	}
-	rendered, err := renderDocument(restarted)
+	if pending := storedBefore.PendingStats(); pending.Items != 0 {
+		t.Fatalf("the stored history parks %+v, want nothing the room parked stored", pending)
+	}
+
+	// The room closes, as a restart closes it, and the editor sends the frame it was answered not
+	// applied for again, then the predecessor.
+	peer.Close()
+	<-peer.Ended
+	if err := service.Evict(context.Background(), artifactID); err != nil {
+		t.Fatalf("close the room: %v", err)
+	}
+	again := connectPeer(t, server.URL, artifactID, "alice")
+	awaitAnswer(t, again, "the document")
+	for _, update := range [][]byte{mixed, predecessor} {
+		if err := again.Write(ygsync.EncodeUpdate(update)); err != nil {
+			t.Fatalf("send again after the restart: %v", err)
+		}
+	}
+	waitFor(t, 10*time.Second, "the room to render both clients' edits", func() bool {
+		rendered := currentLiveMarkdown(t, service, artifactID)
+		return strings.Contains(rendered, "now") && strings.Contains(rendered, "base later")
+	})
+	waitFor(t, 10*time.Second, "the room to count no persistence update", func() bool {
+		return !service.hasPendingUpdates(artifactID) && !service.hasDurableAppend(artifactID)
+	})
+	history, err := service.persistence.Load(context.Background(), artifactID)
 	if err != nil {
-		t.Fatalf("render the restarted room: %v", err)
+		t.Fatalf("load the history once the predecessor is stored: %v", err)
 	}
-	if !strings.Contains(rendered, "now") {
-		t.Fatalf("the restarted room renders %q, want the integrated edit's text", rendered)
+	reloaded := newDocumentCopy()
+	if err := crdt.ApplyUpdateV1(reloaded, history.Update, nil); err != nil {
+		t.Fatalf("open the stored history: %v", err)
 	}
-	if !strings.Contains(rendered, "base later") {
-		t.Fatalf("the restarted room renders %q, want the parked edit's text too", rendered)
+	if rendered, err := renderDocument(reloaded); err != nil || !strings.Contains(rendered, "now") || !strings.Contains(rendered, "base later") {
+		t.Fatalf("the stored history renders %q (%v), want both clients' edits", rendered, err)
 	}
 	assertStoredOrder(t, service, artifactID)
 }

@@ -20,9 +20,10 @@ import (
 
 // A row parked over clocks a room already holds, stored before the keystrokes that later take
 // those clocks. A typist types three characters, so the room holds the typist through clock 5;
-// another browser sends one struct of deleted content over the typist's clocks 5 to 1004, whose
-// right origin (77, 0) no document holds, so it parks and the store takes it as a row of its own
-// (storeParked); the typist then types 997 more characters, clocks 5 to 1001, each a row after
+// one struct of deleted content over the typist's clocks 5 to 1004, whose right origin (77, 0) no
+// document holds, is stored as a row of its own, as a build before this one stored what its room
+// parked (the room now stores nothing it parks, leaveParkedOut, so such rows are only ever an
+// earlier build's); the typist then types 997 more characters, clocks 5 to 1001, each a row after
 // it. A document that applies the rows in the order they were stored holds all 1,000 characters
 // and parks the struct. A merge of the rows (crdt.MergeUpdatesV1) keeps the struct, the longest
 // at clock 5 and the first row to carry that clock, and drops every keystroke it covers, so a
@@ -99,9 +100,12 @@ func (c *parkedFirstTyping) typeUpTo(t *testing.T, characters int) {
 }
 
 // storeParkedRowFirst has a typist on service's room at serverURL type parkedFirstAhead
-// characters, another browser send parkedOverTheKeystrokes, and the typist type the rest, waiting
-// at each step for the store, so the parked row is stored after the first keystrokes' rows and
-// before every later one's. It returns the typist's document, which never took the parked row.
+// characters, stores parkedOverTheKeystrokes as a row of its own as an earlier build's room did -
+// the room's own append of an update its observer recorded no class for, marked with the room
+// instance's cursor (withRoomCursor), so the instance holds the row and no catch-up applies it -
+// and has the typist type the rest, waiting at each step for the store, so the parked row is
+// stored after the first keystrokes' rows and before every later one's. It returns the typist's
+// document, which never took the parked row.
 func storeParkedRowFirst(t *testing.T, service *Service, serverURL, artifactID string) *crdt.Doc {
 	t.Helper()
 	typing := startParkedFirstTyping(t, serverURL, artifactID)
@@ -110,19 +114,17 @@ func storeParkedRowFirst(t *testing.T, service *Service, serverURL, artifactID s
 		return strings.Count(currentLiveMarkdown(t, service, artifactID), "a") == parkedFirstAhead
 	})
 	waitForLandedAppends(t, service, artifactID)
-	before := storedHead(t, service.store, artifactID)
-	sender := connectPeer(t, serverURL, artifactID, "mallory")
-	waitFor(t, roomWait(t), "the sender to hold the document", func() bool {
-		return strings.Contains(peerMarkdown(sender), "Seed.")
-	})
-	if err := sender.Write(ygsync.EncodeUpdate(parkedOverTheKeystrokes())); err != nil {
-		t.Fatalf("send the parked row: %v", err)
+	instance := service.instanceOf(service.srv.GetDoc(artifactID))
+	if instance == nil {
+		t.Fatal("the typist's room has no instance to append the parked row as its own")
 	}
-	waitFor(t, roomWait(t), "the store to take the parked row", func() bool {
-		return storedHead(t, service.store, artifactID) > before
-	})
-	if parked := service.srv.GetDoc(artifactID).PendingStats(); parked.Items != 1 {
-		t.Fatalf("the room parks %+v after the parked row, want its one struct", parked)
+	before := storedHead(t, service.store, artifactID)
+	ctx := withRoomCursor(context.Background(), &instance.cursor)
+	if _, err := service.persistence.AppendUpdatesWithCredit(ctx, artifactID, []BrowserUpdate{{Update: parkedOverTheKeystrokes()}}); err != nil {
+		t.Fatalf("store the parked row: %v", err)
+	}
+	if head := storedHead(t, service.store, artifactID); head <= before {
+		t.Fatalf("the store's head is %d after the parked row, not past the %d before it", head, before)
 	}
 	typing.typeUpTo(t, parkedFirstKeystrokes)
 	waitFor(t, roomWait(t), "the room to take every keystroke", func() bool {
@@ -312,7 +314,9 @@ func TestAShareOfTheRoomsUnstoredUpdatesCarriesNoParkedRow(t *testing.T) {
 	})
 	waitForLandedAppends(t, service, artifactID)
 	gate.hold()
-	sender := connectPeer(t, server.URL, artifactID, "mallory")
+	// The struct is under the typist's client, which only the typist's person may write under
+	// (judgeClients), so another tab of hers sends it.
+	sender := connectPeer(t, server.URL, artifactID, "alice")
 	waitFor(t, roomWait(t), "the sender to hold the document", func() bool {
 		return strings.Contains(peerMarkdown(sender), "Seed.")
 	})

@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -341,12 +340,12 @@ func TestAnOfferNoLoadWillTakeIsNotKept(t *testing.T) {
 }
 
 // A browser's update that parks behind a gap in its own clocks leaves the replica holding what the
-// room holds: the log records each committed transaction's update and what it parked beside it,
-// and the replica applies both in turn (renderedReplica.observe, crdt.LoggedUpdate). The parked
-// struct renders nothing while it waits, so the room's rendering and the replica's are the same
-// through the gap and after the update that fills it, and the replica parks exactly what the room
-// parks: a replica that took the update alone would hold neither the parked struct nor, until the
-// gap was filled, the room's state.
+// room holds: the log records each committed transaction's update, and the replica applies it
+// (renderedReplica.observe, crdt.LoggedUpdate). What parked is no part of the room's document
+// until it lands (leaveParkedOut), so the replica parks nothing of it and the two hold the same
+// state and render the same through the gap; the update that fills the gap lands the parked
+// struct in the room's drain, and that commit's update carries both to the replica. Their pending
+// queues are not compared, for that reason.
 func TestAPeerUpdateThatParksBehindAGapLeavesTheReplicaHoldingWhatTheRoomHolds(t *testing.T) {
 	service, live, _ := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
 	decoded := newDocumentCopy()
@@ -376,11 +375,6 @@ func TestAPeerUpdateThatParksBehindAGapLeavesTheReplicaHoldingWhatTheRoomHolds(t
 		held := markdownAt(replica.rendering)
 		if held == nil || *held != room {
 			t.Fatalf("%s: the replica renders %s, want the room's %q", when, describeRendering(held), room)
-		}
-		roomPending, replicaPending := live.PendingStats(), replica.doc.PendingStats()
-		if roomPending.Items != replicaPending.Items || roomPending.DeleteRanges != replicaPending.DeleteRanges ||
-			!slices.Equal(roomPending.MissingFor, replicaPending.MissingFor) {
-			t.Fatalf("%s: the replica parks %+v, want the room's %+v", when, replicaPending, roomPending)
 		}
 		if !bytes.Equal(crdt.EncodeStateAsUpdateV1(replica.doc, nil), crdt.EncodeStateAsUpdateV1(live, nil)) {
 			t.Fatalf("%s: the replica's state is not the room's", when)

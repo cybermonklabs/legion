@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,11 +30,11 @@ import (
 // the same cap and refuses both first (weighPeerUpdate), so only ygo's apply can show the cap
 // itself.
 //
-// The copies the service decodes a document into take what the room holds as they took it before
-// the cap counted delete ranges: a cold read decodes the stored state that parks structs and delete
-// ranges, and the copy a write's fork is made from (snapshotDocument) decodes the room holding as
-// many parked delete ranges as the cap allows. The fold of a stored log that parks both is
-// TestALoadAndACompactionKeepWhatTheDocumentParked.
+// A cold read decodes the stored state, an earlier build's, that parks structs and delete ranges.
+// The copy a write's fork is made from (snapshotDocument) holds the room's document and nothing
+// of its pending queue, however full: what the room parks is no part of the document until it
+// lands (leaveParkedOut), so the room's encode leaves it out. The fold of a stored log that parks
+// both is TestALoadAndACompactionKeepWhatTheDocumentParked.
 func TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad(t *testing.T) {
 	const (
 		parkedStructs = 1_000
@@ -131,7 +132,10 @@ func TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("copy the room holding %d parked delete ranges: %v", maxUpdateItems, err)
 	}
-	if stats := snapshot.PendingStats(); stats.DeleteRanges != maxUpdateItems || stats.Items != parkedStructs {
-		t.Fatalf("the copy parks %d delete ranges and %d structs, want the room's %d and %d", stats.DeleteRanges, stats.Items, maxUpdateItems, parkedStructs)
+	if stats := snapshot.PendingStats(); stats.DeleteRanges != 0 || stats.Items != 0 {
+		t.Fatalf("the copy parks %d delete ranges and %d structs, want none of what the room parks", stats.DeleteRanges, stats.Items)
+	}
+	if got, want := snapshot.StateVector(), room.StateVector(); !maps.Equal(got, want) {
+		t.Fatalf("the copy holds the state vector %v, want the room's %v", got, want)
 	}
 }

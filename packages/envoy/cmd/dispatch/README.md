@@ -5064,7 +5064,8 @@ Each item below names a status and code, then its meaning.
 - `4413 DOC_CLIENT_ID_REFUSED`
 
   The same close for an update carrying an edit under a Yjs client id that is not its sender's:
-  one the document's admissions gave another person, one another person's edit claimed first, or one at 2^32 or above that no admission gave out.
+  one the document's admissions gave another person, one another person's edit claimed first, or one at 2^32 or above that no admission gave out;
+  and for an edit under an id below 2^32 that another person claimed, at clocks the room already holds from the claim on, whose content differs from what the room holds there.
   Each document socket's admission gives its page a client id of its own, stored with the person the socket is signed in as (`document_client_ids`), and names it in the socket's first frame, a stateless message starting `dispatch.client_id:` (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`);
   the page presents that id again on every reconnect (`client_id`, `DOCUMENT_CLIENT_ID_PARAMETER`) and is given it back, so a tab keeps one id across reconnects and offline edits.
   An id below 2^32 that no row names - one a page of a build from before client ids drew for itself - may be claimed by the first person whose browser lands an edit under it, so such a tab, and the rows it saved, still land across the deploy:
@@ -5072,7 +5073,9 @@ Each item below names a status and code, then its meaning.
   A sync step 2 is not refused for another person's client id: the structs under it are cut out of the step 2 before the apply (`DiffUpdateV1`), and the rest of it, deletions included, applies;
   an incremental update under another person's id is refused whole.
   Deletions are not judged: a person deletes other people's text.
-  Nor are structs the room already holds, which land nothing whoever sends them, so a browser may hand back the whole history it holds.
+  Nor are structs the room already holds, which land nothing whoever sends them, so a browser may hand back the whole history it holds,
+  with one exception that keeps a lost edit from passing in silence: while the 30-day claim window is open, structs under an id below 2^32 that another person claimed are compared, from the clock the claim started at (`claimed_from`), with what the room holds at the same clocks, and refused where they differ.
+  A co-author who claims an earlier build's tab's id first, at the clock the tab writes next, otherwise left the tab's own edit at that clock a duplicate the room dropped while the tab believed it saved; an equal resend passes.
   A client id no edit landed under and no admission presented for 30 days is deleted by the hourly compaction sweep, and a page that presents it after that is given a fresh one.
   The socket's awareness carries presence only under the id its page was given, so a cursor cannot be announced under another person's id either.
   Permanent like `DOC_TOO_LARGE`: the dashboard drops the refused edit and every edit it saved under the same id, which would each meet the same refusal, says how many it dropped, re-reads the document and takes a fresh client id with it.

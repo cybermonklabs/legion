@@ -16,6 +16,15 @@
 -- another person is refused whole, and one carrying an edit under an id at 2^32 or above that has
 -- no row is refused too (packages/envoy/internal/dispatch/docs/client_ids.go).
 --
+-- A claim can be made first by someone other than the tab whose id it is - a co-author, reading
+-- the id off the history, writing at the clock the tab writes next - and the tab's own edit at
+-- that clock then arrives as a duplicate of a clock the room holds, which would be dropped with
+-- no word. So an update carrying an edit under a claimed id below 2^32, inside the claim window,
+-- at a clock from claimed_from on that the room already holds, is compared with what the room
+-- holds there, and refused where its content differs; claimed_from is the id's clock in the
+-- document when the claim was made, so the history before the claim, which no claim could have
+-- written, is never compared.
+--
 -- The person a row names never changes, but the row does: presented_at is moved to now each time
 -- a socket's admission gives the id back to the page that presented it, and landed is set once an
 -- edit under the id has landed in the document. A row whose id never landed an edit and that no
@@ -32,6 +41,9 @@ create table document_client_ids (
   minted boolean not null,
   -- whether an edit under this id has landed in the document; a claim lands one by definition.
   landed boolean not null default false,
+  -- for a claimed id, the clock the document held the id to when the claim was made; null for a
+  -- minted id.
+  claimed_from bigint check (claimed_from >= 0),
   created_at timestamptz not null default now(),
   presented_at timestamptz not null default now(),
   primary key (artifact_id, client_id)

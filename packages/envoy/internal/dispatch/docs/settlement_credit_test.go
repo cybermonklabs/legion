@@ -440,14 +440,17 @@ func TestABrowserEditQueuedBehindAnOpenVersionIsNotCreditedAgainAfterAReopen(t *
 	}
 }
 
-// connectBrowser connects login's browser to artifactID's room (connectPeer) and returns once the
-// browser holds the room's document. The browser stays connected until the caller closes it or the
-// room closes it. A room's last browser leaving settles what the room is owed at once
-// (settleLastPeer), so a test that needs credit left pending keeps a browser connected until the
-// issue's close, which stops that settlement first.
+// connectBrowser connects login's browser to artifactID's room as a page of this build, given a
+// client id of its own (openPage), and returns once the browser holds the room's document. A page
+// of the earlier build would claim the id it drew on its first edit, and a claim waits for the
+// room's appends to land (claimable), which these tests hold behind an open transaction. The
+// browser stays connected until the caller closes it or the room closes it. A room's last browser
+// leaving settles what the room is owed at once (settleLastPeer), so a test that needs credit
+// left pending keeps a browser connected until the issue's close, which stops that settlement
+// first.
 func connectBrowser(t *testing.T, serverURL, artifactID, login string) *docstest.Peer {
 	t.Helper()
-	browser := connectPeer(t, serverURL, artifactID, login)
+	browser := openPage(t, serverURL, artifactID, login)
 	if err := browser.AskForDocument(); err != nil {
 		t.Fatalf("ask the room for its document: %v", err)
 	}

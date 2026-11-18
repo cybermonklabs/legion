@@ -1436,12 +1436,13 @@ func TestRenderReuseARoomBehindTheHeadRendersThePublish(t *testing.T) {
 // first transaction's, which the room lacks, so the room parks them and the commit integrates
 // nothing. ygo calls no update observer for that commit, but logs it with what it parked
 // (crdt.LoggedUpdate.Parked), and the room drains it right after the transaction
-// (onLoadDocument's after-transaction drain), so the replica holds what the room holds parked
-// while it waits, and the peer's update hook stores those parked bytes (onPeerUpdate). When the
-// first transaction arrives both integrate what waited behind it: the room, the replica and a
-// render of the room all hold the text of both transactions, and the commit that brought them is
-// a content change.
-func TestRenderReuseAReplicaRebuiltFromTheLogHoldsWhatTheRoomParked(t *testing.T) {
+// (onLoadDocument's after-transaction drain). What parked is no part of the document until it
+// lands (leaveParkedOut): the replica takes the commit as a position and applies nothing of it,
+// so it holds the room's document while the structs wait, and nothing stores the parked bytes.
+// When the first transaction arrives both integrate what waited behind it: the room, the replica
+// and a render of the room all hold the text of both transactions, and the commit that brought
+// them is a content change.
+func TestRenderReuseAReplicaRebuiltFromTheLogHoldsTheRoomAcrossACommitThatOnlyParked(t *testing.T) {
 	service, artifactID, sh := newWarmRenderReuseRoom(t)
 	live := service.srv.GetDoc(artifactID)
 	replica := service.replicaOf(live)
@@ -1496,14 +1497,19 @@ func TestRenderReuseAReplicaRebuiltFromTheLogHoldsWhatTheRoomParked(t *testing.T
 		t.Errorf("the replica renders %s and the room %d bytes", describeRendering(markdown), len(rendered))
 	}
 	// The commit that integrated what the room parked rendered two blocks more, so it changed the
-	// room's markdown; the commit that only parked changed nothing of it. ygo hands the room's
-	// persistence no update for that commit, so what is stored of it is the bytes it parked, which
-	// the peer's update hook stored as no content change.
+	// room's markdown. The commit that only parked changed nothing of it, and ygo hands the room's
+	// persistence no update for it, so the room stores nothing of what it parked: the editor that
+	// sent it keeps it until it lands.
 	if changed := storedClassOf(t, service, artifactID, integrated.Update); !changed {
 		t.Error("the commit that integrated what the room parked was not recorded as a content change")
 	}
-	if changed := storedClassOf(t, service, artifactID, logged.Parked); changed {
-		t.Error("the bytes the commit that only parked kept were recorded as a content change")
+	var parkedRows int
+	if err := service.store.Pool.QueryRow(context.Background(),
+		`select count(*) from doc_updates where artifact_id = $1 and update = $2`, artifactID, logged.Parked).Scan(&parkedRows); err != nil {
+		t.Fatal(err)
+	}
+	if parkedRows != 0 {
+		t.Errorf("the room stored the bytes the commit that only parked kept in %d rows, want none", parkedRows)
 	}
 	// The commit that only parked changed nothing, so the room's apply check was not called for it
 	// and the observer classified it untouched. The one that filled the gap was checked once
@@ -1531,11 +1537,11 @@ func peerAppendsBlock(t *testing.T, peer *roomPeer, markdown string) {
 }
 
 // sendPeerUpdate applies one of the peer's updates to the room as its connection does - through
-// the service's peer update hook (onPeerUpdate) - and returns once the room's update observer, or
-// its after-transaction drain for a commit that changed nothing, has run for it.
+// the service's peer update hook (weighPeerUpdate) - and returns once the room's update observer,
+// or its after-transaction drain for a commit that changed nothing, has run for it.
 func sendPeerUpdate(t *testing.T, service *Service, artifactID string, live *crdt.Doc, update []byte) {
 	t.Helper()
-	if err := service.onPeerUpdate(ygws.PeerUpdateInfo{Room: artifactID, Doc: live, Update: update, Origin: "peer"}, func() error {
+	if err := service.weighPeerUpdate(ygws.PeerUpdateInfo{Room: artifactID, Doc: live, Update: update, Origin: "peer"}, func() error {
 		return crdt.ApplyUpdateV1(live, update, "peer")
 	}); err != nil {
 		t.Fatalf("apply the peer's update to the room: %v", err)
@@ -1554,27 +1560,26 @@ func drainOneLoggedUpdate(t *testing.T, log *crdt.UpdateLog, made string) crdt.L
 }
 
 // replicaHoldsTheRoom asserts that the replica, once it holds every logged commit, is the room,
-// read every way a drift shows in: the same state vector, the same structs and deletions parked
-// (crdt.Doc.PendingStats), the same delete set - a format cleanup the replica ran alone
-// tombstones markers the room keeps - the same tree, the same runs and marks for every text node
-// of the fragment, walked in order, and the same whole state, which carries what is parked
-// (crdt.EncodeStateAsUpdateV1). The room is read first, with nothing else writing it, so neither
-// read walks a document another holds. It stops the test at the first commit that diverges,
-// since every later one compares a replica that has already drifted.
+// read every way a drift shows in: the same state vector, the same delete set - a format cleanup
+// the replica ran alone tombstones markers the room keeps - the same tree, the same runs and marks
+// for every text node of the fragment, walked in order, and the same whole state
+// (crdt.EncodeStateAsUpdateV1). The pending queues are not compared: what the room parks is no
+// part of its document until it lands (leaveParkedOut), the replica applies only what each
+// commit integrated, so it parks nothing of what the room parks, and the commit that lands it
+// carries it to both. The room is read first, with nothing else writing it, so neither read walks
+// a document another holds. It stops the test at the first commit that diverges, since every
+// later one compares a replica that has already drifted.
 func replicaHoldsTheRoom(t *testing.T, live *crdt.Doc, replica *renderedReplica, after string) {
 	t.Helper()
 	if replica == nil {
 		t.Fatalf("after %s the room has no replica", after)
 	}
-	clocks, waiting, tree := live.StateVector(), live.PendingStats(), live.GetXmlFragment(fragmentName).ToXML()
+	clocks, tree := live.StateVector(), live.GetXmlFragment(fragmentName).ToXML()
 	deletes, state, want := crdt.DeleteSetFromDoc(live), crdt.EncodeStateAsUpdateV1(live, nil), allTextRuns(live)
 	doc := heldReplica(t, replica)
 	defer replica.mu.Unlock()
 	if got := doc.StateVector(); !maps.Equal(got, clocks) {
 		t.Fatalf("after %s the replica stands at state vector %v and the room at %v", after, got, clocks)
-	}
-	if got := doc.PendingStats(); got.Items != waiting.Items || got.DeleteRanges != waiting.DeleteRanges || !slices.Equal(got.MissingFor, waiting.MissingFor) {
-		t.Fatalf("after %s the replica holds %+v parked and the room %+v", after, got, waiting)
 	}
 	if got := crdt.DeleteSetFromDoc(doc); !sameDeletes(deletes, got) {
 		t.Fatalf("after %s the replica tombstones what the room does not: %s", after, deleteDifference(got, deletes))

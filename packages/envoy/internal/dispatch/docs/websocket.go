@@ -315,6 +315,9 @@ func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room 
 	// class stored.
 	suppressed := a.service.consumeSuppressedPersistence(room, update)
 	if writer := class.stored.Load() || (suppressed && !found); writer || a.service.roomFailed(room) {
+		if writer && found {
+			a.service.resyncLanded(room, class.instance, class.seq)
+		}
 		return writer, nil
 	}
 	a.service.hooks.awaitPersistenceHold(ctx, room)
@@ -355,7 +358,8 @@ func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room 
 		return false, err
 	}
 	flush := &RoomFlush{service: a.service, room: room, cursor: class.cursor}
-	if _, err := a.store.AppendRoomFlush(ctx, room, flush, a.service.roomBatchThrough(room, class), class.credit); err != nil {
+	through := a.service.roomBatchThrough(room, class)
+	if _, err := a.store.AppendRoomFlush(ctx, room, flush, through, class.credit); err != nil {
 		if errors.Is(err, ErrIssueClosed) {
 			a.service.refuseClosedIssueAppend(room, class.instance)
 			return false, nil
@@ -363,6 +367,9 @@ func (a *servicePersistenceAdapter) StoreUpdateStored(ctx context.Context, room 
 		a.service.failRoom(room, err)
 		return false, err
 	}
+	// The room's commits are stored through the batch's position, so a browser whose parked frames
+	// a commit up to there landed is told now (resyncLanded).
+	a.service.resyncLanded(room, class.instance, through)
 	if flush.storedContentChange() {
 		a.service.scheduleSettleAfterAppend(room)
 	}

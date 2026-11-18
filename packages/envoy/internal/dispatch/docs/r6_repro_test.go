@@ -66,11 +66,11 @@ func TestR6Finding1StructsAndSplitShareNoHeadroom(t *testing.T) {
 	}
 }
 
-// Finding 2 (peer_update.go:544): headroom reads info.Doc.StructCount(), which excludes the
-// pending queue, so frames parked behind a clock gap escape the decode cap. At this head the gap
-// fill itself is refused DOC_NEEDS_REBUILD by refusedStuckBacklog, but both parked frames are
-// admitted and the room's stored state (EncodeStateAsUpdateV1, pending included) no longer
-// decodes under decodeStoredCopy.
+// Finding 2 (peer_update.go:544): headroom read info.Doc.StructCount(), which excludes the
+// pending queue, so frames parked behind a clock gap escaped the decode cap, and the room's stored
+// state, which then carried its pending queue, no longer decoded under decodeStoredCopy. The
+// ceiling now charges each parked struct twice (storedCeiling), and the room leaves what it parks
+// out of its state (leaveParkedOut), so the state a load decodes carries what landed alone.
 func TestR6Finding2ParkedStructsEscapeTheDecodeCap(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
 	defer runtime.KeepAlive(replica)

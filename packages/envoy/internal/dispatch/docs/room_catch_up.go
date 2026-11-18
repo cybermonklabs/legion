@@ -124,10 +124,14 @@ func readCatchUp(ctx context.Context, q Queryer, room string, through int64) (lo
 // room. A batch that cannot be merged, applied or broadcast fails the room, which reloads from
 // the store, and is returned as the error.
 //
-// After the batches the document must have nothing pending: every row past the cursor was
-// applied, and each depends only on rows before it, so an item left waiting for a missing
-// dependency is a store that holds a state the document never held (plan D3.8). That is logged at
-// ERROR, naming the room and the versions, and the room is left as it is.
+// After the batches the document must hold nothing pending it did not hold before them: every row
+// past the cursor was applied, and each depends only on rows before it, so an item left waiting
+// for a missing dependency is a store that holds a state the document never held (plan D3.8),
+// or a row a build before this one stored of what its room parked, which no process of this build
+// writes (leaveParkedOut). That is logged at ERROR, naming the room and the versions, and the room
+// is left as it is. What the room held pending before the catch-up is not the catch-up's: a load
+// parks again the rows an earlier build stored of what parked, which wait on clocks no row
+// carries, and every later catch-up would otherwise report them again.
 func (s *Service) catchUpRoom(ctx context.Context, q Queryer, room string, live *crdt.Doc) (catchUpOutcome, error) {
 	instance := s.instanceOf(live)
 	if instance == nil {
@@ -167,6 +171,7 @@ func (s *Service) catchUpRoom(ctx context.Context, q Queryer, room string, live 
 		s.failRoom(room, err)
 		return 0, err
 	}
+	before := live.PendingStats()
 	var broadcasts [][]byte
 	for _, batch := range batches {
 		applied, open, err := s.applyRemoteBatch(room, live, batch)
@@ -186,10 +191,10 @@ func (s *Service) catchUpRoom(ctx context.Context, q Queryer, room string, live 
 		instance.hold.add(version)
 		advanceRoomCursor(&instance.cursor, persistence.Version(version))
 	}
-	if parks(live) {
-		pending := live.PendingStats()
+	if after := live.PendingStats(); after.Items > before.Items || after.DeleteRanges > before.DeleteRanges {
 		slog.Error("dispatch: a document room holds updates it cannot place after catching up to the stored head",
-			"room", room, "versions", versions, "pending_items", pending.Items, "pending_delete_ranges", pending.DeleteRanges)
+			"room", room, "versions", versions, "pending_items", after.Items, "pending_delete_ranges", after.DeleteRanges,
+			"pending_items_before", before.Items, "pending_delete_ranges_before", before.DeleteRanges)
 	}
 	for _, applied := range broadcasts {
 		if err := s.srv.BroadcastUpdate(withOwnerVerified(WithoutRecoveryWait(ctx)), room, applied); err != nil &&

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -100,9 +99,8 @@ func (r *rcRoom) frame(t *testing.T, what string, update []byte) error {
 		}
 		// A refusal for a rendering past the line is held to what a whole render of the room with
 		// the update applied writes: the check's splice must answer what that render answers. The
-		// room is cloned rather than decoded, since a decode lands what the room holds parked
-		// behind a gap that is filled, and the update is applied with its drain taken back, since
-		// the check refused the update before any drain.
+		// room is cloned, its pending queue with it, and the update is applied with any drain of
+		// that queue taken back, since the check refused the update before any drain.
 		var checked *renderRefusal
 		if errors.As(err, &checked) && checked.cause == nil && !checked.unsure {
 			copied := r.live.Clone(documentCopyOptions(maxUpdateItems)...)
@@ -187,10 +185,12 @@ func (r *rcRoom) requireRenderedAs(t *testing.T, what, whole string) {
 
 // requireReplicaIsRoom requires the replica's document, which the replica renders every later
 // commit on and the room's reads and settlements walk, to be the room's, whatever the room parked,
-// refused or took back: the same integrated structs (the state vector), the same pending queue
-// (crdt.Doc.PendingStats) and the same whole render, whole being the room's. A held room's replica
-// stands behind the room until it is released, and a replica in its recover state holds no
-// document, so neither is compared.
+// refused or discarded: the same integrated structs (the state vector) and the same whole render,
+// whole being the room's. The pending queues are not compared: what the room parks is no part of
+// its document until it lands (leaveParkedOut), and the replica applies only what each commit
+// integrated, so it parks nothing the room parks and holds it once the commit that lands it
+// carries it. A held room's replica stands behind the room until it is released, and a replica in
+// its recover state holds no document, so neither is compared.
 func (r *rcRoom) requireReplicaIsRoom(t *testing.T, what, whole string) {
 	t.Helper()
 	if r.held.Load() {
@@ -204,10 +204,6 @@ func (r *rcRoom) requireReplicaIsRoom(t *testing.T, what, whole string) {
 	}
 	if got, want := doc.StateVector(), r.live.StateVector(); !maps.Equal(got, want) {
 		t.Fatalf("%s: the replica's document holds the state vector %v and the room %v", what, got, want)
-	}
-	if got, want := doc.PendingStats(), r.live.PendingStats(); got.Items != want.Items || got.DeleteRanges != want.DeleteRanges ||
-		!slices.Equal(got.MissingFor, want.MissingFor) {
-		t.Fatalf("%s: the replica's document parks %+v and the room %+v", what, got, want)
 	}
 	if rendered, err := renderDocument(doc); err != nil || rendered != whole {
 		t.Fatalf("%s: the replica's document renders %d bytes (%v) where the room renders %d: %s",
@@ -670,16 +666,15 @@ func (g rcGen) frame(t *testing.T, room *rcRoom) ([]byte, string) {
 // gapFrames is a generated change sent behind a gap: a browser starts a change the room does not
 // hold yet (the fill), a change made after it reaches the room first and parks until the fill
 // arrives, and the fill's apply then lands it. Half the time the change is another browser's
-// nested code block (nestedCodeBlock) inserted right after a paragraph the fill starts: its few
-// bytes are what the hook's estimate of a drain weighs (drainWouldRender), and its rendering can
-// pass the bound, and it waits on the fill's paragraph as its origin, so the fill's apply lands it
-// in a drain of the pending queue, which the room takes back where its apply check refuses what
-// the drain lands or the apply's scan allowance cannot hold the drain. Otherwise the fill is a
-// keystroke into a text and the change any generated change (change) the same browser makes in a
-// transaction of its own and sends first, whose structs follow the keystroke's clock. It returns
-// the change and the fill, each as its browser sends its transaction, what the change does, and
-// the change's client and the clock it starts at, which the room's state vector stays at for that
-// client while the change is parked.
+// nested code block (nestedCodeBlock) inserted right after a paragraph the fill starts: its
+// rendering can pass the bound, and it waits on the fill's paragraph as its origin, so the fill's
+// apply lands it in a drain of the pending queue, which the room discards where its apply check
+// refuses what the drain lands or the apply's scan allowance cannot hold the drain
+// (leaveParkedOut). Otherwise the fill is a keystroke into a text and the change any generated
+// change (change) the same browser makes in a transaction of its own and sends first, whose
+// structs follow the keystroke's clock. It returns the change and the fill, each as its browser
+// sends its transaction, what the change does, and the change's client and the clock it starts
+// at, which the room's state vector stays at for that client while the change is parked.
 func (g rcGen) gapFrames(t *testing.T, room *rcRoom) (parked, fill []byte, op string, client crdt.ClientID, from uint64) {
 	t.Helper()
 	browser := room.browserCopy(t)
@@ -1031,14 +1026,17 @@ func TestAnUpdateAfterAServerWriteTheReplicaHasNotTakenIsRefusedOnlyForNow(t *te
 	t.Logf("before the cut %d bytes, after it %d; the code mark's removal would leave %d", len(stale), len(before), checked.after)
 }
 
-// A drain the check refuses closes nobody: one client's frame of newlines, typed into a code block
-// nested 98 quotes deep right after a keystroke of another client's that the room does not hold
-// yet, parks behind it; landing the newlines would take the room past the bound. Then a browser
-// sends that keystroke, which fills the gap, and ygo drains the queue in the same apply: the room's
-// apply check passes the keystroke and refuses the drain, which is taken back. The keystroke
-// stands - its sender stays connected, and a second browser is sent it, which the room does only
-// for an update it answered applied (ygo's updateStood) - and the newlines stay parked.
-func TestARefusedDrainClosesNobodyAndTheUpdateIsAnsweredApplied(t *testing.T) {
+// A drain the check refuses closes the browser that parked what it would land and nobody else: one
+// client's frame of newlines, typed into a code block nested 98 quotes deep right after a
+// keystroke of another client's that the room does not hold yet, parks behind it, sent from a tab
+// of its own; landing the newlines would take the room past the bound. Then a browser sends that
+// keystroke, which fills the gap, and ygo drains the queue in the same apply: the room's apply
+// check passes the keystroke and refuses the drain, which is discarded (leaveParkedOut). The
+// keystroke stands - its sender stays connected, and a second browser is sent it, which the room
+// does only for an update it answered applied (ygo's updateStood) - the tab that parked the
+// newlines is closed with the check's own refusal (closeDiscardedSenders), and the room holds
+// none of them.
+func TestARefusedDrainClosesTheBrowserThatParkedItAndTheUpdateIsAnsweredApplied(t *testing.T) {
 	skipAtTheBoundsUnderRace(t)
 	service, artifactID := newTestService(t)
 	prefix := strings.Repeat("> ", 98)
@@ -1050,20 +1048,27 @@ func TestARefusedDrainClosesNobodyAndTheUpdateIsAnsweredApplied(t *testing.T) {
 	alice := http.Header{"X-Dispatch-User": []string{"alice"}}
 	sender := docstest.Dial(t, url, alice, artifactID, crdt.New())
 	awaitAnswer(t, sender, "the document")
+	parker := docstest.Dial(t, url, alice, artifactID, crdt.New())
+	awaitAnswer(t, parker, "the document in the parking tab")
 	watcher := docstest.Dial(t, url, http.Header{"X-Dispatch-User": []string{"bob"}}, artifactID, crdt.New())
 	awaitAnswer(t, watcher, "the document")
 
 	code := allTexts(sender.Doc.GetXmlFragment(fragmentName))[1]
 	fill := docstest.Transact(sender.Doc, func(txn *crdt.Transaction) { code.Insert(txn, 0, "FILL", nil) })
-	other := crdt.New(crdt.WithClientID(4242))
+	const parkingClient = 4242
+	other := crdt.New(crdt.WithClientID(parkingClient))
 	if err := crdt.ApplyUpdateV1(other, crdt.EncodeStateAsUpdateV1(sender.Doc, nil), nil); err != nil {
 		t.Fatal(err)
 	}
 	otherCode := allTexts(other.GetXmlFragment(fragmentName))[1]
 	parked := docstest.Transact(other, func(txn *crdt.Transaction) { otherCode.Insert(txn, 4, strings.Repeat("\n", 5_000), nil) })
-	if err := sender.Write(ygsync.EncodeUpdate(parked)); err != nil {
+	if err := parker.Write(ygsync.EncodeUpdate(parked)); err != nil {
 		t.Fatal(err)
 	}
+	waitFor(t, time.Minute, "the room to park the newlines", func() bool {
+		live := service.srv.GetDoc(artifactID)
+		return live != nil && live.PendingStats().Items > 0
+	})
 	if err := sender.Write(ygsync.EncodeUpdate(fill)); err != nil {
 		t.Fatal(err)
 	}
@@ -1076,6 +1081,14 @@ func TestARefusedDrainClosesNobodyAndTheUpdateIsAnsweredApplied(t *testing.T) {
 		t.Fatalf("the second browser was never sent the keystroke that filled the gap: %v", err)
 	}
 	select {
+	case <-parker.Ended:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the tab that parked the newlines is still connected after their drain was discarded")
+	}
+	if closed := parker.Closed(); closed == nil || closed.Code != contracts.DocumentTooLargeCloseCode || closed.Text != contracts.DocumentTooLargeCloseReason {
+		t.Fatalf("the parking tab was closed %v, want %d %s", closed, contracts.DocumentTooLargeCloseCode, contracts.DocumentTooLargeCloseReason)
+	}
+	select {
 	case <-sender.Ended:
 		t.Fatalf("the sender was closed %v, want it connected", sender.Closed())
 	case <-time.After(2 * time.Second):
@@ -1084,14 +1097,14 @@ func TestARefusedDrainClosesNobodyAndTheUpdateIsAnsweredApplied(t *testing.T) {
 	if live == nil {
 		t.Fatal("the room is not resident")
 	}
-	if pending := live.PendingStats(); pending.Items == 0 {
-		t.Fatal("the room drained the newlines, want them parked behind the refused drain")
+	if pending, held := live.PendingStats(), live.StateVector().Clock(parkingClient); pending.Items != 0 || held != 0 {
+		t.Fatalf("the room parks %+v and holds the parking client to clock %d, want the newlines discarded", pending, held)
 	}
 	rendering, err := renderDocument(live)
 	if err != nil || len(rendering) > maxPeerRenderingBytes {
 		t.Fatalf("the room renders %d bytes (%v), want it within %d", len(rendering), err, maxPeerRenderingBytes)
 	}
-	t.Logf("the keystroke stood and reached the second browser; the room renders %d bytes with %d structs parked", len(rendering), live.PendingStats().Items)
+	t.Logf("the keystroke stood and reached the second browser, the parking tab was closed %v; the room renders %d bytes", parker.Closed(), len(rendering))
 }
 
 // A load is no browser's apply: a document stored past the bound and its creep loads as it is

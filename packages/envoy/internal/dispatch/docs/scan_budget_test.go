@@ -477,9 +477,10 @@ func scanCeilingRoom(b *testing.B, runner crdt.ClientID, run int) (*crdt.Doc, *r
 
 // An apply's scans never pass its allowance, the drain of the parked queue included: a browser's
 // update that fills the gap parked items wait on, whose own item scans nothing but whose drain
-// would scan past what is left of the update's allowance, applies with the drain taken back, the
-// parked items parked as they were, and the room's scan total grown by what the apply's scans
-// passed, no more than its allowance.
+// would scan past what is left of the update's allowance, applies with the drain stopped at the
+// allowance and discarded (leaveParkedOut), the parked items gone from the room, and the room's
+// scan total grown by no more than the allowance: what the discarded drain scanned is left out of
+// it, since nothing it scanned is left in the room (roomScans.settle).
 func TestAnApplyNeverScansMoreThanItsAllowanceDrainIncluded(t *testing.T) {
 	const typed, waiting = 2_000, 20
 	service, room, replica, _ := tangledRoom(t, typed)
@@ -505,18 +506,18 @@ func TestAnApplyNeverScansMoreThanItsAllowanceDrainIncluded(t *testing.T) {
 	}
 	before, _ := replica.scans.figures()
 	if err, called := weighInto(service, room, filler); err != nil || !called {
-		t.Fatalf("the hook answered the filler %v (applied %t), want it admitted with its drain taken back", err, called)
+		t.Fatalf("the hook answered the filler %v (applied %t), want it admitted with its drain discarded", err, called)
 	}
 	after, _ := replica.scans.figures()
-	t.Logf("the filler's apply scanned %d items against its allowance of %d", after-before, allowance)
-	if after-before > allowance || after == before {
-		t.Errorf("the filler's apply added %d items to the room's scan total, want some and no more than its %d allowance", after-before, allowance)
+	t.Logf("the filler's apply added %d items to the room's scan total against its allowance of %d", after-before, allowance)
+	if after-before > allowance {
+		t.Errorf("the filler's apply added %d items to the room's scan total, want no more than its %d allowance", after-before, allowance)
 	}
 	if held := room.StateVector()[9]; held != 1 {
 		t.Errorf("the room holds client 9 to clock %d, want the filler's 1", held)
 	}
-	if pending := room.PendingStats(); pending.Items != waiting {
-		t.Errorf("the room parks %d items after the drain was taken back, want the %d it parked", pending.Items, waiting)
+	if pending := room.PendingStats(); pending.Items != 0 {
+		t.Errorf("the room parks %d items after the drain was discarded, want none", pending.Items)
 	}
 	runtime.KeepAlive(replica)
 }

@@ -271,31 +271,46 @@ func elementInsert(t *testing.T, state []byte, elements int) []byte {
 }
 
 // A run of frames that each park content behind a gap of their own client is refused at the
-// state cap, however many arrive. Each frame is under the document bound, so its allowance is
-// what the state cap leaves; and an apply that only parks fires no update, so a tally built from
-// committed updates never rose and every frame was given the whole headroom again. Measured
-// before the fix, on a room tracked at nothing: 24 frames of 900 KiB were all admitted and the
-// room's encoded state reached 22,119,318 bytes against the 16,777,216 one room may hold
-// (dispatch://INFRA-179, found by the byte half of the anchor). One parked frame is refused at the
-// cap and always was, which is why the review's one-frame test passed: the run is the shape that
-// finds it, so the run is the test. The close is the one the state cap gives the room it refuses
-// in: the document's own DOC_TOO_LARGE while more than nearTheStateCap is left, since a smaller
-// frame still lands, and the rebuild offer within it (peerRule.refusal, nearACapUnencoded).
+// state cap's headroom, however many arrive, and is charged to the room budget as it parks. What
+// parks is no part of the room's encoded state (leaveParkedOut): the library's count of that state,
+// which the room's tracked state follows, does not move for it (crdt.ApplyReport.StateBytes), and
+// an encode of the room does not show it. It is resident all the same, in the room's pending
+// queue, and the room's own figure of that queue (roomApplies.noteQueued, queuedBytes) is what the
+// state cap's allowance and the budget weigh beside the tracked state (residentBytes): each frame
+// is under the document bound, so its allowance is what the state cap leaves of that sum, and the
+// room is charged that sum as each frame parks. Measured before any figure counted what parks, on
+// a room tracked at nothing: 24 frames of 900 KiB were all admitted and the room held 22,119,318
+// bytes against the 16,777,216 one room may hold (dispatch://INFRA-179, found by the byte half of
+// the anchor). One parked frame is refused at the cap and always was, which is why the review's
+// one-frame test passed: the run is the shape that finds it, so the run is the test. The close is
+// the one the state cap gives the room it refuses in: the document's own DOC_TOO_LARGE while its
+// tracked state is more than nearTheStateCap below the cap, since a rebuild of it would not be
+// taken, and the rebuild offer within it (peerRule.refusal, nearACapUnencoded).
 func TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph.\n", 0)
 	defer runtime.KeepAlive(replica)
+	service.budget.limit = roomBudgetBytes
+	charge := service.chargeLoadedRoom("room", replica, int64(len(crdt.EncodeStateAsUpdateV1(room, nil))))
+	weighing := service.roomWeighingOf(room)
+	applies := weighing.applies()
 	text := strings.Repeat("m", 900<<10)
 	admitted, refusedAt := 0, -1
 	for i := range 40 {
-		tracked := service.roomStateBytes(room)
+		tracked, queued := service.roomStateBytes(room), applies.queuedBytes()
 		err, applied := weighInto(service, room, marginRecord(uint64(6_100_001+i), 5, "k", text))
-		encoded := len(crdt.EncodeStateAsUpdateV1(room, nil))
-		if encoded > maxRoomStateBytes {
-			t.Fatalf("after %d parked frames the room's encoded state is %d bytes, past the %d one room may hold; the tally reads %d",
-				i+1, encoded, maxRoomStateBytes, service.roomStateBytes(room))
+		if resident := weighing.roomResidentBytes(); resident > maxRoomStateBytes {
+			t.Fatalf("after %d parked frames the room holds %d bytes of state and queue, past the %d one room may hold; its tracked state is %d",
+				i+1, resident, maxRoomStateBytes, service.roomStateBytes(room))
 		}
 		if err == nil && applied {
 			admitted++
+			if grew := applies.queuedBytes() - queued; grew < int64(len(text)) {
+				t.Fatalf("parked frame %d carried %d bytes of content and moved the room's queue figure by %d", i, len(text), grew)
+			}
+			if got, want := chargedWeight(charge), roomWeight(applies.residentBytes(), int64(applies.structsHeld(room))); got != want {
+				t.Fatalf("after parked frame %d the budget charges the room %d bytes, want the %d its %d bytes of state and queue come to",
+					i, got, want, applies.residentBytes())
+			}
 			continue
 		}
 		want := contracts.DocumentTooLargeCloseReason
@@ -310,9 +325,12 @@ func TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive(t *testing.T)
 			refusedAt = i
 		}
 	}
-	t.Logf("%d of 40 frames of 900 KiB parked behind gaps of their own were admitted; the first refused was frame %d; the room's encoded state is %d bytes of %d",
-		admitted, refusedAt, len(crdt.EncodeStateAsUpdateV1(room, nil)), maxRoomStateBytes)
+	t.Logf("%d of 40 frames of 900 KiB parked behind gaps of their own were admitted, the first refused was frame %d; the room parks %d structs, holds %d bytes of state and queue of %d, its tracked state %d, and is charged %d",
+		admitted, refusedAt, room.PendingStats().Items, applies.residentBytes(), maxRoomStateBytes, service.roomStateBytes(room), chargedWeight(charge))
 	if refusedAt < 0 {
 		t.Fatalf("all 40 parked frames were admitted, want the state cap to refuse the run")
+	}
+	if parked := room.PendingStats().Items; parked != admitted {
+		t.Fatalf("the room parks %d structs, want the %d frames it admitted, each still waiting on its gap", parked, admitted)
 	}
 }

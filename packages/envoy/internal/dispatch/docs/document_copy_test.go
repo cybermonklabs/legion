@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -341,12 +342,13 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 // A browser's two edits reach the room out of order: the one that leans on the other lands first
 // and parks, waiting for it, and the one it waits for lands next. The room's rendered replica is
 // the copy of the room every read walks (holdLive), so after each commit it must hold what the
-// room holds, the structs and deletions that commit parked included: ygo leaves those out of the
-// update its observers are handed, as Yjs does, and carries them beside it
-// (crdt.LoggedUpdate.Parked). A replica that takes only the update is a copy of the room that has
-// lost the browser's parked edit: caught up with the edit that fills the gap, as the room is, it
-// shows the room's text without it.
-func TestTheRoomsRenderedReplicaHoldsWhatACommitParked(t *testing.T) {
+// room holds. What parked is no part of the document until it lands (leaveParkedOut): a copy of
+// the replica, or of the room, taken while the edit waits holds the room's document without it,
+// so caught up with the edit that fills the gap it shows that edit alone, and the editor that
+// sent the parked edit, answered not applied, sends it again. Once the room takes the filler, its
+// drain lands the parked edit in the same commit, whose update carries both, so the replica holds
+// the browser's whole text.
+func TestTheRoomsRenderedReplicaHoldsTheRoomAcrossAParkedEdit(t *testing.T) {
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp of the browser's blocks would commit into the
 	// room while the edit is parked.
@@ -385,11 +387,12 @@ func TestTheRoomsRenderedReplicaHoldsWhatACommitParked(t *testing.T) {
 	if parked := room.PendingStats(); parked.Items == 0 {
 		t.Fatal("the room integrated the browser's second edit whole; without the first it must park it")
 	}
-	if got := renderedWith(t, replicaState(t, replica), filler); got != want {
-		t.Errorf("a copy of the replica taken while the edit was parked, caught up, renders %q, want %q", got, want)
+	withoutParked := renderedWith(t, crdt.EncodeStateAsUpdateV1(room, nil), filler)
+	if strings.Contains(withoutParked, "Third.") || !strings.Contains(withoutParked, "Second.") {
+		t.Fatalf("a copy of the room taken while the edit was parked, caught up, renders %q, want the filler's edit without the parked one", withoutParked)
 	}
-	if got := renderedWith(t, crdt.EncodeStateAsUpdateV1(room, nil), filler); got != want {
-		t.Errorf("a copy of the room taken while the edit was parked, caught up, renders %q, want %q", got, want)
+	if got := renderedWith(t, replicaState(t, replica), filler); got != withoutParked {
+		t.Errorf("a copy of the replica taken while the edit was parked, caught up, renders %q, want the room's %q", got, withoutParked)
 	}
 
 	if err := crdt.ApplyUpdateV1(room, filler, "peer"); err != nil {

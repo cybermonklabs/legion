@@ -10,17 +10,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// A drain of parked content is weighed against the document bound on the update that can release
-// it (drainWouldRender), and past the creep cap the update's allowance leaves it no content at all
-// (peerApplyAllowance, crdt.ApplyBudget.Bytes). The drain is not the update's own content, and ygo
-// charges an apply nothing for what its drain lands (crdt.ApplyBudget, "A struct the drain
-// integrates is outside Structs"), so that allowance refused only a fill that carried some. A fill
-// that carries none - its one character deleted by the same update, which ygo counts as no
-// content, or a GC struct at the gap's clock, which carries none at all - is what this drives:
-// eight browsers each park 900 KiB behind a character the room never received, and one update
-// fills every gap. Either fill was admitted and left the room rendering 7,372,824 bytes, against a
-// document bound of 1,048,576; the hook now refuses an update that can release a drain past the
-// creep cap before its apply, whatever it carries (refusedDrainPastTheCreep).
+// A drain of parked content is weighed against the document bound on what it lands: the room's
+// apply check renders what the drain left and refuses it past the bound and its creep, and the
+// refused drain is discarded while the update that released it stands (renderCheck,
+// leaveParkedOut, closeDiscardedSenders). The update's own allowance cannot do it: the drain is
+// not the update's own content, and ygo charges an apply nothing for what its drain lands
+// (crdt.ApplyBudget, "A struct the drain integrates is outside Structs"), so past the creep cap,
+// where the allowance leaves no content at all (peerApplyAllowance, crdt.ApplyBudget.Bytes), it
+// refuses only a fill that carries some. A fill that carries none - its one character deleted by
+// the same update, which ygo counts as no content, or a GC struct at the gap's clock, which
+// carries none at all - is what this drives: eight browsers each park 900 KiB behind a character
+// the room never received, and one update fills every gap. Before any check of the drain either
+// fill was admitted and left the room rendering 7,372,824 bytes, against a document bound of
+// 1,048,576.
 func TestAGapFillCarryingNoContentDrainsNoRoomPastTheDocumentBound(t *testing.T) {
 	const frames, each = 8, 900 << 10
 	for _, row := range []struct {

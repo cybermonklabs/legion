@@ -540,7 +540,7 @@ func TestARebuildOfANearResidentRoomRunsThoughItsDecodedHistoryReadsFar(t *testi
 	if live == nil {
 		t.Fatal("the room did not load")
 	}
-	service.roomWeighingOf(live).applies().loaded(live, maxRoomStateBytes-1<<10)
+	service.roomWeighingOf(live).applies().loaded(maxRoomStateBytes - 1<<10)
 	if why, near, err := nearACap(ctx, live, service.copyOfRoom(live), int64(service.roomStateBytes(live))); err != nil || !near {
 		t.Fatalf("the resident room reads near=%t (%q, %v), want near the state cap", near, why, err)
 	}

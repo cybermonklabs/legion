@@ -604,6 +604,9 @@ type roomApplies struct {
 	// room budget weigh beside the tracked state (residentBytes). It is written by the hook after
 	// its apply and read by the hook before one and by the budget's drains, so it is an atomic.
 	queuedContent atomic.Int64
+	// parked is each browser connection whose frames left something parked that has not landed
+	// yet, which the room resyncs once the commit that lands it is stored (parked_resync.go).
+	parked parkedWaits
 	// pressureMark is the room's struct total as the budget's pressure first weighed one of
 	// its updates, and pressureMarked whether the room carries such a mark: what bounds the
 	// room's growth across the whole of one pressure rather than within one update
@@ -1337,7 +1340,8 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	// parked is stored any more (leaveParkedOut), so those terms bound the queue the room holds in
 	// memory, out of the same headroom as what it integrates.
 	structs := weighing.applies().structsHeld(info.Doc)
-	ceiling := storedCeiling(structs, info.Doc.PendingStats())
+	parkedBefore := info.Doc.PendingStats()
+	ceiling := storedCeiling(structs, parkedBefore)
 	rendering, measured := weighing.size()
 	// The pressure is read once for this update: whether the open rooms are past their budget,
 	// and what the room's own growth under that pressure has left it to cut with
@@ -1390,11 +1394,15 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	// What the apply left in the room's pending queue is the room's from here, in memory beside
 	// its encoded state (noteQueued). The room's update observer charged the room's budget inside
 	// the apply, before the queue could be read, so the room is weighed again where its queue's
-	// charge moved. A refused apply left the queue as it was and is charged nothing.
+	// charge moved. A refused apply left the queue as it was and is charged nothing. A frame that
+	// left something of its own parked was answered not applied, and its sender waits for what
+	// parked to land (noteParked, parked_resync.go).
 	applies := weighing.applies()
-	if before := applies.queuedBytes(); applies.noteQueued(info.Doc.PendingStats(), content) != before {
+	parkedAfter := info.Doc.PendingStats()
+	if before := applies.queuedBytes(); applies.noteQueued(parkedAfter, content) != before {
 		weighing.roomCharge().weigh(applies.residentBytes(), int64(applies.structsHeld(info.Doc)))
 	}
+	applies.noteParked(info, parkedBefore, parkedAfter)
 	return nil
 }
 

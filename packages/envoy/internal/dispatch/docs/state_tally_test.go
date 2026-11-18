@@ -15,50 +15,54 @@ import (
 // (crdt.ApplyReport.StateBytes), and TestTheAnchorFindsNoDifferenceFromWhatTheRoomsAppliesReported
 // holds it against an encode of the room for the browser's shapes. These hold it there on the
 // paths no browser's report covers: the re-base a compaction gives a room holding something
-// pending or something its store has not taken, the format cleanup ygo commits after a remote
+// parked or something its store has not taken, the format cleanup ygo commits after a remote
 // apply, the server's own writes, a replica that is a coarser copy of the room than the room
 // itself, and a commit the replica cannot measure at all. Each compares the tally with an encode
 // of the room's own document, never of the replica.
 
-// A re-base is a reading of the room's whole state, and a reading of a room whose pending queue
-// holds something is a lower bound: the encode merges the queue into the store's encoding, which
-// can come out shorter than the direct form the reports count (roomApplies.noteApply). So a
-// re-base taken while frames are parked keeps the larger of the tally and the reading, and only
-// one taken with nothing pending replaces the tally. The two frames here are the anchor's
-// parked shape, which leaves the encode a byte short of the tally: a re-base taking that
-// encode as the truth lowered the tally below what the room holds once the gaps fill.
-func TestAReBaseTakenWhileAFrameIsParkedDoesNotLowerTheTally(t *testing.T) {
+// What a room parks is in neither its tracked state nor an encode of it (leaveParkedOut,
+// roomApplies.noteApply): a report counts a struct where it enters the state, and the encode
+// leaves the pending queue out. So a re-base taken while frames are parked reads what the tally
+// counts and replaces it as any exact reading does, and the fills that land the frames add them
+// as they land, so the tally covers an encode of the room once they have. The two frames here are
+// the anchor's parked shape, whose encode came out a byte short of the tally while an encode
+// merged the queue in.
+func TestAReBaseTakenWhileAFrameIsParkedReadsWhatTheTallyCounts(t *testing.T) {
 	clients := []uint64{8_200_001, 8_200_002}
 	room := loadAndType(t, seededState(t), [][]byte{parkedGCFrame(clients[0], 2_000), parkedGCFrame(clients[1], 3_000)})
 	defer runtime.KeepAlive(room)
+	// The commits that only parked fire no update observer, so the room's log is drained of them
+	// as a room's load drains it after each transaction (onLoadDocument).
+	room.replica.observe("room")
 	store := keepStore(room)
-	if !holdsPending(room.live) {
-		t.Fatal("the frames parked nothing, so no re-base here is taken while the room holds something pending")
+	if room.live.PendingStats().Items == 0 {
+		t.Fatal("the frames parked nothing, so no re-base here is taken while the room holds something parked")
 	}
 	tracked := room.replica.roomStateBytes()
 	read := int64(len(crdt.EncodeStateAsUpdateV1(room.live, nil)))
 	t.Logf("with the frames parked the tally is %d bytes and an encode of the room holds %d", tracked, read)
-	for _, reading := range []int64{read, read / 2} {
-		room.service.rebaseResident("room", room.live, reading, room.service.markResident(room.live))
-		if after := room.replica.roomStateBytes(); after < tracked {
-			t.Fatalf("a re-base reading %d bytes while the room held parked frames took the tally from %d to %d", reading, tracked, after)
-		}
+	if tracked < read {
+		t.Fatalf("with the frames parked the tally is %d bytes, below the %d an encode of the room holds", tracked, read)
+	}
+	room.service.rebaseResident("room", room.live, read, room.service.markResident(room.live))
+	if after := room.replica.roomStateBytes(); after != read {
+		t.Fatalf("a re-base reading %d bytes of a room whose store holds all it integrated left the tally at %d, want the reading", read, after)
 	}
 
-	// The struct each frame waits for fills its gap, the queue empties, and once the store has
-	// taken what the room committed, the encode is exact.
+	// The struct each frame waits for fills its gap, the queue empties, and the drains add what
+	// they land to the tally.
 	for _, client := range clients {
 		weighAsBrowser(t, room, newV1Frame(1).group(1, client, 0).gc(1).noDeletes(), new(int))
 	}
-	if holdsPending(room.live) {
-		t.Fatal("the fillers left the room holding something pending")
+	if pending := room.live.PendingStats(); pending.Items > 0 || pending.DeleteRanges > 0 {
+		t.Fatalf("the fillers left the room holding %+v parked", pending)
 	}
 	store.stored()
 	requireTallyCovers(t, room, "the gaps filled")
 	read = int64(len(crdt.EncodeStateAsUpdateV1(room.live, nil)))
 	room.service.rebaseResident("room", room.live, read, room.service.markResident(room.live))
 	if after := room.replica.roomStateBytes(); after != read {
-		t.Fatalf("a re-base reading %d bytes of a room holding nothing pending left the tally at %d, want the reading", read, after)
+		t.Fatalf("a re-base reading %d bytes of a room holding nothing parked left the tally at %d, want the reading", read, after)
 	}
 }
 

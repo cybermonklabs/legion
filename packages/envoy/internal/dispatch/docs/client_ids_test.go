@@ -493,6 +493,80 @@ func TestAnEarlierBuildsTabLandsItsEditsAndSavedRowsAcrossTheDeploy(t *testing.T
 	awaitRefused(t, mallory, "mallory")
 }
 
+// The race a claim leaves among co-authors loses nothing in silence. Bob, who edited the document
+// after the earlier build's tab first typed in it, reads the tab's id and next clock off the
+// history and writes under it first, so the claim is his, from that clock (claimed_from). The tab
+// had typed at that clock already, offline, and its saved row, replayed by alice's reloaded page
+// under the id it was typed under, falls wholly at clocks the room holds: the apply would land
+// nothing of it and the page would be answered as if it had. It is refused with the client id
+// refusal instead, and the room holds bob's text at that clock, not hers. A browser handing back
+// what the room relayed under that id - carol's whole state, bob's struct in it - passes, and
+// carol stays connected.
+func TestAnEditAtAClockACoAuthorClaimedFirstIsRefusedNotDroppedInSilence(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
+	const tab = crdt.ClientID(1_234_567_011)
+
+	// Before the deploy: the earlier build's tab types, and bob edits the document after it.
+	oldTab := docstest.Dial(t, socketURL(serverURL, artifactID), pageHeader("alice"), artifactID, crdt.New(crdt.WithClientID(tab)))
+	awaitAnswer(t, oldTab, "the document")
+	sendTyped(t, oldTab, 0, "o")
+	waitForRoomRendering(t, room, func(rendering string) bool { return strings.Contains(rendering, "oAlice") }, "the room holding the tab's edit")
+	bob := openPage(t, serverURL, artifactID, "bob")
+	awaitAnswer(t, bob, "the document")
+	sendTyped(t, bob, 0, "b")
+	waitForRoomRendering(t, room, func(rendering string) bool { return strings.Contains(rendering, "boAlice") }, "the room holding bob's edit")
+	oldTab.Close()
+	<-oldTab.Ended
+	// The earlier build stored no binding for the tab's id: the history names it, and no row does.
+	if _, err := service.store.Pool.Exec(context.Background(),
+		`delete from document_client_ids where artifact_id = $1 and client_id = $2`, artifactID, int64(tab)); err != nil {
+		t.Fatal(err)
+	}
+
+	// While the deploy runs, the tab types on offline at its next clock and saves the row.
+	next := oldTab.Doc.StateVector().Clock(tab)
+	saved := typeAt(t, oldTab.Doc, 0, "T")
+	// Bob writes under the tab's id first, at that clock.
+	if err := bob.Write(ygsync.EncodeUpdate(forgedUnder(t, bob.Doc, "BOB", tab, next))); err != nil {
+		t.Fatal(err)
+	}
+	waitForRoomRendering(t, room, func(rendering string) bool { return strings.Contains(rendering, "BOB") }, "the room holding bob's claim")
+	requireConnected(t, bob, "bob")
+	var claimedFrom int64
+	if err := service.store.Pool.QueryRow(context.Background(),
+		`select claimed_from from document_client_ids where artifact_id = $1 and client_id = $2 and actor_id = 'bob' and not minted`,
+		artifactID, int64(tab)).Scan(&claimedFrom); err != nil {
+		t.Fatalf("read bob's claim of the tab's id: %v", err)
+	}
+	if uint64(claimedFrom) != next {
+		t.Fatalf("bob's claim of the tab's id starts at clock %d, want %d, the clock the room held it to", claimedFrom, next)
+	}
+
+	// Carol hands back the room's whole state, bob's struct under the tab's id in it: equal, so
+	// it passes.
+	carol := openPage(t, serverURL, artifactID, "carol")
+	awaitAnswer(t, carol, "the document")
+	sendStepTwo(t, carol, crdt.EncodeStateAsUpdateV1(carol.Doc, nil))
+	requireConnected(t, carol, "carol")
+
+	// Alice reloads: a page of this build replays the tab's saved row under the id it was typed
+	// under, at the clock bob's claim took.
+	before := mustRendering(t, room())
+	page := openPage(t, serverURL, artifactID, "alice")
+	awaitAnswer(t, page, "the document in the reloaded page")
+	if err := page.Write(ygsync.EncodeUpdate(saved)); err != nil {
+		t.Fatal(err)
+	}
+	awaitRefused(t, page, "alice's reloaded page replaying the tab's saved row")
+	if after := mustRendering(t, room()); after != before {
+		t.Fatalf("the room renders %q after the refused row, want %q as before it", after, before)
+	}
+	if clock := room().StateVector().Clock(tab); clock != next+uint64(len("BOB")) {
+		t.Fatalf("the room holds the tab's id to clock %d, want bob's claim's end %d", clock, next+uint64(len("BOB")))
+	}
+}
+
 // sendStepTwo sends the room update as a sync step 2, the whole-state answer a provider gives the
 // room's sync step 1.
 func sendStepTwo(t *testing.T, page *docstest.Peer, update []byte) {

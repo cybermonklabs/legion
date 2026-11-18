@@ -929,12 +929,12 @@ func TestAnAnswerFromARoomThatParksNothingIsGrantedWhatItsCutCosts(t *testing.T)
 		structs, clients, state, granted)
 }
 
-// A room holding a parked struct is cut from its own structs as every room is, and what it parks
-// is read back on its own beside the cut (readParked, theorem-labs/ygo v1.55.1-theorem.6), so a
-// browser joining it is answered under the cut's grant and what that read-back allocates
-// (parkedAnswerWeight). The parked struct is a browser's keystroke sent before the keystroke it
-// was typed after, as a browser whose earlier update was lost sends it.
-func TestAnAnswerFromARoomHoldingAParkedStructIsGrantedItsCutAndItsReadBack(t *testing.T) {
+// A room holding a parked struct is answered as every room is: the answer carries nothing the room
+// parks (leaveParkedOut, crdt.Doc.SetParkedOutOfState), so a browser joining it is answered under
+// the grant of its cut alone, priced on the structs the room's store holds and not on what waits
+// in its queue (answerWeight). The parked struct is a browser's keystroke sent before the
+// keystroke it was typed after, as a browser whose earlier update was lost sends it.
+func TestAnAnswerFromARoomHoldingAParkedStructIsGrantedItsCutAlone(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // no settlement takes a grant while the browser joins
 	seedServiceText(t, service, artifactID, "One paragraph of ordinary prose.")
@@ -958,14 +958,17 @@ func TestAnAnswerFromARoomHoldingAParkedStructIsGrantedItsCutAndItsReadBack(t *t
 	live, replica := answeringRoom(t, service, artifactID)
 
 	granted := grantOfAJoin(t, httpServer.URL, artifactID)
-	state, clients, structs := replica.roomStateBytes(), int64(live.ClientCount()), int64(live.StructCount()+live.PendingStats().Items)
-	cut := cutAnswerWeight(state, clients, structs)
-	if want := parkedAnswerWeight(cut, live.PendingStats()); granted != want || want == cut {
-		t.Fatalf("the answer to a room holding a parked struct held %d bytes of the pod's copy heap, want the %d its cut and its read-back cost; its cut alone is %d",
-			granted, want, cut)
+	state, clients, structs := replica.roomStateBytes(), int64(live.ClientCount()), int64(live.StructCount())
+	want := cutAnswerWeight(state, clients, structs)
+	if parked := int64(live.PendingStats().Items); want == cutAnswerWeight(state, clients, structs+parked) {
+		t.Fatalf("the room's %d parked structs change nothing of its %d-byte grant, so nothing here is tested", parked, want)
 	}
-	t.Logf("an answer carrying %d structs of %d clients and %d bytes of tracked state, %d of them parked, held %d bytes of the pod's copy heap, %d past its cut",
-		structs, clients, state, live.PendingStats().Items, granted, granted-cut)
+	if granted != want {
+		t.Fatalf("the answer to a room holding a parked struct held %d bytes of the pod's copy heap, want the %d its cut of the store's %d structs costs",
+			granted, want, structs)
+	}
+	t.Logf("an answer carrying %d structs of %d clients and %d bytes of tracked state, with %d parked beside them, held %d bytes of the pod's copy heap",
+		structs, clients, state, live.PendingStats().Items, granted)
 }
 
 // answeringRoom is artifactID's resident room and the replica its load listed it with, which

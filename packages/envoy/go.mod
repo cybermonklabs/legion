@@ -223,8 +223,8 @@ require (
 // can weigh the whole-state decode that answer costs - 360,954,408 bytes of peak heap on a
 // document of 1,048,576 structs - against the pod's copy heap (weighStateAnswer). And a drain's
 // splits are charged to the apply that lands them, with the drain refused and taken back while
-// the gap filler's own apply stands, so a room can hold a backlog that never drains and the room
-// answers that from its own pending queue (refusedStuckBacklog, crdt.Doc.PendingStats). It also
+// the gap filler's own apply stands, so a room could hold a backlog that never drained; the room
+// now discards such a drain instead (crdt.Doc.SetDiscardRefusedDrain, leaveParkedOut). It also
 // carries the allowed-roots check to where a struct parks and travels the list with it, so a
 // sender can no longer write under a root it may not name by parking behind a clock it never
 // sends, which needed nothing here. Breaking: ApplyBudget's zero value for Split allows no
@@ -247,4 +247,16 @@ require (
 // does to the rendering - a 35-byte frame setting a list's start number grew one document by
 // 800,024 bytes, and a 7-byte delete of an inline-code mark's format items grew another by
 // 2,799,998 - so only a check of the result can hold the bound (render_check.go).
-replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.7
+// v1.55.1-theorem.8 adds what this package's room keeps parked content out of the document with,
+// every behaviour change an option off by default and the rest additive: PeerUpdateInfo.Context,
+// the connection's request context, which the client id rule reads its socket from
+// (judgeClients); ApplyUpdateV1Outcome and Server.RelayIntegratedOnly and AnswerParkedNotApplied,
+// so a frame that parks is neither relayed nor answered applied; Server.AnswerOnceStored and
+// PersistenceAdapterStored, so a frame's answer waits for its commit's store (StoreUpdateStored);
+// Doc.SetParkedOutOfState, so nothing parked is encoded, answered or stored, and
+// Doc.SetDiscardRefusedDrain with DrainDiscardedError, so a drain the room cannot take is
+// discarded and its senders named (leaveParkedOut, closeDiscardedSenders); Server.ClosePeer and
+// ResyncPeer, which close or resync a browser from any goroutine after the answers it is owed
+// (closeDiscardedSenders, resyncLanded); and HeldStructsDifferV1, which compares an update's
+// structs with what the document holds at the same clocks (refusedDuplicate).
+replace github.com/reearth/ygo => github.com/theorem-labs/ygo v1.55.1-theorem.8

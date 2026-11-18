@@ -1,15 +1,17 @@
-// Scratch reproduction for review 7 of sjawhar/legion PR #2544 at 7e798f23 (R7Table), package docs.
-// Asserts the correct behaviour, so it FAILS where the defect stands.
+// Reproduction for review 7 of sjawhar/legion PR #2544 at 7e798f23 (R7Table), package docs.
+// Asserts the correct behaviour, so it fails where the defect stands.
 //
-// refusedStuckBacklog (peer_update.go:1126-1147) refuses EVERY browser's update into a room whose
-// pending queue has stopped falling and whose drain's splits (parked items + 2 x parked delete
-// ranges) pass the splits' half of the decode cap's headroom. A parked delete range is charged to
-// no field of the allowance (crdt.ApplyBudget.Bytes: "The number of delete ranges an update carries
-// is bounded by Decoded instead"), so one browser's frame of delete ranges over a client the room
-// has never seen parks them all, and two updates later the room refuses every person's keystroke
-// DOC_NEEDS_REBUILD. The rebuild that close offers is refused: nearACap reads the room far from
-// every cap (structCeiling counts each parked range once), so RebuildDocument answers 409
-// DOCUMENT_LIVE (rebuild.go:421-427) while the room is resident, and ErrDocumentLoads once it is not.
+// At 7e798f23 the room refused every browser's update into a room whose pending queue had stopped
+// falling and whose drain's splits (parked items + 2 x parked delete ranges) passed the splits'
+// half of the decode cap's headroom, closing it DOC_NEEDS_REBUILD. A parked delete range is
+// charged to no field of the allowance (crdt.ApplyBudget.Bytes: "The number of delete ranges an
+// update carries is bounded by Decoded instead"), so one browser's frame of delete ranges over a
+// client the room has never seen parked them all, and two updates later the room refused every
+// person's keystroke, offering a rebuild the route refused: nearACap read the room far from every
+// cap, so RebuildDocument answered 409 DOCUMENT_LIVE (rebuild.go:421-427). That rule is gone: a
+// drain the room cannot take is discarded while the update that released it stands
+// (leaveParkedOut), so no queue stands still for a rule to read, and this holds that a frame of
+// parked delete ranges locks no editor out.
 package docs
 
 import (

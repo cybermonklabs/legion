@@ -249,7 +249,10 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
-	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
+	// A page of this build, given its own client id: a page of the earlier build would claim the
+	// id it drew on its first keystroke, and a claim waits for the room's appends to land
+	// (claimable, waitForDurableAppends), which the gates below hold.
+	editor := openPage(t, httpServer.URL, artifactID, "alice")
 	if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
 		t.Fatal(err)
 	}

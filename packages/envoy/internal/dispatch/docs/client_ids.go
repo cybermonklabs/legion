@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -77,6 +78,19 @@ import (
 // writer was credited for what it typed, so the race the claim leaves is among the document's
 // co-authors of that time and no longer every reader. An id the history does not name - a tab
 // that typed offline from the moment it opened - no one can have read, so its first claim stands.
+//
+// That race is not refused, but it loses nothing in silence. A co-author who claims the tab's id
+// first, writing at the clock the tab writes next, leaves the room holding that clock, and the
+// tab's own edit at it then arrives as a duplicate: the apply lands nothing of it and says
+// nothing, and the tab would believe it saved. So, while the claim window is open, an update
+// carrying structs under a claimed id below the floor that is not its sender's, at clocks the room
+// already holds from the claim on, has them compared with what the room holds there
+// (crdt.HeldStructsDifferV1, refusedDuplicate), and is refused DocumentClientIdRefusedCloseReason
+// where they differ. An equal resend - any browser handing back what the room relayed - passes.
+// The row keeps the id's clock in the document as the claim was made (claimed_from), so only
+// clocks the claim could have written are compared, never the tab's own history before it, and
+// only an update carrying such a duplicate pays for the comparison, never a keystroke under the
+// socket's own id.
 //
 // Every page load is given an id, and most never type, so a row that never landed an edit and
 // that no admission has presented for unusedClientIDAge is deleted by the hourly compaction sweep
@@ -180,9 +194,12 @@ func (c *socketClients) announces(client uint64) bool {
 	return client == uint64(c.own)
 }
 
-// clientOwner is the person a client id is stored for.
+// clientOwner is the person a client id is stored for, and for an id claimed rather than given
+// out, the clock the document held it to as the claim was made (claimedFrom).
 type clientOwner struct {
-	kind, id string
+	kind, id    string
+	claimed     bool
+	claimedFrom uint64
 }
 
 func (o clientOwner) is(actor model.Actor) bool {
@@ -228,29 +245,30 @@ func (s *Service) claimWindowOpen(ctx context.Context) (bool, error) {
 // claimable is nil where actor may claim client, an id below mintedClientFloor no row names, in
 // room, and errClaimRefused, saying why, where it may not: the claim window has closed, or the
 // stored history names the id and neither a version holding the history's first row naming it
-// nor a pending author row lists actor (historyFirstNames). It reads every stored row of the
-// document, which only a claim pays for, and a claim is made once for each such id.
-func (s *Service) claimable(ctx context.Context, room string, actor model.Actor, client uint64) error {
+// nor a pending author row lists actor (historyNames). It also answers the clock the stored
+// history holds client to, where a claim made now starts (claimed_from). It reads every stored
+// row of the document, which only a claim pays for, and a claim is made once for each such id.
+func (s *Service) claimable(ctx context.Context, room string, actor model.Actor, client uint64) (heldTo uint64, err error) {
 	open, err := s.claimWindowOpen(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !open {
-		return fmt.Errorf("%w: its window closed %s after this database first gave client ids out", errClaimRefused, claimWindow)
+		return 0, fmt.Errorf("%w: its window closed %s after this database first gave client ids out", errClaimRefused, claimWindow)
 	}
 	// What the room took and has not stored yet is history too: an id a tab wrote under a moment
 	// ago names nothing in the stored rows until the room's appends land, so they are asked for at
 	// once, and waited for, before the history is read (waitForDurableAppends).
 	if err := s.waitForDurableAppends(ctx, room); err != nil {
-		return err
+		return 0, err
 	}
-	named, from, err := s.historyFirstNames(ctx, room, crdt.ClientID(client))
+	named, from, heldTo, err := s.historyNames(ctx, room, crdt.ClientID(client))
 	if err != nil || !named {
-		return err
+		return heldTo, err
 	}
 	author, err := json.Marshal([]map[string]string{{"kind": actor.Kind, "id": actor.ID}})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var listed bool
 	if err := s.store.Pool.QueryRow(ctx, `
@@ -261,22 +279,23 @@ func (s *Service) claimable(ctx context.Context, room string, actor model.Actor,
 			select 1 from doc_pending_authors where artifact_id = $1 and actor_kind = $4 and actor_id = $5
 		)
 	`, room, from, string(author), actor.Kind, actor.ID).Scan(&listed); err != nil {
-		return fmt.Errorf("read the document's authors: %w", err)
+		return 0, fmt.Errorf("read the document's authors: %w", err)
 	}
 	if !listed {
-		return fmt.Errorf("%w: the document's history names it, and no version since lists the claimant", errClaimRefused)
+		return 0, fmt.Errorf("%w: the document's history names it, and no version since lists the claimant", errClaimRefused)
 	}
-	return nil
+	return heldTo, nil
 }
 
-// historyFirstNames reports whether room's stored history names client, and the doc_updates
-// version the versions that may hold the first struct of client start from: the version of the
-// first stored row whose structs name it, or 0 where that row is the history's first, which a
-// compaction may have folded every earlier row into, so the struct can be older than the row.
-func (s *Service) historyFirstNames(ctx context.Context, room string, client crdt.ClientID) (named bool, from int64, err error) {
+// historyNames reports whether room's stored history names client; the doc_updates version the
+// versions that may hold the first struct of client start from: the version of the first stored
+// row whose structs name it, or 0 where that row is the history's first, which a compaction may
+// have folded every earlier row into, so the struct can be older than the row; and the clock the
+// history holds client to, the furthest any row's structs of it reach.
+func (s *Service) historyNames(ctx context.Context, room string, client crdt.ClientID) (named bool, from int64, heldTo uint64, err error) {
 	rows, err := s.store.Pool.Query(ctx, `select version, update from doc_updates where artifact_id = $1 order by version`, room)
 	if err != nil {
-		return false, 0, fmt.Errorf("read the document's history: %w", err)
+		return false, 0, 0, fmt.Errorf("read the document's history: %w", err)
 	}
 	defer rows.Close()
 	first := true
@@ -284,21 +303,22 @@ func (s *Service) historyFirstNames(ctx context.Context, room string, client crd
 		var version int64
 		var update []byte
 		if err := rows.Scan(&version, &update); err != nil {
-			return false, 0, fmt.Errorf("read the document's history: %w", err)
+			return false, 0, 0, fmt.Errorf("read the document's history: %w", err)
 		}
-		structs, _, metaErr := crdt.ParseUpdateMeta(update)
+		structs, ends, metaErr := crdt.ParseUpdateMeta(update)
 		if _, names := structs[client]; metaErr == nil && names {
-			if first {
-				return true, 0, nil
+			if !named && !first {
+				from = version
 			}
-			return true, version, nil
+			named = true
+			heldTo = max(heldTo, ends[client])
 		}
 		first = false
 	}
 	if err := rows.Err(); err != nil {
-		return false, 0, fmt.Errorf("read the document's history: %w", err)
+		return false, 0, 0, fmt.Errorf("read the document's history: %w", err)
 	}
-	return false, 0, nil
+	return named, from, heldTo, nil
 }
 
 // admitClients is a document socket's client ids, decided by its admission: none for a page that
@@ -334,7 +354,8 @@ func (s *Service) admitClients(ctx context.Context, room string, actor model.Act
 
 // keepsClient is whether a page may keep client, the id it presented: the table names actor for
 // it, which this records as a presentation (presented_at) in the same statement, or it is an id
-// below mintedClientFloor no row names that actor may claim, which this claims.
+// below mintedClientFloor no row names that actor may claim, which this claims from the clock the
+// document holds it to, in the stored history or the room where this server holds it.
 func (s *Service) keepsClient(ctx context.Context, room string, actor model.Actor, client uint64) (bool, error) {
 	tag, err := s.store.Pool.Exec(ctx, `
 		update document_client_ids set presented_at = now()
@@ -356,13 +377,15 @@ func (s *Service) keepsClient(ctx context.Context, room string, actor model.Acto
 	if _, bound := owners[client]; bound {
 		return false, nil
 	}
-	if err := s.claimable(ctx, room, actor, client); err != nil {
+	heldTo, err := s.claimable(ctx, room, actor, client)
+	if err != nil {
 		if errors.Is(err, errClaimRefused) {
 			return false, nil
 		}
 		return false, err
 	}
-	claimed, err := s.claimClients(ctx, room, actor, []uint64{client})
+	heldTo = max(heldTo, heldBy(s.srv.GetDoc(room))[crdt.ClientID(client)])
+	claimed, err := s.claimClients(ctx, room, actor, []uint64{client}, []uint64{heldTo})
 	return len(claimed) == 1, err
 }
 
@@ -390,11 +413,11 @@ func (s *Service) mintClient(ctx context.Context, room string, actor model.Actor
 	return 0, fmt.Errorf("give out a client id: %d draws were all taken", mintTries)
 }
 
-// clientOwners is the person the table names for each of clients in room; a client no row names
-// is absent.
+// clientOwners is the person the table names for each of clients in room, with where a claimed
+// id's claim started; a client no row names is absent.
 func (s *Service) clientOwners(ctx context.Context, room string, clients []uint64) (map[uint64]clientOwner, error) {
 	rows, err := s.store.Pool.Query(ctx, `
-		select client_id, actor_kind, actor_id from document_client_ids
+		select client_id, actor_kind, actor_id, minted, claimed_from from document_client_ids
 		where artifact_id = $1 and client_id = any($2)
 	`, room, clientIDs(clients))
 	if err != nil {
@@ -404,9 +427,15 @@ func (s *Service) clientOwners(ctx context.Context, room string, clients []uint6
 	owners := make(map[uint64]clientOwner, len(clients))
 	for rows.Next() {
 		var client int64
+		var minted bool
+		var claimedFrom *int64
 		var owner clientOwner
-		if err := rows.Scan(&client, &owner.kind, &owner.id); err != nil {
+		if err := rows.Scan(&client, &owner.kind, &owner.id, &minted, &claimedFrom); err != nil {
 			return nil, fmt.Errorf("read the client ids' owners: %w", err)
+		}
+		owner.claimed = !minted
+		if claimedFrom != nil {
+			owner.claimedFrom = uint64(*claimedFrom)
 		}
 		owners[uint64(client)] = owner
 	}
@@ -416,16 +445,18 @@ func (s *Service) clientOwners(ctx context.Context, room string, clients []uint6
 	return owners, nil
 }
 
-// claimClients stores clients, ids no admission gave out, as actor's in room, marked as having
-// landed an edit, since a claim is made only by one, and returns the ones this call stored: an id
-// another call stored first is not among them, and the caller reads who that was.
-func (s *Service) claimClients(ctx context.Context, room string, actor model.Actor, clients []uint64) ([]uint64, error) {
+// claimClients stores clients, ids no admission gave out, as actor's in room, each claimed from
+// the clock at the same index of from (claimed_from), marked as having landed an edit, since a
+// claim is made only by one, and returns the ones this call stored: an id another call stored
+// first is not among them, and the caller reads who that was.
+func (s *Service) claimClients(ctx context.Context, room string, actor model.Actor, clients, from []uint64) ([]uint64, error) {
 	rows, err := s.store.Pool.Query(ctx, `
-		insert into document_client_ids (artifact_id, client_id, actor_kind, actor_id, minted, landed)
-		select $1, client, $3, $4, false, true from unnest($2::bigint[]) as client
+		insert into document_client_ids (artifact_id, client_id, actor_kind, actor_id, minted, landed, claimed_from)
+		select $1, claim.client, $3, $4, false, true, claim.claimed_from
+		from unnest($2::bigint[], $5::bigint[]) as claim (client, claimed_from)
 		on conflict do nothing
 		returning client_id
-	`, room, clientIDs(clients), actor.Kind, actor.ID)
+	`, room, clientIDs(clients), actor.Kind, actor.ID, clientIDs(from))
 	if err != nil {
 		return nil, fmt.Errorf("claim client ids: %w", err)
 	}
@@ -509,16 +540,19 @@ type clientJudgement struct {
 }
 
 // judgeClients is the rule above for one browser update: it returns the refusal of an update
-// carrying structs under a client id that is not its sender's, and otherwise what it decided
-// (clientJudgement). An update whose context names no socket of this service's admission - a
-// test's call of the hook - is judged by nothing here, and neither is one whose header does not
-// read: the apply refuses its bytes.
+// carrying structs under a client id that is not its sender's, or carrying, under a claimed id
+// that is not its sender's, an edit at clocks the room holds that differs from what it holds
+// there, and otherwise what it decided (clientJudgement). An update whose context names no socket
+// of this service's admission - a test's call of the hook - is judged by nothing here, and neither
+// is one whose header does not read: the apply refuses its bytes.
 //
 // A keystroke costs a read of its header's first three numbers and nothing more: an update of
 // one client's structs under the id the socket was given passes there, and only an update
 // carrying another id - a saved row replayed, a sync step 2, a page of the earlier build - reads
 // the whole header (crdt.ParseUpdateMeta) and the room's state vector, and asks the table about
-// the ids its socket has not shown before that carry clocks the room lacks.
+// the ids its socket has not shown before that carry clocks the room lacks, and, while the claim
+// window is open, about the ids below mintedClientFloor whose structs fall wholly at clocks the
+// room holds (heldDuplicates, refusedDuplicate).
 func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudgement, refusal error) {
 	connection := connectionOf(info.Context)
 	if connection == nil || connection.clients == nil {
@@ -534,20 +568,40 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 	}
 	// A client whose structs the room holds to their end adds nothing - a whole-state handoff
 	// carries every client of the history back - so only the clients the update carries clocks of
-	// that the room lacks are judged (beyondHeld).
-	asked := beyondHeld(info.Doc, from, to, clients)
+	// that the room lacks are judged (beyondHeld), and of the rest only a claimed id's duplicates
+	// are read (heldDuplicates).
+	held := heldBy(info.Doc)
+	asked := beyondHeld(held, from, to, clients)
+	duplicated := heldDuplicates(held, from, to, clients)
 	_, judged.writesOwn = from[clients.own]
 	judged.writesOwn = judged.writesOwn && !clients.legacy
-	if len(asked) == 0 {
+	if len(asked) == 0 && len(duplicated) == 0 {
 		return judged, nil
 	}
 	ctx, cancel := context.WithTimeout(info.Context, clientCheckTimeout)
 	defer cancel()
-	owners, err := s.clientOwners(ctx, info.Room, asked)
+	if len(duplicated) > 0 {
+		open, err := s.claimWindowOpen(ctx)
+		if err != nil {
+			return clientJudgement{}, s.clientCheckFailed(info, err)
+		}
+		if !open {
+			duplicated = nil
+		}
+	}
+	if len(asked) == 0 && len(duplicated) == 0 {
+		return judged, nil
+	}
+	owners, err := s.clientOwners(ctx, info.Room, append(slices.Clone(asked), duplicated...))
 	if err != nil {
 		return clientJudgement{}, s.clientCheckFailed(info, err)
 	}
-	var claims []uint64
+	for _, client := range duplicated {
+		if refusal := s.refusedDuplicate(info, connection, owners[client], client, from, to); refusal != nil {
+			return clientJudgement{}, refusal
+		}
+	}
+	var claims, claimFrom []uint64
 	for _, client := range asked {
 		owner, bound := owners[client]
 		switch {
@@ -556,16 +610,18 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 		case !bound && client >= mintedClientFloor:
 			return clientJudgement{}, s.refuseClient(info, connection, client, "no admission gave it out")
 		case !bound:
-			if err := s.claimable(ctx, info.Room, connection.actor, client); errors.Is(err, errClaimRefused) {
+			heldTo, err := s.claimable(ctx, info.Room, connection.actor, client)
+			if errors.Is(err, errClaimRefused) {
 				return clientJudgement{}, s.refuseClient(info, connection, client, err.Error())
 			} else if err != nil {
 				return clientJudgement{}, s.clientCheckFailed(info, err)
 			}
 			claims = append(claims, client)
+			claimFrom = append(claimFrom, max(heldTo, held[crdt.ClientID(client)]))
 		}
 	}
 	if len(claims) > 0 {
-		if judged.claimed, err = s.claimClients(ctx, info.Room, connection.actor, claims); err != nil {
+		if judged.claimed, err = s.claimClients(ctx, info.Room, connection.actor, claims, claimFrom); err != nil {
 			return clientJudgement{}, s.clientCheckFailed(info, err)
 		}
 		if len(judged.claimed) < len(claims) {
@@ -588,6 +644,26 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 	return judged, nil
 }
 
+// refusedDuplicate is the refusal of update's structs under client, an id below
+// mintedClientFloor whose structs fall wholly at clocks the room holds (heldDuplicates), where
+// owner, the row the table holds for it, is another person's claim and the structs differ from
+// what the room holds at the same clocks from the claim on (crdt.HeldStructsDifferV1): an edit
+// typed at a clock another person claimed first, which the apply would drop as a duplicate and
+// say nothing of. It is nil for an id no row names, one the sender's own person claimed, and an
+// update that hands back the room's own structs, as a browser relayed them. An update whose
+// structs do not decode is the apply's to refuse.
+func (s *Service) refusedDuplicate(info websocket.PeerUpdateInfo, connection *connectionState, owner clientOwner, client uint64, from, to crdt.StateVector) error {
+	id := crdt.ClientID(client)
+	if !owner.claimed || owner.is(connection.actor) || to[id] <= owner.claimedFrom {
+		return nil
+	}
+	differs, err := crdt.HeldStructsDifferV1(info.Doc, info.Update, id, max(from[id], owner.claimedFrom))
+	if err != nil || !differs {
+		return nil
+	}
+	return s.refuseClient(info, connection, client, "it carries an edit at clocks another person claimed first that differs from what the room holds there")
+}
+
 // stepTwoCut is the cut the socket's filter makes of each sync step 2 it sends
 // (awarenessLimitConn.collectStepTwo): the structs under client ids the table names another
 // person for, of the clients whose clocks reach past what the room holds (beyondHeld), are taken
@@ -607,7 +683,7 @@ func (s *Service) stepTwoCut(ctx context.Context, room string, actor model.Actor
 		if err != nil {
 			return update
 		}
-		asked := beyondHeld(s.srv.GetDoc(room), from, to, clients)
+		asked := beyondHeld(heldBy(s.srv.GetDoc(room)), from, to, clients)
 		if len(asked) == 0 {
 			return update
 		}
@@ -637,15 +713,11 @@ func (s *Service) stepTwoCut(ctx context.Context, room string, actor model.Actor
 }
 
 // beyondHeld is the clients of an update, from and to as crdt.ParseUpdateMeta reads them, that
-// clients does not hold as the socket's own and whose structs reach past what room holds: the
-// clients the update can land anything under. Structs the room holds already are duplicates that
-// land nothing whoever sends them, so they are neither judged nor cut, and the ids of a history a
-// browser hands back whole cost no lookup. A nil room, one not loaded, holds nothing.
-func beyondHeld(room *crdt.Doc, from, to crdt.StateVector, clients *socketClients) []uint64 {
-	var held crdt.StateVector
-	if room != nil {
-		held = room.StateVector()
-	}
+// clients does not hold as the socket's own and whose structs reach past held, what the room
+// holds: the clients the update can land anything under. Structs the room holds already are
+// duplicates that land nothing whoever sends them, so they are neither judged for their id nor
+// cut, and the ids of a history a browser hands back whole cost no lookup.
+func beyondHeld(held, from, to crdt.StateVector, clients *socketClients) []uint64 {
 	var beyond []uint64
 	for client := range from {
 		if !clients.holds(client) && to[client] > held[client] {
@@ -653,6 +725,28 @@ func beyondHeld(room *crdt.Doc, from, to crdt.StateVector, clients *socketClient
 		}
 	}
 	return beyond
+}
+
+// heldDuplicates is the clients of an update below mintedClientFloor that clients does not hold
+// as the socket's own and whose structs all fall at clocks held, what the room holds, already:
+// duplicates the apply would land nothing of, which are compared with the room's where another
+// person claimed the id (refusedDuplicate). A client whose structs reach past held is beyondHeld's.
+func heldDuplicates(held, from, to crdt.StateVector, clients *socketClients) []uint64 {
+	var duplicated []uint64
+	for client, start := range from {
+		if client < mintedClientFloor && start < held[client] && to[client] <= held[client] && !clients.holds(client) {
+			duplicated = append(duplicated, uint64(client))
+		}
+	}
+	return duplicated
+}
+
+// heldBy is what room holds, its state vector; a nil room, one not loaded, holds nothing.
+func heldBy(room *crdt.Doc) crdt.StateVector {
+	if room == nil {
+		return nil
+	}
+	return room.StateVector()
 }
 
 // settleClients is what the hook does with judged once the apply has returned err: an apply that

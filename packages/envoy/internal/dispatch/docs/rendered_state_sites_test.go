@@ -173,6 +173,11 @@ func TestARebuildSeedsTheStateItReplacesAndVersionsAWholeRenderOfItsSeed(t *test
 	}
 }
 
+// gapNewlinesClient is the client the newlines of gapFrames, and of the settlement's own gap, are
+// typed under: a browser of its own, so the room holds nothing of it until their gap fills and a
+// drain lands them.
+const gapNewlinesClient = 4242
+
 // gapFrames is a frame of newlines one browser types into room's code block right after another
 // browser's keystroke, and that keystroke: sent first, the newlines park behind the keystroke the
 // room does not hold yet, and the keystroke then fills their gap, so its apply drains them.
@@ -183,7 +188,7 @@ func gapFrames(t *testing.T, room *rcRoom, newlines int) (parked, fill []byte) {
 	held := room.live.StateVector()
 	browser.Transact(func(txn *crdt.Transaction) { code.Insert(txn, 0, "FILL", nil) })
 	fill = crdt.EncodeStateAsUpdateV1(browser, held)
-	other := newDocumentCopy(crdt.WithClientID(4242))
+	other := newDocumentCopy(crdt.WithClientID(gapNewlinesClient))
 	if err := crdt.ApplyUpdateV1(other, crdt.EncodeStateAsUpdateV1(browser, nil), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +325,7 @@ func TestARefusedDrainLeavesTheReplicaHoldingWhatTheRoomHolds(t *testing.T) {
 // The replica's document is the room's after the filler (requireReplicaIsRoom, which frame holds),
 // and so is what the replica renders after it: a server write into the paragraph is spliced from
 // the replica's paragraph, which a replica holding the 20 items would render with them.
-func TestADrainTheScanAllowanceStopsLeavesTheReplicaParkingWhatTheRoomParks(t *testing.T) {
+func TestADrainTheScanAllowanceStopsLeavesTheReplicaHoldingWhatTheRoomHolds(t *testing.T) {
 	const typed, waiting = 2_000, 20
 	room := newRCRoom(t, stateOf(t, "# Title\n\nOne paragraph of ordinary prose.\n"))
 	typeOnto(t, room.service, room.live, tangledTypist, typed)
@@ -356,7 +361,7 @@ func TestADrainTheScanAllowanceStopsLeavesTheReplicaParkingWhatTheRoomParks(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	room.requireRenderedAs(t, "a server write into the paragraph after the drain was taken back", whole)
+	room.requireRenderedAs(t, "a server write into the paragraph after the drain was discarded", whole)
 }
 
 // A settlement versions the room as its replica holds it at the point it reads (atPoint): the
@@ -390,7 +395,7 @@ func TestASettlementAfterARefusedDrainVersionsAWholeRenderOfTheRoom(t *testing.T
 
 			code := allTexts(sender.Doc.GetXmlFragment(fragmentName))[1]
 			fill := docstest.Transact(sender.Doc, func(txn *crdt.Transaction) { code.Insert(txn, 0, "FILL", nil) })
-			other := crdt.New(crdt.WithClientID(4242))
+			other := crdt.New(crdt.WithClientID(gapNewlinesClient))
 			if err := crdt.ApplyUpdateV1(other, crdt.EncodeStateAsUpdateV1(sender.Doc, nil), nil); err != nil {
 				t.Fatal(err)
 			}

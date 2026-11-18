@@ -877,9 +877,9 @@ const (
 // what the decode cap leaves above the room, which buys half as many structs as that half holds
 // items, the other half being the splits' (peerApplyAllowance, capShares). So a fill near the
 // cap quarters its way in - a frame of the whole headroom is refused DOC_NEEDS_REBUILD, since
-// each struct of it could park and cost the stored state two items, and the apply that carried
-// it could still cut what the splits' half is kept for - and the last items of a fill to the
-// cap itself, which no browser may carry, go in through the room.
+// each struct of it could park and cost the room two items, and the apply that carried it could
+// still cut what the splits' half is kept for - and the last items of a fill to the cap itself,
+// which no browser may carry, go in through the room.
 func fillToStructs(t *testing.T, service *Service, room *crdt.Doc, count int) {
 	t.Helper()
 	for client := uint64(gcFillClient); structCeiling(room) < uint64(count); client++ {
@@ -889,9 +889,8 @@ func fillToStructs(t *testing.T, service *Service, room *crdt.Doc, count int) {
 		if n == 0 {
 			// A fill to the cap itself ends here: the structs' share buys half the items of
 			// the headroom's half, so a room within four items of the cap takes no struct
-			// from any browser, each of which could park and cost its state two (capShares).
-			// The last items go in through the room itself, as the backlog fixture's whole
-			// fill does (fillRoomToStructs).
+			// from any browser, each of which could park and cost the room two (capShares).
+			// The last items go in through the room itself (fillRoomToStructs).
 			fillRoomToStructs(t, room, count)
 			break
 		}
@@ -907,10 +906,7 @@ func fillToStructs(t *testing.T, service *Service, room *crdt.Doc, count int) {
 
 // fillRoomToStructs takes room to count structs as its next load's decode meets them
 // (structCeiling) by applying frames of GC structs to the room itself, outside the hook. It is
-// for the one fixture the hook cannot build: a room already holding a backlog it will not drain
-// refuses every update once the decode cap leaves less than that drain's splits
-// (refusedStuckBacklog), which is the rule the one test that uses this is about, so its room is
-// carried to the cap by hand.
+// for the last items of a fill to the cap itself, which no browser may carry (fillToStructs).
 func fillRoomToStructs(t *testing.T, room *crdt.Doc, count int) {
 	t.Helper()
 	for client := uint64(gcFillClient); structCeiling(room) < uint64(count); client++ {
@@ -2199,75 +2195,6 @@ func TestABrowsersUpdateCarryingAnEmbedIsRefused(t *testing.T) {
 	if err, called := weighInto(service, room, peerTyping(t, room, "y")); err != nil || !called {
 		t.Fatalf("a keystroke was answered %v (applied %t), want it admitted", err, called)
 	}
-}
-
-// A room can hold a backlog no update will drain. ygo parks a struct or a delete range that
-// arrives before what it is written against and drains the queue inside the next apply that
-// fills the gap; from sjawhar/ygo v1.55.1-sami.8 the splits that drain makes are charged to the
-// apply that lands them, and a drain whose splits pass Split is taken back while that apply
-// stands, deliberately - the parked content is another sender's and the sender that filled the
-// gap can neither see it nor send less of it. No error says so, so the room reads its own state
-// instead: a queue that holds something, holds no fewer than the fewest this room has seen since
-// it was last empty, and a drain whose splits - one for each parked struct and two for each
-// parked delete range, which cuts the items its two edges fall in - are more than the apply
-// that fills the gap may make, which is the splits' share of what the decode cap leaves above
-// what the room's stored state carries (refusedStuckBacklog, capShares).
-//
-// The same standing queue in a room with headroom refuses nothing, which is what the third test
-// is for: there the drain cannot be refused for its splits at all, so a queue that is not
-// falling is one whose gap has not been filled yet and the browser is left alone.
-func TestABrowsersUpdateIntoARoomWhoseBacklogWillNotDrainIsRefused(t *testing.T) {
-	const message = "dispatch: refused a browser's update into a room holding a backlog no update will drain"
-	// A client the room holds nothing of, so its delete range parks whole and stays parked: no
-	// browser ever sends the structs it names (ygo's DeleteSet.allAbsent).
-	const absentClient = 4242
-	logs := captureLogs(t)
-	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
-	defer runtime.KeepAlive(replica)
-	if err, called := weighInto(service, room, deleteRangesFrom(absentClient, 1)); err != nil || !called {
-		t.Fatalf("the frame that parks a delete range was answered %v (applied %t), want it admitted", err, called)
-	}
-	if parked := room.PendingStats(); parked.DeleteRanges != 1 || parked.Items != 0 {
-		t.Fatalf("the room's queue holds %d items and %d delete ranges, want the one range the frame parked", parked.Items, parked.DeleteRanges)
-	}
-	// The queue stands still over two more updates and the room, far from the cap, refuses
-	// neither: its drain has room for every split it could make.
-	for i := range 2 {
-		if err, called := weighInto(service, room, peerTyping(t, room, "y")); err != nil || !called {
-			t.Fatalf("keystroke %d into a room with a standing queue and headroom was answered %v (applied %t), want it admitted", i, err, called)
-		}
-	}
-	if line := logs.Lines(message); line != "" {
-		t.Fatalf("a room with headroom refused an update for its standing queue:\n%s", line)
-	}
-	// The same queue in the same room once the room is at the decode cap: the drain of its one
-	// parked range can cut two items and the cap leaves nothing, so the next browser is closed.
-	// The fill is applied to the room itself, since this room is the one the hook refuses: its
-	// queue has stopped falling, and a fill through the hook would be closed by the very rule
-	// under test as soon as the cap left less than the drain's two splits (fillRoomToStructs).
-	fillRoomToStructs(t, room, maxUpdateItems)
-	before := crdt.EncodeStateAsUpdateV1(room, nil)
-	update := deleteRangesFrom(gcFillClient, 1)
-	err, called := weighInto(service, room, update)
-	if called {
-		t.Fatal("the hook applied the update, want it refused on the room's own state before any apply")
-	}
-	requireRefusedNeedsRebuild(t, err, room, before)
-	line := logs.Lines(message)
-	if strings.Count(line, "\n") != 1 {
-		t.Fatalf("the refusal logged %d lines holding %q, want the one line that says why:\n%s", strings.Count(line, "\n"), message, logs)
-	}
-	for _, want := range []string{
-		"level=WARN", "room=room", fmt.Sprintf("update_bytes=%d", len(update)),
-		fmt.Sprintf("close_code=%d", contracts.DocumentTooLargeCloseCode),
-		"close_reason=" + contracts.DocumentNeedsRebuildCloseReason,
-		"parked_ranges=1", "drain_splits=2", "split_limit=0",
-	} {
-		if !strings.Contains(line, want) {
-			t.Fatalf("the refusal logged\n%swant that line to hold %q", line, want)
-		}
-	}
-	t.Logf("%s", line)
 }
 
 // peerDeletingInPieces is the update a browser sends that deletes one character in each of cuts
