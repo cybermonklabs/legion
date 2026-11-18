@@ -1544,7 +1544,7 @@ export const dispatchToolSpecs = [
       summary: z
         .string({ min: 1 })
         .describe(
-          `What the human is approving, in one to three sentences, and nothing else: no commentary on itself or the conversation, and no question; after an earlier approval, one sentence naming what changed since it, since the card shows that approval and a diff. A Legion architect adds a sentence with its two spec reviews' results, then a last sentence naming the measurements and test results the design rests on. Request approval only once ${HUMAN_AGREED_TO_DOCUMENT}.`
+          `What the human is approving, in one to three sentences, and nothing else: no commentary on itself or the conversation, and no question; after an earlier approval, one sentence naming what changed since it, since the card shows that approval and a diff. Request approval only once ${HUMAN_AGREED_TO_DOCUMENT}.`
         ),
       include_verification: z
         .boolean()

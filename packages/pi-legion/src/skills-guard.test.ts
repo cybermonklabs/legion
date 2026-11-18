@@ -733,9 +733,6 @@ test("the architect shows a person the surface before it asks them to approve th
     "The agreed pictures go in the spec, in line, each with a line of prose under it saying what it shows and which of its readings are real: ```md ![the priorities page with no priority set](dispatch://<KEY>/artifact/<slug>) The page as a reader opens it. The 529 issues and their ages are read from this deployment; the two ranks on the right are invented. ```"
   );
   expect(gate).toContain(
-    "One further line says what the pictures do not show: the states you did not draw."
-  );
-  expect(gate).toContain(
     "The words of the spec still govern the build, because a reader on the command line gets the link text and not the picture."
   );
   expect(gate).toContain(

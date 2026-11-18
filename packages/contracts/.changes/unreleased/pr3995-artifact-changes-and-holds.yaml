@@ -11,6 +11,6 @@ body: |-
   `ArtifactSectionChange` of the text outside every section carries its `place`
   (`before_first_section` or `after_section`, with `after_heading` and `after_occurrence`).
 
-  The `dispatch_request_approval` tool's `summary` says a Legion architect adds a sentence with
-  its two spec reviews' results, then a last sentence naming the measurements and test results the
-  design rests on.
+  The `dispatch_request_approval` tool's `summary` no longer asks a Legion architect for a
+  sentence with its two spec reviews' results. The summary says what the human is approving, and
+  nothing else.

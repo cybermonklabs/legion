@@ -34,8 +34,11 @@ body: |-
   round like any other. The base is merged only where GitHub reads the pull request `CONFLICTING`,
   or where a check that needs a child's merged code fails at the head without it, and the parent
   signs off on an approved head at which its checks pass. `legion-worker` no longer names a
-  parent's last round as a reason to merge. An approval request's `--summary` ends with the
-  measurements and test results the design rests on, in place of what the reviews do not show.
+  parent's last round as a reason to merge. In `legion-architect`, an approval request's
+  `--summary` says in one to three sentences what the human is approving, and nothing else: it no
+  longer carries the reviews' results or what they do not show. A measurement or test result the
+  design rests on goes in the document the request names. The line on what a surface's pictures
+  do not show is gone.
 
   On a new head, `legion-worker` has the implementer, the tester and the reviewer read what
   changed since the head they last recorded, tested or approved (`git diff`, or
