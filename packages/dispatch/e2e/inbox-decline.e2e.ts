@@ -370,25 +370,25 @@ test("the decline dialog counts what is left of the note's bound and takes a not
   const card = await askCard(page, ask.id);
   await declineControl(card).click();
   const dialog = declineDialog(page);
-  const left = dialog.getByText(/^\d+ characters? left$/);
+  const left = dialog.getByText(/^\d+ of at most \d+$/);
 
-  // The count opens at the whole of the bound the route holds a resolution's reason to
-  // (`DISPATCH_EVENT_BODY_MAX`, which the server enforces in UTF-16 units), and falls by what
+  // The count opens at none of the bound the route holds a resolution's reason to
+  // (`DISPATCH_EVENT_BODY_MAX`, which the server enforces in UTF-16 units), and rises by what
   // the person has written.
-  await expect(left).toHaveText(`${DISPATCH_EVENT_BODY_MAX} characters left`);
+  await expect(left).toHaveText(`0 of at most ${DISPATCH_EVENT_BODY_MAX}`);
   const note = dialog.getByLabel("Note (optional)");
   const opening = "Ask the release owner.";
   await note.fill(opening);
-  await expect(left).toHaveText(`${DISPATCH_EVENT_BODY_MAX - opening.length} characters left`);
+  await expect(left).toHaveText(`${opening.length} of at most ${DISPATCH_EVENT_BODY_MAX}`);
 
-  // At the bound itself the count is zero. The note is paragraphs, so no block of it is longer
+  // At the bound itself the count is the bound. The note is paragraphs, so no block of it is longer
   // than Dispatch holds one block to, and it ends in a letter, so the server's trim leaves the
   // length as written.
   const whole = `${paragraphsOf(DISPATCH_EVENT_BODY_MAX - 1)}x`;
   expect(whole.length).toBe(DISPATCH_EVENT_BODY_MAX);
   await note.fill(whole);
   await expect.poll(async () => (await note.inputValue()).length).toBe(DISPATCH_EVENT_BODY_MAX);
-  await expect(left).toHaveText("0 characters left");
+  await expect(left).toHaveText(`${DISPATCH_EVENT_BODY_MAX} of at most ${DISPATCH_EVENT_BODY_MAX}`);
 
   // A note of exactly that size is one the route takes: no refusal is drawn, the dialog closes,
   // and the server kept every unit of it.

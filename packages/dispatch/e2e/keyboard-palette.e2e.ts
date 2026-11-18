@@ -32,7 +32,7 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     const actions = dialog.getByRole("group", { name: "Actions" });
     await expect(actions).toBeVisible();
     // An empty query still lists the actions, above the message the hits would answer.
-    await expect(page.getByText("Type at least 2 characters")).toBeVisible();
+    await expect(page.getByText("Type at least 2 to search (0 so far)")).toBeVisible();
 
     const close = actions.getByRole("option", { name: "Close issue" });
     await expect(close).toBeVisible();

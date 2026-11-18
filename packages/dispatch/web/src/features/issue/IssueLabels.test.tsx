@@ -97,13 +97,15 @@ test("a rejected create shows its error until the next keystroke clears it", asy
     await user.click(search);
     await user.paste(tooLong);
     await user.click(screen.getByRole("option", { name: `Create "${tooLong}"` }));
-    expect(screen.getByText("Labels must be 1–40 characters.")).toBeTruthy();
+    expect(screen.getByText("This label is 41 long; a label is 1 to 40 long.")).toBeTruthy();
     expect(screen.queryByRole("option", { name: tooLong })).not.toBeInTheDocument();
 
     await user.clear(search);
     await user.click(search);
     await user.paste("x");
-    expect(screen.queryByText("Labels must be 1–40 characters.")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("This label is 41 long; a label is 1 to 40 long.")
+    ).not.toBeInTheDocument();
   } finally {
     view.unmount();
     listIssues.mockRestore();

@@ -187,7 +187,7 @@ describe("sending pictures", () => {
   // Nothing is judged here before the request: the picture is uploaded, its line is appended,
   // and Dispatch refuses the whole text and names the block that passed its bound.
   test("a body the picture lines carry over a block bound is posted whole and refused by Dispatch", async () => {
-    const over = `body block 1 (paragraph) is 1 characters over the ${DISPATCH_BLOCK_UNITS}-character block limit (${DISPATCH_BLOCK_UNITS + 1}/${DISPATCH_BLOCK_UNITS})`;
+    const over = `body block 1 (paragraph): ${DISPATCH_BLOCK_UNITS + 1} of at most ${DISPATCH_BLOCK_UNITS}`;
     const server = dispatch((pathname, init) =>
       pathname === "/api/v1/issues/DSP-41/messages" && init.method === "POST"
         ? json({ code: "CAP_EXCEEDED", error: over }, 400)
@@ -207,7 +207,7 @@ describe("sending pictures", () => {
   });
 
   test("an ask's question goes to Dispatch with its ref and its picture lines, and Dispatch bounds it", async () => {
-    const over = `question and options is 1 characters over the ${DISPATCH_EVENT_BODY_MAX}-character limit (${DISPATCH_EVENT_BODY_MAX + 1}/${DISPATCH_EVENT_BODY_MAX})`;
+    const over = `question and options: ${DISPATCH_EVENT_BODY_MAX + 1} of at most ${DISPATCH_EVENT_BODY_MAX}`;
     const server = dispatch((pathname, init) =>
       pathname === "/api/v1/issues/DSP-41/asks" && init.method === "POST"
         ? json({ code: "CAP_EXCEEDED", error: over }, 400)
@@ -503,7 +503,7 @@ describe("sending pictures", () => {
   test("the line a picture gets names the version Dispatch gave it, and Dispatch bounds the text", async () => {
     // The owner already holds a file of this name at version 12, so the posted line is longer
     // than one for a first version.
-    const over = `body block 1 (paragraph) is 1 characters over the ${DISPATCH_BLOCK_UNITS}-character block limit (${DISPATCH_BLOCK_UNITS + 1}/${DISPATCH_BLOCK_UNITS})`;
+    const over = `body block 1 (paragraph): ${DISPATCH_BLOCK_UNITS + 1} of at most ${DISPATCH_BLOCK_UNITS}`;
     const server = dispatch((pathname, init) => {
       if (pathname === "/api/v1/issues/DSP-41/artifacts" && init.method === "POST") {
         return json({ artifact: { slug: "shot-png" }, version: { number: 12 } });

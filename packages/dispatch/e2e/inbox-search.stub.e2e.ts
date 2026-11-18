@@ -54,7 +54,7 @@ test.describe("inbox search", () => {
     // The cap is said rather than enforced by the field, so the change handler's cut is the
     // one rule (proved by the address row below).
     expect(await box.getAttribute("maxlength")).toBeNull();
-    await expect(box).toHaveAttribute("title", `At most ${SEARCH_QUERY_MAX} characters`);
+    await expect(box).toHaveAttribute("title", `0 of at most ${SEARCH_QUERY_MAX}`);
 
     // With the assignee popover open both fields are on the page, and they are not the same
     // control: only one of them is the Inbox's searchbox.

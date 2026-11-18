@@ -14954,7 +14954,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: expect.stringMatching(
             new RegExp(
-              `^!printf 'a%\\.0s' \\$\\(seq 1 20000\\)\\n\\n\`\`\`\\na{${SHELL_OUTPUT_MAX}}\\n\`\`\`\\n\\nThe output was cut at ${SHELL_OUTPUT_MAX} characters\\.$`
+              `^!printf 'a%\\.0s' \\$\\(seq 1 20000\\)\\n\\n\`\`\`\\na{${SHELL_OUTPUT_MAX}}\\n\`\`\`\\n\\nThe output was cut at ${SHELL_OUTPUT_MAX} UTF-16 code units\\.$`
             )
           ),
         });

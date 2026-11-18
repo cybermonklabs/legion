@@ -80,7 +80,7 @@ const comment: SessionAnswer = {
 const direct = message("m-1", "2026-10-27T10:00:00Z", "Stop after the migration lands.");
 
 const leftOut = (count: number) =>
-  `${count} older ${count === 1 ? "item" : "items"} left out to stay under 8,000 characters: run \`dispatch answers\` to read every one in full.`;
+  `${count} older ${count === 1 ? "item" : "items"} left out to stay under 8,000 UTF-16 code units: run \`dispatch answers\` to read every one in full.`;
 
 /** A message item whose list, rendered alone (with the left-out line `after` older items take),
  *  is exactly `target` characters long. */
@@ -216,7 +216,9 @@ describe("renderSessionAnswers", () => {
     expect(shown).toEqual(items.slice(0, shown.length));
     expect(rendered.length).toBeLessThan(8_000);
     const count = items.length - shown.length;
-    expect(rendered).toEndWith(`\n\n${count} older items left out to stay under 8,000 characters.`);
+    expect(rendered).toEndWith(
+      `\n\n${count} older items left out to stay under 8,000 UTF-16 code units.`
+    );
     expect(rendered).not.toContain("dispatch answers");
     expect(
       renderSessionAnswers([message("one", hoursAgo(1), "one")], {
@@ -224,7 +226,7 @@ describe("renderSessionAnswers", () => {
         total: 2,
         withoutCommand: true,
       })
-    ).toEndWith("\n\n1 older item left out to stay under 8,000 characters.");
+    ).toEndWith("\n\n1 older item left out to stay under 8,000 UTF-16 code units.");
   });
 
   test("prints no left-out line when everything fits, and nothing at all when there is nothing", () => {
@@ -840,7 +842,7 @@ describe("readSessionAnswers", () => {
       })
     );
     expect(read.text?.split("\n").at(-1)).toMatch(
-      /^\d+ older items left out to stay under 8,000 characters\.$/
+      /^\d+ older items left out to stay under 8,000 UTF-16 code units\.$/
     );
     expect(read.text).not.toContain("dispatch answers");
   });

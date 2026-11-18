@@ -124,7 +124,7 @@ export function IssueLabels({
   const createLabel = (value: string) => {
     const label = value.trim();
     if (label.length === 0 || label.length > maxLabelLength) {
-      setInputError(`Labels must be 1–${maxLabelLength} characters.`);
+      setInputError(`This label is ${label.length} long; a label is 1 to ${maxLabelLength} long.`);
       return;
     }
     if (includesLabel(draft, label)) {

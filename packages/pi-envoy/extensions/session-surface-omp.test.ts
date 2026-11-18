@@ -1097,7 +1097,7 @@ test.skipIf(skip)(
     const session = await shellSession();
     const command = "!printf 'a%.0s' $(seq 1 20000)";
     const sent = await session.send(command);
-    const cut = `${command}\n\n\`\`\`\n${"a".repeat(SHELL_OUTPUT_MAX)}\n\`\`\`\n\nThe output was cut at ${SHELL_OUTPUT_MAX} characters.`;
+    const cut = `${command}\n\n\`\`\`\n${"a".repeat(SHELL_OUTPUT_MAX)}\n\`\`\`\n\nThe output was cut at ${SHELL_OUTPUT_MAX} UTF-16 code units.`;
     expect(await session.reply(sent, "the reply to the long command")).toBe(cut);
     const published = await framesFor(session, sent, "the frame of the long command");
     expect(published).toHaveLength(1);

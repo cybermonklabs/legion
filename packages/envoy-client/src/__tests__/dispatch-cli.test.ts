@@ -29,10 +29,7 @@ const human = { kind: "human", id: "h" };
  *  units long, past the bound it holds each block to, worded as `itemblocks.CapExceeded` words
  *  it. The fake server below answers it, and the command prints it as it came. */
 function blockCapRefusal(block: number, units: number): string {
-  return (
-    `body block ${block} (paragraph) is ${units - DISPATCH_BLOCK_UNITS} characters over the ` +
-    `${DISPATCH_BLOCK_UNITS}-character block limit (${units}/${DISPATCH_BLOCK_UNITS})`
-  );
+  return `body block ${block} (paragraph): ${units} of at most ${DISPATCH_BLOCK_UNITS}`;
 }
 
 /** The same refusal as the command prints it: a refusal Dispatch gives a code is printed with
@@ -1414,7 +1411,9 @@ describe("the dispatch CLI", () => {
     const pictureLine = /\n(- picture: [^\n]*)/.exec(claude.stdout)?.[1];
     expect(pictureLine).toBeDefined();
     // The file holds the whole result, its picture lines included.
-    const marker = /\(the full result, (\d+) characters: (\S+)\)/.exec(claude.stdout);
+    const marker = /\(the full result, (\d+) long, over the \d+ this output holds: (\S+)\)/.exec(
+      claude.stdout
+    );
     const written = `${text}\n${pictureLine}`;
     expect(marker?.[1]).toBe(String(written.length));
     expect(readFileSync(marker?.[2] ?? "", "utf-8")).toBe(written);
@@ -2413,7 +2412,9 @@ describe("fitOutput", () => {
   test("cuts the result text first, keeping every line after it and naming the full result", () => {
     const out = fitOutput("x".repeat(200), ["- picture: a"], ["follow notice", "note"], 120, write);
     expect(out.length).toBeLessThanOrEqual(120);
-    expect(out).toContain("(the full result, 213 characters: /state/out/213.md)");
+    expect(out).toContain(
+      "(the full result, 213 long, over the 120 this output holds: /state/out/213.md)"
+    );
     expect(out).toEndWith("\n- picture: a\nfollow notice\nnote");
   });
 
@@ -2432,7 +2433,9 @@ describe("fitOutput", () => {
   test("when the kept lines alone pass the limit, the output is cut to it and names the file first", () => {
     const out = fitOutput("x".repeat(50), ["- picture: a"], ["n".repeat(500)], 200, write);
     expect(out.length).toBe(200);
-    expect(out).toStartWith("(the full result, 63 characters: /state/out/63.md)");
+    expect(out).toStartWith(
+      "(the full result, 63 long, over the 200 this output holds: /state/out/63.md)"
+    );
   });
 
   test("an unbounded limit returns every line as given", () => {

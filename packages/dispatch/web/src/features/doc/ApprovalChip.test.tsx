@@ -225,8 +225,7 @@ test("Request changes requires a reason before it can submit, then posts it", as
 // words name the block and the bound: the dialog shows them in place of wording of its own.
 test("a refused reason shows the server's message", async () => {
   const user = userEvent.setup();
-  const refusal =
-    "reason block 1 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)";
+  const refusal = "reason block 1 (paragraph): 32001 of at most 32000";
   const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
     new ApiError(400, { code: "CAP_EXCEEDED", error: refusal })
   );

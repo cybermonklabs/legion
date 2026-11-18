@@ -220,7 +220,7 @@ const MAX_CHARS_TEXT = SESSION_ANSWERS_MAX_CHARS.toLocaleString("en-US");
 /** The last line of a list that left `count` items out: it names `dispatch answers`, which reads
  *  every one, unless `namesCommand` is false because that command cannot read the Dispatch. */
 function leftOutLine(count: number, namesCommand: boolean): string {
-  const counted = `${count} older ${count === 1 ? "item" : "items"} left out to stay under ${MAX_CHARS_TEXT} characters`;
+  const counted = `${count} older ${count === 1 ? "item" : "items"} left out to stay under ${MAX_CHARS_TEXT} UTF-16 code units`;
   return namesCommand
     ? `${counted}: run \`dispatch answers\` to read every one in full.`
     : `${counted}.`;

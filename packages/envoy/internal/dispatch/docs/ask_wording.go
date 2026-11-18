@@ -76,6 +76,6 @@ func askWordingTooLong(block askBlock) error {
 	if units <= contracts.DispatchEventBodyMax {
 		return nil
 	}
-	return fmt.Errorf("ask block %q is %d characters over the %d-character limit on its question and options (%d/%d)",
-		block.id, units-contracts.DispatchEventBodyMax, contracts.DispatchEventBodyMax, units, contracts.DispatchEventBodyMax)
+	return fmt.Errorf("ask block %q: its question and options are %d of at most %d",
+		block.id, units, contracts.DispatchEventBodyMax)
 }

@@ -61,7 +61,6 @@ function DeclineDialog({
     onClose: close,
     open: true,
   });
-  const left = DISPATCH_EVENT_BODY_MAX - note.length;
 
   return (
     <>
@@ -100,7 +99,7 @@ function DeclineDialog({
             />
           </label>
           <p className={`text-xs ${textMutedOnSurface}`} id={countId}>
-            {left} {left === 1 ? "character" : "characters"} left
+            {note.length} of at most {DISPATCH_EVENT_BODY_MAX}
           </p>
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">

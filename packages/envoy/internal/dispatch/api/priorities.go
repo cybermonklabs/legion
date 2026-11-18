@@ -101,7 +101,7 @@ func refusePriorityTitle(w http.ResponseWriter, title string) bool {
 		return false
 	}
 	writeError(w, codePriorityInput, http.StatusBadRequest, fmt.Sprintf(
-		"a title is at most %d characters, as an issue title is, and this one is %d", contracts.IssueTitleMax, length))
+		"a title is at most %d long, as an issue title is, and this one is %d", contracts.IssueTitleMax, length))
 	return true
 }
 

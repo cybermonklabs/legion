@@ -128,10 +128,7 @@ describe("formatZodIssues", () => {
   test("carries the number to trim for an over-limit string and the item count for an array", () => {
     expect(
       problemsFor("dispatch_issue", { project: "DSP", title: "x".repeat(ISSUE_TITLE_MAX + 50) })
-    ).toEqual([
-      `--title is 50 characters over the ${ISSUE_TITLE_MAX}-character limit ` +
-        `(${ISSUE_TITLE_MAX + 50}/${ISSUE_TITLE_MAX})`,
-    ]);
+    ).toEqual([`--title: ${ISSUE_TITLE_MAX + 50} of at most ${ISSUE_TITLE_MAX}`]);
     expect(
       problemsFor("dispatch_ask", {
         issue: "DSP-42",
@@ -176,9 +173,7 @@ describe("formatZodIssues", () => {
         "as its bytes, unchanged; a document takes a name ending in .md or .markdown or with " +
         "no extension.",
     ]);
-    expect(problemsFor("dispatch_search", { query: "a" })).toEqual([
-      "--query: Too small: expected string to have >=2 characters",
-    ]);
+    expect(problemsFor("dispatch_search", { query: "a" })).toEqual(["--query: 1 of at least 2"]);
     expect(problemsFor("dispatch_issue", { project: "P", title: "t", priority: 1.5 })).toEqual([
       "--priority must be an integer, not 1.5",
     ]);

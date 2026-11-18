@@ -633,9 +633,7 @@ describe("executeDispatchTool", () => {
     const ref = "dispatch://DSP-41/ask/ab";
     const question = "x".repeat(DISPATCH_EVENT_BODY_MAX - 10);
     const sent = `${question}\n\nRef: ${ref}`;
-    const refusal =
-      `question and options is 21 characters over the ${DISPATCH_EVENT_BODY_MAX}-character ` +
-      `limit (${DISPATCH_EVENT_BODY_MAX + 21}/${DISPATCH_EVENT_BODY_MAX})`;
+    const refusal = `question and options: ${DISPATCH_EVENT_BODY_MAX + 21} of at most ${DISPATCH_EVENT_BODY_MAX}`;
     const questions: unknown[] = [];
     const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       questions.push(JSON.parse(String(init?.body)).question);
@@ -1900,7 +1898,7 @@ describe("executeDispatchTool", () => {
         exec: repoExec("owner/repo"),
         fetchImpl,
       })
-    ).rejects.toThrow(/2 characters/);
+    ).rejects.toThrow(/--query: 1 of at least 2/);
     expect(requests).toBe(0);
   });
 
@@ -1924,7 +1922,7 @@ describe("executeDispatchTool", () => {
         fetchImpl,
       })
     ).rejects.toThrow(
-      `- --query ${overCapMessage(length, SEARCH_QUERY_MAX)}; search with a short phrase of a few words, not a passage\n`
+      `- --query: ${overCapMessage(length, SEARCH_QUERY_MAX)}; search with a short phrase of a few words, not a passage\n`
     );
     expect(requests).toBe(0);
   });
@@ -5139,7 +5137,7 @@ describe("executeDispatchTool", () => {
         exec: repoExec("owner/repo"),
         fetchImpl,
       })
-    ).rejects.toThrow(/title is 1 characters over the 1000-character limit \(1001\/1000\)/);
+    ).rejects.toThrow(/title: 1001 of at most 1000/);
   });
 
   /**
@@ -11510,7 +11508,7 @@ describe("executeDispatchTool", () => {
     expect(stored.startsWith(printed)).toBe(true);
     expect(printed.endsWith("\n")).toBe(true);
     expect(problem).toContain(
-      ` The text below is cut after ${printed.length} of its ${stored.length} characters: change the line named above and send the text again.`
+      ` The text below is cut at ${printed.length} of its ${stored.length}: change the line named above and send the text again.`
     );
   });
 
@@ -11551,10 +11549,10 @@ describe("executeDispatchTool", () => {
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
     const problem = failure.problems[0] ?? "";
     expect(problem).toContain(
-      `${JSON.stringify(long.slice(0, 200))} (cut after 200 of its ${long.length} characters)`
+      `${JSON.stringify(long.slice(0, 200))} (cut at 200 of its ${long.length})`
     );
     expect(problem).toContain(
-      `${JSON.stringify(storedLine.slice(0, 200))} (cut after 200 of its ${storedLine.length} characters)`
+      `${JSON.stringify(storedLine.slice(0, 200))} (cut at 200 of its ${storedLine.length})`
     );
     // The whole line never reaches the refusal.
     expect(problem).not.toContain(long);

@@ -665,7 +665,7 @@ test.skipIf(skipped)(
     const leftOut = items.length - count;
     expect(
       list.endsWith(
-        `\n\n${leftOut} older items left out to stay under 8,000 characters: run \`dispatch answers\` to read every one in full.`
+        `\n\n${leftOut} older items left out to stay under 8,000 UTF-16 code units: run \`dispatch answers\` to read every one in full.`
       )
     ).toBe(true);
     expect(list).toBe(renderSessionAnswers(items, { now: Date.now() }));

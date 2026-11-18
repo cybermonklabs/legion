@@ -865,12 +865,11 @@ function PaletteDialog({
           {newIssue?.said}
           {tooShort ? (
             <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>
-              Type at least 2 characters
+              Type at least 2 to search ({searchText.length} so far)
             </p>
           ) : tooLong ? (
             <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>
-              Search with a short phrase: {searchText.length} characters is over the{" "}
-              {SEARCH_QUERY_MAX}-character limit
+              Search with a short phrase: {searchText.length} of at most {SEARCH_QUERY_MAX}
             </p>
           ) : waitingForQuery || search.isPending ? (
             <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>Searching…</p>

@@ -715,7 +715,7 @@ const STORED_LINE_QUOTED = 200;
 function quotedStoredLine(line: string): string {
   if (line.length <= STORED_LINE_QUOTED) return JSON.stringify(line);
   const head = JSON.stringify(line.slice(0, STORED_LINE_QUOTED));
-  return `${head} (cut after ${STORED_LINE_QUOTED} of its ${line.length} characters)`;
+  return `${head} (cut at ${STORED_LINE_QUOTED} of its ${line.length})`;
 }
 
 /** The first line the store would write otherwise, which is the line a reader fixes first. The
@@ -761,7 +761,7 @@ function storedTextPrinted(stored: string): { readonly text: string; readonly cu
   const text = lastLineFeed === -1 ? head : head.slice(0, lastLineFeed + 1);
   return {
     text,
-    cut: ` The text below is cut after ${text.length} of its ${stored.length} characters: change the line named above and send the text again.`,
+    cut: ` The text below is cut at ${text.length} of its ${stored.length}: change the line named above and send the text again.`,
   };
 }
 

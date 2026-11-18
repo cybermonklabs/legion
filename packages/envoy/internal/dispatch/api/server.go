@@ -287,7 +287,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
 	switch problem {
 	case "label":
-		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, maxIssueLabel16)
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (%d long, at most %d)", newIssue.Label, itemblocks.Units16(newIssue.Label), maxIssueLabel16)
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
@@ -1525,12 +1525,12 @@ func (s *server) requireCallerScope(w http.ResponseWriter, r *http.Request, scop
 	return true
 }
 
-// capExceededError names how far a text field is over its cap so one trim lands:
-// "<field> is N characters over the M-character limit (L/M)". Lengths are UTF-16 units
-// (itemblocks.Units16).
+// capExceededError names a text field's length and its cap, so one trim lands:
+// "<field>: L of at most M". Lengths are UTF-16 units (itemblocks.Units16), and the words name
+// no unit. overCapMessage in packages/contracts/src/tool-schema.ts is its twin: a tool call a
+// client refuses for the same cap reads "<field>: L of at most M" too.
 func capExceededError(field string, length, limit int) *apiError {
-	return errorf(http.StatusBadRequest, "CAP_EXCEEDED",
-		"%s is %d characters over the %d-character limit (%d/%d)", field, length-limit, limit, length, limit)
+	return errorf(http.StatusBadRequest, "CAP_EXCEEDED", "%s: %d of at most %d", field, length, limit)
 }
 
 // countExceededError is capExceededError for item counts (options, labels).

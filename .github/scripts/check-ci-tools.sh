@@ -1196,6 +1196,7 @@ for entry, repository in declines:
     if why.strip(" .").lower() in REASON_PLACEHOLDERS or len(why) < REASON_MINIMUM:
         problems.append(
             f"{CI_TOOLS}:{key_line(entry, 'why')}: this entry's why is {why}, which "
+            # characters: code points, Python's len() of a str counts them.
             f"says nothing a reader could act on. Write at least {REASON_MINIMUM} characters "
             f"naming which second source was looked for, why there is none today, and what "
             f"building one would take. Whether that reason is true is the reviewer's judgement "

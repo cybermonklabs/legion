@@ -637,6 +637,7 @@ judge "INFRA-3099 k1 every token the stand-in minted for that run was given back
 	is "$n3099_minted" "$n3099_given_back"
 n3099_token="$(revoked_token "$n3099_revokes")"
 n3099_read="$(standin_read "$n3099_token" "$DEV_BROKER_GITHUB_OWNER/$NAMED_REPOSITORY")"
+# characters: ASCII alone, the token is the one an HTTP Authorization header carried.
 judge "INFRA-3099 k1 the token that run gave back reads nothing afterwards, a stand-in forgetting a token it revoked (the revoke carried a token of ${#n3099_token} characters, whose read of $DEV_BROKER_GITHUB_OWNER/$NAMED_REPOSITORY answered $n3099_read)" \
 	revoked_read "$n3099_token" "$n3099_read"
 

@@ -6,4 +6,5 @@ if [ -z "${DEMO_API_KEY:-}" ]; then
   exit 1
 fi
 last4="$(printf '%s' "$DEMO_API_KEY" | tail -c 4)"
+# characters: ASCII alone, the rig's made-up key, as walkthrough/README.md records its output.
 echo "DEMO_API_KEY reached this command: ${#DEMO_API_KEY} characters, ending in ${last4}"
