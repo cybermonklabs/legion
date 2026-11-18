@@ -4,9 +4,10 @@
 // BROKER_TEST_DATABASE_URL, exactly as the broker/api tests do)
 // behind an httptest.Server, wires Dispatch's own routes to relay to it, and drives every UI
 // action through DISPATCH's routes as a signed-in human — proving the proxy round-trips a real
-// broker, which lists each person's pending requests, decides a machine login and a revoke by the
-// login Dispatch names, and refuses every decision of a secret request with the page where a
-// person signed in to the broker decides it. A test needing a secret request decided decides it on
+// broker, which lists each person's pending requests and the expired ones nobody has dismissed,
+// decides a machine login, a dismissal and a revoke by the login Dispatch names, and refuses
+// every decision of a secret request with the page where a person signed in to the broker
+// decides it. A test needing a secret request decided decides it on
 // that page, signed in to the broker (brokertest.Decide), as a person does. Skips without
 // BROKER_TEST_DATABASE_URL (via brokerstoretest.Open) or DISPATCH_TEST_DATABASE_URL (via
 // storetest.Open, already required by every other test in this package).
@@ -22,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +76,11 @@ type contractRig struct {
 	brokerStore *store.Store
 	issuer      *oidctest.Issuer
 	issuerKey   *oidctest.Key
+	// requestMachine and machineLogins are the broker's own services behind its routes, held so
+	// a test runs their expiry sweeps (requests.Machine.ExpirePending and
+	// machine.Service.ExpirePending) as the broker's sweeper does.
+	requestMachine *requests.Machine
+	machineLogins  *machine.Service
 }
 
 func newContractRig(t *testing.T) *contractRig {
@@ -152,7 +159,10 @@ func newContractRig(t *testing.T) *contractRig {
 	dispatchMux := http.NewServeMux()
 	t.Cleanup(Register(dispatchMux, t.Context(), deps).Wait)
 
-	return &contractRig{Dispatch: dispatchMux, BrokerURL: brokerServer.URL, brokerStore: brokerStore, issuer: issuer, issuerKey: issuerKey}
+	return &contractRig{
+		Dispatch: dispatchMux, BrokerURL: brokerServer.URL, brokerStore: brokerStore, issuer: issuer, issuerKey: issuerKey,
+		requestMachine: reqMachine, machineLogins: mach,
+	}
 }
 
 // --- fixture seeding: direct broker access, mirroring what an agent or a machine would do ---
@@ -479,10 +489,12 @@ func TestContractGrantsListAndRevokeByApproverThroughDispatch(t *testing.T) {
 
 // contractPending is one row of Dispatch's pending list.
 type contractPending struct {
-	RecordID    string   `json:"record_id"`
-	Kind        string   `json:"kind"`
-	Identifiers []string `json:"identifiers"`
-	ApproveURL  string   `json:"approve_url"`
+	RecordID    string    `json:"record_id"`
+	Kind        string    `json:"kind"`
+	Identifiers []string  `json:"identifiers"`
+	ApproveURL  string    `json:"approve_url"`
+	State       string    `json:"state"`
+	ExpiresAt   time.Time `json:"expires_at"`
 }
 
 // pendingFor reads login's credential inbox through Dispatch.
@@ -930,4 +942,181 @@ func TestContractAnyoneApprovalCannotReleaseAPersonsWithheldSecret(t *testing.T)
 	if status, released := rig.values(t, session, rig.grantOf(t, session, mixed.RequestID)); status != http.StatusOK || released["AUTO_TOKEN"] == "" {
 		t.Fatalf("values of the owner's approval = %d %v, want AUTO_TOKEN released", status, released)
 	}
+}
+
+// --- expired requests: check c-expired-request-listed through Dispatch (dispatch://INFRA-3921) ---
+
+// contractDismissal is the dismiss route's answer.
+type contractDismissal struct {
+	RecordID    string    `json:"record_id"`
+	DismissedBy string    `json:"dismissed_by"`
+	DismissedAt time.Time `json:"dismissed_at"`
+}
+
+// inboxFor reads login's credential inbox through Dispatch and fails t unless it lists exactly
+// want, each row as "<record id>=<state>" in the list's own order. It answers the rows.
+func (rig *contractRig) inboxFor(t *testing.T, login string, want ...string) []contractPending {
+	t.Helper()
+	rows := rig.pendingFor(t, login)
+	got := make([]string, len(rows))
+	for i, row := range rows {
+		got[i] = row.RecordID + "=" + row.State
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("%s's inbox = %v, want %v", login, got, want)
+	}
+	return rows
+}
+
+// overdue moves requestID's deadline an hour into the past, as time passing does, and runs no
+// sweep, so its request row still reads pending while every decision of it already answers that
+// it expired. It answers the new deadline.
+func (rig *contractRig) overdue(t *testing.T, requestID string) time.Time {
+	t.Helper()
+	var deadline time.Time
+	if err := rig.brokerStore.Pool.QueryRow(context.Background(), `update requests set pending_expires_at = now() - interval '1 hour'
+		where id=$1 returning pending_expires_at`, requestID).Scan(&deadline); err != nil {
+		t.Fatalf("move request %s past its deadline: %v", requestID, err)
+	}
+	return deadline
+}
+
+// expiredMachineLogin writes a machine login of contractApprover's for host whose deadline
+// passed an hour ago, with the typed code code, as the broker's device authorization writes one.
+// A machine login's record is append-only, so its deadline is set as it is written. It answers
+// the record's id and its deadline.
+func (rig *contractRig) expiredMachineLogin(t *testing.T, host, code string) (string, time.Time) {
+	t.Helper()
+	compact, err := record.Sign(contractSigningKey(t), rig.BrokerURL,
+		[]record.AuthorizationDetail{{Type: record.KindLauncherCredential, Identifier: host}}, "", contractApprover, nil, time.Now())
+	if err != nil {
+		t.Fatalf("record.Sign: %v", err)
+	}
+	body := record.Body{
+		Request:         compact,
+		Approver:        contractApprover,
+		Enrollment:      record.Enrollment{Kind: "-", RuntimeID: "-"},
+		LifetimeSeconds: new(3600),
+		RulesVersion:    "rules-v1",
+		ExpiresAt:       time.Now().Add(-time.Hour).UTC().Truncate(time.Second),
+		Code:            code,
+	}
+	if _, err := rig.brokerStore.Pool.Exec(context.Background(), `insert into credential_requests (id, body, kind, approver, code, expires_at)
+		values ($1,$2,'launcher_credential',$3,$4,$5)`, body.ID(), body.Canonical(), body.Approver, body.Code, body.ExpiresAt); err != nil {
+		t.Fatalf("insert the expired machine login for %s: %v", host, err)
+	}
+	return body.ID(), body.ExpiresAt
+}
+
+// dismissThroughDispatch dismisses recordID through Dispatch as login, whose browser sends body,
+// and fails t unless Dispatch relays the broker's 200 naming login as the one who dismissed it.
+func (rig *contractRig) dismissThroughDispatch(t *testing.T, recordID, login string, body any) {
+	t.Helper()
+	resp := dispatchRequest(t, rig.Dispatch, http.MethodPost, "/api/v1/credential-requests/"+recordID+"/dismiss", body, login)
+	dismissal := decodeBody[contractDismissal](t, resp)
+	if resp.Code != http.StatusOK || dismissal.RecordID != recordID || dismissal.DismissedBy != login || dismissal.DismissedAt.IsZero() {
+		t.Fatalf("dismiss %s as %s = %d %s, want 200 naming it, dismissed by %s, with its time", recordID, login, resp.Code, resp.Body.String(), login)
+	}
+}
+
+// TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed is check
+// c-expired-request-listed's sequence for a secret request, through Dispatch's own routes and the
+// real broker. Two requests wait on one approver, both sessions live, and one is moved past its
+// deadline with no sweep run: the approver's inbox holds both, the live one pending and first, the
+// overdue one expired with its deadline. Dispatch's approve and deny of the overdue one are still
+// the broker's 403 DECIDE_ON_BROKER_PAGE. After the broker's sweep ends the overdue request the
+// inbox still holds both, as they were. Another person's dismissal is refused whatever their
+// browser's body names; the approver's dismissal answers 200, and the inbox then holds the live
+// request alone.
+func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T) {
+	rig := newContractRig(t)
+	late := rig.createPendingAgentSecretRecord(t, "needed before its deadline", "DEEL_API_KEY")
+	live := rig.createPendingAgentSecretRecord(t, "needed now", "DEEL_API_KEY")
+	deadline := rig.overdue(t, late.RequestID)
+	both := []string{live.RecordID + "=pending", late.RecordID + "=expired"}
+
+	rows := rig.inboxFor(t, contractApprover, both...)
+	if !rows[0].ExpiresAt.After(time.Now()) || rows[0].ApproveURL != rig.BrokerURL+"/approve/"+live.RecordID {
+		t.Fatalf("the live row = %+v, want a deadline still ahead and its page on the broker", rows[0])
+	}
+	if !rows[1].ExpiresAt.Equal(deadline) || rows[1].Kind != "agent_secret" || !slices.Equal(rows[1].Identifiers, []string{"DEEL_API_KEY"}) {
+		t.Fatalf("the overdue row = %+v, want the DEEL_API_KEY request with its deadline %s", rows[1], deadline)
+	}
+	page := rig.BrokerURL + "/approve/" + late.RecordID
+	for _, action := range []string{"approve", "deny"} {
+		resp := dispatchRequest(t, rig.Dispatch, http.MethodPost, "/api/v1/credential-requests/"+late.RecordID+"/"+action, map[string]any{}, contractApprover)
+		if refusal := decodeBody[contractError](t, resp); resp.Code != http.StatusForbidden || refusal.Code != "DECIDE_ON_BROKER_PAGE" || refusal.ApproveURL != page {
+			t.Fatalf("%s the overdue request = %d %s, want 403 DECIDE_ON_BROKER_PAGE naming %s", action, resp.Code, resp.Body.String(), page)
+		}
+	}
+	if n := rig.decisionEvents(t, late.RecordID); n != 0 {
+		t.Fatalf("the overdue request has %d decisions after Dispatch's approve and deny, want none", n)
+	}
+
+	if n, err := rig.requestMachine.ExpirePending(context.Background(), time.Now()); err != nil || n != 1 {
+		t.Fatalf("the broker's sweep = %d, %v; want the overdue request alone expired", n, err)
+	}
+	rig.inboxFor(t, contractApprover, both...)
+
+	refused := dispatchRequest(t, rig.Dispatch, http.MethodPost, "/api/v1/credential-requests/"+late.RecordID+"/dismiss",
+		map[string]any{"approver": contractApprover}, contractOther)
+	if refused.Code != http.StatusForbidden || decodeBody[contractError](t, refused).Code != "NOT_APPROVER" {
+		t.Fatalf("dismiss as %s = %d %s, want 403 NOT_APPROVER", contractOther, refused.Code, refused.Body.String())
+	}
+	rig.inboxFor(t, contractApprover, both...)
+
+	rig.dismissThroughDispatch(t, late.RecordID, contractApprover, nil)
+	rig.inboxFor(t, contractApprover, live.RecordID+"=pending")
+}
+
+// TestContractExpiredMachineLoginStaysInTheInboxUntilDismissed is the same sequence for a machine
+// login: one written with a deadline already passed beside a live one the machine opened through
+// the broker's device authorization. The approver's inbox holds both, the live one pending and
+// first, the overdue one expired with its machine and its deadline and no page. Dispatch's approve
+// and deny of the overdue one, with its own code, are the broker's 409 RECORD_TERMINAL and write
+// nothing. After the broker's machine-login sweep records it expired, the inbox still holds both;
+// the approver's dismissal answers 200, and the inbox then holds the live login alone.
+func TestContractExpiredMachineLoginStaysInTheInboxUntilDismissed(t *testing.T) {
+	rig := newContractRig(t)
+	const expiredCode = "BCDF-GHJK"
+	expired, deadline := rig.expiredMachineLogin(t, "contract-expired-host", expiredCode)
+	machineKey := contractSigningKey(t)
+	compact, err := record.Sign(machineKey, rig.BrokerURL,
+		[]record.AuthorizationDetail{{Type: record.KindLauncherCredential, Identifier: "contract-live-host"}}, "", contractApprover, nil, time.Now())
+	if err != nil {
+		t.Fatalf("record.Sign: %v", err)
+	}
+	_, live := rig.startMachineLogin(t, machineKey, compact, contractApprover)
+	both := []string{live + "=pending", expired + "=expired"}
+
+	rows := rig.inboxFor(t, contractApprover, both...)
+	if !rows[0].ExpiresAt.After(time.Now()) {
+		t.Fatalf("the live row = %+v, want a deadline still ahead", rows[0])
+	}
+	if !rows[1].ExpiresAt.Equal(deadline) || rows[1].Kind != record.KindLauncherCredential ||
+		!slices.Equal(rows[1].Identifiers, []string{"contract-expired-host"}) || rows[1].ApproveURL != "" {
+		t.Fatalf("the overdue row = %+v, want the machine contract-expired-host with its deadline %s and no page", rows[1], deadline)
+	}
+	for _, action := range []string{"approve", "deny"} {
+		resp := dispatchRequest(t, rig.Dispatch, http.MethodPost, "/api/v1/credential-requests/"+expired+"/"+action, map[string]any{"code": expiredCode}, contractApprover)
+		if resp.Code != http.StatusConflict || decodeBody[contractError](t, resp).Code != "RECORD_TERMINAL" {
+			t.Fatalf("%s the overdue machine login = %d %s, want 409 RECORD_TERMINAL", action, resp.Code, resp.Body.String())
+		}
+	}
+	if n := rig.decisionEvents(t, expired); n != 0 {
+		t.Fatalf("the overdue machine login has %d decisions after Dispatch's approve and deny, want none", n)
+	}
+
+	if err := rig.machineLogins.ExpirePending(context.Background(), time.Now()); err != nil {
+		t.Fatalf("the broker's machine-login sweep: %v", err)
+	}
+	var swept int
+	if err := rig.brokerStore.Pool.QueryRow(context.Background(),
+		`select count(*) from credential_request_events where record_id=$1 and event='expired'`, expired).Scan(&swept); err != nil || swept != 1 {
+		t.Fatalf("the sweep wrote %d expired events for the overdue login (%v), want one", swept, err)
+	}
+	rig.inboxFor(t, contractApprover, both...)
+
+	rig.dismissThroughDispatch(t, expired, contractApprover, map[string]any{"approver": contractOther})
+	rig.inboxFor(t, contractApprover, live+"=pending")
 }

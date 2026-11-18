@@ -82,14 +82,23 @@ func askShared(t *testing.T, m *Machine, enrollment string, key *ecdsa.PrivateKe
 	return req
 }
 
-// listsFor reports whether GET /v1/pending's list for login holds recordID.
+// listsFor reports whether GET /v1/pending's list for login holds recordID. It reads both of
+// PendingForApprover's statements, the one with no state and Dispatch's (pending and expired),
+// and fails when they disagree: the notify rule is one filter both read.
 func listsFor(t *testing.T, m *Machine, login, recordID string) bool {
 	t.Helper()
-	pending, err := m.PendingForApprover(context.Background(), login)
-	if err != nil {
-		t.Fatalf("PendingForApprover(%s): %v", login, err)
+	holds := func(states PendingStates) bool {
+		pending, err := m.PendingForApprover(context.Background(), login, states)
+		if err != nil {
+			t.Fatalf("PendingForApprover(%s, %+v): %v", login, states, err)
+		}
+		return slices.ContainsFunc(pending, func(p PendingSummary) bool { return p.RecordID == recordID })
 	}
-	return slices.ContainsFunc(pending, func(p PendingSummary) bool { return p.RecordID == recordID })
+	plain, byState := holds(PendingStates{}), holds(PendingStates{Pending: true, Expired: true})
+	if plain != byState {
+		t.Fatalf("PendingForApprover(%s) holds %s %t with no state and %t for pending and expired; want the same", login, recordID, plain, byState)
+	}
+	return plain
 }
 
 // notifyOf reads the person recordID's row names as the one whose Inbox lists it, "" for none.

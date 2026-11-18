@@ -9,5 +9,5 @@ body: |-
   seconds. Where none names a person the request is listed for everyone, as before, and a Dispatch
   read that failed or ran late logs a WARN,
   `broker: the assignee of a Legion pod's issue could not be read; its request is listed for everyone`.
-  Anyone signed in still decides such a request from its page. Migration `0035_request_notify` adds
+  Anyone signed in still decides such a request from its page. Migration `0036_request_notify` adds
   the nullable `credential_requests.notify`.

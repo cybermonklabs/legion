@@ -410,14 +410,16 @@ percentile. On the run that first moved this repository's jobs to arm64 (run 440
 turn too, and the gating jobs (`lint`, `ci-ok`, `changes`, `pr-title`) started in 7 to 23 s. So
 the gain is a second pool, and gating jobs that no longer wait behind the x86_64 queue; it is not
 zero wait. A job goes on `ubuntu-24.04` only for a reason of the machine,
-and ci.yaml's "Runners" paragraph lists each one: a tool whose `.github/ci-tools.yaml` row is an
-x86_64 build alone, the pinned Oh My Pi build (linux-x64 alone), a browser, an image built for
-linux/amd64, or a build that must match a release built on `ubuntu-24.04`. A Go build that sets
-no `CGO_ENABLED` is that last kind: Go turns cgo on for a native build where gcc is present and
-off for a cross build, so the same command links a different pair of binaries on each runner.
+and ci.yaml's "Runners" paragraph lists each one: a tool with no arm64 row in
+`.github/ci-tools.yaml`, the pinned Oh My Pi build (linux-x64 alone), a browser, an image built
+for linux/amd64, or a build that must match a release built on `ubuntu-24.04`. A Go build that
+sets no `CGO_ENABLED` is that last kind: Go turns cgo on for a native build where gcc is present
+and off for a cross build, so the same command links a different pair of binaries on each runner.
 That is why envoy-go-checks, which packs the release's listener archives that way, stays on
-`ubuntu-24.04`. A job that installs a tool on arm64 needs that tool's arm64 row, and a Go cache
-family it restores needs a fill on that runner (the section above).
+`ubuntu-24.04`. A job that installs a tool on arm64 needs that tool's `<tool>-aarch64` row, which
+`check-ci-tools.sh` holds to the version of the `<tool>` row, an install action that picks the
+row from `uname -m`, and a case of that row in the tool-fallback-arm job; a Go cache family it
+restores needs a fill on that runner (the section above).
 
 ## The merge queue runs the router too
 
@@ -431,8 +433,8 @@ What skips a
 group does so on purpose, and worker-image is the one job that does (pull request only, so it is
 in `CI_OK_PULL_REQUEST_ONLY`; main's image builds are release.yaml's). The queued pull request's
 text is checked on the group by ci.yaml's `pr-title` job, which finds it with
-find-pr-payload.sh; pr-title.yaml runs on an edit and a review alone, and a group carries
-neither. The nine slow suites go the
+find-pr-payload.sh; pr-title.yaml runs on an edit alone, which a group never
+carries. The nine slow suites go the
 other way: the queue is where their result normally comes from, and a pull request runs them only
 when it carries the label `full-ci`. The
 docs job runs on a group and on a pull request alike; docs-pages.yaml builds and publishes main's

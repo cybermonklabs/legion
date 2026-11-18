@@ -398,6 +398,76 @@ check "fails" "$(is "$status" 1)"
 check "names both values and both files" \
   "$(contains "$out" "the jj row's version is 5.5.5 and packages/daemon/docker/worker.Dockerfile pins ARG JJ_TOOL=github:example/jj@6.6.6, whose version is 6.6.6")"
 
+# arm64_row <root> <name> <version>: appends the arm64 build of a tool at that version, in the
+# shape the manifest's -aarch64 rows take, with URLs that hold the version so rule 1 reads nothing
+# else in them.
+arm64_row() {
+  cat >> "$1/.github/ci-tools.yaml" <<YAML
+
+  - name: $2
+    version: $3
+    digest: $SOLO
+    digest_of: the release tarball, whole
+    primary_source: github-release
+    primary: https://github.com/example/tool/releases/download/v$3/tool_$3_linux_arm64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/example/tool/releases/download/v$3/tool_$3_linux_arm64.tar.gz
+    mirror_member: ""
+YAML
+}
+
+echo "case: rule 2 — an -aarch64 row at its base row's version"
+root=$(fixture pin-arm64-agrees)
+arm64_row "$root" tool-aarch64 1.0.0
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and counts the arm64 row with the rest" \
+  "$(contains "$out" '^.github/ci-tools.yaml holds 7 row(s), each agreeing with the pin that installs it')"
+
+echo "case: rule 2 — an -aarch64 row at another version than its base row"
+root=$(fixture pin-arm64-version)
+arm64_row "$root" tool-aarch64 2.0.0
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names both rows and both versions" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the tool-aarch64 row's version is 2.0.0 and the tool row's is 1.0.0.")"
+check "and says the two move together" "$(contains "$out" 'move the two rows together')"
+
+echo "case: rule 2 — an -aarch64 row whose base row the manifest does not hold"
+root=$(fixture pin-arm64-orphan)
+arm64_row "$root" orphan-aarch64 1.0.0
+run_gate "$root"
+check "fails" "$(is "$status" 1)"
+check "names the row and the base row it lacks" \
+  "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the orphan-aarch64 row is the arm64 build of a orphan row this file does not hold")"
+
+echo "case: rule 2 — the bun aarch64 row answers to .bun-version, not to a base row"
+# bun-linux-aarch64 has no bun-linux row beside it, by the naming Bun's own assets use, and the
+# clause above leaves it to the .bun-version one: a bun row at the pinned version is no orphan.
+root=$(fixture pin-arm64-bun)
+cat >> "$root/.github/ci-tools.yaml" <<YAML
+
+  - name: bun-linux-aarch64
+    version: 9.9.9
+    digest: $SOLO
+    digest_of: the installed bun binary
+    primary_source: github-release
+    primary: ""
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: npm
+    max_time: 60
+    npm_package: "@oven/bun-linux-aarch64"
+    npm_member: package/bin/bun
+YAML
+run_gate "$root"
+check "exits 0" "$(is "$status" 0)"
+
 echo "case: rule 2 — the uv row and ARG UV_VERSION disagree"
 # The uv row answers to the same file the mise row does, and for the same reason: the image's
 # own toolchain stage builds uv from that ARG, so a row at another version installs one uv and

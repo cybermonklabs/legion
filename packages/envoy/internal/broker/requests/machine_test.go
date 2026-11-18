@@ -1265,7 +1265,7 @@ func TestEveryRequesterIsDecidedByOwnerAndTier(t *testing.T) {
 					"pod": "carol@example.com", "the service's pod": "carol@example.com",
 				}[who]
 			}
-			pending, err := m.PendingForApprover(ctx, listedFor)
+			pending, err := m.PendingForApprover(ctx, listedFor, PendingStates{})
 			if err != nil || !slices.ContainsFunc(pending, func(p PendingSummary) bool { return p.RecordID == *req.RecordID }) {
 				t.Errorf("%s asking for %s: %s's pending list %+v, %v; want the record listed", who, name, listedFor, pending, err)
 			}
@@ -1285,11 +1285,11 @@ func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v, want pending with a record", req, err)
 	}
-	if pending, err := m.PendingForApprover(ctx, fixtureOperator); err != nil || len(pending) != 1 || pending[0].RecordID != *req.RecordID {
+	if pending, err := m.PendingForApprover(ctx, fixtureOperator, PendingStates{}); err != nil || len(pending) != 1 || pending[0].RecordID != *req.RecordID {
 		t.Fatalf("PendingForApprover(%s) = %+v, %v, want the shared record its session asked for", fixtureOperator, pending, err)
 	}
 	for _, person := range []string{"bob@example.com", "carol@example.com"} {
-		if pending, err := m.PendingForApprover(ctx, person); err != nil || len(pending) != 0 {
+		if pending, err := m.PendingForApprover(ctx, person, PendingStates{}); err != nil || len(pending) != 0 {
 			t.Fatalf("PendingForApprover(%s) = %+v, %v, want nothing: the record is its session's operator's to be asked", person, pending, err)
 		}
 	}
@@ -1316,7 +1316,7 @@ func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 	if err != nil || len(grants) != 1 || grants[0].GrantID != dec.GrantID || grants[0].Approver != "bob@example.com" {
 		t.Fatalf("GrantsForApprover(bob) = %+v, %v, want the grant bob approved", grants, err)
 	}
-	if pending, err := m.PendingForApprover(ctx, fixtureOperator); err != nil || len(pending) != 0 {
+	if pending, err := m.PendingForApprover(ctx, fixtureOperator, PendingStates{}); err != nil || len(pending) != 0 {
 		t.Fatalf("PendingForApprover(%s) after bob decided = %+v, %v, want nothing", fixtureOperator, pending, err)
 	}
 }

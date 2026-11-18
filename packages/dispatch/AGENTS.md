@@ -1197,13 +1197,10 @@ the agent's reason) above
 decision; a service's login gets Deny alone, since no person approves one any more).
 That lookup selects machine logins alone, and the broker leaves such a record's enrollment and both
 of its session ids empty, so the facts carry no enrollment, no worker slot and no session line; the
-session lines are the Inbox row's own. A service's machine login, waiting on
-`anyone`, is in every signed-in person's pending list, since the broker lists it for every approver,
-and any of them decides it the same way; a shared secret's request, waiting on `anyone` too, is in
-the pending list of the person responsible for the agent that asked (its session's operator, a
-fleet machine's person, a Legion pod's issue assignee), or in everyone's when the broker finds no
-such person, and anyone signed in still decides it on the broker's page; a person's own machine
-login is decided by that person alone.
+session lines are the Inbox row's own. A record waiting on
+`anyone` is in every signed-in person's pending list, since the broker lists it for every approver,
+and any of them decides it the same way; a person's own machine login is decided by that person
+alone.
 The reason renders inside a `<blockquote>` as **plain text only** — no Markdown pipeline, no
 linkification, `white-space: pre-wrap` — since it is the agent's own words, not reviewed content;
 a pending machine record adds the sentence "Approving lets `<host>` start agent sessions as

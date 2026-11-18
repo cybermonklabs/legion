@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -245,6 +246,20 @@ type Config struct {
 	// command that is gone; a short bound costs a long-polling client its connection, which it
 	// opens again.
 	AirlockIdleSeconds int
+	// BROKER_AIRLOCK_CLUSTER_RANGES: the broker cluster's own Service range, and each of its
+	// pod and node ranges that RFC 1918 does not already make private, as a comma-separated list
+	// of CIDR prefixes, IPv4 or IPv6, such as 34.118.224.0/20. The airlock proxy refuses to dial
+	// an address inside any of them, as it refuses a private one: a GKE Service range is global
+	// unicast, so without this a command under an airlock grant could tunnel to a ClusterIP of the
+	// cluster the broker runs in. Each prefix is read as its network (34.118.230.7/20 is
+	// 34.118.224.0/20); an empty element, a prefix that does not parse and an IPv4-mapped IPv6
+	// prefix refuse the start, naming the element's position. With BROKER_AIRLOCK_RULES_FILE set
+	// and KUBERNETES_SERVICE_HOST set to a non-empty value, which Kubernetes sets in every
+	// container to the address of the cluster's kubernetes Service, it is required, and the start
+	// is refused unless KUBERNETES_SERVICE_HOST is an IP address inside one of the ranges, so a
+	// list that misses the cluster's Service range cannot pass silently. Outside a cluster
+	// (KUBERNETES_SERVICE_HOST empty or unset) it is optional.
+	AirlockClusterRanges []netip.Prefix
 	// BROKER_AIRLOCK_TEST_GITHUB_API_BASE: the base URL a github-app secret is minted against,
 	// in place of https://api.github.com, so a release of one mints at a stand-in GitHub
 	// (internal/broker/airlock/airlocktest, cmd/dev-airlock-stands). For the broker's local
@@ -1211,9 +1226,75 @@ func parseAirlockTestResolve(value string) (map[string]netip.Addr, error) {
 		if hosts == nil {
 			hosts = map[string]netip.Addr{}
 		}
-		hosts[host] = addr.Unmap()
+		hosts[host] = netaddr.Canonical(addr)
 	}
 	return hosts, nil
+}
+
+// parseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES' comma-separated CIDR prefixes, in
+// order, each as its network; spaces around a comma are allowed, and a blank value is none. It
+// refuses, naming the element's position and never the element, which could be anything an
+// operator pasted: an empty element, one netip.ParsePrefix does not read, and an IPv4-mapped IPv6
+// prefix, which no address the proxy checks is ever inside, since the proxy reads every address as
+// the IPv4 address it holds.
+func parseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
+	const setting = "BROKER_AIRLOCK_CLUSTER_RANGES"
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	elements := strings.Split(value, ",")
+	ranges := make([]netip.Prefix, 0, len(elements))
+	for i, element := range elements {
+		text := strings.TrimSpace(element)
+		if text == "" {
+			return nil, fmt.Errorf("%s: element %d is empty; the setting is a comma-separated list of CIDR prefixes such as 34.118.224.0/20", setting, i+1)
+		}
+		prefix, err := netip.ParsePrefix(text)
+		if err != nil {
+			return nil, fmt.Errorf("%s: element %d is not a CIDR prefix such as 34.118.224.0/20", setting, i+1)
+		}
+		if prefix.Addr().Is4In6() {
+			return nil, fmt.Errorf("%s: element %d is an IPv4-mapped IPv6 prefix, which no address the proxy checks is ever inside; write it as an IPv4 prefix", setting, i+1)
+		}
+		ranges = append(ranges, prefix.Masked())
+	}
+	return ranges, nil
+}
+
+// requireClusterRanges is the check of BROKER_AIRLOCK_CLUSTER_RANGES against the cluster a broker
+// with the airlock on runs in. KUBERNETES_SERVICE_HOST, which Kubernetes sets in every container
+// to the ClusterIP of the cluster's kubernetes Service, says the broker runs in a cluster; empty
+// or unset, the broker runs outside one and the ranges are optional. Set to a non-empty value,
+// they are required and must hold that address: it is drawn from the cluster's Service range, so
+// a list that does not hold it has missed the one range the proxy's fixed rules cannot refuse.
+// Each refusal names both variables, and a KUBERNETES_SERVICE_HOST that is no address is not
+// quoted.
+func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
+	// Empty or unset is outside a cluster, and nothing else is: any non-empty value is a cluster,
+	// a value of spaces among them, which is refused below as a missing setting or as no address.
+	if serviceHost == "" {
+		return nil
+	}
+	serviceHost = strings.TrimSpace(serviceHost)
+	if len(ranges) == 0 {
+		return errors.New("BROKER_AIRLOCK_CLUSTER_RANGES is required: BROKER_AIRLOCK_RULES_FILE turns the airlock on and KUBERNETES_SERVICE_HOST is set, so the broker runs in a cluster, and its proxy must refuse that cluster's own Service, pod and node ranges, which only this setting names")
+	}
+	host, err := netip.ParseAddr(serviceHost)
+	if err != nil {
+		return errors.New("KUBERNETES_SERVICE_HOST is not an IP address, so the broker cannot check that BROKER_AIRLOCK_CLUSTER_RANGES holds the cluster's Service range")
+	}
+	// The address the proxy reads (netaddr.Canonical): a zone is no part of whether it is inside
+	// a range, and the refusal below repeats a parsed address and nothing after a zone's %.
+	host = netaddr.Canonical(host)
+	named := make([]string, len(ranges))
+	for i, own := range ranges {
+		if own.Contains(host) {
+			return nil
+		}
+		named[i] = own.String()
+	}
+	return fmt.Errorf("KUBERNETES_SERVICE_HOST %s is inside no range BROKER_AIRLOCK_CLUSTER_RANGES names (%s): the setting misses the cluster's Service range, and the airlock proxy would dial the cluster's ClusterIPs",
+		host, strings.Join(named, ", "))
 }
 
 // parseAirlockTestAzureAuthority reads BROKER_AIRLOCK_TEST_AZURE_AUTHORITY, the host the proxy
@@ -1499,6 +1580,11 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, err
 		}
 	}
+	// The broker cluster's own ranges, read whatever the rules file says: a list the broker could
+	// not act on is a mistake in the deployment whether or not its airlock is on today.
+	if cfg.AirlockClusterRanges, err = parseAirlockClusterRanges(getenv("BROKER_AIRLOCK_CLUSTER_RANGES")); err != nil {
+		return Config{}, err
+	}
 	// A broker that reads the airlock's rules but cannot proxy would hold back the value of
 	// every name the file names and release nothing in its place, so the three settings the
 	// proxy cannot run without are required with the rules file, and the refusal names the ones
@@ -1524,6 +1610,11 @@ func Load(getenv func(string) string) (Config, error) {
 		// ("proxy:13381") boots and then fails every airlock run one command at a time, with
 		// a refusal in the CLI rather than in the pod that was configured wrong.
 		if err := httpURLSetting("BROKER_AIRLOCK_PROXY_URL", cfg.AirlockProxyURL); err != nil {
+			return Config{}, err
+		}
+		// And, in a cluster, the cluster's own ranges, which no fixed rule of the proxy covers
+		// (requireClusterRanges).
+		if err := requireClusterRanges(cfg.AirlockClusterRanges, getenv("KUBERNETES_SERVICE_HOST")); err != nil {
 			return Config{}, err
 		}
 	}
@@ -1935,8 +2026,8 @@ func signInIssuerOK(issuer string) bool {
 		return true
 	case "http":
 		host := parsed.Hostname()
-		ip := net.ParseIP(host)
-		return host == "localhost" || ip != nil && ip.IsLoopback()
+		addr, err := netip.ParseAddr(host)
+		return host == "localhost" || err == nil && netaddr.Canonical(addr).IsLoopback()
 	}
 	return false
 }

@@ -271,11 +271,12 @@ func (a *SignInAuthority) Refused(ctx context.Context, credentialID string) erro
 }
 
 // markRefused records that this record's sign-in has been refused for good — by the broker, or
-// by the issuer that no longer honours the person's refresh token — and logs it once with code,
-// the code that named the refusal as a message may print it (the broker's through
-// brokeraddr.Address.Words, the issuer's this package's own invalid_grant): the person reads it
-// on Dispatch's sign-ins page, and the box goes on working under its own authority. The caller
-// holds a.mu.
+// by the issuer that no longer honours the person's refresh token — and logs it once with the
+// person and code, the code that named the refusal as a message may print it (the broker's
+// through brokeraddr.Address.Words, the issuer's this package's own invalid_grant): the person
+// reads the refusal on Dispatch's sign-ins page, and the box goes on working under its own
+// authority. The line prints none of the refusal's words, which can quote a URL with a
+// credential in it, and adds no cure of its own (Hint). The caller holds a.mu.
 func (a *SignInAuthority) markRefused(name, person, code string) {
 	if a.refused == nil {
 		a.refused = map[string]bool{}
@@ -283,7 +284,7 @@ func (a *SignInAuthority) markRefused(name, person, code string) {
 	a.refused[name] = true
 	a.held, a.heldFor, a.heldCredential = nil, "", ""
 	if a.Log != nil {
-		a.Log.Warn("this machine's sign-in was refused; sessions enrol under this machine's own authority until somebody signs in again",
-			"person", person, "code", code, "command", SignInCommand)
+		a.Log.Warn("this machine's sign-in was refused; sessions enrol under this machine's own authority",
+			"person", person, "code", code)
 	}
 }

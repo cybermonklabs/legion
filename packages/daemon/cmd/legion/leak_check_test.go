@@ -3,12 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
@@ -146,6 +151,117 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 			}
 			says(t, printed, tc.says)
 		})
+	}
+}
+
+func legionLeakCheckPrePush(t *testing.T, dir string, env map[string]string, line, url string) (int, string) {
+	t.Helper()
+	cmd := legionCommand(t, dir, env, "leak-check", "pre-push", "origin", url)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(line), &stdout, &stderr
+	code := 0
+	if err := cmd.Run(); err != nil {
+		exit, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("legion leak-check pre-push origin %s: %v", url, err)
+		}
+		code = exit.ExitCode()
+	}
+	if stdout.Len() > 0 {
+		t.Errorf("printed %q on standard output, want nothing", stdout.String())
+	}
+	return code, stderr.String()
+}
+
+// A push a real gh makes — `gh repo create --source=. --push` — runs git's pre-push hook, `legion
+// leak-check pre-push`, under the variable `legion gh` gives every real gh it runs
+// (leakguard.RunByRealGhVar), since gh's git inherits it. The guard reads the destination's
+// visibility with `gh`, which in a pane or pod is `legion gh`, and it blanks the variable for that
+// read, so the read reaches the real gh and the push is cleared. Under the variable the read would
+// be refused as a real gh leading back to `legion gh`, and the push with it, leaving the
+// repository gh created empty.
+func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "gh")
+	dir, line := aPushFixture(t, "a commit of nothing in particular")
+	code, printed := legionLeakCheckPrePush(t, dir, map[string]string{
+		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+		"GH_STANDIN_RECORD": record, leakguard.RunByRealGhVar: stub,
+	}, line, "https://github.com/acme/widgets.git")
+	if code != leakguard.StatusClean || printed != "" {
+		t.Errorf("legion leak-check pre-push under %s = exit %d, stderr %q; want exit 0 and nothing printed", leakguard.RunByRealGhVar, code, printed)
+	}
+	if want := "visibility " + strings.Join(leakguard.VisibilityReadWithHeadersArgs("acme/widgets"), " ") + "\n"; readRecord(t, record) != want {
+		t.Errorf("gh recorded %q, want the guard's REST read, %q", readRecord(t, record), want)
+	}
+}
+
+// git runs its pre-push hook, `legion leak-check pre-push`, in the terminal's foreground process
+// group with git, and the guard runs the shared check in a process group of its own, which none
+// of the terminal's signals reach; `legion leak-check text` runs its check the same way. A SIGINT
+// to the command's group cancels its context (main's signal.NotifyContext), and a SIGHUP, a pane
+// that closes during the push, is caught while the command runs (hangupCancels) and cancels it the
+// same way; either stops the check's group, and the command ends with 128+<signal>, which refuses
+// the write, and prints nothing (leakCheckReport). The command is started here as the leader of a
+// group of its own, and the stand-in check holds the write (signalWhileHeld).
+//
+// Before, a SIGHUP killed the command where it stood and left the check running, reparented and
+// waited for by nobody, and a SIGINT stopped the check and was answered with the guard's setup
+// error, exit 2.
+//
+// The command is this test binary run as `legion`, through main and its cobra command line, so
+// the guard's context is the one main's signal.NotifyContext cancels: a leakCheckCommand that
+// handed its shape another context leaves each SIGINT row's command running past its bound.
+func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
+	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
+		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
+	}
+	dir, line := aPushFixture(t, "a commit of nothing in particular")
+	for _, shape := range []struct {
+		name  string
+		stdin string
+		// args is the command after `legion`. A local path names no github.com repository, so
+		// the push's guard reads no visibility and starts no gh, and the write is held in the
+		// check, the guard's first child.
+		args []string
+		// seconds is the holding stand-in's sleep for each signal, one per row.
+		seconds map[syscall.Signal]string
+	}{
+		{
+			name: "leak-check pre-push", stdin: line, args: []string{"leak-check", "pre-push", "origin", dir + ".git"},
+			seconds: map[syscall.Signal]string{syscall.SIGINT: "293", syscall.SIGHUP: "294"},
+		},
+		{
+			name: "leak-check text", stdin: "a title\na body of nothing in particular\n", args: []string{"leak-check", "text", "the pull request body"},
+			seconds: map[syscall.Signal]string{syscall.SIGINT: "291", syscall.SIGHUP: "292"},
+		},
+	} {
+		for _, tc := range []struct {
+			name   string
+			signal syscall.Signal
+		}{
+			{"SIGINT", syscall.SIGINT},
+			{"SIGHUP", syscall.SIGHUP},
+		} {
+			t.Run(shape.name+" "+tc.name, func(t *testing.T) {
+				seconds := shape.seconds[tc.signal]
+				pidFile := filepath.Join(t.TempDir(), "stand-in")
+				command := legionCommand(t, dir, map[string]string{
+					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), holdsStandIn(pidFile, seconds)),
+				}, shape.args...)
+				command.Stdin = strings.NewReader(shape.stdin)
+				signalWhileHeld(t, command, "legion "+shape.name, pidFile, seconds, "the shared check", tc.signal)
+			})
+		}
 	}
 }
 
