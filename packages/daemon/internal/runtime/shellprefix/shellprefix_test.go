@@ -1,6 +1,8 @@
 package shellprefix
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -8,11 +10,12 @@ import (
 	"testing"
 )
 
-// The exact bytes: Oh My Pi runs the prefix verbatim before every command, so a change in quoting,
-// in the closing `hash -r` or in the trailing `&&` is a change in what every agent's shell does.
+// The exact bytes: Oh My Pi runs the prefix verbatim before every command, so a change in the
+// opening reset, in quoting, in the closing `hash -r` or in the trailing `&&` is a change in what
+// every agent's shell does.
 func TestForIsTheAssignmentThatPutsTheDirectoriesFirst(t *testing.T) {
 	got := For("/legion/worker-bin", "/opt/legion/bin")
-	want := `__legion_path=:${PATH//:/::}: && ` +
+	want := `set +e +u +o pipefail; __legion_path=:${PATH//:/::}: && ` +
 		`__legion_path=${__legion_path//:'/legion/worker-bin':/} && ` +
 		`__legion_path=${__legion_path//:'/opt/legion/bin':/} && ` +
 		`__legion_path=${__legion_path//::/:} && __legion_path=${__legion_path#:} && ` +
@@ -25,7 +28,7 @@ func TestForIsTheAssignmentThatPutsTheDirectoriesFirst(t *testing.T) {
 // A directory with a quote in it stays one literal word in every step that names it.
 func TestForQuotesADirectoryWithAQuoteInIt(t *testing.T) {
 	got := For("/state/it's", "/bin dir")
-	want := `__legion_path=:${PATH//:/::}: && ` +
+	want := `set +e +u +o pipefail; __legion_path=:${PATH//:/::}: && ` +
 		`__legion_path=${__legion_path//:'/state/it'\''s':/} && ` +
 		`__legion_path=${__legion_path//:'/bin dir':/} && ` +
 		`__legion_path=${__legion_path//::/:} && __legion_path=${__legion_path#:} && ` +
@@ -104,6 +107,52 @@ func TestThePrefixResolvesItsDirectoriesAheadOfAnRcsAndIsStable(t *testing.T) {
 	want := filepath.Join(first, "gh") + "\n" + filepath.Join(second, "legion") + "\nstable\n"
 	if string(out) != want {
 		t.Fatalf("resolved\n%s\nwant\n%s", out, want)
+	}
+}
+
+// runCalls runs calls the way Oh My Pi's executor does: one bash, without the operator's profile
+// or rc, reading `<prefix> <call>` from its stdin, one line a call. It returns what the calls
+// printed on stdout and on stderr; bash exiting non-zero is no failure here, since a setting that
+// cuts a call can end the shell.
+func runCalls(t *testing.T, prefix string, calls ...string) (stdout, stderr string) {
+	t.Helper()
+	var script strings.Builder
+	for _, call := range calls {
+		script.WriteString(prefix + " " + call + "\n")
+	}
+	var out, errOut bytes.Buffer
+	cmd := exec.Command("bash", "--noprofile", "--norc")
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(script.String()), &out, &errOut
+	var exit *exec.ExitError
+	if err := cmd.Run(); err != nil && !errors.As(err, &exit) {
+		t.Fatalf("bash: %v", err)
+	}
+	return out.String(), errOut.String()
+}
+
+// Oh My Pi runs every call in one persistent shell, so a `set -e`, `set -u` or `set -o pipefail`
+// one call makes stays on for the next. The prefix's opening reset turns each off again, so the
+// next call runs to its end. The same two calls under the prefix as it was before the reset, its
+// PATH steps alone, are cut: `-e` ends the shell at the failing command, `-u` at the unset
+// variable, and under `pipefail` a pipe whose first command fails exits 1.
+func TestThePrefixTurnsOffWhatAnEarlierCallSet(t *testing.T) {
+	prefix := For("/opt/legion/bin")
+	pathSteps, reset := strings.CutPrefix(prefix, "set +e +u +o pipefail; ")
+	if !reset {
+		t.Fatalf("For = %q, want it to start with the reset", prefix)
+	}
+	for _, tc := range []struct{ set, call, want, cut string }{
+		{"set -e", "false; echo ok", "ok\n", ""},
+		{"set -u", `echo "${UNSET_O6_VAR}x"; echo ok`, "x\nok\n", ""},
+		{"set -o pipefail", "false | true; echo $?", "0\n", "1\n"},
+	} {
+		if got, stderr := runCalls(t, prefix, tc.set, tc.call); got != tc.want {
+			t.Errorf("after `%s`, `%s` printed %q (stderr %q), want %q", tc.set, tc.call, got, stderr, tc.want)
+		}
+		if got, stderr := runCalls(t, pathSteps, tc.set, tc.call); got != tc.cut {
+			t.Errorf("without the reset, after `%s`, `%s` printed %q (stderr %q), want %q", tc.set, tc.call, got, stderr, tc.cut)
+		}
 	}
 }
 
