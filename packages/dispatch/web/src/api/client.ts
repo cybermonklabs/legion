@@ -1804,7 +1804,9 @@ export class DispatchApiClient {
   /** `GET /api/v1/credential-requests?approver=me`: every request the viewer may decide - the
    *  ones naming the viewer, and the ones any signed-in person may decide - as the Inbox's
    *  credential-requests section lists them, each secret request with the secrets broker's page
-   *  where it is decided, or `null` when this Dispatch has no secrets broker. */
+   *  where it is decided, or `null` when this Dispatch has no secrets broker. The pending requests
+   *  come first, then the expired ones nobody has dismissed (`state: "expired"`), which nobody can
+   *  decide any more; a row with no `state`, from an older broker, is pending. */
   getCredentialPending() {
     return this.read("/api/v1/credential-requests", {}, { approver: "me" });
   }
@@ -1848,6 +1850,22 @@ export class DispatchApiClient {
    *  those secrets and makes it ask before it gets them again. */
   async revokeCredentialGrant(grantId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/credential-grants/{id}/revoke", { id: grantId }, undefined, bounds);
+  }
+
+  /** Dismiss an expired credential request as the signed-in viewer: one whose deadline passed
+   *  before anybody decided it, which the list keeps until somebody dismisses it. Dispatch names
+   *  the viewer as the person dismissing, and the request then leaves every list for good, a
+   *  shared one's included. The broker refuses one the viewer's list does not hold (403
+   *  `NOT_APPROVER`), one that can still be decided (409 `RECORD_PENDING`) and one that was
+   *  decided, or cancelled before its deadline (409 `RECORD_TERMINAL`); a second dismissal
+   *  answers the first one's values. */
+  async dismissCredentialRequest(recordId: string, bounds: WriteBounds): Promise<void> {
+    await this.post(
+      "/api/v1/credential-requests/{id}/dismiss",
+      { id: recordId },
+      undefined,
+      bounds
+    );
   }
 
   /** `GET /api/v1/machine-logins`: the machine logins the viewer may revoke, their own machines'
