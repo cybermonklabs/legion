@@ -1,0 +1,14 @@
+name: actionlint plant
+
+# A control, never merged: a workflow file no list names, holding one finding of actionlint's own
+# rules and one of shellcheck's, so the lint job's actionlint step must flag both.
+on: workflow_dispatch
+
+permissions: {}
+
+jobs:
+  plant:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 1
+    steps:
+      - run: echo $PLANT ${{ matrix.shard }}
