@@ -1418,13 +1418,14 @@ test("a read that fails before it first answers says so with a Retry, for each o
     "Could not load the results.",
     "Could not load the checks.",
   ]);
-  /** Each failed-read line the body draws, in order: the read it names, its words and the name
-   *  of each of its buttons. */
+  /** Each failed-read line the body draws, in order: the read it names, its words (the alert's
+   *  own text, which the shared line draws as the alert itself) and the name of each of its
+   *  buttons. */
   const linesOf = (drawn: RenderResult) =>
     [...drawn.container.querySelectorAll<HTMLElement>("[data-verification-unreadable]")].map(
       (line) => [
         line.getAttribute("data-verification-unreadable"),
-        within(line).getByRole("alert").querySelector("p")?.textContent,
+        within(line).getByRole("alert").textContent,
         within(line)
           .getAllByRole("button")
           .map((button) => button.textContent),
@@ -1605,9 +1606,9 @@ test("the failed reads' lines stand in the body's own order whatever order they 
 // A line can leave with no press too, and the focus stays in the view all the same: on the view's
 // tree while the read is out, on the read's Retry when it is refused again, and on the tree's tab
 // stop, the issue's row, once it answers. The page asks a refused read again with no press, on
-// the window's focus and on an event that names its key; the slot keeps the read's line while it
-// runs (`useVerificationReads`), and the reads here are handed to the body by hand.
-test("a refused read asked again with no press keeps the focus in the view: on the empty tree while the read is out, on its Retry when refused again, and on the issue's row once it answers", async () => {
+// the window's focus and on an event that names its key. The case hands the body those reads by
+// hand, one after another, and presses nothing.
+test("a refused read's line that leaves with no press keeps the focus in the view: on the empty tree while the read is out, on its Retry when refused again, and on the issue's row once it answers", async () => {
   const met = passing("c-one");
   const statements = [statementNode("r1", "The page draws it.", [checkNode(met)])];
   const refused = refusedReads([], "results");
@@ -1687,10 +1688,11 @@ test("with a read refused, the view's tree gives its focus to that read's Retry"
 });
 
 // Staleness is per observer. The view's own observers of the coverage and the results
-// (`useVerificationReads`) hold what they read until an event refreshes it, so the view pressed
-// 31 s after the page read both, past the app's 30 s (`main.tsx`), sends no request. The
-// observers `useIssueTree` holds of the same keys are not drawn here.
-test("the view's own reads of the coverage and the results send no request when the view is pressed 31 s after they answered", async () => {
+// (`useVerificationReads`) hold what they read until an event refreshes it, so observers that
+// mount 31 s after the page read both, past the app's 30 s (`main.tsx`), as the stage mounts the
+// view's slot when the view is turned on, send no request. Nothing is pressed here: the hook is
+// mounted over a cache whose answers are 31 s old.
+test("the view's own reads of the coverage and the results send no request when they mount 31 s after the page read them", async () => {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
   });
