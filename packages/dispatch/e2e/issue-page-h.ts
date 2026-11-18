@@ -82,8 +82,10 @@ export function filesList(page: Page): Locator {
 
 /** The project every issue of the seed is in. */
 export const PROJECT = "DET";
-/** The repository ONE carries, which the fake GitHub serves with one pull request. */
-export const REPOSITORY = "acme/details";
+/** The repository ONE carries, which the fake GitHub serves with one pull request. Its name is
+ *  twenty characters long, as long as a real repository's name that the box of Details'
+ *  Repository row was found to cut. */
+export const REPOSITORY = "acme/details-of-rows";
 const ARCHITECTURE_REPO = "acme/details-architecture";
 export const PULL_NUMBER = 11;
 /** ONE's link out of Dispatch that is not a pull request. */

@@ -507,6 +507,44 @@ test("every property with a value is visible in Details at every width @phone", 
         repositoryBox,
         `the repository's box does not hold ${REPOSITORY} at ${width} px`
       ).toHaveValue(REPOSITORY);
+      // The open box is the row's value: as wide as the row's value column, the second of the
+      // row's two columns (`IssueMargin.tsx`'s `Row`), and wide enough to show the repository
+      // whole. The box fills its list of suggestions from a read it starts when it takes the
+      // focus, and Chromium draws the list's arrow inside the box once the list holds an option,
+      // so both are measured once the list holds the repository, as the reader sees the box.
+      // Both are soft, so that a width the box fails at does not stop the widths after it.
+      await expect(
+        detailsRow(page, PROPERTY_LABELS.repository).locator(
+          `datalist > option[value="${REPOSITORY}"]`
+        ),
+        `the repository's box does not suggest ${REPOSITORY} at ${width} px`
+      ).toHaveCount(1);
+      const valueColumn = detailsRow(page, PROPERTY_LABELS.repository).locator(
+        ":scope > div:last-child"
+      );
+      const [fieldBox, columnBox] = [
+        await repositoryBox.boundingBox(),
+        await valueColumn.boundingBox(),
+      ];
+      expect(fieldBox, `the repository's box has no box at ${width} px`).not.toBeNull();
+      expect(columnBox, `the Repository row's value has no box at ${width} px`).not.toBeNull();
+      const [fieldWidth, columnWidth] = [fieldBox?.width ?? 0, columnBox?.width ?? 0];
+      const { clientWidth, scrollWidth } = await repositoryBox.evaluate((box) => ({
+        clientWidth: box.clientWidth,
+        scrollWidth: box.scrollWidth,
+      }));
+      expect
+        .soft(
+          Math.abs(fieldWidth - columnWidth),
+          `the repository's box is ${fieldWidth} px wide in a value column of ${columnWidth} px at ${width} px`
+        )
+        .toBeLessThanOrEqual(1);
+      expect
+        .soft(
+          scrollWidth,
+          `the repository's box cuts ${REPOSITORY}: its text takes ${scrollWidth} px and the box shows ${clientWidth} px of it at ${width} px`
+        )
+        .toBeLessThanOrEqual(clientWidth);
       await page.keyboard.press("Escape");
       await expect(
         repository,
