@@ -21,13 +21,14 @@ import (
 // The cases of what a panic in the trimmer's own work costs it: the two rows its faults are
 // counted in (faultRow), the refused /proc reads a sweep met before it panicked, the rise a
 // reported sweep's start raises though the sweep then panicked, the clock a sweep that panicked
-// still has made again, the pause an interval spends whatever its reading did, a held report
-// whose resend panics in the wait for settings, tried once over one refusal, and what a line
-// that panics leaves standing: the pause after its sweep and its countdown, a refusal and the
-// held report it tries, the line of a volume that cannot be read, what a tick decided before its
-// line, and the switched-off trimmer's last report, whether the line that says it is off panics
-// or one written once that report is held. The file builds only under Linux because its cases
-// drive volumetrim_test.go's fixture, which does.
+// still has made again, the pause an interval spends whatever its reading, its resend of a held
+// report or its line of new settings did, a held report whose resend panics in the wait for
+// settings, tried once over one refusal, and what a line that panics leaves standing: the pause
+// after its sweep and its countdown, a refusal and the held report it tries, the line of a volume
+// that cannot be read, what a tick decided before its line, and the switched-off trimmer's last
+// report, whether the line that says it is off panics or one written once that report is held.
+// The file builds only under Linux because its cases drive volumetrim_test.go's fixture, which
+// does.
 
 // R1 has the trimmer switch itself off "after three in a row", and a reading run to its end ends
 // the reading row (faultRow, tick), so a pod whose reading panics now and then, with readings run
@@ -1190,13 +1191,13 @@ func TestASwitchedOffReportWhoseFailedAttemptsLinePanicsIsStillSent(t *testing.T
 }
 
 // The pause after a sweep that freed under a point is counted down before the line of a reading
-// inside it is written (intervalReading), so a panic of that line, which only the logger can
-// raise, still spends that reading of the pause: R1's pause is ten intervals, and a line that fell
-// over adds none. The case's sweep frees nothing, the line of the fourth reading of its pause
-// panics once, and the pause must still end after ten readings in all, that one among them, with
-// the eleventh reading after the sweep sweeping; each line written still names the readings of
-// the pause left, as it did. At c322d6f7 the pause was counted down after that line, so its panic
-// left the count where it stood and the pause ran eleven readings (INFRA-2009, round 39).
+// inside it is written (tick), so a panic of that line, which only the logger can raise, still
+// spends that reading of the pause: R1's pause is ten intervals, and a line that fell over adds
+// none. The case's sweep frees nothing, the line of the fourth reading of its pause panics once,
+// and the pause must still end after ten readings in all, that one among them, with the eleventh
+// reading after the sweep sweeping; each line written still names the readings of the pause
+// left, as it did. At c322d6f7 the pause was counted down after that line, so its panic left the
+// count where it stood and the pause ran eleven readings (INFRA-2009, round 39).
 func TestAPauseLineThatPanicsStillSpendsItsReading(t *testing.T) {
 	const fell = "the log fell over writing a line of the pause"
 	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing and pauses
@@ -1247,13 +1248,13 @@ func TestAPauseLineThatPanicsStillSpendsItsReading(t *testing.T) {
 }
 
 // The pause after a sweep that freed under a point is counted in intervals and not in readings
-// (intervalReading): R1's pause is ten intervals, counted from the end of that sweep, so an
-// interval whose statfs fails, or panics, spends one of them as an interval whose reading
-// answered does. The case's sweep frees nothing; in its pause the third and the fifth readings
-// fail and the seventh panics, and the eleventh interval after the sweep must still sweep. Each
-// line of the pause written still names the intervals left. At 2dc1f390 the pause was counted
-// down only once the statfs had answered, so those three intervals spent none of it and the
-// pause ran thirteen intervals (INFRA-2009, review 5954632411).
+// (tick): R1's pause is ten intervals, counted from the end of that sweep, so an interval whose
+// statfs fails, or panics, spends one of them as an interval whose reading answered does. The
+// case's sweep frees nothing; in its pause the third and the fifth readings fail and the seventh
+// panics, and the eleventh interval after the sweep must still sweep. Each line of the pause
+// written still names the intervals left. At 2dc1f390 the pause was counted down only once the
+// statfs had answered, so those three intervals spent none of it and the pause ran thirteen
+// intervals (INFRA-2009, review 5954632411).
 func TestAPauseIsSpentByAnIntervalWhoseReadingFailsOrPanics(t *testing.T) {
 	const fell = "the volume reader fell over in the pause"
 	f := newTrimFixture(t, 0) // no entry: the sweep frees nothing and pauses
@@ -1311,6 +1312,109 @@ func TestAPauseIsSpentByAnIntervalWhoseReadingFailsOrPanics(t *testing.T) {
 			t.Errorf("the trimmer wrote %d lines saying %d intervals of the pause are left, want one: %q", said, left, f.linesWritten())
 		}
 	}
+}
+
+// The pause after a sweep that freed under a point is counted down where tick begins its
+// interval, before the line of new settings and before the resend of a held report (flush), so an
+// interval in which either panics still spends one of the pause: R1's pause is ten intervals,
+// counted from the end of that sweep, and a panic may skip what follows it in its own interval and
+// no more. The resend's panic is the connection's send, not the logger's. The case's sweep frees
+// nothing; at the first interval of its pause the held report's resend panics, or the line of new
+// settings does, and the eleventh interval after the sweep must still sweep. Each line of the
+// pause written still names the intervals left, and the interval that panicked writes none. At
+// 9fd392ce the pause was counted down in the reading (intervalReading), after both, so that
+// interval spent none of it: after ten intervals the pause stood at 1 and the eleventh interval
+// did not sweep (INFRA-2009, review 5962332201).
+func TestAPauseIsSpentByAnIntervalThatPanicsBeforeItsReading(t *testing.T) {
+	// paused drives the sweep, the ten intervals of its pause, the first of which fallOver readies
+	// to panic before its reading, and the interval after them.
+	paused := func(t *testing.T, f *trimFixture, tr *trimmer, fallOver func(), fell string) {
+		t.Helper()
+		set := *trimSettings()
+		interval := func(what string) {
+			t.Helper()
+			if _, ending := tr.tick(context.Background(), &set); ending != trimGoesOn {
+				t.Fatalf("%s ended the trimmer (%v), want it passed over at worst", what, ending)
+			}
+		}
+		interval("the sweep")
+		// Written out rather than read off volumeQuietIntervals: R1's ten intervals.
+		const pause = 10
+		for at := 1; at <= pause; at++ {
+			if at == 1 {
+				fallOver()
+			}
+			interval("an interval of the pause")
+			if f.logged("sweeping") != 1 {
+				t.Fatalf("interval %d after the sweep swept, want each of the %d intervals after it to pause: %q", at, pause, f.linesWritten())
+			}
+		}
+		if f.logged("recovered a panic") != 1 || !strings.Contains(strings.Join(f.linesWritten(), "\n"), fell) {
+			t.Fatalf("the trimmer wrote %q, want the first interval of the pause fallen over before its reading and recovered", f.linesWritten())
+		}
+		interval("the eleventh interval after the sweep")
+		if f.logged("sweeping") != 2 {
+			t.Errorf("the eleventh interval after the sweep wrote %q, want it to sweep: the pause is ten intervals, the one that fell over before its reading among them", f.linesWritten())
+		}
+		// The lines written count the pause down from 9 to 1: the interval that fell over spent
+		// the 10 and wrote no line of the pause.
+		for left := 1; left <= pause; left++ {
+			want := 1
+			if left == pause {
+				want = 0
+			}
+			if said := f.logged(fmt.Sprintf("no sweep for another %d intervals", left)); said != want {
+				t.Errorf("the trimmer wrote %d lines saying %d intervals of the pause are left, want %d: %q", said, left, want, f.linesWritten())
+			}
+		}
+	}
+
+	t.Run("the held report's resend", func(t *testing.T) {
+		const fell = "the connection fell over resending the held report"
+		f := newTrimFixture(t, 0) // no entry: the sweep frees nothing, reports and pauses
+		f.useVolume(steady(90))
+		f.setSettings(trimSettings())
+		f.refuseSends(errors.New("no daemon connection is up to carry it"))
+		tr := f.trimmer()
+		var falling atomic.Bool
+		tr.send = func(report shimwire.LauncherVolumeReport) error {
+			if falling.CompareAndSwap(true, false) {
+				panic(fell)
+			}
+			return f.send(report)
+		}
+		paused(t, f, tr, func() {
+			if f.logged("holding it for the next attempt") != 1 {
+				t.Fatalf("the trimmer wrote %q, want the sweep's report held, its send refused", f.linesWritten())
+			}
+			f.refuseSends(nil)
+			falling.Store(true)
+		}, fell)
+		if sent := len(f.reports()); sent != 2 {
+			t.Errorf("the trimmer sent %d reports, want 2: the held one, resent at the second interval of the pause, and the report of the eleventh interval's sweep", sent)
+		}
+	})
+
+	t.Run("the line of new settings", func(t *testing.T) {
+		const fell = "the log fell over writing the line of new settings"
+		f := newTrimFixture(t, 0) // no entry: the sweep frees nothing and pauses
+		f.useVolume(steady(90))
+		f.setSettings(trimSettings())
+		tr := f.trimmer()
+		var falling atomic.Bool
+		tr.logf = func(format string, args ...any) {
+			if strings.Contains(format, "new settings") && falling.CompareAndSwap(true, false) {
+				panic(fell)
+			}
+			f.log(format, args...)
+		}
+		paused(t, f, tr, func() {
+			changed := *trimSettings()
+			changed.MinAgeMinutes++
+			f.setSettings(&changed)
+			falling.Store(true)
+		}, fell)
+	})
 }
 
 // A volume this process cannot read is remembered as said only once its line is written

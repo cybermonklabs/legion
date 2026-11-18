@@ -190,6 +190,16 @@ var trimDeleteLaunch = func(cover RoleCover) (argv, env []string, err error) {
 	return append([]string{self, "launcher", VolumeTrimDeleteSubcommand}, cover.flags()...), nil, nil
 }
 
+// VolumeTrimDeleteArgv is the command line trimDeleteLaunch runs one sweep's deleter with for
+// cover, which the test of `legion launcher volume-trim-delete` runs through that command
+// (cmd/legion): a flag written here that the command does not register would end every sweep's
+// deleter with its usage, and no case of this package can see that, since a test binary is not
+// `legion` and its cases re-enter their own helper instead.
+func VolumeTrimDeleteArgv(cover RoleCover) ([]string, error) {
+	argv, _, err := trimDeleteLaunch(cover)
+	return argv, err
+}
+
 // containedRemover is one sweep's deleter: the child process, the pipe its requests go down, the
 // pipe its answers come back on, and which descriptor of the child's each listed directory is.
 type containedRemover struct {

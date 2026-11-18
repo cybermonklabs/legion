@@ -135,9 +135,11 @@ func baitPaths(bait []replacedBait) []string {
 	return paths
 }
 
-// Every directory of the cover reaches the deleter on its command line, read back the way
-// `legion launcher volume-trim-delete` reads it: through the flags that command registers
-// (RoleCoverFlags), which is the one registration role-init makes too. The swap case drives the
+// Every directory of the cover reaches the deleter on its command line, read back with
+// RoleCoverFlags, the registration `legion launcher volume-trim-delete` makes and role-init makes
+// too, on the standard library's flag.FlagSet: that command reads its flags with cobra, and the
+// case that runs this command line through the command itself is cmd/legion's
+// TestTheLaunchersCommandLineForItsDeleterIsOneVolumeTrimDeleteReads. The swap case drives the
 // covers end to end through this test binary re-entered, which carries them in its environment
 // since a test binary is not `legion` (useContainedDeleter), so this is what holds the argv of
 // the real command to the whole of the cover: a directory of RoleCover the trimmer does not pass

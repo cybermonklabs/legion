@@ -417,7 +417,7 @@ func (t *trimmer) run(ctx context.Context) {
 		// still tried, as one held without a panic is. This line says so, and its own panic is
 		// dropped, as above.
 		contain(func() {
-			t.logf(volumeTrimLog+"the last report of the switched-off trimmer is held, and a line written once it was held panicked; the report is still tried until a connection takes it: %v\n%s",
+			t.logf(volumeTrimLog+"the last report of the switched-off trimmer is held, and a line written once it was held panicked; the report is still tried until a connection takes it, the container stops or an answer with no settings discards it: %v\n%s",
 				recovered, stack)
 		})
 		recovered = nil
@@ -687,6 +687,17 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 		return false, trimWaits // said, and a held report tried, in the wait (awaitSettings)
 	}
 	t.saidNothing()
+	// The interval begins here, once settings it can run by are in force, so a tick that waits
+	// for settings spends none of the pause. The pause is counted in intervals and not in
+	// readings, as R1 has it ("ten intervals, counted from the end of that sweep"): counted down
+	// here, before every step of the interval that can fail or panic — the line of new settings,
+	// the resend of a held report (flush), the statfs and the line of the pause — so an interval
+	// that fails or panics at any of them still spends one of the pause. The line of the pause
+	// names the intervals left as it did, this one among them (intervalReading).
+	left := t.pause
+	if left > 0 {
+		t.pause--
+	}
 	if *next != *inForce {
 		// In force before their line, so a panic of the line, which only the logger can raise,
 		// still has this tick's clock made again at a new period and the next interval run by
@@ -699,7 +710,7 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 	set := *inForce
 
 	t.flush()
-	reading, sweeping := t.intervalReading(set)
+	reading, sweeping := t.intervalReading(set, left)
 	t.ran(readingRow)
 	if !sweeping {
 		return restart, trimGoesOn
@@ -787,19 +798,13 @@ func (t *trimmer) tick(ctx context.Context, inForce *shimwire.LauncherVolumeTrim
 
 // intervalReading is the interval's reading of the volume: the statfs, the episode it raises, the
 // line that says what the interval decided, and whether that is a sweep, which it is at or above
-// the high mark outside a pause. A volume it cannot read asks for no sweep. It is the readings'
-// work as tick counts its faults (faultRow): a panic in it adds to the reading row, and its
-// return, whatever it answers, is a reading run to its end, which ends that row (tick).
-func (t *trimmer) intervalReading(set shimwire.LauncherVolumeTrim) (volumeUsage, bool) {
-	// The pause is counted in intervals and not in readings, as R1 has it ("ten intervals,
-	// counted from the end of that sweep"): counted down here, before the statfs, so an interval
-	// whose reading fails or panics still spends one of the pause, and before the line of the
-	// pause, so a panic of that line, which only the logger can raise, spends it too. That line
-	// names the intervals left as it did, this one among them.
-	left := t.pause
-	if left > 0 {
-		t.pause--
-	}
+// the high mark outside a pause. left is the intervals of the pause left, this one among them,
+// which tick counted down as the interval began, so an interval whose reading fails or panics has
+// spent one of the pause already, as one whose line of the pause panics has. A volume it cannot
+// read asks for no sweep. It is the readings' work as tick counts its faults (faultRow): a panic
+// in it adds to the reading row, and its return, whatever it answers, is a reading run to its
+// end, which ends that row (tick).
+func (t *trimmer) intervalReading(set shimwire.LauncherVolumeTrim, left int) (volumeUsage, bool) {
 	reading, err := readVolumeUsage(t.volumeRoot)
 	if err != nil {
 		// Said when it changes and not once per interval, for the reason a refusal is (news): a
@@ -1002,9 +1007,10 @@ func (row faultRow) String() string {
 // tries it again, where a panic ends the trimmer unless that report is still held when it comes,
 // which the trimmer then still tries: run after a line of switchOff's, and deliverLast at its next
 // attempt after the line of a failed one (switchOff, deliverLast). Where a line written once the
-// last report was sent panics, saidLeftOut's line of what the bound left out or deliverLast's line
-// that says the report was sent, run's closing line says the report panicked and was not tried
-// again, although the daemon has it.
+// last report was sent or discarded panics, saidLeftOut's line of what the bound left out,
+// deliverLast's line that says the report was sent or its line that says an answer with no
+// settings discarded it, run's closing line says the report panicked and was not tried again,
+// although the daemon has it or, for the last of those lines, R2 had it discarded.
 //
 // Each row counts the recovered panics of its kind since the last work of that kind ran to its
 // end (ran, tick), a panic tick recovered and one of the work run contained alike, and a panic of
