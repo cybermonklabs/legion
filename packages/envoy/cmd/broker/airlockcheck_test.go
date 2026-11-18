@@ -162,8 +162,8 @@ func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 		absent string
 	}{
 		// An address in its canonical form, and in a form netaddr.Host rewrites.
-		{"an IPv4 address", "192.0.2.10", []string{ipAddress, "sni mismatch", "host name"}, `"192.0.2.10"`},
-		{"an IPv6 address", "2001:db8:7::1", []string{ipAddress, "sni mismatch", "host name"}, `"2001:db8:7::1"`},
+		{"an IPv4 address", "192.0.2.10", []string{ipAddress, "sni mismatch", "host name"}, "192.0.2.10"},
+		{"an IPv6 address", "2001:db8:7::1", []string{ipAddress, "sni mismatch", "host name"}, "2001:db8:7::1"},
 		{"an IPv6 address in upper case", "2001:DB8:8::1", []string{ipAddress, "host name"}, "DB8"},
 		{"an IPv6 address not written in its canonical form", "2001:db8:7:0::1", []string{ipAddress, "host name"}, "2001:db8:7:0::1"},
 		{"an IPv6 address with a leading zero in a group", "2001:0db8:7::1", []string{ipAddress, "host name"}, "0db8"},
@@ -202,8 +202,8 @@ func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 		// scheme is read as a scheme, not as the "host" net.SplitHostPort would make of it.
 		{"a host with a scheme", "https://slack.com", bindsNothing("holds a scheme"), "https"},
 		{"a host with a path", "slack.com/x", noDNSName, "slack.com/"},
-		{"a bare wildcard", "*", noDNSName, `"*"`},
-		{"a wildcard alone with a trailing dot", "*.", noDNSName, `"*."`},
+		{"a bare wildcard", "*", noDNSName, "*"},
+		{"a wildcard alone with a trailing dot", "*.", noDNSName, "*."},
 		{"a leading dot", ".slack.com", noDNSName, ".slack"},
 		{"an empty label", "slack..com", noDNSName, "slack.."},
 		{"a label opening with a hyphen", "-slack.com", noDNSName, "-slack"},
