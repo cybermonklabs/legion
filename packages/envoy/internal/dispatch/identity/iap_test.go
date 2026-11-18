@@ -172,3 +172,54 @@ func TestIAPIdentityAnswersAnUnreadableKeySetAsSignInUnavailable(t *testing.T) {
 		t.Fatalf("Login while IAP's key set answers 503: err = %v, want ErrSignInUnavailable", err)
 	}
 }
+
+// A refused assertion's WARN line names its class and carries none of the token's text. Login runs
+// before any authorization, so the iss, aud, sub and email of an assertion nobody signed are
+// whatever its sender chose: here long runs of marker text with control characters. Each is
+// refused with exactly one WARN line, `reason=<class>`, of a bounded length, that holds no marker.
+// The control, IAP's own assertion for another audience, is refused the same way.
+func TestIAPIdentityLogsARefusalsClassAndNoneOfItsText(t *testing.T) {
+	var logged bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	rig := newIAPRig(t)
+	forger := oidctest.NewES256Key(t, rig.signing.KeyID())
+	chosen := func(marker string) string {
+		return "https://" + strings.Repeat(marker, 2000) + "\x00\x07\x1b[31m\r\nlevel=ERROR msg=" + marker
+	}
+	for _, tc := range []struct {
+		name, reason, marker string
+		key                  *oidctest.Key
+		change               func(map[string]any)
+	}{
+		{"a forged iss", "issuer", "ISS-MARKER", forger, func(c map[string]any) { c["iss"] = chosen("ISS-MARKER") }},
+		{"a forged aud", "audience", "AUD-MARKER", forger, func(c map[string]any) { c["aud"] = chosen("AUD-MARKER") }},
+		{"a forged aud array", "audience", "AUDS-MARKER", forger, func(c map[string]any) {
+			c["aud"] = []string{chosen("AUDS-MARKER"), chosen("AUDS-MARKER")}
+		}},
+		{"a forged sub and email", "signature", "WHO-MARKER", forger, func(c map[string]any) {
+			c["sub"], c["email"] = chosen("WHO-MARKER"), chosen("WHO-MARKER")+"@example.com"
+		}},
+		{"an expired forged iss", "issuer", "OLD-MARKER", forger, func(c map[string]any) {
+			c["iss"] = chosen("OLD-MARKER")
+			c["iat"], c["exp"] = time.Now().Add(-20*time.Minute).Unix(), time.Now().Add(-10*time.Minute).Unix()
+		}},
+		{"control: IAP's assertion for another audience", "audience", "CONTROL-MARKER", rig.signing, func(c map[string]any) {
+			c["aud"] = chosen("CONTROL-MARKER")
+		}},
+	} {
+		logged.Reset()
+		if _, err := rig.login(rig.assertion(t, tc.key, "example.com", tc.change), nil); !errors.Is(err, ErrNoIdentity) || errors.Is(err, ErrCredentialExpired) {
+			t.Errorf("%s: Login = %v, want ErrNoIdentity", tc.name, err)
+		}
+		lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], "level=WARN") || !strings.Contains(lines[0], "reason="+tc.reason) {
+			t.Errorf("%s: logged %d lines %q, want one WARN line with reason=%s", tc.name, len(lines), lines, tc.reason)
+		}
+		if strings.Contains(logged.String(), tc.marker) || logged.Len() > 200 {
+			t.Errorf("%s: the log carries the token's own text: %d bytes, starting %.300q", tc.name, logged.Len(), logged.String())
+		}
+	}
+}

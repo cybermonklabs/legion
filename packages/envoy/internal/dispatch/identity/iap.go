@@ -46,7 +46,14 @@ type IAPIdentity struct {
 // An expired assertion is logged at DEBUG, not WARN: IAP signs a fresh one for every request it
 // passes, so the one request that carries an old assertion is a websocket's heartbeat, which
 // re-checks the upgrade's assertion every few seconds and finds it expired once its ten minutes
-// are up (api.whileCallerResolves), at every socket of every person.
+// are up (api.whileCallerResolves), at every socket of every person. Its error is logged whole,
+// since it is built only from a verified assertion and names only the exp IAP signed.
+//
+// A refused assertion is logged by its class alone (oidc.Reason), never its error: for an
+// assertion whose signature failed, the error quotes the token's own unverified iss or aud
+// (oidc.Verifier's classify), and Login runs before any authorization, so anyone who reaches
+// Dispatch around IAP would choose that text on every request. The person refusals log the email
+// and hd of a verified assertion, which IAP wrote.
 func (i IAPIdentity) Login(r *http.Request) (string, error) {
 	raw := r.Header.Get(IAPAssertionHeader)
 	if raw == "" {
@@ -65,7 +72,7 @@ func (i IAPIdentity) Login(r *http.Request) (string, error) {
 		slog.Debug("dispatch: IAP assertion expired", "error", err)
 		return "", ErrCredentialExpired
 	case err != nil:
-		slog.Warn("dispatch: IAP assertion refused", "reason", oidc.Reason(err), "error", err)
+		slog.Warn("dispatch: IAP assertion refused", "reason", oidc.Reason(err))
 		return "", ErrNoIdentity
 	}
 	email, err := i.Rule.Person(claims)

@@ -71,3 +71,39 @@ func TestIAPVerifierHoldsAnNbfToTheSkew(t *testing.T) {
 		}
 	}
 }
+
+// A time claim IAP signed that is not a time from 1970 to 9999 is malformed, never read: go-oidc
+// turns a number past int64's range into an int64 with no check, so an iat or nbf of 1e19 read as
+// far in the past and verified, and an exp of 1e19 read as expired. Each is ErrMalformed, never
+// verified and never expired; the controls, the same claims at the range's two ends, are read as
+// times.
+func TestIAPVerifierRefusesATimeOutOfRangeAsMalformed(t *testing.T) {
+	rig := newIAPRig(t)
+	for _, tc := range []struct {
+		claim string
+		value any
+	}{
+		{"iat", 1e19}, {"iat", -1e19}, {"iat", -1}, {"iat", 1e300}, {"iat", 253402300800},
+		{"nbf", 1e19}, {"nbf", -1e19}, {"nbf", 1e300},
+		{"exp", 1e19}, {"exp", -1e19}, {"exp", -1}, {"exp", 1e300},
+	} {
+		claims, err := rig.verify(t, rig.signing, func(c map[string]any) { c[tc.claim] = tc.value })
+		var expired *IAPExpiredError
+		if !errors.Is(err, ErrMalformed) || errors.Is(err, ErrExpired) || errors.As(err, &expired) {
+			t.Errorf("%s %v: claims = %+v, err = %v; want %v", tc.claim, tc.value, claims, err, ErrMalformed)
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(map[string]any)
+		want   error
+	}{
+		{"iat and nbf at 0", func(c map[string]any) { c["iat"], c["nbf"] = 0, 0 }, nil},
+		{"exp at the range's end", func(c map[string]any) { c["exp"] = 253402300799 }, nil},
+		{"exp at 0", func(c map[string]any) { c["exp"] = 0 }, ErrExpired},
+	} {
+		if _, err := rig.verify(t, rig.signing, tc.change); !errors.Is(err, tc.want) {
+			t.Errorf("control, %s: err = %v, want %v", tc.name, err, tc.want)
+		}
+	}
+}

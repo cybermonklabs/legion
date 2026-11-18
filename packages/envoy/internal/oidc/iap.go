@@ -86,8 +86,8 @@ func NewIAPVerifier(audience string, keys *Keys) *IAPVerifier {
 // The checks run in this order, and an assertion is refused for the first that fails: the
 // compact serialization, then go-oidc's algorithm, signature, issuer and audience (Verifier.verify,
 // whose refusals classify names without ever calling one expired); then on the verified payload
-// an exp present (ErrMalformed), an iat present (ErrMalformed) and not further ahead than the skew
-// (ErrNotYetValid), an nbf, where one is written, not further ahead than the skew
+// an exp, an iat and any nbf each present where required and a time Dispatch can read
+// (numericDate, ErrMalformed), the iat and any nbf not further ahead than the skew
 // (ErrNotYetValid), and claims of the right types (ErrMalformed). Only an assertion that passes
 // all of them and whose exp is more than the skew past is an *IAPExpiredError.
 func (v *IAPVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
@@ -95,30 +95,62 @@ func (v *IAPVerifier) Verify(ctx context.Context, raw string) (Claims, error) {
 	if err != nil {
 		return Claims{}, err
 	}
-	// go-oidc checks nbf only beside the exp it skips here, so it is read from the payload.
+	// The times are read from the verified payload as the numbers it carries, not from go-oidc's
+	// reading: go-oidc converts a number past int64's range to an int64 with no check, so an iat of
+	// 1e19 would read as far in the past; and it checks nbf only beside the exp it skips here.
 	var times struct {
+		Expiry    *float64 `json:"exp"`
+		IssuedAt  *float64 `json:"iat"`
 		NotBefore *float64 `json:"nbf"`
 	}
 	if err := token.Claims(&times); err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
+	exp, err := numericDate("exp", times.Expiry)
+	if err != nil {
+		return Claims{}, err
+	}
+	issued, err := numericDate("iat", times.IssuedAt)
+	if err != nil {
+		return Claims{}, err
+	}
+	var notBefore time.Time
+	if times.NotBefore != nil {
+		if notBefore, err = numericDate("nbf", times.NotBefore); err != nil {
+			return Claims{}, err
+		}
+	}
 	now := time.Now()
 	switch {
-	case token.Expiry.IsZero():
-		return Claims{}, fmt.Errorf("%w: the assertion carries no exp", ErrMalformed)
-	case token.IssuedAt.IsZero():
-		return Claims{}, fmt.Errorf("%w: the assertion carries no iat", ErrMalformed)
-	case token.IssuedAt.After(now.Add(IAPClockSkew)):
-		return Claims{}, fmt.Errorf("%w: issued at %s", ErrNotYetValid, token.IssuedAt.UTC().Format(time.RFC3339))
-	case times.NotBefore != nil && time.Unix(int64(*times.NotBefore), 0).After(now.Add(IAPClockSkew)):
-		return Claims{}, fmt.Errorf("%w: not before %s", ErrNotYetValid, time.Unix(int64(*times.NotBefore), 0).UTC().Format(time.RFC3339))
+	case issued.After(now.Add(IAPClockSkew)):
+		return Claims{}, fmt.Errorf("%w: issued at %s", ErrNotYetValid, issued.UTC().Format(time.RFC3339))
+	case notBefore.After(now.Add(IAPClockSkew)):
+		return Claims{}, fmt.Errorf("%w: not before %s", ErrNotYetValid, notBefore.UTC().Format(time.RFC3339))
 	}
 	if err := readWorkspaceClaims(token, &claims); err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
+	claims.Expiry = exp
 	claims.EmailVerified = strings.HasPrefix(claims.Subject, iapGoogleAccountSubject)
-	if token.Expiry.Add(IAPClockSkew).Before(now) {
+	if exp.Add(IAPClockSkew).Before(now) {
 		return Claims{}, &IAPExpiredError{Claims: claims}
 	}
 	return claims, nil
+}
+
+// maxNumericDate is the last second of the year 9999, the latest time an RFC 3339 timestamp can
+// write; IAP writes times within seconds of now.
+const maxNumericDate = 253402300799
+
+// numericDate reads a JWT time claim, seconds since 1970, as a time. A claim that is absent, or not
+// a number from 0 to maxNumericDate, is ErrMalformed naming the claim and never its value; the
+// comparison is written so a NaN or an infinity fails it too.
+func numericDate(name string, seconds *float64) (time.Time, error) {
+	switch {
+	case seconds == nil:
+		return time.Time{}, fmt.Errorf("%w: the assertion carries no %s", ErrMalformed, name)
+	case !(*seconds >= 0 && *seconds <= maxNumericDate):
+		return time.Time{}, fmt.Errorf("%w: the assertion's %s is not a time from 1970 to 9999", ErrMalformed, name)
+	}
+	return time.Unix(int64(*seconds), 0), nil
 }
