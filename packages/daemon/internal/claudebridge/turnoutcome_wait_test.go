@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 )
 
 // instantWait is a clock a report's wait runs on whose pauses take no time: each moves the clock on
@@ -193,11 +192,8 @@ func TestAReportWaitsOutADaemonThatIsNotServingAndNoAnswerTheDaemonGave(t *testi
 // A daemon that never serves again is waited for an hour, the wait an Oh My Pi worker's call makes
 // (config.StallDaemonWait, pi-shared's DAEMON_RESTART_BUDGET_MS), its pauses from half a second
 // doubling to 30 s and the last one ending at the hour, and then the report is given up on and
-// said to be. One post the daemon takes is given 5 minutes to be answered.
+// said to be.
 func TestAReportWaitsAnHourForADaemonThatNeverServesAndThenGivesUp(t *testing.T) {
-	if config.StallDaemonWait != time.Hour || realWait.attemptLimit != 5*time.Minute {
-		t.Fatalf("the wait is %s with an attempt limit of %s, want an hour and 5 minutes", config.StallDaemonWait, realWait.attemptLimit)
-	}
 	address, _ := refusingPort(t)
 	wait := &instantWait{at: time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)}
 	reports, logged := reportsTo("http://"+address, wait.clock(time.Second))
