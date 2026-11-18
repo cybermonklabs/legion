@@ -5,11 +5,14 @@ body: |-
     self-contained tree at `/opt/azure-cli`), both held to Debian's root bundle by defaults a role
     can override. It also carries trixie's `busybox` and `tmux`, the pinned `mise` at
     `/usr/local/bin/mise`, `USER=legion`, and the 56 Debian packages Playwright 1.64.1 names for
-    WebKit on Debian 13. A build step launches the locked Playwright's WebKit, so a Playwright bump
-    whose WebKit needs a library the image lacks fails the image build. `legion probe-image` holds
+    WebKit on Debian 13. A build stage of its own launches the locked Playwright's WebKit, so a
+    Playwright bump whose WebKit needs a library the image lacks fails the image build, and nothing
+    that download writes reaches the image. `legion probe-image` holds
     `gcloud`, `bq`, `az`, `mise` and `socat` to the compromised emSign and AAA chains where each is
     on `PATH`, and reports it `absent` where it is not. It also holds GNU `wget`, `git`, `go`,
-    `kubectl` and `redis-cli` to the chains on every image. Because the image sets `USER`,
+    `kubectl` and `redis-cli` to the chains on every image. Every probed client runs with the
+    pod's credential variables unset, and curl, wget, git and uv with a home of their own, so no
+    credential of the pod's reaches a test site. Because the image sets `USER`,
     `runtime.kubernetes.pod.env` may no longer set it: `legion start`, `--check-config` and the
     daemon's boot refuse a configuration that does, whatever digest it pins. The daemon's image
     probe pod now reserves 500m CPU (was 250m), because the image's longer TLS probe needs it.

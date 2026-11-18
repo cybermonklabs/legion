@@ -453,9 +453,11 @@ const (
 )
 
 // newTLSStateDir makes the directory the TLS probe's gcloud, bq, az, mise, go and kubectl keep
-// their state in (go also changes to it, -C), so none of it lands in the runtime user's home (the
-// image build's final step requires that), and writes into it the access-token file gcloud and bq
-// sign in with. remove deletes the directory with everything the clients wrote there.
+// their state in (go also changes to it, -C), and curl, wget, git and uv their homes in
+// (tlsClientHome), so none of it lands in the runtime user's home (the image build's final step
+// requires that) and none of them reads a credential file of that home, and writes into it the
+// access-token file gcloud and bq sign in with. remove deletes the directory with everything the
+// clients wrote there.
 func newTLSStateDir() (dir string, remove func(), err error) {
 	dir, err = os.MkdirTemp("", "legion-tls-probe-")
 	if err != nil {
