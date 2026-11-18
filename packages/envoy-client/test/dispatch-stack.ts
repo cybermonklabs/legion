@@ -60,6 +60,15 @@ export interface DispatchStackOptions {
    * `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
+  /**
+   * Settings the server is given beside the ones below, for a row that needs a deployment the
+   * default stack is not: `DISPATCH_OIDC_ISSUER` and `DISPATCH_OIDC_AUDIENCE` make a server that
+   * verifies projected service-account tokens, and an issuer nothing serves makes every such
+   * verification answer `503 OIDC_ISSUER_UNAVAILABLE`
+   * (`src/__tests__/dispatch-keyed-resend-live.test.ts`). A name the stack sets itself is refused,
+   * so a row cannot quietly take the server's database, port or token away from it.
+   */
+  readonly env?: Readonly<Record<string, string>> | undefined;
 }
 
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
@@ -131,21 +140,30 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
     mkdirSync(home);
     const log = path.join(work, "dispatch.log");
     const out = openSync(log, "a");
+    const settings: Record<string, string> = {
+      PATH: SHELL_PATH,
+      HOME: home,
+      DATABASE_URL: databaseUrl.toString(),
+      DISPATCH_AGENT_TOKEN: token,
+      DISPATCH_IDENTITY: "header:X-Dispatch-User",
+      DISPATCH_IDENTITY_HEADER_TRUSTED: "1",
+      DISPATCH_NATS_DISABLED: "1",
+      DISPATCH_LISTEN_HOST: "127.0.0.1",
+      DISPATCH_PORT: String(port),
+      DISPATCH_SERVER_URL: url,
+      DISPATCH_WEB_DIST: WEB_DIST,
+    };
+    for (const [name, value] of Object.entries(options.env ?? {})) {
+      if (name in settings) {
+        throw new Error(
+          `the Dispatch stack sets ${name} itself; a caller's env may not replace it`
+        );
+      }
+      settings[name] = value;
+    }
     child = Bun.spawn([path.join(bin, "dispatch")], {
       cwd: ENVOY_MODULE,
-      env: {
-        PATH: SHELL_PATH,
-        HOME: home,
-        DATABASE_URL: databaseUrl.toString(),
-        DISPATCH_AGENT_TOKEN: token,
-        DISPATCH_IDENTITY: "header:X-Dispatch-User",
-        DISPATCH_IDENTITY_HEADER_TRUSTED: "1",
-        DISPATCH_NATS_DISABLED: "1",
-        DISPATCH_LISTEN_HOST: "127.0.0.1",
-        DISPATCH_PORT: String(port),
-        DISPATCH_SERVER_URL: url,
-        DISPATCH_WEB_DIST: WEB_DIST,
-      },
+      env: settings,
       stdout: out,
       stderr: out,
     });
