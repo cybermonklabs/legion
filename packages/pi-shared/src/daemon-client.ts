@@ -570,35 +570,28 @@ export async function retryWhileDaemonRestarts<T>(
   let dropped = false;
   let lastFailure: unknown;
   const ownFailures = new Set<unknown>();
-  /** Ends the record of this call's time on the daemon, which the worker's own stall watch reads
-   * so that no outage is counted against the tool call that waited it out (`src/daemon-wait.ts`).
+  /** The record of this call's time on the daemon, which the worker's own stall watch reads so
+   * that no outage is counted against the tool call that waited it out (`src/daemon-wait.ts`).
    * It is opened at the call's first request, since a daemon that takes the connection and does
    * not answer is not serving from that moment, though nothing says so until the attempt's limit
    * five minutes later; and only for a wait a tool call owns, so a wait no tool call owns records
-   * nothing. A step outside the daemon ends it, and its end opens another: that step's time is
-   * the call's own, which the stall watch counts. */
-  let waitEnded: ((endedAt: number) => void) | undefined;
-  const waitBegins = () => {
-    waitEnded =
-      options.toolCallId === undefined ? undefined : daemonWaitBegan(options.toolCallId, now());
-  };
-  const waitEnds = () => {
-    waitEnded?.(now());
-    waitEnded = undefined;
-  };
+   * nothing. It is one record for the whole call, and a step outside the daemon is marked inside
+   * it: that step's time is the call's own, which the stall watch counts. */
+  const waited =
+    options.toolCallId === undefined ? undefined : daemonWaitBegan(options.toolCallId, now());
   // The budget is for time on the daemon, so a step outside it moves the deadline on by as long.
   let pausedAt = 0;
   const onTheDaemon: TimeOnTheDaemon = {
     paused: () => {
       pausedAt = now();
-      waitEnds();
+      waited?.paused(pausedAt);
     },
     resumed: () => {
-      deadline += now() - pausedAt;
-      waitBegins();
+      const resumedAt = now();
+      deadline += resumedAt - pausedAt;
+      waited?.resumed(resumedAt);
     },
   };
-  waitBegins();
   try {
     for (;;) {
       // An abort sends nothing more: a write the agent cancelled before it was sent is never
@@ -642,7 +635,7 @@ export async function retryWhileDaemonRestarts<T>(
       }
     }
   } finally {
-    waitEnds();
+    waited?.ended(now());
   }
 }
 

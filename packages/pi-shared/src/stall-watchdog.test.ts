@@ -464,7 +464,7 @@ test("the sweep takes the waits this process recorded, with no dep of its own", 
 
   // The daemon stopped serving five minutes in and came back 50 minutes later; the call waited
   // for it (`src/daemon-client.ts`, retryWhileDaemonRestarts) and went on.
-  daemonWaitBegan("toolu_legion", START + 5 * MINUTE)(START + 50 * MINUTE);
+  daemonWaitBegan("toolu_legion", START + 5 * MINUTE).ended(START + 50 * MINUTE);
 
   r.tick(HOUR + MINUTE);
   await r.watchdog.sweep();

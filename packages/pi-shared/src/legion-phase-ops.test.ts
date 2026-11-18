@@ -387,6 +387,66 @@ test("a handoff report's own failure is passed on at once and never waited out a
   expect(routes).toEqual(["/legion/v1/state"]);
 });
 
+// A call that waits out an outage keeps its whole wait, however many attempts it makes. Each
+// attempt of a completion reads the state, then its report in the pane, which is the call's own
+// time and no wait for the daemon, then mints its grant. Here the daemon answers the state and
+// drops every grant for 40 attempts, more than the record holds entries (`daemon-wait.ts`), so a
+// record that counted each attempt's wait as an entry of its own would lose the oldest of them
+// while the call is still open, and the stall watch would charge the call for that outage.
+test("a completion that waits out an outage over more attempts than the wait record holds keeps its whole wait, less its report reads", async () => {
+  forgetDaemonWaitsForTests();
+  const routes: string[] = [];
+  const answers: Record<string, Record<string, unknown>> = {
+    "/legion/v1/state": daemonFixture("state.json"),
+    "/legion/v1/grants": daemonFixture("grant.json"),
+    "/legion/v1/handoff/complete": daemonFixture("handoff-complete.json"),
+  };
+  const DROPPED_GRANTS = 40;
+  let grants = 0;
+  const stub = (async (input) => {
+    const route = new URL(input.toString()).pathname;
+    routes.push(route);
+    if (route === "/legion/v1/grants" && ++grants <= DROPPED_GRANTS) {
+      throw Object.assign(new Error("socket hang up"), { code: "ECONNRESET" });
+    }
+    return Response.json(answers[route] ?? {});
+  }) as typeof fetch;
+  const READ_MS = 1_000;
+  const sleeps: number[] = [];
+  let clock = 0;
+  const ops: PhaseOpRuntime = {
+    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    claim: implementer,
+    // Each report read takes a second of the call's own time.
+    handoffReport: async () => {
+      clock += READ_MS;
+      return REPORT;
+    },
+    branchHead: async () => {
+      throw new Error("no branch-head lookup expected");
+    },
+    restart: {
+      now: () => clock,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+        clock += ms;
+      },
+      toolCallId: "toolu_legion",
+      attemptLimit: () => Promise.withResolvers<void>().promise,
+    },
+  };
+
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+
+  const attempts = DROPPED_GRANTS + 1;
+  expect(routes.filter((route) => route === "/legion/v1/state")).toHaveLength(attempts);
+  expect(sleeps).toHaveLength(DROPPED_GRANTS);
+  expect(clock).toBe(sleeps.reduce((sum, ms) => sum + ms, 0) + attempts * READ_MS);
+  expect(daemonWaitMs("toolu_legion", 0, clock)).toBe(clock - attempts * READ_MS);
+});
+
 // Workers named their own issue on handoff_complete and left it off read_record, and both were
 // refused: 1,515 failed calls in the 48 h to 2026-11-10 17:40Z in INFRA's sessions alone
 // (dispatch://INFRA-2824). A read that names no issue now reads the claim's own, a read that names
