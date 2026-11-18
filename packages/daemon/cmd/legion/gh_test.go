@@ -179,6 +179,7 @@ func TestParseGhHelpReadsRealGhHelp(t *testing.T) {
 		{"no usage", prView, "FLAGS\n  --help   Show help for command\n", "names no usage"},
 		{"no --help", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  -w, --web   Open\n", "lists no --help"},
 		{"an option line it cannot read", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w --web   Open\n", "cannot read the options"},
+		{"an option line marking its option boolean and naming a value", prView, "USAGE\n  gh pr view [flags]\n\nFLAGS\n  --help   Show help\n  -w, --web[=true|false] string   Open\n", "marks its option boolean and names a value"},
 		{"a parent's help", prView, "USAGE\n  gh pr <command> [flags]\n", "gh has no command"},
 		{"gh co's, pr checkout's, which lists no alias co", []string{"co"}, co, "is a gh alias"},
 	} {
@@ -2468,6 +2469,100 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 			}
 			if !slices.Equal(target.files, tc.want) {
 				t.Fatalf("ghTargetOf(%q) read the files %v, want %v", tc.argv, target.files, tc.want)
+			}
+		})
+	}
+}
+
+// gh 2.104.0's --attach uploads the file it names to GitHub, an SVG's text among what it takes,
+// and the leak guard reads no such file, so `legion gh` refuses a call giving one, naming the
+// option, before anything runs, on each of the six issue and pr leaves whose help lists it. The
+// same calls without it read as they did, so the option alone is what is refused; and at gh
+// 2.98.0, which has no --attach, each is refused already, as an option its help does not list.
+// The seventh leaf listing it, `gh issue artifact create`, which also uploads the files its
+// arguments name, is refused whole with or without it, for an argument this does not know.
+func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
+	latest := savedGhHelpOf(t, "2.104.0")
+	rows := 0
+	for _, argv := range [][]string{
+		{"issue", "comment", "5", "-R", "acme/widgets", "--body", "hi", "--attach", "notes.svg"},
+		{"issue", "create", "-R", "acme/widgets", "--title", "t", "--body", "b", "--attach", "notes.svg"},
+		{"issue", "edit", "5", "-R", "acme/widgets", "--attach=notes.svg#alt"},
+		{"pr", "comment", "5", "-R", "acme/widgets", "--attach", "notes.svg#alt"},
+		{"pr", "create", "-R", "acme/widgets", "--title", "t", "--body", "b", "--attach", "notes.svg"},
+		{"pr", "edit", "5", "-R", "acme/widgets", "--attach", "notes.svg"},
+	} {
+		attach := slices.IndexFunc(argv, func(arg string) bool { return strings.HasPrefix(arg, "--attach") })
+		t.Run(strings.Join(argv[:attach], " "), func(t *testing.T) {
+			rows++
+			_, err := ghTargetOf(argv, nil, latest, noGitRepository, ownersOwnDirectories)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q uploads the file it names to GitHub, which the leak guard does not read", argv[attach])) {
+				t.Errorf("ghTargetOf(%q) at gh 2.104.0 = %v, want a refusal naming %q", argv, err, argv[attach])
+			}
+			end := attach + 2
+			if strings.Contains(argv[attach], "=") {
+				end = attach + 1
+			}
+			without := slices.Delete(slices.Clone(argv), attach, end)
+			if target, err := ghTargetOf(without, nil, latest, noGitRepository, ownersOwnDirectories); err != nil || target.owner != "acme" {
+				t.Errorf("ghTargetOf(%q) at gh 2.104.0 = %+v, %v; want acme's call", without, target, err)
+			}
+			if _, err := ghTargetOf(argv, nil, savedGhHelp, noGitRepository, ownersOwnDirectories); err == nil || !strings.Contains(err.Error(), "is no option") {
+				t.Errorf("ghTargetOf(%q) at gh 2.98.0 = %v, want --attach refused as no option", argv, err)
+			}
+		})
+	}
+	if rows != 6 {
+		t.Errorf("%d rows ran, want 6", rows)
+	}
+	for _, argv := range [][]string{
+		{"issue", "artifact", "create", "5", "-R", "acme/widgets", "--attach", "notes.svg"},
+		{"issue", "artifact", "create", "5", "plan.md", "-R", "acme/widgets"},
+	} {
+		if _, err := ghTargetOf(argv, nil, latest, noGitRepository, ownersOwnDirectories); err == nil {
+			t.Errorf("ghTargetOf(%q) at gh 2.104.0 = nil, want a refusal", argv)
+		}
+	}
+}
+
+// A gh directory whose hosts.yml or config.yml sends gh's requests elsewhere is refused, naming
+// the file and the key and never the value: api_host in a host's block, http_unix_socket at the
+// top of config.yml or in a host's block, at any depth gh might read it. The files the daemon
+// renders, a config.yml holding aliases, and a directory holding neither file pass; one that does
+// not parse is refused.
+func TestGhRoutingKeyRefusesADirectoryThatSendsElsewhere(t *testing.T) {
+	hosts := ghconfig.Hosts("ghs_acme_write")
+	for _, tc := range []struct {
+		name          string
+		hosts, config string // "" writes no such file
+		want          string // "" for a directory that passes
+	}{
+		{name: "the files the daemon renders", hosts: hosts, config: ghconfig.Config},
+		{name: "a config.yml holding aliases", hosts: hosts, config: ghconfig.Config + "aliases:\n    co: pr checkout\n"},
+		{name: "neither file"},
+		{name: "api_host in hosts.yml's github.com block", hosts: hosts + "    api_host: api.example.invalid\n", config: ghconfig.Config, want: "hosts.yml sets api_host"},
+		{name: "api_host under the account", hosts: strings.Replace(hosts, "            oauth_token: ghs_acme_write\n", "            oauth_token: ghs_acme_write\n            api_host: api.example.invalid\n", 1), config: ghconfig.Config, want: "hosts.yml sets api_host"},
+		{name: "http_unix_socket at the top of config.yml", hosts: hosts, config: ghconfig.Config + "http_unix_socket: /tmp/example.sock\n", want: "config.yml sets http_unix_socket"},
+		{name: "http_unix_socket in a host's block of config.yml", hosts: hosts, config: ghconfig.Config + "hosts:\n    github.com:\n        http_unix_socket: /tmp/example.sock\n", want: "config.yml sets http_unix_socket"},
+		{name: "a hosts.yml that does not parse", hosts: "github.com: [\n", config: ghconfig.Config, want: "hosts.yml does not parse as YAML"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, text := range map[string]string{ghconfig.HostsFile: tc.hosts, ghconfig.ConfigFile: tc.config} {
+				if text != "" {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(text), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			err := ghRoutingKey(dir)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("ghRoutingKey = %v, want none", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("ghRoutingKey = %v, want a refusal containing %q", err, tc.want)
+			case err != nil && (strings.Contains(err.Error(), "example.invalid") || strings.Contains(err.Error(), "example.sock")):
+				t.Fatalf("ghRoutingKey's refusal %q quotes the value", err)
 			}
 		})
 	}
