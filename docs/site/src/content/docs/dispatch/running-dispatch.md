@@ -417,6 +417,8 @@ These answers are not failures. The loop takes each one as data and goes on, so 
   longer installed on (the delivery reconcile marks it as one it cannot fetch);
 - a pull request head that GitHub no longer has, or of a repository the App cannot read (the
   reconcile marks it as read);
+- a directory of an architecture source that GitHub answers `404 Not Found` for at the commit
+  (the import reads it as an empty model);
 - a repository that only an issue names, which the App is not installed on (the CI reconcile
   passes over it);
 - a `304 Not Modified`;

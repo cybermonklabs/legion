@@ -120,12 +120,11 @@ func (c *Client) Redeliver(ctx context.Context, deliveryID int64) error {
 // long GitHub asks for before the next request. GitHub warns that requests made while limited
 // may get the integration banned.
 //
-// Body is GitHub's refusal, the body it answered the request with, or, for a limit GitHub
-// answered at a 2xx status, GitHub's wording of the limit (graphQLLimitWording), and never that
-// answer's body: a 2xx body is the data the request asked for, which can be a private
-// repository's, and the error's text, which carries Body, reaches GET /healthz as a cause however
-// a loop wraps it. The data is the body GraphQL returns beside the error. Every limit GitHub
-// answered is built by answeredLimit, which holds to this.
+// Body is GitHub's refusal, the body it answered the request with, and the error's text carries
+// it only at a status other than 2xx, as StatusText does: a 2xx body is the data the request asked
+// for, which can be a private repository's, and the text reaches GET /healthz as a cause however a
+// loop wraps it. At a 2xx the text carries wording in Body's place, whoever builds the error:
+// GitHub's wording of the limit, which answeredLimit alone sets, leaving Body empty there.
 //
 // A held error is a limit already recorded for Scope in the limits every process shares
 // (Limits): the request was never sent, Status and Body are empty, Wait is what the recorded
@@ -142,12 +141,18 @@ type RateLimitError struct {
 	Scope    string
 	Held     bool
 	Recorded time.Time
+	// wording is GitHub's wording of a limit answered at a 2xx status (graphQLLimitWording),
+	// which answeredLimit alone sets.
+	wording string
 }
 
 func (e *RateLimitError) Error() string {
 	if e.Held {
 		return fmt.Sprintf("GitHub rate limit on %s recorded at %s is in force; the request was not sent",
 			e.Scope, e.Recorded.UTC().Format(time.RFC3339Nano))
+	}
+	if e.Status/100 == 2 {
+		return withBody(limitAnswered(e.Status, e.Wait), e.wording)
 	}
 	return withBody(limitAnswered(e.Status, e.Wait), e.Body)
 }
@@ -160,7 +165,7 @@ func limitAnswered(status int, wait time.Duration) string {
 }
 
 // Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
-// body that is not JSON or names none, as a held error's empty body and a 2xx limit's wording do
+// body that is not JSON or names none, as a held error's and a 2xx limit's empty Body do
 // (responseMessage).
 func (e *RateLimitError) Message() string {
 	return responseMessage([]byte(e.Body))
@@ -195,13 +200,13 @@ func RateLimit(status int, header http.Header, body []byte) *RateLimitError {
 
 // answeredLimit is the RateLimitError of a limit GitHub answered with status, header and body, and
 // the one constructor of such an error (RateLimit, GraphQLRateLimit). Its Body is body, GitHub's
-// refusal, at every status but a 2xx, and at a 2xx GitHub's wording of the limit read from the
-// envelope around the data or from header (graphQLLimitWording), since such a body is the data the
-// request asked for and no text of the error may carry it (RateLimitError).
+// refusal, at every status but a 2xx, and at a 2xx it is empty and wording is GitHub's wording of
+// the limit read from the envelope around the data or from header (graphQLLimitWording), since
+// such a body is the data the request asked for and no text of the error may carry it.
 func answeredLimit(status int, header http.Header, body []byte) *RateLimitError {
 	limited := &RateLimitError{Status: status, Wait: rateLimitWait(header)}
 	if status/100 == 2 {
-		limited.Body = graphQLLimitWording(header, body)
+		limited.wording = graphQLLimitWording(header, body)
 	} else {
 		limited.Body = string(body)
 	}
@@ -231,8 +236,8 @@ func answeredLimit(status int, header http.Header, body []byte) *RateLimitError 
 // it read as no limit that the query's own signals say is one. A header alone counts only at
 // 200, the status GitHub answers the query itself with: at any other status GitHub is refusing
 // the request rather than answering it, and the headers on that refusal say nothing about the
-// budget. Either way answeredLimit builds the error, so a limit read in a 200 holds GitHub's
-// wording of the limit in Body and nothing of the query's data.
+// budget. Either way answeredLimit builds the error, so a limit read in a 200 has an empty Body
+// and a text that carries GitHub's wording of the limit and nothing of the query's data.
 //
 // Nothing here is read from a repository's own data. The answer to a query is the data GitHub
 // holds, and that data is the names people give their check runs and their pull requests: a body
@@ -343,9 +348,9 @@ func readLimitEnvelope(body []byte) (limitEnvelope, bool) {
 	return answer, true
 }
 
-// graphQLLimitWording is GitHub's own wording of a limit it answered a query with at a 2xx status,
-// the Body of that limit's RateLimitError in place of the answer's body, which is the query's data
-// (answeredLimit), and so the detail of every text the error or the client's note of it makes.
+// graphQLLimitWording is GitHub's own wording of a limit it answered a query with at a 2xx status:
+// the wording answeredLimit gives that limit's RateLimitError in place of the answer's body, which
+// is the query's data, and so the detail of every text the error or the client's note of it makes.
 // It is what of the envelope names the limit, read where GitHub's type or phrase for a limit is
 // anywhere in the body (readLimitEnvelope): the top-level message where it holds GitHub's
 // secondary-limit wording, and each `errors` entry of type RATE_LIMITED or whose message holds that
