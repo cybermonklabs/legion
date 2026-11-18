@@ -2,14 +2,17 @@ kind: Added
 body: |-
     A session Legion drives whose previous process ended in a turn is told so at its start, before
     the first turn it runs. The note asks the agent to read what that turn did before it acts
-    again, names each delivery card the host wrote into that turn, and starts no turn itself. Each
-    session is told once. Every run of such a session leaves an `envoy-turn-mark` entry in its
-    transcript, at its start and at an end the host settles, so a process killed in a provider
-    retry's backoff reads as a cut turn too. A transcript written before the marks is read from its
-    newest assistant message. Until the note is written, every start of a turn waits for it, for 10
-    seconds at most, and logs a `warn` when it goes without it. Plugin interface version 6, whose
-    `cutTurnNote` `@sjawhar/pi-legion`'s phase reminder reads: install it with the
-    `@sjawhar/pi-legion` released beside it.
+    again and starts no turn itself. It names each delivery card the host wrote into that turn,
+    and each person's Send from Dispatch that became the session's own turn there: the user
+    message, or the skill prompt a `/skill:` Send submits, whose host `tag` is a Dispatch message id
+    the session recorded handling. A Send on a host without `sendUserInput` carries no tag, so the
+    note does not name it. Each session is told once. Every run of such a session leaves an
+    `envoy-turn-mark` entry in its transcript, at its start and at an end the host settles, so a
+    process killed in a provider retry's backoff reads as a cut turn too. A transcript written
+    before the marks is read from its newest assistant message. Until the note is written, every
+    start of a turn waits for it, for 10 seconds at most, and logs a `warn` when it goes without
+    it. Plugin interface version 6, whose `cutTurnNote` `@sjawhar/pi-legion`'s phase reminder
+    reads: install it with the `@sjawhar/pi-legion` released beside it.
     A session whose heartbeat timer stopped registers with Envoy again. After 5 minutes with no
     accepted registration and no heartbeat tick, a watchdog on the process's own timer arms the
     heartbeat again and registers at once under the same session, and its retries back off to at
