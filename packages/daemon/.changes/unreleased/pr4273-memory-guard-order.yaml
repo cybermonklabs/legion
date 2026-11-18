@@ -1,124 +1,18 @@
 kind: Changed
 body: |-
-    The memory guard in an issue pod's launcher now ends first the process that grew the most
-    over the last 300 ms, by 1 MiB or more; then, of those that did not, the largest process
-    new to this stay in the band that holds memory of its own, one the guard has read at most
-    once since the band's second-to-last reading; then the one that grew the most since the
-    first kill of this stay in the band, by 1 MiB or more, a stay that a dip below the mark
-    in the band does not end; and the largest only where none of these applies. Where the stay
-    holds fewer than two readings before the one decided at, every process is new to it, which
-    leaves the order by size. The controller's pod's guard, new in this release, follows the same
-    rules. Under gVisor a forked child reports the pages it shares with its parent as its own,
-    so the largest could be a sleeping fork whose end freed nothing while another process filled
-    the pod. A process new to the stay has no earlier read to grow from, or one alone: six growers
-    that started together while a parent and its sleeping forks of a shared block held a 4 GiB
-    gVisor pod at 84% had the first kill end a process that shares the block, a sleeping fork
-    or the parent, in 7 of 7 runs, the closest run's highest reading 2.4 MiB below the kernel's
-    kill point, and six that started 5 ms before the band's last reading still lost a sleeping
-    fork first to a tier that took only the processes the reading before had not read. Where the
-    new tier or the largest ranks by size, a process that runs its parent's executable with its
-    parent's whole arguments, where the guard has read that parent in this stay, is a fork that
-    has not run a program of its own, and ranks by its size less its parent's latest read size
-    (at most its own size), so a sleeping fork ranks near nothing: three sleeping forks of a
-    2.4 GB parent were ended first by the new tier in 2 of 7 runs at 4 GiB without it. A fork
-    that ranks at nothing holds no memory of its own and is not in the new tier, so where every
-    process new to the stay ranks at nothing, the tiers below decide. The parent ranks at its
-    whole size, so where nothing grew a pool's parent can be ended before its forks, and its
-    end frees nothing while they hold the pages. Growth, the floor and each line's sizes count
-    every process whole. At the mark, with each `smaps` it reads again of a process the band
-    read running its parent's program, the guard reads that process's `exe` link and arguments
-    again, within the same budgets, before the discount applies: a process that has run another
-    program since ranks by its whole size, and one whose `exe` link cannot be read is left out
-    of that decision. The band can read a process between its fork and its exec, and a run at
-    4 GiB ended the probe's parent first 115.1 ms after the mark while growers so read ranked
-    at nothing. After a kill, a process whose program differs from the one the decision read
-    takes its first read after the kill as its size as of the kill. A pod short of CPU takes its
-    readings 170 to more than 300 ms apart, so the 300 ms window can hold one read and show no
-    growth, which is why growth since a kill comes before size. That tier measures growth since
-    the stay's first kill, not the previous one, because growers that step every 250 ms in step
-    with each other show no step in the 100 ms after the previous kill: two kills after a fall
-    went to a pool's parent and a sleeping fork while the growers rose from 90.6% to 95.9% of a
-    4 GiB limit, 7.3 and 40.9 MiB below the kill point. A reading below the mark that stays in
-    the band ends a rise and not the stay, so a later rise measures from the stay's first kill,
-    which a rise before it sent: where one grower was left and the reading sat about 2 MB below
-    the mark and came back, a guard that measured from the dip ended the 4.8 GB parent first in
-    3 runs at 8 GiB, and a guard that keeps those sizes across the dip ended the grower by
-    `rule=grew sizes=reread` at a dip of 1.9 MiB, as three more second rises of that wave
-    ended growers. Whether the guard goes on after a kill is still decided by growth since the
-    previous kill. To know what grew, the guard reads the sizes of what it may end at each
-    reading in the band of 10% of the limit below the mark and after a kill, and none below the
-    band. At the first reading at or above the mark it chooses the process by the sizes it read
-    in the band and sends the kill before it reads every size, which it reads only after the
-    kill. Where the window at the mark holds two band reads of no process while the band's own
-    last 300 ms hold two of one, it measures growth over those last 300 ms, since band readings
-    throttled about 200 ms apart leave one read at the mark. Where none of the processes the band
-    found grew, it first reads again the `smaps` of those that grew between two of their band
-    reads, the most grown first, then of those new to the stay that held memory of their own at
-    their band read, the newest first, with no listing of the processes and no descriptor read;
-    it always reads the first, stops after the read in hand once half an interval has passed
-    since the reading at the mark, and keeps the rest at the band's sizes. Where those show no
-    growth either, it lists the processes once, takes the band's processes as the band read them
-    with no read of them, reads the `stat`, `exe`, `ns/pid` and arguments of the processes
-    started since the band's last reading, the highest pid first, within the same half interval,
-    protects them by the same rules as any process (a new helper of Oh My Pi stays protected),
-    leaves out of that decision a new process whose parent it cannot place, and reads the
-    `smaps` of those it may end, the newest first, within the same half interval; then it reads
-    again the `smaps` of the processes the band found new to the stay that ranked at nothing at
-    their band read, forks whose parent's size covered their own, the newest first, within the
-    same half interval. At the mark the processes new to the stay that a read there reached and
-    that hold memory of their own, those the band found and read again and those started since,
-    come second as one set, so the largest of them ends; with none, the tiers below decide.
-    Whatever the half interval, the guard reads at least one process new to the stay that it may
-    end, where one exists, and reads on past the half interval in the same order, each group the
-    newest first, until it has read one that holds memory of its own or, having read any, one
-    interval from the reading at the mark has passed: a read that reached one sleeping fork of a
-    2.4 GB parent and spent the half interval ended that fork first in 2 of 7 runs at 4 GiB. It
-    reads those forks after the processes started since because a run at 4 GiB that read them
-    first read three sleeping forks to one interval, searched nothing, and ended their 2.4 GB
-    parent by `rule=largest sizes=reread new_read=3:0` 120.1 ms after the mark. The kill reads
-    its target's start time before it signals, so a pid taken since the band read it is never
-    signalled. It reads again because the step that takes the reading over the mark comes after
-    the band's last reading: deciding on the band's sizes alone ended a sleeping fork first in a
-    gVisor run at 4 GiB and at 8 GiB. It reads only those, for half an interval, because reading
-    every process again put two first kills 201 ms and 101.75 ms after the mark, reading all six
-    growers of a run that each had one band read put one 100.68 ms after it, and reading every
-    band process's start time and every new process's files put two 196.3 ms and 128.2 ms after
-    it. With six processes growing at once the host throttled the whole pod's CPU, and a reading
-    at the mark that read every size again put the kill 194 ms after it, where choosing by the
-    band's sizes put it 1.3 to 71.8 ms after it in 9 of 9 runs. So the first kill comes within
-    one interval of the reading at the mark, past it by no more than the read in hand where the
-    guard reads on for memory of its own, and within two where a stall of the throttled pod's
-    CPU, measured at 100 to 200 ms, delays one of the guard's reads, or where it must search for
-    a process started after the band's last reading, which took 13.5 to 108.4 ms in 13 such
-    first kills at 4 GiB. Where the band holds no size, where the process it would end first has
-    exited, its pid names another process or its kill fails, or where the band's sizes or the
-    sizes read again are under the floor, the guard reads every size at that reading and acts
-    on them, as before. After a kill the guard waits only until the killed process has exited, and
-    at most `wait_seconds`. Then, where the reading has fallen and is still at or above the mark,
-    it ends the next process; where it has not fallen, it ends the next at once while a process
-    it may end has grown by 1 MiB or more since the previous kill and the processes it may end
-    hold the floor between them, and it stops for that rise with `reason=not fallen` only once
-    the wait has passed with nothing grown. A killed process that has not exited is never ended
-    or reported again. The hourly line's high and low, its counter read and its scan for the
-    largest process now come only after the guard has decided on the reading. Each `ended` line
-    now carries, before `executable=`, `rule=`, the rule of the order that put the process first
-    (`grew`, `new`, `grew-since-kill` or `largest`), `sizes=`, where the sizes it was chosen by
-    came from (`band`, the band's sizes alone at the mark; `reread`, with `smaps` read again there;
-    `search`, with processes started since the band's last reading; `reading`, the reading the kill
-    is sent at), `less_parent=`, what the order took off a fork's size, 0 where it took nothing,
-    and `new_read=`, `<reached>:<own>` for a first kill the reads at the mark decided (how many
-    processes new to the stay they read, and how many of them hold memory of their own) and `-`
-    for every other kill; the microVM guest watch's lines write
-    `rule=kernel sizes=kernel less_parent=0 new_read=-`. The `stopped for this rise` line now ends
-    with `unread_processes=`, which names each process the guard could not read, in pid order:
-    `<pid>:<bytes>` where its `stat` reads a state other than `Z` and its `smaps` reads, a bare
-    `<pid>` otherwise, and `none` where there is none; its other fields are unchanged. The guard
-    never ends such a process, and a process whose `exe` or `ns/pid` answers `ENOENT` now counts
-    unread unless it has ended, where the scan used to leave it out with no line. Under gVisor
-    three kinds stay unread, a stated limit: a process whose main thread exited while another
-    thread holds its memory, a process that is not dumpable outside the role namespaces (such as
-    what a `kubectl exec` shell runs), and a process being killed. The settings and their defaults
-    are unchanged.
+    The memory guard in a gVisor issue pod's launcher ends processes in a new order: first the one
+    that grew the most over its last few reads, then the largest one new to its stay near the
+    limit that holds memory of its own, then the one that grew the most since the guard's first
+    kill of that stay, and the largest only where none of these applies, with a fork that still
+    runs its parent's program counted by what it holds over its parent. At the first reading at
+    the mark it decides on the sizes it read below the mark, so its first kill comes within one
+    interval, or two where it must search for a process started just before. After a kill it waits
+    only until the killed process has exited, and at most `wait_seconds`, which stays 5 for issue
+    pods, and then goes on at each reading. Each `ended` line gains `rule=`, `sizes=`,
+    `less_parent=` and `new_read=` before `executable=`, saying which rule chose the process and
+    from what, and each `stopped for this rise` line gains `unread_processes=` at its end, naming
+    the processes the guard could not read. docs/kubernetes.md, "The memory guard in an issue pod",
+    gives the whole order, what each field means and the gVisor measurements behind them.
 time: 2026-11-17T09:37:25Z
 custom:
     Issue: pr4273

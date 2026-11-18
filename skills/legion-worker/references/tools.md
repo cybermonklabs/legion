@@ -10,12 +10,9 @@ binary; and when a test fails in your pod. Every path it cites is in cybermonkla
 
 An issue pod runs no heavy build and no whole test suite. The pod's six roles share one memory
 limit. Near that limit the launcher's memory guard, where the deployment runs it (it is on by
-default), stops with SIGKILL, of the processes that are neither Legion's own nor an agent's own,
-the process that grew the most over its last few reads, else the largest one it has read at most
-once in its last two readings near the limit, else the one that grew the most since the guard's
-first kill while the reading stays near the limit, else the largest, a fork that still runs its
-parent's program counted by what it holds over its parent, which in practice is a command an agent
-ran: a build, a test binary, a Python or JavaScript kernel.
+default), stops with SIGKILL a process that is neither Legion's own nor an agent's own, the one
+that grows fastest first (`docs/kubernetes.md`, "What it ends"), which in practice is a command an
+agent ran: a build, a test binary, a Python or JavaScript kernel.
 It then tells that process's role why, in a message on the role's topic. In a pod that runs in a
 microVM, the pod's own kernel stops such a command in place of the guard where each of the pod's
 requests equals its limit, and the role is told the same way; in a pod that requests less, it can
