@@ -184,15 +184,14 @@ export function renderProofDocument({
           focusRequest: { markId: string; seq: number } | undefined;
           hoveredMarkId: string | undefined;
           markPlacements: ReadonlyMap<string, MarkPlacement>;
-          pendingComposes: ReadonlyMap<
+          composes: ReadonlyMap<
             string,
             {
-              anchor: ComposerAnchor;
-              kind: "ask" | "comment" | "suggestion";
+              open: { anchor: ComposerAnchor; kind: "ask" | "comment" | "suggestion" } | undefined;
               seq: number;
             }
           >;
-          cancelCompose(seq: number): void;
+          cancelCompose(artifact: string, seq: number): void;
         }
       | undefined,
   };

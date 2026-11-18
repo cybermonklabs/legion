@@ -1,8 +1,8 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryObserver } from "@tanstack/react-query";
+import { onlineManager, QueryObserver } from "@tanstack/react-query";
 
 import { ApiError, createApiClient, isRetryableQueryError } from "./client";
-import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./query-client";
+import { askSignInAgain, DispatchQueryClient, queryRetry, queryRetryDelay } from "./query-client";
 
 /**
  * A server for one read whose every request is answered by the test: `answer()` lands the oldest
@@ -107,6 +107,54 @@ test("an invalidation of an idle read fetches it at once", async () => {
     expect(queryClient.getQueryData<string>(["projects"])).toBe("after");
   } finally {
     unsubscribe();
+  }
+});
+
+// Two asks of the sign-in check while the browser is offline, as two writes answered 401 at once
+// make them: the second cancels the check the first started, which ends the first's invalidation
+// with no answer, and starts its own, which the network holds paused. A paused check has not
+// answered, so neither ask is over until the network returns and that check answers.
+test("an ask of the sign-in check waits through a check paused offline for the newest answer", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  // Mounted, as the page's provider mounts it, so its queries hear the network come back.
+  queryClient.mount();
+  const server = heldServer("alice");
+  const observer = new QueryObserver(queryClient, {
+    queryFn: server.queryFn,
+    queryKey: ["whoami"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  const answered: string[] = [];
+  try {
+    await settle();
+    server.answer();
+    await settle();
+
+    onlineManager.setOnline(false);
+    const first = askSignInAgain(queryClient).then(() => answered.push("first"));
+    await settle();
+    const second = askSignInAgain(queryClient).then(() => answered.push("second"));
+    await settle();
+    expect({
+      answered,
+      check: queryClient.getQueryState(["whoami"])?.fetchStatus,
+      requests: server.requests(),
+    }).toEqual({ answered: [], check: "paused", requests: 1 });
+
+    server.write("bob");
+    onlineManager.setOnline(true);
+    await settle();
+    expect({ answered, requests: server.requests() }).toEqual({ answered: [], requests: 2 });
+    server.answer();
+    await Promise.all([first, second]);
+    expect({
+      answered: answered.length,
+      login: queryClient.getQueryData<string>(["whoami"]),
+    }).toEqual({ answered: 2, login: "bob" });
+  } finally {
+    onlineManager.setOnline(true);
+    unsubscribe();
+    queryClient.unmount();
   }
 });
 

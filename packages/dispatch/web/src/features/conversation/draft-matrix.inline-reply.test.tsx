@@ -100,6 +100,7 @@ import {
   expectedBack,
   HELD,
   type Held,
+  heldIn,
   keptInSight,
   listTurn,
   NOTHING_READ,
@@ -107,6 +108,7 @@ import {
   noteIn,
   REFUSAL,
   REFUSED_NOTE,
+  replyField,
   signedInAsReader,
   stubLists,
   tab,
@@ -179,9 +181,6 @@ async function openConversation(stopped: boolean, phone = false, signedIn = fals
 /** Comment A's turn in the list, outside any thread view. */
 const turn = () => listTurn(commentA.id);
 
-const replyField = (place: HTMLElement) =>
-  within(place).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
-
 /** Opens Comment A's thread with the host's Expand thread and answers where its card's reply
  *  shows: the turn above the phone layout, the thread view on a phone. */
 async function expand(user: UserEvent, phone: boolean): Promise<HTMLElement> {
@@ -207,11 +206,6 @@ async function holdInCard(page: Page, held: Held, phone = false): Promise<HTMLEl
     await within(place).findByText(REFUSED_NOTE);
   }
   return place;
-}
-
-/** What the reply composer holds where it shows again. */
-function heldIn(place: HTMLElement): { note: Held | "none"; text: string } {
-  return { note: noteIn(place), text: replyField(place).value };
 }
 
 // On a phone the card's reply lives in the thread view, which Back takes off the page. Back is the

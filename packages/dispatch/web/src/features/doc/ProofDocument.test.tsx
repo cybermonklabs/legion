@@ -610,9 +610,9 @@ test("a selection-bar action opens the margin composer for the mark and settles 
   const { editors, margin, sync, view } = renderProofDocument({ queryClient });
   const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
   const openCompose = () => {
-    const open = margin.current?.pendingComposes.get(artifact.id);
-    if (open === undefined) throw new Error("expected an open compose");
-    return open;
+    const compose = margin.current?.composes.get(artifact.id);
+    if (compose?.open === undefined) throw new Error("expected an open compose");
+    return { ...compose.open, seq: compose.seq };
   };
   /** Sends the compose the margin has open, as its composer's Send does: from then on the
    *  compose is its send's, and the library's promise resolves. */
@@ -656,7 +656,7 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     if (comment === undefined) {
       throw new Error("The comment action did not return a promise.");
     }
-    expect(margin.current?.pendingComposes.get(artifact.id)).toMatchObject({
+    expect(margin.current?.composes.get(artifact.id)?.open).toMatchObject({
       anchor: {
         artifact: artifact.id,
         mark_id: "m-9",
@@ -687,7 +687,7 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     if (suggest === undefined) {
       throw new Error("The suggestion action did not return a promise.");
     }
-    expect(margin.current?.pendingComposes.get(artifact.id)?.kind).toBe("suggestion");
+    expect(margin.current?.composes.get(artifact.id)?.open?.kind).toBe("suggestion");
     act(() => sendOpenCompose());
     await expect(suggest).resolves.toBeUndefined();
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
@@ -709,8 +709,8 @@ test("a selection-bar action opens the margin composer for the mark and settles 
     if (ask === undefined) {
       throw new Error("The ask action did not return a promise.");
     }
-    expect(margin.current?.pendingComposes.get(artifact.id)?.kind).toBe("ask");
-    act(() => margin.current?.cancelCompose(openCompose().seq));
+    expect(margin.current?.composes.get(artifact.id)?.open?.kind).toBe("ask");
+    act(() => margin.current?.cancelCompose(artifact.id, openCompose().seq));
     await expect(ask).rejects.toThrow("composer closed");
 
     let unsupported: unknown;
@@ -778,14 +778,14 @@ test("a closed document's Comment opens a quote composer with no mark, which pos
       cancelled = Promise.resolve(onMarkAction({ from: 11, kind: "quote-comment", to: 16 }));
       void cancelled.catch(() => {});
     });
-    const open = margin.current?.pendingComposes.get(artifact.id);
-    expect(open).toMatchObject({
+    const compose = margin.current?.composes.get(artifact.id);
+    expect(compose?.open).toMatchObject({
       anchor: { artifact: artifact.id, occurrence: 1, quote: "brown" },
       kind: "comment",
     });
-    expect(open?.anchor.mark_id).toBeUndefined();
+    expect(compose?.open?.anchor.mark_id).toBeUndefined();
     // Ending it unsent takes nothing out of the document: there is no mark.
-    act(() => margin.current?.cancelCompose(open?.seq ?? -1));
+    act(() => margin.current?.cancelCompose(artifact.id, compose?.seq ?? -1));
     await expect(cancelled).rejects.toThrow("composer closed");
     expect(removed).toEqual([]);
 
@@ -793,7 +793,7 @@ test("a closed document's Comment opens a quote composer with no mark, which pos
     act(() => {
       sent = Promise.resolve(onMarkAction({ from: 11, kind: "quote-comment", to: 16 }));
     });
-    const { anchor } = margin.current?.pendingComposes.get(artifact.id) ?? {};
+    const { anchor } = margin.current?.composes.get(artifact.id)?.open ?? {};
     if (anchor === undefined) throw new Error("expected an open compose");
     act(() =>
       heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
@@ -867,12 +867,12 @@ test("a closed document's Comment on a selection with no text to quote says so a
     });
     await expect(refused).resolves.toBeUndefined();
     expect(within(view.container).getByRole("status").textContent).toBe(notice);
-    expect(margin.current?.pendingComposes.get(artifact.id)).toBeUndefined();
+    expect(margin.current?.composes.get(artifact.id)?.open).toBeUndefined();
 
     act(() => {
       void Promise.resolve(onMarkAction({ from: 1, kind: "quote-comment", to: 6 })).catch(() => {});
     });
-    expect(margin.current?.pendingComposes.get(artifact.id)).toMatchObject({
+    expect(margin.current?.composes.get(artifact.id)?.open).toMatchObject({
       anchor: { artifact: artifact.id, occurrence: 0, quote: "brown" },
       kind: "comment",
     });

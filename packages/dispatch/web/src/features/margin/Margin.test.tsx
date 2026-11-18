@@ -6,6 +6,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { RegisterRouteDocument } from "../../__tests__/draft-matrix-fixture";
 import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -1039,20 +1040,29 @@ function RegisterBridge({ bridge }: { bridge: DocumentBridge }): ReactNode {
   return null;
 }
 
-/** What a remounted `ProofDocument` does (a new artifact): the old editor
- *  unregisters and a fresh one registers, while the margin and its open composer stay. */
+/** What a remounted `ProofDocument` does (a new artifact): the old editor unregisters and a fresh
+ *  one registers, while the margin and its open composer stay. It does so at once, or in two
+ *  steps, with the fresh editor still binding between them. */
 function ReopenDocument({ bridge }: { bridge: DocumentBridge }): ReactNode {
   const { registerDocument } = useMargin();
   return (
-    <button
-      onClick={() => {
-        registerDocument(undefined);
-        registerDocument(bridge);
-      }}
-      type="button"
-    >
-      Reopen the document
-    </button>
+    <>
+      <button
+        onClick={() => {
+          registerDocument(undefined);
+          registerDocument(bridge);
+        }}
+        type="button"
+      >
+        Reopen the document
+      </button>
+      <button onClick={() => registerDocument(undefined)} type="button">
+        Close the document's editor
+      </button>
+      <button onClick={() => registerDocument(bridge)} type="button">
+        Bind the reopened editor
+      </button>
+    </>
   );
 }
 
@@ -1199,6 +1209,42 @@ test("the margin removes the composer's mark when the composer is cancelled or r
     expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument();
     // The replaced document is told nothing more once the document reopened onto `reopened`.
     expect(fake.removed).toEqual(["m-1-ask"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+// While a document's editor is still binding, the margin already shows that document's compose
+// (`useMarginSheet` follows the route), so the reader can close it before any bridge of that
+// document is registered. Its mark is in that document alone: the margin takes it out once the
+// document binds its editor again, and asks the editor that went nothing.
+test("a compose closed while its document's editor is still binding takes its mark out once the editor binds", async () => {
+  const user = userEvent.setup();
+  const retype = (markId: string, kind: string) => ({
+    markId: `${markId}-${kind}`,
+    placement: null,
+    quote: "selected",
+  });
+  const fake = fakeBridge(retype);
+  const reopened = fakeBridge(retype);
+  const view = renderMarginWithBridge(fake.bridge, reopened.bridge);
+  const removed = () => ({ first: [...fake.removed], reopened: [...reopened.removed] });
+
+  try {
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
+    const composer = await screen.findByRole("form", { name: "Comment composer" });
+    await user.click(screen.getByRole("button", { name: "Close the document's editor" }));
+    // Nothing is typed, so Close ends the compose at once.
+    await user.click(within(composer).getByRole("button", { name: "Close" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("First composer outcome").textContent).toBe("composer closed")
+    );
+    const whileBinding = removed();
+    await user.click(screen.getByRole("button", { name: "Bind the reopened editor" }));
+    expect({ bound: removed(), whileBinding }).toEqual({
+      bound: { first: [], reopened: ["m-1"] },
+      whileBinding: { first: [], reopened: [] },
+    });
   } finally {
     view.unmount();
   }
@@ -1592,25 +1638,6 @@ test("a newer compose on a document whose send is out waits on it, after visits 
   }
 });
 
-/** Registers the bridge of the document the route shows, as each document page registers its
- *  own: CORE-1's spec, or CORE-2's while the reader is on the second issue. */
-function RegisterRouteBridge({
-  first,
-  second,
-}: {
-  first: DocumentBridge;
-  second: DocumentBridge;
-}): ReactNode {
-  const { registerDocument } = useMargin();
-  const { pathname } = useLocation();
-  const bridge = pathname === buildIssuePath({ key: "CORE-2", kind: "issue" }) ? second : first;
-  useEffect(() => {
-    registerDocument(bridge);
-    return () => registerDocument(undefined);
-  }, [bridge, registerDocument]);
-  return null;
-}
-
 // One compose is open per document (`composeForMark`): a compose on the second document leaves
 // the first document's compose open, its mark with it, and a newer compose replaces only the one
 // on its own document, whose editor is the one registered then. So the margin takes each replaced
@@ -1642,7 +1669,7 @@ test("a compose on another document leaves the first open with its mark, and eac
     <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
         <MarginProvider>
-          <RegisterRouteBridge first={first.bridge} second={second.bridge} />
+          <RegisterRouteDocument first={first.bridge} second={second.bridge} />
           <MarkComposerProbe />
           <SecondDocumentCompose />
           <NavigateToSecondIssue />

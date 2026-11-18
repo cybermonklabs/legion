@@ -101,21 +101,21 @@
  * above or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
-import { type MutationKey, type QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import type { MutationKey, QueryClient } from "@tanstack/react-query";
+import { act, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
 
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import {
   BODY,
-  endAsAReload,
+  drawInboxColumn,
   HELD,
   type Held,
+  holdInInboxBox,
+  inboxBoxField,
+  inboxNote,
+  inboxPane,
   newQueryClient,
-  noteIn,
   REFUSAL,
-  REFUSED_NOTE,
   signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
@@ -130,11 +130,9 @@ import type {
   MyReplyThreadRow,
 } from "../../api/types";
 import type { SentRequest } from "../conversation/send-request";
-import { DocumentRuntime } from "../doc/runtime";
-import { MarginProvider } from "../margin/margin-context";
 import { plannerAgentRow } from "../threads/replies-fixture";
 import { installInboxApiMocks } from "./inbox-fixture";
-import { ReadingPane } from "./ReadingPane";
+import { threadSendKey } from "./ThreadBody";
 
 installInboxApiMocks();
 
@@ -248,9 +246,6 @@ function plannerThread(replies: readonly string[]): MessageRead[] {
   ];
 }
 
-/** The send name of a thread's box (`threadSendKey` in `ThreadBody.tsx`). */
-const boxKey = (threadId: string): MutationKey => ["inbox-thread-reply", threadId];
-
 /** A reply of `BODY` from the first comment thread's box, and from the Planner thread's box. */
 const commentReply = sentRequest(BODY, {
   actor: bob,
@@ -303,7 +298,7 @@ async function openColumn(
   stopped?: { readonly key: MutationKey; readonly request: SentRequest }
 ): Promise<Column> {
   const user = userEvent.setup();
-  let client = commentsClient();
+  const client = commentsClient();
   const reads = [
     spyOn(api, "getArtifact").mockRejectedValue(new Error("no document seeded")),
     spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
@@ -326,39 +321,18 @@ async function openColumn(
   }
   createComment.mockRejectedValue(REFUSAL);
   createAgentMessage.mockRejectedValue(REFUSAL);
-  const fake = fakeDocumentRuntime({ text: "The live document" });
-  const tree = (shown: MyReplyRow) => (
-    <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <DocumentRuntime.Provider value={fake.runtime}>
-          <MarginProvider>
-            <ReadingPane
-              onAnswered={() => {}}
-              onSnoozeLive={() => {}}
-              row={{ kind: "thread", thread: shown }}
-              viewer="alice"
-            />
-          </MarginProvider>
-        </DocumentRuntime.Provider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  let view = render(tree(row));
+  const column = drawInboxColumn(client, row, commentsClient);
   return {
     get client() {
-      return client;
+      return column.client;
     },
     createAgentMessage,
     createComment,
     listAgentMessages,
-    move: (shown) => view.rerender(tree(shown)),
-    reload: (shown) => {
-      endAsAReload(() => view.unmount());
-      client = commentsClient();
-      view = render(tree(shown));
-    },
+    move: column.move,
+    reload: column.reload,
     restore: () => {
-      view.unmount();
+      column.unmount();
       createComment.mockRestore();
       createAgentMessage.mockRestore();
       listAgentMessages.mockRestore();
@@ -368,36 +342,8 @@ async function openColumn(
   };
 }
 
-const pane = () => screen.getByTestId("inbox-pane");
-
-/** The box's field: `Reply` in a comment thread, `Comment` in an Agent row's thread. */
-const boxField = (name: "Reply" | "Comment") =>
-  within(pane()).getByRole<HTMLTextAreaElement>("textbox", { name });
-
-/** Which note the column shows about a send its box holds. */
-const note = () => noteIn(pane());
-
-/** Puts `BODY` in the box of the box's field `name`, in the state `held` names; a stopped reply
- *  is the one `openColumn` seeded. */
-async function holdInBox(column: Column, name: "Reply" | "Comment", held: Held): Promise<void> {
-  const field = await within(
-    await screen.findByTestId("inbox-pane")
-  ).findByRole<HTMLTextAreaElement>("textbox", { name });
-  if (held === "stopped") {
-    await waitFor(() => expect(note()).toBe("stopped"));
-    return;
-  }
-  await column.user.click(field);
-  await column.user.keyboard("{Control>}a{/Control}");
-  await column.user.paste(BODY);
-  if (held === "refused") {
-    await column.user.click(within(pane()).getByRole("button", { name: "Send" }));
-    await within(pane()).findByText(REFUSED_NOTE);
-  }
-}
-
 const stoppedComment = (held: Held) =>
-  held === "stopped" ? { key: boxKey("comment-1"), request: commentReply } : undefined;
+  held === "stopped" ? { key: threadSendKey("comment-1"), request: commentReply } : undefined;
 
 // The column moving to another row is the host's move, and it takes the box off the screen: the
 // box's draft waits under its send name, and the box drawn when the column comes back shows it.
@@ -405,11 +351,11 @@ for (const held of HELD) {
   test(`${HOST} · the column moves to another row, then back · ${held}`, async () => {
     const column = await openColumn(firstRow, stoppedComment(held));
     try {
-      await holdInBox(column, "Reply", held);
+      await holdInInboxBox(column.user, held);
       column.move(otherRow);
-      const other = pane().querySelector('[data-inbox-thread="comment-9"]') !== null;
+      const other = inboxPane().querySelector('[data-inbox-thread="comment-9"]') !== null;
       column.move(firstRow);
-      expect({ back: { note: note(), text: boxField("Reply").value }, other }).toEqual({
+      expect({ back: { note: inboxNote(), text: inboxBoxField("Reply").value }, other }).toEqual({
         back: { note: held === "typed" ? "none" : held, text: BODY },
         other: true,
       });
@@ -420,7 +366,7 @@ for (const held of HELD) {
 }
 
 const stoppedAgent = (held: Held) =>
-  held === "stopped" ? { key: boxKey("message-1"), request: agentReply } : undefined;
+  held === "stopped" ? { key: threadSendKey("message-1"), request: agentReply } : undefined;
 
 // An Agent row's box is drawn afresh for each row too, keyed by its thread, so the column moving
 // to a comment thread and back is the same host's move: the box's draft waits under its send name,
@@ -429,16 +375,16 @@ for (const held of HELD) {
   test(`${HOST} · the column moves to another row, then back · an Agent row's box · ${held}`, async () => {
     const column = await openColumn(plannerAgentRow(), stoppedAgent(held));
     try {
-      await holdInBox(column, "Comment", held);
+      await holdInInboxBox(column.user, held, "Comment");
       column.move(firstRow);
       const other = (
-        await within(pane()).findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" })
+        await within(inboxPane()).findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" })
       ).value;
       column.move(plannerAgentRow());
-      const field = await within(pane()).findByRole<HTMLTextAreaElement>("textbox", {
+      const field = await within(inboxPane()).findByRole<HTMLTextAreaElement>("textbox", {
         name: "Comment",
       });
-      expect({ back: { note: note(), text: field.value }, other }).toEqual({
+      expect({ back: { note: inboxNote(), text: field.value }, other }).toEqual({
         back: { note: held === "typed" ? "none" : held, text: BODY },
         other: "",
       });
@@ -452,7 +398,7 @@ for (const held of HELD) {
 async function newerAnswer(column: Column): Promise<void> {
   column.listAgentMessages.mockResolvedValue(plannerThread(["reply-1", "reply-2"]));
   await act(() => column.client.invalidateQueries());
-  await within(pane()).findByText(MOVED_ON);
+  await within(inboxPane()).findByText(MOVED_ON);
 }
 
 // A newer message moves an Agent row's box onto it: the host's move, which carries nothing. The
@@ -462,15 +408,15 @@ for (const held of ["refused", "stopped"] as const) {
   test(`${HOST} · host moves it over a refusal (elsewhere) · ${held}`, async () => {
     const column = await openColumn(
       plannerAgentRow(),
-      held === "stopped" ? { key: boxKey("message-1"), request: agentReply } : undefined
+      held === "stopped" ? { key: threadSendKey("message-1"), request: agentReply } : undefined
     );
     try {
-      await holdInBox(column, "Comment", held);
+      await holdInInboxBox(column.user, held, "Comment");
       await newerAnswer(column);
       expect({
-        note: note(),
-        retry: within(pane()).queryAllByRole("button", { name: "Retry" }).length,
-        text: boxField("Comment").value,
+        note: inboxNote(),
+        retry: within(inboxPane()).queryAllByRole("button", { name: "Retry" }).length,
+        text: inboxBoxField("Comment").value,
       }).toEqual({ note: held, retry: 0, text: BODY });
     } finally {
       column.restore();
@@ -487,19 +433,19 @@ test(`${HOST} · typed while a refusal is held elsewhere, then the composer unmo
   const column = await openColumn(plannerAgentRow());
   const typed = "Reply meant for the newer answer";
   try {
-    await holdInBox(column, "Comment", "refused");
+    await holdInInboxBox(column.user, "refused", "Comment");
     await newerAnswer(column);
-    await column.user.click(boxField("Comment"));
+    await column.user.click(inboxBoxField("Comment"));
     await column.user.keyboard("{Control>}a{/Control}");
     await column.user.paste(typed);
     column.move(firstRow);
-    await within(pane()).findByRole("textbox", { name: "Reply" });
+    await within(inboxPane()).findByRole("textbox", { name: "Reply" });
     column.move(plannerAgentRow());
-    await within(pane()).findByRole("textbox", { name: "Comment" });
+    await within(inboxPane()).findByRole("textbox", { name: "Comment" });
     const back = screen
       .getAllByRole<HTMLTextAreaElement>("textbox")
       .some((box) => box.value.includes(typed));
-    expect({ back, refusal: note() }).toEqual({ back: true, refusal: "refused" });
+    expect({ back, refusal: inboxNote() }).toEqual({ back: true, refusal: "refused" });
   } finally {
     column.restore();
   }
@@ -510,10 +456,10 @@ for (const held of HELD) {
   test(`${HOST} · Escape in the field · ${held}`, async () => {
     const column = await openColumn(firstRow, stoppedComment(held));
     try {
-      await holdInBox(column, "Reply", held);
-      await column.user.click(boxField("Reply"));
+      await holdInInboxBox(column.user, held);
+      await column.user.click(inboxBoxField("Reply"));
       await column.user.keyboard("{Escape}");
-      expect({ note: note(), text: boxField("Reply").value }).toEqual({
+      expect({ note: inboxNote(), text: inboxBoxField("Reply").value }).toEqual({
         note: held === "typed" ? "none" : held,
         text: BODY,
       });
@@ -526,8 +472,8 @@ for (const held of HELD) {
 test(`${HOST} · Cancel reply · cannot make: a standing box draws no Cancel reply`, async () => {
   const column = await openColumn(firstRow);
   try {
-    await holdInBox(column, "Reply", "typed");
-    expect(within(pane()).queryAllByRole("button", { name: "Cancel reply" }).length).toBe(0);
+    await holdInInboxBox(column.user, "typed");
+    expect(within(inboxPane()).queryAllByRole("button", { name: "Cancel reply" }).length).toBe(0);
   } finally {
     column.restore();
   }
@@ -536,8 +482,8 @@ test(`${HOST} · Cancel reply · cannot make: a standing box draws no Cancel rep
 test(`${HOST} · Close, then Discard draft? · cannot make: the box draws no Close`, async () => {
   const column = await openColumn(firstRow);
   try {
-    await holdInBox(column, "Reply", "typed");
-    expect(within(pane()).queryAllByRole("button", { name: "Close" }).length).toBe(0);
+    await holdInInboxBox(column.user, "typed");
+    expect(within(inboxPane()).queryAllByRole("button", { name: "Close" }).length).toBe(0);
   } finally {
     column.restore();
   }
@@ -546,8 +492,8 @@ test(`${HOST} · Close, then Discard draft? · cannot make: the box draws no Clo
 test(`${HOST} · Agents pick · cannot make: an Agent row's box draws no issue picker`, async () => {
   const column = await openColumn(plannerAgentRow());
   try {
-    await holdInBox(column, "Comment", "typed");
-    expect(within(pane()).queryAllByRole("button", { name: "Choose issue" }).length).toBe(0);
+    await holdInInboxBox(column.user, "typed", "Comment");
+    expect(within(inboxPane()).queryAllByRole("button", { name: "Choose issue" }).length).toBe(0);
   } finally {
     column.restore();
   }
@@ -561,12 +507,12 @@ for (const held of HELD) {
   test(`${HOST} · the page reloaded, then back · ${held}`, async () => {
     const column = await openColumn(firstRow, stoppedComment(held));
     try {
-      await holdInBox(column, "Reply", held);
+      await holdInInboxBox(column.user, held);
       column.reload(firstRow);
       const field = await within(
         await screen.findByTestId("inbox-pane")
       ).findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
-      expect({ note: note(), text: field.value }).toEqual({
+      expect({ note: inboxNote(), text: field.value }).toEqual({
         note: held === "typed" ? "none" : held,
         text: BODY,
       });
@@ -580,12 +526,12 @@ for (const held of HELD) {
   test(`${HOST} · the page reloaded, then back · an Agent row's box · ${held}`, async () => {
     const column = await openColumn(plannerAgentRow(), stoppedAgent(held));
     try {
-      await holdInBox(column, "Comment", held);
+      await holdInInboxBox(column.user, held, "Comment");
       column.reload(plannerAgentRow());
       const field = await within(
         await screen.findByTestId("inbox-pane")
       ).findByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
-      expect({ note: note(), text: field.value }).toEqual({
+      expect({ note: inboxNote(), text: field.value }).toEqual({
         note: held === "typed" ? "none" : held,
         text: BODY,
       });

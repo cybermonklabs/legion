@@ -565,10 +565,9 @@ export class HeldSends {
    *  thread composer's Cancel reply - and `into` is the one that shows `to`, the docked composer
    *  at the issue's own address, which has taken the send's draft into its field. A composer
    *  takes a carried draft only while it holds no send of its own, out or refused
-   *  (`DraftIntake`), so the send carried in is the only one under `into`. The margin moves a
-   *  stopped compose this way too: aside, unchanged, under a name no composer sends from, when a
-   *  newer compose on its document takes its place, and from there into that compose, at its
-   *  words and in its kind (`at`), when the reader presses Use my draft there. */
+   *  (`DraftIntake`), so the send carried in is the only one under `into`. The margin carries a
+   *  stopped compose set aside (`setAside`) into the newer compose that took its place this way,
+   *  at its words and in its kind (`at`), when the reader presses Use my draft there. */
   carryInto(
     mutationKey: MutationKey,
     into: MutationKey,
@@ -579,6 +578,20 @@ export class HeldSends {
     if (held?.status !== "refused") return;
     this.#writes.amend(held.id, composerSend, (detail) => ({
       ...carriedTo(detail, held.refusal, to, at),
+      mutationKey: sendName(into),
+    }));
+  }
+
+  /** Moves the refused send under `mutationKey` to the name `into`, and nothing else: its
+   *  request, its key, its draft and its refusal stay as they are, since no address moves. The
+   *  margin sets a stopped compose aside this way when a newer compose on its document takes its
+   *  place, under a name no composer sends from (`marginComposeKeptKey`), and puts it back under
+   *  its compose's own name the same way once no compose is open there (`useMarginSheet`). */
+  setAside(mutationKey: MutationKey, into: MutationKey): void {
+    const held = this.get(mutationKey);
+    if (held?.status !== "refused") return;
+    this.#writes.amend(held.id, composerSend, (detail) => ({
+      ...detail,
       mutationKey: sendName(into),
     }));
   }

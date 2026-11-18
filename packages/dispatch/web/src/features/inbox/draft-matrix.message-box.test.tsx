@@ -82,21 +82,19 @@
  * above or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, spyOn, test } from "bun:test";
-import { type MutationKey, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
 
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import {
   BODY,
-  endAsAReload,
+  drawInboxColumn,
   HELD,
-  type Held,
+  holdInInboxBox,
+  inboxBoxField,
+  inboxNote,
+  inboxPane,
   newQueryClient,
-  noteIn,
   REFUSAL,
-  REFUSED_NOTE,
   signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
@@ -108,10 +106,8 @@ import type {
   MyReplyRow,
   MyReplyThreadRow,
 } from "../../api/types";
-import { DocumentRuntime } from "../doc/runtime";
-import { MarginProvider } from "../margin/margin-context";
 import { installInboxApiMocks } from "./inbox-fixture";
-import { ReadingPane } from "./ReadingPane";
+import { threadSendKey } from "./ThreadBody";
 
 installInboxApiMocks();
 
@@ -170,9 +166,6 @@ const otherRow = messageRow({
   thread_id: "message-9",
 });
 
-/** The send name of a thread's box (`threadSendKey` in `ThreadBody.tsx`). */
-const boxKey = (threadId: string): MutationKey => ["inbox-thread-reply", threadId];
-
 /** A reply of `BODY` from the first thread's box to its root message. */
 const messageReply = sentRequest(BODY, {
   actor: bob,
@@ -199,7 +192,7 @@ interface Column {
  */
 async function openColumn(row: MyReplyRow, stopped: boolean): Promise<Column> {
   const user = userEvent.setup();
-  let client = signedInAsReader(newQueryClient());
+  const client = signedInAsReader(newQueryClient());
   const reads = [
     // The box reads one field of the issue: whether it is closed.
     spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails),
@@ -211,37 +204,19 @@ async function openColumn(row: MyReplyRow, stopped: boolean): Promise<Column> {
   const createComment = spyOn(api, "createComment");
   const createMessage = spyOn(api, "createMessage");
   if (stopped) {
-    await stopSend(client, boxKey("message-1"), messageReply, [createComment, createMessage]);
+    await stopSend(client, threadSendKey("message-1"), messageReply, [
+      createComment,
+      createMessage,
+    ]);
   }
   createComment.mockRejectedValue(REFUSAL);
   createMessage.mockRejectedValue(REFUSAL);
-  const fake = fakeDocumentRuntime({ text: "The live document" });
-  const tree = (shown: MyReplyRow) => (
-    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
-      <QueryClientProvider client={client}>
-        <DocumentRuntime.Provider value={fake.runtime}>
-          <MarginProvider>
-            <ReadingPane
-              onAnswered={() => {}}
-              onSnoozeLive={() => {}}
-              row={{ kind: "thread", thread: shown }}
-              viewer="alice"
-            />
-          </MarginProvider>
-        </DocumentRuntime.Provider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  let view = render(tree(row));
+  const column = drawInboxColumn(client, row, () => signedInAsReader(newQueryClient()));
   return {
-    move: (shown) => view.rerender(tree(shown)),
-    reload: (shown) => {
-      endAsAReload(() => view.unmount());
-      client = signedInAsReader(newQueryClient());
-      view = render(tree(shown));
-    },
+    move: column.move,
+    reload: column.reload,
     restore: () => {
-      view.unmount();
+      column.unmount();
       createComment.mockRestore();
       createMessage.mockRestore();
       for (const read of reads) read.mockRestore();
@@ -250,50 +225,24 @@ async function openColumn(row: MyReplyRow, stopped: boolean): Promise<Column> {
   };
 }
 
-const pane = () => screen.getByTestId("inbox-pane");
-
-const boxField = () => within(pane()).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
-
-/** Which note the column shows about a send its box holds. */
-const note = () => noteIn(pane());
-
-/** Puts `BODY` in the first thread's box, in the state `held` names; a stopped reply is the one
- *  `openColumn` seeded. */
-async function holdInBox(column: Column, held: Held): Promise<void> {
-  const field = await within(
-    await screen.findByTestId("inbox-pane")
-  ).findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
-  if (held === "stopped") {
-    await waitFor(() => expect(note()).toBe("stopped"));
-    return;
-  }
-  await column.user.click(field);
-  await column.user.keyboard("{Control>}a{/Control}");
-  await column.user.paste(BODY);
-  if (held === "refused") {
-    await column.user.click(within(pane()).getByRole("button", { name: "Send" }));
-    await within(pane()).findByText(REFUSED_NOTE);
-  }
-}
-
 // The column moving to another row is the host's move, and it takes the box off the screen: the
 // box's draft waits under its send name, and the box drawn when the column comes back shows it.
 for (const held of HELD) {
   test(`${HOST} · the column moves to another row, then back · ${held}`, async () => {
     const column = await openColumn(firstRow, held === "stopped");
     try {
-      await holdInBox(column, held);
+      await holdInInboxBox(column.user, held);
       column.move(otherRow);
       const other = await waitFor(() => {
-        const box = pane().querySelector('[data-inbox-thread="message-9"]');
+        const box = inboxPane().querySelector('[data-inbox-thread="message-9"]');
         if (box === null) throw new Error("expected the other thread");
-        return within(pane()).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value;
+        return inboxBoxField().value;
       });
       column.move(firstRow);
       await waitFor(() =>
-        expect(pane().querySelector('[data-inbox-thread="message-1"]')).not.toBe(null)
+        expect(inboxPane().querySelector('[data-inbox-thread="message-1"]')).not.toBe(null)
       );
-      expect({ back: { note: note(), text: boxField().value }, other }).toEqual({
+      expect({ back: { note: inboxNote(), text: inboxBoxField().value }, other }).toEqual({
         back: { note: held === "typed" ? "none" : held, text: BODY },
         other: "",
       });
@@ -308,10 +257,10 @@ for (const held of HELD) {
   test(`${HOST} · Escape in the field · ${held}`, async () => {
     const column = await openColumn(firstRow, held === "stopped");
     try {
-      await holdInBox(column, held);
-      await column.user.click(boxField());
+      await holdInInboxBox(column.user, held);
+      await column.user.click(inboxBoxField());
       await column.user.keyboard("{Escape}");
-      expect({ note: note(), text: boxField().value }).toEqual({
+      expect({ note: inboxNote(), text: inboxBoxField().value }).toEqual({
         note: held === "typed" ? "none" : held,
         text: BODY,
       });
@@ -324,8 +273,8 @@ for (const held of HELD) {
 test(`${HOST} · Cancel reply · cannot make: a standing box draws no Cancel reply`, async () => {
   const column = await openColumn(firstRow, false);
   try {
-    await holdInBox(column, "typed");
-    expect(within(pane()).queryAllByRole("button", { name: "Cancel reply" }).length).toBe(0);
+    await holdInInboxBox(column.user, "typed");
+    expect(within(inboxPane()).queryAllByRole("button", { name: "Cancel reply" }).length).toBe(0);
   } finally {
     column.restore();
   }
@@ -334,8 +283,8 @@ test(`${HOST} · Cancel reply · cannot make: a standing box draws no Cancel rep
 test(`${HOST} · Close, then Discard draft? · cannot make: the box draws no Close`, async () => {
   const column = await openColumn(firstRow, false);
   try {
-    await holdInBox(column, "typed");
-    expect(within(pane()).queryAllByRole("button", { name: "Close" }).length).toBe(0);
+    await holdInInboxBox(column.user, "typed");
+    expect(within(inboxPane()).queryAllByRole("button", { name: "Close" }).length).toBe(0);
   } finally {
     column.restore();
   }
@@ -348,12 +297,12 @@ for (const held of HELD) {
   test(`${HOST} · the page reloaded, then back · ${held}`, async () => {
     const column = await openColumn(firstRow, held === "stopped");
     try {
-      await holdInBox(column, held);
+      await holdInInboxBox(column.user, held);
       column.reload(firstRow);
       const field = await within(
         await screen.findByTestId("inbox-pane")
       ).findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
-      expect({ note: note(), text: field.value }).toEqual({
+      expect({ note: inboxNote(), text: field.value }).toEqual({
         note: held === "typed" ? "none" : held,
         text: BODY,
       });

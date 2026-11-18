@@ -1,18 +1,20 @@
 /**
  * What the draft matrix files (`draft-matrix.*.test.tsx`, INFRA-1503) share: the refusal their
  * writes get and the notes a composer shows about a send it holds, the draft a cell writes and the
- * states it holds it in, the lines a cell reads to tell whether a draft is kept, the comments the
- * Conversation's hosts answer, the Conversation page as each Conversation host draws it (and as
- * `ConversationTab.test.tsx` draws it), the margin's page over two threads, the Planner session
- * an Agents row draws, and the reload a reload row makes. A stopped send is seeded with
+ * states it holds it in, the lines a cell reads to tell whether a draft is kept and the reply
+ * field it reads a draft back from, the comments the Conversation's hosts answer, the Conversation
+ * page as each Conversation host draws it (and as `ConversationTab.test.tsx` draws it), the
+ * margin's page over two threads and the documents it registers (and as `Margin.test.tsx`
+ * registers them), the Inbox reading column the two Inbox files draw, the Planner session an
+ * Agents row draws, and the reload a reload row makes. A stopped send is seeded with
  * `stop-late-write.ts`.
  */
-import { spyOn } from "bun:test";
+import { expect, spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { ApiError, api } from "../api/client";
 import type {
@@ -24,14 +26,17 @@ import type {
   Handoff,
   IssueAskThreadRow,
   MessageRead,
+  MyReplyRow,
   UserState,
 } from "../api/types";
 import { ConversationTab } from "../features/conversation/ConversationTab";
 import { unsentDraftsOf } from "../features/conversation/unsent-drafts";
+import { DocumentRuntime } from "../features/doc/runtime";
 import { answerDraftsSignedIn } from "../features/inbox/answer-drafts";
+import { ReadingPane } from "../features/inbox/ReadingPane";
 import { replyDraftsSignedIn } from "../features/inbox/reply-drafts";
 import { Margin } from "../features/margin/Margin";
-import { MarginProvider, useMargin } from "../features/margin/margin-context";
+import { type DocumentBridge, MarginProvider, useMargin } from "../features/margin/margin-context";
 import {
   comment,
   issue,
@@ -43,6 +48,7 @@ import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { SendStoppedError } from "../features/writes/keyed-write";
 import { writesOf } from "../features/writes/write-store";
 import { commentDeliveryFields } from "./comment-fixture";
+import { fakeDocumentRuntime } from "./document-runtime";
 import { graphNode } from "./graph-fixture";
 
 /** Dispatch refusing a send outright, as a 400 does: no attempt follows under its key. */
@@ -84,6 +90,17 @@ export function noteIn(place: HTMLElement): Held | "none" {
  *  or stopped send had. */
 export function expectedBack(held: Held): { note: Held | "none"; text: string } {
   return { note: held === "typed" ? "none" : held, text: BODY };
+}
+
+/** The reply field in `place`: a thread card's, or a thread view's. */
+export function replyField(place: HTMLElement): HTMLTextAreaElement {
+  return within(place).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+}
+
+/** What the reply composer in `place` holds where it shows again: its text, and the note it shows
+ *  about a send it holds. */
+export function heldIn(place: HTMLElement): { note: Held | "none"; text: string } {
+  return { note: noteIn(place), text: replyField(place).value };
 }
 
 /** Whether a line the reader can see says the earlier draft is kept and names where it was
@@ -298,6 +315,26 @@ export function RegisterDocument(): ReactNode {
   return null;
 }
 
+/** Registers the bridge of the document the route shows, as each document page registers its own:
+ *  `second`, CORE-2's spec, while the reader is on CORE-2, and `first`, CORE-1's, on every other
+ *  route. A route's bridge registers as its page draws and unregisters as the page goes. */
+export function RegisterRouteDocument({
+  first,
+  second,
+}: {
+  readonly first: DocumentBridge;
+  readonly second: DocumentBridge;
+}): ReactNode {
+  const { registerDocument } = useMargin();
+  const { pathname } = useLocation();
+  const bridge = pathname === buildIssuePath({ key: "CORE-2", kind: "issue" }) ? second : first;
+  useEffect(() => {
+    registerDocument(bridge);
+    return () => registerDocument(undefined);
+  }, [bridge, registerDocument]);
+  return null;
+}
+
 /** Thread `id`'s card in the margin's list, looked up afresh, since opening a thread draws its
  *  card again. */
 export function marginCard(id: string): HTMLElement {
@@ -335,6 +372,100 @@ export function marginPage(queryClient: QueryClient, children: ReactNode): React
       </QueryClientProvider>
     </MemoryRouter>
   );
+}
+
+/** The Inbox's reading column, as `ReadingPane` draws it. */
+export function inboxPane(): HTMLElement {
+  return screen.getByTestId("inbox-pane");
+}
+
+/** The field of the column's box: `Reply` in a comment or message thread, `Comment` in an Agent
+ *  row's thread. */
+export function inboxBoxField(name: "Reply" | "Comment" = "Reply"): HTMLTextAreaElement {
+  return within(inboxPane()).getByRole<HTMLTextAreaElement>("textbox", { name });
+}
+
+/** Which note the column shows about a send its box holds. */
+export function inboxNote(): Held | "none" {
+  return noteIn(inboxPane());
+}
+
+/** Puts `BODY` in the column's box, whose field is named `name`, in the state `held` names; a
+ *  stopped reply is one the file seeded under the box's send name (`threadSendKey`) before the
+ *  column was drawn. */
+export async function holdInInboxBox(
+  user: UserEvent,
+  held: Held,
+  name: "Reply" | "Comment" = "Reply"
+): Promise<void> {
+  const field = await within(
+    await screen.findByTestId("inbox-pane")
+  ).findByRole<HTMLTextAreaElement>("textbox", { name });
+  if (held === "stopped") {
+    await waitFor(() => expect(inboxNote()).toBe("stopped"));
+    return;
+  }
+  await user.click(field);
+  await user.keyboard("{Control>}a{/Control}");
+  await user.paste(BODY);
+  if (held === "refused") {
+    await user.click(within(inboxPane()).getByRole("button", { name: "Send" }));
+    await within(inboxPane()).findByText(REFUSED_NOTE);
+  }
+}
+
+/** The Inbox reading column a file drew (`drawInboxColumn`). */
+export interface InboxColumn {
+  /** The query client the column is drawn over now: a reload draws it over a new one. */
+  readonly client: QueryClient;
+  /** The column moved to another row, as the Inbox moves it: the same column, drawn again. */
+  readonly move: (row: MyReplyRow) => void;
+  /** Ends the page as a reload does and loads it again over the same tab on `row`, with the
+   *  query client the file's `newClient` makes for the next load (`endAsAReload`). */
+  readonly reload: (row: MyReplyRow) => void;
+  readonly unmount: () => void;
+}
+
+/** The Inbox reading column on `row` over `client`, as the Inbox draws it beside its list, for the
+ *  reader: inside the margin's provider, over a document runtime for a thread written in a
+ *  document. A reload draws it again over `newClient()`, as the next load of the tab makes its own
+ *  query client. */
+export function drawInboxColumn(
+  client: QueryClient,
+  row: MyReplyRow,
+  newClient: () => QueryClient
+): InboxColumn {
+  let shownClient = client;
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const tree = (shown: MyReplyRow) => (
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={shownClient}>
+        <DocumentRuntime.Provider value={fake.runtime}>
+          <MarginProvider>
+            <ReadingPane
+              onAnswered={() => {}}
+              onSnoozeLive={() => {}}
+              row={{ kind: "thread", thread: shown }}
+              viewer={READER_LOGIN}
+            />
+          </MarginProvider>
+        </DocumentRuntime.Provider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  let view = render(tree(row));
+  return {
+    get client() {
+      return shownClient;
+    },
+    move: (shown) => view.rerender(tree(shown)),
+    reload: (shown) => {
+      endAsAReload(() => view.unmount());
+      shownClient = newClient();
+      view = render(tree(shown));
+    },
+    unmount: () => view.unmount(),
+  };
 }
 
 /** A running session the Agents page draws a row for, whose composer a test types into. */

@@ -985,18 +985,11 @@ export class Writes {
       // The person's session may have lapsed under the write: the page reads who is signed in
       // again, and a lapse holds every write until the sign-in that follows (`signedIn`). The
       // answer says whether the check, read afresh, still names the person who pressed it, which
-      // makes a repeated 401 Dispatch's refusal (`writeUnderKey`). Another ask made while that
-      // check is out - a second write's 401, news of a sign-in - cancels it and starts a check of
-      // its own (`askSignInAgain`), which ends the wait for the first before any check answers,
-      // so the answer read is the newest check's, once it is in.
+      // makes a repeated 401 Dispatch's refusal (`writeUnderKey`). The answer read is the newest
+      // check's, once it is in (`askSignInAgain`): another ask made meanwhile starts a check of
+      // its own, and a check paused offline has not answered yet.
       unauthorized: async () => {
         await askSignInAgain(this.#client);
-        const whoami = this.#client.getQueryCache().find({ exact: true, queryKey: ["whoami"] });
-        for (;;) {
-          const out = whoami?.state.fetchStatus === "fetching" ? whoami.promise : undefined;
-          if (out === undefined) break;
-          await out.catch(() => undefined);
-        }
         const state = this.#client.getQueryState<AuthenticatedUser>(["whoami"]);
         return (
           state?.status === "success" &&

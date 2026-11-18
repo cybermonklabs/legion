@@ -1,4 +1,4 @@
-import { hashKey, type MutationKey, useQuery } from "@tanstack/react-query";
+import { type MutationKey, useQuery } from "@tanstack/react-query";
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -101,7 +101,7 @@ import {
   type ReplyTarget,
 } from "./composer-model";
 import { MODE_LABELS, plainDelivery } from "./delivery";
-import { type HeldSend, useHeldSend, useHeldSends } from "./held-sends";
+import type { HeldSend } from "./held-sends";
 import { KeptDraftOffers } from "./KeptDraftOffers";
 import { keptAwayLine } from "./KeptReply";
 import { ReplyQuote } from "./ReplyQuote";
@@ -124,7 +124,7 @@ import { useUnsentDrafts } from "./unsent-drafts";
 import { useAgents } from "./useAgents";
 import { useComposerSend } from "./useComposerSend";
 import { useDraftHomes } from "./useDraftHomes";
-import { mountDraft, useKeptDrafts } from "./useKeptDrafts";
+import { composerNameOf, mountDraft, type OfferedDraft, useKeptDrafts } from "./useKeptDrafts";
 
 interface MentionOption {
   readonly capabilities: readonly string[];
@@ -441,11 +441,12 @@ interface MentionComposerProps {
    *  thread shows it again, and a newer message the host moves the box onto leaves it in the
    *  field rather than prefilling over it. */
   readonly standing?: boolean;
-  /** Where a send of this composer's that the reader stopped waits once its host gave the
+  /** The send of this composer's that the reader stopped, waiting aside since its host gave the
    *  composer a newer address that carries nothing - the margin's compose at other words of the
-   *  document (`marginComposeKeptKey`): the composer offers it beside its own draft, saying it may
-   *  have been delivered, and Use my draft carries it here, still that send (`KeptAside`). */
-  readonly stoppedAside?: MutationKey;
+   *  document (`marginComposeKeptKey`) - as the host offers it with the presses that move it
+   *  (`OfferedDraft`): the composer offers it beside its own draft, saying it may have been
+   *  delivered, and Use my draft carries it here, still that send. */
+  readonly stoppedAside?: OfferedDraft;
   /** Shows the Comment / Suggest / Ask switch and hands each pick to the host, which answers
    *  through `kind` - a selected document mark is the only surface where the kind can change, and
    *  its mark has to change with it (the margin retypes it) - or returns, in the reader's words,
@@ -489,10 +490,8 @@ export function MentionComposer({
   });
   const registerComposer = useComposerRegistry();
   /** This composer's send by name, which is what the margin looks it up by. */
-  const composerName = mutationKey === undefined ? undefined : hashKey(mutationKey);
+  const composerName = mutationKey === undefined ? undefined : composerNameOf(mutationKey);
   const unsent = useUnsentDrafts();
-  const heldSendStore = useHeldSends();
-  const asideHeld = useHeldSend(stoppedAside);
   // Only the mount reads it, so it is computed once rather than on every keystroke (`mountDraft`).
   const [initial] = useState(() =>
     mountDraft({
@@ -800,18 +799,6 @@ export function MentionComposer({
     takeOffered,
   } = useKeptDrafts({
     anchor,
-    // The reader's presses on a stopped send waiting aside: Use my draft carries it into this
-    // composer's own name at its address, and Discard my draft drops it there.
-    aside: {
-      carry: (at) => {
-        if (stoppedAside === undefined || mutationKey === undefined) return;
-        heldSendStore.carryInto(stoppedAside, mutationKey, { owner, replyTo }, at);
-      },
-      drop: () => {
-        if (stoppedAside !== undefined) heldSendStore.discard(stoppedAside);
-      },
-      held: asideHeld,
-    },
     composerName,
     edit,
     field: { askOptions, body, mentions, multiple, replacement, urgency },
@@ -829,6 +816,7 @@ export function MentionComposer({
     replyTo,
     seedMentions,
     standing,
+    stoppedAside,
     unsent,
   });
   // Closed to this kind or finishing, with no send out, no refusal to show and no draft offered

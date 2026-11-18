@@ -227,8 +227,9 @@ type ThreadOwner = Extract<ComposerOwner, { kind: "issue" } | { kind: "artifact"
 
 /** The name the thread's reply is sent under: one per thread, so a reply still out or refused is
  *  shown by whichever surface mounts the composer again (`held-sends.ts`), and by no box drawn for
- *  another thread - an Agent row's thread too, though its session has threads besides. */
-function threadSendKey(threadId: string): readonly unknown[] {
+ *  another thread - an Agent row's thread too, though its session has threads besides. The draft
+ *  matrix's Inbox files seed a stopped reply under it. */
+export function threadSendKey(threadId: string): readonly unknown[] {
   return ["inbox-thread-reply", threadId];
 }
 

@@ -271,20 +271,24 @@ export function addressWords(
 }
 
 /**
- * A send the reader stopped, whose draft they have since moved to another address with the
- * composer's own controls (`HeldSends.carry`). The stopped write may have reached Dispatch at
- * `stopped`, its own address, and its key is used only there, so the draft sent from here is a
- * new message under a key of its own, which can make two: the sentence says so in the words of
- * every surface's stopped write (`stoppedWriteNote`). It ends as a stopped write does, with Retry
- * and Discard.
+ * What a send the reader stopped says once they have moved its draft to another address with the
+ * composer's own controls (`HeldSends.carry`): the stopped write may have reached Dispatch at
+ * `stopped`, its own address, and its key is used only there, so the draft sent from here is a new
+ * message under a key of its own, which can make two. It says so in the words of every surface's
+ * stopped write (`stoppedWriteNote`). A margin compose says the same beside a stopped send it
+ * offers for its words (`stoppedOfferOf` in `useKeptDrafts`).
  */
+export function movedSendNote(stopped: CarriedAddress): string {
+  return stoppedWriteNote(`this message, sent ${addressWords(stopped, "to")}`, "delivered there", {
+    anew: "Sending it from here is a new message, which can be delivered a second time if the first one was.",
+  });
+}
+
+/** A send the reader stopped whose draft they have since moved to another address, which says so
+ *  (`movedSendNote`). It ends as a stopped write does, with Retry and Discard. */
 export class SendMovedError extends SendStoppedError {
   constructor(stopped: CarriedAddress) {
-    super(
-      stoppedWriteNote(`this message, sent ${addressWords(stopped, "to")}`, "delivered there", {
-        anew: "Sending it from here is a new message, which can be delivered a second time if the first one was.",
-      })
-    );
+    super(movedSendNote(stopped));
     this.name = "SendMovedError";
   }
 }

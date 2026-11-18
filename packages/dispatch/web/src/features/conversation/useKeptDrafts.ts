@@ -1,3 +1,4 @@
+import { hashKey, type MutationKey } from "@tanstack/react-query";
 import {
   type Ref,
   type RefObject,
@@ -11,6 +12,7 @@ import {
 
 import type { ArtifactOwner } from "../../api/client";
 import type { AskUrgency } from "../../api/types";
+import { SendStoppedError } from "../writes/keyed-write";
 import { textareaValue } from "./block-spans";
 import {
   type AskOptionDraft,
@@ -27,15 +29,22 @@ import {
   hasUnsavedInput,
   type ReplyTarget,
 } from "./composer-model";
-import type { HeldSend } from "./held-sends";
+import type { HeldSend, HeldSends } from "./held-sends";
 import {
   type Address,
   addressWords,
+  movedSendNote,
   type SentDraft,
   type SentRequest,
   sameAddress,
 } from "./send-request";
-import { type AwayDraft, sameAnchor, sameReply, type UnsentDrafts } from "./unsent-drafts";
+import {
+  type AwayDraft,
+  awayDraftOf,
+  sameAnchor,
+  sameReply,
+  type UnsentDrafts,
+} from "./unsent-drafts";
 import type { ComposerSend } from "./useComposerSend";
 import type { DraftHomes } from "./useDraftHomes";
 
@@ -71,6 +80,36 @@ function keptNames({ composerName, inline, standing }: KeptUnder) {
      *  draft is that thread's until the reader sends or drops it. */
     unsentName: standing || inline ? composerName : undefined,
   };
+}
+
+/** The name of the composer that sends under `mutationKey` (`KeptUnder.composerName`): its send's
+ *  own name, which is what it keeps the reader's drafts under (`keptNames`). The margin keeps and
+ *  reads a compose's drafts under it from outside the composer (`giveWay`, `useMarginSheet`). */
+export function composerNameOf(mutationKey: MutationKey): string {
+  return hashKey(mutationKey);
+}
+
+/**
+ * What a margin compose's refusal becomes once a newer compose on its document takes its place,
+ * which is the host's move for it and carries nothing. A send the reader stopped may have been
+ * delivered, so it is not reduced to a draft: it waits under `aside` unchanged, its mark with it
+ * (`HeldSends.setAside`), for the newer compose to offer (`stoppedOfferOf`). Any other refusal
+ * goes, its mark with it, and its draft is kept under the compose's name for the words it was
+ * written about and in the kind it was written as (`awayDraftOf`), where the compose keeps a draft
+ * by address (`keptNames`' `awayName`) and the newer compose offers it (`keptForOtherWords`).
+ */
+export function giveWay(
+  refused: HeldSend & { readonly status: "refused" },
+  aside: MutationKey,
+  store: HeldSends,
+  unsent: UnsentDrafts
+): void {
+  if (refused.refusal instanceof SendStoppedError) {
+    store.setAside(refused.mutationKey, aside);
+    return;
+  }
+  unsent.keepAway(composerNameOf(refused.mutationKey), awayDraftOf(refused));
+  store.discard(refused.mutationKey);
 }
 
 /** What Send says while the refusal the composer holds lives at another address than the one it
@@ -196,64 +235,62 @@ export function mountDraft({
   return fresh;
 }
 
-/** A draft a margin compose kept for other words of its document than the compose shows now:
- *  one kept by address (`AwayDraft`), or the send the reader stopped there, which waits aside
- *  unchanged and may have been delivered (`stopped`, `KeptAside`). */
-export type OfferedDraft = AwayDraft & {
-  readonly anchor: ComposerAnchor;
-  readonly stopped?: true;
-};
+/** A draft a margin compose kept for words of its document (`AwayDraft.anchor`). */
+type KeptForWords = AwayDraft & { readonly anchor: ComposerAnchor };
 
-/** What a margin compose offers of the send the reader stopped there, once it waits aside
- *  (`KeptAside`): its draft, at the words and in the kind it went out with, saying it may have
- *  been delivered (`stopped`). */
-export function stoppedOfferOf(held: HeldSend | undefined): OfferedDraft | undefined {
-  const request = held?.status === "refused" ? held.request : undefined;
-  if (held === undefined || request?.anchor === undefined) return undefined;
-  return {
-    anchor: request.anchor,
-    ask: held.draft.ask,
-    draft: held.draft.draft,
-    kind: request.kind,
-    owner: request.owner,
-    replyTo: request.replyTo,
-    stopped: true,
-  };
+/**
+ * A draft a margin compose offers beside its field, kept for other words of its document than the
+ * compose shows now (`KeptDrafts.offered`): one its name keeps by address (`keptForOtherWords`), or
+ * the send the reader stopped there, which waits aside unchanged and may have been delivered
+ * (`stoppedOfferOf`). Each carries the reader's two presses for it, which move it where it is
+ * kept, so the composer never asks which of the two it offers.
+ */
+export interface OfferedDraft extends AwayDraft {
+  readonly anchor: ComposerAnchor;
+  /** Discard my draft: drops it where it is kept. */
+  readonly drop: () => void;
+  /** What the offer says of a send the reader stopped: it may have been delivered where it went,
+   *  and taken here it goes as a new message (`movedSendNote`). */
+  readonly note: string | undefined;
+  /** Use my draft, once the field holds the draft: a draft kept by address is kept there no
+   *  longer, and a stopped send is carried into the compose at `at`, its words and its kind, as
+   *  the reader's own move carries one (`HeldSends.carryInto`), so it says it may have been
+   *  delivered until that compose sends it or the reader discards it (`SendMovedError`). */
+  readonly take: (at: Pick<SentRequest, "anchor" | "kind">) => void;
 }
 
-/** The draft a composer at `anchor` offers beside its field (`KeptDrafts.offered`): the send the
- *  reader stopped, waiting aside (`stopped`), first, then the newest of the drafts its send name
- *  keeps by address (`kept`) for other words of the document. Only a composer with an anchor - a
- *  margin compose - offers one. The margin reads it too, to keep a compose that offers a draft
- *  open when its issue closes (`useMarginSheet`). */
-export function offeredDraft(
-  stopped: OfferedDraft | undefined,
+/** What a margin compose offers of the send the reader stopped on its document, once that send
+ *  waits aside (`giveWay`): its draft, at the words and in the kind it went out with
+ *  (`awayDraftOf`), saying it may have been delivered. The compose's host gives it the presses
+ *  that move that send (`MarginComposerSlot`), and the margin reads it to keep a compose that
+ *  offers it open when its issue closes (`useMarginSheet`). */
+export function stoppedOfferOf(
+  held: HeldSend | undefined
+): Omit<OfferedDraft, "drop" | "take"> | undefined {
+  if (held?.status !== "refused" || held.request.anchor === undefined) return undefined;
+  return { ...awayDraftOf(held), anchor: held.request.anchor, note: movedSendNote(held.request) };
+}
+
+/** The newest of the drafts a composer's name keeps by address (`kept`) for the reply `replyTo`
+ *  answers and for other words of the document than `anchor` names: the one a margin compose at
+ *  `anchor` offers beside its field while no send the reader stopped waits aside for it
+ *  (`KeptDrafts.offered`). Only a composer with an anchor - a margin compose - offers one. The
+ *  margin reads it too, to keep a compose that offers a draft open when its issue closes
+ *  (`useMarginSheet`). */
+export function keptForOtherWords(
   kept: readonly AwayDraft[],
   anchor: ComposerAnchor | undefined,
   replyTo: ReplyTarget | null
-): OfferedDraft | undefined {
+): KeptForWords | undefined {
   if (anchor === undefined) return undefined;
-  return (
-    stopped ??
-    kept
-      .filter(
-        (away): away is OfferedDraft =>
-          sameReply(away.replyTo, replyTo) &&
-          away.anchor !== undefined &&
-          !sameAnchor(away.anchor, anchor)
-      )
-      .at(-1)
-  );
-}
-
-/** Where a margin compose's stopped send waits once a newer compose on its document took its
- *  place (`marginComposeKeptKey`), as this composer's host hands it over: the send, and the moves
- *  the reader's presses make of it - into this composer at its words and in its kind
- *  (`HeldSends.carryInto`), or dropped. */
-export interface KeptAside {
-  readonly carry: (at: Pick<SentRequest, "anchor" | "kind">) => void;
-  readonly drop: () => void;
-  readonly held: HeldSend | undefined;
+  return kept
+    .filter(
+      (away): away is KeptForWords =>
+        sameReply(away.replyTo, replyTo) &&
+        away.anchor !== undefined &&
+        !sameAnchor(away.anchor, anchor)
+    )
+    .at(-1);
 }
 
 /** What the composer keeps of a draft the field does not send, the edit it offers beside a newer
@@ -269,8 +306,9 @@ export interface KeptDrafts {
   /** Drops the edit waiting beside a newer body, with what is kept of it for the comment: Discard
    *  drops the draft the reader wrote there. */
   readonly dropChanged: () => void;
-  /** Drops the draft waiting beside the compose (`offered`): Discard my draft, and the
-   *  composer's own Discard, which Close and Escape ask for over it. */
+  /** Drops the draft waiting beside the compose (`offered`), as its own press does
+   *  (`OfferedDraft.drop`): Discard my draft, and the composer's own Discard, which Close and
+   *  Escape ask for over it. */
   readonly dropOffered: () => void;
   /** What Send says while the refusal the composer holds lives at another address than the one
    *  it shows (`writtenElsewhere`), else undefined. */
@@ -290,14 +328,14 @@ export interface KeptDrafts {
    *  compose on the document is the host's move for the one before it, which carries nothing,
    *  so that compose's draft - typed, or handed back by a refusal - stays with the words it was
    *  written about, under the send name, and a send the reader stopped waits aside unchanged
-   *  (`KeptAside`). It never goes in this field by itself. It waits beside the compose, with
-   *  words naming the quote it was written for, the kind it was written as where this compose is
+   *  (`giveWay`). It never goes in this field by itself. It waits beside the compose, with words
+   *  naming the quote it was written for, the kind it was written as where this compose is
    *  another, and for a stopped send the words saying it may have been delivered, until the
    *  reader takes it into the field (`takeOffered`) or drops it (`dropOffered`); meanwhile the
    *  field and an ask's fields are read only and Send refuses, so nothing the reader types is
    *  written over by it. Close and Escape ask `Discard draft?` over it as over the field's own
-   *  draft, and Discard drops it with that. A stopped send is offered first, then the newest
-   *  draft (`offeredDraft`). */
+   *  draft, and Discard drops it with that. A stopped send, which the composer's host hands it
+   *  (`stoppedAside`), is offered first, then the newest draft (`keptForOtherWords`). */
   readonly offered: OfferedDraft | undefined;
   /** Takes an edit waiting beside a newer body back into the field, which the reader saves with
    *  their own press, having had the newer body before them. It is the field's draft from here
@@ -306,9 +344,8 @@ export interface KeptDrafts {
   readonly takeChanged: () => void;
   /** Takes the draft waiting beside the compose (`offered`) into the field, by the reader's own
    *  press, with an ask's options and settings kept with it: from here on it is the draft of the
-   *  words the compose shows. A stopped send is carried here as the reader's own move carries
-   *  one, so it stays a send that may have been delivered, and says so until this compose sends
-   *  it or the reader discards it (`SendMovedError`). */
+   *  words the compose shows, and the offer's own press moves what was kept of it
+   *  (`OfferedDraft.take`). */
   readonly takeOffered: () => void;
 }
 
@@ -335,7 +372,6 @@ const KEEP_DRAFT_MS = 300;
  */
 export function useKeptDrafts({
   anchor,
-  aside,
   composerName,
   edit,
   field,
@@ -353,10 +389,10 @@ export function useKeptDrafts({
   replyTo,
   seedMentions,
   standing,
+  stoppedAside,
   unsent,
 }: ShownAddress &
   KeptUnder & {
-    readonly aside: KeptAside;
     readonly field: {
       readonly askOptions: readonly AskOptionDraft[];
       readonly body: string;
@@ -375,17 +411,28 @@ export function useKeptDrafts({
     readonly replaceAsk: (ask: SentRequest["ask"]) => void;
     readonly replaceDraft: (draft: Draft) => void;
     readonly seedMentions: readonly { readonly target: string; readonly title: string }[];
+    /** The send the reader stopped at this compose's document, set aside for it, as its host
+     *  offers it (`stoppedOfferOf`), or none. */
+    readonly stoppedAside: OfferedDraft | undefined;
     readonly unsent: UnsentDrafts;
   }): KeptDrafts {
   const { askOptions, body, mentions, multiple, replacement, urgency } = field;
   const { awayName, unsentName } = keptNames({ composerName, inline, standing });
   const keptByAddress = unsent.useAway(awayName ?? "");
   const keptAway = keptByAddress.filter((away) => !sameReply(away.replyTo, replyTo));
-  // Only a composer with an anchor keeps drafts by it, so only a margin compose offers one.
-  const asideHeld = anchor === undefined ? undefined : aside.held;
-  // Built once per held send, so the words said beside it are worked out once per offer.
-  const stoppedOffer = useMemo(() => stoppedOfferOf(asideHeld), [asideHeld]);
-  const offered = offeredDraft(stoppedOffer, keptByAddress, anchor, replyTo);
+  // Only a composer with an anchor keeps drafts by it, so only a margin compose offers one: the
+  // send the reader stopped, set aside for it, first, then the newest draft kept for other words.
+  // A kept draft's two presses both forget it where it is kept, since Use my draft has put it in
+  // the field by then. Built once per draft kept, not on every keystroke.
+  const keptOffer =
+    stoppedAside === undefined ? keptForOtherWords(keptByAddress, anchor, replyTo) : undefined;
+  const offered = useMemo((): OfferedDraft | undefined => {
+    if (anchor === undefined) return undefined;
+    if (stoppedAside !== undefined) return stoppedAside;
+    if (keptOffer === undefined || awayName === undefined) return undefined;
+    const forget = () => unsent.forgetAway(awayName, keptOffer);
+    return { ...keptOffer, drop: forget, note: undefined, take: forget };
+  }, [anchor, awayName, keptOffer, stoppedAside, unsent]);
   const [changed, setChanged] = useState<SentDraft | undefined>(initial.changed);
   /** Set as the reader ends the reply here or drops the draft (`keepNothing`), until a commit
    *  still draws this composer: a host that ends the composer with the reply - the phone thread
@@ -480,28 +527,25 @@ export function useKeptDrafts({
       return false;
     }
     const kept = wroteOver(freshBody);
-    unsent.writeAway(
-      awayName,
-      replyTo,
-      kept
-        ? {
-            anchor,
-            ask: { multiple, options: submittedAskOptions(askOptions), urgency },
-            base: edit?.body,
-            draft: { body, mentions, replacement },
-            kind,
-            owner,
-            replyTo,
-          }
-        : undefined,
-      anchor
-    );
+    if (kept) {
+      unsent.keepAway(awayName, {
+        anchor,
+        ask: { multiple, options: submittedAskOptions(askOptions), urgency },
+        base: edit?.body,
+        draft: { body, mentions, replacement },
+        kind,
+        owner,
+        replyTo,
+      });
+    } else {
+      unsent.forgetAway(awayName, { anchor, replyTo });
+    }
     return kept;
   };
   useEffect(() => () => void keepAway.current(), []);
   const takeBack = useRef(() => {});
   takeBack.current = () => {
-    if (awayName !== undefined) unsent.writeAway(awayName, replyTo, undefined, anchor);
+    if (awayName !== undefined) unsent.forgetAway(awayName, { anchor, replyTo });
   };
   // A reload, and the tab's closing, end the page with no unmount, so the draft is kept for its
   // address as the page goes too (`pagehide`), which the tab's storage holds over a reload
@@ -550,7 +594,13 @@ export function useKeptDrafts({
     ) {
       if (heldRefusal !== undefined) keepDraft.current();
       else if (awayName !== undefined) {
-        unsent.writeAway(awayName, replyTo, { base: writtenOver, draft: written, owner, replyTo });
+        unsent.keepAway(awayName, {
+          anchor,
+          base: writtenOver,
+          draft: written,
+          owner,
+          replyTo,
+        });
       }
       setChanged(written);
     }
@@ -615,7 +665,7 @@ export function useKeptDrafts({
     if (before === undefined) {
       // The field took the draft kept for this address, which is kept there no longer.
       if (initial.away && awayName !== undefined) {
-        unsent.writeAway(awayName, replyTo, undefined, anchor);
+        unsent.forgetAway(awayName, { anchor, replyTo });
       }
       return;
     }
@@ -646,24 +696,21 @@ export function useKeptDrafts({
       // Written now, since the debounced write reads the address the composer shows by then.
       outgoing.keep({ ask, draft: leaving });
     } else if (awayName !== undefined) {
-      unsent.writeAway(
-        awayName,
-        before.address.replyTo,
-        wroteOver(before.fresh)
-          ? {
-              anchor: before.address.anchor,
-              ask,
-              draft: leaving,
-              kind,
-              owner: before.address.owner,
-              replyTo: before.address.replyTo,
-            }
-          : undefined,
-        before.address.anchor
-      );
+      if (wroteOver(before.fresh)) {
+        unsent.keepAway(awayName, {
+          anchor: before.address.anchor,
+          ask,
+          draft: leaving,
+          kind,
+          owner: before.address.owner,
+          replyTo: before.address.replyTo,
+        });
+      } else {
+        unsent.forgetAway(awayName, before.address);
+      }
     }
     if (awayName === undefined) return;
-    if (kept !== undefined) unsent.writeAway(awayName, replyTo, undefined, anchor);
+    if (kept !== undefined) unsent.forgetAway(awayName, { anchor, replyTo });
     const next = refusalAt(address)
       ? heldRefusal?.draft.draft
       : (kept?.draft ??
@@ -679,16 +726,11 @@ export function useKeptDrafts({
     changed,
     dropChanged: () => {
       if (changed !== undefined && awayName !== undefined) {
-        unsent.writeAway(awayName, replyTo, undefined);
+        unsent.forgetAway(awayName, { anchor, replyTo });
       }
       setChanged(undefined);
     },
-    dropOffered: () => {
-      if (offered?.stopped === true) aside.drop();
-      else if (offered !== undefined && awayName !== undefined) {
-        unsent.writeAway(awayName, offered.replyTo, undefined, offered.anchor);
-      }
-    },
+    dropOffered: () => offered?.drop(),
     elsewhere,
     forgetUnsent: () => {
       if (unsentName !== undefined) unsent.write(unsentName, undefined);
@@ -703,16 +745,13 @@ export function useKeptDrafts({
       if (changed === undefined) return;
       replaceDraft(changed);
       setChanged(undefined);
-      if (awayName !== undefined) unsent.writeAway(awayName, replyTo, undefined);
+      if (awayName !== undefined) unsent.forgetAway(awayName, { anchor, replyTo });
     },
     takeOffered: () => {
       if (offered === undefined || anchor === undefined) return;
       replaceDraft(offered.draft);
       if (offered.ask !== undefined) replaceAsk(offered.ask);
-      if (offered.stopped === true) aside.carry({ anchor, kind });
-      else if (awayName !== undefined) {
-        unsent.writeAway(awayName, offered.replyTo, undefined, offered.anchor);
-      }
+      offered.take({ anchor, kind });
     },
   };
 }

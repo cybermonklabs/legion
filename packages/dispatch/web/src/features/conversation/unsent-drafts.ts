@@ -3,6 +3,7 @@ import { useMemo } from "react";
 
 import { createDraftStore } from "../inbox/draft-store";
 import type { ComposerAnchor, ComposerKind, ComposerOwner, ReplyTarget } from "./composer-model";
+import type { HeldSend } from "./held-sends";
 import type { SentDraft, SentRequest } from "./send-request";
 
 /**
@@ -33,6 +34,23 @@ export interface AwayDraft {
   readonly kind?: ComposerKind;
   readonly owner: ComposerOwner;
   readonly replyTo: ReplyTarget | null;
+}
+
+/** The address a draft kept by address is kept for (`AwayDraft`): the reply it answers, or none,
+ *  and for a margin compose the words of the document it was written about, or none for every
+ *  other composer. Both are named, so a forget says which words it forgets. */
+export interface AwayAddress {
+  readonly anchor: ComposerAnchor | undefined;
+  readonly replyTo: ReplyTarget | null;
+}
+
+/** What a held send's draft is kept as once the send is gone (`AwayDraft`): its text, its
+ *  accepted mentions and a suggestion's replacement, and an ask's fields, for the address it went
+ *  to - its owner, the reply it answered and a margin compose's words - in the kind it went out
+ *  as. */
+export function awayDraftOf(held: HeldSend): AwayDraft {
+  const { anchor, kind, owner, replyTo } = held.request;
+  return { anchor, ask: held.draft.ask, draft: held.draft.draft, kind, owner, replyTo };
 }
 
 /** Whether two drafts answer the same reply, or both answer none. */
@@ -93,14 +111,10 @@ export interface UnsentDrafts {
   /** Every draft kept under `name` by its address, re-rendering whenever they change: the
    *  composer says which are kept and how to go back to each. */
   useAway(name: string): readonly AwayDraft[];
-  /** Keeps `away` under `name` for its address, or forgets what is kept there for `replyTo` at
-   *  `anchor`, which is the anchor `away` carries when one is given. */
-  writeAway(
-    name: string,
-    replyTo: ReplyTarget | null,
-    away: AwayDraft | undefined,
-    anchor?: ComposerAnchor
-  ): void;
+  /** Keeps `away` under `name` for its address (`AwayAddress`), in place of what is kept there. */
+  keepAway(name: string, away: AwayDraft): void;
+  /** Forgets what is kept under `name` for the address `at` names. */
+  forgetAway(name: string, at: AwayAddress): void;
 }
 
 function parseAway(kept: string): readonly AwayDraft[] {
@@ -126,13 +140,24 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
       const [kept] = awayStore.useDraft(name);
       return useMemo(() => parseAway(kept), [kept]);
     }
+    // A draft is kept by the reply part of its address and the words it is about: one per reply,
+    // one for a message that answers none, and one per quote of a margin compose.
+    const writeAway = (name: string, at: AwayAddress, away: AwayDraft | undefined) =>
+      awayStore.set(name, (kept) => {
+        const others = parseAway(kept).filter(
+          (other) => !(sameReply(other.replyTo, at.replyTo) && sameAnchor(other.anchor, at.anchor))
+        );
+        const next = away === undefined ? others : [...others, away];
+        return next.length === 0 ? "" : JSON.stringify(next);
+      });
     unsent = {
+      forgetAway: (name, at) => writeAway(name, at, undefined),
+      keepAway: (name, away) =>
+        writeAway(name, { anchor: away.anchor, replyTo: away.replyTo }, away),
       read: (name) => {
         const kept = store.read(name);
         return kept === "" ? undefined : (JSON.parse(kept) as SentDraft);
       },
-      // A draft is kept by the reply part of its address and the words it is about: one per
-      // reply, one for a message that answers none, and one per quote of a margin compose.
       readAway: (name, replyTo, anchor) =>
         parseAway(awayStore.read(name)).find(
           (away) => sameReply(away.replyTo, replyTo) && sameAnchor(away.anchor, anchor)
@@ -144,14 +169,6 @@ export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
       useAway,
       useKept,
       write: (name, draft) => store.set(name, draft === undefined ? "" : JSON.stringify(draft)),
-      writeAway: (name, replyTo, away, anchor = away?.anchor) =>
-        awayStore.set(name, (kept) => {
-          const others = parseAway(kept).filter(
-            (other) => !(sameReply(other.replyTo, replyTo) && sameAnchor(other.anchor, anchor))
-          );
-          const next = away === undefined ? others : [...others, away];
-          return next.length === 0 ? "" : JSON.stringify(next);
-        }),
     };
     drafts.set(client, unsent);
   }

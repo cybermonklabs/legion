@@ -179,7 +179,7 @@ test("another person signed in from another tab finds none of the drafts the per
     await screen.findByText("Signed in as alice");
     act(() => {
       unsent.write("composer", draft);
-      unsent.writeAway("composer", null, {
+      unsent.keepAway("composer", {
         draft,
         owner: { issueKey: "CORE-1", kind: "issue" },
         replyTo: null,
@@ -231,7 +231,7 @@ test("after another person's sign-in, a reload of the same tab brings back none 
     const unsent = unsentDraftsOf(app.queryClient);
     act(() => {
       unsent.write("composer", draft);
-      unsent.writeAway("composer", null, {
+      unsent.keepAway("composer", {
         draft,
         owner: { issueKey: "CORE-1", kind: "issue" },
         replyTo: null,

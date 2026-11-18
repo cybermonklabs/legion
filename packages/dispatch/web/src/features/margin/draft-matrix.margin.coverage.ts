@@ -55,6 +55,15 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · document left, then back (the margin's compose)`),
     cells(`${HOST} · phone · panel closed, document left, then back (the margin's compose)`)
   ),
+  // The send the reader stopped, set aside for the newer compose, which the slot hands that
+  // compose to offer (`stoppedAside`): the offer rows' stopped cells.
+  ...answers(
+    "MarginComposerSlot | MentionComposer | address prop | stoppedAside={stoppedAside}",
+    cells(OFFER_CLOSED, ["stopped"]),
+    cells(OFFER_ESCAPED, ["stopped"]),
+    cells(OFFER_ISSUE_CLOSED, ["stopped"]),
+    cells(OFFER_LAPSED, ["stopped"])
+  ),
   ...answers("MarginComposerSlot | MentionComposer | conditional | <div hidden={hidden}>", {
     reason: REASONS[4],
   }),

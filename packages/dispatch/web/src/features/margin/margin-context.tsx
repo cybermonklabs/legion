@@ -1,4 +1,4 @@
-import { hashKey, type MutationKey, partialMatchKey, useQueryClient } from "@tanstack/react-query";
+import { type MutationKey, partialMatchKey, useQueryClient } from "@tanstack/react-query";
 import {
   createContext,
   type ReactNode,
@@ -14,6 +14,7 @@ import type { AnchorRefusal, ComposerAnchor, ComposerKind } from "../conversatio
 import type { HeldSend } from "../conversation/held-sends";
 import { heldSends } from "../conversation/held-sends";
 import { unsentDraftsOf } from "../conversation/unsent-drafts";
+import { composerNameOf, giveWay } from "../conversation/useKeptDrafts";
 import type {
   RecordMarkPlacement,
   RemarkOutcome,
@@ -22,7 +23,6 @@ import type {
   RetypeOutcome,
   RetypeRefusal,
 } from "../doc/editor";
-import { SendStoppedError } from "../writes/keyed-write";
 import type { MarkPlacement } from "./useMarginItems";
 
 export interface DocumentBridge {
@@ -169,7 +169,14 @@ interface MarkComposeRequest {
   kind: ComposerKind;
 }
 
-type PendingCompose = MarkComposeRequest & { seq: number };
+/** The compose of one document (`MarginContextValue.composes`): the number the newest compose on
+ *  it opened under, and that compose while the reader has it open and has not sent it. The number
+ *  is kept past that compose's Send and its cancel: a held send's composer is the compose that
+ *  sent it, by that number (`MarginSheet` keys the composer by it). */
+export interface DocumentCompose {
+  readonly open: MarkComposeRequest | undefined;
+  readonly seq: number;
+}
 
 /** A compose the margin shows the reader: a new one, or one whose document a newer selection-bar
  *  action had to wait on (`turnedAway`), or one held for the document the reader came back to.
@@ -212,12 +219,16 @@ export function marginReplySendKey(key: string): MutationKey {
   return [...MARGIN_REPLY_SEND_KEY, key];
 }
 
-/** A mark composer the reader has open on one document: what it is about, and the editor's
+/** A mark compose the reader has open on one document: what it is about, and the editor's
  *  promise it settles. */
-interface OpenCompose {
+interface OpenCompose extends MarkComposeRequest {
   reject(reason: Error): void;
-  request: PendingCompose;
   resolve(): void;
+}
+
+/** The compose of one document as the margin holds it: the open one with the editor's promise. */
+interface HeldCompose extends DocumentCompose {
+  readonly open: OpenCompose | undefined;
 }
 
 interface MarginContextValue {
@@ -229,14 +240,14 @@ interface MarginContextValue {
   anchorRefusal: AnchorRefusal | undefined;
   blockFilterId: string | undefined;
   blockPlacements: ReadonlyMap<string, MarkPlacement>;
-  /** Ends the open compose `seq`, whatever document it is on, unsaved, if it is still open: its
+  /** Ends the compose `seq` on the document `artifact`, unsaved, if it is still open there: its
    *  mark leaves the document and the editor's promise rejects. */
-  cancelCompose(seq: number): void;
+  cancelCompose(artifact: string, seq: number): void;
   clearBlockFilter(): void;
   composeForMark(request: MarkComposeRequest): Promise<void>;
-  /** The number the newest compose on each document opened under (`PendingCompose.seq`), by its
-   *  artifact, kept past that compose's Send: the held send's composer is that compose's own. */
-  composeSeqs: ReadonlyMap<string, number>;
+  /** The compose of each document the reader has composed on, by its artifact, one at most per
+   *  document (`DocumentCompose`). */
+  composes: ReadonlyMap<string, DocumentCompose>;
   documentBridge: DocumentBridge | undefined;
   filterToBlock(blockId: string): void;
   focusBlock(blockId: string): void;
@@ -246,8 +257,6 @@ interface MarginContextValue {
   hoveredItemId: string | undefined;
   hoveredMarkId: string | undefined;
   markPlacements: ReadonlyMap<string, MarkPlacement>;
-  /** The composes the reader has open and has not sent, one per document, by its artifact. */
-  pendingComposes: ReadonlyMap<string, PendingCompose>;
   /** Whether the registered document has reported its layout: it says so by publishing
    *  placements, and the answer resets whenever a document registers or unregisters, or the
    *  registered document withdraws a hidden layout. An empty map is still an answer - a document
@@ -282,7 +291,7 @@ const MarginContext = createContext<MarginContextValue>({
   cancelCompose: unavailableMargin,
   clearBlockFilter: unavailableMargin,
   composeForMark: unavailableMargin,
-  composeSeqs: new Map(),
+  composes: new Map(),
   documentBridge: undefined,
   filterToBlock: unavailableMargin,
   focusBlock: unavailableMargin,
@@ -292,7 +301,6 @@ const MarginContext = createContext<MarginContextValue>({
   hoveredItemId: undefined,
   hoveredMarkId: undefined,
   markPlacements: new Map(),
-  pendingComposes: new Map(),
   placementsReported: false,
   registerDocument: unavailableMargin,
   revealCompose: unavailableMargin,
@@ -335,10 +343,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
     () => new Map()
   );
   const [placementsReported, setPlacementsReported] = useState(false);
-  const [pendingComposes, setPendingComposes] = useState<ReadonlyMap<string, PendingCompose>>(
-    () => new Map()
-  );
-  const [composeSeqs, setComposeSeqs] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const [composes, setComposes] = useState<ReadonlyMap<string, DocumentCompose>>(() => new Map());
   const [shownCompose, setShownCompose] = useState<ShownCompose>();
   const [selectedItemId, setSelectedItemId] = useState<string>();
   const [anchorRefusal, setAnchorRefusal] = useState<AnchorRefusal>();
@@ -353,11 +358,11 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
   // and a second recovery for it would write a second mark once the bridge binds - one of the
   // two left in the shared document with no record of its own (dispatch://INFRA-727).
   const recovering = useRef(new Set<string>());
-  // Mirrors of the open composes and `documentBridge` for the compose callbacks, which stay stable
-  // (the editor holds `composeForMark` for the document's lifetime). One compose is open per
-  // document at most, by its artifact: a compose on one document leaves another's open, so the
-  // reader finds it, its text and its mark again on going back there.
-  const openComposes = useRef<ReadonlyMap<string, OpenCompose>>(new Map());
+  // The composes, one per document by its artifact, for the compose callbacks, which stay stable
+  // (the editor holds `composeForMark` for the document's lifetime); `composes` is the same map,
+  // for the sheet to render. A compose on one document leaves another's open, so the reader finds
+  // it and its text again on going back there.
+  const heldComposes = useRef<ReadonlyMap<string, HeldCompose>>(new Map());
   const bridgeRef = useRef<DocumentBridge | undefined>(undefined);
   // Who waits for the next document to bind its bridge: a refused send whose document is still
   // loading (`whenBridgeBinds`). A wait only ever drops itself, which Set iteration allows.
@@ -368,30 +373,33 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
     sequence.current += 1;
     setShownCompose({ artifact, seq: sequence.current, turnedAway });
   }, []);
-  // Every change to a document's open compose goes through here: the ref the callbacks read, and
-  // the state the sheet renders. The number a compose opened under is kept past its Send, which
-  // hands it to its held send: the composer the reader wrote in stays theirs through it, and a
-  // newer compose on the document draws a composer of its own (`MarginSheet`'s key).
-  const publishCompose = useCallback((artifact: string, next: OpenCompose | undefined) => {
-    const open = new Map(openComposes.current);
-    if (next === undefined) open.delete(artifact);
-    else open.set(artifact, next);
-    openComposes.current = open;
-    setPendingComposes(new Map([...open].map(([key, compose]) => [key, compose.request])));
-    if (next === undefined) return;
-    const { seq } = next.request;
-    setComposeSeqs((seqs) =>
-      seqs.get(artifact) === seq ? seqs : new Map(seqs).set(artifact, seq)
-    );
+  // Every change to a document's compose goes through here: the ref the callbacks read, and the
+  // same map for the sheet to render. The number a compose opened under is kept past its Send,
+  // which hands it to its held send: the composer the reader wrote in stays theirs through it,
+  // and a newer compose on the document draws a composer of its own (`MarginSheet`'s key).
+  const publishCompose = useCallback((artifact: string, compose: HeldCompose) => {
+    const next = new Map(heldComposes.current).set(artifact, compose);
+    heldComposes.current = next;
+    setComposes(next);
   }, []);
+  // The provisional marks the margin took out of a document while no bridge of that document was
+  // registered, by its artifact. `useMarginSheet` shows a document's compose as soon as the route
+  // names the document, while its editor may still be binding, so the reader can close that
+  // compose, or the issue's closing cancel it, before the document can be reached; the marks go
+  // as the document binds its bridge (`registerDocument`), rather than waiting for the server's
+  // sweep of marks no row records.
+  const unboundRemovals = useRef(new Map<string, Set<string>>());
   // A compose's provisional mark is in its own document, so the margin takes it out only through
-  // that document's bridge. A compose is replaced only by a newer one on its own document, whose
-  // editor is the one registered then, and cancelled or discarded only while the margin shows that
-  // document, so this is the bridge on screen; another document's editor holds no such mark, and
-  // is never asked to remove one.
+  // that document's bridge: the one on screen, or the next one that document registers. Another
+  // document's editor holds no such mark, and is never asked to remove one.
   const removeMarkOf = useCallback((artifact: string, markId: string) => {
     const bridge = bridgeRef.current;
-    if (bridge?.artifactId === artifact) bridge.removeMark(markId);
+    if (bridge?.artifactId === artifact) {
+      bridge.removeMark(markId);
+      return;
+    }
+    const marks = unboundRemovals.current.get(artifact) ?? new Set<string>();
+    unboundRemovals.current.set(artifact, marks.add(markId));
   }, []);
   // The bridge of the document on screen, waiting while no document has registered one at all:
   // the reader may be on the very document a refused send is anchored to, with its editor still
@@ -473,7 +481,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
         // has typed there only a short wait after each keystroke (`KEEP_DRAFT_MS`): words typed
         // while the margin waited would go nowhere, and the landed send would then clear the
         // composer they are in. So the composer writes its draft now, before the retry takes it.
-        composers.current.get(hashKey(held.mutationKey))?.keepDraft();
+        composers.current.get(composerNameOf(held.mutationKey))?.keepDraft();
         store.retry(held.mutationKey);
       } finally {
         // The next refusal of this mark is the reader's to recover from again: a recovery that
@@ -491,9 +499,11 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
   // a send name of its own, so a send on one ends that document's compose alone.
   useEffect(() => {
     const unsubscribe = store.subscribe(() => {
-      for (const [artifact, open] of openComposes.current) {
-        if (store.get(marginComposeSendKey(artifact)) === undefined) continue;
-        publishCompose(artifact, undefined);
+      for (const [artifact, { open, seq }] of heldComposes.current) {
+        if (open === undefined || store.get(marginComposeSendKey(artifact)) === undefined) {
+          continue;
+        }
+        publishCompose(artifact, { open: undefined, seq });
         open.resolve();
       }
     });
@@ -537,24 +547,26 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
   // @legion/proof-editor's dispatch-action-bar.ts) still removes the mark it created, which is a
   // no-op by then, and cannot know a retyped mark's id. One compose is open per document: a newer
   // selection-bar action replaces only the compose of its own document, so a compose open on
-  // another document stays open, with its text and its mark, for the reader's return. A newer
-  // action on a document whose compose's send is out is refused, and the margin takes back the
-  // mark that action wrote, as it does a replaced one - that catch cannot see a provisional
-  // comment, whose body is empty (`removeRecordMark` in @legion/proof-editor says why). The
-  // send's outcome is the compose's: moving it to the newer selection would hand that outcome to
-  // the newer one - a success closing it, a refusal's Retry posting to its mark. The refused
-  // action shows the reader why nothing opened: the margin brings that compose on screen saying
-  // its send is still out. A refused send gives way: the refusal and its mark go, and its draft -
-  // what the composer on screen holds, written into the send first - is kept for the words it was
-  // written about (`AwayDraft.anchor`) and the kind it was written as, which the newer compose
-  // offers beside itself and never puts in its own field (`useKeptDrafts`'s `offered`). A send the
-  // reader stopped may have been delivered, so it is not reduced to a draft: it waits aside,
-  // unchanged, its mark with it (`marginComposeKeptKey`), and the newer compose offers it saying
-  // so; Use my draft carries it there as the reader's own move carries a stopped send, saying the
-  // same until that compose sends it or the reader discards it (`SendMovedError`). Either offer
-  // stays in front of the reader until they take it or drop it: the newer compose's Close and
-  // Escape ask `Discard draft?` over it, and its Discard drops it. A compose that names its text
-  // by quote (a closed issue's document) holds no mark, so it has none to take back.
+  // another document stays open, with its text, for the reader's return; its mark stays while
+  // the reader's browser is on that document, and once the server has swept it the compose's
+  // Send finds its words again (`reanchor`). A newer action on a document whose compose's send is
+  // out is refused, and the margin takes back the mark that action wrote, as it does a replaced
+  // one - that catch cannot see a provisional comment, whose body is empty (`removeRecordMark` in
+  // @legion/proof-editor says why). The send's outcome is the compose's: moving it to the newer
+  // selection would hand that outcome to the newer one - a success closing it, a refusal's Retry
+  // posting to its mark. The refused action shows the reader why nothing opened: the margin
+  // brings that compose on screen saying its send is still out. A refused send gives way
+  // (`giveWay`): the refusal and its mark go, and its draft - what the composer on screen holds,
+  // written into the send first - is kept for the words it was written about (`AwayDraft.anchor`)
+  // and the kind it was written as, which the newer compose offers beside itself and never puts
+  // in its own field (`useKeptDrafts`'s `offered`). A send the reader stopped may have been
+  // delivered, so it is not reduced to a draft: it waits aside, unchanged, its mark with it
+  // (`marginComposeKeptKey`), and the newer compose offers it saying so; Use my draft carries it
+  // there as the reader's own move carries a stopped send, saying the same until that compose
+  // sends it or the reader discards it (`SendMovedError`). Either offer stays in front of the
+  // reader until they take it or drop it: the newer compose's Close and Escape ask `Discard
+  // draft?` over it, and its Discard drops it. A compose that names its text by quote (a closed
+  // issue's document) holds no mark, so it has none to take back.
   const composeForMark = useCallback(
     (request: MarkComposeRequest): Promise<void> =>
       new Promise<void>((resolve, reject) => {
@@ -568,60 +580,49 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
           return;
         }
         if (held !== undefined) {
-          const name = hashKey(sendKey);
-          composers.current.get(name)?.keepDraft();
-          const refused = store.get(sendKey) ?? held;
-          if (held.refusal instanceof SendStoppedError) {
-            const { owner, replyTo } = refused.request;
-            store.carryInto(sendKey, marginComposeKeptKey(artifact), { owner, replyTo });
-          } else {
-            unsent.writeAway(name, null, {
-              anchor: refused.request.anchor,
-              ask: refused.draft.ask,
-              draft: refused.draft.draft,
-              kind: refused.request.kind,
-              owner: refused.request.owner,
-              replyTo: null,
-            });
-            store.discard(held.mutationKey);
-          }
+          // The composer on screen writes what the reader typed over the refusal into it first,
+          // so what gives way is the draft in front of them.
+          composers.current.get(composerNameOf(sendKey))?.keepDraft();
+          const typedOver = store.get(sendKey);
+          giveWay(
+            typedOver?.status === "refused" ? typedOver : held,
+            marginComposeKeptKey(artifact),
+            store,
+            unsent
+          );
         }
-        const open = openComposes.current.get(artifact);
+        const open = heldComposes.current.get(artifact)?.open;
         if (open !== undefined) {
-          const openMarkId = open.request.anchor.mark_id;
+          const openMarkId = open.anchor.mark_id;
           if (openMarkId !== undefined) removeMarkOf(artifact, openMarkId);
           open.reject(new Error("replaced by a newer composer"));
         }
         sequence.current += 1;
-        publishCompose(artifact, {
-          reject,
-          request: { ...request, seq: sequence.current },
-          resolve,
-        });
+        publishCompose(artifact, { open: { ...request, reject, resolve }, seq: sequence.current });
         show(artifact, false);
       }),
     [publishCompose, removeMarkOf, show, store, unsent]
   );
   const cancelCompose = useCallback(
-    (seq: number) => {
-      for (const [artifact, open] of openComposes.current) {
-        if (open.request.seq !== seq) continue;
-        const markId = open.request.anchor.mark_id;
-        if (markId !== undefined) removeMarkOf(artifact, markId);
-        publishCompose(artifact, undefined);
-        open.reject(new Error("composer closed"));
-        return;
-      }
+    (artifact: string, seq: number) => {
+      const compose = heldComposes.current.get(artifact);
+      const open = compose?.open;
+      if (open === undefined || compose?.seq !== seq) return;
+      const markId = open.anchor.mark_id;
+      if (markId !== undefined) removeMarkOf(artifact, markId);
+      publishCompose(artifact, { open: undefined, seq });
+      open.reject(new Error("composer closed"));
     },
     [publishCompose, removeMarkOf]
   );
   const revealCompose = useCallback((artifact: string) => show(artifact, false), [show]);
   const retypeCompose = useCallback(
     (artifact: string, kind: ComposerKind): string | undefined => {
-      const open = openComposes.current.get(artifact);
+      const compose = heldComposes.current.get(artifact);
+      const open = compose?.open;
       const held = open === undefined ? store.get(marginComposeSendKey(artifact)) : undefined;
-      const anchor = open?.request.anchor ?? held?.request.anchor;
-      const current = open?.request.kind ?? held?.request.kind;
+      const anchor = open?.anchor ?? held?.request.anchor;
+      const current = open?.kind ?? held?.request.kind;
       if (anchor === undefined || current === kind) return undefined;
       if (anchor.mark_id === undefined) return QUOTE_KIND_SWITCH_REFUSAL;
       // Only the compose's own document holds its mark. With none open, or another document's
@@ -635,8 +636,11 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
         return KIND_SWITCH_REFUSALS[outcome.refused];
       }
       const retyped = anchorAt(anchor, outcome);
-      if (open !== undefined) {
-        publishCompose(artifact, { ...open, request: { ...open.request, anchor: retyped, kind } });
+      if (compose?.open !== undefined) {
+        publishCompose(artifact, {
+          open: { ...compose.open, anchor: retyped, kind },
+          seq: compose.seq,
+        });
       } else if (held !== undefined) {
         store.readdress(held.mutationKey, { ...held.request, anchor: retyped, kind });
       }
@@ -682,6 +686,10 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       // A document that has just bound its editor answers whoever waited for one; an
       // unregistration answers nobody - the next document, or the wait's own bound, does.
       if (bridge !== undefined) {
+        // The marks taken out of this document while it was still binding go now (`removeMarkOf`).
+        const marks = unboundRemovals.current.get(bridge.artifactId);
+        unboundRemovals.current.delete(bridge.artifactId);
+        for (const markId of marks ?? []) bridge.removeMark(markId);
         for (const waiter of bridgeWaiters.current) waiter(bridge);
       }
     },
@@ -691,7 +699,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
   // mounts next under the same name is this map's then. A send whose composer registered
   // nothing - no composer is on screen for it - is sent again with the draft the store holds.
   const registerComposer = useCallback((composer: ComposerBridge) => {
-    const name = hashKey(composer.mutationKey);
+    const name = composerNameOf(composer.mutationKey);
     composers.current.set(name, composer);
     return () => {
       if (composers.current.get(name) === composer) composers.current.delete(name);
@@ -719,7 +727,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       cancelCompose,
       clearBlockFilter,
       composeForMark,
-      composeSeqs,
+      composes,
       documentBridge,
       filterToBlock,
       focusBlock,
@@ -729,7 +737,6 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       hoveredItemId,
       hoveredMarkId,
       markPlacements,
-      pendingComposes,
       placementsReported,
       registerDocument,
       revealCompose,
@@ -750,7 +757,7 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       cancelCompose,
       clearBlockFilter,
       composeForMark,
-      composeSeqs,
+      composes,
       documentBridge,
       filterToBlock,
       focusBlock,
@@ -760,7 +767,6 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       hoveredItemId,
       hoveredMarkId,
       markPlacements,
-      pendingComposes,
       placementsReported,
       publishBlockPlacements,
       publishMarkPlacements,

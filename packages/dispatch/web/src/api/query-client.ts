@@ -130,8 +130,23 @@ export class DispatchQueryClient extends QueryClient {
  * the page would be drawn for that person. The cancel takes effect at once, so the invalidation
  * after it starts a check of its own; a sign-out's `resetQueries` needs no cancel, since a reset
  * drops the fetch it finds.
+ *
+ * It answers once the newest check has answered, which is what a caller that reads the answer
+ * needs (`unauthorized` in `write-store.ts`). Another ask made while this one's check is out - a
+ * second write's 401, news of a sign-in - cancels that check and starts its own, which ends this
+ * ask's invalidation before any check has answered, so the wait goes on for the check out then. A
+ * check the network paused, offline, has not answered either: TanStack calls it `paused` rather
+ * than `fetching`, and only `idle` says no check is out, so the wait goes on until the network
+ * returns and the check answers.
  */
-export function askSignInAgain(client: QueryClient): Promise<void> {
+export async function askSignInAgain(client: QueryClient): Promise<void> {
   void client.cancelQueries({ queryKey: ["whoami"] });
-  return client.invalidateQueries({ queryKey: ["whoami"] });
+  await client.invalidateQueries({ queryKey: ["whoami"] });
+  const whoami = client.getQueryCache().find({ exact: true, queryKey: ["whoami"] });
+  for (;;) {
+    const out =
+      whoami === undefined || whoami.state.fetchStatus === "idle" ? undefined : whoami.promise;
+    if (out === undefined) return;
+    await out.catch(() => undefined);
+  }
 }

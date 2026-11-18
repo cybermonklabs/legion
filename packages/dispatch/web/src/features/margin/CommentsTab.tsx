@@ -6,17 +6,17 @@ import { QueryError } from "../../components/QueryError";
 import { useSending } from "../../hooks/useSending";
 import {
   borderDefault,
-  dangerText,
   highlightRing,
-  quoteAccentBorder,
-  quoteBodyText,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import type { ComposerAnchor, ComposerKind, ComposerOwner } from "../conversation/composer-model";
+import { useHeldSend, useHeldSends } from "../conversation/held-sends";
+import { DraftOffer } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import type { AwayDraft } from "../conversation/unsent-drafts";
+import { type OfferedDraft, stoppedOfferOf } from "../conversation/useKeptDrafts";
 import { AskCard } from "../inbox/AskCard";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
@@ -39,7 +39,7 @@ export interface MarginComposer {
   kind: ComposerKind;
   /** Where its sends go: the owner it was opened under. */
   owner: ComposerOwner;
-  /** The compose it is, by the number it opened under (`PendingCompose.seq`): the open compose,
+  /** The compose it is, by the number it opened under (`DocumentCompose.seq`): the open compose,
    *  and after its Send the held send's, which keeps the number. A send held since before a
    *  reload has none. `MarginSheet` keys the composer by it, so each compose draws its own. */
   seq: number | undefined;
@@ -121,6 +121,21 @@ export function MarginComposerSlot({
     [composer.anchor.artifact]
   );
   const { sending } = useSending(sendKey);
+  // That stopped compose as this compose offers it, with the presses that move it: Use my draft
+  // carries it into this compose's own name at its words and in its kind, and Discard my draft
+  // drops it where it waits. Built once per held send, so its words are worked out once.
+  const store = useHeldSends();
+  const keptAside = useHeldSend(keptKey);
+  const owner = composer.owner;
+  const stoppedAside = useMemo((): OfferedDraft | undefined => {
+    const offer = stoppedOfferOf(keptAside);
+    if (offer === undefined) return undefined;
+    return {
+      ...offer,
+      drop: () => store.discard(keptKey),
+      take: (at) => store.carryInto(keptKey, sendKey, { owner, replyTo: null }, at),
+    };
+  }, [keptAside, keptKey, owner, sendKey, store]);
   return (
     // The margin scrolls this into its scrollport when it opens: a composer the reader started
     // from the document renders at the top of the margin's scroll content, which can be thousands
@@ -143,7 +158,7 @@ export function MarginComposerSlot({
         onSent={() => {}}
         owner={composer.owner}
         replyTo={null}
-        stoppedAside={keptKey}
+        stoppedAside={stoppedAside}
         onKindChange={(kind) => onKindChange(composer.anchor.artifact, kind)}
       />
     </div>
@@ -181,38 +196,13 @@ export function MarginKeptDrafts({
   return (
     <div className="space-y-3 pt-3" hidden={hidden}>
       {kept.map((away) => (
-        <div
-          className="space-y-2"
+        <DraftOffer
+          body={away.draft.body}
+          drop={{ label: "Discard my draft", press: () => onDiscard(away) }}
           key={`${away.anchor.mark_id ?? ""}:${away.anchor.occurrence ?? ""}:${away.anchor.quote}`}
-        >
-          <div className={`space-y-1 text-sm ${textMutedOnSurfaceMuted}`} role="status">
-            <p>
-              {`You wrote this draft${KEPT_KIND_WORDS[away.kind ?? "comment"]} for the words “${away.anchor.quote}”. It is kept here, and offered in the next compose you open on this document:`}
-            </p>
-            <blockquote
-              className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
-            >
-              {away.draft.body}
-            </blockquote>
-            {away.draft.replacement === "" ? null : (
-              <>
-                <p>Replace with:</p>
-                <blockquote
-                  className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
-                >
-                  {away.draft.replacement}
-                </blockquote>
-              </>
-            )}
-          </div>
-          <button
-            className={`text-sm font-medium underline ${dangerText}`}
-            onClick={() => onDiscard(away)}
-            type="button"
-          >
-            Discard my draft
-          </button>
-        </div>
+          lead={`You wrote this draft${KEPT_KIND_WORDS[away.kind ?? "comment"]} for the words “${away.anchor.quote}”. It is kept here, and offered in the next compose you open on this document:`}
+          replacement={away.draft.replacement}
+        />
       ))}
     </div>
   );
