@@ -116,22 +116,14 @@ func newRefusedError(identity string, status int, code, description string) *Ref
 	}
 }
 
-// namedInRefusal is a Source whose refusal names it: a person's sign-in, whose name in a refusal
-// (PersonIdentity's) holds the person and nothing configured.
-type namedInRefusal interface {
-	nameInRefusal() string
-}
-
 // refusedIdentity is how a refusal of a trade of s names the identity refused. A person's sign-in
 // names the person, so a person whose own sign-in the broker refused never reads "this machine".
 // Every other source reads "this machine's identity", as a refusal always has: a machine source's
 // Describe names configured values (a token file's path, a pool's audiences and account), which a
 // refusal's text has never carried.
 func refusedIdentity(s Source) string {
-	if named, ok := s.(namedInRefusal); ok {
-		if name := named.nameInRefusal(); name != "" {
-			return name
-		}
+	if person, ok := s.(*PersonIdentity); ok {
+		return person.Describe()
 	}
 	return "this machine's identity"
 }

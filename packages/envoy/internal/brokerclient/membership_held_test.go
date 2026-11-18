@@ -98,22 +98,11 @@ func TestMembershipHeldKeepsTheSignInAuthority(t *testing.T) {
 	}
 }
 
-// personScriptedSource is a scriptedSource that names itself in a refusal as a person's sign-in
-// does (PersonIdentity.nameInRefusal), the stand-in for a sign-in whose own Flow has its own tests.
-type personScriptedSource struct {
-	scriptedSource
-	person string
-}
-
-func (s *personScriptedSource) nameInRefusal() string {
-	return (&PersonIdentity{Person: s.person}).nameInRefusal()
-}
-
-// TestARefusalNamesTheIdentityItRefused: a refusal names the identity the broker refused, through
-// the client's real trade. A person's sign-in names that person, so a person whose own sign-in was
-// refused never reads "this machine". A machine source reads "this machine's identity", as a
-// refusal always has, and carries no configured value its Describe names: a pod's projected token
-// prints no file path.
+// TestARefusalNamesTheIdentityItRefused: a refusal of a machine source, through the client's real
+// trade, reads "this machine's identity", as a refusal always has, and carries no configured value
+// its Describe names: a pod's projected token prints no file path. A person's sign-in names the
+// person instead; TestMembershipHeldKeepsTheSignInAuthority asserts that through a real
+// PersonIdentity.
 func TestARefusalNamesTheIdentityItRefused(t *testing.T) {
 	const tokenFile = "/var/run/secrets/tokens/not-a-secret-path"
 	for _, tc := range []struct {
@@ -121,9 +110,6 @@ func TestARefusalNamesTheIdentityItRefused(t *testing.T) {
 		source Source
 		names  string // how the refusal names the identity
 	}{
-		{"a person's sign-in", &personScriptedSource{
-			scriptedSource: scriptedSource{token: "person.google.identity.token", tokenType: oauthwire.SubjectTokenTypeGoogle},
-			person:         "ada@example.com"}, "ada@example.com's sign-in on this machine"},
 		{"a pod's projected token", &scriptedSource{token: "projected.service.account.token", tokenType: oauthwire.SubjectTokenTypeKubernetes,
 			describe: NewProjectedToken(tokenFile).Describe()}, "this machine's identity"},
 	} {
