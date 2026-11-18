@@ -81,6 +81,7 @@ import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
+import { UnsentText } from "./UnsentText";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 import { useAskHandOn } from "./useAskHandOn";
 
@@ -675,18 +676,12 @@ export function AskCard({
           onChangeAnswer={canChangeAnswer ? startChanging : undefined}
         />
         {unsentAnswer === "" ? null : (
-          <div
-            className={`mt-3 rounded-xl border p-3 ${borderDefault}`}
-            data-testid="ask-unsent-answer"
-          >
-            <p className={`text-xs ${textMutedOnSurface}`}>
-              This question closed before you sent your answer, so it was not sent. Your text is
-              here to copy.
-            </p>
-            <p className={`mt-1 text-sm whitespace-pre-wrap ${textPrimaryOnSurface}`}>
-              {unsentAnswer}
-            </p>
-          </div>
+          <UnsentText
+            className="mt-3"
+            testId="ask-unsent-answer"
+            text={unsentAnswer}
+            why="This question closed before you sent your answer, so it was not sent. Your text is here to copy."
+          />
         )}
         {answerFailure === null ? null : <QueryError message={answerFailure.message} />}
         {referencedByNode}

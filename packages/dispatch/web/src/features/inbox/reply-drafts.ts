@@ -6,7 +6,8 @@ import { createDraftStore } from "./draft-store";
  * Conversation or decision-block composer can be on one page at once), and a composer that
  * remounts (switching margin tabs away and back, closing and reopening Write a reply) picks the
  * draft back up. A sent reply or an emptied field drops it. The ask resolving does not: a
- * resolved ask's thread still takes the reply (`takesReply` in `AskThread.tsx`).
+ * resolved ask's thread still takes the reply (`takesReply` in `AskThread.tsx`). Nor does the
+ * ask opening again, whose thread shows the draft read-only (`useUnsentReply`).
  */
 const store = createDraftStore();
 

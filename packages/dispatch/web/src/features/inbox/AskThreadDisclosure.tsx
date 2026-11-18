@@ -12,6 +12,8 @@ import {
   type AskThreadQuery,
   type CreateReply,
   takesReply,
+  UnsentReply,
+  useUnsentReply,
 } from "./AskThread";
 
 interface AskThreadDisclosureProps {
@@ -46,6 +48,7 @@ export function AskThreadDisclosure({
 }: AskThreadDisclosureProps): ReactNode {
   const [composerOpen, setComposerOpen] = useState(false);
   const composerId = useId();
+  const unsentReply = useUnsentReply(ask);
   if (thread.isError) {
     const message =
       thread.error instanceof Error ? thread.error.message : "Unable to load replies.";
@@ -65,7 +68,7 @@ export function AskThreadDisclosure({
   }
 
   const replyCount = (thread.data?.replies ?? []).length;
-  if (replyCount === 0 && !takesReply(ask)) return null;
+  if (replyCount === 0 && !takesReply(ask) && unsentReply === "") return null;
 
   // The composer follows the control that reveals it, so the next Tab from the control lands in
   // the field and a screen reader meets the expanded panel right after its button. The control is
@@ -84,7 +87,13 @@ export function AskThreadDisclosure({
         unread={unread}
       />
     );
-  const composer = takesReply(ask) ? (
+  // An open ask takes no reply composer: a reply the reader typed before it opened again stands
+  // in the composer's place, read-only (`useUnsentReply`).
+  const composer = !takesReply(ask) ? (
+    unsentReply === "" ? null : (
+      <UnsentReply className="mt-3" text={unsentReply} />
+    )
+  ) : (
     <>
       <button
         aria-controls={composerId}
@@ -101,7 +110,7 @@ export function AskThreadDisclosure({
         </div>
       ) : null}
     </>
-  ) : null;
+  );
 
   return composerFirst(order) ? (
     <>

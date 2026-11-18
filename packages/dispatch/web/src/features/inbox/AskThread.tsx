@@ -30,6 +30,7 @@ import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { clearReplyDraft, useReplyDraft } from "./reply-drafts";
+import { UnsentText } from "./UnsentText";
 
 export type CreateReply = (
   issueKey: string,
@@ -83,6 +84,32 @@ export type AskThreadQuery = UseQueryResult<AskRead, Error>;
  */
 export function takesReply(ask: Pick<Ask, "state">): boolean {
   return ask.state !== "open";
+}
+
+/**
+ * The text of a reply the reader was writing under a settled ask that has since opened again (a
+ * withdrawn ask whose issue was reopened, a retracted question a document's settlement restored),
+ * or `""` when there is none. An open ask draws no reply composer (`takesReply`), so without this
+ * the draft would sit in `reply-drafts.ts` with nothing showing it: the thread draws it read-only
+ * where the composer stood (`UnsentReply`), as the card draws an answer whose question closed
+ * under it (`unsentAnswer` in `useAskAnswerForm.ts`). The draft stays the ask's, so the composer
+ * picks it up again if the ask is settled once more.
+ */
+export function useUnsentReply(ask: Pick<Ask, "id" | "state">): string {
+  const [draft] = useReplyDraft(ask.id);
+  return takesReply(ask) || draft.trim() === "" ? "" : draft;
+}
+
+/** `useUnsentReply`'s text, read-only and copyable, in the reply composer's place. */
+export function UnsentReply({ className, text }: { className?: string; text: string }): ReactNode {
+  return (
+    <UnsentText
+      className={className}
+      testId="ask-unsent-reply"
+      text={text}
+      why="This question opened again before you sent your reply, so it was not sent. Your text is here to copy."
+    />
+  );
 }
 
 /**
@@ -218,8 +245,10 @@ export interface AskThreadProps {
  * (Comment.ask_id) plus their own reply chains, in the reader's thread order, with the replies
  * outside the newest two folded behind **Show N earlier replies** (`threads/thread-layout.ts`,
  * drawn by `threads/EarlierReplies.tsx`, the fold control the Inbox's thread body shares).
- * An answered or resolved ask keeps a plain reply composer, at the end of that order
- * (`takesReply`); an open ask reserves its single composer for answering or asking back.
+ * An answered or resolved ask keeps a plain reply composer, next to the newest message
+ * (`composerFirst`), and `takesReply` says which asks do; an open ask reserves its single
+ * composer for answering or asking back, and draws a reply the reader had not sent before it
+ * opened again read-only in the composer's place (`useUnsentReply`).
  */
 export function AskThread({
   ask,
@@ -276,10 +305,12 @@ export function AskThread({
       )}
     />
   );
-  const composer =
-    showComposer && takesReply(ask) ? (
-      <AskReplyComposer ask={ask} createReply={reply} uploadOwner={uploadOwner} />
-    ) : null;
+  const unsentReply = useUnsentReply(ask);
+  const composer = !showComposer ? null : takesReply(ask) ? (
+    <AskReplyComposer ask={ask} createReply={reply} uploadOwner={uploadOwner} />
+  ) : unsentReply === "" ? null : (
+    <UnsentReply text={unsentReply} />
+  );
 
   return (
     <section

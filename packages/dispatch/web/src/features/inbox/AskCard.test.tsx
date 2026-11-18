@@ -751,6 +751,51 @@ test("a reply draft outlives its ask resolving and its card remounting, and goes
   }
 });
 
+// A reply typed under a settled ask that then opens again (a withdrawn ask whose issue is
+// reopened, a retracted question a document's settlement restores) has no composer left to sit
+// in, since an open ask takes none: each thread shows the text read-only where its composer
+// stood, so the reader can still copy it.
+for (const surface of ["inline", "collapsed"] as const) {
+  test(`a reply typed under a retracted ask that opens again stays on screen in the ${surface} thread`, async () => {
+    const user = userEvent.setup();
+    const retracted = resolvedAsk("retracted");
+    const reopened = answeredAsk({ answer: null, state: "open" });
+    const typed = "Before this is picked up again: the lease is the cause.";
+    const card = (ask: Ask) => (
+      <AskCard
+        ask={ask}
+        getAskThread={async () => thread(ask, [])}
+        initialThread={thread(ask, [])}
+        thread={surface}
+      />
+    );
+    const { queryClient, view } = renderCard(card(retracted));
+    const scope = within(view.container);
+    try {
+      if (surface === "collapsed") {
+        await user.click(await scope.findByRole("button", { name: "Write a reply" }));
+      }
+      await user.click(await scope.findByRole("textbox", { name: "Reply" }));
+      await user.paste(typed);
+
+      // The ask opens again: its thread and the list the card is drawn from both read it open.
+      act(() => {
+        queryClient.setQueryData<AskRead>(["ask-thread", retracted.id], thread(reopened, []));
+      });
+      view.rerender(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>{card(reopened)}</QueryClientProvider>
+        </MemoryRouter>
+      );
+      expect(await scope.findByLabelText("Your answer")).toBeInTheDocument();
+      expect(await scope.findByTestId("ask-unsent-reply")).toHaveTextContent(typed);
+      expect(scope.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+    }
+  });
+}
+
 // Handing a question to somebody else is a move on a question still waiting for an answer, so
 // the control is part of an open card and of no record: an answered, a resolved or a withdrawn
 // question waits on nobody.

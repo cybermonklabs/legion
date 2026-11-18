@@ -1678,10 +1678,24 @@ test("the thread composer appears only once an ask is no longer open", async () 
   const { view: answeredView } = renderCard(
     <AskCard ask={answeredAsk} getAskThread={emptyThread(answeredAsk)} />
   );
+  const resolvedAsk: OwnedAsk = {
+    ...ask({ id: "ask-resolved" }),
+    resolution: {
+      actor: { id: "session-1", kind: "session" },
+      at: "2026-09-09T00:05:00Z",
+      kind: "retracted",
+      reason: "Superseded.",
+    },
+    state: "resolved",
+  };
+  const { view: resolvedView } = renderCard(
+    <AskCard ask={resolvedAsk} getAskThread={emptyThread(resolvedAsk)} />
+  );
 
   try {
     const openScope = within(openView.container);
     const answeredScope = within(answeredView.container);
+    const resolvedScope = within(resolvedView.container);
     expect(await openScope.findByLabelText("Your answer")).toBeTruthy();
     expect(openScope.queryByLabelText("Reply")).not.toBeInTheDocument();
 
@@ -1690,9 +1704,14 @@ test("the thread composer appears only once an ask is no longer open", async () 
     expect(
       answeredScope.queryByText("Replying does not answer the question.")
     ).not.toBeInTheDocument();
+
+    // A resolved ask is not open either, however it was resolved.
+    expect(await resolvedScope.findByLabelText("Reply")).toBeTruthy();
+    expect(resolvedScope.getByRole("button", { name: "Reply" })).toBeTruthy();
   } finally {
     openView.unmount();
     answeredView.unmount();
+    resolvedView.unmount();
   }
 });
 
@@ -2055,6 +2074,19 @@ test("AskCard with no replies offers Write a reply only once the ask is not open
   const { view: answered } = renderCard(
     <AskCard ask={answeredInput} getAskThread={emptyThread(answeredInput)} thread="collapsed" />
   );
+  const resolvedInput: OwnedAsk = {
+    ...ask({ id: "ask-resolved" }),
+    resolution: {
+      actor: { id: "session-1", kind: "session" },
+      at: "2026-09-09T00:05:00Z",
+      kind: "declined",
+      reason: "Not mine to say.",
+    },
+    state: "resolved",
+  };
+  const { view: resolved } = renderCard(
+    <AskCard ask={resolvedInput} getAskThread={emptyThread(resolvedInput)} thread="collapsed" />
+  );
   let attempts = 0;
   const failedInput = ask({ id: "ask-2" });
   const { view: failed } = renderCard(
@@ -2083,8 +2115,11 @@ test("AskCard with no replies offers Write a reply only once the ask is not open
   try {
     const openCard = within(open.container);
     const answeredCard = within(answered.container);
+    const resolvedCard = within(resolved.container);
     const failedCard = within(failed.container);
     await answeredCard.findByRole("button", { name: "Write a reply" });
+    // A resolved ask is not open either, however it was resolved.
+    await resolvedCard.findByRole("button", { name: "Write a reply" });
     // The open ask's only composer is the card's own Answer / Ask back row.
     await openCard.findByRole("button", { name: "Ask back" });
     expect(openCard.queryByRole("button", { name: "Write a reply" })).not.toBeInTheDocument();
@@ -2101,6 +2136,7 @@ test("AskCard with no replies offers Write a reply only once the ask is not open
   } finally {
     open.unmount();
     answered.unmount();
+    resolved.unmount();
     failed.unmount();
   }
 });
