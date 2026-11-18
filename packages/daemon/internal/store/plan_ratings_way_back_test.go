@@ -267,8 +267,8 @@ func TestThePlanRatingsWayBackLeavesWhatTheReleaseBeforeReads(t *testing.T) {
 		} else if !reflect.DeepEqual(decoded, q.payload) {
 			t.Errorf("%s reads %#v after the way back, want %#v as it was queued", q.name, decoded, q.payload)
 		}
-		if want := inserted[i]; want.attempts > 0 && (s.attempts != want.attempts || !s.nextAt.Equal(want.nextAt) || s.lastError != want.lastError) {
-			t.Errorf("%s waits to retry after the way back with %d attempts, at %s, after %q; want its %d, %s and %q as they were",
+		if want := inserted[i]; s.attempts != want.attempts || !s.nextAt.Equal(want.nextAt) || s.lastError != want.lastError {
+			t.Errorf("%s stands after the way back with %d attempts, due at %s, after %q; want its %d, %s and %q as they were",
 				q.name, s.attempts, s.nextAt.UTC(), s.lastError, want.attempts, want.nextAt, want.lastError)
 		}
 		if row.Kind != record.OutboxKindStepRecord {
