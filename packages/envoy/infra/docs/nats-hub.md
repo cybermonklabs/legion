@@ -1107,8 +1107,11 @@ client to a host, not to a host per port, so every host serves both of the Servi
 forwarded as TCP to the hub's client Service, and 9020, forwarded to the session listener's own
 cluster Service. Clients reach them as the hub's `tailnetNatsUrl`,
 `nats://<tailnet.serviceName>.<tailnetDnsName>:4222`, and `tailnetEnvoyUrl`, the same name on
-9020. The listener's `/v1` takes no bearer there, as on the VM, so
-[The hub's listener](#the-hubs-listener) holds for port 9020 of the Service as written.
+9020. A `tailnet.listener` with no `clientNamespaces` takes no bearer there, as on the VM, so
+[The hub's listener](#the-hubs-listener) holds for port 9020 of the Service as written. A
+listener declared as the hub's own `listener`, or given `clientNamespaces`, requires each tailnet
+caller's token too, as it requires every other caller's ([The session
+listener](#the-session-listener)).
 
 Each host's advertiser advertises the Service as soon as its node may. So a listener fault leaves
 the hub's 4222 on the tailnet, and every host keeps serving both ports while the listener's own
