@@ -404,8 +404,8 @@ What skips a
 group does so on purpose, and worker-image is the one job that does (pull request only, so it is
 in `CI_OK_PULL_REQUEST_ONLY`; main's image builds are release.yaml's). The queued pull request's
 text is checked on the group by ci.yaml's `pr-title` job, which finds it with
-find-pr-payload.sh; pr-title.yaml runs on an edit and a review alone, and a group carries
-neither. The nine slow suites go the
+find-pr-payload.sh; pr-title.yaml runs on an edit alone, which a group never
+carries. The nine slow suites go the
 other way: the queue is where their result normally comes from, and a pull request runs them only
 when it carries the label `full-ci`. The
 docs job runs on a group and on a pull request alike; docs-pages.yaml builds and publishes main's

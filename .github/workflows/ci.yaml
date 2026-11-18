@@ -22,9 +22,9 @@ name: CI
 # the `pr-title` job at the end of this file, in the same shape and for the same reason: it runs
 # check-pr-text.sh on a pull request that is not a draft and on the merge queue's group, the two
 # events this workflow runs that carry a pull request's text, and its own check run is the report,
-# so it posts nothing. pr-title.yaml carries that same check when the pull request is edited and
-# when a review is submitted or edited, the two events this workflow does not run on, as its own
-# job's check run too; its header says why it runs on nothing else.
+# so it posts nothing. pr-title.yaml carries that same check when the pull request is edited, the
+# event this workflow does not run on, as its own job's check run too; its header says why it runs
+# on nothing else.
 # The docs site's build on a push to main, and its GitHub Pages
 # deploy, are docs-pages.yaml's, a workflow of its own whose header says why. Its paths are held
 # to the docs filter below.
@@ -5634,8 +5634,8 @@ jobs:
   #
   # A merge group carries no pull request, only the queue branch it runs on, so
   # find-pr-payload.sh reads the pull request that branch names and writes it in the shape
-  # check-pr-text.sh wants. pr-title.yaml runs on an edit and a review alone, whose payloads
-  # carry the pull request, so a pull request that is opened, reopened or pushed to gets its
+  # check-pr-text.sh wants. pr-title.yaml runs on an edit alone, whose payload carries the pull
+  # request, so a pull request that is opened, reopened or pushed to gets its
   # pr-title from this job, and a fork's head gets one too: a job's check run costs no token
   # scope, where a POST needs `checks: write`, which a fork's run's read-only GITHUB_TOKEN does
   # not carry. A dispatched run carries
