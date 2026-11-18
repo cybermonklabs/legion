@@ -2349,10 +2349,13 @@ const gcFloodClient = 5_000_000
 // (crdt.Doc.StructCount, docs' peerApplyAllowance) - is refused with 4413 and taken back out
 // whole, leaving the room as it was. Frames of what the allowance carries then take the room as
 // near the cap as a browser's frames can, and one struct more is refused too. A frame of delete
-// ranges, which integrates nothing, is admitted there: the splits a delete makes in items the
-// document already held are not the update's own and are not counted against it
-// (crdt.ApplyBudget.Structs), so a document at the cap can still be trimmed. The stored document
-// then loads in a new room of a new server, within the cap.
+// ranges over clocks the room holds, the first fill frame's GC structs, is admitted there: it
+// integrates nothing, parks nothing and cuts no item in two, so it spends none of the headroom
+// the structs and the splits share (docs' capShares), which is the rule that lets a person trim a
+// document at the cap by deleting whole items. Its ranges are of clocks the room holds because a
+// delete of clocks the room lacks waits in the pending queue, and a frame part of which parks is
+// answered not applied (ygo's Server.AnswerParkedNotApplied). The stored document then loads in a
+// new room of a new server, within the cap.
 //
 // Every frame's size is the hook's own share, read from the code (docs.PeerStructsAllowedForTest)
 // rather than written here: a struct that parks costs the stored state two items, so the
@@ -2455,8 +2458,9 @@ func TestABrowserCannotPushADocumentPastTheDecodeCap(t *testing.T) {
 	if state := canonicalState(t, filling.state(t)); !bytes.Equal(state, before) {
 		t.Fatalf("the room holds a %d-byte state after the refused struct, want the %d-byte state it held", len(state), len(before))
 	}
-	fillClient++
-	requireApplied(t, filling, deleteRangesFrame(fillClient+2, 64), "an update of 64 delete ranges into a room at the cap")
+	// The first fill frame's client, whose clocks the room holds as GC structs: deleted already,
+	// so a range over them cuts no item in two and integrates nothing.
+	requireApplied(t, filling, deleteRangesFrame(gcFloodClient, 64), "an update of 64 delete ranges over clocks a room at the cap holds")
 	atTheCap := canonicalState(t, filling.state(t))
 	capped, err := docs.StateStructsForTest(atTheCap)
 	if err != nil {
@@ -2726,14 +2730,15 @@ const (
 	// after that to: ten seconds, which each of them is three orders of magnitude under on this
 	// pod and which no path linear in a claimed span could meet.
 	hugeSpanEditWithin = 10 * time.Second
-	// hugeSpanNewClient is the client of the frame below, above every client a stored document
-	// holds and above the 32 bits a browser's own id is drawn from (crdt.New).
-	hugeSpanNewClient = 1<<40 + 211
 )
 
 // A frame costs the server what its bytes carry, never what its clocks claim, over real document
 // sockets of a real server: a GC run of 2^40 clocks for a client the room has never seen, which
 // a browser writes in a handful of bytes because a clock length in a V1 update is a varuint.
+// The client is the one the sending browser's admission gave it (openGivenBrowser), the id a
+// page of this build writes its structs under: an update with structs under an id at 2^32 or
+// above that no admission gave out is refused DOC_CLIENT_ID_REFUSED (docs' client_ids.go), and a
+// given id is one no stored document and no write of the server's own holds.
 // A hostile browser can send it today, so what it meets is observable behaviour whatever answers
 // it; what changed with INFRA-179 is only which code does. The pre-apply walk that read a struct
 // and a delete range at a time, and the running totals it fed, are gone: the frame now goes
@@ -2774,8 +2779,8 @@ func TestAFrameClaimingHugeClockSpansCostsOnlyItsBytes(t *testing.T) {
 	}
 	memory.waitForSettlement(t, stored)
 	room := stored.artifactID
-	frame := gcRunFrame(hugeSpanNewClient, 0, 1<<40)
 
+	var frame []byte
 	var answered, typed, resynced time.Duration
 	var applied bool
 	var closed *gws.CloseError
@@ -2785,8 +2790,9 @@ func TestAFrameClaimingHugeClockSpansCostsOnlyItsBytes(t *testing.T) {
 		// A browser that only reads the room, which the frame must leave alone.
 		reader := server.openBrowser(t, room)
 		defer reader.leave()
-		sending := server.openBrowser(t, room)
+		sending, given := server.openGivenBrowser(t, room)
 		defer sending.leave()
+		frame = gcRunFrame(given, 0, 1<<40)
 		start := time.Now()
 		var err error
 		applied, closed, err = sending.send(sending.updateFrame(frame))
@@ -4124,8 +4130,9 @@ type keystroke struct {
 	took time.Duration
 }
 
-// typist is a person typing in a room they hold open (startTyping), until finish.
-type typist struct {
+// typingPerson is a person typing in a room they hold open (startTyping), until finish. Its name
+// is not typist, which the multiprocess drives declare in the same package.
+type typingPerson struct {
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
@@ -4140,14 +4147,14 @@ type typist struct {
 // slow to answer delays the next rather than queueing beside it. The typing stops at the first
 // keystroke the room does not apply, when the test ends, and once the person has pressed
 // typingKeystrokes keys, which finish reports as the person having run out.
-func startTyping(t *testing.T, typing *browser) *typist {
+func startTyping(t *testing.T, typing *browser) *typingPerson {
 	t.Helper()
 	document := newBrowserDocument(t, typing.state(t))
 	text := firstXMLText(document.fragment)
 	if text == nil {
 		t.Fatal("the typed room's state holds no text")
 	}
-	person := &typist{stop: make(chan struct{}), done: make(chan struct{})}
+	person := &typingPerson{stop: make(chan struct{}), done: make(chan struct{})}
 	go func() {
 		defer close(person.done)
 		ticker := time.NewTicker(typingInterval)
@@ -4188,7 +4195,7 @@ func startTyping(t *testing.T, typing *browser) *typist {
 
 // finish stops the typing, and is every keystroke it sent and why the last was not applied, if it
 // was not.
-func (p *typist) finish() ([]keystroke, error) {
+func (p *typingPerson) finish() ([]keystroke, error) {
 	p.stopOnce.Do(func() { close(p.stop) })
 	<-p.done
 	p.mu.Lock()

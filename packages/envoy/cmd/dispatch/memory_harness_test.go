@@ -31,6 +31,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -1089,6 +1090,7 @@ func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 // each (sjawhar/ygo v1.55.1-sami.1, provider/websocket/server.go:104-118).
 const (
 	frameSync       = 0
+	frameStateless  = 5
 	frameSyncStatus = 8
 	framePing       = 9
 	framePong       = 10
@@ -1111,8 +1113,18 @@ func documentFrame(room string, tag uint64, payload []byte) []byte {
 // calibration) and share two processors, so a browser waits for that answer as long as a browser
 // does rather than the 45 seconds gorilla's default dialer gives up after. An upgrade the server
 // answers with an HTTP status in place of the socket is an *upgradeRefused.
+//
+// It presents no client id (contracts.DocumentClientIdParameter), as a page of a build from
+// before Dispatch gave them out does, so the socket is given none: each id below 2^32 its updates
+// first write structs under is claimed by that write, and an update with structs under an id at
+// 2^32 or above is refused (docs' client_ids.go). openGivenBrowser is a page of this build.
 func (p *memoryServer) dialDocument(artifactID string) (*gws.Conn, error) {
-	address := "ws" + strings.TrimPrefix(p.base, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion())
+	return p.dialDocumentWith(artifactID, "")
+}
+
+// dialDocumentWith is dialDocument with query appended to the address's own parameters.
+func (p *memoryServer) dialDocumentWith(artifactID, query string) (*gws.Conn, error) {
+	address := "ws" + strings.TrimPrefix(p.base, "http") + "/ws/doc/" + artifactID + "?schema_version=" + strconv.Itoa(pmdoc.SchemaVersion()) + query
 	dialer := gws.Dialer{Proxy: http.ProxyFromEnvironment, HandshakeTimeout: 10 * time.Minute}
 	connection, answer, err := dialer.Dial(address, http.Header{"X-Dispatch-User": {"alice"}})
 	if err != nil {
@@ -1196,30 +1208,89 @@ func (p *memoryServer) tryOpenBrowser(artifactID string) (*browser, error) {
 	if err != nil {
 		return nil, err
 	}
-	go opened.read()
+	return opened.join()
+}
+
+// join starts b's read loop and joins b's room as tryOpenBrowser describes, answering b once it
+// has; where it could not, it leaves the room and answers why.
+func (b *browser) join() (*browser, error) {
+	go b.read()
 	// The room hands a joining peer its state only once the peer asks for it (reearth/ygo#342),
 	// as @hocuspocus/provider does on every connection: without the ask the socket waits out
 	// ygo's handshake deadline and the room closes it.
-	if err := opened.write(documentFrame(artifactID, frameSync, ygsync.EncodeSyncStep1(crdt.New()))); err != nil {
+	if err := b.write(documentFrame(b.room, frameSync, ygsync.EncodeSyncStep1(crdt.New()))); err != nil {
 		// A socket the room budget refused can be closed before the ask goes out: the read loop
 		// has then read the room's close and answered it, so the write fails with the client's
 		// own close (ErrCloseSent), and what the room said is what the read loop ended with.
 		if errors.Is(err, gws.ErrCloseSent) {
-			<-opened.ended
-			err = opened.end
+			<-b.ended
+			err = b.end
 		}
-		opened.leave()
+		b.leave()
 		return nil, err
 	}
-	if _, err := opened.await(frameSync); err != nil {
-		opened.leave()
+	if _, err := b.await(frameSync); err != nil {
+		b.leave()
 		return nil, err
 	}
-	if err := opened.ping(); err != nil {
-		opened.leave()
+	if err := b.ping(); err != nil {
+		b.leave()
 		return nil, err
 	}
-	return opened, nil
+	return b, nil
+}
+
+// openGivenBrowser is openBrowser for a page of this build: it presents the client id parameter
+// holding no id, as a page that holds none for the document yet does, and reads the socket's
+// first frame, the stateless message in which the admission names the client id it gave the page
+// (docs' clientIDFrame), before it joins the room as openBrowser does. given is that id: one at
+// 2^32 or above that the document had not given out, so no stored document and no write of the
+// server's own holds it, and the one id this socket may write structs under.
+func (p *memoryServer) openGivenBrowser(t *testing.T, artifactID string) (opened *browser, given uint64) {
+	t.Helper()
+	connection, err := p.dialDocumentWith(artifactID, "&"+contracts.DocumentClientIdParameter+"=")
+	if err != nil {
+		t.Fatalf("open document %s in a browser of this build: %v", artifactID, err)
+	}
+	if given, err = givenClient(connection); err != nil {
+		_ = connection.Close()
+		t.Fatalf("read the client id the admission to document %s gave the browser: %v", artifactID, err)
+	}
+	if opened, err = newBrowser(artifactID, connection).join(); err != nil {
+		t.Fatalf("open document %s in a browser of this build: %v", artifactID, err)
+	}
+	return opened, given
+}
+
+// givenClient reads connection's first frame, the stateless message naming the client id the
+// socket's admission gave its page (contracts.DocumentClientIdMessagePrefix), and is that id.
+func givenClient(connection *gws.Conn) (uint64, error) {
+	if err := connection.SetReadDeadline(time.Now().Add(browserAnswerWithin)); err != nil {
+		return 0, err
+	}
+	_, message, err := connection.ReadMessage()
+	if err != nil {
+		return 0, err
+	}
+	if err := connection.SetReadDeadline(time.Time{}); err != nil {
+		return 0, err
+	}
+	decoder := encoding.NewDecoder(message)
+	if _, err := decoder.ReadVarString(); err != nil {
+		return 0, fmt.Errorf("read the first frame's room: %w", err)
+	}
+	if tag, err := decoder.ReadVarUint(); err != nil || tag != frameStateless {
+		return 0, fmt.Errorf("the first frame is tagged %d (%v), want a stateless message (%d)", tag, err, frameStateless)
+	}
+	payload, err := decoder.ReadVarString()
+	if err != nil {
+		return 0, fmt.Errorf("read the first frame's stateless message: %w", err)
+	}
+	digits, named := strings.CutPrefix(payload, contracts.DocumentClientIdMessagePrefix)
+	if !named {
+		return 0, fmt.Errorf("the first frame's stateless message %q names no client id", payload)
+	}
+	return strconv.ParseUint(digits, 10, 64)
 }
 
 // connectBrowser connects to the document's room and does nothing else: it sends nothing, and
@@ -1229,13 +1300,18 @@ func (p *memoryServer) connectBrowser(artifactID string) (*browser, error) {
 	if err != nil {
 		return nil, err
 	}
+	return newBrowser(artifactID, connection), nil
+}
+
+// newBrowser is a browser of room over connection, whose read loop has not started.
+func newBrowser(room string, connection *gws.Conn) *browser {
 	return &browser{
-		room:       artifactID,
+		room:       room,
 		connection: connection,
 		answers:    make(chan browserAnswer, 4),
 		ended:      make(chan struct{}),
 		left:       make(chan struct{}),
-	}, nil
+	}
 }
 
 func (b *browser) read() {

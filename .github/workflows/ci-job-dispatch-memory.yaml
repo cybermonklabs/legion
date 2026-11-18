@@ -32,7 +32,9 @@ env:
 jobs:
   dispatch-memory:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 75
+    # The test step's 90-minute package timeout and the two minutes or so the job's own setup and
+    # the test binary's build took before it (run 44333064387), with three minutes to spare.
+    timeout-minutes: 95
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -58,9 +60,11 @@ jobs:
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Memory tests of the Dispatch server
+        # -timeout 90m holds the package's measured run, 3,578 s at 7e798f23 and about 3,750 s at
+        # 55efde4b, with about 27 minutes to spare.
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
-          go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+          go test -tags memory -count=1 -timeout 90m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

@@ -246,15 +246,16 @@ func TestAWriteThatCannotGetRoomInTheCopyPoolIsRefusedAtTheWaitBound(t *testing.
 	t.Logf("the probe was refused 503 after %s, within the %s wait bound", elapsed.Round(time.Millisecond), docs.WriteWaitBound)
 }
 
-// liveWritePausePath is the test hook route of the pause of the document's live writes at point.
-func liveWritePausePath(artifactID string, point docs.LiveWritePausePoint) string {
+// liveWritePauseRoute is the test hook route of the pause of the document's live writes at point.
+// Its name is not liveWritePausePath, which the multiprocess drives declare in the same package.
+func liveWritePauseRoute(artifactID string, point docs.LiveWritePausePoint) string {
 	return "/api/v1/artifacts/" + artifactID + "/_test/live-write-pauses/" + string(point)
 }
 
 // armLiveWritePause makes the next live write of the document park at point until it is released.
 func (p *memoryServer) armLiveWritePause(t *testing.T, artifactID string, point docs.LiveWritePausePoint) {
 	t.Helper()
-	if answer := p.send(t, http.MethodPut, liveWritePausePath(artifactID, point), "application/json", nil, http.Header{"X-Dispatch-User": {"alice"}}); answer.status != http.StatusNoContent {
+	if answer := p.send(t, http.MethodPut, liveWritePauseRoute(artifactID, point), "application/json", nil, http.Header{"X-Dispatch-User": {"alice"}}); answer.status != http.StatusNoContent {
 		t.Fatalf("arm the live write pause of %s at %s: %d %s", artifactID, point, answer.status, answer.body)
 	}
 }
@@ -262,7 +263,7 @@ func (p *memoryServer) armLiveWritePause(t *testing.T, artifactID string, point 
 // awaitLiveWriteParked waits for a write of the document to park at the pause armed at point.
 func (p *memoryServer) awaitLiveWriteParked(t *testing.T, artifactID string, point docs.LiveWritePausePoint) {
 	t.Helper()
-	answer := p.send(t, http.MethodGet, liveWritePausePath(artifactID, point)+"?wait=30s", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
+	answer := p.send(t, http.MethodGet, liveWritePauseRoute(artifactID, point)+"?wait=30s", "", nil, http.Header{"X-Dispatch-User": {"alice"}})
 	if answer.status != http.StatusOK {
 		t.Fatalf("await the live write parked at %s of %s: %d %s", point, artifactID, answer.status, answer.body)
 	}
@@ -280,7 +281,7 @@ func (p *memoryServer) awaitLiveWriteParked(t *testing.T, artifactID string, poi
 // releaseLiveWritePause lets the write parked at point go on and disarms the pause.
 func (p *memoryServer) releaseLiveWritePause(t *testing.T, artifactID string, point docs.LiveWritePausePoint) {
 	t.Helper()
-	answer, err := p.trySend(http.MethodDelete, liveWritePausePath(artifactID, point), "", nil, http.Header{"X-Dispatch-User": {"alice"}})
+	answer, err := p.trySend(http.MethodDelete, liveWritePauseRoute(artifactID, point), "", nil, http.Header{"X-Dispatch-User": {"alice"}})
 	if err != nil {
 		t.Logf("release the live write pause of %s at %s: %v", artifactID, point, err)
 		return
