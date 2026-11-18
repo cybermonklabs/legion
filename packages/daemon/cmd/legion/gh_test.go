@@ -2326,6 +2326,13 @@ func TestLegionGhLeavesAnIgnoredHangupIgnoredForGh(t *testing.T) {
 // stops its help read's group. The guard never checks this call, so the whole of the held work is
 // this command's own: the check of these runs refuses everything, and a run that reached it would
 // exit 2 rather than on the signal.
+//
+// Each `legion gh` here is this test binary run as `legion`, through main and its cobra command
+// line (run, passThrough), so the context runGh is handed is the one main's signal.NotifyContext
+// cancels, which endedBySignal reads the cause of. A command line that handed runGh another
+// context fails every row: the SIGINT and the SIGTERM rows answer the visibility, exit 0, with gh
+// run for the read, and the SIGHUP row runs gh too, since the guard's stop of the `legion gh` its
+// read runs reaches that command through the same context.
 func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)

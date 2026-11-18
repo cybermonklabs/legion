@@ -217,6 +217,10 @@ func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T)
 // Before, a SIGHUP killed the command where it stood and left the check running, reparented and
 // waited for by nobody, and a SIGINT stopped the check and was answered with the guard's setup
 // error, exit 2.
+//
+// The command is this test binary run as `legion`, through main and its cobra command line, so
+// the guard's context is the one main's signal.NotifyContext cancels: a leakCheckCommand that
+// handed its shape another context leaves each SIGINT row's command running past its bound.
 func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 	if _, err := os.ReadFile("/proc/self/cmdline"); err != nil {
 		t.Fatalf("/proc does not answer (%v): this row reads from it whether the stand-in is still running", err)
