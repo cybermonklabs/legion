@@ -621,8 +621,9 @@ test("default assignee picks made while one is saving show, and only the newest 
   try {
     const section = within(await screen.findByRole("region", { name: "Projects" }));
     // A default set on the project an unmapped repository falls back to is what a reader has to
-    // weigh while setting one, so the consequence sits beside the control.
-    expect(section.getByText(/no project mapping/)).toHaveTextContent("default project");
+    // weigh while setting one, so the consequence sits beside the control. The region is drawn
+    // at once, saying `Loading projects…`, so the line is waited for: it comes with the projects.
+    expect(await section.findByText(/no project mapping/)).toHaveTextContent("default project");
 
     const control = await defaultAssigneeControl("CORE");
     await waitFor(() => expect(control.value).toBe("alice@example.com"));

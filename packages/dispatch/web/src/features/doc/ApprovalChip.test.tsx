@@ -445,8 +445,9 @@ test("clicking the chip opens a popover listing every review", async () => {
   );
   try {
     await user.click(screen.getByRole("button", { name: "Changes requested" }));
+    // The dialog is drawn at once, saying `Loading reviews…`, so its rows are waited for.
     const dialog = await screen.findByRole("dialog", { name: "Reviews" });
-    expect(within(dialog).getByText(/alice approved v2/)).not.toBeNull();
+    expect(await within(dialog).findByText(/alice approved v2/)).not.toBeNull();
     expect(within(dialog).getByText(/bob requested changes on v3/)).not.toBeNull();
     expect(
       await within(dialog).findByText((text) => text.includes("Please tighten the intro."))
