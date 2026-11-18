@@ -578,14 +578,10 @@ func stepArgsHash(args []byte) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// syntheticModel is the model Claude Code names on a message no model wrote, such as its own
-// answer to a provider's refusal (internal/claudebridge's testdata/api-error-429.jsonl).
-const syntheticModel = "<synthetic>"
-
 // answeredBy is the Answered a message_end read on this connection makes, under the connection's
 // claim and the generation its hello was registered for: an assistant message whose message.model
-// is set and is not syntheticModel. A user's message, a tool's result and a message no model wrote
-// answer nothing, and neither does a frame that is not the shape Oh My Pi writes
+// is set and is not shimwire.SyntheticModel. A user's message, a tool's result and a message no
+// model wrote answer nothing, and neither does a frame that is not the shape Oh My Pi writes
 // (internal/testbin's omp frames, omp://rpc.md).
 //
 // A message whose provider or model holds U+0000 did answer, with a model no store can keep
@@ -607,7 +603,7 @@ func (c *Conn) answeredBy(raw json.RawMessage) (Answered, bool) {
 		return Answered{}, false
 	}
 	m := frame.Message
-	if m.Role != "assistant" || m.Model == "" || m.Model == syntheticModel {
+	if m.Role != "assistant" || m.Model == "" || m.Model == shimwire.SyntheticModel {
 		return Answered{}, false
 	}
 	var unstorable []string

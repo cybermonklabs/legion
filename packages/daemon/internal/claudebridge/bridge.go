@@ -680,14 +680,11 @@ func (b *bridge) assistant(message json.RawMessage) {
 		}
 		b.emitRaw(map[string]any{"type": "tool_execution_start", "toolName": block.Name, "args": args})
 	}
-	if m.Model != "" && m.Model != syntheticModel {
+	if m.Model != "" && m.Model != shimwire.SyntheticModel {
 		b.emitRaw(map[string]any{"type": "message_end", "message": map[string]any{
 			"role": "assistant", "provider": "anthropic", "model": m.Model}})
 	}
 }
-
-// syntheticModel is the model Claude Code names on a message no model wrote.
-const syntheticModel = "<synthetic>"
 
 // echoed answers the delivery Claude Code has just taken: the oldest one sent, not yet answered,
 // whose text is the re-emitted user message's. The bridge's own user messages (the daemon's prompt,
