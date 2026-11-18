@@ -492,7 +492,7 @@ func TestPauseRoutes(t *testing.T) {
 				t.Fatalf("%s while paused left %s %s, want %s", step.action, step.token, got.State, step.want)
 			}
 		}
-		// set_status, through the controller's grant and through the one `legion status <issue>`
+		// set_status, through the controller's grant and through the one `legion issue status`
 		// mints with the operator's token, and `legion status <team>`'s health read.
 		h.statuses.issues["LEGION-213"] = dispatch.Issue{Key: "LEGION-213"}
 		for _, grantID := range []string{grant, controllerGrant(t, h.harness).GrantID} {

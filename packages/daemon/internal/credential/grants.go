@@ -108,7 +108,7 @@ func (g *Grants) MintController(session string) (Grant, error) {
 }
 
 // MintOperatorController records a sixty-second controller grant for the operator's bearer, which
-// the route compared before it asked (the grants route's empty form, which `legion status <issue>`
+// the route compared before it asked (the grants route's empty form, which `legion issue status`
 // takes). The service keeps no bearer.
 func (g *Grants) MintOperatorController() (Grant, error) {
 	return g.mintController(Grant{Operator: true})
