@@ -24,7 +24,10 @@ import (
 // whatever number of names it shares, by the operator's source so that no rule of the daemon's
 // resumes it; relaunched, it would be refused before it starts, again and again until its launch
 // budget ran out, and a claim that took another's name in the window would keep the grants it
-// adopted then. On a database only daemons with the hold have run, both steps find nothing.
+// adopted then. The suspension sends no clean stop of the claim's Envoy session (supervise's
+// sessionGone): the listener's registration under that id can be the live process of the claim
+// that holds it, which the stop would delete. On a database only daemons with the hold have run,
+// both steps find nothing.
 //
 // A name only an abandoned session records suspends nothing, and is logged at Warn alone: nothing
 // resumes or enrolls an abandoned session (start resumes the current file, ensureEnrolled enrolls

@@ -2944,7 +2944,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	m.claim.LastDeathCause = deathCause(observation)
 	ended := endDied(m.claim.LastDeathCause)
 	m.recordGoneEnd(ctx, ended)
-	m.sessionGone()
+	m.sessionGone(ctx)
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
 	}
@@ -3036,8 +3036,25 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // of the claim registers the same session again — in the same decision after a death, or at a
 // later wake after a suspension — which is the state the listener should then read, so the stop
 // says what is true when it is sent.
-func (m *Machine) sessionGone() {
+//
+// A claim that records a session it does not hold sends no stop (holdRecorded, plan E's t-e-54).
+// The stop deletes the registration the listener holds for the session id, whichever process
+// wrote it last (cleanSessionStop reads its client instance id first), and where another claim
+// holds the id its live process can be that writer, as after a rollback: the stop of this claim's
+// ended process would delete the registration of a process it never ran, and that claim's role
+// would read gone until the next heartbeat. The boot suspends such a claim (the merge of
+// cybermonklabs/legion#4088 into #4220 made that suspension send a stop), so the stop is held as
+// a publish to the claim's role is (outbox.publish). A store that does not answer sends nothing
+// either; the registration then lapses when its record expires, the wait the session had before
+// the stop existed. A claim holding its session asks nothing of the store (Machine.heldNames) and
+// is stopped as before (R9).
+func (m *Machine) sessionGone(ctx context.Context) {
 	if m.deps.SessionGone == nil || m.claim.Session == "" {
+		return
+	}
+	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+		m.log.Info("supervise: no clean stop of the Envoy session of a claim that does not hold it",
+			"claim", m.claim.Token, "session", m.claim.Session, "error", err)
 		return
 	}
 	m.deps.SessionGone(m.claim.Session)

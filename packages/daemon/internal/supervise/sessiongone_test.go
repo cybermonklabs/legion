@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -100,6 +101,79 @@ func TestADeathBeforeAnyRegistrationStopsNoSession(t *testing.T) {
 
 	if len(*stopped) != 0 {
 		t.Fatalf("stopped sessions %v, want none for a claim that registered none", *stopped)
+	}
+}
+
+// The clean stop deletes the registration the Envoy listener holds for the session id, whichever
+// process wrote it last, so a claim that records a session another claim recorded first sends no
+// stop when its process ends (sessionGone, plan E's t-e-54): that claim's live process can be the
+// last writer, as after a rollback, and the stop would delete its registration. The boot suspends
+// such a claim, and a death ends one as well; neither sends a stop. A store that does not answer
+// whose claim the name is held for sends none either. Across the same restart, a claim holding its
+// own session is stopped as before, once (R9).
+//
+// The control (the pull request records the run): sessionGone sending the stop without asking
+// the hold, as cybermonklabs/legion#4088 wrote it, records a stop of ses_implementer in the first
+// three rows.
+func TestAClaimThatDoesNotHoldItsSessionSendsNoStopOfIt(t *testing.T) {
+	const other = claim.Token("legion-legion-LEGION-209-tester")
+	// dies is the probe's verdict of a death, whose relaunch resumes the recorded session and so
+	// is refused by the same hold, with refused the error that relaunch must answer.
+	dies := func(refused func(error) bool) func(h *harness) {
+		return func(h *harness) {
+			h.t.Helper()
+			err := h.handle(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}})
+			if !refused(err) {
+				h.t.Fatalf("the death's relaunch = %v, want the hold's refusal of the session it resumes", err)
+			}
+		}
+	}
+	for _, row := range []struct {
+		name string
+		// before is what changes in the store between the claim's registration and the restart.
+		before func(h *harness)
+		end    func(h *harness)
+		want   []string
+	}{
+		{
+			name:   "a death of a claim whose session another claim recorded first",
+			before: func(h *harness) { h.store.setHold(sessionID(session), other) },
+			end: dies(func(err error) bool {
+				var refusal claim.Refusal
+				return errors.As(err, &refusal) && refusal == claim.SessionHeldRefusal(session)
+			}),
+		},
+		{
+			name:   "the daemon's suspension of a claim whose session another claim recorded first",
+			before: func(h *harness) { h.store.setHold(sessionID(session), other) },
+			end: func(h *harness) {
+				h.must(RequestSuspend{Claim: h.token, Reason: "the boot contains it", By: SuspendedByDaemon})
+				h.wantState(StateSuspended)
+			},
+		},
+		{
+			name:   "a death of a claim whose hold the store does not answer",
+			before: func(h *harness) { h.store.fail("HoldSessions", errors.New("the store is down")) },
+			end:    dies(func(err error) bool { return errors.Is(err, errHoldUnanswered) }),
+		},
+		{
+			name:   "the daemon's suspension of a claim holding its own session",
+			before: func(*harness) {},
+			end: func(h *harness) {
+				h.must(RequestSuspend{Claim: h.token, Reason: "the issue left the workflow", By: SuspendedByDaemon})
+				h.wantState(StateSuspended)
+			},
+			want: []string{session},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h, stopped := sessionStops(t)
+			h.reach(StateReady)
+			row.before(h)
+			h.restart()
+			row.end(h)
+			wantStops(t, *stopped, row.want)
+		})
 	}
 }
 
