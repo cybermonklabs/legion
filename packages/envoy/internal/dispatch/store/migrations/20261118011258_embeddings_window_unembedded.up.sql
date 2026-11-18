@@ -42,8 +42,8 @@
 -- build's time is downtime. TestCoverageStatementScale (embedqueue) drops both indexes and builds
 -- them again with these files' own statements at each scale it measures, and logs each build's
 -- time: in the builds Job scripts/coverage-scale.sh runs (8 CPUs, 16 GiB, on 2026-11-18), this
--- build took 4.7 s and 20261118011208's 2.8 s on a synthetic corpus of production's size
--- (1,000,000 window rows), and 10.5 s and 6.3 s on one of twice it.
+-- build took 7.5 s and 20261118011208's 3.9 s on a synthetic corpus of production's size
+-- (1,000,000 window rows), and 17.6 s and 8.4 s on one of twice it.
 --
 -- Why it is exempt from the census's size limit. A migration whose first line is
 -- `-- pgmigrate:non-transactional` holding exactly one non-unique

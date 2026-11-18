@@ -2,16 +2,16 @@ kind: Fixed
 custom:
   Issue: pr4378
 body: |-
-  `GET /api/v1/search/coverage` took 10 to 30 s in production and is now several times faster on a
-  synthetic corpus of production's size, in every state of the visibility map. It reads the window
-  kinds through two partial indexes (`embeddings_window_embedded`, `embeddings_window_unembedded`)
-  by one bitmap scan of both and by no other index or plan, never by a sequential scan that tests
-  every window's text, whatever the visibility map holds, whatever the statistics read and
-  whatever share of the windows is embedded, as after an embedder change drops every vector; and
-  it builds and hashes an issue's text only where the issue's inputs changed since the coverage
-  pass recorded them in the new table `embedding_issue_sources` (at boot and every 10 minutes).
-  The statement runs under a 10 s `statement_timeout`, past which the route answers
-  `503 SEARCH_COVERAGE_TIMEOUT` while its caller still waits, and a boot pass whose closing report
-  fails logs it at WARN instead of failing. The two index builds run before the server serves, so
-  a single-replica deployment is down for them at the deploy: 2.8 s and 4.7 s on a synthetic corpus
-  of 1,000,000 window rows.
+  `GET /api/v1/search/coverage` took 10 to 30 s in production; its statement now takes 1.1 to 1.6 s
+  on a synthetic corpus of production's size where the old one took 11.5 to 15.4 s, in every state
+  that corpus was measured in. It reads the window kinds through two partial indexes
+  (`embeddings_window_embedded`, `embeddings_window_unembedded`) by one bitmap scan of both and by
+  no other index or plan, never by a sequential scan that tests every window's text, whatever the
+  visibility map holds, whatever the statistics read and whatever share of the windows is
+  embedded, as after an embedder change drops every vector; and it builds and hashes an issue's
+  text only where the issue's inputs changed since the coverage pass recorded them in the new
+  table `embedding_issue_sources` (at boot and every 10 minutes). The statement runs under a 10 s
+  `statement_timeout`, past which the route answers `503 SEARCH_COVERAGE_TIMEOUT` while its caller
+  still waits, and a boot pass whose closing report fails logs it at WARN instead of failing. The
+  two index builds run before the server serves, so a single-replica deployment is down for them
+  at the deploy: 3.9 s and 7.5 s on a synthetic corpus of 1,000,000 window rows.
