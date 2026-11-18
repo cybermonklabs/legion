@@ -20,12 +20,13 @@ body: |-
     configuration file of a role's working directory. Each client runs with a home of its own and
     with the probe's state directory as its working directory; `curl` takes `-q` first, `mise`
     and `uv` take `--no-config`, `git` takes `GIT_CEILING_DIRECTORIES`, and `go` reads a `go.mod`
-    of the probe's own, so none reads a configuration file of the pod's home, working directory or
-    their parents, and no credential variable or file of the pod's reaches a test site. Because
-    the image sets `USER`, `runtime.kubernetes.pod.env` may no longer set it: `legion start`,
-    `legion config check` and the daemon's boot refuse a configuration that does, whatever digest
-    it pins. The daemon's image probe pod now reserves 500m CPU (was 250m), because the image's
-    longer TLS probe needs it.
+    of the probe's own, so none reads a configuration file of the pod's home or working directory,
+    none but `bun` and `omp`, which read a `package.json` and a `tsconfig.json`, reads one of the
+    state directory's parents, and no credential variable or file of the pod's reaches a test site.
+    Because the image sets `USER`, `runtime.kubernetes.pod.env` may no longer set it:
+    `legion start`, `legion config check` and the daemon's boot refuse a configuration that does,
+    whatever digest it pins. The daemon's image probe pod now reserves 500m CPU (was 250m), because
+    the image's longer TLS probe needs it.
 time: 2026-11-18T03:35:00Z
 custom:
     Issue: pr4377

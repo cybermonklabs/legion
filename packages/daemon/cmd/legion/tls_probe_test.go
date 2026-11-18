@@ -421,7 +421,8 @@ func TestImageRedisCLITLSClientTargetsTheSitesHost(t *testing.T) {
 // also holds a sentinel no list names, with a value made at run time, which stands for a variable
 // nobody has found yet. At every site, each client's environment holds none of those names and
 // none of those values, but for a name the client sets itself to a value of its own, and its HOME
-// is in the state directory, so no netrc, rc file or configuration of the pod's home is read.
+// is in the state directory, so no netrc, rc file or configuration of the pod's home is read
+// through HOME; curl, which also reads its passwd home, takes -q (TestTLSProbeCurlReadsNoCurlrc).
 func TestImageTLSClientsCarryNoCredentialOfThePods(t *testing.T) {
 	githubToken := func(seed string) string { return "ghp_" + strings.Repeat(seed, 9) }
 	pod := map[string]string{

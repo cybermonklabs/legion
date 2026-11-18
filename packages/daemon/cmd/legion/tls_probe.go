@@ -317,20 +317,25 @@ func chromiumNavigationFailure(stderr string) string {
 // On top of the kept variables, each client runs with the probe's own values: a HOME of its own
 // in the state directory, which replaces the image's, the state directory as its working
 // directory (tlsClientSpec.build), the settings its command gives, and LEGION_TLS_URL naming the
-// site. The state directory holds only the probe's access-token file and go.mod (newTLSStateDir),
-// so no configuration file of the pod's working directory is read. Each client that reads
-// configuration from somewhere neither moves is given the flag or variable that stops it, each
-// with its measurement at the client's spec (workerTLSClients): curl's -q (its passwd home's
-// curlrc), mise's and uv's --no-config (their working directory's parents), git's
-// GIT_CEILING_DIRECTORIES (a parent repository), and go's own go.mod (a parent go.mod). So no
-// credential variable of the pod's reaches a client, and no file of the pod's home or working
-// directory does.
+// site. The state directory holds the probe's access-token file and go.mod (newTLSStateDir) and
+// what the clients keep there, so no configuration file of the pod's working directory is read.
+// Five clients that read configuration from somewhere neither moves are each given the flag,
+// variable or file that stops it, with its measurement at the client's spec (workerTLSClients):
+// curl's -q (its passwd home's curlrc), mise's and uv's --no-config (their working directory's
+// parents), git's GIT_CEILING_DIRECTORIES (a parent repository), and go's own go.mod (a parent
+// go.mod). bun and omp also read configuration from somewhere neither moves, the package.json and
+// tsconfig.json of each of their working directory's parents (measured on 2026-11-18 with bun
+// 1.4.4 and the omp built on it: a grandparent's of each was parsed, and the eval ran), and are
+// given nothing that stops it, since neither file holds a TLS setting of Bun's. So no credential
+// variable of the pod's reaches a client, and no file of the pod's home or working directory does
+// but one a kept variable names, as SSL_CERT_FILE may.
 //
 // No proxy variable of the pod's reaches a client, so the probe tests each client's direct path
-// to each site. Where a pod's roles reach a site only through a proxy, the probe's control fails
-// as unavailable; where a pod has a proxy and direct egress both, the probe tests the direct path
-// while the roles' traffic takes the proxy, which the probe does not test. Proxy variables are
-// left out because a proxy URL can carry a login.
+// to each site. Where a pod's roles reach the sites only through a proxy, the positive controls
+// cannot reach them and fail the probe (verifyTLSPositiveControls); where a pod has a proxy and
+// direct egress both, the probe tests the direct path while the roles' traffic takes the proxy,
+// which the probe does not test. Proxy variables are left out because a proxy URL can carry a
+// login.
 var tlsKeptVariables = slices.Concat(sandbox.ImageEnv, tlsTrustVariables)
 
 // tlsTrustVariables are the pod's trust and verification settings every client keeps
@@ -522,11 +527,12 @@ const (
 )
 
 // newTLSStateDir makes the TLS probe's state directory: every client's working directory and the
-// parent of its HOME (tlsClientSpec.build), where gcloud, bq, az, mise, go and kubectl keep their
-// state too, so none of it lands in the runtime user's home (the image build's final step requires
-// that). It is made holding two files: the access-token file gcloud and bq sign in with, and a
-// go.mod, which go reads in place of a parent directory's (the go client of workerTLSClients says
-// why). remove deletes the directory with everything the clients wrote there.
+// directory its HOME is under (tlsClientSpec.build), where gcloud, bq, az, mise, go and kubectl
+// keep their state too, so none of it lands in the runtime user's home (the image build's final
+// step requires that). It is made holding two files: the access-token file gcloud and bq sign in
+// with, and a go.mod, which go reads in place of a parent directory's (the go client of
+// workerTLSClients says why). remove deletes the directory with everything the clients wrote
+// there.
 func newTLSStateDir() (dir string, remove func(), err error) {
 	dir, err = os.MkdirTemp("", "legion-tls-probe-")
 	if err != nil {
@@ -652,7 +658,7 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 // default store.
 //
 // No client carries a credential of the pod's to a site, and none reads a file of the pod's home
-// or working directory: tlsKeptVariables says how.
+// or working directory but one a kept variable names: tlsKeptVariables says how.
 //
 // Deliberately not here, each with what was measured:
 //
