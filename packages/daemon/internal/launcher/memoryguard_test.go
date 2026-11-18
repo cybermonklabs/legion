@@ -2156,10 +2156,12 @@ var (
 )
 
 // The tester's latepool runs at 4 GiB in the controller's tree, replayed with their traces'
-// readings and times: `4g-latepool-6gd5t` and `4g-latepool-v5s8l` at 23fdd92f, and
-// `4g-latepool-54nzl`, `4g-latepool-kxv5k` and `4g-latepool-zxhnw` at d22d8da3 (INFRA-3531 R1 of
-// spec versions 33 and 34). The shell command Oh My Pi ran starts the probe, a python3 parent that
-// fills a block of 2.4 GB over the band's first readings, beside Oh My Pi at a quarter of the limit.
+// readings and times: `4g-latepool-6gd5t` and `4g-latepool-v5s8l` at 23fdd92f,
+// `4g-latepool-54nzl`, `4g-latepool-kxv5k` and `4g-latepool-zxhnw` at d22d8da3, and
+// `4g-latepool-djcvt` and `4g-latepool-rjm8m` at 18c3c5bb (INFRA-3531 R1 of spec versions 33 and
+// 34, verification version 24). The shell command Oh My Pi ran starts the probe, a python3 parent
+// that fills a block of 2.4 GB over the band's first readings, beside Oh My Pi at a quarter of the
+// limit.
 // It forks three sleepers, each running its program and reporting its block as its own: between
 // the band's last two readings, so the band reads each once (v5s8l, 54nzl, zxhnw), after the
 // band's last reading, so the reading at the mark finds them started since (6gd5t), or before the
@@ -2170,7 +2172,11 @@ var (
 // fell but stayed above the mark with no grower's step inside the window. At d22d8da3, where each
 // fork reported its parent's whole size and ranked at nothing, the reads at the mark of 54nzl and
 // zxhnw had reached one fork when the half interval had passed, and it ended first; and kxv5k and
-// zxhnw ended the parent and a sleeping fork after a fall while the growers lived.
+// zxhnw ended the parent and a sleeping fork after a fall while the growers lived. In djcvt and
+// rjm8m the growers start just before the band's last reading, which reads each between its fork
+// and its exec with its parent's executable and arguments, in djcvt at a few MiB and in rjm8m at
+// its parent's 2.4 GB; at 18c3c5bb the fork discount took them for forks, and rjm8m's reading at
+// the mark, stalled 115.1 ms, ended the parent.
 //
 // Each fork ranks by its size less its parent's: 1 MiB at 23fdd92f and nothing at d22d8da3, where
 // it is not in the tier of the processes new to the stay. In 54nzl and zxhnw the time from the
@@ -2184,7 +2190,13 @@ var (
 // the parent and its forks show no growth. With the six growers ended, at the readings left, which
 // fall, it ends the largest: the probe's parent, at its whole 2.4 GB, its own program not its
 // parent's, the shell's; then, no read parent discounting the forks any longer, the newest fork at
-// its whole size. Neither the parent nor a fork ends while a grower lives.
+// its whole size. Neither the parent nor a fork ends while a grower lives. The reading at the mark
+// reads again the executable and arguments of a held process whose smaps it reads where the band
+// read it running its parent's program, so in djcvt and rjm8m the grower it reads ranks by its
+// whole size; a grower the band read before its exec that the mark did not read again has its
+// first read after the kill as its size as of the kill, so in rjm8m the guard goes on while the
+// growers grow and after a fall ends one by its growth since the first kill. Each first kill's line
+// says what the reads at the mark read of the processes new to the stay (new_read).
 func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(t *testing.T) {
 	// forkSize is the size each sleeping fork reports.
 	const parent, forkSize = 1700, 2412785664
@@ -2200,10 +2212,15 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 		// the mark takes before the guard reads anything.
 		own   uint64
 		stall time.Duration
+		// preExec, where set, has the growers start before the band's last reading, which reads
+		// each before its exec, with its parent's executable and arguments, at preExec bytes.
+		preExec uint64
 		// grown is each grower's size, less its 1 MiB offset, in MiB, at the reading at the mark
 		// and at each reading after it.
 		grown []uint64
-		want  []guardEnded
+		// newRead is the first kill's new_read.
+		newRead string
+		want    []guardEnded
 	}{
 		{
 			name: "the forks started between the band's last two readings, read once by the band (v5s8l)",
@@ -2217,8 +2234,9 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			after: []guardReplayReading{{9024, 315 * time.Millisecond}, {9227, 317 * time.Millisecond}, {9063, 110 * time.Millisecond},
 				{9476, 107 * time.Millisecond}, {9360, 117 * time.Millisecond}, {9197, 108 * time.Millisecond},
 				{8765, 110 * time.Millisecond}},
-			own:   guardMiB,
-			grown: []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			own:     guardMiB,
+			grown:   []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			newRead: "9:9",
 			want: []guardEnded{
 				{1715, "new", "search", 0}, {1714, "new", "reading", 0}, {1713, "grew-since-kill", "reading", 0},
 				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
@@ -2236,8 +2254,9 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			after: []guardReplayReading{{9024, 242 * time.Millisecond}, {9232, 202 * time.Millisecond}, {9073, 106 * time.Millisecond},
 				{9370, 105 * time.Millisecond}, {9365, 105 * time.Millisecond}, {9201, 104 * time.Millisecond},
 				{8882, 105 * time.Millisecond}},
-			own:   guardMiB,
-			grown: []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			own:     guardMiB,
+			grown:   []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			newRead: "9:9",
 			want: []guardEnded{
 				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
 				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
@@ -2255,8 +2274,9 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			mark:    guardReplayReading{8590, 108 * time.Millisecond},
 			after: []guardReplayReading{{8904, 193 * time.Millisecond}, {9211, 267 * time.Millisecond}, {9048, 108 * time.Millisecond},
 				{9282, 106 * time.Millisecond}, {9039, 111 * time.Millisecond}, {8719, 105 * time.Millisecond}},
-			stall: 58900 * time.Microsecond,
-			grown: []uint64{4, 56, 70, 128, 133, 134, 134},
+			stall:   58900 * time.Microsecond,
+			grown:   []uint64{4, 56, 70, 128, 133, 134, 134},
+			newRead: "4:1",
 			want: []guardEnded{
 				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
 				{1712, "grew", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
@@ -2274,7 +2294,8 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			after: []guardReplayReading{{9222, 231 * time.Millisecond}, {9070, 105 * time.Millisecond}, {9057, 104 * time.Millisecond},
 				{9594, 104 * time.Millisecond}, {9349, 214 * time.Millisecond}, {9249, 106 * time.Millisecond},
 				{8866, 106 * time.Millisecond}},
-			grown: []uint64{45, 70, 70, 70, 134, 134, 197, 197},
+			grown:   []uint64{45, 70, 70, 70, 134, 134, 197, 197},
+			newRead: "6:6",
 			want: []guardEnded{
 				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew-since-kill", "reading", 0},
 				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew-since-kill", "reading", 0},
@@ -2293,12 +2314,54 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			after: []guardReplayReading{{8974, 206 * time.Millisecond}, {9209, 201 * time.Millisecond}, {9053, 108 * time.Millisecond},
 				{9040, 106 * time.Millisecond}, {9548, 104 * time.Millisecond}, {9331, 182 * time.Millisecond},
 				{9168, 103 * time.Millisecond}, {8848, 103 * time.Millisecond}},
-			stall: 84800 * time.Microsecond,
-			grown: []uint64{4, 53, 68, 68, 68, 133, 133, 197, 197},
+			stall:   84800 * time.Microsecond,
+			grown:   []uint64{4, 53, 68, 68, 68, 133, 133, 197, 197},
+			newRead: "4:1",
 			want: []guardEnded{
 				{1715, "new", "search", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
 				{1712, "grew-since-kill", "reading", 0}, {1711, "grew-since-kill", "reading", 0}, {1710, "grew", "reading", 0},
 				{parent, "largest", "reading", 0}, {1703, "largest", "reading", 0}, {1702, "largest", "reading", 0},
+			},
+		},
+		{
+			name: "the growers read by the band's last reading before their exec at a few MiB (djcvt)",
+			band: []guardReplayReading{{7531, 0}, {7695, 102 * time.Millisecond}, {7891, 105 * time.Millisecond},
+				{8080, 102 * time.Millisecond}, {8271, 104 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8371, 102 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8371, 101 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8414, 101 * time.Millisecond}, {8428, 111 * time.Millisecond}},
+			forksAt: 12,
+			mark:    guardReplayReading{8648, 137 * time.Millisecond},
+			after: []guardReplayReading{{8909, 192 * time.Millisecond}, {9067, 194 * time.Millisecond}, {9060, 109 * time.Millisecond},
+				{9053, 109 * time.Millisecond}, {8734, 109 * time.Millisecond}},
+			stall:   72400 * time.Microsecond,
+			preExec: 2 * guardMiB,
+			grown:   []uint64{30, 52, 68, 134, 134, 134},
+			newRead: "1:1",
+			want: []guardEnded{
+				{1715, "grew", "reread", 0}, {1714, "grew", "reading", 0}, {1713, "grew", "reading", 0},
+				{1712, "grew", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew-since-kill", "reading", 0},
+			},
+		},
+		{
+			name: "the growers read by the band's last reading before their exec at the parent's size and the reading at the mark stalled 115.1 ms (rjm8m)",
+			band: []guardReplayReading{{7565, 0}, {7736, 105 * time.Millisecond}, {7893, 103 * time.Millisecond},
+				{8053, 104 * time.Millisecond}, {8232, 103 * time.Millisecond}, {8371, 102 * time.Millisecond},
+				{8371, 102 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8376, 106 * time.Millisecond},
+				{8376, 102 * time.Millisecond}, {8376, 102 * time.Millisecond}, {8376, 102 * time.Millisecond},
+				{8376, 102 * time.Millisecond}, {8419, 155 * time.Millisecond}},
+			forksAt: 13,
+			mark:    guardReplayReading{8664, 137 * time.Millisecond},
+			after: []guardReplayReading{{9099, 306 * time.Millisecond}, {9222, 195 * time.Millisecond}, {9058, 111 * time.Millisecond},
+				{9364, 104 * time.Millisecond}, {9044, 105 * time.Millisecond}, {8877, 106 * time.Millisecond}},
+			stall:   115100 * time.Microsecond,
+			preExec: forkSize,
+			grown:   []uint64{30, 60, 70, 70, 134, 134, 197},
+			newRead: "1:1",
+			want: []guardEnded{
+				{1715, "new", "reread", 0}, {1714, "grew-since-kill", "reading", 0}, {1713, "grew", "reading", 0},
+				{1712, "grew-since-kill", "reading", 0}, {1711, "grew", "reading", 0}, {1710, "grew", "reading", 0},
+				{parent, "largest", "reading", 0},
 			},
 		},
 	} {
@@ -2334,6 +2397,12 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 				if i+1 == run.forksAt {
 					fork()
 				}
+				if run.preExec > 0 && i+2 == len(run.band) {
+					// The growers start, and the band's last reading reads each before its exec.
+					for j := range 6 {
+						pod.add(guardProcess{pid: parent + 10 + j, ppid: parent, exe: "/usr/bin/python3.13", args: guardLatepoolArgs, anon: run.preExec})
+					}
+				}
 				pod.add(probe(r.hundredths))
 				pod.setAnon(at(r.hundredths))
 				rig.tickAfter(r.after - interval)
@@ -2355,8 +2424,11 @@ func TestControllerPodMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatR
 			stall.Store(int64(run.stall))
 			rig.tickAfter(run.mark.after - interval)
 			stall.Store(0)
-			if got, want := guardEndedLines(log), []guardEnded{{1715, "new", "search", 0}}; !slices.Equal(got, want) {
-				t.Fatalf("at the first reading at the mark the guard ended %+v, want the largest grower %+v; its log:\n%s", got, want, rig.log())
+			if got, want := guardEndedLines(log), run.want[:1]; !slices.Equal(got, want) {
+				t.Fatalf("at the first reading at the mark the guard ended %+v, want a grower %+v; its log:\n%s", got, want, rig.log())
+			}
+			if got := guardNewRead(log, 1715); got != run.newRead {
+				t.Fatalf("the first kill's line says new_read=%s, want %s", got, run.newRead)
 			}
 			for i, r := range run.after {
 				grow(i + 1)
@@ -2431,6 +2503,71 @@ func TestControllerPodMemoryGuardRanksANewProcessThatRunsAProgramOfItsOwnByItsWh
 			}
 			if got, want := guardEndedLines(log), []guardEnded{{1702, "new", "reread", 0}}; !slices.Equal(got, want) {
 				t.Fatalf("the guard ended %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+// guardNewRead is the new_read of the guard's ended line for pid in log, what the reads at the mark
+// read of the processes new to the stay, "" where it wrote no such line.
+func guardNewRead(log *lockedBuffer, pid int) string {
+	for _, line := range guardLines(log, fmt.Sprintf("ended pid=%d ", pid)) {
+		for _, field := range strings.Fields(line) {
+			if value, ok := strings.CutPrefix(field, "new_read="); ok {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+// In the controller's tree, the reading at the mark reads again the executable and arguments of a
+// held process whose smaps it reads where the band read it running its parent's program
+// (INFRA-3531 R1 of spec version 34, verification version 24): a process the band read between its
+// fork and its exec carries its parent's identity there. The python3 program pid 1700, of 1 GiB,
+// starts pid 1701 before the band's last reading, which reads it with pid 1700's executable and
+// arguments, reporting pid 1700's 1 GiB as its own. By the reading at the mark pid 1701 runs
+// python3 grow.py at 300 MiB, or still runs pool.py, a fork; nothing has grown. Running grow.py it
+// ends at its whole size, new to the stay, its line saying the mark read one process new to the
+// stay with memory of its own (new_read=1:1); a fork ranks at nothing, and the guard ends the
+// largest, pid 1700 (new_read=1:0).
+func TestControllerPodMemoryGuardRanksAHeldProcessThatHasRunAnotherProgramSinceTheBandReadItByItsWholeSize(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		anon    uint64
+		want    guardEnded
+		newRead string
+	}{
+		{"one that runs grow.py since", []string{"python3", "grow.py"}, 300 * guardMiB, guardEnded{1701, "new", "reread", 0}, "1:1"},
+		{"a fork that still runs pool.py", []string{"python3", "pool.py"}, guardGiB, guardEnded{1700, "largest", "reread", 0}, "1:0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := controllerTree(t, map[int]uint64{ctlOmp: 2 * guardGiB})
+			pod.add(guardProcess{pid: 1700, ppid: ctlCommand, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: guardGiB})
+			rig := useGuardPod(t, pod, nil)
+			m, log := controllerManager()
+			serveControllerGuard(t, m, &pidGuard{})
+			rig.started()
+			for _, reading := range []uint64{3300, 3350} {
+				pod.setAnon(reading * guardMiB)
+				rig.tick()
+			}
+			pod.add(guardProcess{pid: 1701, ppid: 1700, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: guardGiB})
+			pod.setAnon(3400 * guardMiB)
+			rig.tick()
+			if kills := rig.signal.kills(); len(kills) != 0 {
+				t.Fatalf("in the band the guard killed %v, want nothing; its log:\n%s", kills, rig.log())
+			}
+
+			pod.add(guardProcess{pid: 1701, ppid: 1700, exe: "/usr/bin/python3.13", args: tc.args, anon: tc.anon})
+			pod.setAnon(3500 * guardMiB)
+			rig.tick()
+			if got := guardEndedLines(log); !slices.Equal(got, []guardEnded{tc.want}) {
+				t.Fatalf("at the mark the guard ended %+v, want %+v; its log:\n%s", got, tc.want, rig.log())
+			}
+			if got := guardNewRead(log, tc.want.pid); got != tc.newRead {
+				t.Fatalf("the ended line of pid %d says new_read=%s, want %s", tc.want.pid, got, tc.newRead)
 			}
 		})
 	}
@@ -3180,9 +3317,9 @@ func TestAMicroVMLauncherRunsNoGuardAndTellsTheKilledProcesssRoleAlone(t *testin
 	f.role("reviewer").noMemoryKill("after the kernel killed the tester's process and one of no role, the reviewer's connection")
 	f.role("tester").noMemoryKill("after its one report, the tester's connection")
 	ended := []string{off,
-		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 executable="python3.13"`,
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 new_read=- executable="python3.13"`,
 			testers, 900*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
-		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=none size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 executable="python3.13"`,
+		fmt.Sprintf(`launcher: memory guard: ended pid=%d role=none size=%d reading=%d counter=%d shmem=%d limit=%d rule=kernel sizes=kernel less_parent=0 new_read=- executable="python3.13"`,
 			outside, 200*guardMiB, 3500*guardMiB, guardCounter, 64*guardMiB, guardLimit),
 	}
 	if got := guardLines(f.stderr, ""); !slices.Equal(got, ended) {

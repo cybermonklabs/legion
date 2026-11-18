@@ -444,7 +444,7 @@ func TestControllerPodMemoryGuardEndsEachKindOfCommand(t *testing.T) {
 				c.what, frame, rig.id(), sequence, c.executable, c.held, atKill, counterHigh, limit)
 		}
 		ended := endedLine(g.stderr, frame.PID)
-		if !strings.Contains(ended, " role=controller ") || !strings.HasSuffix(ended, ` rule=new sizes=reading less_parent=0 executable="`+c.executable+`"`) {
+		if !strings.Contains(ended, " role=controller ") || !strings.HasSuffix(ended, ` rule=new sizes=reading less_parent=0 new_read=- executable="`+c.executable+`"`) {
 			t.Errorf("the guard's ended line for %s (pid %d) is %q, want the controller's, chosen as the largest of the new by the reading's sizes, naming %q",
 				c.what, frame.PID, ended, c.executable)
 		}

@@ -133,9 +133,9 @@ import (
 // Each killed process has the guard's own endedLine, with its resident size at the last scan whose
 // snapshot came before the pass that showed its kill and the pod's memory at the burst's first
 // rise, the kernel as its rule and its sizes (ruleKernel, sizesKernel: the kernel chose it, by
-// sizes of its own) and no parent's size taken off (less_parent=0), and a Kill to the sink with its
-// role, "" for a process of no role, the watch's id and its own sequence from 1, as the guard's
-// kills have (writeKill), and Cause
+// sizes of its own), no parent's size taken off (less_parent=0) and no read at the mark
+// (new_read=-), and a Kill to the sink with its role, "" for a process of no role, the watch's id
+// and its own sequence from 1, as the guard's kills have (writeKill), and Cause
 // shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process the
 // classifier protected: one of the processes that run the role's session, whose end the role is
 // told of in its own words.

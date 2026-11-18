@@ -46,13 +46,26 @@ import (
 // own size where that is less, so that size less less_parent is the size it ranked by where a tier
 // ranks by size (candidate.lessParent); 0 for every other process and for a process the guest
 // kernel killed. The line's size is always the process's own.
+//
+// Its new_read, after less_parent, says what the reads at the reading at the mark read of the
+// processes new to the stay, those the band read once at its last reading and those started since
+// it (INFRA-3531 R1 of spec versions 31, 32 and 34), for a first kill decided where no held process
+// had grown by the band's reads (endHeld), whatever its sizes: `<reached>:<own>`, how many of those
+// processes they read the smaps of, and of them how many rank above nothing, holding memory of
+// their own after the fork discount, their identity read again (newRead, reidentify). So
+// `new_read=3:0` reads that the mark read three processes new to the stay, each a fork whose
+// parent's size covers its own, and the tiers below the new decided, and `new_read=0:0` that it
+// read none. It is `-` where the kill was decided on no read at the mark: a first kill on the
+// band's held reads alone, one of them having grown by them, every kill on a reading's own
+// assessment (act), every kill after a kill of the rise among them, and a process the guest
+// kernel killed.
 const (
 	linePrefix     = "launcher: memory guard: "
 	startedLine    = linePrefix + "started act_percent=%d floor_percent=%d wait=%s interval=%s limit=%d reading=%d"
 	settingsLine   = linePrefix + "settings act_percent=%d floor_percent=%d wait=%s interval=%s"
 	noSettingsLine = linePrefix + "off: the daemon's acknowledgement carries no settings"
 	refusedLine    = linePrefix + "settings refused: %v; nothing changes"
-	endedLine      = linePrefix + `ended pid=%d role=%s size=%d reading=%d counter=%d shmem=%d limit=%d rule=%s sizes=%s less_parent=%d executable="%s"`
+	endedLine      = linePrefix + `ended pid=%d role=%s size=%d reading=%d counter=%d shmem=%d limit=%d rule=%s sizes=%s less_parent=%d new_read=%s executable="%s"`
 	stoppedLine    = linePrefix + "stopped for this rise reason=%s reading=%d endable=%d protected=%d unread=%d unheld=%d limit=%d left_out=%d unread_processes=%s"
 	hourLine       = linePrefix + "hour start=%s end=%s reading_high=%d reading_high_at=%s reading_low=%d counter_high=%d counter_low=%d" +
 		` largest_pid=%d largest_role=%s largest_size=%d largest_executable="%s"`

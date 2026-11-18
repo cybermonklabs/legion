@@ -1801,7 +1801,19 @@ func requireChosenBy(h *harness, pid int, rule, sizes string) {
 // did not count.
 func requireRankedBy(h *harness, pid int, rule, sizes string, lessParent uint64) {
 	h.t.Helper()
-	fields := fmt.Sprintf(" rule=%s sizes=%s less_parent=%d executable=", rule, sizes, lessParent)
+	requireEndedWith(h, pid, fmt.Sprintf(" rule=%s sizes=%s less_parent=%d new_read=", rule, sizes, lessParent))
+}
+
+// requireNewRead fails unless the guard's one ended line for pid says newRead of what the reads at
+// the mark read of the processes new to the stay, just before the executable (lines.go).
+func requireNewRead(h *harness, pid int, newRead string) {
+	h.t.Helper()
+	requireEndedWith(h, pid, " new_read="+newRead+" executable=")
+}
+
+// requireEndedWith fails unless the guard has one ended line for pid, and it holds fields.
+func requireEndedWith(h *harness, pid int, fields string) {
+	h.t.Helper()
 	lines := h.log.with(fmt.Sprintf("ended pid=%d ", pid))
 	if len(lines) != 1 || !strings.Contains(lines[0], fields) {
 		h.t.Fatalf("the ended lines of pid %d are %q, want one with %q; the log:\n%s", pid, lines, fields, strings.Join(h.log.all(), "\n"))
@@ -2937,8 +2949,9 @@ func endedChoices(h *harness) []endedChoice {
 }
 
 // The tester's latepool runs under gVisor at 4 GiB, replayed with the readings their traces
-// recorded and their times: `4g-latepool-6gd5t` and `4g-latepool-v5s8l` at 23fdd92f, and
-// `4g-latepool-54nzl`, `4g-latepool-kxv5k` and `4g-latepool-zxhnw` at d22d8da3, all of 2026-11-18
+// recorded and their times: `4g-latepool-6gd5t` and `4g-latepool-v5s8l` at 23fdd92f,
+// `4g-latepool-54nzl`, `4g-latepool-kxv5k` and `4g-latepool-zxhnw` at d22d8da3, and
+// `4g-latepool-djcvt` and `4g-latepool-rjm8m` at 18c3c5bb, all of 2026-11-18
 // (infra-3531-live-4g-latepool-<run>.log, among the tester's logs of those heads). The agent holds
 // a quarter of the limit; the probe's parent, a python3 command, fills a block of 2.4 GB over the
 // band's first readings and holds it, read at each. It then forks three sleepers, each running its
@@ -2954,7 +2967,13 @@ func endedChoices(h *harness) []endedChoice {
 // reads at the mark of 54nzl and zxhnw had reached one fork when the half interval had passed, and
 // that fork ended first, 58.9 and 84.8 ms after the reading at the mark; and after a fall, with
 // growers that step every 250 ms in step, so that no read 100 ms after a kill shows a step, kxv5k
-// and zxhnw ended the parent and then a sleeping fork while the growers lived.
+// and zxhnw ended the parent and then a sleeping fork while the growers lived. In djcvt and rjm8m
+// the growers start just before the band's last reading, which reads each between its fork and its
+// exec (Python's subprocess.Popen), with its parent's executable and arguments: in djcvt at a few
+// MiB, in rjm8m at its parent's 2.4 GB, as a fork reports its parent's pages under gVisor. At
+// 18c3c5bb the fork discount took them for forks: djcvt's first kill, a grower that grew, had its
+// whole size taken off (`less_parent=31051776`), and rjm8m's reading at the mark, stalled 115.1 ms,
+// read one grower, ranked it at nothing, and ended the parent.
 //
 // A fork that runs its parent's program, its parent read in this stay, ranks by its size less its
 // parent's (INFRA-3531 R1 of spec version 33): at 1 MiB in the runs of 23fdd92f, and at nothing in
@@ -2972,7 +2991,14 @@ func endedChoices(h *harness) []endedChoice {
 // six growers ended, at the readings left, which fall, it ends the largest: the parent, whose own
 // program is not its parent's, the agent's, at its whole 2.4 GB, and then, no read parent
 // discounting the forks any longer, the newest fork at its whole size. No fork, and not the parent,
-// ends while a grower lives.
+// ends while a grower lives. The reading at the mark reads again the executable and arguments of a
+// held process whose smaps it reads where the band read it running its parent's program
+// (reidentify), so in djcvt and rjm8m the grower it reads ranks by its whole size and ends first; a
+// grower the band read before its exec and the mark did not read again has its first read after
+// the kill as its size as of the kill (keepKillSizes), so in rjm8m the guard goes on after the
+// first kill while the growers grow, and after a fall ends one by its growth since that kill. Each
+// run's first kill says what the reads at the mark read of the processes new to the stay
+// (new_read).
 func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(t *testing.T) {
 	// forkSize is the size each sleeping fork reports.
 	const forkSize = 2412785664
@@ -2990,10 +3016,16 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 		own uint64
 		// stall is how long the reading at the mark takes before the guard reads anything.
 		stall time.Duration
+		// preExec, where set, has the growers start before the band's last reading, which reads
+		// each before its exec, with its parent's executable and arguments, at preExec bytes;
+		// they run the grow program from the reading at the mark on.
+		preExec uint64
 		// grown is each grower's size, less its 1 MiB offset, in MiB, at the reading at the mark
 		// and at each reading after it.
 		grown []uint64
-		want  []endedChoice
+		// newRead is the first kill's new_read.
+		newRead string
+		want    []endedChoice
 	}{
 		{
 			name: "6gd5t, the forks started after the band's last reading",
@@ -3006,8 +3038,9 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			after: []replayReading{{9024, 242 * time.Millisecond}, {9232, 202 * time.Millisecond}, {9073, 106 * time.Millisecond},
 				{9370, 105 * time.Millisecond}, {9365, 105 * time.Millisecond}, {9201, 104 * time.Millisecond},
 				{8882, 105 * time.Millisecond}},
-			own:   mib,
-			grown: []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			own:     mib,
+			grown:   []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			newRead: "9:9",
 			want: []endedChoice{
 				{805, "new", "search", 0}, {804, "grew", "reading", 0}, {803, "grew", "reading", 0},
 				{802, "grew-since-kill", "reading", 0}, {801, "grew", "reading", 0}, {800, "grew", "reading", 0},
@@ -3030,8 +3063,9 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			after: []replayReading{{9024, 315 * time.Millisecond}, {9227, 317 * time.Millisecond}, {9063, 110 * time.Millisecond},
 				{9476, 107 * time.Millisecond}, {9360, 117 * time.Millisecond}, {9197, 108 * time.Millisecond},
 				{8765, 110 * time.Millisecond}},
-			own:   mib,
-			grown: []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			own:     mib,
+			grown:   []uint64{4, 50, 72, 72, 136, 136, 200, 200},
+			newRead: "9:9",
 			want: []endedChoice{
 				{805, "new", "search", 0}, {804, "new", "reading", 0}, {803, "grew-since-kill", "reading", 0},
 				{802, "grew-since-kill", "reading", 0}, {801, "grew", "reading", 0}, {800, "grew", "reading", 0},
@@ -3051,8 +3085,9 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			mark:    replayReading{8590, 108 * time.Millisecond},
 			after: []replayReading{{8904, 193 * time.Millisecond}, {9211, 267 * time.Millisecond}, {9048, 108 * time.Millisecond},
 				{9282, 106 * time.Millisecond}, {9039, 111 * time.Millisecond}, {8719, 105 * time.Millisecond}},
-			stall: 58900 * time.Microsecond,
-			grown: []uint64{4, 56, 70, 128, 133, 134, 134},
+			stall:   58900 * time.Microsecond,
+			grown:   []uint64{4, 56, 70, 128, 133, 134, 134},
+			newRead: "4:1",
 			want: []endedChoice{
 				{805, "new", "search", 0}, {804, "grew", "reading", 0}, {803, "grew", "reading", 0},
 				{802, "grew", "reading", 0}, {801, "grew", "reading", 0}, {800, "grew", "reading", 0},
@@ -3073,7 +3108,8 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			after: []replayReading{{9222, 231 * time.Millisecond}, {9070, 105 * time.Millisecond}, {9057, 104 * time.Millisecond},
 				{9594, 104 * time.Millisecond}, {9349, 214 * time.Millisecond}, {9249, 106 * time.Millisecond},
 				{8866, 106 * time.Millisecond}},
-			grown: []uint64{45, 70, 70, 70, 134, 134, 197, 197},
+			grown:   []uint64{45, 70, 70, 70, 134, 134, 197, 197},
+			newRead: "6:6",
 			want: []endedChoice{
 				{805, "new", "search", 0}, {804, "grew", "reading", 0}, {803, "grew-since-kill", "reading", 0},
 				{802, "grew-since-kill", "reading", 0}, {801, "grew", "reading", 0}, {800, "grew-since-kill", "reading", 0},
@@ -3094,12 +3130,59 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			after: []replayReading{{8974, 206 * time.Millisecond}, {9209, 201 * time.Millisecond}, {9053, 108 * time.Millisecond},
 				{9040, 106 * time.Millisecond}, {9548, 104 * time.Millisecond}, {9331, 182 * time.Millisecond},
 				{9168, 103 * time.Millisecond}, {8848, 103 * time.Millisecond}},
-			stall: 84800 * time.Microsecond,
-			grown: []uint64{4, 53, 68, 68, 68, 133, 133, 197, 197},
+			stall:   84800 * time.Microsecond,
+			grown:   []uint64{4, 53, 68, 68, 68, 133, 133, 197, 197},
+			newRead: "4:1",
 			want: []endedChoice{
 				{805, "new", "search", 0}, {804, "grew", "reading", 0}, {803, "grew", "reading", 0},
 				{802, "grew-since-kill", "reading", 0}, {801, "grew-since-kill", "reading", 0}, {800, "grew", "reading", 0},
 				{700, "largest", "reading", 0}, {703, "largest", "reading", 0}, {702, "largest", "reading", 0},
+			},
+		},
+		{
+			// The reading at the mark reads the newest grower again, which has grown 33 MiB since
+			// the band's read of it before its exec.
+			name: "djcvt, the growers read by the band's last reading before their exec at a few MiB",
+			band: []replayReading{{7531, 0}, {7695, 102 * time.Millisecond}, {7891, 105 * time.Millisecond},
+				{8080, 102 * time.Millisecond}, {8271, 104 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8371, 102 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8371, 101 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8371, 101 * time.Millisecond},
+				{8414, 101 * time.Millisecond}, {8428, 111 * time.Millisecond}},
+			forksAt: 12,
+			mark:    replayReading{8648, 137 * time.Millisecond},
+			after: []replayReading{{8909, 192 * time.Millisecond}, {9067, 194 * time.Millisecond}, {9060, 109 * time.Millisecond},
+				{9053, 109 * time.Millisecond}, {8734, 109 * time.Millisecond}},
+			stall:   72400 * time.Microsecond,
+			preExec: 2 * mib,
+			grown:   []uint64{30, 52, 68, 134, 134, 134},
+			newRead: "1:1",
+			want: []endedChoice{
+				{805, "grew", "reread", 0}, {804, "grew", "reading", 0}, {803, "grew", "reading", 0},
+				{802, "grew", "reading", 0}, {801, "grew", "reading", 0}, {800, "grew-since-kill", "reading", 0},
+			},
+		},
+		{
+			// rjm8m's next reading comes 306 ms after the mark, so the window holds no read before
+			// it and the growers, read twice, are not new: the guard goes on by their growth since
+			// the first kill, and ends one by it again at +2139 ms, after a fall.
+			name: "rjm8m, the growers read by the band's last reading before their exec at the parent's size and the reading at the mark stalled 115.1 ms",
+			band: []replayReading{{7565, 0}, {7736, 105 * time.Millisecond}, {7893, 103 * time.Millisecond},
+				{8053, 104 * time.Millisecond}, {8232, 103 * time.Millisecond}, {8371, 102 * time.Millisecond},
+				{8371, 102 * time.Millisecond}, {8371, 102 * time.Millisecond}, {8376, 106 * time.Millisecond},
+				{8376, 102 * time.Millisecond}, {8376, 102 * time.Millisecond}, {8376, 102 * time.Millisecond},
+				{8376, 102 * time.Millisecond}, {8419, 155 * time.Millisecond}},
+			forksAt: 13,
+			mark:    replayReading{8664, 137 * time.Millisecond},
+			after: []replayReading{{9099, 306 * time.Millisecond}, {9222, 195 * time.Millisecond}, {9058, 111 * time.Millisecond},
+				{9364, 104 * time.Millisecond}, {9044, 105 * time.Millisecond}, {8877, 106 * time.Millisecond}},
+			stall:   115100 * time.Microsecond,
+			preExec: forkSize,
+			grown:   []uint64{30, 60, 70, 70, 134, 134, 197},
+			newRead: "1:1",
+			want: []endedChoice{
+				{805, "new", "reread", 0}, {804, "grew-since-kill", "reading", 0}, {803, "grew", "reading", 0},
+				{802, "grew-since-kill", "reading", 0}, {801, "grew", "reading", 0}, {800, "grew", "reading", 0},
+				{700, "largest", "reading", 0},
 			},
 		},
 	} {
@@ -3128,9 +3211,19 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 					pod.add(fakeProcess{pid: 701 + i, ppid: 700, start: uint64(5100 + 100*i), exe: "/usr/bin/python3.13", args: latepoolArgs, anon: forkSize})
 				}
 			}
+			growers := make([]*fakeProcess, 6)
+			for i := range growers {
+				growers[i] = &fakeProcess{pid: 800 + i, ppid: 700, start: uint64(6000 + i), exe: "/usr/bin/python3.13", args: growArgs}
+			}
 			for i, r := range run.band[1:] {
 				if i+1 == run.forksAt {
 					fork()
+				}
+				if run.preExec > 0 && i+2 == len(run.band) {
+					// The growers start, and the band's last reading reads each before its exec.
+					for _, g := range growers {
+						pod.add(fakeProcess{pid: g.pid, ppid: g.ppid, start: g.start, exe: g.exe, args: latepoolArgs, anon: run.preExec})
+					}
 				}
 				pod.resize(&parent, parentAt(r.hundredths))
 				pod.setAnon(at(r.hundredths))
@@ -3138,10 +3231,6 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			}
 			if run.forksAt == len(run.band) {
 				fork()
-			}
-			growers := make([]*fakeProcess, 6)
-			for i := range growers {
-				growers[i] = &fakeProcess{pid: 800 + i, ppid: 700, start: uint64(6000 + i), exe: "/usr/bin/python3.13", args: growArgs}
 			}
 			// grow sets each grower that lives to its size at the reading of index i, 0 the mark's.
 			grow := func(i int) {
@@ -3157,9 +3246,10 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 			stall.Store(int64(run.stall))
 			h.tickAfter(run.mark.after - Defaults().Interval)
 			stall.Store(0)
-			if got, want := endedChoices(h), []endedChoice{{805, "new", "search", 0}}; !slices.Equal(got, want) {
-				t.Fatalf("at the first reading at the mark the guard ended %+v, want the largest grower %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
+			if got, want := endedChoices(h), run.want[:1]; !slices.Equal(got, want) {
+				t.Fatalf("at the first reading at the mark the guard ended %+v, want a grower %+v; the log:\n%s", got, want, strings.Join(h.log.all(), "\n"))
 			}
+			requireNewRead(h, 805, run.newRead)
 			for i, r := range run.after {
 				grow(i + 1)
 				pod.setAnon(at(r.hundredths))
@@ -3391,6 +3481,54 @@ func TestMemoryGuardEndsAForkThatHoldsMoreThanItsParentAndSaysWhatItsRankDidNotC
 	)
 	requireMarkKill(h, 701, gib+100*mib)
 	requireRankedBy(h, 701, "new", "reread", gib)
+}
+
+// The reading at the mark reads again the executable and arguments of a held process whose smaps
+// it reads where the band read it running its parent's program (reidentify): a process the band
+// read between its fork and its exec carries its parent's identity there, and one that has run
+// another program since ranks by its whole size. Pid 700 runs python3 pool.py at 1 GiB through
+// the band. Before the band's last reading it starts pid 701, which the band reads with pid 700's
+// executable and arguments, reporting pid 700's 1 GiB as its own. By the reading at the mark pid
+// 701 runs python3 grow.py at 300 MiB, or still runs pool.py, a fork. Nothing has grown, and the
+// mark reads pid 701 again. Running grow.py, it is new to the stay with memory of its own and ends,
+// its line saying the mark read one process new to the stay that held memory of its own
+// (new_read=1:1); a fork ranks at nothing, and the guard ends the largest, pid 700 (new_read=1:0).
+func TestMemoryGuardRanksAHeldProcessThatHasRunAnotherProgramSinceTheBandReadItByItsWholeSize(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		anon    uint64
+		want    int
+		size    uint64
+		rule    string
+		newRead string
+	}{
+		{"one that runs grow.py since", []string{"python3", "grow.py"}, 300 * mib, 701, 300 * mib, "new", "1:1"},
+		{"a fork that still runs pool.py", []string{"python3", "pool.py"}, gib, 700, gib, "largest", "1:0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := newFakePod(t)
+			pod.add(agent(2*gib), fakeProcess{pid: 700, ppid: 100, start: 5000, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: gib})
+			pod.setAnon(3200 * mib)
+			h := newHarness(t, pod, protect("tester", 100))
+			h.run()
+			pod.setAnon(3300 * mib)
+			h.tick()
+			child := fakeProcess{pid: 701, ppid: 700, start: 7000, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: gib}
+			pod.add(child)
+			pod.setAnon(3400 * mib)
+			h.tick()
+			h.requireKilled()
+
+			child.args = tc.args
+			pod.resize(&child, tc.anon)
+			pod.setAnon(3500 * mib)
+			h.tick()
+			requireMarkKill(h, tc.want, tc.size)
+			requireChosenBy(h, tc.want, tc.rule, "reread")
+			requireNewRead(h, tc.want, tc.newRead)
+		})
+	}
 }
 
 // After a kill, a process new to the stay ends before one that only grew since the kill, and
@@ -4576,7 +4714,7 @@ func TestMemoryGuardLinesCarryTheirFieldsAndTheExecutableWithNoArgument(t *testi
 	if got := h.log.with("started"); !slices.Equal(got, []string{started}) {
 		t.Fatalf("the start lines are %q, want %q", got, started)
 	}
-	ended := fmt.Sprintf(`launcher: memory guard: ended pid=900 role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=new sizes=reading less_parent=0 executable="python3.13"`,
+	ended := fmt.Sprintf(`launcher: memory guard: ended pid=900 role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=new sizes=reading less_parent=0 new_read=- executable="python3.13"`,
 		1500*mib, 3600*mib, 3900*mib, 64*mib, podLimit)
 	if got := h.log.with("ended"); !slices.Equal(got, []string{ended}) {
 		t.Fatalf("the kill lines are\n%q\nwant\n%q", got, ended)
@@ -4615,7 +4753,7 @@ func requireKillNamesAlone(t *testing.T, label string, pod *fakePod, fp fakeProc
 	h := newHarness(t, pod, protect("tester", 100)).run()
 	defer h.stop()
 	h.requireKilled(900)
-	ended := fmt.Sprintf(`launcher: memory guard: ended pid=900 role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=new sizes=reading less_parent=0 executable="%s"`,
+	ended := fmt.Sprintf(`launcher: memory guard: ended pid=900 role=tester size=%d reading=%d counter=%d shmem=%d limit=%d rule=new sizes=reading less_parent=0 new_read=- executable="%s"`,
 		1500*mib, 3600*mib, 3900*mib, pod.shmem, podLimit, want)
 	if got := h.log.with("ended"); !slices.Equal(got, []string{ended}) {
 		t.Fatalf("%s: the kill lines are\n%q\nwant\n%q", label, got, ended)
