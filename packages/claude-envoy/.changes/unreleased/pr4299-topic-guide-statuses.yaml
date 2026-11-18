@@ -1,13 +1,10 @@
 kind: Changed
 body: |-
-    The subscribe tool's guide to the checks topic and the envoy skill's check-settlement
-    reference, which this plugin ships, name a settlement's `statuses`: each commit status of the
-    commit, with its state and GitHub's `created_at`. They say how a consumer keeps them. For each
-    context it keeps the entry with the later `created_at`, and a context that a settlement leaves
-    out stays as it was. A settlement that names a new context, or a later `created_at` for a
-    context, changes those statuses alone where its check runs are older than the kept ones, or
-    the same at a generation no higher than the kept one. It is applied whole only where its check
-    runs are newer for some check, or the same at a higher generation.
+    The subscribe tool's guide to the checks topic, which this plugin ships, says that a settlement
+    names the commit statuses of the commit in its `statuses` field, each with its state and
+    GitHub's `created_at`, and leaves the field out when none is recorded. A consumer keeps, for
+    each context, the entry with the later `created_at`, and keeps a context that a settlement
+    leaves out as it was. A settlement is sent again when a commit status is new or changes state.
 time: 2026-11-17T18:23:30Z
 custom:
     Issue: pr4299

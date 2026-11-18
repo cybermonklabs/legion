@@ -1,7 +1,0 @@
-kind: Changed
-body: |-
-    The architect skill's wake routing says that the `review-stuck` notice of a head that GitHub
-    will not merge names each commit status of the head with its state.
-time: 2026-11-17T18:23:30Z
-custom:
-    Issue: pr4299

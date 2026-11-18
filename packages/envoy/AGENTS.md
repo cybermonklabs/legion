@@ -5860,32 +5860,14 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   — a new name counts as higher) is newer;
   every shared id equal and no new name is the same set;
   no id higher, no new name, and some id lower is older;
-  anything else (a higher or new alongside a lower) is a mixed view, which the Legion daemon applies, deciding each name by its newest run as it merges the set into its fence (`classify.ClassifySettlement`, `mergeAttemptSets`) (names only in the stored set are ignored
+  anything else (a higher or new alongside a lower) is a mixed view and is dropped as a conflict (names only in the stored set are ignored
   — a check can vanish from GitHub's view, and a record recreated after the seven-day KV TTL starts sparse).
   Within one producer record per-name ids never decrease, and a consumer's fence is the per-name maximum over every view it has accepted
   — an accepted set merges into the fence, nothing is pruned
-  — so the fence never decreases either: a newer attempt is newer whatever its completion time, no timestamps take part in ordering check runs, and a name an incomplete view omitted cannot later reappear as new.
+  — so the fence never decreases either: a newer attempt is newer whatever its completion time, no timestamps take part in ordering, and a name an incomplete view omitted cannot later reappear as new.
   At the same set the listener's `generation` orders its own settlements:
-  higher is newer; lower is stale; equal is a duplicate when the `snapshot` matches and otherwise a conflict (an equal pair with a different snapshot cannot occur within one record's lifetime;
-  a recreated record numbers its settlements afresh and may reuse one).
-  A lower or equal one that names a commit status of a context the consumer keeps none of, or one newer by its `created_at`, changes those statuses alone instead (below).
-
-- A settlement also carries `statuses` where the record holds a commit status (`cistore.Summary.Statuses`): each `{context, state, created_at}` (`cistore.StatusRef`), in context order, with `state` one of `success`, `failure` and `error` and `created_at` GitHub's RFC 3339 text of when it created the status, as the record keeps it, and no `statuses` field where the record holds none, so a head with no status settles in the same bytes as before the record held statuses.
-  A commit status is an entry of its own kind: `check_runs`, the status groups and the failing names hold check runs alone, a status and a check run of one name are two entries, and a status is in no attempt set and takes no part in whether a head is ready to settle.
-  The record keeps the newest status of each context in one of those three states, by GitHub's `created_at`, and only Dispatch's CI reconcile writes one (`cmd/dispatch/README.md`, "CI reconcile"): the listener publishes GitHub's `status` event nowhere, since it normalizes no such event (above), and the event carries a commit and no pull request.
-  A new context or a changed state moves the record's `snapshot` and `generation` and settles the head again;
-  a new time, link or description in the same state is recorded and settles nothing.
-  The settlement's summary line adds `; statuses: <n> passed, <m> failed`, and `; failing statuses: <context>, …` where one failed, after the failing check runs.
-  A status has no id, and a recreated record numbers its settlements afresh, so a consumer orders two statuses of one context by `created_at`, never by `generation`.
-  A settlement that names a context the consumer keeps no status of for that commit, or one with a later `created_at` than the kept one, and whose attempt set is older, or the same at a `generation` no higher than the kept one, changes those statuses alone:
-  the check runs, the failing and cancelled names, the `generation` and the `snapshot` the consumer keeps stay as they are, so the newer settlement delivered again is still a duplicate.
-  The same set includes one that names fewer checks than the kept one, since names only in the stored set are ignored:
-  a settlement a record sent before a later check name appeared compares equal to the fence of the one it sent after.
-  A settlement is applied whole, its `generation` and `snapshot` with its statuses, only where its attempt set is newer or mixed, or the same at a higher `generation`.
-  One whose attempt set is older and that names no such status is older for every check run and every status, and is stale.
-  A consumer merges the `statuses` of each settlement it applies into the statuses it keeps for that commit, one context at a time: the entry with the later `created_at` stands, so a context the settlement leaves out stays as kept and an older settlement never puts back a state a later one replaced.
-  On an equal `created_at` the settlement's entry stands where the settlement is applied whole, and the kept one where it changes those statuses alone, since it is then the older view.
-  The Legion daemon applies this rule (`classify.ClassifySettlement` and its `statusNews`, `classify.ApplySettlement` and its `mergedStatuses`).
+  lower is stale; equal is a duplicate when the `snapshot` matches and otherwise a conflict (an equal pair with a different snapshot cannot occur within one record's lifetime;
+  a recreated record may reuse one and is dropped).
 
 - The listener publishes a GitHub webhook event only when it normalizes it: an event `githubEventKinds` names, carrying the JSON object `githubPayload` writes (`GithubEnvelopes` publishes no envelope whose payload is empty).
   Every other event a webhook delivers (a commit status, a branch or tag created or deleted, a label, a review thread resolved, a webhook's ping, and the rest of GitHub's list) is answered `200` and published nowhere.
@@ -5900,13 +5882,13 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   — and says nothing about the rest: a known failure among them stands (the consumer keeps failure names, not a per-name status map), and the head is red while any failure remains.
   A consumer that reconciles a verdict from GitHub's rollup compares the rollup's attempt set the same way, but GitHub's read is complete:
   its failing check runs and failing commit statuses replace the stored ones wholesale.
-  Statuses have no check run, so a consumer keeps them apart from check-run failures:
-  a check run that shares a status's name cannot retire it — a settlement's `statuses` is merged into the kept statuses per context by `created_at` (above), GitHub's read replaces them whole, and only GitHub's read retires a deleted check's failure.
+  Statuses have no check run and the listener records and publishes none of them (a `status` webhook is published nowhere, above), so a consumer keeps them apart from check-run failures:
+  a check run that shares a status's name cannot retire it — only GitHub does (likewise a deleted check's failure).
   A newer rollup set merges into the fence and takes the identity (no listener generation);
   the same set applies GitHub's verdict and keeps the listener identity for duplicate detection; an older, mixed, or empty-over-fenced set is ignored.
   A terminal read (green or red) then holds the tie at that set:
   a live settlement at the same set is accepted only if its effective outcome
-  — the check-run failures it reports plus the stored ones it omits, and each failed status among the kept statuses once its `statuses` is merged in
+  — the check-run failures it reports plus the stored ones it omits and the stored commit-status failures
   — agrees with the reconciled verdict, refreshing the listener identity without releasing GitHub's authority;
   a disagreeing one is stale whatever its generation until the set advances;
   a pending or cancelled-only read uncertifies a green head, leaves a red one untouched, and holds nothing
@@ -5937,11 +5919,11 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   A finished Actions job on the default branch, of a run with no pull request, publishes `job.<run_id>.completed`:
   a completed `check_run` that lists no pull request, from the GitHub Actions App, whose `check_suite.head_branch` is the repository's `default_branch` and whose `details_url` names `/actions/runs/<run_id>/job/<job_id>`.
   Its payload fields are `kind: "job"`, `repo`, `run_id`, `job_id`, `name`, `status`, `conclusion`, `started_at`, `completed_at`, `head_sha` and `url` (the job's page).
-  A check run that lists a pull request goes to the CI store instead, as does one whose check suite is on `refs/pull/<n>/head`, and any other check run or suite with no pull request (a merge queue's commit, a branch push) is published nowhere and recorded nowhere by the listener; Dispatch's CI reconcile pass (`cmd/dispatch/README.md`, "CI reconcile") reads GitHub every 5 minutes and records the completed checks of an open pull request's head that no webhook put in its record, and that head's commit statuses where Dispatch's App token holds Commit statuses.
+  A check run that lists a pull request goes to the CI store instead, as does one whose check suite is on `refs/pull/<n>/head`, and any other check run or suite with no pull request (a merge queue's commit, a branch push) is published nowhere and recorded nowhere by the listener; Dispatch's CI reconcile pass (`cmd/dispatch/README.md`, "CI reconcile") reads GitHub every 5 minutes and records the completed checks of an open pull request's head that no webhook put in its record.
 
 - Every other text a webhook payload copies from its body (a title, a ref, a path, a workflow name, a URL) is capped at 2,048 runes with a trailing `…` too (`maxEnvelopeTextRunes`;
-  a comment's or review's body is cut there without one and says so in `body_truncated`), and so is every text a check run copies into the CI store (its name, URL, status, conclusion and times) and every text a commit status copies there (its context, link and description), so no envelope or record grows with the body it came from.
-  The record is keyed by check name and by status context, so a name or a context past the cap keeps a digest of the whole text after its `…`, and two names that share their first 2,048 runes stay two checks.
+  a comment's or review's body is cut there without one and says so in `body_truncated`), and so is every text a check run copies into the CI store (its name, URL, status, conclusion and times), so no envelope or record grows with the body it came from.
+  The record is keyed by check name, so a name past the cap keeps a digest of the whole name after its `…`, and two names that share their first 2,048 runes stay two checks.
   What NATS still refuses however often it is sent is refused (`bus.ErrRefused`):
   an envelope past the server's max payload or a subject past the server's 4 KiB protocol line, over which the server would close the listener's connection (`bus.ErrTooLarge`, naming the size), or a subject holding whitespace or an empty token, which no stream matches (`bus.ErrInvalidSubject`).
   The webhook is answered 422, which Dispatch's redelivery sweep asks for again like any failed delivery, until GitHub records it `OK` or 72 hours after its first failed attempt, and logged `<source> publish refused` (or `github ci record refused`);
@@ -5951,8 +5933,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   the newest 4,096 deliveries, each for 72 hours).
   A commit's CI record is bounded at 384 KiB (`maxRecordBytes`, about 1,300 checks) and its settlement at 960 KiB (`maxSettlementBytes`;
   a failing check's `"` costs three times as much there), since GitHub allows 50,000 check runs in a suite:
-  a check run or check suite past either is refused the same way, and the record is marked `overflowed` and never settles again.
-  A commit status never marks a record overflowed: a status write past either bound is not recorded, logged at WARN as `ci record refused a commit status past its bound` with the head and the context, and a check run or suite that passes a bound only because of the record's statuses is written with the record's statuses dropped, logged at WARN as `ci record dropped its commit statuses to keep a check within its bound` with the head and how many it dropped.
+  a check past either is refused the same way, and the record is marked `overflowed` and never settles again.
   A commit that had already settled keeps its last settlement, which nothing supersedes, so a consumer holding it learns about the refused checks only from GitHub's own read.
   A settlement NATS refuses anyway (a server whose max payload is set lower) marks the record overflowed too, logged once as `checks settlement refused`, rather than being published again at every attempt.
 
@@ -6449,7 +6430,7 @@ none) and `Secret.GitHubOwners` the lowercased, sorted, single-spaced list as on
 A release may narrow its GitHub App tokens (`secrets.GitHubNarrowing`, the `github_app` body of `POST /v1/grants/{id}/values`):
 the token of one listed account's installation alone, sent GitHub's `access_tokens` body naming repositories of that account, `contents: read`, `metadata: read`, `pull_requests: read` and `actions: read`, or both, and nothing else, so a caller can only narrow.
 `actions: read` is the one permission an App is not always granted (`secrets.optionalReadOnlyPermission`), so a read-only request GitHub answers 422 is sent once more without it, logged at WARN, and the release then carries the other three rather than nothing; only a 422 that stands is `NARROWING_REFUSED`.
-This set is the broker's own, and it differs from the Legion daemon's read lease (`appauth.readPermissions`), which also holds `issues`, `checks`, `statuses` and `attestations` at `read`: a daemon's `token_command` lease that the broker releases reads no issue, check run, commit status or attestation, where a key-backed one reads them.
+This set is the Legion daemon's own read set (`appauth.readPermissions`), so a `token_command` lease and a key-backed one read the same things.
 A body naming repositories alone names no permissions, and GitHub then gives the token every permission the App holds, its organization permissions among them: only `read_only` limits those.
 The narrowing is that release's alone: the grant records none (each release's `grant.used` audit row does) and the broker keeps no token, so its next release without one mints the owner-wide tokens, and no approval, record, request object or grant changes, since the session holding the grant can always have the owner-wide token.
 `policy.ParseGitHubNarrowing` checks the body (one login by `policy.ParseGitHubLogin`;
