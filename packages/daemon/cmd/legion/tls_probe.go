@@ -997,7 +997,13 @@ func tlsAnyMarker(markers ...string) func(string) bool {
 	}
 }
 
-var uvResponseSeen = tlsAnyMarker("No solution found when resolving dependencies")
+// uvResponseSeen reads an answer uv got from the site: an index without the package ("No solution
+// found when resolving dependencies", the control), or a page that is no package index, which uv
+// names "Unsupported `Content-Type`" (the emSign and AAA sites' text/plain page, measured on
+// 2026-11-18 with uv 0.13.5 on the image of 841974e9 in `legion probe-image`, with an
+// /etc/uv/uv.toml allowing both hosts and with UV_INSECURE_HOST naming them). Reading both keeps a
+// uv that accepted a compromised chain reported as accepting it rather than as unavailable.
+var uvResponseSeen = tlsAnyMarker("No solution found when resolving dependencies", "Unsupported `Content-Type`")
 
 var awsResponseSeen = tlsAnyMarker("An error occurred", "InvalidResponse", "invalid XML", "ResponseParserError")
 
