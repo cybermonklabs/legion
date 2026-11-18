@@ -1,9 +1,14 @@
 // Package podsafety is what a Legion pod's Oh My Pi starts with beyond the operator's pod, and
 // nothing in it names a model, a provider, or a route, nor holds a repository's settings off. It is
-// three things. The baseline variables: the two that decide where a pod's Oh My Pi keeps its
-// sessions (baseline), set on the agent where the pod leaves them unset — when Oh My Pi would
+// three things. The baseline variables: two of the three that decide where a pod's Oh My Pi keeps
+// its sessions (baseline), set on the agent where the pod leaves them unset — when Oh My Pi would
 // otherwise fill them from the working directory's .env — and never on the shim; the Sandbox
 // runtime refuses them, and OMP_SESSION_SQL_DSN_FILE, in the operator's pod (sandbox.CheckPod).
+// The third is OMP_CONFIG_ROOT, which from the pinned Oh My Pi on outranks PI_CONFIG_DIR as the
+// config root the agent directory, models.yml and file sessions live under. The runtime refuses it
+// in the operator's pod and does not set it, and Apply does not either, so a repository's .env that
+// sets it moves the config root: Oh My Pi applies its working directory's .env and then rebuilds its
+// directories (env.ts, refreshDirsFromEnv).
 // Every session of a workflow role is a row in the database the deployment must name
 // (runtime.kubernetes.session_store postgres or cloudsql-iam): the runtime starts every such
 // generation with OMP_SESSION_STORAGE=sql and OMP_SESSION_SQL_DSN_FILE itself, and Apply keeps
@@ -50,9 +55,12 @@ import (
 const placesSessions = "it decides where Oh My Pi keeps the session a resume reads"
 
 // baseline are the variables Apply sets where the pod's environment leaves them unset or empty,
-// which is when Oh My Pi would fill them from the working directory's .env: the two that place a
-// pod's sessions, each with why an operator's pod may not set it instead (Variable.Reserved).
-// Nothing else is set on a pod's agent; a repository's own settings and .env are its own otherwise.
+// which is when Oh My Pi would fill them from the working directory's .env: two of the three that
+// place a pod's sessions, each with why an operator's pod may not set it instead
+// (Variable.Reserved). The third, OMP_CONFIG_ROOT, outranks PI_CONFIG_DIR from the pinned Oh My Pi
+// on; it is not here, so a repository's .env that sets it moves the config root (see the package
+// doc). Nothing else is set on a pod's agent; a repository's own settings and .env are its own
+// otherwise.
 var baseline = []struct{ name, value, reserved string }{
 	// Names the config root Oh My Pi's agent directory is joined under (.omp in the image), which
 	// chooses the models.yml and profile it reads, and the sessions under it: no settings overlay
@@ -131,16 +139,17 @@ func CheckOverlay(file string) error {
 // `logs`, `browser-profiles`, `reports`, `terminal-sessions`; sessions are data-class) hang under
 // `$XDG_STATE_HOME/omp/profiles/<profile>` for a named profile and `$XDG_STATE_HOME/omp` for the
 // default one, but only when that directory already exists when Oh My Pi starts; otherwise they
-// fall back to the config root (`$HOME/$PI_CONFIG_DIR/profiles/<profile>`, as ompdirs.StateRoot
-// ports it), and a state home the pod set to keep one role's browser broker lock apart from its
-// siblings' (sandbox.roleStateHome) changes nothing. The directory is the one ompdirs answers
-// (ompdirs.StateRootCandidate), so the shim and the port cannot drift: the profile is OMP_PROFILE
-// where environ defines it, else PI_PROFILE, as Oh My Pi reads them, and a name Oh My Pi would
-// refuse is refused here. With XDG_STATE_HOME unset or empty nothing is made: Oh My Pi reads no
-// state home then. Once made, ompdirs.StateRoot over environ, in the working directory the shim's
-// Oh My Pi inherits, must answer that directory; where it answers another — an honoured
-// PI_CODING_AGENT_DIR elsewhere turns Oh My Pi's XDG lookup off — this refuses, naming both, rather
-// than let the shim make a directory Oh My Pi ignores while every role's broker takes one lock name.
+// fall back to the config root's `profiles/<profile>` (`$OMP_CONFIG_ROOT` when set, else
+// `$HOME/$PI_CONFIG_DIR`, as ompdirs.StateRoot ports it), and a state home the pod set to keep one
+// role's browser broker lock apart from its siblings' (sandbox.roleStateHome) changes nothing. The
+// directory is the one ompdirs answers (ompdirs.StateRootCandidate), so the shim and the port
+// cannot drift: the profile is OMP_PROFILE where environ defines it, else PI_PROFILE, as Oh My Pi
+// reads them, and a name Oh My Pi would refuse is refused here. With XDG_STATE_HOME unset or empty
+// nothing is made: Oh My Pi reads no state home then. Once made, ompdirs.StateRoot over environ, in
+// the working directory the shim's Oh My Pi inherits, must answer that directory; where it answers
+// another — an honoured PI_CODING_AGENT_DIR elsewhere turns Oh My Pi's XDG lookup off — this
+// refuses, naming both, rather than let the shim make a directory Oh My Pi ignores while every
+// role's broker takes one lock name.
 func EnsureStateHome(environ []string) error {
 	env := lookup(environ)
 	dir, ok, err := ompdirs.StateRootCandidate(env)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -56,7 +57,10 @@ type setter struct {
 // attributes alone today), and the operator's own pod env. The exchange identity's two variables
 // (exchangeOwned) are the runtime's only where exchange says the deployment names an exchange
 // audience; otherwise nothing of Legion's sets them, and the operator's pod env may, as it could
-// before the key existed. The first setter of a name is the one named.
+// before the key existed. OMP_CONFIG_ROOT (ompdirs.ConfigRootVariable) is named beside the session
+// store's variables though nothing of Legion's sets it: from the pinned Oh My Pi on it replaces the
+// config root the agent directory and a session's path key sit under, so it is refused like them.
+// The first setter of a name is the one named.
 func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]setter {
 	set := map[string]setter{}
 	add := func(name, who string, operatorMay bool) {
@@ -68,6 +72,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 		add(name, "Legion sets to place the sessions a resume reads (runtime.kubernetes.session_store)", false)
 	}
 	add(ompsessions.DSNFileName, "is the name the providers volume mounts the session database's URL under (runtime.kubernetes.session_store)", false)
+	add(ompdirs.ConfigRootVariable, "replaces the config root Oh My Pi keeps the agent directory and a session's path key under (Legion's runtime sets none)", false)
 	add(slackChannelsVariable, "Legion's runtime sets for the controller it launches, from the project's slack_channels alone", false)
 	add(launcher.TestPGVariable, "Legion's runtime sets in every role of an issue pod whose deployment serves the pod's own test database (runtime.kubernetes.test_postgres), and refuses here whether or not it does, since a pod env naming another server would point every test at it", false)
 	const claude = "Legion's runtime sets for a role it launches on Claude Code (worker_backends)"

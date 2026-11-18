@@ -119,6 +119,10 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 		{name: "Oh My Pi's session database", pod: env("OMP_SESSION_SQL_DSN_FILE", "/etc/operator/dsn"), want: envSets("OMP_SESSION_SQL_DSN_FILE", byStore)},
 		{name: "the name the session database's URL is mounted under", pod: env("OMP_SESSION_SQL_DSN", "postgres://operator.internal.example/sessions"),
 			want: envSets("OMP_SESSION_SQL_DSN", "is the name the providers volume mounts the session database's URL under (runtime.kubernetes.session_store)")},
+		// Nothing of Legion's sets Oh My Pi's config root override, but it moves the agent
+		// directory and every session path with it, so the operator's pod may not set it either.
+		{name: "Oh My Pi's config root override", pod: env("OMP_CONFIG_ROOT", "/var/lib/operator/omp"),
+			want: envSets("OMP_CONFIG_ROOT", "replaces the config root Oh My Pi keeps the agent directory and a session's path key under (Legion's runtime sets none)")},
 		{name: "a variable of the App's git identity", pod: env("JJ_USER", "operator"), want: envSets("JJ_USER", byIdentity)},
 		{name: "a variable pointing at a launch secret", pod: env("ENVOY_TOKEN_FILE", "/etc/envoy"), want: envSets("ENVOY_TOKEN_FILE", byEnvoy)},
 		// The daemon names its controller's Slack channels from the project's slack_channels alone: an

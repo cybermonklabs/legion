@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -27,6 +28,7 @@ func TestPaneVariableRefusalNamesWhyAndNeverTheValue(t *testing.T) {
 		{"OMP_SESSION_SQL_DSN", "/etc/acme/dsn", session},
 		{"PI_CODING_AGENT_DIR", "/srv/agent", session},
 		{"PI_CONFIG_DIR", ".elsewhere", session},
+		{"OMP_CONFIG_ROOT", "/srv/omp", session},
 		{"CLAUDE_CONFIG_DIR", "/srv/claude", claude},
 		{"CLAUDE_CODE_DISABLE_CRON", "0", claude},
 		// Claude Code's background tasks are the operator's to set, as its other variables are: the
@@ -56,9 +58,10 @@ func TestPaneVariableRefusalNamesWhyAndNeverTheValue(t *testing.T) {
 
 // The names that place a session are the ones the Sandbox runtime refuses in an operator's pod for
 // the same reason, read from the constants it builds its refusal from (ompsessions' session
-// variables and the pod baseline's reserved names), which this package cannot import.
+// variables, the pod baseline's reserved names, and ompdirs' config root variable), which this
+// package cannot import.
 func TestPaneVariableRefusalCoversTheSandboxRuntimesSessionNames(t *testing.T) {
-	names := []string{ompsessions.StorageVariable, ompsessions.DSNFileVariable, ompsessions.DSNFileName}
+	names := []string{ompsessions.StorageVariable, ompsessions.DSNFileVariable, ompsessions.DSNFileName, ompdirs.ConfigRootVariable}
 	for _, v := range podsafety.Variables() {
 		if v.Reserved != "" {
 			names = append(names, v.Name)
