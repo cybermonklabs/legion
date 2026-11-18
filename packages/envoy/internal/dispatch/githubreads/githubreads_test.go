@@ -200,6 +200,72 @@ func TestAHeldScopesNotesReachTheAttemptOnlyWhenKept(t *testing.T) {
 	})
 }
 
+// countedError is an error that counts the calls of its Error(), so a test sees whether a note
+// made its text.
+type countedError struct{ calls int }
+
+func (e *countedError) Error() string {
+	e.calls++
+	return "a failure after the cause"
+}
+
+// A note made once the attempt holds its first failure can never be the cause: it leaves the
+// cause as it was and makes no text, in a held scope or out of one, and NoteFailuref formats
+// nothing then, nor on a ctx with no attempt. Nor does a held scope make the text of a note it
+// forgets: one after the failure it holds, or one after it was dropped. Where its note can still
+// be the cause, NoteFailuref notes the text fmt.Errorf makes.
+func TestANoteThatCannotBeTheCauseMakesNoText(t *testing.T) {
+	const first = "GET https://api.github.com/app/hook/deliveries: status 503: first"
+	t.Run("outside a held scope", func(t *testing.T) {
+		ctx, attempt := Begin(context.Background())
+		NoteFailure(ctx, errors.New(first))
+		late := &countedError{}
+		NoteFailure(ctx, late)
+		NoteFailuref(ctx, "a step: %w", late)
+		if _, failed, cause := attempt.Outcome(); !failed || cause != first || late.calls != 0 {
+			t.Fatalf("failed %v, cause %q, the late note's Error() called %d times; want the first cause and no call", failed, cause, late.calls)
+		}
+	})
+	t.Run("inside a held scope", func(t *testing.T) {
+		ctx, attempt := Begin(context.Background())
+		held, scope := Hold(ctx)
+		NoteFailure(ctx, errors.New(first))
+		late := &countedError{}
+		NoteFailure(held, late)
+		NoteFailuref(held, "a step: %w", late)
+		scope.Keep()
+		if _, failed, cause := attempt.Outcome(); !failed || cause != first || late.calls != 0 {
+			t.Fatalf("failed %v, cause %q, the late note's Error() called %d times; want the first cause and no call", failed, cause, late.calls)
+		}
+	})
+	t.Run("a note a held scope forgets", func(t *testing.T) {
+		ctx, attempt := Begin(context.Background())
+		held, scope := Hold(ctx)
+		NoteFailure(held, errors.New(first))
+		late := &countedError{}
+		NoteFailure(held, late)
+		scope.Drop()
+		NoteFailure(held, late)
+		if _, failed, _ := attempt.Outcome(); failed || late.calls != 0 {
+			t.Fatalf("failed %v, the forgotten notes' Error() called %d times; want no failure and no call", failed, late.calls)
+		}
+	})
+	t.Run("NoteFailuref on a ctx with no attempt", func(t *testing.T) {
+		late := &countedError{}
+		NoteFailuref(context.Background(), "a step: %w", late)
+		if late.calls != 0 {
+			t.Fatalf("the note's Error() called %d times on a ctx with no attempt; want none", late.calls)
+		}
+	})
+	t.Run("NoteFailuref where its note can be the cause", func(t *testing.T) {
+		ctx, attempt := Begin(context.Background())
+		NoteFailuref(ctx, "re-read the head of %s PR #%d: %w", "acme/web", 7, errors.New("status 502"))
+		if _, failed, cause := attempt.Outcome(); !failed || cause != "re-read the head of acme/web PR #7: status 502" {
+			t.Fatalf("failed %v, cause %q; want the formatted note", failed, cause)
+		}
+	})
+}
+
 // recorded is one call of a test's Recorder.
 type recorded struct {
 	read      Read

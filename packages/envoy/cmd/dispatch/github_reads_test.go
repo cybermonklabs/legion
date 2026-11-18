@@ -120,7 +120,9 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 		NATSURL: natsURL, SigningKey: gitHubReadsSigningKey,
 	})
 	withoutApp.waitHealthy(t)
-	if answer := withoutApp.readHealthz(t); answer.status != http.StatusOK || !answer.OK || string(answer.GitHub) != "null" {
+	answer := withoutApp.readHealthz(t)
+	t.Logf("/healthz of the process with no GitHub App: %d %s", answer.status, answer.body)
+	if answer.status != http.StatusOK || !answer.OK || string(answer.GitHub) != "null" {
 		t.Fatalf("/healthz of a process with no GitHub App = %d %s, want 200 with ok true and github null", answer.status, answer.body)
 	}
 }

@@ -678,12 +678,15 @@ func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag st
 // caller therefore never has to tell a rate-limited 200 from a good one.
 //
 // Which scope that limit is recorded under is which of GitHub's two limits it is
-// (recordGraphQLLimit), and the query's answer is read for the limit here rather than by send,
-// whose REST detection would record both of them under the installation's scope.
+// (recordGraphQLLimit), so the query calls send itself rather than request, whose REST detection
+// would record both of them under the installation's scope.
 //
 // A held limit and a limit read in an answer are noted on the attempt ctx carries (githubreads),
-// as send notes its own: GitHub answers a spent GraphQL budget with 200, which send's reading of
-// the status cannot see.
+// here and not by send, which notes no limit GitHub answers: GitHub answers a spent GraphQL
+// budget with 200, which no reading of the status alone can see. The limit GraphQLRateLimit reads
+// is noted once recordGraphQLLimit has recorded it, so the cause carries the wait every process
+// now holds. A client without Limits reads the answer as request reads a REST call's, and notes
+// the limit RateLimit reads.
 func (c *Client) GraphQL(ctx context.Context, token string, query string, variables map[string]any) ([]byte, int, http.Header, error) {
 	if c == nil {
 		return nil, 0, nil, ErrNoAppKey
@@ -706,8 +709,14 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	installation := c.TokenScope(token)
 	target := c.base + "/graphql"
 	body, status, header, err := c.send(ctx, installation, http.MethodPost, target, "Bearer "+token, mediaTypeJSON, "", bytes.NewReader(payload), responseLimit)
-	if err != nil || c.limits == nil {
+	if err != nil {
 		return body, status, header, err
+	}
+	if c.limits == nil {
+		if limited := RateLimit(status, header, body); limited != nil {
+			noteFailure(ctx, &failedAnswer{method: http.MethodPost, target: target, limited: limited})
+		}
+		return body, status, header, nil
 	}
 	limited, secondary := GraphQLRateLimit(status, header, body)
 	if limited == nil {
@@ -862,17 +871,23 @@ func (c *Client) doLimited(ctx context.Context, scope, method, target, authoriza
 // If-None-Match, so GitHub answers 304 Not Modified when its answer has not changed since the
 // caller read it, and charges the rate limit nothing for it; an empty one sends no such header.
 //
-// It is send with GitHub's own REST limit recorded: an answer RateLimit reads as a limit is
-// recorded under scope with GitHub's own wait, so no process sends GitHub anything under that
-// scope before the wait ends. Every REST call of this package goes through here. GraphQL calls
-// send itself and records what it reads from the answer, which is another detection and another
-// scope (recordGraphQLLimit).
+// It is send with GitHub's own REST limit read, once: an answer RateLimit reads as a limit is
+// noted on the attempt ctx carries (githubreads), whatever the client and the scope, and
+// recorded under scope with GitHub's own wait where the client has Limits and scope is named, so
+// no process sends GitHub anything under that scope before the wait ends. Every REST call of this
+// package goes through here. GraphQL calls send itself and reads, notes and records the limit in
+// its answer itself, which is another detection and another scope (recordGraphQLLimit).
 func (c *Client) request(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
 	responseBody, status, header, err := c.send(ctx, scope, method, target, authorization, accept, ifNoneMatch, body, limit)
-	if err != nil || c.limits == nil || scope == "" {
+	if err != nil {
 		return responseBody, status, header, err
 	}
-	if limited := RateLimit(status, header, responseBody); limited != nil {
+	limited := RateLimit(status, header, responseBody)
+	if limited == nil {
+		return responseBody, status, header, nil
+	}
+	noteFailure(ctx, &failedAnswer{method: method, target: target, limited: limited})
+	if c.limits != nil && scope != "" {
 		// Recorded past the caller's own end: see limitRecordContext.
 		record, cancel := limitRecordContext(ctx)
 		err := c.limits.Record(record, scope, limited.Wait)
@@ -890,13 +905,15 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 // ahead, as embedqueue.reserveTokens goes ahead: GitHub still answers each process's own
 // requests with the limit. An empty scope, or a client without Limits, is no shared limit.
 //
-// What GitHub's own answer says about a limit is the caller's to record, since REST and GraphQL
-// read an answer differently and budget it under different scopes.
+// What GitHub's own answer says about a limit is the caller's to read, note and record, since
+// REST and GraphQL read an answer differently and budget it under different scopes: request
+// does it for a REST call and GraphQL for a query.
 //
 // It is also where the attempt ctx carries (githubreads) learns of every request a leased pass
-// sends: each request is marked sent, and each failure no caller takes as data is noted: no
-// answer at all, a body past limit, a held limit (noted, though nothing was sent), and the
-// answers noteAnswer names. A context with no attempt changes nothing.
+// sends: each request is marked sent, and each failure no caller takes as data, but a limit
+// GitHub answers, is noted: no answer at all, a body that could not be read or ran past limit, a
+// held limit (noted, though nothing was sent), a 5xx and a 401. A context with no attempt changes
+// nothing.
 func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
 	if c.limits != nil && scope != "" {
 		wait, recorded, err := c.limits.Wait(ctx, scope)
@@ -942,7 +959,13 @@ func (c *Client) send(ctx context.Context, scope, method, target, authorization,
 		noteFailure(ctx, err)
 		return nil, 0, nil, err
 	}
-	noteAnswer(ctx, method, target, response.StatusCode, response.Header, responseBody)
+	// A 5xx and a 401 say GitHub could not answer or did not take the App's credentials. Every
+	// other status, a limit aside, is left to the caller, because the same answer is data at one
+	// point and a failure at another (a 404 is a deleted repository to one caller and a wrong
+	// workflow path to the next), and only the caller can tell the two apart.
+	if status := response.StatusCode; status/100 == 5 || status == http.StatusUnauthorized {
+		noteFailure(ctx, &failedAnswer{method: method, target: target, status: status, body: responseBody})
+	}
 	return responseBody, response.StatusCode, response.Header, nil
 }
 
@@ -956,26 +979,11 @@ func noteFailure(ctx context.Context, err error) {
 	}
 }
 
-// noteAnswer notes the answers no caller takes as data: a 5xx and a 401, which say GitHub could
-// not answer or did not take the App's credentials, and a limit RateLimit reads. Every other
-// status is left to the caller, because the same answer is data at one point and a failure at
-// another (a 404 is a deleted repository to one caller and a wrong workflow path to the next),
-// and only the caller can tell the two apart.
-func noteAnswer(ctx context.Context, method, target string, status int, header http.Header, body []byte) {
-	if status/100 == 5 || status == http.StatusUnauthorized {
-		noteFailure(ctx, &failedAnswer{method: method, target: target, status: status, body: body})
-		return
-	}
-	if limited := RateLimit(status, header, body); limited != nil {
-		noteFailure(ctx, &failedAnswer{method: method, target: target, limited: limited})
-	}
-}
-
-// failedAnswer is an answer send or GraphQL notes as a failure, worded as the client's own errors
-// are: "<METHOD> <target>: status <n>: <body>", or the limit's own text after the method and
-// target. Its text is made only when an attempt takes it (githubreads.NoteFailure), so a request
-// outside the leased passes formats nothing. The target carries no token: every token travels in
-// the Authorization header.
+// failedAnswer is an answer send, request or GraphQL notes as a failure, worded as the client's
+// own errors are: "<METHOD> <target>: status <n>: <body>", or the limit's own text after the
+// method and target. Its text is made only when an attempt takes it (githubreads.NoteFailure), so
+// a request outside the leased passes formats nothing. The target carries no token: every token
+// travels in the Authorization header.
 type failedAnswer struct {
 	method, target string
 	status         int

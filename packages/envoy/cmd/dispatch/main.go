@@ -1032,7 +1032,7 @@ func main() {
 	// does not run.
 	var reads *gitHubReads
 	if appCfg != nil {
-		reads = &gitHubReads{record: gitHubReadCopy, runs: map[githubreads.Read]bool{
+		reads = &gitHubReads{recordCopy: gitHubReadCopy, runs: map[githubreads.Read]bool{
 			githubreads.WebhookRedelivery:  sweeper != nil,
 			githubreads.ArchitectureImport: appCtx.Architecture().HasApp(),
 			githubreads.DeliveryReconcile:  reconcile.HasApp(),
@@ -1858,8 +1858,8 @@ type issuers struct {
 type gitHubReads struct {
 	// runs holds true for each read whose loop this process runs.
 	runs map[githubreads.Read]bool
-	// record is the copy githubreads.Copy.Run keeps, which a write by any process refreshes.
-	record *githubreads.Copy
+	// recordCopy is the copy githubreads.Copy.Run keeps, which a write by any process refreshes.
+	recordCopy *githubreads.Copy
 }
 
 // gitHubReadState is the state /healthz names for one GitHub read.
@@ -1927,7 +1927,7 @@ func (g *gitHubReads) member() *gitHubReadsMember {
 	if g == nil {
 		return nil
 	}
-	rows, loaded := g.record.Rows()
+	rows, loaded := g.recordCopy.Rows()
 	entry := func(read githubreads.Read) gitHubReadEntry {
 		return gitHubReadEntryOf(read, g.runs[read], loaded, rows)
 	}

@@ -868,7 +868,7 @@ func attributeHead(ctx context.Context, pool *store.Pool, client *githubapp.Clie
 		}
 		slog.Debug("dispatch delivery: a pull request head is attributed without its commit messages",
 			"repo", facts.Repo, "number", number, "error", readErr)
-		githubreads.NoteFailure(ctx, fmt.Errorf("attribute the head of %s PR #%d without its commit messages: %w", facts.Repo, number, readErr))
+		githubreads.NoteFailuref(ctx, "attribute the head of %s PR #%d without its commit messages: %w", facts.Repo, number, readErr)
 		attributed.complete = false
 		return attributed, nil
 	}

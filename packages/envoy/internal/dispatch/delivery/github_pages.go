@@ -47,22 +47,15 @@ var githubPageRetryWait = time.Second
 // try's notes are kept. A page GitHub answers 502 once and then reads is no failure of the pass,
 // and one it answers 502 every try is the last try's 502.
 func readGitHubPage(ctx context.Context, client *githubapp.Client, token, path string) ([]byte, int, http.Header, error) {
-	var body []byte
-	var status int
-	var header http.Header
-	var err error
 	for attempt := 1; ; attempt++ {
 		asked, held := githubreads.Hold(ctx)
-		body, status, header, err = client.Read(asked, token, path)
-		if !retryGitHubPage(ctx, attempt, status, err) {
-			held.Keep()
-			return body, status, header, err
+		body, status, header, err := client.Read(asked, token, path)
+		if retryGitHubPage(ctx, attempt, status, err) && waitBeforeRetry(ctx, attempt) == nil {
+			held.Drop()
+			continue
 		}
-		if waitErr := waitBeforeRetry(ctx, attempt); waitErr != nil {
-			held.Keep()
-			return body, status, header, err
-		}
-		held.Drop()
+		held.Keep()
+		return body, status, header, err
 	}
 }
 
@@ -70,22 +63,15 @@ func readGitHubPage(ctx context.Context, client *githubapp.Client, token, path s
 // held the same way. A GraphQL query is a read however GitHub spells it, so retrying one repeats
 // nothing.
 func queryGitHubPage(ctx context.Context, client *githubapp.Client, token, query string, variables map[string]any) ([]byte, int, http.Header, error) {
-	var body []byte
-	var status int
-	var header http.Header
-	var err error
 	for attempt := 1; ; attempt++ {
 		asked, held := githubreads.Hold(ctx)
-		body, status, header, err = client.GraphQL(asked, token, query, variables)
-		if !retryGitHubPage(ctx, attempt, status, err) {
-			held.Keep()
-			return body, status, header, err
+		body, status, header, err := client.GraphQL(asked, token, query, variables)
+		if retryGitHubPage(ctx, attempt, status, err) && waitBeforeRetry(ctx, attempt) == nil {
+			held.Drop()
+			continue
 		}
-		if waitErr := waitBeforeRetry(ctx, attempt); waitErr != nil {
-			held.Keep()
-			return body, status, header, err
-		}
-		held.Drop()
+		held.Keep()
+		return body, status, header, err
 	}
 }
 

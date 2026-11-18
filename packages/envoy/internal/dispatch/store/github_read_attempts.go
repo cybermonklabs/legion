@@ -44,7 +44,8 @@ func (g *GitHubReadAttempts) Record(ctx context.Context, read githubreads.Read, 
 	return nil
 }
 
-// All reads every row of the record, a cause of a succeeded attempt reading "".
+// All reads every row of the record, a cause of a succeeded attempt reading "". It selects
+// githubreads.Recorded's fields in their order, which is how each row fills one (RowToStructByPos).
 func (g *GitHubReadAttempts) All(ctx context.Context) ([]githubreads.Recorded, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitHubReadAttemptTimeout)
 	defer cancel()
@@ -52,15 +53,7 @@ func (g *GitHubReadAttempts) All(ctx context.Context) ([]githubreads.Recorded, e
 	if err != nil {
 		return nil, fmt.Errorf("read the GitHub read attempts: %w", err)
 	}
-	recorded, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (githubreads.Recorded, error) {
-		var (
-			attempt githubreads.Recorded
-			read    string
-		)
-		err := row.Scan(&read, &attempt.At, &attempt.Succeeded, &attempt.Cause)
-		attempt.Read = githubreads.Read(read)
-		return attempt, err
-	})
+	recorded, err := pgx.CollectRows(rows, pgx.RowToStructByPos[githubreads.Recorded])
 	if err != nil {
 		return nil, fmt.Errorf("read the GitHub read attempts: %w", err)
 	}

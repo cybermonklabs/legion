@@ -197,7 +197,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	logHeadFailure := func() {
 		if headErr != nil {
 			slog.Error("dispatch delivery: reconcile pull request heads", "error", headErr)
-			githubreads.NoteFailure(ctx, fmt.Errorf("reconcile pull request heads: %w", headErr))
+			githubreads.NoteFailuref(ctx, "reconcile pull request heads: %w", headErr)
 		}
 	}
 	settings, err := GetSettings(ctx, r.pool)
@@ -251,7 +251,7 @@ func (r *Reconcile) runOnce(ctx context.Context) {
 	// record alone.
 	recordRead := func(step string, err error) {
 		if err != nil {
-			githubreads.NoteFailure(ctx, fmt.Errorf("%s: %w", step, err))
+			githubreads.NoteFailuref(ctx, "%s: %w", step, err)
 		}
 		record(step, err)
 	}
@@ -593,7 +593,7 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 		// The answers the refresh takes as data (a pull request GitHub no longer has, a
 		// repository the App cannot read) stamped the row and came back nil, and a rate limit
 		// stops the batch above, which runOnce notes as the step's failure.
-		githubreads.NoteFailure(ctx, fmt.Errorf("re-read the head of %s PR #%d: %w", head.Repo, head.Number, err))
+		githubreads.NoteFailuref(ctx, "re-read the head of %s PR #%d: %w", head.Repo, head.Number, err)
 		return nil
 	}
 	if err := boundedFanOut(ctx, reconcilePartialConcurrency, stale, refresh); err != nil {
@@ -728,7 +728,7 @@ func (r *Reconcile) readAttributionInputs(ctx context.Context, pr DeliveryPullRe
 		slog.Warn("dispatch delivery: read attribution inputs", "repo", pr.Repo, "number", pr.Number, "error", err)
 		// A row this pass gives up after the answers it takes as data: the pass's attempt notes
 		// it (githubreads).
-		githubreads.NoteFailure(ctx, fmt.Errorf("read attribution inputs of %s PR #%d: %w", pr.Repo, pr.Number, err))
+		githubreads.NoteFailuref(ctx, "read attribution inputs of %s PR #%d: %w", pr.Repo, pr.Number, err)
 		return nil
 	}
 	inputs := attributionInputsFrom(facts)
@@ -774,7 +774,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 		// A row this pass gives up after the answers it takes as data: the pass's attempt notes
 		// it (githubreads), a 403 GitHub refuses the pull request with included, since GitHub
 		// refuses it again every pass.
-		githubreads.NoteFailure(ctx, fmt.Errorf("complete partial pull request %s #%d: %w", pr.Repo, pr.Number, err))
+		githubreads.NoteFailuref(ctx, "complete partial pull request %s #%d: %w", pr.Repo, pr.Number, err)
 		return nil
 	}
 	if fetched.MergedAt == nil {
@@ -786,7 +786,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 			return limited
 		}
 		slog.Warn("dispatch delivery: complete partial pull request; it stays partial for the next pass", "repo", pr.Repo, "number", pr.Number, "error", err)
-		githubreads.NoteFailure(ctx, fmt.Errorf("complete partial pull request %s #%d: %w", pr.Repo, pr.Number, err))
+		githubreads.NoteFailuref(ctx, "complete partial pull request %s #%d: %w", pr.Repo, pr.Number, err)
 	}
 	return nil
 }

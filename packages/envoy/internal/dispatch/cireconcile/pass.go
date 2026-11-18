@@ -392,20 +392,21 @@ func (w *walk) page(ctx context.Context) (queryPage, *ending, bool) {
 	}
 	// The query's failures are held (githubreads.Hold) until the pass knows what came of the
 	// page: a query whose repository the REST listing then reads is a read the pass made the
-	// other way, and no failure of it, while every other outcome keeps them.
+	// other way, and no failure of it, while every other outcome keeps them. Kept on the way out,
+	// after any note of the listing's own, unless that listing read the repository and dropped
+	// them first.
 	queried, held := githubreads.Hold(ctx)
+	defer held.Keep()
 	page, err := r.query(queried, w.repository, w.here.after, c)
 	if at := stopAt(err, githubapp.GraphQLScope); at != nil {
 		// A rate limit is the pass ending, never a page to read another way: reading this
 		// page's heads over REST would be exactly the requests GitHub has just asked this
 		// App to stop sending.
-		held.Keep()
 		return queryPage{}, w.stopped(at), false
 	}
 	if err != nil {
 		if r.cutShort(ctx, c) {
 			// The pass's own ending killed the query, which says nothing about the page.
-			held.Keep()
 			return queryPage{}, w.cut(), false
 		}
 		// GitHub refused the query, gave up on it, or answered past what githubapp reads.
@@ -418,14 +419,11 @@ func (w *walk) page(ctx context.Context) (queryPage, *ending, bool) {
 		listed, end, ok := w.restPage(ctx)
 		if ok {
 			held.Drop()
-		} else {
-			// The listing did not read the repository either, which restPage has noted when it
-			// was GitHub's doing.
-			held.Keep()
 		}
+		// Otherwise the listing did not read the repository either, which restPage has noted
+		// when it was GitHub's doing.
 		return listed, end, ok
 	}
-	held.Keep()
 	return page, nil, true
 }
 

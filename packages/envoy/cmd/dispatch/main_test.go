@@ -728,7 +728,7 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 		{Read: githubreads.DeliveryReconcile, At: failedAt, Cause: cause},
 		{Read: githubreads.CIReconcile, At: failedAt, Cause: "a read this process does not run"},
 	})
-	reads := &gitHubReads{record: recorded, runs: map[githubreads.Read]bool{
+	reads := &gitHubReads{recordCopy: recorded, runs: map[githubreads.Read]bool{
 		githubreads.WebhookRedelivery:  true,
 		githubreads.ArchitectureImport: true,
 		githubreads.DeliveryReconcile:  true,
@@ -764,7 +764,7 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 	}
 	requireGitHubReads(t, "with no database", health.GitHub, fromTheCopy)
 
-	unloaded := &gitHubReads{record: &githubreads.Copy{}, runs: reads.runs}
+	unloaded := &gitHubReads{recordCopy: &githubreads.Copy{}, runs: reads.runs}
 	_, health = probeGitHubReads(t, database, unloaded)
 	requireGitHubReads(t, "before the copy has loaded", health.GitHub, map[string]map[string]any{
 		"webhook_redelivery":  entry("unknown", nil, nil),

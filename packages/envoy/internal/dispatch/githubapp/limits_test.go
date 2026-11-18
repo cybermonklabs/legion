@@ -315,10 +315,13 @@ func TestAGraphQLLimitIsRecordedUnderTheScopeGitHubBudgetsIt(t *testing.T) {
 // with the error its caller is given: a limit already recorded, which holds a REST request in
 // send and a query in GraphQL before it is sent, and is noted though nothing was sent; and a limit
 // GraphQLRateLimit reads in a query's answer, which GitHub gives with status 200, named with the
-// query's method and target. A query GitHub answers is not noted.
+// query's method and target. That limit is noted once it is recorded, so a secondary limit's
+// cause carries the wait its strike holds every process to, past GitHub's own. A query GitHub
+// answers is not noted.
 func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
 	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
 	spent := `{"data":null,"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded for installation"}]}`
+	secondaryLimit := `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`
 	read := func(ctx context.Context, client *Client, token string) error {
 		_, _, _, err := client.Read(ctx, token, "/repos/acme/web/issues/2")
 		return err
@@ -372,6 +375,20 @@ func TestEveryRateLimitARequestMeetsIsNotedOnItsAttempt(t *testing.T) {
 		cause: func(fake *limitGitHub, err error) string {
 			if limited, ok := AsRateLimit(err); !ok || limited.Held || limited.Status != http.StatusOK {
 				return fmt.Sprintf("(want GitHub's own 200 as a limit, got %v)", err)
+			}
+			return "POST " + fake.server.URL + "/graphql: " + err.Error()
+		},
+	}, {
+		// GitHub asks for a second, and the strike holds the installation a minute at least.
+		name: "a query GitHub answers 403 with a secondary limit, which its strike holds past GitHub's own wait",
+		prepare: func(_ *testing.T, _ *ratelimit.Store, fake *limitGitHub) {
+			fake.answerGraphQL(graphQLAnswer{status: http.StatusForbidden, header: map[string]string{"Retry-After": "1"}, body: secondaryLimit})
+		},
+		request: query,
+		sent:    true,
+		cause: func(fake *limitGitHub, err error) string {
+			if limited, ok := AsRateLimit(err); !ok || limited.Held || limited.Scope != InstallationScope(7) || limited.Wait <= time.Second {
+				return fmt.Sprintf("(want GitHub's 403 as a secondary limit struck under %s past GitHub's own second, got %v)", InstallationScope(7), err)
 			}
 			return "POST " + fake.server.URL + "/graphql: " + err.Error()
 		},

@@ -4,7 +4,7 @@
 //
 // An attempt is one pass a loop runs under its lease (duty.Exclusive). It travels on the pass's
 // context (Begin), so the GitHub client, which sends every request the pass makes, marks each one
-// sent and notes the answers no caller takes as data (githubapp's send), and the loop notes the
+// sent and notes the answers no caller takes as data (githubapp's Client), and the loop notes the
 // failures only it can tell from data at the points where it gives part of the read up. The loop
 // records the attempt when its pass ends (Finish), and each process keeps a copy of the record
 // (Copy) that the probe reads, so the probe sends nothing to the database.
@@ -15,6 +15,7 @@ package githubreads
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -122,26 +123,50 @@ func NoteSent(ctx context.Context) {
 }
 
 // NoteFailure notes err, by its Error() text made a Cause, as a failure on the attempt ctx
-// carries, or holds it in the innermost held scope ctx carries. It does nothing for a nil err or
-// on a ctx carrying no attempt, and makes no text then, so a request outside the leased passes
-// costs nothing here; nor does it outside a held scope once the attempt holds its first failure,
-// since only that one is ever the cause, and an error's text can carry a whole response body.
+// carries, or holds it in the innermost held scope ctx carries. It does nothing for a nil err, on
+// a ctx carrying no attempt, or once the attempt holds its first failure, and makes no text then:
+// only that first failure is ever the cause, whatever scope a later note waits in, and an error's
+// text can carry a whole response body, so a request outside the leased passes, and every note
+// after the cause, cost nothing here. A held scope makes the text only of a note it keeps.
 func NoteFailure(ctx context.Context, err error) {
 	if err == nil {
 		return
 	}
+	if current, ok := unfailed(ctx); ok {
+		current.note(err)
+	}
+}
+
+// NoteFailuref is NoteFailure of fmt.Errorf(format, args...), which it formats only where the
+// note can still become the cause: on a ctx carrying an attempt that holds no failure yet. A loop
+// notes with it what it gives up, worded with the error it gave up on, at points a request outside
+// the leased passes reaches too.
+func NoteFailuref(ctx context.Context, format string, args ...any) {
+	if current, ok := unfailed(ctx); ok {
+		current.note(fmt.Errorf(format, args...))
+	}
+}
+
+// unfailed returns the frame ctx carries while its attempt holds no failure: a note made after
+// the attempt's first failure can never become its cause, in a held scope or out of one.
+func unfailed(ctx context.Context) (frame, bool) {
 	current, ok := ctx.Value(frameKey{}).(frame)
 	if !ok {
-		return
-	}
-	if current.held != nil {
-		current.held.fail(Cause(err.Error()))
-		return
+		return frame{}, false
 	}
 	if _, failed, _ := current.attempt.Outcome(); failed {
+		return frame{}, false
+	}
+	return current, true
+}
+
+// note holds err in the innermost held scope, or notes it on the attempt outside any.
+func (f frame) note(err error) {
+	if f.held != nil {
+		f.held.note(err)
 		return
 	}
-	current.attempt.fail(Cause(err.Error()))
+	f.attempt.fail(Cause(err.Error()))
 }
 
 // fail keeps cause as the attempt's when it is the first failure to reach it.
@@ -168,8 +193,24 @@ func Hold(ctx context.Context) (context.Context, *Held) {
 	return context.WithValue(ctx, frameKey{}, frame{attempt: current.attempt, held: held}), held
 }
 
-// fail holds cause while the scope is unsettled, passes it on once the scope was kept, and
-// forgets it once the scope was dropped.
+// note holds err's cause while the scope is unsettled and holds none yet, passes it on once the
+// scope was kept, and forgets it otherwise, making the cause's text only in the first two cases.
+func (h *Held) note(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	switch {
+	case !h.settled:
+		if !h.failed {
+			h.failed = true
+			h.cause = Cause(err.Error())
+		}
+	case h.kept:
+		h.passOn(Cause(err.Error()))
+	}
+}
+
+// fail holds cause, a note an inner scope kept, while the scope is unsettled, passes it on once
+// the scope was kept, and forgets it once the scope was dropped.
 func (h *Held) fail(cause string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
