@@ -6,13 +6,17 @@ import { QueryError } from "../../components/QueryError";
 import { useSending } from "../../hooks/useSending";
 import {
   borderDefault,
+  dangerText,
   highlightRing,
+  quoteAccentBorder,
+  quoteBodyText,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import type { ComposerAnchor, ComposerKind, ComposerOwner } from "../conversation/composer-model";
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { SaveCommentEdit } from "../conversation/send-request";
+import type { AwayDraft } from "../conversation/unsent-drafts";
 import { AskCard } from "../inbox/AskCard";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
@@ -142,6 +146,74 @@ export function MarginComposerSlot({
         stoppedAside={keptKey}
         onKindChange={(kind) => onKindChange(composer.anchor.artifact, kind)}
       />
+    </div>
+  );
+}
+
+/** How a kept draft names the kind it was written as, where it is not a comment. */
+const KEPT_KIND_WORDS: Record<ComposerKind, string> = {
+  ask: " as an ask,",
+  comment: "",
+  suggestion: " as a suggestion,",
+};
+
+/**
+ * What the margin's compose kept for words of the open document (`AwayDraft.anchor`), while no
+ * compose is open on it (`useMarginSheet`'s `keptDrafts`). A reload, a sign-in after a lapse and
+ * an issue's closing each end a compose with nothing the reader pressed, and the next compose on
+ * the document would offer only the newest of its drafts, so the margin draws each here with the
+ * words it was written for, the kind it was written as, and Discard my draft. A compose opened on
+ * the document offers it beside its field, where Use my draft takes it in.
+ */
+export function MarginKeptDrafts({
+  drafts,
+  hidden,
+  onDiscard,
+}: {
+  drafts: readonly AwayDraft[];
+  hidden: boolean;
+  onDiscard: (away: AwayDraft) => void;
+}): ReactNode {
+  const kept = drafts.filter(
+    (away): away is AwayDraft & { anchor: ComposerAnchor } => away.anchor !== undefined
+  );
+  if (kept.length === 0) return null;
+  return (
+    <div className="space-y-3 pt-3" hidden={hidden}>
+      {kept.map((away) => (
+        <div
+          className="space-y-2"
+          key={`${away.anchor.mark_id ?? ""}:${away.anchor.occurrence ?? ""}:${away.anchor.quote}`}
+        >
+          <div className={`space-y-1 text-sm ${textMutedOnSurfaceMuted}`} role="status">
+            <p>
+              {`You wrote this draft${KEPT_KIND_WORDS[away.kind ?? "comment"]} for the words “${away.anchor.quote}”. It is kept here, and offered in the next compose you open on this document:`}
+            </p>
+            <blockquote
+              className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
+            >
+              {away.draft.body}
+            </blockquote>
+            {away.draft.replacement === "" ? null : (
+              <>
+                <p>Replace with:</p>
+                <blockquote
+                  className={`border-l-2 pl-2 whitespace-pre-wrap ${quoteAccentBorder} ${quoteBodyText}`}
+                >
+                  {away.draft.replacement}
+                </blockquote>
+              </>
+            )}
+          </div>
+          <button
+            className={`text-sm font-medium underline ${dangerText}`}
+            onClick={() => onDiscard(away)}
+            type="button"
+          >
+            Discard my draft
+          </button>
+        </div>
+      ))}
     </div>
   );
 }

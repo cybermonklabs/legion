@@ -479,8 +479,9 @@ export class WriteStorage {
  *  press on it, or the page shown again. */
 const STAYING = ["keydown", "pageshow", "pointerdown"] as const;
 
-/** The page's sessionStorage, or undefined where the browser refuses it the page. */
-function pageStorage(): Storage | undefined {
+/** The page's sessionStorage, or undefined where the browser refuses it the page. The draft
+ *  stores keep their drafts there too (`draft-store.ts`). */
+export function pageStorage(): Storage | undefined {
   try {
     return window.sessionStorage;
   } catch {

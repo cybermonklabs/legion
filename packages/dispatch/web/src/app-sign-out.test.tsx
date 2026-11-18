@@ -10,7 +10,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { planner } from "./__tests__/draft-matrix-fixture";
+import { endAsAReload, planner } from "./__tests__/draft-matrix-fixture";
 import { realClock, tick } from "./__tests__/fake-clock";
 import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
@@ -201,6 +201,73 @@ test("another person signed in from another tab finds none of the drafts the per
     expect(reply.result.current[0]).toBe("");
   } finally {
     reply.unmount();
+    tab.close();
+    app.teardown();
+  }
+});
+
+/** The names of the drafts this tab keeps across a reload, in order. */
+function keptDrafts(): string {
+  return Array.from({ length: window.sessionStorage.length }, (_, index) =>
+    window.sessionStorage.key(index)
+  )
+    .filter((name): name is string => name?.startsWith("dispatch.draft:") === true)
+    .sort()
+    .join(", ");
+}
+
+// The tab keeps each draft for a reload of the page, stamped with the person who typed it
+// (`draft-store.ts`), and another person's sign-in forgets it there as it does in the page: once
+// they are signed in, the tab holds none of the person before's drafts, and a reload brings back
+// none of them - a composer's, one it keeps for another address, an ask's answer or its reply.
+test("after another person's sign-in, a reload of the same tab brings back none of the drafts the person before kept", async () => {
+  let login = "alice";
+  const whoAmI = async () => ({ event_head: "0", kind: "user" as const, login });
+  let app = renderApp({ whoAmI });
+  const tab = new BroadcastChannel("dispatch-sign-in");
+  const draft = { body: "Alice's unsent reply", mentions: [], replacement: "" };
+  try {
+    await screen.findByText("Signed in as alice");
+    const unsent = unsentDraftsOf(app.queryClient);
+    act(() => {
+      unsent.write("composer", draft);
+      unsent.writeAway("composer", null, {
+        draft,
+        owner: { issueKey: "CORE-1", kind: "issue" },
+        replyTo: null,
+      });
+      setAnswerDraft("ask-1", "Alice's unsent answer");
+      setReplyDraft("ask-1", "Alice's unsent ask reply");
+    });
+    const keptForAlice = keptDrafts();
+
+    login = "bob";
+    act(() => tab.postMessage("bob"));
+    await screen.findByText("Signed in as bob");
+    await waitFor(() => expect(unsent.read("composer")).toBeUndefined());
+    const keptAfterBob = keptDrafts();
+
+    endAsAReload(() => app.teardown());
+    app = renderApp({ whoAmI });
+    await screen.findByText("Signed in as bob");
+    const reloaded = unsentDraftsOf(app.queryClient);
+    expect({
+      afterBob: keptAfterBob,
+      alice: keptForAlice,
+      reloaded: {
+        answer: answerDraft("ask-1"),
+        away: reloaded.readAway("composer", null),
+        composer: reloaded.read("composer"),
+        kept: keptDrafts(),
+        reply: renderHook(() => useReplyDraft("ask-1")).result.current[0],
+      },
+    }).toEqual({
+      afterBob: "",
+      alice:
+        "dispatch.draft:answer:ask-1, dispatch.draft:away:composer, dispatch.draft:reply:ask-1, dispatch.draft:unsent:composer",
+      reloaded: { answer: "", away: undefined, composer: undefined, kept: "", reply: "" },
+    });
+  } finally {
     tab.close();
     app.teardown();
   }

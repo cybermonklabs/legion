@@ -468,8 +468,8 @@ export function useKeptDrafts({
   // with the comment's body the field started from, so it comes back only over that body. A draft
   // a held send keeps at its own address is that send's, one the reader's Cancel reply handed to
   // the host is wherever the host put it, and an edit waiting beside a newer body stays kept as it
-  // was until the reader takes it back or drops it.
-  const keepAway = useRef(() => {});
+  // was until the reader takes it back or drops it. It answers whether it kept a draft.
+  const keepAway = useRef((): boolean => false);
   keepAway.current = () => {
     if (
       awayName === undefined ||
@@ -477,12 +477,13 @@ export function useKeptDrafts({
       changed !== undefined ||
       (holdsSend && !refusedElsewhere)
     ) {
-      return;
+      return false;
     }
+    const kept = wroteOver(freshBody);
     unsent.writeAway(
       awayName,
       replyTo,
-      wroteOver(freshBody)
+      kept
         ? {
             anchor,
             ask: { multiple, options: submittedAskOptions(askOptions), urgency },
@@ -495,8 +496,35 @@ export function useKeptDrafts({
         : undefined,
       anchor
     );
+    return kept;
   };
-  useEffect(() => () => keepAway.current(), []);
+  useEffect(() => () => void keepAway.current(), []);
+  const takeBack = useRef(() => {});
+  takeBack.current = () => {
+    if (awayName !== undefined) unsent.writeAway(awayName, replyTo, undefined, anchor);
+  };
+  // A reload, and the tab's closing, end the page with no unmount, so the draft is kept for its
+  // address as the page goes too (`pagehide`), which the tab's storage holds over a reload
+  // (`draft-store.ts`). A page the browser keeps and shows again (`pageshow`, `persisted`) still
+  // holds the draft in this field, so it takes back what it kept: kept for the address it shows,
+  // the draft would come back in its field again after it was sent or dropped.
+  useEffect(() => {
+    let keptAsThePageWent = false;
+    const going = () => {
+      keptAsThePageWent = keepAway.current();
+    };
+    const shownAgain = (event: PageTransitionEvent) => {
+      if (!event.persisted || !keptAsThePageWent) return;
+      keptAsThePageWent = false;
+      takeBack.current();
+    };
+    window.addEventListener("pagehide", going);
+    window.addEventListener("pageshow", shownAgain);
+    return () => {
+      window.removeEventListener("pagehide", going);
+      window.removeEventListener("pageshow", shownAgain);
+    };
+  }, []);
   // An edit's body is the draft when the edit opens, and the field takes the comment again
   // whenever it changes under the open edit: another writer saved it, or a save of this editor's
   // landed. What the reader wrote over the body before is not written over with no word: unless

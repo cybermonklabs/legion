@@ -10,7 +10,7 @@ import type { Ask } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
 import { useHeldSend, useHeldSends, useHeldSendsUnder } from "../conversation/held-sends";
 import type { CarriedBlockIds } from "../conversation/send-request";
-import { useUnsentDrafts } from "../conversation/unsent-drafts";
+import { type AwayDraft, useUnsentDrafts } from "../conversation/unsent-drafts";
 import { offeredDraft, stoppedOfferOf } from "../conversation/useKeptDrafts";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { writePin } from "../issue/pin-write";
@@ -172,8 +172,19 @@ export function useMarginSheet(): MarginSheetModel {
   const keptAside = useHeldSend(
     visibleArtifactId === undefined ? undefined : marginComposeKeptKey(visibleArtifactId)
   );
-  const keptForWords = useUnsentDrafts().useAway(
-    visibleArtifactId === undefined ? "" : hashKey(marginComposeSendKey(visibleArtifactId))
+  const unsent = useUnsentDrafts();
+  const composeName =
+    visibleArtifactId === undefined ? "" : hashKey(marginComposeSendKey(visibleArtifactId));
+  const keptForWords = unsent.useAway(composeName);
+  // What the compose kept for words of the document, which the margin draws while no compose is
+  // open there (`MarginKeptDrafts`), and the reader's Discard my draft for one of them.
+  const keptDrafts = useMemo(
+    () => keptForWords.filter((away) => away.anchor !== undefined),
+    [keptForWords]
+  );
+  const discardKeptDraft = useCallback(
+    (away: AwayDraft) => unsent.writeAway(composeName, away.replyTo, undefined, away.anchor),
+    [composeName, unsent]
   );
   const composeOffers =
     offeredDraft(stoppedOfferOf(keptAside), keptForWords, pendingCompose?.anchor, null) !==
@@ -623,6 +634,7 @@ export function useMarginSheet(): MarginSheetModel {
     actions: {
       onEditingChange: setEditingCommentId,
       closeComposer,
+      discardKeptDraft,
       onAction,
       onComposerKindChange: retypeCompose,
       onEdit,
@@ -644,6 +656,7 @@ export function useMarginSheet(): MarginSheetModel {
       commentsPending,
       decisions,
       historicalAsks,
+      keptDrafts,
       marginRef,
       isClosed,
       issueError: issue.isError,

@@ -77,8 +77,9 @@ export interface UnsentDrafts {
    *  whose reply composer is off the page says it keeps the reply's draft. */
   useKept(name: string): boolean;
   /** Who is signed in now: another person's sign-in forgets every draft in both stores, the
-   *  drafts kept by address with them, since each is the person's who typed it
-   *  (`DraftStore.signedIn`). */
+   *  drafts kept by address with them, in the page and in the tab, since each is the person's who
+   *  typed it (`DraftStore.signedIn`); the first sign-in takes up the drafts the tab kept for that
+   *  person before a reload. */
   signedIn(login: string | undefined): void;
   /** Keeps `draft` under `name`, or, given none, forgets the draft there. */
   write(name: string, draft: SentDraft | undefined): void;
@@ -110,12 +111,14 @@ const drafts = new WeakMap<QueryClient, UnsentDrafts>();
 
 /** The unsent drafts that live with the query client, as the held sends do (`heldSends`): a draft
  *  store holds text, so each draft is kept as its JSON, and the drafts a composer keeps by address
- *  as one JSON list under its send name, in a store of their own. */
+ *  as one JSON list under its send name, in a store of their own. The tab keeps both for a reload
+ *  of the page, under `unsent` and `away` (`draft-store.ts`), as it keeps the held sends; the
+ *  page has one query client, so the next load's client takes up what this one kept. */
 export function unsentDraftsOf(client: QueryClient): UnsentDrafts {
   let unsent = drafts.get(client);
   if (unsent === undefined) {
-    const store = createDraftStore();
-    const awayStore = createDraftStore();
+    const store = createDraftStore("unsent");
+    const awayStore = createDraftStore("away");
     function useKept(name: string): boolean {
       return store.useDraft(name)[0] !== "";
     }

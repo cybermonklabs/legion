@@ -15,7 +15,7 @@ const REASONS = {
 
 export const coverage: readonly CoverageEntry[] = [
   ...answers(
-    "AuthGate | AuthenticatedApp | conditional | (shellFor === undefined || shellFor === whoAmI.data.login) ? …",
+    "AuthGate | AuthenticatedApp | conditional | (shellFor === whoAmI.data.login) ? …",
     {
       row: "an older check answering after another person's sign-in draws no shell for the person before (QueryClient)",
     },
@@ -23,6 +23,9 @@ export const coverage: readonly CoverageEntry[] = [
       row: "an older check answering after another person's sign-in draws no shell for the person before (DispatchQueryClient)",
     },
     { row: "the same person's sign-in from another tab keeps the shell and the words typed in it" },
+    {
+      row: "after a reload, a composer whose reads the query client holds as the shell is drawn opens on the draft the tab kept",
+    },
     { reason: REASONS[1] },
     { reason: REASONS[2] }
   ),

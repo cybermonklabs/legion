@@ -16,6 +16,7 @@ import { unsentDraftsOf } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
 import { TextAskBlockCard } from "./features/doc/AskBlockCard";
 import { answerDraftsSignedIn } from "./features/inbox/answer-drafts";
+import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { Inbox } from "./features/inbox/Inbox";
 import { InboxDrawer } from "./features/inbox/InboxDrawer";
 import { replyDraftsSignedIn } from "./features/inbox/reply-drafts";
@@ -772,17 +773,19 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         >
           Skip to content
         </a>
-        {/* The shell's status corner: the pending-writes indicator above the connection pill.
-            Above the highest composer fixed at the foot of the screen (`--foot-composer-inset`,
-            `useFootInset`), so neither sits over its controls; otherwise just above the phone's
-            bottom bar. Only what it shows takes the pointer. A socket Dispatch refuses carries no
-            status the page can read, so nothing in the pill is terminal: once reconnecting has
-            gone on for two minutes it offers a reload, and the page keeps trying underneath. */}
+        {/* The shell's status corner: the pending-writes indicator and the word on drafts the tab
+            cannot keep for a reload above the connection pill. Above the highest composer fixed
+            at the foot of the screen (`--foot-composer-inset`, `useFootInset`), so neither sits
+            over its controls; otherwise just above the phone's bottom bar. Only what it shows
+            takes the pointer. A socket Dispatch refuses carries no status the page can read, so
+            nothing in the pill is terminal: once reconnecting has gone on for two minutes it
+            offers a reload, and the page keeps trying underneath. */}
         <div
           className="pointer-events-none fixed right-4 bottom-[max(5rem,calc(var(--foot-composer-inset,0px)_+_1rem))] z-50 flex w-[min(28rem,calc(100vw-2rem))] flex-col items-end gap-2 xl:bottom-[calc(var(--foot-composer-inset,0px)_+_1rem)] *:pointer-events-auto"
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />
+          <DraftsNotKept />
           {connection === "stuck" ? (
             <p
               aria-live="polite"
@@ -1084,14 +1087,21 @@ export function AuthGate(): ReactNode {
   // follows: the same person's takes them up again (`Writes.signedIn`). Every other tab of this
   // browser is told to read who is signed in again, so it does the same. A draft the person typed
   // and has not sent is theirs too, in every draft store, which outlives the shell as the write
-  // store does: another person's sign-in forgets it, and a lapse keeps it (`DraftStore.signedIn`).
+  // store does and keeps each draft in the tab's storage for a reload: another person's sign-in
+  // forgets it there too, a lapse keeps it, and the first sign-in of a page that loaded takes up
+  // only the drafts that person kept (`DraftStore.signedIn`).
   const login = signedOut ? undefined : whoAmI.data?.login;
   const known = signedOut || whoAmI.data !== undefined;
-  // Whose shell is drawn. What the person typed into a field on screen is held by the field, not
-  // by a store, and the shell would otherwise stay mounted for someone signed in from another
-  // tab, showing them those words. So another person's shell is drawn only in the commit after
-  // the stores have let go of what the person before kept: the one before unmounts the shell and
-  // every field in it, and the shell drawn next reads nothing of theirs.
+  // Whose shell is drawn: only ever the person the stores were last told of, in the commit after
+  // they were told. What the person typed into a field on screen is held by the field, not by a
+  // store, and the shell would otherwise stay mounted for someone signed in from another tab,
+  // showing them those words; so another person's shell is drawn only once the stores have let go
+  // of what the person before kept: the one before unmounts the shell and every field in it, and
+  // the shell drawn next reads nothing of theirs. The first sign-in of a page waits the same one
+  // commit, since that is when the draft stores take up what the tab kept for the person before a
+  // reload (`DraftStore.signedIn`): a composer reads its field from the store as it mounts, and
+  // React runs this effect after its children's, so a shell drawn sooner could open a composer
+  // whose reads are cached on an empty field, before the store holds the draft the tab kept.
   const [shellFor, setShellFor] = useState<string>();
   useEffect(() => {
     if (!known) return;
@@ -1126,7 +1136,7 @@ export function AuthGate(): ReactNode {
     return <SignInPage />;
   }
   if (whoAmI.data !== undefined) {
-    return shellFor === undefined || shellFor === whoAmI.data.login ? (
+    return shellFor === whoAmI.data.login ? (
       <AuthenticatedApp user={whoAmI.data} />
     ) : (
       <ShellSkeleton />

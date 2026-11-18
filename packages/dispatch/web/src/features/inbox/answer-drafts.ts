@@ -3,7 +3,8 @@ import { createDraftStore } from "./draft-store";
 /**
  * Unsent ask-answer drafts, by ask id, for the reason the reply drafts beside them live in one
  * (`reply-drafts.ts`): a draft belongs to the ask, not to the form showing it, so every card for
- * one ask reads and writes the same draft and a card that remounts picks it back up.
+ * one ask reads and writes the same draft and a card that remounts picks it back up. The tab
+ * keeps each for a reload of the page too, under `answer` (`draft-store.ts`).
  *
  * It outlives the ask's Inbox row, which is what the Inbox reads it for. A question the server
  * withdraws, resolves or answers elsewhere leaves the list at once, except where the reader had
@@ -12,7 +13,7 @@ import { createDraftStore } from "./draft-store";
  * `AskCard.tsx`, `unsentAnswer`). An answer the server records drops the draft, since it is no
  * longer unsent.
  */
-const store = createDraftStore();
+const store = createDraftStore("answer");
 
 /** What the reader has typed into the ask's answer box and not sent, read without subscribing to
  *  it: the Inbox asks at the commit that drops the row, not at every keystroke in the column. */

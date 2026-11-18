@@ -13,6 +13,13 @@
  * | Another person's sign-in, the first check still out        | cell (1) |
  * | The same person's sign-in from another tab                 | cell     |
  * | Another person's sign-in from another tab                  | (2)      |
+ * | A reload, the composer's reads cached as the shell draws   | cell     |
+ *
+ * The last row is the shell's first sign-in after a reload. The tab keeps what the reader typed
+ * (`draft-store.ts`), and the draft stores take it up when `AuthGate` tells them who is signed
+ * in, so the shell is drawn only in the commit after that, the first sign-in's too: a composer
+ * whose reads the query client already holds mounts in the shell's first commit and opens on the
+ * kept draft (the docked composer, on CORE-1's issue page).
  *
  * 1. Run under each client: TanStack's own, which the other app-shell rows use, and
  *    `DispatchQueryClient`, built as `main.tsx` builds it. While the check holds no answer the
@@ -23,7 +30,7 @@
  *    from another tab", is this cell, and it is not repeated here.
  *
  * The composer census finds `AuthGate`'s own conditionals above every host the app draws
- * (`app.tsx`): which person's shell is drawn (`shellFor`, once the check answers), the rows
+ * (`app.tsx`): which person's shell is drawn (`shellFor`, once the stores were told), the rows
  * above; the check not yet answered (`whoAmI.isPending`), before which no shell, and so no
  * composer, is drawn, which the first row's check still out makes; and:
  * 3. Signed out (`signedOut`), the page takes the shell and every composer away, which
@@ -45,14 +52,18 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
+import { http } from "msw";
 
-import { planner } from "./__tests__/draft-matrix-fixture";
+import { commentA, commentB, endAsAReload, planner } from "./__tests__/draft-matrix-fixture";
 import { realClock, settle, tick } from "./__tests__/fake-clock";
+import { answerRequests } from "./__tests__/network";
 import { answerAgentStates } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
 import { api } from "./api/client";
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
 import { renderApp } from "./app-sign-out-fixture";
+import { issue } from "./features/margin/margin-fixture";
+import { buildIssuePath } from "./features/refs/routes";
 
 /** When the page's first sign-in check answers, on the held clock. It is later than every wait
  *  before bob types moves that clock (a `findBy` moves it 50 ms a step), and within the 10 s a
@@ -246,6 +257,72 @@ test("the same person's sign-in from another tab keeps the shell and the words t
   } finally {
     shells.stop();
     tab.close();
+    app.teardown();
+    restoreReads();
+  }
+});
+
+/** The reads of CORE-1's issue page over Comment A and Comment B, each answered as an issue with
+ *  nothing else on it answers. Returns what puts the reads back. */
+function answerIssueReads(): () => void {
+  const state = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
+  const reads = [
+    spyOn(api, "getIssue").mockResolvedValue(issue),
+    spyOn(api, "getMyState").mockResolvedValue({ "CORE-1": state }),
+    spyOn(api, "getIssueEvents").mockResolvedValue([]),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
+    spyOn(api, "listComments").mockResolvedValue([commentA, commentB]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+    spyOn(api, "listHandoffs").mockResolvedValue([]),
+    spyOn(api, "listAgents").mockResolvedValue([]),
+    spyOn(api, "getIssueSubscribers").mockResolvedValue([]),
+  ];
+  answerRequests(
+    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
+    http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([]))
+  );
+  return () => {
+    for (const read of reads) read.mockRestore();
+  };
+}
+
+/** A query client that holds every read `before` holds, as a page whose reads are answered
+ *  before its shell is drawn would: each composer can draw in the shell's first commit. */
+function holdingTheReadsOf(before: QueryClient): QueryClient {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  for (const { queryKey, state } of before.getQueryCache().getAll()) {
+    if (state.data !== undefined) client.setQueryData(queryKey, state.data);
+  }
+  return client;
+}
+
+// The tab keeps what the reader typed for a reload (`draft-store.ts`), and the page that loads
+// takes it up as the reader's sign-in is known (`AuthGate`). A composer draws its field from the
+// store as it mounts, so the shell is drawn only once the stores have been told who is signed in,
+// the first sign-in's too. Here the reads the issue page makes are all in the query client as the
+// page after the reload draws its shell, so the docked composer mounts in the shell's first
+// commit, and opens on the comment the reader typed before the reload.
+test("after a reload, a composer whose reads the query client holds as the shell is drawn opens on the draft the tab kept", async () => {
+  const user = userEvent.setup();
+  const restoreReads = answerIssueReads();
+  const at = buildIssuePath({ key: issue.key, kind: "conversation" });
+  const whoAmI = async () => named("alice");
+  let app = renderApp({ at, whoAmI });
+  const typed = "Alice's comment, typed before the reload";
+  try {
+    const composer = await screen.findByRole("form", { name: "Comment composer" });
+    const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    await user.click(field);
+    await user.paste(typed);
+    const before = app.queryClient;
+    endAsAReload(() => app.teardown());
+    app = renderApp({ at, queryClient: holdingTheReadsOf(before), whoAmI });
+    const back = await screen.findByRole("form", { name: "Comment composer" });
+    expect(within(back).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).value).toBe(
+      typed
+    );
+  } finally {
     app.teardown();
     restoreReads();
   }
