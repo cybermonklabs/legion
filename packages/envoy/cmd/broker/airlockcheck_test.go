@@ -133,8 +133,11 @@ func TestAirlockCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 			if !strings.Contains(stderr, path) {
 				t.Fatalf("the refusal does not name the file %s: %q", path, stderr)
 			}
+			// The file's path is the row's temporary directory, which holds the subtest's name,
+			// so every want is looked for in the refusal with the path taken out.
+			text := strings.ReplaceAll(stderr, path, "")
 			for _, want := range c.want {
-				if !strings.Contains(stderr, want) {
+				if !strings.Contains(text, want) {
 					t.Fatalf("the refusal does not say %q: %q", want, stderr)
 				}
 			}
@@ -158,7 +161,7 @@ type ruleHostRow struct {
 // host has one, and no form otherwise.
 var ruleHostRows = func() []ruleHostRow {
 	ip := func(canonical string) []string {
-		want := []string{"is an IP address", "no TLS server name", "sni mismatch", "binds nothing", "name the service by its host name"}
+		want := []string{"is an IP address", "no TLS server name", "sni mismatch", "carries no secret there", "name the service by its host name"}
 		if canonical != "" {
 			want = append(want, canonical+" in its canonical form")
 		}
@@ -168,6 +171,7 @@ var ruleHostRows = func() []ruleHostRow {
 	noForm := func(why ...string) []string {
 		return append(why, "write a host name of lower-case letters, digits and hyphens")
 	}
+	const numbered = "clients read such a host differently"
 	longLabel := strings.Repeat("a", 64) + ".example"
 	longName := strings.Repeat(strings.Repeat("b", 63)+".", 4) + "example"
 	return []ruleHostRow{
@@ -196,7 +200,9 @@ var ruleHostRows = func() []ruleHostRow {
 		{"a host name with a trailing dot", "api.github.com.", formed("sni mismatch", "api.github.com"), "github.com."},
 		{"a host name in mixed case with a trailing dot", "API.GitHub.com.", formed("ends in a dot", "api.github.com"), "GitHub"},
 		{"a wildcard with a trailing dot", "*.googleapis.com.", formed("ends in a dot", "*.googleapis.com"), "googleapis.com."},
+		{"a name of 253 characters with a trailing dot", longestRuleHost + ".", formed("ends in a dot", longestRuleHost), longestRuleHost + "."},
 		{"a Unicode internationalized name", "bücher.example", formed("punycode", "xn--bcher-kva.example"), "bücher"},
+		{"a Unicode internationalized name under a wildcard", "*.bücher.example", formed("punycode", "*.xn--bcher-kva.example"), "bücher"},
 		{"a host name ending in an ideographic full stop", "api.github.com\u3002", formed("is not ASCII", "api.github.com"), "\u3002"},
 		{"a host name ending in a full-width full stop", "api.github.com\uff0e", formed("is not ASCII", "api.github.com"), "\uff0e"},
 		{"a trailing dot and a zero-width space", "api.github.com.\u200b", formed("is not ASCII", "api.github.com"), "\u200b"},
@@ -209,6 +215,7 @@ var ruleHostRows = func() []ruleHostRow {
 		{"a doubled dot", "a..b.com", noForm("has an empty label", "binds nothing"), "a..b"},
 		{"a space", " ", noForm("white space", "binds nothing"), ""},
 		{"a tab", "\t", noForm("white space", "binds nothing"), ""},
+		{"a DEL character", "api\x7f.github.com", noForm("white space or a control character", "binds nothing"), "api\x7f"},
 		{"a leading space", " api.github.com", noForm("white space", "binds nothing"), "github"},
 		{"a trailing space", "api.github.com ", noForm("white space", "binds nothing"), "github"},
 		{"a trailing dot and a space", "api.github.com. ", noForm("white space", "binds nothing"), "github"},
@@ -216,26 +223,47 @@ var ruleHostRows = func() []ruleHostRow {
 		{"a host name with a port", "api.github.com:443", noForm("holds a colon", "carries no port", "binds nothing"), ":443"},
 		{"a host name in brackets", "[api.github.com]", noForm("holds a bracket", "binds nothing"), "[api"},
 		{"a host name holding a %", "api%x.github.com", noForm("holds a %", "binds nothing"), "%x"},
+		{"a host name holding a slash", "a/b.example", noForm("holds a character other than a-z, 0-9, a hyphen and a dot", "binds nothing"), "a/b"},
 		{"a colon in no IP address", "2001:db8::g", noForm("holds a colon", "binds nothing"), "::g"},
-		{"an underscore", "a_b.example.com", noForm("underscore"), "a_b"},
+		{"an underscore", "a_b.example.com", noForm("holds an underscore", "outside the LDH grammar"), "a_b"},
 		{"a label starting with a hyphen", "-api.github.com", noForm("starts or ends with a hyphen"), "-api"},
-		{"an xn-- label that is no punycode", "xn--zz.example", noForm("xn-- label the IDNA lookup profile refuses", "binds nothing"), "xn--zz"},
+		{"a label ending in a hyphen", "api-.github.com", noForm("starts or ends with a hyphen"), "api-"},
+		{"a label with -- as its third and fourth characters", "ab--cd.example", noForm("as its third and fourth characters", "reserved form"), "ab--cd"},
+		{"an xn-- label that is no punycode", "xn--zz.example", noForm("xn-- label the IDNA lookup profile refuses", "Fake A-label"), "xn--zz"},
+		// The punycode of the ﬁ ligature: punycode decodes it, and the IDNA lookup profile, which
+		// maps ﬁ to fi, refuses it as no A-label.
+		{"an xn-- label that decodes but no lookup reads", "xn--le-1b1n.example", noForm("xn-- label the IDNA lookup profile refuses", "Fake A-label"), "xn--le-1b1n"},
 		{"a label over 63 characters", longLabel, noForm("label longer than 63 characters", "binds nothing"), strings.Repeat("a", 64)},
 		{"a name over 253 characters", longName, noForm("longer than 253 characters", "binds nothing"), strings.Repeat("b", 63)},
-		{"a trailing dot after text that is no host name", "api github.com.", noForm("ends in a dot", "binds nothing"), "api github"},
-		{"two trailing dots", "api.github.com..", noForm("ends in a dot", "binds nothing"), "github.com."},
-		{"an IPv4 address with a leading zero", "093.184.216.34", noForm("ends in a number", "leading zero", "binds nothing"), "093.184"},
-		{"an IPv4 address of fewer than four parts", "93.184.54818", noForm("ends in a number", "fewer than four parts", "binds nothing"), "184.54818"},
-		{"an IPv4 address written as one number", "1572395042", noForm("ends in a number", "binds nothing"), "1572395042"},
-		{"an IPv4 address written in hex", "0x5db8d822", noForm("ends in a number", "hex part", "binds nothing"), "0x5db8"},
+		{"a name of 254 characters", longestRuleHost + "c", noForm("longer than 253 characters", "binds nothing"), strings.Repeat("c", 63)},
+		{"a trailing dot after text that is no host name", "api github.com.", noForm("ends in a dot", "carries no secret there"), "api github"},
+		{"two trailing dots", "api.github.com..", noForm("ends in a dot", "carries no secret there"), "github.com."},
+		{"an IPv4 address with a leading zero", "093.184.216.34", noForm("ends in a number", "leading zero", numbered), "093.184"},
+		{"an IPv4 address of fewer than four parts", "93.184.54818", noForm("ends in a number", "fewer than four parts", numbered), "184.54818"},
+		{"an IPv4 address written as one number", "1572395042", noForm("ends in a number", numbered), "1572395042"},
+		{"an IPv4 address written in hex", "0x5db8d822", noForm("ends in a number", "hex part", numbered), "0x5db8"},
+		{"a name whose last label is a number", "foo.123", noForm("ends in a number", numbered), "foo.123"},
+		{"a name whose last label is 0x alone", "foo.0x", noForm("ends in a number", numbered), "foo.0x"},
+		{"0x alone", "0x", noForm("ends in a number", numbered), ""},
 		{"a wildcard over the last labels of an address", "*.216.34", noForm("wildcard whose last label is a number", "addresses by their text"), "*.216"},
+		{"a wildcard over 0x alone", "*.0x", noForm("wildcard whose last label is a number", "addresses by their text"), "*.0x"},
 	}
 }()
 
+// longestRuleHost is a name of 253 characters, the longest the grammar reads, and
+// longestRuleLabel a name whose first label is 63 characters, the longest label it reads: a row
+// one character past either is refused, and these two are read.
+var (
+	longestRuleHost  = strings.Repeat(strings.Repeat("c", 63)+".", 3) + strings.Repeat("c", 61)
+	longestRuleLabel = strings.Repeat("d", 63) + ".example"
+)
+
 // canonicalRuleHosts are hosts the grammar reads, one of each shape a deployment's rules file
-// names: a name, a wildcard, a name with a hyphen and a digit in a label, an internationalized
-// name as its punycode, and a single-label name.
-var canonicalRuleHosts = []string{"api.github.com", "*.googleapis.com", "s3.us-east-1.amazonaws.com", "xn--bcher-kva.example", "localhost"}
+// names - a name, a wildcard, a name with a hyphen and a digit in a label, an internationalized
+// name as its punycode, and a single-label name - and the edges of the grammar it reads: the
+// longest name, the longest label, and a number as a label other than the last.
+var canonicalRuleHosts = []string{"api.github.com", "*.googleapis.com", "s3.us-east-1.amazonaws.com", "xn--bcher-kva.example", "localhost",
+	longestRuleHost, longestRuleLabel, "123.foo"}
 
 // rulesWithHosts is a rules file of one entry, name, that binds hosts, written by encoding/json
 // so that a host holding a quotation mark, a control character or Unicode is the host the row
@@ -269,12 +297,16 @@ func TestAirlockCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 			if code != 1 || stdout != "" {
 				t.Fatalf("%s = exit %d with stdout %q, want exit 1 and no report", c.name, code, stdout)
 			}
+			// The file's path is the row's temporary directory, which holds the subtest's name,
+			// and a subtest's name holds words a want looks for, such as "underscore": every want,
+			// and the text that must be absent, is looked for with the path taken out.
+			text := strings.ReplaceAll(stderr, path, "")
 			for _, want := range append([]string{`secrets[0] "GITHUB"`, "hosts[1]"}, c.want...) {
-				if !strings.Contains(stderr, want) {
+				if !strings.Contains(text, want) {
 					t.Fatalf("the refusal does not say %q: %q", want, stderr)
 				}
 			}
-			if c.absent != "" && strings.Contains(stderr, c.absent) {
+			if c.absent != "" && strings.Contains(text, c.absent) {
 				t.Fatalf("the refusal repeats %q as the file writes it: %q", c.absent, stderr)
 			}
 		})

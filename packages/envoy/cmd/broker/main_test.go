@@ -1058,13 +1058,21 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		if !strings.Contains(out, "BROKER_AIRLOCK_RULES_FILE") {
 			t.Fatalf("broker refused, but its output does not name BROKER_AIRLOCK_RULES_FILE: %s", out)
 		}
+		// The file's path is the row's temporary directory, which holds the subtest's name, and
+		// a subtest's name holds words a want looks for, such as "underscore": every want but the
+		// path itself, and the text that must be absent, is looked for with the path taken out.
+		text := strings.ReplaceAll(out, path, "")
 		for _, want := range want {
-			if !strings.Contains(out, want) {
+			in := text
+			if want == path {
+				in = out
+			}
+			if !strings.Contains(in, want) {
 				t.Fatalf("broker refused, but its output does not say %q: %s", want, out)
 			}
 		}
 		for _, absent := range absent {
-			if absent != "" && strings.Contains(out, absent) {
+			if absent != "" && strings.Contains(text, absent) {
 				t.Fatalf("broker refused, but its output repeats %q as the file writes it: %s", absent, out)
 			}
 		}

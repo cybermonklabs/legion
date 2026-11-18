@@ -69,6 +69,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/weborigin"
 )
 
 // machineLoginPendingTTL bounds how long a typed-code machine login waits for a human to decide
@@ -129,8 +130,12 @@ func main() {
 	// Every line this process writes is one JSON object on stderr, which Cloud Logging reads as
 	// an entry with its own severity, message and fields (logging.NewCloudHandler). It is the
 	// first thing main does, so a subcommand that opens the store logs the same shape, and the
-	// log package, which slog.SetDefault points at the same handler, writes no line of another.
-	slog.SetDefault(slog.New(logging.NewCloudHandler(os.Stderr)))
+	// log package writes no line of another. It is written through the airlock's placeholder mask
+	// (airlockproxy.SetDefaultLog), so a line any package or library writes - net/http's
+	// transport logs what a service sent on an idle connection with log.Printf, which no ErrorLog
+	// reaches - holds no placeholder as it was minted, and a line the log package is written has
+	// its first line cut as a call line's fields are.
+	airlockproxy.SetDefaultLog(logging.NewCloudHandler(os.Stderr))
 	// A subcommand is read before flag.Parse, and serves nothing: it is the whole of what this
 	// process does. Reading it here is what makes an older image refuse `broker end-sessions`
 	// rather than fall through to serving - and so to migrating the database - when a
@@ -1021,12 +1026,16 @@ func validateRulesFile(rules airlock.Rules) error {
 // that grammar does not read is refused, saying why and naming the form to write where one exists.
 //
 // The grammar is the one spelling of a host every request for it is compared in.
-// airlock.HostBound compares an entry's hosts with a request's host as text; the proxy reads that
-// host after net.SplitHostPort has taken its port and brackets off; and a client sends a name
-// without a trailing dot in its TLS server name, an internationalized name as its punycode, and
-// no server name at all for an address, which airlock.Decide refuses ("sni mismatch"). So a host
-// in any other spelling binds nothing, or binds only by HostBound's case fold, and the entry would
-// read as covering a host the proxy tunnels unread.
+// airlock.HostBound compares an entry's hosts with a request's host as text, folding ASCII case;
+// the proxy reads that host after net.SplitHostPort has taken its port and brackets off; and a
+// client sends a name without a trailing dot in its TLS server name, an internationalized name as
+// its punycode, and no server name at all for an address. A host in another spelling is refused
+// as no host in that one spelling, and what it would do served differs by kind: one in upper case
+// binds by the fold, so the file would hold two spellings of one host; one with a trailing dot,
+// or an address, is decrypted and every request on it refused ("sni mismatch"), so the entry
+// would carry nothing; one with an underscore, a reserved "--" label or a Fake A-label binds when
+// DNS answers for it, but is outside the LDH grammar public names are written in; and the rest -
+// white space, a port, brackets, an empty or overlong label - is no name a client sends at all.
 //
 // The form named is the host in the grammar's spelling, and only when it is that same host
 // written another way: in upper or mixed case (fold.ASCII), with a trailing dot, or as a Unicode
@@ -1055,22 +1064,25 @@ const (
 
 // ruleHostGrammar is why h is not a host in the one grammar a rules host is written in, or "" for
 // one that is: labels of lower-case ASCII letters, digits and hyphens (LDH), each 1 to 63
-// characters with no hyphen at either end; at most 253 characters in all; no empty label, so no
-// leading, trailing or doubled dot; at most one leading "*." as the only wildcard; an
-// internationalized name only as its punycode, an xn-- label the IDNA lookup profile reads back
-// unchanged; and a last label that is not a number as the WHATWG URL parser reads one, decimal or
-// 0x and hex digits, since such a host is an IPv4 address in one client and a name in the next.
-// An IP address breaks the last two rules; ruleHostRefusal names it as the address it is.
+// characters with no hyphen at either end and no "--" as their third and fourth characters but
+// in the punycode of an internationalized label (weborigin.ReservedLabel); at most 253
+// characters in all; no empty label, so no leading, trailing or doubled dot; at most one leading
+// "*." as the only wildcard; and a last label that is not a number as the WHATWG URL parser's
+// IPv4 reading takes one - decimal, or 0x and hex digits, 0x alone among them - since such a host
+// is an IPv4 address in one client and a name, or no host, in the next. An IP address breaks the
+// last rule; ruleHostRefusal names it as the address it is.
 func ruleHostGrammar(h string) string {
 	switch {
 	case h == "":
 		return "is empty, so it names no host and binds nothing"
 	case !isASCII(h):
 		return "is not ASCII, and a client sends an internationalized name as its punycode, so no request names this spelling and the host binds nothing"
+	case strings.HasSuffix(h, "."):
+		// Before the length: a 253-character name with a trailing dot is a name DNS carries,
+		// written with the dot no client sends, and the dot is what is wrong with it.
+		return "ends in a dot, which a client drops from the TLS server name it sends, so the proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there"
 	case len(h) > maxHostName:
 		return "is longer than 253 characters, the longest name DNS carries, so the host binds nothing"
-	case strings.HasSuffix(h, "."):
-		return "ends in a dot, which a client drops from the TLS server name it sends, so airlock.Decide refuses every request to it (\"sni mismatch\") and the host binds nothing"
 	}
 	name, wildcard := strings.CutPrefix(h, "*.")
 	labels := strings.Split(name, ".")
@@ -1085,7 +1097,7 @@ func ruleHostGrammar(h string) string {
 	case wildcard:
 		return "is a wildcard whose last label is a number, which no host name has, so airlock.HostBound would match it against addresses by their text"
 	}
-	return "ends in a number, which no host name does: it is an IPv4 address in a form netip does not read (a leading zero, fewer than four parts or a hex part), which clients read as different addresses, so the host binds nothing"
+	return "ends in a number, which no host name does: the WHATWG URL parser reads a host whose last label is a number as an IPv4 address - in a form netip does not read when it has a leading zero, fewer than four parts or a hex part - or refuses it as no host, and clients read such a host differently, so it is no host in the one spelling a rules host is written in"
 }
 
 // labelRefusal is why one label of an ASCII host breaks ruleHostGrammar, or "" for one that keeps
@@ -1112,9 +1124,9 @@ func labelRefusal(label string) string {
 		case c <= ' ' || c == 0x7f:
 			return "holds white space or a control character, which no host name holds, so the host binds nothing"
 		case c == '_':
-			return "holds an underscore, which a host name does not hold"
+			return "holds an underscore, which is outside the LDH grammar public host names are written in: it binds when DNS answers for it, but it is no host in the one spelling a rules host is written in"
 		case 'A' <= c && c <= 'Z':
-			return "is not in lower case, the one case a rules host is written in"
+			return "is not in lower case, the one case a rules host is written in: airlock.HostBound folds case, so it would bind as a second spelling of one host"
 		default:
 			return "holds a character other than a-z, 0-9, a hyphen and a dot, which no host name holds, so the host binds nothing"
 		}
@@ -1122,30 +1134,24 @@ func labelRefusal(label string) string {
 	switch {
 	case label[0] == '-' || label[len(label)-1] == '-':
 		return "has a label that starts or ends with a hyphen, which a host name does not have"
-	case strings.HasPrefix(label, "xn--") && !punycodeLabel(label):
-		return "has an xn-- label the IDNA lookup profile refuses, which is no internationalized name, so the host binds nothing"
+	case weborigin.ReservedLabel(label) == nil:
+		return ""
+	case strings.HasPrefix(label, "xn--"):
+		return "has an xn-- label the IDNA lookup profile refuses, a Fake A-label (RFC 5890 section 2.3.1) that is the punycode of no internationalized name, so it is no host in the one spelling a rules host is written in"
 	}
-	return ""
-}
-
-// punycodeLabel reports whether an xn-- label is the punycode of an internationalized label: the
-// IDNA lookup profile, which reads it back, answers it unchanged (RFC 5890's A-label, as
-// weborigin reads one).
-func punycodeLabel(label string) bool {
-	ascii, err := idna.Lookup.ToASCII(label)
-	return err == nil && ascii == label
+	return "has a label with \"--\" as its third and fourth characters, a reserved form (RFC 5890 section 2.3.1) public certificate authorities refuse to issue for, so it is no host in the one spelling a rules host is written in"
 }
 
 // numericLabel reports whether a label is a number as the WHATWG URL parser's IPv4 reading takes
-// one, decimal or 0x and hex digits: never the last label of a host name, and always part of an
-// IPv4 address.
+// one: decimal, or 0x and hex digits, where 0x alone is the number 0. The last label of no host
+// name is one; the WHATWG parser reads a host ending in one as an IPv4 address or refuses it.
 func numericLabel(label string) bool {
 	digits, hex := label, false
 	if rest, ok := strings.CutPrefix(label, "0x"); ok {
 		digits, hex = rest, true
 	}
 	if digits == "" {
-		return false
+		return hex
 	}
 	for i := range len(digits) {
 		c := digits[i]
@@ -1178,11 +1184,12 @@ func ipLiteral(h string) (netip.Addr, bool) {
 }
 
 // ipHostRefusal is the refusal of a host that is an IP address, in any spelling: a client sends no
-// TLS server name for an address, so airlock.Decide refuses every request to it, and the entry
-// binds nothing a standard client asks for. It names the address in netaddr.Canonical's form when
-// h writes it another way, which holds no zone, so it repeats nothing of h.
+// TLS server name for an address, so the proxy decrypts a CONNECT to it and airlock.Decide refuses
+// every request it carries, and the entry carries no secret there. It names the address in
+// netaddr.Canonical's form when h writes it another way, which holds no zone, so it repeats
+// nothing of h.
 func ipHostRefusal(h string, addr netip.Addr) string {
-	const why = "a client sends no TLS server name for an address, so airlock.Decide refuses every request to it (\"sni mismatch\") and the host binds nothing; name the service by its host name"
+	const why = "a client sends no TLS server name for an address, so the proxy decrypts a CONNECT to it and airlock.Decide refuses every request it carries (\"sni mismatch\"): the entry carries no secret there; name the service by its host name"
 	if canonical := netaddr.Canonical(addr).String(); canonical != h {
 		return "is an IP address, " + canonical + " in its canonical form, and " + why
 	}

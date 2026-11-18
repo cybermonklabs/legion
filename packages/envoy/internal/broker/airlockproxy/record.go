@@ -15,10 +15,12 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
 	"regexp"
+	"strings"
 
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -32,7 +34,8 @@ var placeholderPattern = regexp.MustCompile(`(?i)` + regexp.QuoteMeta(requests.P
 
 const placeholderMark = "[placeholder]"
 
-// maskedHandler is the handler every line of this package is written through (New). Much of
+// maskedHandler is the handler every line of this package is written through (New), and every
+// line of the broker's process too (SetDefaultLog). Much of
 // what a line names is the command's own text - the method, the path, the host and port it asked
 // for, a reason or an error that quotes them, a refusal's correlation id from X-Correlation-Id,
 // the host of a CONNECT whose authority is its Host header - and a command can write its own
@@ -43,6 +46,36 @@ const placeholderMark = "[placeholder]"
 // given. The 32 characters after the prefix written without it are no text this can tell from
 // any other, and stay as they came. A line that holds no placeholder is handed on as it is.
 type maskedHandler struct{ slog.Handler }
+
+// SetDefaultLog makes handler, behind the placeholder mask (maskedHandler), the process's default
+// logger, and points the log package at it through standardLog. cmd/broker calls it first, so
+// every line of the process passes the mask: the airlock's own lines pass it twice, which
+// changes nothing, and a line a library writes with the log package - net/http's transport
+// writes one quoting what a service sent on an idle connection, and has no ErrorLog to route it
+// elsewhere - passes it too, which nothing else would make it.
+func SetDefaultLog(handler slog.Handler) {
+	logger := slog.New(maskedHandler{handler})
+	slog.SetDefault(logger)
+	log.SetFlags(0)
+	log.SetOutput(standardLog{log: logger})
+}
+
+// standardLog is the log package's output once SetDefaultLog has run: one line at INFO for each
+// write, as slog.SetDefault's own writer makes one, whose message is the write's first line cut
+// to answer.FieldBytes (answer.Clip), since a library's first line can quote what a client or a
+// service sent, and whose stack is every line after it, whole: a recovered panic's stack, which a
+// server with no ErrorLog of its own writes here and which the cut would take the frames off.
+type standardLog struct{ log *slog.Logger }
+
+func (w standardLog) Write(p []byte) (int, error) {
+	first, rest, _ := strings.Cut(strings.TrimSuffix(string(p), "\n"), "\n")
+	if rest == "" {
+		w.log.Info(answer.Clip(first))
+	} else {
+		w.log.Info(answer.Clip(first), "stack", rest)
+	}
+	return len(p), nil
+}
 
 func (h maskedHandler) Handle(ctx context.Context, record slog.Record) error {
 	holds := placeholderPattern.MatchString(record.Message)

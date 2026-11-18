@@ -222,11 +222,14 @@ type Server struct {
 	// forwards, a socket of its own for each (New).
 	upstream *http.Transport
 	forward  *http.Transport
-	// errorLog is the log.Logger net/http and httputil write their own lines through: both
-	// servers' ErrorLog and both ReverseProxies' (servePlain, serveBound). It writes into log, so
-	// each of those lines is masked (maskedHandler) and cut (slogWriter) as every line of this
-	// package is; a ReverseProxy left without one writes to the standard logger, neither masked
-	// nor cut, and an error it logs can quote what the service sent, its trailers among it.
+	// errorLog is the log.Logger both servers' ErrorLog and both ReverseProxies' (servePlain,
+	// serveBound) are: the lines net/http's servers and httputil write of their own go through
+	// log, so each is the airlock's own line, masked (maskedHandler) and cut (slogWriter), and an
+	// error httputil logs can quote what a service sent, its trailers among it. net/http's
+	// Transport has no ErrorLog: what it logs - what a service sent on an idle connection, which
+	// it quotes - it writes with log.Printf to the standard logger, which cmd/broker masks and
+	// cuts as a whole (SetDefaultLog), and which is the one place a line of the proxy's goes that
+	// is not this logger.
 	errorLog *log.Logger
 	serveOne sync.Once
 

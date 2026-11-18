@@ -834,17 +834,27 @@ the longest grant of that secret the model judge may approve, at most 900
 on port 443 alone, and another port of that name is another service the proxy tunnels unread.
 A host is written in one form, the one every request for it is compared in: a DNS host name of
 lower-case letters, digits and hyphens between single dots, with no label longer than 63
-characters or starting or ending with a hyphen, no name longer than 253 characters, no leading,
-trailing or doubled dot, at most one leading `*.` as the wildcard, an internationalized name as
-its punycode (`xn--bcher-kva.example`, not `bücher.example`), and a last label that is not a
-number. The broker refuses to start with a file that writes a host any other way, and
-`airlock-check` refuses that file too, naming the form to write where there is one:
-`api.github.com` for `API.GitHub.com` or `api.github.com.`, and the punycode for a Unicode name.
-An IP address is refused in every spelling, because a client sends no TLS server name (SNI) for
-an address, so the proxy would decrypt each request to it and refuse it `sni mismatch`. A name
-with a trailing dot binds nothing for the same reason: a client drops the dot from the SNI it
-sends. The refusal at start matters because a host in any other form reads as bound while the
-proxy tunnels a CONNECT to it unread.
+characters, starting or ending with a hyphen, or holding `--` as its third and fourth characters
+other than the `xn--` of an internationalized name, no name longer than 253 characters, no
+leading, trailing or doubled dot, at most one leading `*.` as the wildcard, an internationalized
+name as its punycode (`xn--bcher-kva.example`, not `bücher.example`), and a last label that is not
+a number (`foo.123` and `foo.0x` are refused, `123.foo` is read). The broker refuses to start with
+a file that writes a host any other way, and `airlock-check` refuses that file too, naming the
+form to write where there is one: `api.github.com` for `API.GitHub.com` or `api.github.com.`, and
+the punycode for a Unicode name. What a host in another spelling would do if it were served
+depends on the spelling, and in every case the refusal keeps the file to the one spelling:
+
+- An upper-case name binds, because the proxy compares hosts without regard to case, so the file
+  would hold a second spelling of one host.
+- An IP address, in any spelling, and a name with a trailing dot are decrypted, and every request
+  on them is refused `sni mismatch`, because a client sends no TLS server name (SNI) for an
+  address and drops the dot from the one it sends for a name: the entry would carry nothing.
+- A name with an underscore, a `--` label other than an internationalized one, or an `xn--` label
+  the IDNA lookup profile refuses binds when DNS answers for it, but it is outside the LDH grammar
+  public host names are written in.
+- The rest — white space, a port, brackets, an empty or overlong label, a number for a last
+  label — is no name a client sends, or one clients read differently.
+
 A secret the file names is **behind the airlock**,
 and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
 `values` and answers an `airlock` object instead, which carries the proxy's URL, the certificate
