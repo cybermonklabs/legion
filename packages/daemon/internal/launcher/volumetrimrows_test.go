@@ -1115,6 +1115,80 @@ func TestASwitchedOffReportWhoseLinePanicsOnceItIsHeldIsStillSent(t *testing.T) 
 	}
 }
 
+// The line of a failed attempt of the switched-off trimmer's last report is written inside
+// contain (deliverLast), so a panic of it, which only the logger can raise, is dropped and the
+// report stays held for the next attempt, which sends it once the connection takes it, as R2 has
+// the trimmer hold its report until that connection is up again. The reason is remembered only
+// once that line is written, so the next attempt that fails for it writes the line, once. Three
+// readings panic, which switches the trimmer off; the connection refuses the report's first send,
+// so it is held, and then its first retry, whose line panics once, and the retries after it, until
+// the connection takes it. At 0c49568f the panic of that line ended the trimmer with the report
+// held and never sent (INFRA-2009, round 42).
+func TestASwitchedOffReportWhoseFailedAttemptsLinePanicsIsStillSent(t *testing.T) {
+	const failed = "the last report of the switched-off trimmer could not be sent"
+	const fell = "the log fell over writing a failed attempt of the last report"
+	f := newTrimFixture(t, 0)
+	f.setOnRead(func(call int) { panic(fmt.Sprintf("the volume reader fell over on call %d", call)) })
+	f.useVolume(steady(50))
+	f.setSettings(trimSettings())
+	f.refuseSends(errors.New("no daemon connection is up to carry it"))
+	tr := f.trimmer()
+	var fallen atomic.Bool
+	tr.logf = func(format string, args ...any) {
+		if strings.Contains(format, failed) && fallen.CompareAndSwap(false, true) {
+			panic(fell)
+		}
+		f.log(format, args...)
+	}
+	_, done := f.start(tr)
+	// Written out rather than read off volumeFaultLimit, as the other cases of the switch-off count them.
+	for range 3 {
+		f.tick("recovered a panic")
+	}
+	// deliverLast asks for its clock only once switchOff has held the report, so a live clock is
+	// the switched-off trimmer waiting to try it again.
+	testwait.Eventually(t, "the trimmer to hold its last report and wait to try it again", func() bool {
+		_, waiting := f.ticks.live(volumeSettingsWait)
+		return waiting && f.logged("holding it for the next attempt") == 1
+	})
+	ended := func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+	offerSettingsTicksUntil(t, f, "the line of a failed attempt to fall over and a later failed attempt to write it, or the trimmer to end", func() bool {
+		return ended() || fallen.Load() && f.logged(failed) == 1
+	})
+	if ended() {
+		t.Fatalf("the trimmer ended with held=%t reports=%d once the line of a failed attempt fell over, want it holding its last report for the next attempt; it wrote %q",
+			tr.held != nil, len(f.reports()), f.linesWritten())
+	}
+	f.refuseSends(nil)
+	offerSettingsTicksUntil(t, f, "the trimmer to send its last report and end", ended)
+	awaitClosed(t, done, "the trimmer's loop to return once its last report was sent")
+
+	sent := f.reports()
+	if len(sent) != 1 || tr.held != nil {
+		t.Fatalf("the trimmer ended with held=%t reports=%d, want held=false reports=1: the last report whose failed attempt's line fell over is sent once the connection takes it; it wrote %q",
+			tr.held != nil, len(sent), f.linesWritten())
+	}
+	if !sent[0].SwitchedOff {
+		t.Error("the last report does not say the trimmer switched itself off")
+	}
+	if said := f.logged("ends here without trying it again"); said != 0 {
+		t.Errorf("the trimmer wrote %q, want no line ending it without trying the held report", f.linesWritten())
+	}
+	if said := f.logged(failed); said != 1 {
+		t.Errorf("the trimmer wrote %d lines holding %q, want the line that fell over written once, at a later failed attempt: %q", said, failed, f.linesWritten())
+	}
+	if said := f.logged("the last report of the switched-off trimmer was sent"); said != 1 {
+		t.Errorf("the trimmer wrote %d lines saying its last report was sent, want one: %q", said, f.linesWritten())
+	}
+}
+
 // The pause after a sweep that freed under a point is counted down before the line of a reading
 // inside it is written (intervalReading), so a panic of that line, which only the logger can
 // raise, still spends that reading of the pause: R1's pause is ten intervals, and a line that fell

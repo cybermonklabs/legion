@@ -376,7 +376,8 @@ const (
 // again, since a report that panicked once can panic again, unless switchOff raised it once
 // deliver held that report: the send has answered by then and what is left of deliver is its
 // lines, whose panic only the logger can raise (deliver), so run writes that panic and still
-// tries the held report (deliverLast), where a panic ends the trimmer. The line that says the
+// tries the held report (deliverLast), where a panic ends the trimmer but one of the line of a
+// failed attempt, which deliverLast drops before it tries the report again. The line that says the
 // trimmer is off ends nothing: run writes it once that report has been sent, held or has
 // panicked, and drops its panic, as it drops the panic of the line of a fault and of the lines it
 // writes of a panic of the last report. Each step runs inside contain and none inside a deferred
@@ -598,8 +599,8 @@ func (t *trimmer) refuse(refusals []string) {
 // the pod, and that log is the only place this work is visible to a person after a deploy. The
 // caller remembers the state in said once it has written its lines, so a line of the wait for
 // settings that panics leaves the state news for the wait run starts again (awaitSettings).
-// deliverLast remembers its state in the same order, though a panic there ends the trimmer and
-// leaves no next try (run).
+// deliverLast remembers its state in the same order and drops a panic of its line, so a line of a
+// failed attempt that panicked is written at the next attempt that fails (deliverLast).
 func (t *trimmer) news(state string) bool {
 	return state != t.said
 }
@@ -998,8 +999,9 @@ func (row faultRow) String() string {
 // logger that raised it is the one place there is to write it and the panic each was about is
 // counted already or is the last report's; the line that says the trimmer is off, which run drops
 // as well; and the lines of the last report, as switchOff makes and sends it or as deliverLast
-// tries it again, where a panic ends the trimmer unless deliver has held that report by then,
-// which run then still tries (switchOff, deliverLast).
+// tries it again, where a panic ends the trimmer unless that report is still held when it comes,
+// which the trimmer then still tries: run after a line of switchOff's, and deliverLast at its next
+// attempt after the line of a failed one (switchOff, deliverLast).
 //
 // Each row counts the recovered panics of its kind since the last work of that kind ran to its
 // end (ran, tick), a panic tick recovered and one of the work run contained alike, and a panic of

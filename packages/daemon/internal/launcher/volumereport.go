@@ -142,9 +142,10 @@ func carryHeld(held, report shimwire.LauncherVolumeReport) shimwire.LauncherVolu
 // held, and run sends it once the connection is up again (deliverLast): R2 has the trimmer hold
 // its report until that connection is up again, and this report is the one that tells the daemon
 // the pod's volume is no longer guarded. A panic here before deliver holds this report, or one in
-// deliverLast, ends the trimmer, and this report is not tried again (run). One once deliver holds
-// it, of the line that says so or of saidLeftOut's, which only the logger can raise, comes after
-// the send has answered and loses nothing: run writes it and still tries the held report
+// deliverLast but of the line of a failed attempt, which deliverLast drops and tries the report
+// again, ends the trimmer, and this report is not tried again (run). One once deliver holds it, of
+// the line that says so or of saidLeftOut's, which only the logger can raise, comes after the
+// send has answered and loses nothing: run writes it and still tries the held report
 // (deliverLast), as it does where the line that says the trimmer is off panics, which ends
 // nothing either, since run drops it. One in deliver gives what the report carried back to the
 // trimmer under deliver's rule, as any report's panic does, and nothing carries it further: the
@@ -208,7 +209,12 @@ func (t *trimmer) switchOff() {
 //
 // A failed attempt is written when its reason changes and not once per attempt, for the reason
 // a refusal is (news): a connection that is down answers the same way every ten seconds for as
-// long as it is down.
+// long as it is down. Its line is written inside contain, so a panic of it, which only the logger
+// can raise, is dropped and the report stays held for the next attempt, where one left to run
+// would end the trimmer with the report held and never sent; the reason is remembered only once
+// that line is written, so a line that panicked is written at the next attempt that fails. A
+// panic anywhere else here ends the trimmer (run), one of the line that the report was sent or
+// discarded included, which loses nothing: the report was sent, or R2 discards it.
 func (t *trimmer) deliverLast(ctx context.Context) {
 	if t.held == nil {
 		return
@@ -227,8 +233,10 @@ func (t *trimmer) deliverLast(ctx context.Context) {
 		}
 		if err := t.send(*t.held); err != nil {
 			if why := err.Error(); t.news(why) {
-				t.logf(volumeTrimLog+"the last report of the switched-off trimmer could not be sent (%v); holding it for the next attempt", err)
-				t.said = why
+				contain(func() {
+					t.logf(volumeTrimLog+"the last report of the switched-off trimmer could not be sent (%v); holding it for the next attempt", err)
+					t.said = why
+				})
 			}
 			continue
 		}
