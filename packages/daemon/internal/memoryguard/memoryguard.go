@@ -485,6 +485,10 @@ type Guard struct {
 	// (startedSince), before it reads them. The tests set it to count those reads and to move
 	// their clock on; production leaves it nil.
 	identityRead func(pid int)
+	// argsRead, when set, is called with the pid of each cmdline the fork discount reads whole
+	// (sameProgram), before it reads it. The tests set it to count those reads; production leaves
+	// it nil.
+	argsRead func(pid int)
 	// memfdLink is how the link of a descriptor that holds a memfd starts (heldMemfdBytes):
 	// memfdPrefix, as New sets it. The tests set their fake pod's own, since a fake descriptor's
 	// link must lead to a file the guard can stat.
@@ -1498,11 +1502,14 @@ func (c *candidate) rankSize() uint64 { return c.size - c.lessParent }
 // window and since a kill are measured on each process's own sizes, and the floor and the reading
 // count every size whole: the discount orders, and changes nothing else.
 func (g *Guard) discountForks(cs []candidate, t *Table) {
+	// wholeArgs are the cmdline files this decision has read whole, by process, nil for one it
+	// could not read: a parent's is read once however many of its forks are compared with it.
+	var wholeArgs map[procKey][]byte
 	for i := range cs {
 		c := &cs[i]
 		c.lessParent = 0
 		parent, listed := t.byPID[c.PPID]
-		if !listed || !sameProgram(c.Process, parent) {
+		if !listed || !g.sameProgram(c.Process, parent, &wholeArgs) {
 			continue
 		}
 		r := g.sizes[procKey{pid: parent.PID, start: parent.StartTime}]
@@ -1513,11 +1520,44 @@ func (g *Guard) discountForks(cs []candidate, t *Table) {
 }
 
 // sameProgram is whether p runs parent's executable with parent's arguments: both executables read
-// and equal, and both argument lists read whole and equal. An exe link the scan could not read,
-// arguments it read none of, or arguments it cut at classifierArgsBytes are no match.
-func sameProgram(p, parent *Process) bool {
-	return p.Exe != "" && p.Exe == parent.Exe && len(p.Args) > 0 && p.argsWhole && parent.argsWhole &&
-		slices.Equal(p.Args, parent.Args)
+// and equal, and both argument lists read and equal whole. An exe link the scan could not read, or
+// arguments it read none of, are no match. The scan read the first classifierArgsBytes of each
+// list alone, and a list that filled them, of that length or longer, may be cut: where the two
+// heads are equal and either filled them, it reads both cmdline files whole now and compares them,
+// gVisor and Linux answering the whole list, and a list it cannot read whole is no match. Only that
+// case reads more, so the discount sets no bound on the arguments' length (INFRA-3531 R1 of spec
+// version 33). wholeArgs keeps each file it read whole for the rest of the decision, so a pool's
+// parent is read once for all its forks; it is made at the first such read.
+func (g *Guard) sameProgram(p, parent *Process, wholeArgs *map[procKey][]byte) bool {
+	if p.Exe == "" || p.Exe != parent.Exe || len(p.Args) == 0 || !slices.Equal(p.Args, parent.Args) {
+		return false
+	}
+	if p.argsWhole && parent.argsWhole {
+		return true
+	}
+	own := g.wholeArgs(p, wholeArgs)
+	return own != nil && bytes.Equal(own, g.wholeArgs(parent, wholeArgs))
+}
+
+// wholeArgs is p's cmdline read whole, or nil where it cannot be read, from cache where this
+// decision has read it before (sameProgram).
+func (g *Guard) wholeArgs(p *Process, cache *map[procKey][]byte) []byte {
+	key := procKey{pid: p.PID, start: p.StartTime}
+	if data, read := (*cache)[key]; read {
+		return data
+	}
+	if g.argsRead != nil {
+		g.argsRead(p.PID)
+	}
+	data, err := os.ReadFile(filepath.Join(g.proc, strconv.Itoa(p.PID), "cmdline"))
+	if err != nil {
+		data = nil
+	}
+	if *cache == nil {
+		*cache = map[procKey][]byte{}
+	}
+	(*cache)[key] = data
+	return data
 }
 
 // rule is the tier of the order of ends (rank) that puts c first where it is first, which the

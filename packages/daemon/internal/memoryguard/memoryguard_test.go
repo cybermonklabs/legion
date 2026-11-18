@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -3093,13 +3094,19 @@ func TestMemoryGuardEndsAGrowerBeforeTheSleepingForksOfAParentThatRunItsProgram(
 }
 
 // heldBeside is a pod whose agent holds 2 GiB and whose pid 700, the parent of what is added, a
-// python3 program of 1 GiB, sleeps through the band's readings, the guard h on it with classify;
-// started start before the band's third and last reading, which reads each of them once, and the
-// reading after is at the mark, where nothing has grown.
+// python3 program of 1 GiB, python3 pool.py, sleeps through the band's readings, the guard h on it
+// with classify; started start before the band's third and last reading, which reads each of them
+// once, and the reading after is at the mark, where nothing has grown.
 func heldBeside(t *testing.T, classify Classifier, started ...fakeProcess) *harness {
 	t.Helper()
+	return heldBesideRunning(t, classify, []string{"python3", "pool.py"}, started...)
+}
+
+// heldBesideRunning is heldBeside whose pid 700 runs python3 with args.
+func heldBesideRunning(t *testing.T, classify Classifier, args []string, started ...fakeProcess) *harness {
+	t.Helper()
 	pod := newFakePod(t)
-	pod.add(agent(2*gib), fakeProcess{pid: 700, ppid: 100, exe: "/usr/bin/python3.13", args: []string{"python3", "pool.py"}, anon: gib})
+	pod.add(agent(2*gib), fakeProcess{pid: 700, ppid: 100, exe: "/usr/bin/python3.13", args: args, anon: gib})
 	pod.setAnon(3200 * mib)
 	h := newHarness(t, pod, classify)
 	h.run()
@@ -3111,6 +3118,76 @@ func heldBeside(t *testing.T, classify Classifier, started ...fakeProcess) *harn
 	pod.setAnon(3500 * mib)
 	h.tick()
 	return h
+}
+
+// The scan reads the first classifierArgsBytes of a process's arguments alone, and the discount
+// sets no bound on their length (INFRA-3531 R1 of spec version 33): where a process's first 4,096
+// bytes of arguments are its parent's and either list fills them, of 4,096 bytes or more, the guard
+// reads both argument lists whole and compares them. Pid 700 runs python3 -c with a program, 1
+// GiB. Before the band's last reading pid 701, of 1 GiB and 2 MiB, starts as its child, with the
+// arguments each case gives, and pid 720, of 250 MiB, under the agent. At the mark nothing has
+// grown. A fork with its parent's whole list ranks at 2 MiB, and pid 720 ends; one whose list
+// differs from its parent's past the first 4,096 bytes runs a program of its own, ranks whole, and
+// ends itself. A list of exactly 4,096 bytes may be cut as well as whole by the scan's read: it is
+// read whole, so one that is its parent's whole list is discounted, and one that is only the head
+// of its parent's longer list is not.
+func TestMemoryGuardComparesArgumentListsLongerThanTheScanReadsWhole(t *testing.T) {
+	program := strings.Repeat("x", 5000)
+	// exact is a program whose list, python3 -c and it, each argument ended by its NUL, is 4,096
+	// bytes.
+	exact := strings.Repeat("x", 4096-len("python3\x00-c\x00\x00"))
+	for _, tc := range []struct {
+		name         string
+		parent, args []string
+		want         int
+		size         uint64
+	}{
+		{"the parent's whole list of 5,000 bytes", []string{"python3", "-c", program}, []string{"python3", "-c", program}, 720, 250 * mib},
+		{"a list that differs past its first 4096 bytes", []string{"python3", "-c", program},
+			[]string{"python3", "-c", program[:4500] + "y" + program[4501:]}, 701, gib + 2*mib},
+		{"the parent's whole list of exactly 4096 bytes", []string{"python3", "-c", exact}, []string{"python3", "-c", exact}, 720, 250 * mib},
+		{"a list of exactly 4096 bytes that begins its parent's longer one", []string{"python3", "-c", exact, "more"},
+			[]string{"python3", "-c", exact}, 701, gib + 2*mib},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := heldBesideRunning(t, protect("tester", 100), tc.parent,
+				fakeProcess{pid: 701, ppid: 700, start: 7000, exe: "/usr/bin/python3.13", args: tc.args, anon: gib + 2*mib},
+				fakeProcess{pid: 720, ppid: 100, start: 7020, args: []string{"python3", "idle.py"}, anon: 250 * mib},
+			)
+			requireMarkKill(h, tc.want, tc.size)
+			requireRankedBy(h, tc.want, "new", "reread", 0)
+		})
+	}
+}
+
+// A decision reads a parent's whole argument list once for all its forks (sameProgram). Pid 700
+// runs python3 -c with a program of 5,000 bytes, and before the band's second reading it forks
+// pids 701, 702 and 703, which run its program; at that reading, one assessment, the guard reads
+// each fork's list whole once and pid 700's once.
+func TestMemoryGuardReadsAParentsWholeArgumentsOnceForAllItsForks(t *testing.T) {
+	args := []string{"python3", "-c", strings.Repeat("x", 5000)}
+	pod := newFakePod(t)
+	pod.add(agent(2*gib), fakeProcess{pid: 700, ppid: 100, exe: "/usr/bin/python3.13", args: args, anon: gib})
+	pod.setAnon(3200 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	var mu sync.Mutex
+	read := map[int]int{}
+	h.g.argsRead = func(pid int) {
+		mu.Lock()
+		defer mu.Unlock()
+		read[pid]++
+	}
+	h.run()
+	for i := range 3 {
+		pod.add(fakeProcess{pid: 701 + i, ppid: 700, start: uint64(7000 + i), exe: "/usr/bin/python3.13", args: args, anon: gib + mib})
+	}
+	pod.setAnon(3300 * mib)
+	h.tick()
+	mu.Lock()
+	defer mu.Unlock()
+	if want := map[int]int{700: 1, 701: 1, 702: 1, 703: 1}; !maps.Equal(read, want) {
+		t.Fatalf("at one reading the guard read the whole argument lists of %v, by pid, want %v", read, want)
+	}
 }
 
 // A new process that runs its parent's executable with other arguments has run a program of its

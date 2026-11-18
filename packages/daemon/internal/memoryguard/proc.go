@@ -19,10 +19,11 @@ import (
 )
 
 // classifierArgsBytes is the most bytes of a process's `cmdline` the scan reads (readProcess): a
-// classifier reads a process's first arguments, and nothing else of the guard reads them, since no
-// line and no report prints an argument (processName). It is a bound, so the scan of a process
-// with a linker's mebibyte of arguments, which the guard's loop runs before its next reading after
-// a kill, costs no more than the scan of any other.
+// classifier reads a process's first arguments, and the fork discount compares a process's with
+// its parent's (Guard.sameProgram), which reads both cmdline files whole only where both heads are
+// equal and one of them was cut here; no line and no report prints an argument (processName). It is
+// a bound, so the scan of a process with a linker's mebibyte of arguments, which the guard's loop
+// runs before its next reading after a kill, costs no more than the scan of any other.
 const classifierArgsBytes = 4096
 
 // Process is one process as the guard's scan read it: its parent, start time and resident pages
@@ -48,11 +49,11 @@ type Process struct {
 	Exe string
 	// Args are the NUL-separated arguments of `cmdline`, nil for a process that shows none: of its
 	// first classifierArgsBytes bytes alone, the last of them perhaps part of an argument, since a
-	// classifier reads a process's first arguments and nothing else reads them.
+	// classifier reads a process's first arguments, and the fork discount reads more only where
+	// these are equal to its parent's and cut (Guard.sameProgram).
 	Args []string
 	// argsWhole is whether Args are the whole of `cmdline`, which the scan read in fewer than
-	// classifierArgsBytes bytes: a fork's arguments are compared with its parent's whole
-	// (sameProgram), and a cut one is no match.
+	// classifierArgsBytes bytes; where they are not, the fork discount reads cmdline whole.
 	argsWhole bool
 	// PIDNamespace is the target of the `ns/pid` link (`pid:[4026531836]`), empty when the scan
 	// could not read it.
