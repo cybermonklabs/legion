@@ -2424,6 +2424,7 @@ GATES = [
         (BUILD_BINARIES, f"docs/site/scripts/generate.ts:116 runs it ({at_docs('Build the docs site')})"),
         (RUN_SERVER, f"packages/dispatch/e2e/harness-listeners.ts's dispatchServer runs it ({at_docs('Take the screenshots')})"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds the server's port through it"),
+        ("packages/test-fixtures/src/socket-root.ts", f"packages/dispatch/e2e/harness-start.ts:44 imports it, so {at_docs('Typecheck the docs site')} compiles it and the screenshots' harness runs it"),
         # broker-refgen (docs/site/generators/broker-reference.sh:15) parses these at run time,
         # each directory's non-test .go files alone (packages/envoy/cmd/broker-refgen/source.go:34-45),
         # and the packages of REFGEN_API past them, whose non-test files the build of

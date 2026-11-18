@@ -248,6 +248,7 @@ on:
       - 'packages/envoy/internal/ratelimit/*'
       - 'packages/dispatch/**'
       - 'scripts/e2e/lib/held-port.py'
+      - 'packages/test-fixtures/src/socket-root.ts'
       - 'packages/proof-editor/src/**'
       - 'packages/contracts/src/**'
       - 'packages/envoy-client/src/**'

@@ -1807,6 +1807,9 @@ jobs:
               # server on the socket scripts/e2e/lib/held-port.py holds (run-server.sh:37).
               - 'packages/dispatch/**'
               - 'scripts/e2e/lib/held-port.py'
+              # harness-start.ts:44 imports socketRoot and socketPathRefusal from it, so the site's
+              # typecheck (docs/site/tsconfig.tools.json) compiles it.
+              - 'packages/test-fixtures/src/socket-root.ts'
               - 'packages/proof-editor/src/**'
               - 'packages/contracts/src/**'
               # generators/dispatch-tools.ts:12 imports envoy-client's dispatch-command.ts;
