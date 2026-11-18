@@ -113,6 +113,15 @@
  *    (`useMarginListeners`, `useCardHold`), and an open panel or thread view keeps focus inside
  *    it and the page still under it (`useDialog`). None moves an address or ends a mount. The
  *    app shell's forms, above every host, are the sign-in file's.
+ *
+ * The address prop the composer census found that no move of the host's changes:
+ * 13. The compose's kind (`composer.kind`) changes only by the compose's own Comment, Suggest and
+ *    Ask switch (`onKindChange`), the reader's own control, which retypes the same mark
+ *    (`retypeCompose`) and leaves the draft in the field (`useKeptDrafts`), so it re-addresses
+ *    the same compose and moves nothing it holds.
+ *
+ * `draft-matrix.margin.coverage.ts` holds each census item this file answers for to a test above
+ * or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";

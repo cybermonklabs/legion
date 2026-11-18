@@ -72,6 +72,9 @@
  *    the composer stays mounted while its reply is set, whatever the width. The Jump to latest
  *    pill and the read mark's ref on the newest card move no composer, and the app shell's forms
  *    are the sign-in file's.
+ *
+ * `draft-matrix.phone-thread.coverage.ts` holds each census item this file answers for to a test
+ * above or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";

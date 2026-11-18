@@ -78,6 +78,9 @@
  *    composer stays mounted at the issue throughout. The Jump to latest pill, which waits under a
  *    thread view for Back, and the read mark's ref on the newest card (`register`), which moves to
  *    the view's copy of it, move no composer. The app shell's forms are the sign-in file's.
+ *
+ * `draft-matrix.docked.coverage.ts` holds each census item this file answers for to a test above
+ * or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey } from "@tanstack/react-query";

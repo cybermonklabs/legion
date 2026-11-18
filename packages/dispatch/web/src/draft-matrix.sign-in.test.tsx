@@ -23,19 +23,23 @@
  *    from another tab", is this cell, and it is not repeated here.
  *
  * The composer census finds `AuthGate`'s own conditionals above every host the app draws
- * (`app.tsx`): which person's shell is drawn (`shellFor`), the rows above; the check not yet
- * answered (`whoAmI.isPending`), before which no shell, and so no composer, is drawn; and signed
- * out (`signedOut`), whose page takes the shell and every composer away, which
- * `app-sign-out.test.tsx` holds to the same rule as (2).
+ * (`app.tsx`): which person's shell is drawn (`shellFor`, once the check answers), the rows
+ * above; the check not yet answered (`whoAmI.isPending`), before which no shell, and so no
+ * composer, is drawn, which the first row's check still out makes; and:
+ * 3. Signed out (`signedOut`), the page takes the shell and every composer away, which
+ *    `app-sign-out.test.tsx` holds to the same rule as (2).
  *
  * The forms the composer census found, where the layout draws the page otherwise, which the rows
  * above do not make:
- * 3. In `AppShell`, above every host, the layout draws the shell around the page: the compact
+ * 4. In `AppShell`, above every host, the layout draws the shell around the page: the compact
  *    header with its Menu and the Inbox's Peek (whose drawer is the Inbox files' reason), the
  *    navigation drawer and the focus it keeps (`useDialog`), the sidebar or its rail, the main
  *    column's classes, and the keyboard fit of a page that fills the screen (`useKeyboardFit`).
  *    Each draws or moves something beside the route element and the margin a host is in, never
  *    them, so no composer moves, and the rows above make their moves at the test page's width.
+ *
+ * `draft-matrix.sign-in.coverage.ts` holds each census item this file answers for to a test
+ * above or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";

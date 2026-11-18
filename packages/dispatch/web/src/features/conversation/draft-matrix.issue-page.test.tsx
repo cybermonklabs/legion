@@ -57,6 +57,9 @@
  * The forms the composer census found: none in `IssuePage` or `IssueDetail`, which draw the page
  * the same at every width. The layout's forms under them are `ConversationTab`'s, which the docked
  * and phone thread files map, and the app shell's above them are the sign-in file's.
+ *
+ * `draft-matrix.issue-page.coverage.ts` holds each census item this file answers for to a test
+ * above or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClientProvider } from "@tanstack/react-query";

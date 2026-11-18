@@ -73,6 +73,9 @@
  *    moves are the same `MessageThreadBody`'s as the rows above. The layout's other branches in
  *    `Inbox` and `usePaneSelection` pick, focus and scroll the column's row and draw the list
  *    beside the column, and move no box; the app shell's forms are the sign-in file's.
+ *
+ * `draft-matrix.message-box.coverage.ts` holds each census item this file answers for to a test
+ * above or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClientProvider } from "@tanstack/react-query";

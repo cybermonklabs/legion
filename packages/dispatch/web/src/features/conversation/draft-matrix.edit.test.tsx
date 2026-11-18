@@ -103,6 +103,9 @@
  *
  * The hosts that cannot make the move: the docked composer, the phone thread composer, an Agents
  * row and an Inbox thread box are never given an `edit`, so they draw no editor to move.
+ *
+ * `draft-matrix.edit.coverage.ts` holds each census item this file answers for to a test above or
+ * to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey, QueryClient } from "@tanstack/react-query";

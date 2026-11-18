@@ -80,6 +80,9 @@
  * 10. The read mark's ref on the newest card (`register`) moves to the view's copy of it while a
  *    thread is open; it marks the issue read and moves no reply. The margin's thread reply is the
  *    margin file's, and the app shell's forms are the sign-in file's.
+ *
+ * `draft-matrix.inline-reply.coverage.ts` holds each census item this file answers for to a test
+ * above or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { render, screen, waitFor, within } from "@testing-library/react";

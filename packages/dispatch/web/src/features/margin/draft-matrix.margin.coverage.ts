@@ -1,0 +1,297 @@
+/**
+ * The draft matrix's coverage list, margin thread (INFRA-1503): each composer census item that
+ * `draft-matrix.margin.test.tsx` answers for, held to one of its tests or to one of the numbered
+ * reasons of its header, as `__tests__/composer-census/coverage.ts` says.
+ */
+import { answers, type CoverageEntry, cells } from "../../__tests__/composer-census/coverage";
+
+/** The host as the matrix file's titles name it. */
+const HOST = "margin thread";
+
+/** The numbered reasons of the matrix file's header. */
+const REASONS = {
+  1: "1. A thread's reply always answers its own thread's root, so no move of the host's changes its address, and it is never elsewhere.",
+  2: "2. The margin's card draws no collapse of its own: the desktop list closes it only by opening another thread (the second row), and the phone only by Back (the first row).",
+  3: "3. The issue picker is an Agents row's (`AgentMessageComposer`), and the margin draws no Agents row's composer.",
+  4: "4. The Pinned tab, and above the compact layout the rail the margin collapses to, hide the compose (`MarginComposerSlot`'s `hidden`, `MarginSheet`'s `covered`, `Margin`'s `railShown`, which also opens the rail for each compose the margin shows) and keep it mounted at its address, so nothing it holds moves; a phone thread hides it the same way, the third phone row.",
+  5: "5. On a page with no margin above the compact layout `Margin` draws nothing, which unmounts the compose and every card as leaving the document does; below it `Margin` stays drawn there with no document, and so with no compose, which is the shown document's (`useMarginSheet`). The compose is the provider's (`MarginProvider`) and a reply's draft is held under its name, as the document-left rows' and the another-thread row's returns show.",
+  6: "6. The Comments tab's list is not drawn on the Pinned tab, under a phone margin thread, or while the comments read failed (`MarginSheet`, `CommentsTab`), which unmounts a thread's reply and its editor as opening another thread does (the second row, and the edit file's margin card).",
+  7: "7. A thread's card is drawn per thread of the open document, keyed by it (`ThreadList`): a thread that leaves the list, by its resolution or another document's list, unmounts its card as opening another thread does, and a resolved thread folded away under Show resolved is the same; its reply is held by its thread's name.",
+  8: "8. Which end of a margin thread its reply sits at (`composerFirst`, from `useThreadOrder` in `ThreadCard`) is read when the card is drawn and again only when who is signed in changes (`useUserPreference`), so it never moves a reply that is on screen.",
+  9: "9. The phone panel's being open or closed is the reader's own (its toggle, its backdrop and Escape, `toggleSheet`) and moves no address: closed, only the stylesheet hides what is in it (`hidden xl:block`), so the compose and every card, reply and editor stay mounted under it, and opening it shows them as they were. Closing it closes a phone thread as Back does (`closeThread`), the first row. The margin opens it for each compose it shows (`openCompactSheet`), which the first two phone rows assert.",
+  10: "10. On a phone a card's tap and a mark's click open the thread full-screen in place of opening it in the list (`onToggleThread`, `selectMarginItem`), so the first row's Back is the way off a thread there, and another thread is opened after it; a comment or ask link only selects its card (`openPhoneThread` false), which moves no composer.",
+  11: "11. Where the margin sits moves no composer: the desktop column's width, class and resize handle, the compact layout's `contents` class (`Margin`), and the panel's dialog role, its place at the foot of the screen and its backdrop (`MarginSheet`).",
+  12: "12. The rest is focus and scrolling: the compose takes focus once it is on screen (`onScreen`, `autoFocus`), the margin scrolls the compose or a linked card into view only in an open panel (`useMarginListeners`, `useCardHold`), and an open panel or thread view keeps focus inside it and the page still under it (`useDialog`). None moves an address or ends a mount. The app shell's forms, above every host, are the sign-in file's.",
+  13: "13. The compose's kind (`composer.kind`) changes only by the compose's own Comment, Suggest and Ask switch (`onKindChange`), the reader's own control, which retypes the same mark (`retypeCompose`) and leaves the draft in the field (`useKeptDrafts`), so it re-addresses the same compose and moves nothing it holds.",
+} as const;
+
+/** What a lifetime item answers to until the reload rows of this round are written. */
+const PENDING = { reason: "pending: the reload rows of this round" };
+
+export const coverage: readonly CoverageEntry[] = [
+  ...answers(
+    "MarginComposerSlot | MentionComposer | address prop | anchor={composer.anchor}",
+    cells(`${HOST} · Close, then Discard draft? (the margin's compose)`),
+    cells(`${HOST} · a compose opened on another document, then back (the margin's compose)`),
+    cells(
+      `${HOST} · phone · a compose opened on another document, then back (the margin's compose)`
+    )
+  ),
+  ...answers("MarginComposerSlot | MentionComposer | address prop | kind={composer.kind}", {
+    reason: REASONS[13],
+  }),
+  ...answers(
+    "MarginComposerSlot | MentionComposer | address prop | mutationKey={sendKey}",
+    cells(`${HOST} · a compose opened on another document, then back (the margin's compose)`),
+    { reason: REASONS[3] }
+  ),
+  ...answers(
+    "MarginComposerSlot | MentionComposer | address prop | owner={composer.owner}",
+    cells(`${HOST} · document left, then back (the margin's compose)`),
+    cells(`${HOST} · phone · panel closed, document left, then back (the margin's compose)`)
+  ),
+  ...answers("MarginComposerSlot | MentionComposer | conditional | <div hidden={hidden}>", {
+    reason: REASONS[4],
+  }),
+  ...answers("ThreadCard | MentionComposer | address prop | owner={composerOwner(owner)}", {
+    reason: REASONS[1],
+  }),
+  ...answers(
+    "ThreadCard | MentionComposer | conditional | (expanded) ? …",
+    cells(`${HOST} · another thread opened, then back`),
+    { reason: REASONS[2] }
+  ),
+  ...answers(
+    "ThreadCard | MentionComposer | address prop | mutationKey={replyMutationKey}",
+    cells(`${HOST} · another thread opened, then back`),
+    { reason: REASONS[3] }
+  ),
+  ...answers(
+    'ThreadCard | MentionComposer | address prop | replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}',
+    cells(`${HOST} · Cancel reply`),
+    cells(`${HOST} · Escape in the field`),
+    { reason: REASONS[1] }
+  ),
+  ...answers("ThreadCard | MentionComposer | conditional | (composerFirst) ? …", {
+    reason: REASONS[8],
+  }),
+  ...answers("ThreadCard | MentionComposer | conditional | !(composerFirst) ? …", {
+    reason: REASONS[8],
+  }),
+  ...answers(
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: the key holds the expression's own source text, whose template literal this is.
+    'MarginSheet | MarginComposerSlot | key | <MarginComposerSlot key={`${composer.anchor.artifact}:${composer.seq ?? ""}`}>',
+    cells(`${HOST} · a compose opened on another document, then back (the margin's compose)`),
+    cells(
+      `${HOST} · phone · a compose opened on another document, then back (the margin's compose)`
+    )
+  ),
+  ...answers(
+    "MarginSheet | MarginComposerSlot | conditional | !(composer === undefined) ? …",
+    cells(`${HOST} · document left, then back (the margin's compose)`),
+    cells(`${HOST} · phone · panel closed, document left, then back (the margin's compose)`)
+  ),
+  ...answers(
+    "MarginSheet | MarginComposerSlot | conditional | <div hidden={covered}>",
+    cells(`${HOST} · phone · a thread opened over the compose, then Back (the margin's compose)`),
+    { reason: REASONS[4] }
+  ),
+  ...answers(
+    "MarginSheet | MarginComposerSlot | address prop | composer={composer}",
+    cells(`${HOST} · document left, then back (the margin's compose)`),
+    cells(`${HOST} · a compose opened on another document, then back (the margin's compose)`)
+  ),
+  ...answers(
+    'MarginSheet | MarginComposerSlot | address prop | hidden={tab.value !== "comments"}',
+    { reason: REASONS[4] }
+  ),
+  ...answers(
+    "Margin | MarginSheet | conditional | <div hidden={railShown || (!isCompactViewport && !hasMargin)}>",
+    { reason: REASONS[4] },
+    { reason: REASONS[5] }
+  ),
+  ...answers(
+    "Margin | MarginSheet | early return | if (!isCompactViewport && !hasMargin) return …",
+    { reason: REASONS[5] }
+  ),
+  ...answers("Margin | MarginSheet | address prop | collapsed={railShown}", { reason: REASONS[4] }),
+  ...answers(
+    "Margin | MarginSheet | address prop | model={model}",
+    cells(`${HOST} · document left, then back (the margin's compose)`)
+  ),
+  ...answers("MarginColumn | Margin | address prop | <Margin {...props}>", { reason: REASONS[5] }),
+  ...answers(
+    "MarginSheet | ThreadCard | conditional | (isPhoneViewport && phoneThread !== undefined && owner !== undefined && visibleArtifact !== undefined) ? …",
+    cells(`${HOST} · Back, then back (phone thread view)`),
+    { reason: REASONS[10] }
+  ),
+  ...answers(
+    "MarginSheet | ThreadCard | address prop | expanded",
+    cells(`${HOST} · Back, then back (phone thread view)`)
+  ),
+  ...answers("MarginSheet | ThreadCard | address prop | owner={owner}", { reason: REASONS[1] }),
+  ...answers(
+    "MarginSheet | ThreadCard | address prop | thread={phoneThread}",
+    cells(`${HOST} · Back, then back (phone thread view)`)
+  ),
+  ...answers(
+    "MarginSheet | ThreadCard | address prop | replyMutationKey={marginReplySendKey(phoneThread.key)}",
+    cells(`${HOST} · Back, then back (phone thread view)`)
+  ),
+  ...answers("ThreadList | ThreadCard | key | <ThreadCard key={thread.key}>", {
+    reason: REASONS[7],
+  }),
+  ...answers("ThreadList | ThreadCard | key | <div key={thread.key}>", { reason: REASONS[7] }),
+  ...answers("ThreadList | ThreadCard | conditional | drawn by anchored.map(…)", {
+    reason: REASONS[7],
+  }),
+  ...answers("ThreadList | ThreadCard | conditional | !(anchored.length === 0) ? …", {
+    reason: REASONS[7],
+  }),
+  ...answers("ThreadList | ThreadCard | conditional | drawn by discussion.map(…)", {
+    reason: REASONS[7],
+  }),
+  ...answers("ThreadList | ThreadCard | conditional | !(discussion.length === 0) ? …", {
+    reason: REASONS[7],
+  }),
+  ...answers("ThreadList | ThreadCard | conditional | drawn by resolvedThreads.map(…)", {
+    reason: REASONS[7],
+  }),
+  ...answers("ThreadList | ThreadCard | conditional | (showResolved) ? …", { reason: REASONS[7] }),
+  ...answers(
+    "ThreadList | ThreadCard | conditional | !(resolvedThreads.length + foldedAskCount === 0) ? …",
+    { reason: REASONS[7] }
+  ),
+  ...answers(
+    "ThreadList | ThreadCard | address prop | expanded={expandedThreadKey === thread.key}",
+    cells(`${HOST} · another thread opened, then back`)
+  ),
+  ...answers("ThreadList | ThreadCard | address prop | owner={owner}", { reason: REASONS[1] }),
+  ...answers("ThreadList | ThreadCard | address prop | thread={thread}", { reason: REASONS[7] }),
+  ...answers(
+    "ThreadList | ThreadCard | address prop | replyMutationKey={marginReplySendKey(thread.key)}",
+    cells(`${HOST} · another thread opened, then back`),
+    { reason: REASONS[7] }
+  ),
+  ...answers("CommentsTab | ThreadList | conditional | !(commentsError) ? …", {
+    reason: REASONS[6],
+  }),
+  ...answers(
+    "CommentsTab | ThreadList | address prop | expandedThreadKey={expandedThreadKey}",
+    cells(`${HOST} · another thread opened, then back`)
+  ),
+  ...answers("CommentsTab | ThreadList | address prop | foldedAskCount={foldedAskCount}", {
+    reason: REASONS[7],
+  }),
+  ...answers("CommentsTab | ThreadList | address prop | owner={owner}", { reason: REASONS[1] }),
+  ...answers("CommentsTab | ThreadList | address prop | resolvedThreads={resolvedThreads}", {
+    reason: REASONS[7],
+  }),
+  ...answers("CommentsTab | ThreadList | address prop | showResolved={showResolved}", {
+    reason: REASONS[7],
+  }),
+  ...answers("CommentsTab | ThreadList | address prop | threads={threads}", { reason: REASONS[7] }),
+  ...answers(
+    'MarginSheet | CommentsTab | conditional | (tab.value === "comments" && !covered && owner !== undefined && visibleArtifact !== undefined) ? …',
+    { reason: REASONS[6] }
+  ),
+  ...answers("MarginSheet | CommentsTab | conditional | <div hidden={covered}>", {
+    reason: REASONS[4],
+  }),
+  ...answers("MarginSheet | CommentsTab | address prop | commentsError={commentsError}", {
+    reason: REASONS[6],
+  }),
+  ...answers(
+    "MarginSheet | CommentsTab | address prop | expandedThreadKey={selection.expandedThreadKey}",
+    cells(`${HOST} · another thread opened, then back`)
+  ),
+  ...answers("MarginSheet | CommentsTab | address prop | foldedAskCount={foldedAskCount}", {
+    reason: REASONS[7],
+  }),
+  ...answers("MarginSheet | CommentsTab | address prop | owner={owner}", { reason: REASONS[1] }),
+  ...answers("MarginSheet | CommentsTab | address prop | resolvedThreads={resolvedThreads}", {
+    reason: REASONS[7],
+  }),
+  ...answers("MarginSheet | CommentsTab | address prop | showResolved={selection.showResolved}", {
+    reason: REASONS[7],
+  }),
+  ...answers("MarginSheet | CommentsTab | address prop | threads={threads}", {
+    reason: REASONS[7],
+  }),
+  ...answers("MarginComposerSlot | MentionComposer | form | autoFocus={onScreen}", {
+    reason: REASONS[12],
+  }),
+  ...answers("MarginSheet | MarginComposerSlot | form | <div className>", { reason: REASONS[9] }),
+  ...answers(
+    "MarginSheet | MarginComposerSlot | form | <div hidden={covered}>",
+    cells(`${HOST} · phone · a thread opened over the compose, then Back (the margin's compose)`),
+    { reason: REASONS[4] }
+  ),
+  ...answers("MarginSheet | MarginComposerSlot | form | <aside className role aria-modal ref>", {
+    reason: REASONS[11],
+  }),
+  ...answers(
+    'MarginSheet | MarginComposerSlot | form | onScreen={ !covered && tab.value === "comments" && (sheet.expanded || !isCompactViewport) }',
+    { reason: REASONS[12] }
+  ),
+  ...answers("Margin | MarginSheet | form | <div className>", { reason: REASONS[11] }),
+  ...answers(
+    "Margin | MarginSheet | form | <div hidden={railShown || (!isCompactViewport && !hasMargin)}>",
+    { reason: REASONS[4] }
+  ),
+  ...answers("Margin | MarginSheet | form | if (!isCompactViewport && !hasMargin) return …", {
+    reason: REASONS[5],
+  }),
+  ...answers("Margin | MarginSheet | form | collapsed={railShown}", { reason: REASONS[4] }),
+  ...answers("MarginSheet | ThreadCard | form | <section ref>", { reason: REASONS[12] }),
+  ...answers(
+    "MarginSheet | ThreadCard | form | (isPhoneViewport && phoneThread !== undefined && owner !== undefined && visibleArtifact !== undefined) ? …",
+    { reason: REASONS[10] }
+  ),
+  ...answers(
+    'MarginSheet | CommentsTab | form | (tab.value === "comments" && !covered && owner !== undefined && visibleArtifact !== undefined) ? …',
+    { reason: REASONS[6] }
+  ),
+  ...answers("MarginSheet | - | form | (sheet.expanded && isCompactViewport) ? …", {
+    reason: REASONS[11],
+  }),
+  ...answers("MarginSheet | - | form | (isCompactViewport) ? …", { reason: REASONS[11] }),
+  ...answers("MarginSheet | - | form | (covered) ? …", { reason: REASONS[4] }),
+  ...answers('MarginSheet | - | form | !covered && tab.value === "comments" && …', {
+    reason: REASONS[12],
+  }),
+  ...answers("Margin | - | form | if (shownCompose !== undefined && railShown)", {
+    reason: REASONS[4],
+  }),
+  ...answers("Margin | - | form | (railShown) ? …", { reason: REASONS[4] }),
+  ...answers("Margin | - | form | railShown || …", { reason: REASONS[4] }),
+  ...answers("useDialog | - | form | (open) ? …", { reason: REASONS[12] }),
+  ...answers("useDialog | - | form | if (!open) return …", { reason: REASONS[12] }),
+  ...answers(
+    "useMarginSheet | - | form | if (ownerId !== undefined && window.matchMedia(COMPACT_VIEWPORT_QUERY).matches)",
+    { reason: REASONS[9] }
+  ),
+  ...answers(
+    "useMarginSheet | - | form | if (ownerId !== undefined && window.matchMedia(PHONE_VIEWPORT_QUERY).matches) return …",
+    { reason: REASONS[10] }
+  ),
+  ...answers("useMarginSheet | - | form | (nextExpanded) ? …", { reason: REASONS[9] }),
+  ...answers("useMarginSheet | - | form | if (!nextExpanded)", { reason: REASONS[9] }),
+  ...answers("useMarginSheet | - | form | (sheetThreadKey === undefined) ? …", {
+    reason: REASONS[10],
+  }),
+  ...answers("useMarginListeners | - | form | if (isCompactViewport && !sheetExpanded) return …", {
+    reason: REASONS[12],
+  }),
+  ...answers("useCardHold | - | form | if (isCompactViewport && !sheetExpanded) return …", {
+    reason: REASONS[12],
+  }),
+  ...answers(
+    "MarginComposerSlot | MentionComposer | lifetime | <MentionComposer mutationKey={sendKey}>",
+    PENDING
+  ),
+  ...answers(
+    "ThreadCard | MentionComposer | lifetime | <MentionComposer mutationKey={replyMutationKey}>",
+    PENDING
+  ),
+];

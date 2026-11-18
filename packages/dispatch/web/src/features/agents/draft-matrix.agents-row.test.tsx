@@ -67,6 +67,9 @@
  *    and below it the whole path (`mdViewport`). The row, its details and its composer are drawn
  *    the same at every width, so a phone makes the rows above as they are. The app shell's forms
  *    are the sign-in file's.
+ *
+ * `draft-matrix.agents-row.coverage.ts` holds each census item this file answers for to a test
+ * above or to a numbered reason, and is the source this header is the prose of.
  */
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";

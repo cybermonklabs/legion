@@ -105,6 +105,11 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   `useDraftHomes` with a number of its own naming the owner that draft lives at, `draftHomes`).
   Who moved the composer's address decides where a draft goes, and what it holds with it: a
   refused or stopped send, and the files pasted into it.
+  The draft matrix (`draft-matrix.*.test.tsx`) holds every composer host to this rule, one row
+  per move, form and lifetime its host has, and `__tests__/composer-census/composer-census.test.ts`
+  holds the matrix to the code: it lists every `MentionComposer` mount, every way its address or
+  its tree moves and every layout form, and fails on an item with neither a row nor a numbered
+  reason in its file's `*.coverage.ts`, so a new conditional above a composer is a red test.
   The reader's own controls move the draft with the address: Cancel reply (and Escape, which ends
   a reply as it does), and a control the host draws for the composer and counts in the press that
   makes the move (`ownMoves`, an Agents row's issue picker).
