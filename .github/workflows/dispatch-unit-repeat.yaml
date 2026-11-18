@@ -57,7 +57,8 @@ name: Dispatch unit suite repeated
 #   harness: 1,070, 1,233, 1,334; 1,066, 1,195, 1,224; 1,384, 1,281, 1,294; 1,274, 1,084, 1,264 s;
 #            3,050 to 3,907 MiB at the most (41 files, 661 and then 662 rows a run, 1 skipped)
 # So 20 reruns a leg fit one standard runner with room in memory, and a run takes about 24 min.
-# No run has measured a web-cold leg yet: the matrix says what its budget stands on until one does.
+#   web-cold: 84, 98, 101 s in run 44339340132 (2026-11-18), 2,302 to 2,382 MiB at the most
+#            (281 files, 4,932 rows, one run)
 #
 # What a red run does, and what it does not. The leg fails, and its report and its artifact stay
 # on the run. GitHub's "Events that trigger workflows" page says: "Notifications for scheduled
@@ -84,9 +85,9 @@ name: Dispatch unit suite repeated
 # "GitHub Actions usage is free for standard GitHub-hosted runners in public repositories". In
 # runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the four runs of
 # the head comment, before the web-cold lane, were 95, 97, 102 and 98 minutes (web legs 9 to 13
-# minutes, harness legs 19 to 24): about 100 minutes a run. The three web-cold legs add at most
-# their provisional budget, 45 minutes, so at most about 150 minutes a run, and $0, since those
-# minutes are free here.
+# minutes, harness legs 19 to 24): about 100 minutes a run. The three web-cold legs of run
+# 44339340132 took 2 minutes each as GitHub bills them, so about 106 minutes a run, and $0,
+# since those minutes are free here.
 
 on:
   schedule:
@@ -126,8 +127,8 @@ jobs:
     # budget is the sum of its step budgets plus the measured maximum of the steps without one.
     # The test step's budget is the matrix's step_minutes. The steps without one measured at most
     # 52 s together in the four runs of the head comment (19 s of it the harness legs' zsh
-    # install), so 1 minute: 14 + 1 = 15 minutes for a web or web-cold leg and 27 + 1 = 28 for a
-    # harness leg, the matrix's job_minutes.
+    # install), so 1 minute: 14 + 1 = 15 minutes for a web leg, 2 + 1 = 3 for a web-cold leg and
+    # 27 + 1 = 28 for a harness leg, the matrix's job_minutes.
     timeout-minutes: ${{ matrix.job_minutes }}
     strategy:
       # One leg's failure leaves the other legs running, so each one reports its own rows.
@@ -144,17 +145,14 @@ jobs:
             reruns: 20
             step_minutes: 14
             job_minutes: 15
-          # Provisional until the first run on this pull request measures a web-cold leg; then its
-          # budget follows the rule the other two do. Until then it is the web leg's: a web-cold
-          # leg is one run of the web lane's files where a web leg is 20, with each held load
-          # adding 1 s. One web run measured 25 to 36 s (502 to 710 s over 20). Three of its files,
-          # each run alone in a pod, took 3.5 to 5.8 s longer cold than warm, and 281 files at
-          # 5.8 s each over the runner's four cores, one worker a core under `--parallel`, add
-          # about 7 minutes.
+          # Measured by run 44339340132 on this pull request (2026-11-18, head 63424a25): its three
+          # web-cold legs' test steps took 84, 98 and 101 s, one run each of 281 files and 4,932
+          # rows with every lazy module held 1 s, and read 0 failing rows. By the test step's rule,
+          # 101 x 1.15 = 116 s, under the two-minute floor, so 2 minutes.
           - lane: web-cold
             reruns: 1
-            step_minutes: 14
-            job_minutes: 15
+            step_minutes: 2
+            job_minutes: 3
           - lane: harness
             reruns: 20
             step_minutes: 27
@@ -216,7 +214,8 @@ jobs:
       # rounded up to the next whole minute, with a floor of two minutes. The four runs of the
       # head comment measured this step at 502 to 710 s for the web legs, so 710 x 1.15 = 817 s,
       # 14 minutes; and at 1,066 to 1,384 s for the harness legs, so 1,384 x 1.15 = 1,592 s, 27
-      # minutes. The web-cold legs' 14 minutes are provisional, as the matrix says.
+      # minutes. The web-cold legs measured 84 to 101 s in run 44339340132, so 101 x 1.15 = 116 s,
+      # the two-minute floor.
       #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
       # under does not rest on the runner's: Bun's test runner reads it, and under it writes no
