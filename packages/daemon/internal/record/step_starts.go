@@ -118,8 +118,8 @@ func (s *Postgres) StepStarts(ctx context.Context, tx pgx.Tx, issue string, plac
 // EndStepStart is the end of the step running at place on issue, in the transaction that writes
 // that run's end. An open run it marks ended, and answers that start, marked, and EndedNow. It
 // marks nothing otherwise, and answers the place as it stands: AlreadyEnded for a run whose end
-// was written already (the linger's before the hand-over's, or a second end one fact writes), and
-// NotCounted for a run no start of this release counted (EndUncountedStep). The update locks the
+// was written already (the settle of an earlier fact ended it), and NotCounted for a run no start
+// of this release counted (EndUncountedStep). The update locks the
 // row, so two transactions that end one run at one time end it once: the second reads the mark the
 // first committed.
 func (s *Postgres) EndStepStart(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, EndMark, error) {

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -70,9 +71,12 @@ func (e *Engine) OpenUncountedRuns(ctx context.Context, tx pgx.Tx) (int, error) 
 		if err != nil {
 			return 0, err
 		}
-		if first {
-			opened++
+		// The pass read this place's row as missing or uncounted in this transaction, under the
+		// lock every fact applies under, so the store opens it: a refusal is a broken read.
+		if !first {
+			return 0, fmt.Errorf("open the uncounted run of %s at %+v: the store holds it counted, which this pass read as not", issue.Key, step.place)
 		}
+		opened++
 	}
 	return opened, nil
 }

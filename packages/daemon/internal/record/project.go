@@ -1441,9 +1441,10 @@ func TreeRunning(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps 
 // (treelifecycle.ErrAuthorityHeld) and never opens a workflow tree under it. A tree with no
 // lifecycle row is no tree the operator holds, which is the read's own answer for it.
 //
-// It is the one statement of that rule, and the readers that must agree — the park of such a
-// root (workflow.Engine.leave) and the claim release row every other park queues
-// (outbox.releaseClaim) — both call it.
+// It is the one statement of that rule, and every reader that must agree calls it: the park of
+// such a root (workflow.Engine.leave), the claim release row every other park queues
+// (outbox.releaseClaim), and the one answer to whether a run no start counted is open
+// (workflow.Engine.uncountedRunOpen), which the boot's open of those runs and the settle both ask.
 func OperatorHoldsTree(ctx context.Context, store Store, tx pgx.Tx, issue Issue) (bool, error) {
 	project, err := claim.ProjectToken(issue.Project)
 	if err != nil {

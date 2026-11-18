@@ -14,11 +14,12 @@
 -- run is where the latest run of the place stands (record.StepRun). 'open': the latest start's
 -- run has no end yet, and the next end of the step running there is its end. 'ended': that run has
 -- its end, written in the transaction that set the mark, and a later end of it writes nothing:
--- two writes can each end the same run, as a tree's linger and the hand-over at its close both end
--- a member's step, and the second finds the mark, so Dispatch never takes the later end of a run as
--- its end. 'uncounted': the run the row counted is over, and a run the place holds now started
--- under an earlier release, which counts no start: its end is a record of its own at the next
--- count. Only the roll forward of a rollback writes it (20261117064152_step_starts_roll_forward).
+-- the settle of a fact is the one writer of an end (workflow's settleRuns), and the mark holds it
+-- to one end of a run whichever later fact asks again, so Dispatch never takes a later end of a
+-- run as its end. 'uncounted': the run the row counted is over, and a run the place holds now
+-- started under an earlier release, which counts no start: its end is a record of its own at the
+-- next count. Only the roll forward of a rollback writes it
+-- (20261117064152_step_starts_roll_forward).
 -- The next start of the place sets 'open' whatever stood before, and so does the daemon's boot
 -- for the run an 'uncounted' row stands for (record.Store.OpenUncountedStep). record is the
 -- identity of the latest start's record — the fields each write of it carries, its id among them,

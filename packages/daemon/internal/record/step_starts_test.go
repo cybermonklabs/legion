@@ -133,8 +133,9 @@ func TestTheCountOfStartsOfAStepRisesByOneAndTheEndReadsItUnchanged(t *testing.T
 
 // One run of a step gets one end, decided in the daemon's own store in the transaction that ends
 // it: the first end marks the latest start ended, and every later end of that run finds the mark
-// and writes nothing, until a new start raises the count and clears it. So the linger's end and
-// the hand-over's of one run, or two ends one fact writes, give one record one end.
+// and writes nothing, until a new start raises the count and clears it. The settle of a fact is
+// the one writer of an end (workflow's settleRuns), and the mark is what holds it to one end of a
+// run, whichever fact asks it to end that run again.
 func TestOneRunOfAStepEndsOnce(t *testing.T) {
 	st := migratedStore(t)
 	store := NewStore()

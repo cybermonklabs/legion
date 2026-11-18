@@ -16,7 +16,7 @@ import (
 // this release counted at the place an issue stood when the fact began (endStep's uncounted end) —
 // is over when (runOver):
 //   - its issue no longer stands there: it has no record, or stands at another place, or in
-//     another generation (recordedPlace);
+//     another generation (standingStep);
 //   - its place starts again (startStep), for a run the store holds open: a new run of the place
 //     begins, as the promotion of a tree admitted again starts a member's merger again; or
 //   - its tree's run is over: the tree's root lingers, and the run is not a merge that can still

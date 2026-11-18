@@ -147,9 +147,9 @@ func seedAwaitingPullRequest(t *testing.T, pool *pgxpool.Pool) {
 	})
 }
 
-// A member's linger ends its step (the workflow's beginLinger), and the hand-over at the close of
-// that linger re-admits it, whose readmit ends the run it leaves: one run, two writes that end it.
-// The daemon's own store keeps the mark of the first end, so readmit writes no second end, and the
+// A member's linger ends its step (the settle of the fact that lingers its tree), and the hand-over
+// at the close of that linger re-admits it, which raises its generation: the settle of that fact
+// finds the run ended already, by the mark the store keeps, and writes no second end, and the
 // promotion of the new root starts its new generation's step.
 func TestAHandedOverMemberWhoseLingerEndedItsStepGetsNoSecondEnd(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
