@@ -1,5 +1,6 @@
 import { test } from "@playwright/test";
 
+import type { RecordResponse } from "../web/src/api/types";
 import type {
   FakeGrant,
   FakeLauncherCredential,
@@ -21,14 +22,26 @@ async function fixtureRequest(path: string, body: unknown): Promise<void> {
   }
 }
 
-/** Replaces the fake broker's pending credential requests wholesale; each waits on `approver`.
- *  The test that seeds them is skipped where this run's server reads no fake broker: a deployed
- *  server, or one the harness switch points at no broker or another (e2e/harness-broker.ts). */
+/** Replaces the fake broker's listed credential requests wholesale, pending and expired, and
+ *  forgets every dismissal of the rows it replaces; each waits on `approver`. The test that seeds
+ *  them is skipped where this run's server reads no fake broker: a deployed server, or one the
+ *  harness switch points at no broker or another (e2e/harness-broker.ts). */
 export async function setPendingCredentialRequests(
   requests: readonly FakePendingRequest[]
 ): Promise<void> {
   test.skip(!usesFakeBroker, "this run's server reads no fake broker (e2e/harness-broker.ts)");
   await fixtureRequest("/__fixture/pending", requests);
+}
+
+/** A credential request whose deadline passed before anybody decided it, as the broker lists it:
+ *  `row`, a secret request or a machine login, marked `expired` with its deadline `expiresAt`.
+ *  Seed it with `setPendingCredentialRequests` beside any pending rows, which the fake lists
+ *  before it; a dismissal of it takes it off the fake's list. */
+export function expiredCredentialRequest(
+  row: Omit<FakePendingRequest, "expires_at" | "state">,
+  expiresAt: string
+): FakePendingRequest {
+  return { ...row, expires_at: expiresAt, state: "expired" };
 }
 
 /** Replaces the live grants the fake broker lists wholesale, each beside the login whose list
@@ -58,6 +71,18 @@ export async function setLauncherCredentials(
 export async function setMachineLogins(logins: readonly FakeMachineLogin[]): Promise<void> {
   test.skip(!usesFakeBroker, "this run's server reads no fake broker (e2e/harness-broker.ts)");
   await fixtureRequest("/__fixture/machine-logins", logins);
+}
+
+/** A machine login whose deadline passed before anybody decided it, as the broker stores it: the
+ *  code its machine printed, and its record still `pending`, undecided, with the deadline
+ *  `expiresAt`. The fake's lookup reads it as expired, as the broker does, and refuses its
+ *  approval and its denial (`409 RECORD_TERMINAL`). Seed it with `setMachineLogins`. */
+export function expiredMachineLogin(
+  code: string,
+  record: Omit<RecordResponse, "decided" | "expires_at" | "state">,
+  expiresAt: string
+): FakeMachineLogin {
+  return { code, record: { ...record, decided: null, expires_at: expiresAt, state: "pending" } };
 }
 
 /** Replaces the sign-ins the fake broker lists wholesale, each the person it belongs to and the

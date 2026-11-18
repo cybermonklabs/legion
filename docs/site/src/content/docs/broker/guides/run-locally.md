@@ -726,3 +726,6 @@ authority is made at each start, where a deployment keeps it in a Kubernetes Sec
 pods mount. The two brokers behind one TCP front stand in for two pods behind a Service, so a
 call reaches either process. And the pod session the script enrols stands in for the Legion
 daemon's enrollment of a worker pod, which is why `agent-secrets self` answers `kind: pod` there.
+The two brokers start as processes outside any cluster even when the script runs in a pod: it
+empties `KUBERNETES_SERVICE_HOST` for them, so neither needs `BROKER_AIRLOCK_CLUSTER_RANGES`,
+which a deployed broker in a cluster refuses to start without.

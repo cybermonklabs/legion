@@ -106,6 +106,8 @@ export const realStackReasons: Record<string, string> = {
   "create-issue-decision-claim.e2e.ts":
     "the server's search answers the typed title, and the answered ask it lists is its ranking",
   "create-issue-related.e2e.ts": "the server's similar-issue search answers the typed title",
+  "credential-expired.e2e.ts":
+    "a Dismiss is a write the server relays to the broker, and the reload after it reads the list the broker kept; an expired machine login's record is the one the broker answers for its typed code",
   "decision-records.e2e.ts":
     'Keep and Change are writes, and "out of date" is the server\'s judgement',
   "deep-links.e2e.ts": "document landings need the live room and server-settled anchored marks",

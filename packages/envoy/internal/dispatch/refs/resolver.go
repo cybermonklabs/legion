@@ -200,8 +200,11 @@ func (r *Reader) resolveItem(key prefixKey) (string, error) {
 // document the block is of, at the version the reference pins; an item's within the owner its
 // reference names, the issue or the project document it is written on
 // (`dispatch://<PROJECT>/artifact/<slug>/ask/<id>`, whose slug the parsed reference carries in
-// Document). Both callers of a short id ask it: the reader that rewrites a body's short ids as
-// it is indexed, and the `?to=` route that answers a node under its whole id.
+// Document). Both callers that resolve one short id at a time ask it: the reader that rewrites a
+// body's short ids as it is indexed, and the `?to=` route that answers a node under its whole
+// id. GET /api/v1/reference-targets asks it too, for each reference of a set, and gives the
+// answers to ResolvePrefixes, the batched second copy of the queries of ResolvePrefix, which
+// shares its selection rule (choosePrefixCandidate).
 //
 // ok is false for a reference whose owner no Scope holds, which is then left as the text wrote
 // it: an item of no owner at all, and a block of an ask, a comment or a message, whose blocks

@@ -537,6 +537,11 @@ func TestAnAirlockRefusalLineStaysUnderOneLogEntryWhateverHostTheCallerNames(t *
 //   - of a cut call's line (watchCarried, through callFields), the method and the path of a call
 //     whose answer streams, under the same two entries, each cut by a grant that stopped
 //     carrying it;
+//   - of a tunnel's line (logTunnel, through dialFields), the host of a CONNECT whose name
+//     resolves to an address the proxy may dial and a service answers on, so the tunnel opens;
+//   - of a failed dial's line (logDialFailure, through dialFields), the host and the reason of a
+//     CONNECT to a name that resolves nowhere, the reason being the proxy's own words around that
+//     host;
 //   - of the upstream failure's line (badGateway), the path and the host of a plain proxy request
 //     whose service cannot be reached, and the error of one whose name answers the check and
 //     nothing to the transport's own lookup, which quotes that host;
@@ -661,6 +666,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 		callMessage:           {"method", "path"},
 		joinMessage:           {"method", "path"},
 		cutMessage:            {"method", "path"},
+		tunnelMessage:         {"host"},
+		dialFailedMessage:     {"host", "reason"},
 		upstreamMessage:       {"path", "host", "error"},
 		netHTTPMessage:        {"error"},
 	}
@@ -725,6 +732,20 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			options: Options{Watch: watchFast, Rules: anyMethod}, send: cut(sent, "/v1/stream")},
 		{name: "a cut call's path", message: cutMessage, field: "path", held: "/v1/" + sent, status: http.StatusOK,
 			options: Options{Watch: watchFast}, send: cut(http.MethodGet, "/v1/"+sent)},
+		{name: "a tunnel's host: a CONNECT to a name the proxy may dial that a service answers", message: tunnelMessage, field: "host",
+			held: sent, status: http.StatusOK,
+			send: func(_ *testing.T, r *rig) *http.Response {
+				// The name resolves to a public address wired to the echo service, so the
+				// CONNECT opens a tunnel and the proxy writes that tunnel's one line.
+				r.addresses[sent] = []netip.Addr{public}
+				r.dialTo[net.JoinHostPort(public.String(), "443")] = r.dialTo[net.JoinHostPort(echoHost, "443")]
+				response, _, _ := r.connectRaw(sent+":443", basic(workerPlaceholder))
+				return response
+			}},
+		{name: "a failed dial's host: a CONNECT to a name that resolves nowhere", message: dialFailedMessage, field: "host",
+			held: sent, status: http.StatusForbidden, send: connect(sent + ":443")},
+		{name: "a failed dial's reason: a CONNECT to a name that resolves nowhere", message: dialFailedMessage, field: "reason",
+			held: "cannot resolve " + sent + ": no such host", status: http.StatusForbidden, send: connect(sent + ":443")},
 		{name: "an upstream failure's path: a plain proxy request whose service cannot be reached", message: upstreamMessage, field: "path",
 			held: "/" + sent, status: http.StatusBadGateway,
 			send: func(_ *testing.T, r *rig) *http.Response {
@@ -856,8 +877,8 @@ func TestEveryLineOfTheAirlockCutsEachFieldTheCallerWrote(t *testing.T) {
 			}
 		}
 	}
-	if driven != 18 || len(missing) != 0 {
-		t.Fatalf("the table drove %d rows, want 18; it never drove %v", driven, missing)
+	if driven != 21 || len(missing) != 0 {
+		t.Fatalf("the table drove %d rows, want 21; it never drove %v", driven, missing)
 	}
 }
 
