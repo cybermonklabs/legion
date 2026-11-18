@@ -231,6 +231,11 @@ never denies. Every other request waits for that person, as it does now.
   1 otherwise, and it asks the broker nothing. `agent-secrets identity --source` prints the source
   the client would take its broker identity from (`key-dir`, `sign-in`, `helper` or `machine`).
   `agent-secrets self` prints this session's live grants.
+- `agent-secrets grant revoke <grant_id>` ends a grant given to this session's broker identity,
+  from inside the session, before its lifetime runs out. The broker checks the enrollment, not the
+  session: a grant of another enrollment is refused `was given to another broker identity
+  (enrollment)`, and every session of a person who ran `agent-secrets login` on this machine signs
+  as that sign-in's one enrollment, so each of them can end the others' grants.
 
 ## Where a name comes from, and how you may use it
 

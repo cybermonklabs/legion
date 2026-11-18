@@ -52,8 +52,8 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 			Rank: "B", LastDispatchSeq: 1})
 	}
 
-	// hasRun records each role of key as one that has run: the claim row the tree's close left
-	// suspended, the durable record of the run before this generation.
+	// hasRun records each role of key as one that has run: a claim row left suspended, the durable
+	// record of the run before this generation.
 	hasRun := func(t *testing.T, pool *pgxpool.Pool, key string, roles ...claim.Role) []claim.Token {
 		t.Helper()
 		tokens := make([]claim.Token, 0, len(roles))
@@ -64,14 +64,14 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 	}
 
 	// survived is the assertion the rule itself reads: every claim row seeded before the
-	// re-admission is still there, in the state the tree's close left it.
+	// re-admission is still there, in the suspended state it was seeded in.
 	survived := func(t *testing.T, pool *pgxpool.Pool, tokens []claim.Token) {
 		t.Helper()
 		states := claimStates(t, pool)
 		for _, token := range tokens {
 			state, kept := states[string(token)]
 			if !kept || state != string(supervise.StateSuspended) {
-				t.Fatalf("the claim %s reads %q, kept=%v after the re-admission; want the suspended row the close left, which no generation clears", token, state, kept)
+				t.Fatalf("the claim %s reads %q, kept=%v after the re-admission; want the suspended row seeded before it, which no generation clears", token, state, kept)
 			}
 		}
 	}
@@ -167,9 +167,10 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 	t.Run("a member in a phase with no worker of its own", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, nil)
-		// Accepting waits on the tree's architect, which the promotion starts, so the member's own
-		// phase has no worker and no row of its own waits for a slot. The roles that have run come
-		// back all the same, each start claimable at once, because such a start waits for nothing.
+		// Accepting waits on the architect that owns the member, here the tree's, which the promotion
+		// starts, so the member's own phase has no worker and no row of its own waits for a slot. The
+		// roles that have run come back all the same, each start claimable at once, because such a
+		// start waits for nothing.
 		seedTree(t, pool, phase.Accepting, "needs_review")
 		tokens := hasRun(t, pool, member, claim.RoleTester, claim.RolePlanner, claim.RoleImplementer)
 
@@ -190,9 +191,10 @@ func TestAReAdmissionStartsOnlyRolesThatHaveRun(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmission(t, 1, nil)
 		seedTree(t, pool, "", "")
-		// Every role of the root has run under the generation before, and the re-admission still
-		// starts none of them: a root standing at admitted has run nothing in this generation, and
-		// its first phase is the waiting line's to start.
+		// Every role of the root has run under the generation before, and the re-admission brings
+		// none of them back but its architect, which the promotion starts: a root standing at
+		// admitted has run nothing in this generation, and its first phase is the waiting line's to
+		// start.
 		tokens := hasRun(t, pool, root, claim.Roles...)
 
 		apply(t, pool, admission, "readmit", readmission, newEngine())
