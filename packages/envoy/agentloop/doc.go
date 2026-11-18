@@ -30,7 +30,24 @@
 // an error naming the redirecting status and the host the Location points at, so the run ends
 // in FaultProviderError. The Detail of that fault carries more than the host: Go's own
 // *url.Error wraps the check's error and names the Location in full, query included, as the
-// endpoint sent it. A caller that logs a Detail logs whatever the endpoint it named put there.
+// endpoint sent it. A caller that logs a Detail logs that Location as the endpoint it named
+// wrote it.
+//
+// # A body that is not the provider's
+//
+// A gateway or a proxy in a provider's place can answer with a page of its own that echoes the
+// request back, its X-Api-Key or bearer header included, so no fault's Detail carries such a body
+// whole. The transport keeps every credential its requests went out with, read off each request's
+// own headers, since on azure-anthropic it is the provider's credential middleware that sets
+// them, and a body that is not the provider's own is named through excerpt.BodyForText with each
+// of them redacted: one line of at most 120 characters, such as `a body that is not Anthropic's
+// error JSON ("403 Forbidden [redacted] …")`. On anthropic-messages and azure-anthropic that is an
+// error body that is not an object whose error member carries a message, which anthropic-sdk-go's
+// error would otherwise append whole. On systemone it is a refusal whose body is not System One's
+// own error JSON, an object with a detail member, whose status line goes through excerpt.Text as
+// well, and a 2xx body that is no answer. The provider's own error JSON prints as the provider
+// wrote it, and the two OpenAI kinds' errors carry the status and the provider's own message
+// field, never a body.
 //
 // # The retry
 //
@@ -45,7 +62,8 @@
 // stream carried it, and a Chat Completions refusal is what an openai-chat call says in place of
 // a reply. Both are read off the SDK's stream of raw provider chunks, which the run asks for on
 // those two protocols and no other. The HTTP transport keeps no response body of its own: it is
-// the token, the endpoint's query parameters and the retry, and nothing else.
+// the token, the endpoint's query parameters, the retry and the credentials its requests went out
+// with, and nothing else.
 //
 // # Cache marks
 //

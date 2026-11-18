@@ -189,10 +189,12 @@ func TestNonTwoXXResponseReturnsTypedErrorWithStatusCodeAndBody(t *testing.T) {
 	}
 }
 
-// A response body that doesn't parse as {"code": "..."} still preserves the raw bytes; only
-// Code is left empty. Best-effort decoding must never turn an opaque broker failure into a
-// dropped body.
-func TestNonTwoXXResponseWithUnparsableBodyPreservesBodyWithEmptyCode(t *testing.T) {
+// A response body that doesn't parse as {"code": "..."} is not the broker's: something in its
+// place wrote it, and it can echo the call back. It still comes back as the typed *Error with its
+// status and an empty Code, and its Body is Dispatch's own {"error"} naming that body in one line
+// (foreignRefusal). Best-effort decoding must never turn an opaque broker failure into a dropped
+// body, nor hand the browser the body itself.
+func TestNonTwoXXResponseWithUnparsableBodyNamesTheBodyWithEmptyCode(t *testing.T) {
 	server, _ := serveCapturing(t, http.StatusInternalServerError, "not json at all")
 	defer server.Close()
 
@@ -207,8 +209,8 @@ func TestNonTwoXXResponseWithUnparsableBodyPreservesBodyWithEmptyCode(t *testing
 	if brokerErr.Code != "" {
 		t.Fatalf("Code = %q, want empty for an unparsable body", brokerErr.Code)
 	}
-	if string(brokerErr.Body) != "not json at all" {
-		t.Fatalf("Body = %s, want the raw bytes preserved", brokerErr.Body)
+	if want := `{"error":"the secrets broker answered 500 with a body that is not the broker's error JSON (\"not json at all\")"}`; string(brokerErr.Body) != want {
+		t.Fatalf("Body = %s, want %s", brokerErr.Body, want)
 	}
 }
 

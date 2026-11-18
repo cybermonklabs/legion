@@ -1,0 +1,23 @@
+kind: Fixed
+body: |-
+  An answer that something else wrote in a server's place, such as a gateway's or a proxy's page,
+  which can echo the request back with its credentials, is no longer printed whole. A new public
+  package, `github.com/sjawhar/envoy/excerpt`, names such a body in one line: `a body that is not
+  <what> ("<excerpt>")`, `an empty body`, or `a body of N bytes and no readable text`, cut to 120
+  characters, with scripts, styles and tags dropped, each URL printed as `redact.Remote` prints
+  one, every run of eight or more characters of each credential the request carried redacted, and
+  the value after `Authorization:`, `Bearer` or `DPoP` redacted. A server's own error text prints
+  as before, and every error keeps its type, status, code and fields. The sites: the Dispatch
+  server's GitHub App client (errors that reach logs, `delivery_settings.last_error`,
+  `architecture.sync_failed` events and the source-check answer), its GitHub proxy (a foreign
+  refusal now reaches the browser at its status as `{"code":"GITHUB_UPSTREAM","error":…}`, and a
+  failed token mint no longer hands the browser the App's JWT) and its secrets-broker relay;
+  x/oauth2 errors (`oauthexcerpt.OAuth`) at `agent-secrets login` and its renewals, a workload's
+  external_account mint, the broker's sign-in client check, the approval page's sign-in log,
+  Dispatch's lapsed-membership log and Dispatch's sign-in callback (its log and the 502 the
+  browser reads); the broker judge's model-loop Detail (its grant-log row and `model_err` line);
+  `dev-airlock-stands` (`enroll-pod`, which also names its `--url` without its user info, and
+  `load`); and loadtest, docstest and brokertest, whose Pods print to requestseed's stderr.
+time: 2026-11-18T11:25:34Z
+custom:
+    Issue: pr4407

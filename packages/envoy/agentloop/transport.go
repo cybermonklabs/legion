@@ -8,19 +8,27 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 // modelTransport carries every model call of a run. It puts the endpoint's token, read again for
-// the attempt, on each request; adds the endpoint's own query parameters to it; and makes the
-// run's one retry, on a 429, a 5xx or a transport error, within the run's time.
+// the attempt, on each request; adds the endpoint's own query parameters to it; makes the run's
+// one retry, on a 429, a 5xx or a transport error, within the run's time; and keeps every
+// credential its requests went out with, so that a body the calls are answered with is named with
+// each of them redacted (credentials).
 type modelTransport struct {
 	base  http.RoundTripper
 	kind  Kind
 	token func(context.Context) (string, error)
 	query url.Values
+
+	mu   sync.Mutex
+	sent []string
 }
 
 // newModelTransport is the transport one Run or one Decide makes its model calls through, over
@@ -79,6 +87,7 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		case OpenAIResponses, OpenAIChat, SystemOne:
 			r.Header.Set("Authorization", "Bearer "+key)
 		}
+		t.keep(r.Header)
 		if len(t.query) > 0 {
 			q := r.URL.Query()
 			for name, values := range t.query {
@@ -127,6 +136,34 @@ func retryable(resp *http.Response, err error) (time.Duration, bool) {
 		return wait, true
 	}
 	return defaultRetryWait, true
+}
+
+// keep records the credential a request goes out with, read off the request's own headers: the
+// X-Api-Key header's value and the token after the Authorization header's scheme. The headers are
+// read rather than the token this transport set, because on azure-anthropic it is the provider's
+// credential middleware, above this transport, that sets the bearer.
+func (t *modelTransport) keep(header http.Header) {
+	authorization := header.Get("Authorization")
+	if _, token, ok := strings.Cut(authorization, " "); ok {
+		authorization = token
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, credential := range []string{header.Get("X-Api-Key"), authorization} {
+		if credential = strings.TrimSpace(credential); credential != "" && !slices.Contains(t.sent, credential) {
+			t.sent = append(t.sent, credential)
+		}
+	}
+}
+
+// credentials is every credential a request this transport carried went out with, the retry's
+// included. A gateway or a proxy in the endpoint's place can answer with a page of its own that
+// echoes the request back, its headers with it, so a body that is not the provider's own is named
+// with each of these redacted, rather than with a token read again for the print.
+func (t *modelTransport) credentials() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return slices.Clone(t.sent)
 }
 
 // waitable is whether the context has the time to wait out a retry: it is not already done, and

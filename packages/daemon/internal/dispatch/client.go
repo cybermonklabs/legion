@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/excerpt"
 )
 
 const requestTimeout = 10 * time.Second
@@ -485,7 +487,7 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 		return fmt.Errorf("read Dispatch %s %s: %w", method, path, transportFailure(err))
 	}
 	if response.StatusCode/100 != 2 {
-		return dispatchError(response.StatusCode, response.Status, payload)
+		return dispatchError(response.StatusCode, response.Status, payload, c.token)
 	}
 	if into == nil {
 		return nil
@@ -528,13 +530,20 @@ func daemonActor(key string) actor {
 	return actor{Kind: "session", ID: DaemonSession(key)}
 }
 
-func dispatchError(status int, statusText string, payload []byte) *Error {
+// dispatchError is a non-2xx answer as an *Error. Dispatch's own refusal is its `{code, error}`
+// JSON, carried as it wrote it. Any other body was written by something in Dispatch's place, such
+// as a proxy, which can echo the request back, so it is named after the status line in one line
+// with token, the bearer the request carried, and any Authorization or Bearer value redacted
+// (excerpt.BodyForText); the status line is that excerpt of the reason phrase too, since the
+// answerer chose it.
+func dispatchError(status int, statusText string, payload []byte, token string) *Error {
+	statusText = excerpt.Text(statusText, token)
 	var response struct {
 		Code  string `json:"code"`
 		Error string `json:"error"`
 	}
-	if err := json.Unmarshal(payload, &response); err != nil {
-		response.Error = strings.TrimSpace(string(payload))
+	if err := json.Unmarshal(payload, &response); err != nil && len(bytes.TrimSpace(payload)) > 0 {
+		response.Error = statusText + " with " + excerpt.BodyForText(string(payload), "Dispatch's error JSON", token)
 	}
 	if response.Error == "" {
 		response.Error = statusText

@@ -31,6 +31,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/envoy/excerpt"
 )
 
 // launcherService is the authorization_details "service" this daemon's token logins always
@@ -269,10 +271,10 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 		return nil, err
 	}
 	if status >= 500 && status <= 599 {
-		return nil, &brokerUnavailableError{err: refusal(status, body)}
+		return nil, &brokerUnavailableError{err: refusal(status, body, token, request)}
 	}
 	if status != http.StatusOK {
-		return nil, refusal(status, body)
+		return nil, refusal(status, body, token, request)
 	}
 	var answer struct {
 		CredentialID string    `json:"credential_id"`
@@ -455,12 +457,12 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 		session := e.Session
 		body.SessionID = &session
 	}
-	status, raw, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body)
+	status, raw, proof, err := c.doProof(ctx, http.MethodPost, "/v1/enrollments", body)
 	if err != nil {
 		return Enrollment{}, err
 	}
 	if status != http.StatusCreated && status != http.StatusOK {
-		return Enrollment{}, refusal(status, raw)
+		return Enrollment{}, refusal(status, raw, proof, e.PodToken)
 	}
 	var answer enrollmentAnswer
 	if err := json.Unmarshal(raw, &answer); err != nil {
@@ -475,14 +477,14 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 // Revoke is DELETE /v1/enrollments/{id}, authenticated with a launcher proof: 204 and 404 are
 // both "revoked" (the route is idempotent).
 func (c *Client) Revoke(ctx context.Context, id string) error {
-	status, raw, err := c.doProof(ctx, http.MethodDelete, "/v1/enrollments/"+url.PathEscape(id), nil)
+	status, raw, proof, err := c.doProof(ctx, http.MethodDelete, "/v1/enrollments/"+url.PathEscape(id), nil)
 	if err != nil {
 		return err
 	}
 	if status == http.StatusNoContent || status == http.StatusNotFound {
 		return nil
 	}
-	return refusal(status, raw)
+	return refusal(status, raw, proof)
 }
 
 // podSessionBody is POST /v1/oauth/exchange/pod-sessions's body: the pod's own projected token for
@@ -533,7 +535,7 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 		return time.Time{}, err
 	}
 	if status != http.StatusOK {
-		return time.Time{}, refusal(status, raw)
+		return time.Time{}, refusal(status, raw, token, podToken)
 	}
 	var answer struct {
 		PodUID     string    `json:"pod_uid"`
@@ -608,37 +610,37 @@ func (e *SupersededError) Error() string {
 // Permanent is true: this process's generation never rises, so no later write of it is taken.
 func (*SupersededError) Permanent() bool { return true }
 
-// doProof signs a launcher proof over this call with the held credential's key and sends it as
-// the Proof header — never Authorization, which only RegisterPodSession's route reads. It takes
-// no lock: a renewal proves the same key again, so the broker keeps the credential's id and key
-// and a proof in flight during one stays valid. With no live credential it wakes the login loop
-// and answers NO_MACHINE_CREDENTIAL. A 401 (LAUNCHER_INVALID) clears the credential that failed,
-// wakes the login loop, and answers NO_MACHINE_CREDENTIAL; a 401 on a credential a login already
-// replaced clears nothing.
-func (c *Client) doProof(ctx context.Context, method, path string, body any) (int, []byte, error) {
+// doProof signs a launcher proof over this call with the held credential's key, sends it as the
+// Proof header — never Authorization, which only RegisterPodSession's route reads — and answers it
+// beside the broker's answer, so a refusal can redact it. It takes no lock: a renewal proves the
+// same key again, so the broker keeps the credential's id and key and a proof in flight during one
+// stays valid. With no live credential it wakes the login loop and answers NO_MACHINE_CREDENTIAL.
+// A 401 (LAUNCHER_INVALID) clears the credential that failed, wakes the login loop, and answers
+// NO_MACHINE_CREDENTIAL; a 401 on a credential a login already replaced clears nothing.
+func (c *Client) doProof(ctx context.Context, method, path string, body any) (int, []byte, string, error) {
 	cred := c.snapshot().cred
 	if !cred.live(time.Now()) {
 		c.wake()
-		return 0, nil, c.noCredentialError()
+		return 0, nil, "", c.noCredentialError()
 	}
 	proof, err := signLauncherProof(cred.key, cred.id, method, c.URL+path, time.Now())
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, "", err
 	}
 	status, raw, err := c.do(ctx, method, path, body, func(req *http.Request) {
 		req.Header.Set("Proof", proof)
 	})
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, "", err
 	}
 	if status == http.StatusUnauthorized {
 		c.update(func(cur loginState) (loginState, bool) {
 			return loginState{failure: "the broker refused the daemon's launcher credential; logging in again"}, cur.cred == cred
 		})
 		c.wake()
-		return 0, nil, c.noCredentialError()
+		return 0, nil, "", c.noCredentialError()
 	}
-	return status, raw, nil
+	return status, raw, proof, nil
 }
 
 // backoff is a wait after failed consecutive logins: initial after the first, doubled for each one
@@ -805,15 +807,18 @@ func (c *Client) do(ctx context.Context, method, path string, body any, mutate f
 	return resp.StatusCode, raw, nil
 }
 
-// refusal is the broker's error body as an *APIError; a body that is not the contract's shape
-// still yields one, with the status and the raw text as its message.
-func refusal(status int, raw []byte) error {
+// refusal is the broker's error body as an *APIError. A body that is not the contract's shape
+// still yields one, with the status and code UNKNOWN; it was written by something in the broker's
+// place, such as a proxy, which can echo the request back, its headers and its body, so its message
+// names it in one line with carried, every credential the request carried, and any Authorization
+// or Bearer value redacted (excerpt.BodyForText).
+func refusal(status int, raw []byte, carried ...string) error {
 	var body struct {
 		Code  string `json:"code"`
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil || body.Code == "" {
-		return &APIError{Status: status, Code: "UNKNOWN", Message: string(raw)}
+		return &APIError{Status: status, Code: "UNKNOWN", Message: excerpt.BodyForText(string(raw), "the broker's error JSON", carried...)}
 	}
 	return &APIError{Status: status, Code: body.Code, Message: body.Error}
 }

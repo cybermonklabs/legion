@@ -5,7 +5,9 @@
 // relays a person's revoke of a grant or a machine login. Every handler does the same five things:
 // require a human caller, require the broker to be configured, resolve or read its input, call
 // the matching agentsecrets.Client method, and forward the broker's exact status and body — the
-// broker decides. The pending list alone answers null rather than 404 FEATURE_OFF without a broker.
+// broker decides; a refusal not in the broker's shape keeps its status and is named, never
+// forwarded (relayBrokerResponse). The pending list alone answers null rather than 404 FEATURE_OFF
+// without a broker.
 // The one thing Dispatch supplies is who acts: a machine login's approve and deny, a revoke and the
 // machine-login list send the login actingPerson resolved, in Dispatch's canonical lowercase form,
 // as the approver, which the broker takes on Dispatch's word, and never forward the browser's body,
@@ -62,7 +64,9 @@ func (s *server) requireAgentSecrets(w http.ResponseWriter) (*agentsecrets.Clien
 // AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE for a call that stopped at Dispatch's own ServiceAccount
 // token, or 503 AGENT_SECRETS_UNAVAILABLE for anything else (a transport failure). The token
 // gets its own code because the broker was never asked: the fix is in Dispatch's deployment, and
-// the log line naming the file is the operator's only pointer to it.
+// the log line naming the file is the operator's only pointer to it. A refusal that is not the
+// broker's error JSON keeps its status, and its body is the {"error"} agentsecrets names it with,
+// Dispatch's token redacted, since whatever wrote it in the broker's place can echo the call back.
 func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error) {
 	if err != nil {
 		var brokerErr *agentsecrets.Error

@@ -29,12 +29,14 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/excerpt"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 )
 
@@ -90,6 +92,13 @@ func New(baseURL, tokenFile string, options ...Option) *Client {
 // before reaching the broker is an *AccountTokenError when Dispatch could not read its own token,
 // and a plain wrapped error for a transport failure (connection refused, timeout, context
 // canceled), which the routes answer 503 AGENT_SECRETS_UNAVAILABLE.
+//
+// A refusal that is not the broker's error JSON (an object naming a code, as the broker's
+// writeError always does) was written by something in the broker's place, such as a gateway,
+// which can echo the call back, Dispatch's own ServiceAccount token and a typed machine-login
+// code included. Its Body is then Dispatch's own {"error"} naming it in one line with every
+// credential the call carried redacted (foreignRefusal), its Code empty, and its Status the one
+// it came with, so what a handler forwards never holds that page.
 type Error struct {
 	Status int
 	Code   string
@@ -144,9 +153,31 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 		if err := json.Unmarshal(responseBody, &decoded); err == nil {
 			brokerErr.Code = decoded.Code
 		}
+		if brokerErr.Code == "" {
+			brokerErr.Body = foreignRefusal(response.StatusCode, responseBody, token, body)
+		}
 		return nil, brokerErr
 	}
 	return json.RawMessage(responseBody), nil
+}
+
+// foreignRefusal is the body Dispatch hands the browser in place of a refusal at status that is
+// not the broker's error JSON: {"error"} naming that body (excerpt.BodyForText) with token, the
+// ServiceAccount token the call carried, redacted, and the machine-login code sent, which a
+// decision's and a lookup's body carry as `code`. It names no code, as the refusal named none.
+func foreignRefusal(status int, refusal []byte, token string, sent json.RawMessage) json.RawMessage {
+	carried := []string{token}
+	var typed struct {
+		Code string `json:"code"`
+	}
+	if json.Unmarshal(sent, &typed) == nil && typed.Code != "" {
+		carried = append(carried, typed.Code)
+	}
+	// json.Marshal fails on no map of strings: a string that is not UTF-8 is written with U+FFFD.
+	named, _ := json.Marshal(map[string]string{
+		"error": "the secrets broker answered " + strconv.Itoa(status) + " with " + excerpt.BodyForText(string(refusal), "the broker's error JSON", carried...),
+	})
+	return named
 }
 
 // Pending lists the credential requests awaiting the named approver's decision.

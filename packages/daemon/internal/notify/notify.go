@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/excerpt"
 	"github.com/sjawhar/envoy/roleholder"
 )
 
@@ -66,6 +67,23 @@ type RoleRefusal struct {
 	// can no longer name one.
 	LastSeen *int64 `json:"last_seen"`
 	EventID  string `json:"event_id"`
+}
+
+// refused is how a refusal names the listener's answer: response's status line and body, the body
+// whole where it is the listener's error JSON (an object whose error is a string,
+// writeJSONError). Any other body was written by something in the listener's place, such as a
+// proxy, which can echo the request back, so it is named in one line with token, the bearer the
+// request carried, and any Authorization or Bearer value redacted (excerpt.BodyForText), and the
+// status line, whose reason phrase the answerer chose, goes through the same excerpt.
+func refused(response *http.Response, body []byte, token string) string {
+	var own struct {
+		Error *string `json:"error"`
+	}
+	shown := strings.TrimSpace(string(body))
+	if json.Unmarshal(body, &own) != nil || own.Error == nil {
+		shown = excerpt.BodyForText(string(body), "the listener's error JSON", token)
+	}
+	return "listener returned " + excerpt.Text(response.Status, token) + ": " + shown
 }
 
 // The reasons of a role publish the listener answers 504 (ErrNotDelivered). ReasonReceiptTimeout
@@ -244,7 +262,7 @@ func (p *HTTPPublisher) Publish(ctx context.Context, topic, message string, payl
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-		refusal := fmt.Errorf("publish notice to %s: listener returned %s: %s", topic, response.Status, strings.TrimSpace(string(body)))
+		refusal := fmt.Errorf("publish notice to %s: %s", topic, refused(response, body, p.token))
 		var answer RoleRefusal
 		if json.Unmarshal(body, &answer) != nil {
 			return refusal
@@ -358,8 +376,7 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 		return SessionRegistration{}, nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: listener returned %s: %s",
-		session, response.Status, strings.TrimSpace(string(body)))
+	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %s", session, refused(response, body, p.token))
 }
 
 // DeleteConditions is what one clean stop of a dead role's session holds under, and where this
@@ -446,5 +463,5 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 		return SessionDeleted{Deleted: true}, nil
 	}
 	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
-	return SessionDeleted{}, fmt.Errorf("delete session %s: listener returned %s: %s", session, response.Status, strings.TrimSpace(string(body)))
+	return SessionDeleted{}, fmt.Errorf("delete session %s: %s", session, refused(response, body, p.token))
 }

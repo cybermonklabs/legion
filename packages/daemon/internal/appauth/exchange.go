@@ -116,7 +116,7 @@ func (m *Manager) exchange(ctx context.Context, jwt, installation string, permis
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		body := refusalBody(response)
-		failed := fmt.Errorf("GitHub App token exchange failed (%d): %s", response.StatusCode, strings.TrimSpace(string(body)))
+		failed := fmt.Errorf("GitHub App token exchange failed (%d): %s", response.StatusCode, githubrest.BodyText(body, jwt))
 		if response.StatusCode == http.StatusNotFound {
 			return Lease{}, fmt.Errorf("%w: %w", errInstallationGone, failed)
 		}

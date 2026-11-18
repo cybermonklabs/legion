@@ -464,11 +464,11 @@ func (c *Client) installation(ctx context.Context, owner, repo string) (Installa
 	if status == http.StatusNotFound {
 		return Installation{}, fmt.Errorf("%w on %s/%s", ErrNoInstallation, owner, repo)
 	}
-	if limited := RateLimit(status, header, body); limited != nil {
+	if limited := rateLimit(status, header, body, jwt); limited != nil {
 		return Installation{}, limited
 	}
 	if status != http.StatusOK {
-		return Installation{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Installation{}, fmt.Errorf("GET %s: status %d: %s", target, status, BodyText(body, jwt))
 	}
 	var payload installationPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -520,7 +520,7 @@ func (c *Client) ListInstallations(ctx context.Context) ([]Installation, error) 
 			if err != nil {
 				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 			}
-			if err := CheckResponse(status, header, body); err != nil {
+			if err := CheckTokenResponse(status, header, body, jwt); err != nil {
 				return nil, fmt.Errorf("list installations (page %d): %w", page, err)
 			}
 			var payload []installationPayload
@@ -610,7 +610,7 @@ func listInstallationRepositories(ctx context.Context, c *Client, token string) 
 		if err != nil {
 			return nil, fmt.Errorf("list installation repositories (page %d): %w", page, err)
 		}
-		if err := CheckResponse(status, header, body); err != nil {
+		if err := CheckTokenResponse(status, header, body, token); err != nil {
 			return nil, fmt.Errorf("list installation repositories (page %d): %w", page, err)
 		}
 		var payload struct {
@@ -705,6 +705,8 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	if limited == nil {
 		return body, status, header, nil
 	}
+	// The error's text prints its Body, which the query's token never reaches (BodyText).
+	limited.Body = BodyText(body, token)
 	c.recordGraphQLLimit(ctx, installation, limited, secondary)
 	return body, status, header, limited
 }
@@ -769,11 +771,11 @@ func (c *Client) Token(ctx context.Context, installationID int64) (string, error
 	if err != nil {
 		return "", err
 	}
-	if limited := RateLimit(status, header, body); limited != nil {
+	if limited := rateLimit(status, header, body, jwt); limited != nil {
 		return "", limited
 	}
 	if status != http.StatusCreated {
-		return "", fmt.Errorf("POST %s: status %d: %s", target, status, body)
+		return "", fmt.Errorf("POST %s: status %d: %s", target, status, BodyText(body, jwt))
 	}
 	var payload struct {
 		Token     string    `json:"token"`
@@ -820,7 +822,7 @@ func (c *Client) CheckSource(ctx context.Context, owner, repo string) (Source, e
 		return Source{}, fmt.Errorf("%w: its token cannot read %s/%s", ErrNoInstallation, owner, repo)
 	}
 	if status != http.StatusOK {
-		return Source{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Source{}, fmt.Errorf("GET %s: status %d: %s", target, status, BodyText(body, token))
 	}
 	return Source{InstallationID: installation.ID, AppSlug: installation.AppSlug}, nil
 }
@@ -946,7 +948,7 @@ func (c *Client) Ref(ctx context.Context, token, owner, repo, branch string) (st
 		return "", fmt.Errorf("%w: %s on %s/%s", ErrNoBranch, branch, owner, repo)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return "", fmt.Errorf("GET %s: status %d: %s", target, status, BodyText(body, token))
 	}
 	sha := strings.TrimSpace(string(body))
 	if !commitSHA.MatchString(sha) {
@@ -980,7 +982,7 @@ func (c *Client) Branch(ctx context.Context, token, owner, repo, branch string) 
 	case http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity:
 		return "", noBranch
 	default:
-		return "", fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return "", fmt.Errorf("GET %s: status %d: %s", target, status, BodyText(body, token))
 	}
 	var ref struct {
 		Ref    string `json:"ref"`
@@ -1041,7 +1043,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 		return Dir{}, nil
 	}
 	if status != http.StatusOK {
-		return Dir{}, fmt.Errorf("GET %s: status %d: %s", target, status, body)
+		return Dir{}, fmt.Errorf("GET %s: status %d: %s", target, status, BodyText(body, token))
 	}
 	var tree struct {
 		SHA       string `json:"sha"`
@@ -1108,7 +1110,7 @@ func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, fmt.Errorf("GET %s (%s): status %d: %s", target, path, status, body)
+		return nil, fmt.Errorf("GET %s (%s): status %d: %s", target, path, status, BodyText(body, token))
 	}
 	var payload struct {
 		Content  string `json:"content"`

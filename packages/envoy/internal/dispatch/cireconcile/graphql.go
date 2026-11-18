@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
 const (
@@ -237,7 +239,9 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 		return queryPage{}, err
 	}
 	if status != http.StatusOK {
-		return queryPage{}, fmt.Errorf("the GraphQL query for %s/%s answered status %d: %s", repository.owner, repository.repo, status, body)
+		// GitHub's own refusal prints as GitHub sent it; any other body was written in GitHub's
+		// place and can echo the query back, so it is named with its token redacted.
+		return queryPage{}, fmt.Errorf("the GraphQL query for %s/%s answered status %d: %s", repository.owner, repository.repo, status, githubapp.BodyText(body, repository.token))
 	}
 	var answer graphQLAnswer
 	if err := json.Unmarshal(body, &answer); err != nil {

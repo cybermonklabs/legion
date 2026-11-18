@@ -19,6 +19,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/sjawhar/envoy/excerpt"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // readRepositoryJSON performs one GET of path (an API path under the API origin) with an
@@ -31,7 +34,7 @@ func (c *Client) readRepositoryJSON(ctx context.Context, token, path, repoFull s
 	if err != nil {
 		return nil, status, err
 	}
-	if err := CheckRepositoryResponse(status, header, body, repoFull, c.base+path, handled...); err != nil {
+	if err := CheckRepositoryResponse(status, header, body, token, repoFull, c.base+path, handled...); err != nil {
 		return nil, status, err
 	}
 	return body, status, nil
@@ -62,7 +65,7 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 	if err != nil {
 		return nil, status, "", err
 	}
-	if err := CheckRepositoryResponse(status, header, body, repoFull, c.base+path, http.StatusNotModified); err != nil {
+	if err := CheckRepositoryResponse(status, header, body, token, repoFull, c.base+path, http.StatusNotModified); err != nil {
 		return nil, status, "", err
 	}
 	// GitHub repeats the ETag on a 304; when it does not, the empty value travels to the caller,
@@ -74,19 +77,20 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 // names in handled and reads itself, is no error. A 403 or 404 is ErrRepositoryUnreadable — the
 // installation may not read this resource, or cannot see the repository at all — which the
 // results read takes as unknown, never as a commit it placed elsewhere. A rate limit behind
-// either status is the *RateLimitError instead. Any other status is the error CheckResponse
-// makes, named by the target. repoFull is the `owner/repo` the error names.
-func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFull, target string, handled ...int) error {
+// either status is the *RateLimitError instead. Any other status is the error CheckTokenResponse
+// makes, named by the target. token is the installation token the read carried, which no error
+// prints (BodyText); repoFull is the `owner/repo` the error names.
+func CheckRepositoryResponse(status int, header http.Header, body []byte, token, repoFull, target string, handled ...int) error {
 	if status == http.StatusOK || slices.Contains(handled, status) {
 		return nil
 	}
 	if status == http.StatusForbidden || status == http.StatusNotFound {
-		if limited := RateLimit(status, header, body); limited != nil {
+		if limited := rateLimit(status, header, body, token); limited != nil {
 			return limited
 		}
 		return fmt.Errorf("%w: %s", ErrRepositoryUnreadable, repoFull)
 	}
-	if err := CheckResponse(status, header, body); err != nil {
+	if err := CheckTokenResponse(status, header, body, token); err != nil {
 		return fmt.Errorf("GET %s: %w", target, err)
 	}
 	return nil
@@ -161,7 +165,7 @@ func (c *Client) HasCommit(ctx context.Context, token, owner, repo, sha string) 
 	if status == http.StatusUnprocessableEntity && noCommitForSHA(body) {
 		return false, nil
 	}
-	if err := CheckRepositoryResponse(status, header, body, owner+"/"+repo, target); err != nil {
+	if err := CheckRepositoryResponse(status, header, body, token, owner+"/"+repo, target); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -186,6 +190,58 @@ func responseMessage(body []byte) string {
 		return ""
 	}
 	return answer.Message
+}
+
+// ErrorJSON reports whether body is GitHub's error JSON: an object whose message is a string, the
+// shape GitHub refuses a request with, read as responseMessage reads it, so every body Message
+// finds a message in is one.
+func ErrorJSON(body []byte) bool {
+	var answer struct {
+		Message *string `json:"message"`
+	}
+	return json.Unmarshal(body, &answer) == nil && answer.Message != nil
+}
+
+// BodyText is body, an answer's to a request that carried tokens (the App JWT or an installation
+// token), as an error or a log line may print it: as GitHub sent it where it is GitHub's error JSON
+// (ErrorJSON), GitHub's word on the request. Any other body was written by something in GitHub's
+// place, such as a gateway or a proxy, which can echo the request back, its Authorization header
+// included, so it is named in one line with each of tokens and any Authorization, Bearer or DPoP
+// value redacted (excerpt.BodyForText), and never whole.
+func BodyText(body []byte, tokens ...string) string {
+	if ErrorJSON(body) {
+		return string(body)
+	}
+	return excerpt.BodyForText(string(body), "GitHub's error JSON", tokens...)
+}
+
+// CheckTokenResponse is CheckResponse for an answer to a request that carried token, the App JWT
+// or an installation token: nil at 200, else the *RateLimitError or the *StatusError, each with
+// the status and, as its body, the body as its text prints it (BodyText). GitHub's own error JSON
+// is then the body as GitHub sent it, and any other body is named in one line with token
+// redacted, since whatever wrote it in GitHub's place can echo the request back; the rule reads
+// either form as it reads every remote field (redact.RemoteText). Message is read from the body
+// as GitHub sent it, so it finds GitHub's own message, and none in a body BodyText names, as
+// CheckResponse does. The reads of client.go and this file and every GitHub read of delivery
+// check their answers with it.
+func CheckTokenResponse(status int, header http.Header, body []byte, token string) error {
+	if status == http.StatusOK {
+		return nil
+	}
+	if limited := rateLimit(status, header, body, token); limited != nil {
+		return limited
+	}
+	return &StatusError{Status: status, body: redact.NewRemoteText(BodyText(body, token)), message: redact.NewRemoteText(responseMessage(body))}
+}
+
+// rateLimit is RateLimit for an answer to a request that carried token, its Body the body as its
+// text prints it, as CheckTokenResponse's is.
+func rateLimit(status int, header http.Header, body []byte, token string) *RateLimitError {
+	limited := RateLimit(status, header, body)
+	if limited != nil {
+		limited.Body = BodyText(body, token)
+	}
+	return limited
 }
 
 // DefaultBranch is the name of the repository's default branch (`GET /repos/{owner}/{repo}`,

@@ -137,6 +137,7 @@ on:
       - 'packages/envoy/listenfd/*'
       - 'packages/envoy/migrationid/*'
       - 'packages/envoy/oauth2call/*'
+      - 'packages/envoy/excerpt/*'
       - 'packages/envoy/roleholder/*'
       - 'packages/envoy/sessiontiming/*'
       - 'packages/envoy/subjectforms/*'

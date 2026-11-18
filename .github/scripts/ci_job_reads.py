@@ -3179,7 +3179,7 @@ GATES = [
           for path in files_but_tests(f"{ENVOY}/roleholder", suffix="", tree=True)],
         *[(path, "packages/envoy/docker/Dockerfile:125 COPY packages/envoy/brokeraddr ./brokeraddr")
           for path in files_but_tests(f"{ENVOY}/brokeraddr", suffix="", tree=True)],
-        *[(path, "packages/envoy/docker/Dockerfile:128 COPY packages/envoy/excerpt ./excerpt")
+        *[(path, "packages/envoy/docker/Dockerfile:129 COPY packages/envoy/excerpt ./excerpt")
           for path in files_but_tests(f"{ENVOY}/excerpt", suffix="", tree=True)],
         # The second image this job builds. Its context is that directory alone, test file and
         # all, so the filter owes every file of it: check-image-trigger-paths.sh refuses a

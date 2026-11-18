@@ -21,6 +21,7 @@ import (
 	"github.com/reearth/ygo/encoding"
 	ygsync "github.com/reearth/ygo/sync"
 
+	"github.com/sjawhar/envoy/excerpt"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 )
 
@@ -117,13 +118,15 @@ func Dial(t testing.TB, url string, header http.Header, artifactID string, doc *
 
 // DialContext is Dial for a caller that is not a test, such as a load driver: ctx bounds the
 // connection's opening, a failure is returned, and the caller closes the peer.
+//
+// A refused handshake is named by its status and body (refusal), with every value header carries
+// redacted from what the room did not write.
 func DialContext(ctx context.Context, url string, header http.Header, artifactID string, doc *crdt.Doc) (*Peer, error) {
 	connection, response, err := gws.DefaultDialer.DialContext(ctx, url, header)
 	if err != nil {
 		if response != nil {
-			// A refused handshake's response carries the server's reason in its status and body.
 			body, _ := io.ReadAll(io.LimitReader(response.Body, 512))
-			return nil, fmt.Errorf("connect a peer to document %s: %s %q: %w", artifactID, response.Status, bytes.TrimSpace(body), err)
+			return nil, fmt.Errorf("connect a peer to document %s: %s: %w", artifactID, refusal(response.Status, body, header), err)
 		}
 		return nil, fmt.Errorf("connect a peer to document %s: %w", artifactID, err)
 	}
@@ -143,6 +146,33 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 		return nil, fmt.Errorf("ask document %s's room for the document: %w", artifactID, err)
 	}
 	return peer, nil
+}
+
+// refusal is a refused handshake's status and body, which carry the server's reason: Dispatch's
+// error JSON (an object whose error is a string, as identity.WriteError writes) quoted as it
+// always was. Anything else, the room's plain-text refusals included, could equally be a page of
+// something in Dispatch's place, such as a gateway, which can echo the request back, so it is
+// named in one line with every value of header redacted, each cookie's value too
+// (excerpt.BodyForText), and so is the status line, whose reason phrase the answerer chose. header
+// names the caller, so each of its values is taken as a credential: under DISPATCH_IDENTITY=header
+// a person's name in the trusted header is what admits them.
+func refusal(status string, body []byte, header http.Header) string {
+	var carried []string
+	for _, values := range header {
+		carried = append(carried, values...)
+	}
+	for _, cookie := range (&http.Request{Header: header}).Cookies() {
+		carried = append(carried, cookie.Value)
+	}
+	status = excerpt.Text(status, carried...)
+	body = bytes.TrimSpace(body)
+	var own struct {
+		Error *string `json:"error"`
+	}
+	if json.Unmarshal(body, &own) == nil && own.Error != nil {
+		return fmt.Sprintf("%s %q", status, body)
+	}
+	return status + " with " + excerpt.BodyForText(string(body), "Dispatch's error JSON", carried...)
 }
 
 // Write sends syncMessage to the room as Hocuspocus carries it: the document's name, then the sync
