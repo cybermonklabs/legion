@@ -55,11 +55,14 @@ func earlierEventAndComment(t *testing.T, database *store.Store, broker *events.
 }
 
 // The rule a mention's copy waits on reads what the outbox recorded an earlier event still owes
-// (events.owed_keys). An event no record has written that for - null, as every new event is until
-// the outbox's first batch of it - holds the copy: it owes its topic family at least, and a copy
-// let past it would reach the session before it, which is the case the order exists for. The
-// controls in the same run are the same event recorded as owing nothing, or owing another
-// session's subject only, which hold no copy of s1's; and the words that do hold it.
+// (events.owed_keys), as of the owner's last_seq the recording batch read (events.owed_seq). An
+// event no record has written that for - null, as every new event is until the outbox's first
+// batch of it - holds the copy: it owes its topic family at least, and a copy let past it would
+// reach the session before it, which is the case the order exists for. So does an event whose
+// record read the owner before its last event: a write since may have made the session one of
+// its destinations. The controls in the same run are the same event recorded, as of the owner's
+// last event, as owing nothing, or owing another session's subject only, which hold no copy of
+// s1's; and the words that do hold it.
 func TestAnEarlierEventTheOutboxHasNotRecordedHoldsAMentionCopy(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -67,23 +70,26 @@ func TestAnEarlierEventTheOutboxHasNotRecordedHoldsAMentionCopy(t *testing.T) {
 	deps := Deps{Store: database}
 	s1 := contracts.LegacyAgentSubject("s1")
 	const failure = `publish owner topic "notifications.dispatch.issue.T-1.message.created": no responders`
+	const current = `owed_seq = (select last_seq from issues where key = 'T-1')`
 	for _, row := range []struct {
 		name  string
 		state string
 		holds bool
 	}{
 		{name: "never recorded (null)", state: `owed_keys = null`, holds: true},
-		{name: "control: recorded owing nothing", state: `owed_keys = '{}'`},
-		{name: "control: recorded owing another session's subject alone", state: `owed_keys = array['notifications.agent.s2']`},
-		{name: "owes its topic family", state: `owed_keys = array['` + model.OwedTopicFamily + `']`, holds: true},
-		{name: "owes s1's own subject", state: `owed_keys = array['` + s1 + `']`, holds: true},
-		{name: "a recipient read failed", state: `owed_keys = array['` + model.OwedAnySession + `']`, holds: true},
+		{name: "control: recorded owing nothing", state: `owed_keys = '{}', ` + current},
+		{name: "control: recorded owing another session's subject alone", state: `owed_keys = array['notifications.agent.s2'], ` + current},
+		{name: "recorded owing nothing before the owner's last event", state: `owed_keys = '{}', owed_seq = (select last_seq - 1 from issues where key = 'T-1')`, holds: true},
+		{name: "recorded owing nothing with no owed_seq", state: `owed_keys = '{}'`, holds: true},
+		{name: "owes its topic family", state: `owed_keys = array['` + model.OwedTopicFamily + `'], ` + current, holds: true},
+		{name: "owes s1's own subject", state: `owed_keys = array['` + s1 + `'], ` + current, holds: true},
+		{name: "a recipient read failed", state: `owed_keys = array['` + model.OwedAnySession + `'], ` + current, holds: true},
 		{name: "control: published, never recorded", state: `owed_keys = null, published_at = now()`},
 		{name: "control: a pending subscription command", state: `owed_keys = null, payload = payload || '{"pending": true}'`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			if _, err := database.Pool.Exec(ctx, `
-				update events set owed_keys = null, published_at = null, payload = payload - 'pending', publish_error = $2
+				update events set owed_keys = null, owed_seq = null, published_at = null, payload = payload - 'pending', publish_error = $2
 				where id = $1
 			`, earlier.ID, failure); err != nil {
 				t.Fatalf("reset the earlier event: %v", err)

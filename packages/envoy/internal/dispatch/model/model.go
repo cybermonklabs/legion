@@ -2605,29 +2605,57 @@ const (
 // only when the role's holder is that session, which this statement cannot read: the caller asks
 // MentionCopyRolesSQL for those routes when this one answers no row.
 //
-// An event the outbox has not recorded yet (owed_keys null) owes its topic family at least, the
-// first destination of every event, so it holds every copy. It must: a new event has no record
-// until the outbox's first batch of it, and a comment written directly after it would otherwise
-// pass it, which is the case the order exists for. Null is also every event no record of this
-// release has written, the release before it among them: such an event holds the copies of its
-// owner's later comments until it is published or recorded again, as one that owes its topic
-// family would.
+// What an earlier event owes is what the outbox's last record of it says (events.owed_keys), as
+// its destinations stood when the batch that wrote it read them, and that record is trusted only
+// while no event of the owner has been written since that read: events.owed_seq is the owner's
+// last_seq the batch read beside them, and an owner whose last_seq is past it has had a write the
+// record did not see. Every write that makes a session a destination of an owner's events - the
+// issue's route, its claim, an ask's follower - appends an event of that owner in the same
+// transaction, and an event write takes the owner's row before it draws its seq, so the owner's
+// events commit in seq order and such a write always moves last_seq past every record made
+// before it. A record older than the owner's last event therefore holds the copy until a batch
+// that read that event writes it again, whatever that write was and whether its own event is
+// published yet: the comment's own event moves last_seq too, so a copy waits for a record made
+// after its comment of each earlier event still unpublished. The record that writes owed_keys
+// writes owed_seq beside it, under the same hold; a record that writes neither - one made after
+// its process lost the publisher hold, or one of the release before this one - leaves both as
+// they were, and the copy waits on them.
+//
+// An event the outbox has not recorded yet (owed_keys and owed_seq null) owes its topic family at
+// least, the first destination of every event, so it holds every copy. It must: a new event has
+// no record until the outbox's first batch of it, and a comment written directly after it would
+// otherwise pass it, which is the case the order exists for. Null is also every event no record
+// of this release has written, the release before it among them: such an event holds the copies
+// of its owner's later comments until it is published or recorded again, as one that owes its
+// topic family would.
 //
 // It is the order the outbox keeps for its own sends (planChains), asked by the two roads a
 // mention's copy takes outside the outbox's chains: the API's send of the mention
 // (deliverResolvedCommentMention in internal/dispatch/api) and the outbox's fallback pass
 // (decideFallbackCopy). The read walks the partial index events_outbox_owner, whose predicate the
-// query's own clauses spell, so it reads the owner's unpublished events and no other. It is a
-// constant so that a guard reading a statement's SQL can read it (the keyed-write guard of
-// internal/dispatch/api).
+// query's own clauses spell, so it reads the owner's unpublished events and no other, and the
+// owner's last_seq by its row's primary key. The exhaustive model of this order
+// (TestTheMentionCopyOrderModel in internal/dispatch/outbox) holds this rule, and
+// TestTheModelsCopyRuleIsTheSQLRule runs both on the same rows. It is a constant so that a guard
+// reading a statement's SQL can read it (the keyed-write guard of internal/dispatch/api).
 const MentionCopyHolderSQL = `select k.id, k.publish_error
 		from events c
+		cross join lateral (
+			select coalesce(
+				(select last_seq from issues where key = c.issue_key),
+				(select last_seq from artifacts where id = c.artifact_id),
+				(select last_seq from projects where key = c.project_key)
+			) as last_seq
+		) o
 		join events k on coalesce(k.issue_key, k.artifact_id::text, k.project_key) = coalesce(c.issue_key, c.artifact_id::text, c.project_key)
 		where c.id = $1::bigint
 		  and k.id < c.id
 		  and k.published_at is null
 		  and (k.payload ->> 'pending') is distinct from 'true'
-		  and (k.owed_keys is null or k.owed_keys && array['` + OwedTopicFamily + `', '` + OwedAnySession + `', $2::text]::text[])
+		  and (k.owed_keys is null
+		       or k.owed_seq is null
+		       or k.owed_seq < o.last_seq
+		       or k.owed_keys && array['` + OwedTopicFamily + `', '` + OwedAnySession + `', $2::text]::text[])
 		order by k.id
 		limit 1`
 

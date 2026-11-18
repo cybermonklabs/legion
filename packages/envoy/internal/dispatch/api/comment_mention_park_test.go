@@ -16,10 +16,14 @@ import (
 // parkRig is a mention sender whose sends to one recipient, session:parked, wait for an earlier
 // event (the send answers its item to take up again, as sendCommentMention does for a
 // *mentionHeldForOrder) until the test opens it, and whose every other send takes a moment and
-// records itself.
+// records itself. Its timers are the sender's own (time.AfterFunc), counted: pending is how many
+// parks' timers have been started and not run, which the sender starts only once no goroutine
+// serves the parked lane (serve), and fired how many have run.
 type parkRig struct {
 	sender  *mentionSender
 	open    atomic.Bool
+	pending atomic.Int32
+	fired   atomic.Int64
 	mu      sync.Mutex
 	tries   []time.Time
 	sent    []string
@@ -69,6 +73,14 @@ func newParkRig(t *testing.T, capacity int) *parkRig {
 	)
 	rig.sender.mu.Lock()
 	rig.sender.capacity = capacity
+	rig.sender.after = func(delay time.Duration, f func()) {
+		rig.pending.Add(1)
+		time.AfterFunc(delay, func() {
+			rig.pending.Add(-1)
+			rig.fired.Add(1)
+			f()
+		})
+	}
 	rig.sender.mu.Unlock()
 	t.Cleanup(func() {
 		stop()
@@ -86,14 +98,38 @@ func (r *parkRig) enqueue(id, target string) mentionSend {
 }
 
 // state is what the sender holds now: how many goroutines serve lanes, whether session:parked's
-// held lane is parked, how many sends wait on it, and how many sends are queued in all. The rig's
-// comments name no owner, so they share one held lane (heldLane).
+// held lane is parked - its timer started and not run - how many sends wait on it, and how many
+// sends are queued in all. The rig's comments name no owner, so they share one held lane
+// (heldLane). The four are read as of one moment: a read that a timer's run crossed is read again,
+// since the run starts a goroutine on the lane (unpark) after it counts itself fired.
 func (r *parkRig) state() (serving int, parked bool, onLane, queued int) {
-	r.sender.mu.Lock()
-	defer r.sender.mu.Unlock()
-	held := heldLane("session:parked", "")
-	_, parked = r.sender.parked[held]
-	return r.sender.serving, parked, len(r.sender.lanes[held]), len(r.sender.claims)
+	held := heldLane(laneKey{recipient: "session:parked"}, "")
+	for {
+		fired, pending := r.fired.Load(), r.pending.Load()
+		r.sender.mu.Lock()
+		serving, onLane, queued = r.sender.serving, len(r.sender.lanes[held]), len(r.sender.claims)
+		r.sender.mu.Unlock()
+		if r.fired.Load() == fired && r.pending.Load() == pending {
+			return serving, pending > 0, onLane, queued
+		}
+	}
+}
+
+// countParks has sender count each park whose timer it starts - which it does once no goroutine
+// serves the parked lane (serve) - and start that timer as the sender does, unless hold, which
+// leaves every parked lane parked for the rest of the test. It answers the count. Call it before
+// the first send is queued.
+func countParks(sender *mentionSender, hold bool) *atomic.Int32 {
+	parks := &atomic.Int32{}
+	sender.mu.Lock()
+	defer sender.mu.Unlock()
+	sender.after = func(delay time.Duration, f func()) {
+		parks.Add(1)
+		if !hold {
+			time.AfterFunc(delay, f)
+		}
+	}
+	return parks
 }
 
 // serveStacks counts the goroutines whose stack is in the sender's lane loop.

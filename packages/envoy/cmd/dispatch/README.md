@@ -2340,12 +2340,13 @@ A new table: nothing existing is read, locked or rewritten, the previous release
 Migration `20261117190118_events_owed_keys` adds `events.owed_keys`, nullable `text[]` with no default: what an event still owes once the outbox's last record of it was written (`recordBatch`, `owedKeys`).
 It holds the key of each destination of the event's list that no batch has reached, the owner's topic family spelled `topic-family`, a session's own subject and a role's topic by their subjects, and `any-session` beside them when the event's recipient read failed;
 an event the outbox cannot read, and a published one, hold an empty array, and an event no record has written it for holds null.
-A copy of a mention - the API's own send and the outbox's fallback row - waits behind every earlier event of its owner that still owes a send its session may take (`model.MentionCopyHolderSQL`), and null owes the topic family, so an event written before the migration holds those copies until the outbox records it again or publishes it.
-The read walks `events_outbox_owner`.
-The column is a catalog change that rewrites no row, and the `ALTER` holds `events` `ACCESS EXCLUSIVE` for that alone; its census answers `0`.
-The previous release neither reads nor writes it, so the two roll side by side.
-An event that release records keeps the value this release wrote last, or null: a send the previous release reached since is still listed, which holds copies longer, not shorter, and a role route is listed as its role topic, whose holder the copy's road reads when it asks.
-This release also writes it again for every unpublished event a batch reads not due, when it changed; an event the previous release holds the publisher hold over is not read by this release's batches, so a destination it gains then is written at this release's next batch of its owner.
+The same `ALTER` adds `events.owed_seq`, nullable `integer`: the owner's `last_seq` the batch that wrote `owed_keys` read beside the routing they come from, written with them and only with them.
+A copy of a mention - the API's own send and the outbox's fallback row - waits behind every earlier event of its owner that still owes a send its session may take, or whose `owed_seq` is behind the owner's `last_seq` - a write since the record may have made the session a destination of it (`model.MentionCopyHolderSQL`) - and null owes the topic family, so an event written before the migration holds those copies until the outbox records it again or publishes it.
+The read walks `events_outbox_owner`, and reads the owner's `last_seq` by the owner's primary key.
+The columns are a catalog change that rewrites no row, and the `ALTER` holds `events` `ACCESS EXCLUSIVE` for that alone; its census answers `0`.
+The previous release neither reads nor writes them, so the two roll side by side.
+An event that release records keeps the values this release wrote last, or null, and every event written since - by either release - moves its owner's `last_seq` past them, so a copy this release sends waits until this release records the event again: while the previous release holds the publisher hold, copies on an owner with an unpublished earlier event wait longer, and pass none of its events.
+This release also writes both again for every unpublished event a batch reads not due, when either changed.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:

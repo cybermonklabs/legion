@@ -56,9 +56,12 @@ func TestTheAPIsMentionWaitsForARoleRouteItsSessionHoldsNow(t *testing.T) {
 		{name: "control: keyed on the holder at the time of the record", owed: []string{contracts.LegacyAgentSubject("ses_stale_holder")}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			// Recorded as of the issue's last event, as a batch that read every event of it writes
+			// it: owed_seq at the issue's last_seq, so the keys alone decide.
 			if _, err := database.Pool.Exec(ctx, `
 				update events set published_at = case when id = $2 then null else coalesce(published_at, now()) end,
-					owed_keys = case when id = $2 then $3::text[] else owed_keys end
+					owed_keys = case when id = $2 then $3::text[] else owed_keys end,
+					owed_seq = case when id = $2 then (select last_seq from issues where key = $1) else owed_seq end
 				where issue_key = $1
 			`, issue.Key, earlierID, row.owed); err != nil {
 				t.Fatalf("set the earlier event owing %v: %v", row.owed, err)
@@ -99,6 +102,7 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
 		func(context.Context, []mentionClaim) error { return nil },
 	)
+	parks := countParks(sender, false)
 	t.Cleanup(func() {
 		stop()
 		sender.wait()
@@ -116,12 +120,7 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 	}
 
 	enqueue("a-first", "A-1")
-	waitUntil(t, 5*time.Second, "A's first send held on its own lane", func() bool {
-		sender.mu.Lock()
-		defer sender.mu.Unlock()
-		_, parked := sender.parked[heldLane("session:s1", "A-1")]
-		return parked
-	})
+	waitUntil(t, 5*time.Second, "A's first send held on its own lane", func() bool { return parks.Load() >= 1 })
 	enqueue("b-only", "B-1")
 	enqueue("a-second", "A-1")
 	waitUntil(t, 5*time.Second, "B's mention of s1 sent while A's wait", func() bool {
@@ -248,6 +247,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	sender.mu.Lock()
 	sender.capacity = 1
 	sender.mu.Unlock()
+	parks := countParks(sender, true)
 	t.Cleanup(func() {
 		stop()
 		sender.wait()
@@ -264,13 +264,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	<-started
 	second := enqueue("second", "A-1")
 	close(release)
-	held := heldLane("session:s1", "A-1")
-	waitUntil(t, 5*time.Second, "the first send parked on A-1's held lane", func() bool {
-		sender.mu.Lock()
-		defer sender.mu.Unlock()
-		_, parked := sender.parked[held]
-		return parked
-	})
+	waitUntil(t, 5*time.Second, "the first send parked on A-1's held lane", func() bool { return parks.Load() == 1 })
 	sender.mu.Lock()
 	queued, inflight := len(sender.claims), len(sender.held)-len(sender.claims)
 	sender.mu.Unlock()
@@ -297,6 +291,7 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
 		func(context.Context, []mentionClaim) error { return nil },
 	)
+	parks := countParks(sender, true)
 	t.Cleanup(func() {
 		stop()
 		sender.wait()
@@ -307,12 +302,11 @@ func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 			attempt: 1, claimed: time.Now(),
 		})
 	}
-	held := heldLane("session:s1", "A-1")
+	held := heldLane(laneKey{recipient: "session:s1"}, "A-1")
 	waitUntil(t, 5*time.Second, "the three sends on A's held lane, parked", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
-		_, parked := sender.parked[held]
-		return parked && len(sender.lanes[held]) == 3
+		return parks.Load() == 1 && len(sender.lanes[held]) == 3
 	})
 	count, _ := sender.heldSamples(time.Now())
 	t.Logf("held gauge samples %+v", count)

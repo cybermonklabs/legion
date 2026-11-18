@@ -128,11 +128,31 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 	}
 }
 
-// A held lane whose head waits again is parked by the goroutine that served it, and that goroutine
-// gives it up then and there: the lane's timer, run here the moment the park ends (after), starts
-// one goroutine on it before the first goes on, and no two goroutines ever send two of its sends
-// at once. A-1's first send waits three times, A-1's second waits behind it; each send takes 5 ms,
-// so two goroutines on the lane would have both in flight together.
+// A send that leaves a held lane past the warn threshold with no WARN logged for it names, in the
+// WARN it logs as it goes, what its lane waits behind (reportLate) - or, when the lane has no wait
+// recorded, what the send itself last waited behind: here s1 and event 42, where a read of the
+// lane alone would log an empty session and event 0.
+func TestALateReportWithNoWaitOnItsLaneNamesTheSendsOwnWait(t *testing.T) {
+	logs := &storetest.LockedLog{}
+	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
+	sender := &mentionSender{heldWarnAfter: time.Millisecond, waits: map[laneKey]heldWait{}}
+	item := mentionSend{
+		comment: model.Comment{ID: "late", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
+		heldFor: "s1", heldBy: model.MentionCopyHolder{EventID: 42}, heldSince: time.Now().Add(-time.Minute),
+	}
+	sender.reportLate(heldLane(item.lane(), item.owner()), item)
+	logged := logs.String()
+	t.Logf("logged: %s", logged)
+	if strings.Count(logged, "comment=late ") != 1 || !strings.Contains(logged, "session=s1 ") || !strings.Contains(logged, "event_id=42 ") {
+		t.Fatalf("the late WARN does not name the send's own wait, s1 and event 42, once:\n%s", logged)
+	}
+}
+
+// A held lane whose head waits again is parked by the goroutine that served it, which gives it up
+// before the lane's timer starts: the timer, run here the moment it is started (after), starts
+// one goroutine on the lane only once the first has let it go, and no two goroutines ever send two
+// of its sends at once. A-1's first send waits three times, A-1's second waits behind it; each send
+// takes 5 ms, so two goroutines on the lane would have both in flight together.
 func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 	lifetime, stop := context.WithCancel(context.Background())
 	var tries, active, most atomic.Int32
@@ -183,5 +203,65 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 	}
 	if !slices.Equal(sent, []string{"a-first", "a-second"}) {
 		t.Fatalf("sent %v, want A-1's first, then its second, each once", sent)
+	}
+}
+
+// A park's timer starts only once no goroutine serves the parked lane. A-1's first send to s1
+// waits three times and its second waits behind it: the first park makes A-1's held lane beside
+// s1's lane, whose goroutine may still be on s1's lane; the next two are the held lane's own head
+// waiting again, and the goroutine on that lane gives it up (next) before its timer starts, so at
+// each of their starts no goroutine serves any lane, the held lane being the only one with a
+// send. That is why a parked lane's pending timer says no goroutine is on it, which the park tests
+// read (parkRig.state, countParks) where a count of goroutines would lag the park.
+func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
+	lifetime, stop := context.WithCancel(context.Background())
+	var tries atomic.Int32
+	sender := newMentionSender(lifetime, time.Hour,
+		func(_ context.Context, item mentionSend) (mentionSend, bool) {
+			if item.comment.ID == "a-first" && tries.Add(1) <= 3 {
+				item.heldFor, item.heldBy = "s1", model.MentionCopyHolder{EventID: 7}
+				return item, true
+			}
+			return mentionSend{}, false
+		},
+		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
+		func(context.Context, []mentionClaim) error { return nil },
+	)
+	var mu sync.Mutex
+	var servingAtStart []int
+	sender.mu.Lock()
+	sender.after = func(delay time.Duration, f func()) {
+		sender.mu.Lock()
+		serving := sender.serving
+		sender.mu.Unlock()
+		mu.Lock()
+		servingAtStart = append(servingAtStart, serving)
+		mu.Unlock()
+		time.AfterFunc(delay, f)
+	}
+	sender.mu.Unlock()
+	t.Cleanup(func() {
+		stop()
+		sender.wait()
+	})
+	for _, id := range []string{"a-first", "a-second"} {
+		sender.enqueue(context.Background(), mentionSend{
+			comment: model.Comment{ID: id, IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
+			attempt: 1, claimed: time.Now(),
+		})
+	}
+	waitUntil(t, 5*time.Second, "A-1's two sends gone", func() bool {
+		sender.mu.Lock()
+		defer sender.mu.Unlock()
+		return len(sender.held) == 0
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	t.Logf("goroutines serving lanes as each park's timer started: %v", servingAtStart)
+	if len(servingAtStart) != 3 {
+		t.Fatalf("%d park timers started, want three, one per wait of A-1's first send", len(servingAtStart))
+	}
+	if servingAtStart[1] != 0 || servingAtStart[2] != 0 {
+		t.Fatalf("goroutines serving lanes as the held lane's own parks started their timers: %v, want none for the second and third: the lane's goroutine starts its timer before it gives the lane up", servingAtStart)
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -14,26 +16,43 @@ import (
 )
 
 // An earlier event of T-1 is routed to s2 and its send to s2 fails, so the record says it owes
-// s2's subject alone. The issue's route then moves to s1, and a later comment mentions s1, whose
-// copy the fallback pass holds as a row. s1 takes the earlier event before the comment.
+// s2's subject alone. A write then makes s1 a destination of it - the route moves to s1, or s1
+// takes the claim - and a comment mentions s1, whose copy the fallback pass holds as a row. s1
+// takes the earlier event before the comment, whether the write came before the comment or after
+// it, and whatever batch has run by the time the row is decided.
 //
-// The route moves the way the API moves it - the one write of issues.route, PATCH
-// /api/v1/issues/{key} (issue_patch.go), which appends issue.updated in the same transaction - so
-// that event is unpublished, and owes its topic family, when the row is first decided, and the
-// batch that publishes it reads the earlier event not due and writes what it owes now (owedAgain):
-// s1's subject. Either holds the row.
+// Each write is made the way Dispatch makes it, its event appended in the same transaction: the
+// route by PATCH /api/v1/issues/{key} (issue_patch.go, issue.updated), the claim by a claim
+// (issue.claimed). The new event moves T-1's last_seq past the owed_seq of the earlier event's
+// record, which then holds the row until a batch that read the write records the earlier event
+// again (owedAgain), owing s1's subject (model.MentionCopyHolderSQL). The write after the comment
+// is the case a rule reading only events before the comment cannot see: its event comes after
+// the comment, and the earlier event's record still names s2 alone when the row is decided.
 //
-// The control row moves the route with no event, a write only direct SQL makes: nothing then
-// tells the record the earlier event's route changed before its next batch, and the row's copy
-// reaches s1 first - which is what shows this test can see a copy pass the earlier event.
+// The control row moves the route with no event, a write only direct SQL makes, after a batch has
+// recorded the earlier event as of the comment: nothing then moves T-1's last_seq or tells the
+// record the earlier event's route changed before its next batch, and the row's copy reaches s1
+// first - which is what shows this test can see a copy pass the earlier event.
 func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
+	const (
+		route = `update issues set route = 'session:s1' where key = 'T-1'`
+		claim = `update issues set claimed_by = '{"kind": "session", "id": "s1"}', claimed_at = now() where key = 'T-1'`
+	)
+	routed := map[string]any{"changed_fields": []string{"route"}}
+	claimed := map[string]any{"claimed_by": map[string]any{"kind": "session", "id": "s1"}}
 	for _, tc := range []struct {
-		name      string
-		withEvent bool
-		passes    bool
+		name  string
+		write string
+		// event is the type of the event the write appends, "" for none, and payload its payload.
+		event        string
+		payload      map[string]any
+		afterComment bool
+		passes       bool
 	}{
-		{name: "the route moved as the API moves it, with issue.updated", withEvent: true},
-		{name: "control: the route moved by direct SQL, with no event", passes: true},
+		{name: "the route moved as the API moves it, with issue.updated, before the comment", write: route, event: "issue.updated", payload: routed},
+		{name: "the route moved as the API moves it, with issue.updated, after the comment", write: route, event: "issue.updated", payload: routed, afterComment: true},
+		{name: "s1 took the claim, with issue.claimed, after the comment", write: claim, event: "issue.claimed", payload: claimed, afterComment: true},
+		{name: "control: the route moved by direct SQL, with no event, after a batch read the comment", write: route, afterComment: true, passes: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
@@ -56,14 +75,28 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 				t.Fatalf("the earlier event owes %v, next attempt %v, want s2's subject alone, backed off", owed, next)
 			}
 
-			if _, err := database.Pool.Exec(ctx, `update issues set route = 'session:s1' where key = 'T-1'`); err != nil {
-				t.Fatalf("move the route: %v", err)
+			write := func() {
+				tx, err := database.Pool.Begin(ctx)
+				if err != nil {
+					t.Fatalf("begin the write: %v", err)
+				}
+				defer func() { _ = tx.Rollback(ctx) }()
+				if _, err := tx.Exec(ctx, tc.write); err != nil {
+					t.Fatalf("write %q: %v", tc.write, err)
+				}
+				if tc.event != "" {
+					if _, err := broker.Append(ctx, tx, model.Event{
+						IssueKey: new("T-1"), Type: tc.event, Actor: alice, Payload: tc.payload,
+					}); err != nil {
+						t.Fatalf("append %s: %v", tc.event, err)
+					}
+				}
+				if err := tx.Commit(ctx); err != nil {
+					t.Fatalf("commit the write: %v", err)
+				}
 			}
-			if tc.withEvent {
-				appendEvent(t, database, broker, model.Event{
-					IssueKey: new("T-1"), Type: "issue.updated", Actor: alice,
-					Payload: map[string]any{"changed_fields": []string{"route"}},
-				})
+			if !tc.afterComment {
+				write()
 			}
 			const body = "@session:s1 look"
 			commentID := seedComment(t, database, "T-1", alice, body, nil)
@@ -80,7 +113,17 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 			`, commentID, s1, comment.ID); err != nil {
 				t.Fatalf("hold s1's copy as a fallback row: %v", err)
 			}
-			if tc.withEvent {
+			switch {
+			case tc.afterComment:
+				if tc.event == "" {
+					// The control: a batch records the earlier event as of the comment, owing s2,
+					// and only then does the route move, with no event to tell the next batch.
+					holder.scan(ctx, unfenced{})
+				}
+				// The write commits after the comment and before any batch reads it: the row is
+				// decided while the earlier event's record still names s2 alone.
+				write()
+			case tc.event != "":
 				// The batch the route's event wakes, before the row is decided.
 				holder.scan(ctx, unfenced{})
 			}
@@ -135,6 +178,130 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 			case tc.passes && !slices.Equal(got, []string{inOrder[1], inOrder[0]}):
 				t.Fatalf("control: s1 took %v, want the comment first, as a route moved with no event lets it", got)
 			}
+		})
+	}
+}
+
+// A record that writes no owed keys - one made after its process lost the publisher hold, or one
+// of the release before this one, which knows no owed_keys - can publish the event a write
+// appended while it leaves an earlier event's owed_keys as an older record wrote them. The order
+// model found it (TestTheMentionCopyOrderModel, the hand-over's plan under two publishers): an
+// earlier event of T-1 recorded owing s2, the route moved to s1 after a comment that mentions s1,
+// and the issue.updated of that move published by such a record, the earlier event still owing
+// s2 alone. s1's copy waits all the same: the write moved T-1's last_seq past the earlier event's
+// owed_seq, which no record that read the write has written since (model.MentionCopyHolderSQL).
+//
+// The control is the record with the hold, which writes the earlier event owing s1: the copy then
+// waits on those keys, and once the earlier event is published it waits on nothing in any row -
+// which shows the rule can answer no event here.
+func TestARecordThatWritesNoOwedKeysLeavesAMentionCopyWaiting(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		record string
+	}{
+		{name: "a record made after its process lost the publisher hold", record: "lost"},
+		{name: "a record of the release before this one", record: "previous"},
+		{name: "control: the record with the hold", record: "held"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
+			ctx := context.Background()
+			database := storetest.Open(t)
+			broker := events.NewBroker()
+			route := "session:s2"
+			seedIssue(t, database, "T-1", &route)
+			alice := model.Actor{Kind: "user", ID: "alice"}
+			earlier := appendEvent(t, database, broker, model.Event{
+				IssueKey: new("T-1"), Type: "message.created", Actor: alice,
+				Payload: model.Message{ID: "6b1b1c5e-0d3a-4c38-9b7e-0a5f8a0c0404", IssueKey: new("T-1"), Body: "earlier"},
+			})
+			s1, s2 := contracts.LegacyAgentSubject("s1"), contracts.LegacyAgentSubject("s2")
+			deps := Deps{Store: database, Publisher: &recordingPublisher{failTopic: s2}, Broker: broker}
+			holder := holding(t, deps)
+			holder.scan(ctx, unfenced{})
+			if owed, _, _, _ := eventRecord(t, database, earlier.ID); !slices.Equal(owed, []string{s2}) {
+				t.Fatalf("the earlier event owes %v, want s2's subject alone", owed)
+			}
+			commentID := seedComment(t, database, "T-1", alice, "@session:s1 look", nil)
+			comment := appendEvent(t, database, broker, model.Event{
+				IssueKey: new("T-1"), Type: "comment.created", Actor: alice,
+				Payload: model.CommentEventPayload{Comment: model.Comment{
+					ID: commentID, IssueKey: new("T-1"), Body: "@session:s1 look",
+					Mentions: []model.Mention{{Target: "session:s1", Delivery: "steer"}},
+				}},
+			})
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the route's move: %v", err)
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+			if _, err := tx.Exec(ctx, `update issues set route = 'session:s1' where key = 'T-1'`); err != nil {
+				t.Fatalf("move the route: %v", err)
+			}
+			updated, err := broker.Append(ctx, tx, model.Event{
+				IssueKey: new("T-1"), Type: "issue.updated", Actor: alice,
+				Payload: map[string]any{"changed_fields": []string{"route"}},
+			})
+			if err != nil {
+				t.Fatalf("append issue.updated: %v", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit the route's move: %v", err)
+			}
+			item, err := envelope(updated, "")
+			if err != nil {
+				t.Fatalf("build issue.updated's envelope: %v", err)
+			}
+			var lastSeq int
+			if err := database.Pool.QueryRow(ctx, `select last_seq from issues where key = 'T-1'`).Scan(&lastSeq); err != nil {
+				t.Fatalf("read T-1's last_seq: %v", err)
+			}
+			// What a batch that read the move comes to: the earlier event, not due, owes s1 now,
+			// and issue.updated, which goes to the topic family alone, is published.
+			outcomes := []outcome{
+				{id: earlier.ID, state: owedAgain, owed: []string{s1}, owedSeq: lastSeq},
+				{id: updated.ID, state: published, reached: []string{item.Topic}, owed: []string{}, owedSeq: lastSeq},
+			}
+			switch tc.record {
+			case "lost":
+				if holds, err := recordBatch(ctx, deps, outcomes, uuid.New()); err != nil || holds {
+					t.Fatalf("record without the hold: holds %v, %v; want the hold another's", holds, err)
+				}
+			case "previous":
+				// The record of the release before this one, which writes no owed_keys and no
+				// owed_seq: a published event's destinations and its publish.
+				if _, err := database.Pool.Exec(ctx, `
+					update events set published_destinations = published_destinations || $2::text[], published_at = now(),
+						publish_error = null, next_attempt_at = null
+					where id = $1 and published_at is null
+				`, updated.ID, []string{item.Topic}); err != nil {
+					t.Fatalf("record issue.updated as the previous release does: %v", err)
+				}
+			case "held":
+				if holds, err := recordBatch(ctx, deps, outcomes, holder.instance); err != nil || !holds {
+					t.Fatalf("record with the hold: holds %v, %v; want the hold this process's", holds, err)
+				}
+			}
+			var published bool
+			if err := database.Pool.QueryRow(ctx, `select published_at is not null from events where id = $1`, updated.ID).Scan(&published); err != nil || !published {
+				t.Fatalf("issue.updated published %v (%v), want published by the record", published, err)
+			}
+			owed, _, _, _ := eventRecord(t, database, earlier.ID)
+			by, err := copyHolder(ctx, deps, comment.ID, s1, "s1")
+			if err != nil {
+				t.Fatalf("read the rule: %v", err)
+			}
+			t.Logf("the earlier event owes %v after the record; s1's copy waits behind %s", owed, describeHolder(by))
+			if by == nil || by.EventID != earlier.ID {
+				t.Fatalf("s1's copy waits behind %s, want the earlier event %d: it owes s1 a send since the route moved", describeHolder(by), earlier.ID)
+			}
+			if _, err := database.Pool.Exec(ctx, `update events set published_at = now() where id = $1`, earlier.ID); err != nil {
+				t.Fatalf("publish the earlier event: %v", err)
+			}
+			if by, err := copyHolder(ctx, deps, comment.ID, s1, "s1"); err != nil || by != nil {
+				t.Fatalf("control: with the earlier event published, s1's copy waits behind %s (%v), want nothing", describeHolder(by), err)
+			}
+			t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 		})
 	}
 }

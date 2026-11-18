@@ -41,6 +41,12 @@ type pendingEvent struct {
 	// first batchSize due ones: a candidate a window read whole does not hold is one past it.
 	candidates []int64
 	windowSize int
+	// ownerSeq is the owner's last_seq as the batch's read saw it (readBatchSQL): the read sees
+	// every event of the owner with a seq at most this and the routing they were written with, and
+	// every event written after it has a higher one. The record writes it beside what the event
+	// owes (events.owed_seq, recordBatch), so a copy of a mention reads whether a write came after
+	// that record (model.MentionCopyHolderSQL).
+	ownerSeq int
 	// failure is why the row cannot be published as it was read - it did not scan, or its actor or
 	// payload JSON did not decode - and failureLog is the predicate it reports under. Such an
 	// event has no destinations: it is backed off, and holds back no other event.
@@ -76,8 +82,9 @@ type routing struct {
 // owners' events interleaved as they were written, so a backlog over many owners makes short chains
 // rather than long ones for a few. The choice carries only each row's id and back-off: the event's
 // own columns, and the issue (its route and claim, routing), document and project columns a
-// publish needs, are joined onto the kept rows. A kept row's event is read by its id in a lateral
-// subquery with a limit, which
+// publish needs, are joined onto the kept rows, the owner's last_seq among them (ownerSeq), read
+// in this same statement and so as of the routing it reads. A kept row's event is read by its id
+// in a lateral subquery with a limit, which
 // Postgres does not flatten into a join, so each is one lookup of events_pkey: as a join, the
 // planner, which expects many more kept rows than a batch keeps, merges them with a walk of every
 // event's id.
@@ -139,12 +146,13 @@ const readBatchSQL = `
 	       e.published_destinations, coalesce(ar.slug, ''), coalesce(i.route, ai.route),
 	       coalesce(case when i.claimed_by ->> 'kind' = 'session' then i.claimed_by ->> 'id' end, ''),
 	       coalesce(e.issue_key, e.artifact_id::text, e.project_key), r.due, r.next_attempt_at, r.candidates,
-	       r.window_size
+	       r.window_size, coalesce(i.last_seq, ar.last_seq, p.last_seq, 0)
 	from ranked r
 	cross join lateral (select * from events where id = r.id limit 1) e
 	left join issues i on i.key = e.issue_key
 	left join artifacts ar on ar.id = e.artifact_id
 	left join issues ai on ai.key = ar.issue_key
+	left join projects p on p.key = e.project_key
 	where r.sendable - r.due::int < $1
 	order by r.first, r.id
 `
@@ -199,6 +207,7 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 			&item.nextAttempt,
 			&item.candidates,
 			&item.windowSize,
+			&item.ownerSeq,
 		); err != nil {
 			// pgx scans positionally and treats a failure as fatal to the cursor, so this row ends
 			// the batch and rows.Err() below repeats the same error. e.id is the first column, so

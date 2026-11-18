@@ -334,11 +334,11 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		var done settlement
 		for _, event := range owned {
 			if !event.due {
-				outcomes = append(outcomes, outcome{id: event.event.ID, state: owedAgain, owed: owedKeys(event, nil)})
+				outcomes = append(outcomes, outcome{id: event.event.ID, state: owedAgain, owed: owedKeys(event, nil), owedSeq: event.ownerSeq})
 				continue
 			}
 			event.outcome = settleEvent(event, releaseUnacknowledged)
-			event.outcome.owed = owedKeys(event, event.outcome.reached)
+			event.outcome.owed, event.outcome.owedSeq = owedKeys(event, event.outcome.reached), event.ownerSeq
 			outcomes = append(outcomes, event.outcome)
 			switch event.outcome.state {
 			case published:
@@ -574,8 +574,10 @@ type outcome struct {
 	// owed is what the event still owes once the batch settled it (owedKeys), which the record
 	// writes to events.owed_keys, and nil for an outcome that does not read the event's list - an
 	// event a batch chose and did not read (deferPastWindow) - whose owed_keys the record leaves as
-	// it is.
-	owed []string
+	// it is. owedSeq is the owner's last_seq the batch's read saw (pendingEvent.ownerSeq), which
+	// the record writes to events.owed_seq beside owed, and only beside it.
+	owed    []string
+	owedSeq int
 }
 
 // owedKeys is what event still owes once its batch has settled it, as events.owed_keys records it
@@ -831,12 +833,16 @@ func deferPastWindow(events []*batchEvent) []outcome {
 // published_destinations, and an event that reached every destination is marked published, its
 // publish_error cleared. A back-off (next_attempt_at on the database's clock, the attempt count and
 // publish_error), a hold-back (next_attempt_at alone, the earlier of its delay out and its until),
-// a release, and what the event still owes (owed_keys, from outcome.owed) are written only while
-// the hold is holder's and has not lapsed, checked in the same statement, so a process that lost
-// the hold mid-batch schedules nothing beside the holder that took it and leaves the owed keys to
-// that holder's record. Each row is guarded on published_at is null. An event the batch read only
-// as a blocker, not due (owedAgain), has its owed_keys written alone, and only when they changed,
-// so an owner whose events wait rewrites no row a batch finds as it left it.
+// a release, and what the event still owes (owed_keys, from outcome.owed, and beside it owed_seq,
+// the owner's last_seq the batch read, from outcome.owedSeq) are written only while the hold is
+// holder's and has not lapsed, checked in the same statement, so a process that lost the hold
+// mid-batch schedules nothing beside the holder that took it and leaves the owed keys to that
+// holder's record: a record it skipped is one whose owed_seq the owner's next event leaves behind,
+// which holds a mention's copy until that holder writes it (model.MentionCopyHolderSQL). Each row
+// is guarded on published_at is null. An event the batch read only as a blocker, not due
+// (owedAgain), has its owed_keys and owed_seq written alone, and only when either changed, so an
+// owner whose events wait, and that no event was written to since, rewrites no row a batch finds
+// as it left it.
 //
 // A write that fails leaves the events it covered (one owner's, or the batch end's remainder) as
 // they were read, which is what a process that dies between NATS's acknowledgements and this write
@@ -854,6 +860,7 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 	until := make([]*time.Time, 0, len(outcomes))
 	failures := make([]*string, 0, len(outcomes))
 	owedKnown := make([]bool, 0, len(outcomes))
+	owedSeqs := make([]int32, 0, len(outcomes))
 	var reachedIDs []int64
 	var reachedTopics []string
 	var owedIDs []int64
@@ -879,6 +886,7 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			reachedTopics = append(reachedTopics, topic)
 		}
 		owedKnown = append(owedKnown, result.owed != nil)
+		owedSeqs = append(owedSeqs, int32(result.owedSeq))
 		for _, key := range result.owed {
 			owedIDs = append(owedIDs, result.id)
 			owed = append(owed, key)
@@ -892,8 +900,8 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 				select 1 from duty_holds where name = $1 and holder = $2 and expires_at > now()
 			) as mine
 		), outcome as (
-			select * from unnest($3::bigint[], $4::text[], $5::int[], $6::float8[], $7::timestamptz[], $8::text[], $11::bool[])
-				as o(id, state, attempts, delay, until, failure, owed_known)
+			select * from unnest($3::bigint[], $4::text[], $5::int[], $6::float8[], $7::timestamptz[], $8::text[], $11::bool[], $14::int[])
+				as o(id, state, attempts, delay, until, failure, owed_known, owed_seq)
 		), reached as (
 			select id, array_agg(topic order by position) as topics
 			from unnest($9::bigint[], $10::text[]) with ordinality as r(id, topic, position)
@@ -927,6 +935,10 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 				owed_keys = case
 					when o.owed_known and (h.mine or o.state = 'published') then coalesce(w.keys, '{}')
 					else e.owed_keys
+				end,
+				owed_seq = case
+					when o.owed_known and (h.mine or o.state = 'published') then o.owed_seq
+					else e.owed_seq
 				end
 			from outcome o
 			cross join hold h
@@ -934,11 +946,11 @@ func recordBatch(ctx context.Context, deps Deps, outcomes []outcome, holder uuid
 			left join owed w on w.id = o.id
 			where e.id = o.id and e.published_at is null
 			  and (o.state = 'published' or h.mine or r.id is not null)
-			  and (o.state <> 'owed_again' or e.owed_keys is distinct from coalesce(w.keys, '{}'))
+			  and (o.state <> 'owed_again' or e.owed_keys is distinct from coalesce(w.keys, '{}') or e.owed_seq is distinct from o.owed_seq)
 		)
 		select mine from hold
 	`, publisherHold, holder, ids, states, attempts, delays, until, failures, reachedIDs, reachedTopics,
-			owedKnown, owedIDs, owed).Scan(&holds)
+			owedKnown, owedIDs, owed, owedSeqs).Scan(&holds)
 	}); err != nil {
 		return false, fmt.Errorf("record the batch's outcome: %w", err)
 	}
