@@ -34,7 +34,7 @@ func listedStates(t *testing.T, m *Machine, login string, states PendingStates) 
 	}
 	out := make([]string, len(rows))
 	for i, row := range rows {
-		out[i] = row.RecordID + "=" + row.State
+		out[i] = listing(row.RecordID, row.State)
 	}
 	return out
 }
@@ -140,11 +140,12 @@ func machineLogins(m *Machine) *machine.Service {
 	return &machine.Service{Store: m.Store, Audience: m.Audience, Skew: m.Skew}
 }
 
-// dismissedLines are the DismissedMessage lines capture holds, each as its attributes.
-func dismissedLines(capture *logtest.Recorder) []map[string]string {
+// linesOf are the lines capture holds whose message is message, each as its attributes and its
+// level under "level".
+func linesOf(capture *logtest.Recorder, message string) []map[string]string {
 	var lines []map[string]string
 	for _, r := range capture.Records() {
-		if r.Message != DismissedMessage {
+		if r.Message != message {
 			continue
 		}
 		attrs := map[string]string{"level": r.Level.String()}
@@ -233,7 +234,7 @@ func TestExpiredSecretRequestStaysListedUntilDismissed(t *testing.T) {
 	if err := m.Store.Pool.QueryRow(ctx, `select count(*) from credential_request_dismissals`).Scan(&rows); err != nil || rows != 1 {
 		t.Fatalf("credential_request_dismissals holds %d rows (%v); want the one", rows, err)
 	}
-	lines := dismissedLines(capture)
+	lines := linesOf(capture, DismissedMessage)
 	wantLines := []string{"true", "false"}
 	if len(lines) != len(wantLines) {
 		t.Fatalf("%d %q lines after two dismissals; want one each: %v", len(lines), DismissedMessage, lines)
@@ -531,16 +532,8 @@ func TestExpiredRecordLeftOutOfAStatesListIsNotLogged(t *testing.T) {
 		}
 	}
 	warned := map[string]int{}
-	for _, r := range capture.Records() {
-		if r.Message != PendingLeftOutMessage {
-			continue
-		}
-		r.Attrs(func(a slog.Attr) bool {
-			if a.Key == "record_id" {
-				warned[a.Value.String()]++
-			}
-			return true
-		})
+	for _, line := range linesOf(capture, PendingLeftOutMessage) {
+		warned[line["record_id"]]++
 	}
 	if warned[*live.RecordID] != 1 || warned[expired] != 0 {
 		t.Fatalf("%q lines after two lists = %v; want one for the pending record %s and none for the expired %s", PendingLeftOutMessage, warned, *live.RecordID, expired)

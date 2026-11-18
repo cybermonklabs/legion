@@ -1,3 +1,4 @@
+import { awaitsDecision } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -20,21 +21,29 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { brokerPage } from "./brokerPage";
 import { CredentialSessionLines } from "./CredentialSessionLines";
 import { useMachineCodePage } from "./capabilities";
-import { awaitsDecision, type CredentialRequests, credentialPendingQuery } from "./pending";
+import { type CredentialRequests, credentialPendingQuery } from "./pending";
 import { credentialSessionNamesAnyone } from "./session";
 
 const rowLineClass = "flex flex-wrap items-center gap-2 text-sm";
 const rowLinkClass = `${rowLineClass} rounded-lg outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
+
+/** What a request's kind is called on its line. */
+function requestKindLabel(row: CredentialPendingRow): string {
+  return row.kind === "launcher_credential" ? "Machine login" : "Secret request";
+}
+
+/** What a request names, as its line lists it. */
+function requestIdentifiers(row: CredentialPendingRow): string {
+  return (row.identifiers ?? []).join(", ");
+}
 
 /** What every request's first line shows, pending or expired: its kind, what it names, and when
  *  it was asked. */
 function RequestSummary({ row }: { row: CredentialPendingRow }): ReactNode {
   return (
     <>
-      <LabelPill>
-        {row.kind === "launcher_credential" ? "Machine login" : "Secret request"}
-      </LabelPill>
-      <span>{(row.identifiers ?? []).join(", ")}</span>
+      <LabelPill>{requestKindLabel(row)}</LabelPill>
+      <span>{requestIdentifiers(row)}</span>
       <Timestamp at={row.requested_at} className={textMutedOnCanvas} />
     </>
   );
@@ -85,8 +94,8 @@ function PendingRowLine({ row }: { row: CredentialPendingRow }): ReactNode {
 function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
-  const kind = row.kind === "launcher_credential" ? "machine login" : "secret request";
-  const label = `Dismiss expired ${kind} ${(row.identifiers ?? []).join(", ")}`.trimEnd();
+  const label =
+    `Dismiss expired ${requestKindLabel(row).toLowerCase()} ${requestIdentifiers(row)}`.trimEnd();
   // The row shows a refused dismissal itself, under its own line.
   const dismiss = useKeyedWrite<void>({
     inline: true,

@@ -30,11 +30,9 @@ type wireDismissal struct {
 func (ts *testServer) secretRequestOnBox(t *testing.T, box string) (requestID, recordID string, deadline time.Time) {
 	t.Helper()
 	enrollmentID, key := ts.newSessionEnrollment(t, "session-"+t.Name()+"-"+box, testApprover)
-	status, body := ts.session(t, key, enrollmentID, http.MethodPost, "/v1/requests",
-		map[string]any{"request": signAgentSecretRequest(t, key, ts.URL, "need it on "+box, "DEEL_API_KEY"), "session_id": nil})
-	created := decode[wireCreateRequestResponse](t, body)
-	if status != http.StatusOK || created.State != "pending" || created.RecordID == nil {
-		t.Fatalf("POST /v1/requests on %s = %d %s, want a pending request on a record", box, status, body)
+	created := ts.requestAs(t, key, enrollmentID, "DEEL_API_KEY")
+	if created.State != "pending" || created.RecordID == nil {
+		t.Fatalf("POST /v1/requests on %s = %+v, want a pending request on a record", box, created)
 	}
 	if err := ts.Store.Pool.QueryRow(context.Background(), `select pending_expires_at from requests where id=$1`, created.RequestID).
 		Scan(&deadline); err != nil {

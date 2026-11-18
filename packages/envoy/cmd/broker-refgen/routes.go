@@ -401,7 +401,10 @@ func (g *graph) collect(file *ast.File, body ast.Node, params *ast.FieldList) fu
 		// call names, so the route's page lists it from the index instead.
 		if ix, ok := n.(*ast.IndexExpr); ok && isQueryCall(ix.X) {
 			if name, ok := strLit(ix.Index); ok {
-				info.sites = append(info.sites, site{kind: siteCall, call: ix.X.(*ast.CallExpr), query: name, at: g.src.at(ix)})
+				info.sites = append(info.sites, site{
+					kind: siteCall, call: ix.X.(*ast.CallExpr), query: name, at: g.src.at(ix),
+					sentinels: g.caseSentinels(file, stack), guards: siteGuards(stack),
+				})
 			}
 			return true
 		}

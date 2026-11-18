@@ -1,3 +1,4 @@
+import { awaitsDecision } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -13,7 +14,7 @@ import {
   textSecondaryOnSurface,
   textSecondaryOnSurfaceMuted,
 } from "../../theme/classes";
-import { awaitsDecision, useCredentialRequests } from "../credentials/pending";
+import { useCredentialRequests } from "../credentials/pending";
 import { formatAskAge } from "./ask-age";
 import { isMine } from "./sections";
 import { isSnoozed } from "./snooze";

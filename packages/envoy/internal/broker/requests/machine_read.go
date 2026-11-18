@@ -1374,16 +1374,15 @@ type RecordDetail struct {
 // reading "cancelled", whenever the cancel came. ExpiresAt is the deadline recordStateSQL reads
 // (recordDeadlineSQL): a secret request's pending_expires_at, and a machine login's expires_at.
 func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail, error) {
-	var canonical, approver, kind, requestSession, enrollmentSession string
+	var canonical, approver, kind, requestSession, enrollmentSession, state string
 	var createdAt, expiresAt time.Time
-	var overdue bool
 	if err := m.Store.Pool.QueryRow(ctx, `select cr.body, cr.approver, cr.kind, cr.created_at, `+recordDeadlineSQL+`,
-			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), coalesce(`+recordStateSQL+` = 'expired', false)
+			coalesce(req.session_id, ''), coalesce(enr.session_id, ''), coalesce(`+recordStateSQL+`, 'pending')
 		from credential_requests cr
 		left join requests req on req.record_id = cr.id
 		left join enrollments enr on enr.id = cr.enrollment_id
 		where cr.id=$1`, recordID).
-		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &overdue); err != nil {
+		Scan(&canonical, &approver, &kind, &createdAt, &expiresAt, &requestSession, &enrollmentSession, &state); err != nil {
 		return RecordDetail{}, err
 	}
 	body, err := record.ParseBody(canonical)
@@ -1408,10 +1407,6 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 			service = d.Service
 		}
 	}
-	state := "pending"
-	if overdue {
-		state = "expired"
-	}
 	detail := RecordDetail{
 		RecordID: recordID, Kind: kind, State: state, Approver: approver, Enrollment: enr,
 		Identifiers: identifiers, Service: service, Reason: obj.Reason, LifetimeSeconds: body.LifetimeSeconds,
@@ -1424,8 +1419,8 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 	// endEnrollment wrote that event has none, and its request row stands in for it. The actor is
 	// the event's own and has no stand-in there: a record with no event was decided by nobody, so
 	// there is nobody to name, and the empty actor says so. An undecided record keeps the state
-	// read above: pending, or expired past its deadline. overdue is true for a record cancelled
-	// after its deadline as well, which the read below finds and names cancelled.
+	// read above: pending, or expired past its deadline. A record cancelled after its deadline
+	// reads expired there as well, and the read below finds it and names it cancelled.
 	var event, credID, login, actor, eventDetail string
 	var decidedAt time.Time
 	if agentSecret {

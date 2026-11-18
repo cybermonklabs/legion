@@ -1005,7 +1005,8 @@ type Dismissal struct {
 // under it; and a decision that comes after the read waits for this one and then answers its own
 // expiry. The state is read by a statement of its own, after the lock, so it sees what the
 // decision it waited for committed. Two dismissals of one record meet on the table's primary key:
-// the second inserts nothing, and reads back the first one's row.
+// the first's insert returns the row it wrote, and the second inserts nothing and reads the first
+// one's row back.
 func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissal, error) {
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -1038,14 +1039,16 @@ func (m *Machine) Dismiss(ctx context.Context, recordID, login string) (Dismissa
 	case *state != "expired":
 		return Dismissal{}, ErrNotExpired
 	}
-	inserted, err := tx.Exec(ctx, `insert into credential_request_dismissals (record_id, dismissed_by) values ($1, $2)
-		on conflict (record_id) do nothing`, recordID, login)
-	if err != nil {
-		return Dismissal{}, err
+	d := Dismissal{RecordID: recordID}
+	err = tx.QueryRow(ctx, `insert into credential_request_dismissals (record_id, dismissed_by) values ($1, $2)
+		on conflict (record_id) do nothing returning dismissed_by, dismissed_at`, recordID, login).
+		Scan(&d.DismissedBy, &d.DismissedAt)
+	d.Wrote = err == nil
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = tx.QueryRow(ctx, `select dismissed_by, dismissed_at from credential_request_dismissals where record_id=$1`, recordID).
+			Scan(&d.DismissedBy, &d.DismissedAt)
 	}
-	d := Dismissal{RecordID: recordID, Wrote: inserted.RowsAffected() == 1}
-	if err := tx.QueryRow(ctx, `select dismissed_by, dismissed_at from credential_request_dismissals where record_id=$1`, recordID).
-		Scan(&d.DismissedBy, &d.DismissedAt); err != nil {
+	if err != nil {
 		return Dismissal{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

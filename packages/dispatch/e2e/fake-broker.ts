@@ -1,4 +1,4 @@
-import type { DismissResponse } from "@legion/contracts";
+import { awaitsDecision, type DismissResponse } from "@legion/contracts";
 import type {
   ApproverGrantResp,
   ApproverGrantsResponse,
@@ -103,8 +103,8 @@ function brokerError(status: number, code: string, error: string): Response {
 }
 
 /** A listed row's state as the broker names it: a row seeded with none is pending. */
-function rowState(row: FakePendingRequest): "pending" | "expired" {
-  return row.state ?? "pending";
+function rowState(row: FakePendingRequest): NonNullable<FakePendingRequest["state"]> {
+  return awaitsDecision(row) ? "pending" : "expired";
 }
 
 /** A machine login's record as the broker reads it now: one nobody decided whose deadline has

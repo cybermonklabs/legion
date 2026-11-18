@@ -21,7 +21,7 @@ import {
   withOpenedAsk,
 } from "./api";
 import { cliSession, runDispatch } from "./dispatch-cli";
-import { setPendingCredentialRequests } from "./fake-broker-helpers";
+import { expiredCredentialRequest, setPendingCredentialRequests } from "./fake-broker-helpers";
 import { askCard, inboxRow, READING_PANE_WIDTH } from "./inbox-pane";
 import { agentRowId, isThreadRow, replyRowId } from "./inbox-threads";
 import { expect, type Locator, type Page, test } from "./test";
@@ -280,17 +280,18 @@ async function seedInbox(): Promise<SeededInbox> {
       requested_at: new Date().toISOString(),
       session: { enrollment: worker.session_id, request: worker.session_id },
     },
-    {
-      approve_url: "https://secrets.internal.example/approve/record-inbox-cli-expired",
-      approver: "alice",
-      expires_at: expiredDeadline,
-      identifiers: ["RETIRED_API_KEY"],
-      kind: "agent_secret",
-      record_id: "record-inbox-cli-expired",
-      requested_at: new Date(Date.now() - 2 * 3_600_000).toISOString(),
-      session: { enrollment: worker.session_id, request: worker.session_id },
-      state: "expired",
-    },
+    expiredCredentialRequest(
+      {
+        approve_url: "https://secrets.internal.example/approve/record-inbox-cli-expired",
+        approver: "alice",
+        identifiers: ["RETIRED_API_KEY"],
+        kind: "agent_secret",
+        record_id: "record-inbox-cli-expired",
+        requested_at: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+        session: { enrollment: worker.session_id, request: worker.session_id },
+      },
+      expiredDeadline
+    ),
   ]);
 
   // A thread of alice's that an agent has written in since she last read it.
@@ -369,8 +370,8 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     // `Needs you` and `Unread threads` together. The seed leaves two threads unread, so the
     // thread term is load-bearing rather than a zero that would pass either way. It also lists
     // one expired credential request, which nobody can decide any more, so neither number
-    // counts it (`awaitsDecision`, `features/credentials/pending.ts`): a command that counted it
-    // would print a `Needs you` one above the rail's.
+    // counts it (`awaitsDecision`, `@legion/contracts`): a command that counted it would print a
+    // `Needs you` one above the rail's.
     const pendingRequests = printedRequests.rows.filter((row) => !printedExpired(row));
     expect(pendingRequests).toHaveLength(1);
     expect(printedRequests.rows.filter(printedExpired)).toEqual([

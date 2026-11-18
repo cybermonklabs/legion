@@ -1,4 +1,4 @@
-import { INBOX_DISMISSED_PAGE } from "@legion/contracts";
+import { awaitsDecision, INBOX_DISMISSED_PAGE } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -33,11 +33,7 @@ import {
 } from "../../theme/classes";
 import { searchWords } from "../agents/agent-search";
 import { CredentialRequestsSection } from "../credentials/CredentialRequestsSection";
-import {
-  awaitsDecision,
-  type CredentialRequests,
-  useCredentialRequests,
-} from "../credentials/pending";
+import { type CredentialRequests, useCredentialRequests } from "../credentials/pending";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { AgentName, useAgentText } from "../refs/AgentName";

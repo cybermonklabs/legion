@@ -28,12 +28,12 @@ export async function setPendingCredentialRequests(
 }
 
 /** A credential request whose deadline passed before anybody decided it, as the broker lists it:
- *  `row`, a secret request or a machine login, marked `expired` with its deadline, an hour ago
- *  unless `expiresAt` names another. Seed it with `setPendingCredentialRequests` beside any pending
- *  rows, which the fake lists before it; a dismissal of it takes it off the fake's list. */
+ *  `row`, a secret request or a machine login, marked `expired` with its deadline `expiresAt`.
+ *  Seed it with `setPendingCredentialRequests` beside any pending rows, which the fake lists
+ *  before it; a dismissal of it takes it off the fake's list. */
 export function expiredCredentialRequest(
   row: Omit<FakePendingRequest, "expires_at" | "state">,
-  expiresAt = new Date(Date.now() - 3_600_000).toISOString()
+  expiresAt: string
 ): FakePendingRequest {
   return { ...row, expires_at: expiresAt, state: "expired" };
 }
@@ -56,14 +56,13 @@ export async function setMachineLogins(logins: readonly FakeMachineLogin[]): Pro
 }
 
 /** A machine login whose deadline passed before anybody decided it, as the broker stores it: the
- *  code its machine printed, and its record still `pending`, undecided, with a deadline an hour
- *  ago unless `expiresAt` names another. The fake's lookup reads it as expired, as the broker
- *  does, and refuses its approval and its denial (`409 RECORD_TERMINAL`). Seed it with
- *  `setMachineLogins`. */
+ *  code its machine printed, and its record still `pending`, undecided, with the deadline
+ *  `expiresAt`. The fake's lookup reads it as expired, as the broker does, and refuses its
+ *  approval and its denial (`409 RECORD_TERMINAL`). Seed it with `setMachineLogins`. */
 export function expiredMachineLogin(
   code: string,
   record: Omit<RecordResponse, "decided" | "expires_at" | "state">,
-  expiresAt = new Date(Date.now() - 3_600_000).toISOString()
+  expiresAt: string
 ): FakeMachineLogin {
   return { code, record: { ...record, decided: null, expires_at: expiresAt, state: "pending" } };
 }
