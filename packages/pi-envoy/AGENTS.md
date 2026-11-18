@@ -943,9 +943,12 @@ the process ended in before any reply; a tool call whose result never came, a re
 reason at all and a delivery no assistant message follows are no end, and nor is the message Oh
 My Pi writes at resume to close a turn whose process recorded its exit in it (`Previous OMP process
 exited before completing the turn.`, a SIGTERM's case).
-The note names each delivery card the host wrote into that turn, and it goes with no `deliverAs`
-and no turn: an idle host writes it into the transcript and the model's context at once, ahead
-of whatever opens the next turn, and ends its message.
+The note names each delivery card the host wrote into that turn, and each person's Send that
+became the session's own turn there, by the Dispatch message id its user message carries as the
+host's `tag` and the session's record of handling that message (`envoy-dispatch-handled-attempt`);
+a Send on a host without `pi.sendUserInput` carries no tag and is not named. The note goes with no
+`deliverAs` and no turn: an idle host writes it into the transcript and the model's context at
+once, ahead of whatever opens the next turn, and ends its message.
 It starts no turn itself.
 The host holds a send made in `session_start` until its startup discovery has run, and RPC mode
 starts reading commands without waiting for that send to land, so a task, a person's input or the

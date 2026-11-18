@@ -1,3 +1,4 @@
+import { handledMessages } from "@legion/pi-shared/dispatch-user-turn";
 import { encode } from "@toon-format/toon";
 import { writtenCardIdentity } from "./missed-messages";
 
@@ -68,15 +69,20 @@ import { writtenCardIdentity } from "./missed-messages";
  * turn before it.
  *
  * What it names. Every delivery card the host wrote into the cut turn (`writtenCardIdentity`: an
- * `envoy-message` the ledger knows a frame for, which the plugin's own notices are not). A
- * person's Send that Envoy accepted as the person's own turn is a user message rather than a card,
- * so it is not named here: the note says to read what the turn did, and that message is in the
- * transcript the reader reads.
+ * `envoy-message` the ledger knows a frame for, which the plugin's own notices are not), and every
+ * person's Send that Envoy accepted as the person's own turn, which is no card: the host writes it
+ * as the person's user message, or as the skill prompt a `/skill:` Send submits, carrying the
+ * Dispatch message id as its `tag` (`pi.sendUserInput`), and the session recorded handling an
+ * attempt of that message (`HANDLED_ATTEMPT_ENTRY`) before it went out. Such a Send is named by
+ * that id, from `dispatch`, as its card would say. A Send's attempt the accept did not make a turn
+ * is its card, named as a card. On a host without `pi.sendUserInput` the Send is a user message
+ * with no tag, which nothing in the transcript links to its attempt, so it is not named there.
  */
 
 /** One delivery written into the cut turn, as the note names it. */
 export interface CutTurnDelivery {
-  /** The frame's event id, which `envoy_inbox` and the listener name it by. */
+  /** The frame's event id, which `envoy_inbox` and the listener name it by; for a person's Send
+   *  that became the session's own turn, its Dispatch message id. */
   readonly id?: string;
   /** Who sent it, as the card's own `from:` line reads. */
   readonly from?: string;
@@ -197,6 +203,21 @@ function deliveryOf(entry: unknown): CutTurnDelivery | undefined {
   };
 }
 
+/** The person's Send an entry of the cut turn is, or nothing for every other entry: a user
+ *  message, or a skill prompt (`custom_message`), whose `tag` is the id of a Dispatch message the
+ *  session recorded handling (`accepted`). */
+function personsSendOf(entry: unknown, accepted: ReadonlySet<string>): CutTurnDelivery | undefined {
+  if (typeof entry !== "object" || entry === null) return undefined;
+  const message = hostMessage(entry);
+  let tag: string | undefined;
+  if (message !== undefined) {
+    if (stringField(message, "role") === "user") tag = stringField(message, "tag");
+  } else if (stringField(entry, "type") === "custom_message") {
+    tag = stringField(entry, "tag");
+  }
+  return tag !== undefined && accepted.has(tag) ? { id: tag, from: "dispatch" } : undefined;
+}
+
 /** Whether the entry could have started a turn: a user message, or a delivery card. */
 function couldStartTurn(entry: unknown): boolean {
   const message = hostMessage(entry);
@@ -285,9 +306,10 @@ export function cutTurn(branch: readonly unknown[]): CutTurn | undefined {
       ? unmarkedCutTurnStart(branch)
       : markedCutTurnStart(branch, firstMark, newestEnd, endedLast);
   if (startsAt === undefined) return undefined;
+  const accepted = handledMessages(branch);
   const deliveries: CutTurnDelivery[] = [];
   for (const entry of branch.slice(startsAt)) {
-    const delivery = deliveryOf(entry);
+    const delivery = deliveryOf(entry) ?? personsSendOf(entry, accepted);
     if (delivery !== undefined) deliveries.push(delivery);
   }
   return { deliveries };

@@ -92,6 +92,25 @@ function hostClosedTurn(): Record<string, unknown> {
   return assistant("aborted", "Previous OMP process exited before completing the turn.");
 }
 
+/** The entry a session writes for an attempt of a person's direct message it handled, before the
+ *  card or the turn goes out (`HANDLED_ATTEMPT_ENTRY`). Written out, as `turnMark` is. */
+function handledAttempt(messageID: string): Record<string, unknown> {
+  return {
+    type: "custom",
+    customType: "envoy-dispatch-handled-attempt",
+    data: { message_id: messageID, attempt: 1 },
+  };
+}
+
+/** A person's Send the session accepted as their own turn, as the host writes it: their user
+ *  message, carrying the Dispatch message id as the host's `tag` (`pi.sendUserInput`). */
+function personsTurn(text: string, messageID: string): Record<string, unknown> {
+  return {
+    type: "message",
+    message: { role: "user", content: [{ type: "text", text }], tag: messageID },
+  };
+}
+
 describe("the cut turn a resumed transcript holds", () => {
   test("a transcript whose last assistant message ended its turn holds no cut turn", () => {
     expect(
@@ -128,6 +147,46 @@ describe("the cut turn a resumed transcript holds", () => {
       assistant("toolUse"),
     ]);
     expect(cut?.deliveries.map((delivery) => delivery.id)).toEqual(["evt-new"]);
+  });
+
+  test("a cut turn names a person's Send that became the session's own turn, by its Dispatch message id", () => {
+    const cut = cutTurn([
+      turnMark(false),
+      user("do it"),
+      turnMark(true),
+      handledAttempt("msg-send"),
+      personsTurn("rebase onto main first", "msg-send"),
+      turnMark(false),
+      assistant("toolUse"),
+    ]);
+    expect(cut?.deliveries).toEqual([{ id: "msg-send", from: "dispatch" }]);
+  });
+
+  test("a `/skill:` Send, which the host writes as a skill prompt carrying the tag, is named too", () => {
+    const cut = cutTurn([
+      handledAttempt("msg-skill"),
+      {
+        type: "custom_message",
+        customType: "skill-prompt",
+        content: "the skill's prompt",
+        display: true,
+        tag: "msg-skill",
+      },
+      turnMark(false),
+      assistant("toolUse"),
+    ]);
+    expect(cut?.deliveries).toEqual([{ id: "msg-skill", from: "dispatch" }]);
+  });
+
+  test("a tag no handled attempt records names nothing, and a person's Send before the cut turn is not named", () => {
+    const cut = cutTurn([
+      handledAttempt("msg-old"),
+      personsTurn("an older request", "msg-old"),
+      assistant("endTurn"),
+      personsTurn("not from Dispatch", "some-other-tag"),
+      assistant("toolUse"),
+    ]);
+    expect(cut?.deliveries).toEqual([]);
   });
 
   test("a turn the person interrupted is no cut turn", () => {

@@ -22745,6 +22745,37 @@ describe("the note a cut turn leaves", () => {
     );
   });
 
+  // A person's Send that the session accepted as their own turn is no card: the session records
+  // the attempt it handled (`envoy-dispatch-handled-attempt`) and the host writes the person's
+  // user message with the Dispatch message id as its `tag`. The process ended in that turn, and
+  // the resumed session's note names the message by that id, as it names each card.
+  test("a turn a person's Send started, cut and resumed, gets a note naming that Send", async () => {
+    const session = await bootResumed("cut-turn-person-send", [
+      legionManaged,
+      user("take the issue through its phase"),
+      assistant("endTurn"),
+      {
+        type: "custom",
+        customType: "envoy-dispatch-handled-attempt",
+        data: { message_id: "msg-person-send", attempt: 1 },
+      },
+      {
+        type: "message",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "rebase onto main first" }],
+          tag: "msg-person-send",
+        },
+      },
+      assistant("toolUse"),
+    ]);
+
+    expect(session.notes()).toHaveLength(1);
+    const note = session.notes()[0];
+    expect(note?.content).toContain("msg-person-send");
+    expect(note?.content).toContain("Those messages started or joined that turn.");
+  });
+
   // The daemon's task reaches the host as an RPC `prompt`, which the host hands to every `input`
   // handler and prompts only once they all return (`dispatchOrderedUserInput`,
   // packages/coding-agent/src/modes/rpc/rpc-mode.ts:1871-1958 at the pin), and a person's typed
