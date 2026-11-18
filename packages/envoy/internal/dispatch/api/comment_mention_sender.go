@@ -234,7 +234,8 @@ type mentionSender struct {
 	parked map[string]struct{}
 	// waits is, for each held lane (heldLane), what its sends wait behind: the session and the
 	// earlier event its head send last found the session must take first (park). It goes with the
-	// lane (next), and each send's WARN names it (warnHeld).
+	// lane (next); the held gauges count its lanes' sends (heldSamples), and each send's WARN names
+	// it (warnHeld).
 	waits map[string]heldWait
 	// ready is the lanes waiting for a goroutine, in the order they started waiting.
 	ready []string
@@ -475,17 +476,19 @@ func (m *mentionSender) park(lane string, item mentionSend) {
 		m.lanes[held] = append([]mentionSend{item}, m.lanes[held]...)
 	} else {
 		moved := []mentionSend{item}
-		kept := make([]mentionSend, 0, len(m.lanes[lane]))
-		for _, queued := range m.lanes[lane] {
-			if queued.owner() == owner {
-				if queued.heldSince.IsZero() {
-					queued.heldSince = now
-				}
-				moved = append(moved, queued)
-			} else {
+		waiting := m.lanes[lane]
+		kept := waiting[:0]
+		for _, queued := range waiting {
+			if queued.owner() != owner {
 				kept = append(kept, queued)
+				continue
 			}
+			if queued.heldSince.IsZero() {
+				queued.heldSince = now
+			}
+			moved = append(moved, queued)
 		}
+		clear(waiting[len(kept):])
 		m.lanes[lane] = kept
 		m.lanes[held] = moved
 	}
@@ -549,11 +552,8 @@ func (m *mentionSender) heldSamples(now time.Time) (count, oldest []metrics.Gaug
 	defer m.mu.Unlock()
 	counts := map[string]int64{}
 	ages := map[string]time.Duration{}
-	for lane, sends := range m.lanes {
-		if !strings.Contains(lane, "\x00") {
-			continue
-		}
-		for _, send := range sends {
+	for lane := range m.waits {
+		for _, send := range m.lanes[lane] {
 			owner := send.owner()
 			counts[owner]++
 			ages[owner] = max(ages[owner], now.Sub(send.heldSince))

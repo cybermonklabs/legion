@@ -16,7 +16,7 @@ name: CI job text-checks
 # server, a container or a database, so none of them belongs in a Postgres-backed product
 # suite, where it waited behind that suite's fixtures and ran again on every change to the
 # module. Each module keeps its own package of them, internal/textcheck, and this job runs those
-# three packages, those checks' fifteen tests and those two pins; the three product lanes leave
+# three packages, those checks' seventeen tests and those two pins; the three product lanes leave
 # exactly those out of their own runs (.github/scripts/ci_job_reads.py's TEXT_CHECK_PACKAGE,
 # TEXT_CHECK_TESTS and SUPERVISE_TABLE_TESTS build both sides), so each of these tests runs
 # once per run of the router.
