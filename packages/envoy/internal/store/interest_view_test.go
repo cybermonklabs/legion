@@ -88,15 +88,16 @@ func TestAnEarlierBuildReadsAChunkedRecordAsTheSameSession(t *testing.T) {
 
 // CoveringTopics drops a topic only when another covers every name form of it, keeps a role lane
 // whatever covers it, keeps the first of two topics that cover each other, and keeps a topic no
-// other covers.
+// other covers. `notifications.>` names no subject family the stream stores, so a session consumer's
+// filter leaves it out and it covers nothing (TestAWildcardTheConsumerFilterLeavesOutCoversNothing).
 func TestCoveringTopicsDropsOnlyWhatAnotherTopicCovers(t *testing.T) {
 	lane := contracts.RoleTopicPrefix + "legion-controller"
 	got := CoveringTopics([]string{
 		"notifications.team.a.>", "notifications.team.a.b", "notifications.team.a.b.c",
 		"notifications.team.x.*", "notifications.team.x.y", "notifications.team.x.y.z",
-		"notifications.>", lane, "notifications.team.a.b",
+		"notifications.team.>", lane, "notifications.team.a.b",
 	})
-	if want := []string{"notifications.>", lane}; !slices.Equal(got, want) {
+	if want := []string{lane, "notifications.team.>"}; !slices.Equal(got, want) {
 		t.Fatalf("CoveringTopics answered %v, want %v", got, want)
 	}
 	got = CoveringTopics([]string{"notifications.team.x.*", "notifications.team.x.y", "notifications.team.x.y.z"})
@@ -177,5 +178,71 @@ func TestARecordWithNoViewThatFitsIsRefusedAndWritesNothing(t *testing.T) {
 	}
 	if _, err := reg.Upsert(Interest{SessionID: "ses_no_view", MachineID: "m1"}, append([]string{"notifications.team.>"}, uncovered...)); err != nil {
 		t.Fatalf("the same topics under a covering wildcard answered %v, want them stored", err)
+	}
+}
+
+// carriedFilter is what an earlier build's session consumer filters on for topics: each that the
+// stream stores and the server takes as a filter subject, as cmd/listener's sessionConsumerFilter
+// keeps them.
+func carriedFilter(topics []string) []string {
+	return slices.DeleteFunc(slices.Clone(topics), func(topic string) bool {
+		return !bus.StreamCaptures(topic) || bus.CheckFilterSubject(topic) != nil
+	})
+}
+
+// A wildcard a session consumer's filter leaves out - one the stream does not store, or one the
+// server refuses as a filter subject - covers nothing in a view: an earlier build filters the
+// session's consumer on the view's carried topics alone, so a view that dropped the topics under
+// such a wildcard would leave that consumer filtering on none of them. The control is a wildcard
+// the filter carries, which covers them.
+func TestAWildcardTheConsumerFilterLeavesOutCoversNothing(t *testing.T) {
+	under := []string{"notifications.team.deploy", "notifications.team.build.x"}
+	for _, wildcard := range []string{"*.team.>", "notifications.team.>.x"} {
+		got := CoveringTopics(append([]string{wildcard}, under...))
+		for _, topic := range under {
+			if !slices.Contains(got, topic) {
+				t.Fatalf("CoveringTopics with %s answered %v: it dropped %s, which no topic the consumer filter carries covers", wildcard, got, topic)
+			}
+		}
+		if filter := carriedFilter(got); !slices.Contains(filter, "notifications.team.deploy") {
+			t.Fatalf("an earlier build filters the consumer of a view %v on %v, without notifications.team.deploy", got, filter)
+		}
+	}
+	if got := CoveringTopics(append([]string{"notifications.team.>"}, under...)); !slices.Equal(got, []string{"notifications.team.>"}) {
+		t.Fatalf("CoveringTopics with a carried wildcard answered %v, want it alone", got)
+	}
+}
+
+// The reduction a view falls back to reduces only the topics a session consumer's filter carries,
+// as this build's own consumer reduction does, so it stays inside the literal families they name and
+// never widens to `>`, which an earlier build's index would match against every subject - another
+// project's controller notices among them. A topic the filter does not carry stays as it is.
+func TestTheReductionFallbackReducesOnlyWhatTheConsumerFilterCarries(t *testing.T) {
+	lane := contracts.RoleTopicPrefix + "legion-controller"
+	var topics []string
+	for i := range 150 {
+		topics = append(topics, fmt.Sprintf("notifications.team.f.%04d.*", i), fmt.Sprintf("notifications.team.f.*.%04d", i))
+	}
+	uncarried := []string{"*.t0000-x", "y.*"}
+	topics = append(append(topics, uncarried...), lane)
+	encode := func(topics []string) ([]byte, error) {
+		return json.Marshal(Interest{SessionID: "ses_view", Topics: topics})
+	}
+	covering, _ := encode(CoveringTopics(topics))
+	view, err := ChunkedRecordView(len(covering)-1, topics, encode)
+	var seen Interest
+	if err != nil || json.Unmarshal(view, &seen) != nil {
+		t.Fatalf("a view with no room for the covering topics answered %.80q (%v), want the reduction", view, err)
+	}
+	t.Logf("the reduced view: %v", seen.Topics)
+	for _, topic := range seen.Topics {
+		if topic == ">" || topic == "*.>" || (topic != lane && !slices.Contains(uncarried, topic) && !strings.HasPrefix(topic, "notifications.team.")) {
+			t.Fatalf("the reduced view %v holds %s, wider than the families the registration names", seen.Topics, topic)
+		}
+	}
+	for _, topic := range append(uncarried, lane) {
+		if !slices.Contains(seen.Topics, topic) {
+			t.Fatalf("the reduced view %v lacks %s, a topic the consumer filter does not carry, which it keeps as it is", seen.Topics, topic)
+		}
 	}
 }

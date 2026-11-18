@@ -131,21 +131,23 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, row Inte
 // earlier build (kvchunk.Write), encoded by encode with the topics it keeps, in at most room bytes.
 // Such a listener reads a manifest as a record of its own type and does not join its chunks, so
 // the view is the record with a topic list that matches every subject topics match and fits: the
-// covering topics first (CoveringTopics), the same subjects in fewer topics, and when those do not
-// fit, the role lanes beside the session consumer filter's reduction of the rest
-// (bus.ReduceFilterSubjects), which a registration's consumer was created with and so fits one
-// message, and which may match more. A record whose topics fit neither is bus.ErrTooLarge.
+// covering topics first (CoveringTopics), the same subjects in fewer topics. When those do not
+// fit, the topics a session consumer's filter carries (consumerCarries) are reduced as that filter
+// is (bus.ReduceFilterSubjects), inside the literal families they name, which may match more of
+// those families' subjects; the role lanes and every topic the filter does not carry stay as they
+// are, so no reduction widens to a wildcard over every subject. A record whose topics fit neither
+// is bus.ErrTooLarge.
 func ChunkedRecordView(room int, topics []string, encode func(topics []string) ([]byte, error)) ([]byte, error) {
 	covering := CoveringTopics(topics)
-	var lanes, rest []string
+	var kept, carried []string
 	for _, topic := range covering {
-		if strings.HasPrefix(topic, contracts.RoleTopicPrefix) {
-			lanes = append(lanes, topic)
+		if !strings.HasPrefix(topic, contracts.RoleTopicPrefix) && consumerCarries(topic) {
+			carried = append(carried, topic)
 		} else {
-			rest = append(rest, topic)
+			kept = append(kept, topic)
 		}
 	}
-	reduced := slices.Sorted(slices.Values(append(lanes, bus.ReduceFilterSubjects(rest)...)))
+	reduced := slices.Sorted(slices.Values(append(kept, bus.ReduceFilterSubjects(carried)...)))
 	sizes := make([]int, 0, 2)
 	for _, view := range [][]string{covering, reduced} {
 		encoded, err := encode(view)
@@ -161,19 +163,35 @@ func ChunkedRecordView(room int, topics []string, encode func(topics []string) (
 		bus.ErrTooLarge, len(topics), sizes[0], sizes[1], room)
 }
 
+// consumerCarries reports whether a session consumer's filter carries topic: the stream stores it
+// and the server takes it as a filter subject, as cmd/listener's sessionConsumerFilter keeps a
+// stored row's topics, from the subjects this binary compiles into the stream (bus.StreamCaptures).
+func consumerCarries(topic string) bool {
+	return bus.StreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil
+}
+
 // CoveringTopics is topics without each topic another of them covers, sorted and each once: a list
 // that matches every subject topics match, and no other, in fewer topics. A topic is covered when
 // every name form of it (contracts.TopicForms, which the subject index matches) is contained by a
-// form of the other (bus.SubjectContains); of two that cover each other the first in order stays. A
+// form of the other (bus.SubjectContains); of two that cover each other the first in order stays.
+// Only a topic every form of which a session consumer's filter carries (consumerCarries) covers
+// another: an earlier build filters a session's consumer on the carried topics of its row alone, so
+// a wildcard that filter leaves out - one the stream does not store, or one with a `>` before its
+// last token - covering the topics under it would leave the consumer filtering on none of them. A
 // role lane (contracts.RoleTopicPrefix) always stays, since a reader of the row weighs a role lane
 // by its name as well as by what it matches.
 func CoveringTopics(topics []string) []string {
 	unique := slices.Compact(slices.Sorted(slices.Values(topics)))
 	forms := make([][]string, len(unique))
+	carries := make([]bool, len(unique))
 	for i, topic := range unique {
 		forms[i] = contracts.TopicForms(topic)
+		carries[i] = !slices.ContainsFunc(forms[i], func(form string) bool { return !consumerCarries(form) })
 	}
 	covers := func(pattern, subject int) bool {
+		if !carries[pattern] {
+			return false
+		}
 		for _, form := range forms[subject] {
 			if !slices.ContainsFunc(forms[pattern], func(p string) bool { return bus.SubjectContains(p, form) }) {
 				return false
