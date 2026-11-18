@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -42,8 +43,14 @@ func (s *server) lockedCommentForDelivery(ctx context.Context, tx pgx.Tx, id str
 }
 
 // lockOwnerOfComment reads the comment and locks its owner, answering whether that owner is
-// open.
+// open. Every caller's id is a path value, but for a claimed delivery's, which the comments
+// table gave it. An id that is no uuid names no comment, and sent to the table's uuid column it
+// is the store's 22P02, a 500 (INFRA-4540): it is refused here as the comment reads refuse it
+// (requireUUIDPath), 400 COMMENT_ID_INPUT, by every route this prologue serves.
 func (s *server) lockOwnerOfComment(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
+	if _, err := uuid.Parse(id); err != nil {
+		return false, errorf(http.StatusBadRequest, "COMMENT_ID_INPUT", "%s", idPathProblem("comment"))
+	}
 	unlockedComment, err := s.loadComment(ctx, tx, id)
 	if err != nil {
 		return false, err

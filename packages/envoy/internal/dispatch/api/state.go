@@ -107,8 +107,12 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The row is made only for an issue that exists: a key no issue holds broke the row's
+	// foreign key, a 500 (INFRA-4540). With no row made, the read below finds none, which is
+	// the 404 NOT_FOUND every issue route answers a key nobody holds.
 	if _, err := tx.Exec(r.Context(), `
-		insert into user_issue_state (login, issue_key) values ($1, $2)
+		insert into user_issue_state (login, issue_key)
+		select $1, key from issues where key = $2
 		on conflict (login, issue_key) do nothing
 	`, actor.ID, key); err != nil {
 		s.writeHandlerError(w, err)

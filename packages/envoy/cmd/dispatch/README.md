@@ -4289,6 +4289,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   Reject a suggestion.
 
+  Each of the routes that change a comment - the edit (PATCH), resolve, reopen, accept, reject, and the delivery reply `POST /api/v1/comments/{id}/reply` - answers an `{id}` that is neither a whole uuid nor a unique prefix of one `400 COMMENT_ID_INPUT`, as the reads above do.
+
 - `/api/v1/issues/{key}/messages` (POST; cookie, trusted header, or bearer)
 
   Post an issue message.
