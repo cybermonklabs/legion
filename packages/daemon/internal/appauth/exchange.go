@@ -90,6 +90,13 @@ func askedFor(permissions map[string]string) string {
 // asks for, so a request naming permissions is no proof of a token held to them: what GitHub
 // says it minted is held against what was asked (narrowedTo) and a wider lease is refused rather
 // than served.
+//
+// A 403 says nothing here about a suspension. The read before the exchange finds a suspended
+// installation from the installation's own suspended_at, never from the words of this answer
+// (grantedPermissions). So a 403 is GitHub's secondary rate limit, which transient reads off the
+// headers and the body, or a refusal like any other. An account that suspends the installation
+// between that read and this request fails this one mint, and the next mint's read finds the
+// suspension.
 func (m *Manager) exchange(ctx context.Context, jwt, installation string, permissions map[string]string) (Lease, error) {
 	encoded, err := json.Marshal(accessTokensBody{Permissions: permissions})
 	if err != nil {

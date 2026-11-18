@@ -73,16 +73,16 @@ func TestGhostWisprHandler(t *testing.T) {
 			wantPublished: 1,
 		},
 		{
-			name:          "valid event without signing (empty secret)",
-			method:        "POST",
-			body:          `{"event_type":"session_ended","payload":{"session_id":"20260326041629","type":"session_ended"}}`,
-			delivery:      "d-456",
-			event:         "session_ended",
-			wantStatus:    200,
-			wantPublished: 1,
+			name:       "an event with no secret configured → 401",
+			method:     "POST",
+			body:       `{"event_type":"session_ended","payload":{"session_id":"20260326041629","type":"session_ended"}}`,
+			delivery:   "d-456",
+			event:      "session_ended",
+			wantStatus: 401,
 		},
 		{
 			name:       "non-publishable event type",
+			secret:     "test-secret",
 			method:     "POST",
 			body:       `{"event_type":"recording_started","payload":{"session_id":"abc","type":"recording_started"}}`,
 			delivery:   "d-789",
@@ -91,6 +91,7 @@ func TestGhostWisprHandler(t *testing.T) {
 		},
 		{
 			name:       "missing session_id",
+			secret:     "test-secret",
 			method:     "POST",
 			body:       `{"event_type":"summary_ready","payload":{"type":"summary_ready"}}`,
 			delivery:   "d-000",
@@ -99,6 +100,7 @@ func TestGhostWisprHandler(t *testing.T) {
 		},
 		{
 			name:       "event type mismatch (header vs body)",
+			secret:     "test-secret",
 			method:     "POST",
 			body:       `{"event_type":"session_started","payload":{"session_id":"abc","type":"session_started"}}`,
 			delivery:   "d-mismatch",
@@ -107,6 +109,7 @@ func TestGhostWisprHandler(t *testing.T) {
 		},
 		{
 			name:          "publish failure returns 503",
+			secret:        "test-secret",
 			method:        "POST",
 			body:          validBody,
 			delivery:      "d-fail",
@@ -117,6 +120,7 @@ func TestGhostWisprHandler(t *testing.T) {
 		},
 		{
 			name:          "a publish refused as too large returns 422",
+			secret:        "test-secret",
 			method:        "POST",
 			body:          validBody,
 			delivery:      "d-too-large",
@@ -157,6 +161,40 @@ func TestGhostWisprHandler(t *testing.T) {
 			}
 			if len(pub.published) != tc.wantPublished {
 				t.Errorf("published = %d, want %d", len(pub.published), tc.wantPublished)
+			}
+		})
+	}
+}
+
+// TestGhostWisprHandlerRefusesAnEventItCannotCheck drives the handler the /webhook/ghostwispr route
+// serves. Built with no secret it has nothing to check a signature against, so it answers 401 and
+// publishes nothing, signed or not; built with a secret it publishes only an event that secret
+// signed.
+func TestGhostWisprHandlerRefusesAnEventItCannotCheck(t *testing.T) {
+	const body = `{"event_type":"session_ended","payload":{"session_id":"20260326041629","type":"session_ended"}}`
+	for _, tc := range []struct {
+		name, secret, signature   string
+		wantStatus, wantPublished int
+	}{
+		{name: "no secret, an unsigned event", wantStatus: 401},
+		{name: "no secret, an event signed with the empty key", signature: ghostWisprSign("", []byte(body)), wantStatus: 401},
+		{name: "control: a secret and a bad signature", secret: "s3cret", signature: "sha256=00", wantStatus: 401},
+		{name: "control: a secret and no signature", secret: "s3cret", wantStatus: 401},
+		{name: "control: a secret and a good signature", secret: "s3cret", signature: ghostWisprSign("s3cret", []byte(body)), wantStatus: 200, wantPublished: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pub := &mockPublisher{}
+			req := httptest.NewRequest("POST", "/webhook/ghostwispr", strings.NewReader(body))
+			req.Header.Set("X-GhostWispr-Delivery", "d-check")
+			req.Header.Set("X-GhostWispr-Event", "session_ended")
+			if tc.signature != "" {
+				req.Header.Set("X-GhostWispr-Signature", tc.signature)
+			}
+			rec := httptest.NewRecorder()
+			GhostWisprHandler(tc.secret, pub).ServeHTTP(rec, req)
+			t.Logf("secret set %v, signature %q: status %d, body %q, published %d", tc.secret != "", tc.signature, rec.Code, strings.TrimSpace(rec.Body.String()), len(pub.published))
+			if rec.Code != tc.wantStatus || len(pub.published) != tc.wantPublished {
+				t.Errorf("status %d, published %d; want status %d, published %d", rec.Code, len(pub.published), tc.wantStatus, tc.wantPublished)
 			}
 		})
 	}

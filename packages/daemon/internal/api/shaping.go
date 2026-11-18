@@ -508,6 +508,8 @@ var stateNarrowings = []stateNarrowing{
 	{contract: assignmentsContract, issue: withoutAssignments, dropped: "the issues' assignments"},
 	{contract: entryTimesContract, issue: withoutEntryTimes,
 		dropped: "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
+	{contract: repositoryAppsContract, state: withoutRepositoryApps,
+		dropped: "the apps of repositories.mapped and repositories.refused"},
 	{contract: shapedAnswersContract, state: withoutLowestPluginContract, issue: withoutClaimRoundReport,
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
 }
@@ -867,6 +869,25 @@ const assignmentsContract = 141
 // that constant, and the contract the keys arrived at stays where it is.
 const entryTimesContract = 146
 
+// repositoryAppsContract is the daemon contract that added `apps`, each role App's installation
+// on the repository, to every entry of the state's `repositories.mapped` and, where GitHub
+// answered both Apps' reads, to an entry of `repositories.refused` (version.go's 152). A plugin
+// before it is served the block with no `apps` on either list (withoutRepositoryApps). The
+// readers of 46 (7b4ffe3c) and 48 (45548900) are strict: `legionRepositories` and both lists'
+// entries are `z.strictObject` (legion-api.ts:447-457 and 453-463), so the key would refuse the
+// whole state. The readers from 49 (e68c26f9, legion-api.ts:464-475) to 151 (d9299f7a,
+// legion-api.ts:1055-1066) are `z.object` and strip the key, and none of them types it, so there
+// the band keeps the body their own records describe rather than what keeps them reading.
+// entryTimesContract stands below it with no row of stateNarrowings between the two, so a caller
+// in a pod at or above entryTimesContract and below this contract is served the entry times and
+// not `apps`. The contract's other changes are no key of an answer a plugin parses: the
+// controller's github-credential answer is read by `legion controller start` alone, and what
+// `mapped` and `refused` hold now is read by no plugin code (version.go's 154).
+//
+// It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
+// that constant, and the contract the key arrived at stays where it is.
+const repositoryAppsContract = 152
+
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a
 // deployment that gates no step carries an empty list of it (GatedStepViewsOf), which the wire
@@ -923,6 +944,38 @@ func withoutEntryTimes(issue Issue) (Issue, bool) {
 	moved := issue.EntryQueuedAt != nil || issue.EntryConfirmedAt != nil || len(issue.ArchitectStalls) > 0
 	issue.EntryQueuedAt, issue.EntryConfirmedAt, issue.ArchitectStalls = nil, nil, nil
 	return issue, moved
+}
+
+// withoutRepositoryApps is state with no `apps` on any entry of `repositories.mapped` or
+// `repositories.refused`, the key repositoryAppsContract added to both lists; nothing else of
+// that contract is a key of this route. A mapped entry writes the key whatever it holds, so the
+// key is left off by a flag rather than zeroed (MappedRepositoryView.appsHidden), as
+// Admission.MarshalJSON leaves off `held` for withoutHeld, and a mapped entry is moved wherever
+// one is served. A refused entry carries the key only where GitHub answered both Apps' reads, so
+// it is cleared there, and moved only where it held one. Both lists are the source's, so each is
+// copied before an entry of it is written, and the state the source answered is left as it was.
+func withoutRepositoryApps(state State) (State, bool) {
+	repositories := state.Repositories
+	moved := len(repositories.Mapped) > 0
+	if moved {
+		mapped := make([]MappedRepositoryView, len(repositories.Mapped))
+		for i, entry := range repositories.Mapped {
+			entry.Apps, entry.appsHidden = AppInstallationsView{}, true
+			mapped[i] = entry
+		}
+		repositories.Mapped = mapped
+	}
+	if slices.ContainsFunc(repositories.Refused, func(entry RefusedRepositoryView) bool { return entry.Apps != nil }) {
+		refused := make([]RefusedRepositoryView, len(repositories.Refused))
+		for i, entry := range repositories.Refused {
+			entry.Apps = nil
+			refused[i] = entry
+		}
+		repositories.Refused = refused
+		moved = true
+	}
+	state.Repositories = repositories
+	return state, moved
 }
 
 // withoutWaitingLine is the issue with no `waitingLine`, the field waitingLineContract added to
