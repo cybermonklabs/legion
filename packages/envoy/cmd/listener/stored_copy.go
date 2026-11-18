@@ -38,18 +38,18 @@ type storedReader interface {
 }
 
 // requestSender is who a send or a publish speaks for, which decides how much of a stored copy
-// its answer may carry (answer): the source and source_session of the envelope the route built
-// from the request, and, where the request presented a secrets-broker token, the session that
-// token proves (brokerCaller).
+// its answer may carry (answer): the event_id, source and source_session of the envelope the
+// route built from the request, and, where the request presented a secrets-broker token, the
+// session that token proves (brokerCaller).
 type requestSender struct {
-	source, session string
-	proven          bool
-	tokenSession    string
+	eventID, source, session string
+	proven                   bool
+	tokenSession             string
 }
 
 // senderOf is the sender of r, whose route built item from it.
 func senderOf(r *http.Request, item contracts.Envelope) requestSender {
-	sender := requestSender{source: item.Source, session: item.SourceSession}
+	sender := requestSender{eventID: item.EventID, source: item.Source, session: item.SourceSession}
 	if caller, ok := brokerCaller(r); ok {
 		sender.proven, sender.tokenSession = true, caller.Session
 	}
@@ -57,19 +57,24 @@ func senderOf(r *http.Request, item contracts.Envelope) requestSender {
 }
 
 // answer is held, a copy the stream holds under a request's message id, as the request's answer
-// may carry it. A copy whose source and source_session are the request's, and, where the request
-// proved a session with a broker token, whose source_session is that session, is the request's
-// sender's own, and is answered whole. Any other copy is another sender's message under a key
-// this caller repeated, which may be known or guessed (a Dispatch mention key, a role key taken
-// verbatim), so the answer says only that the key is taken: the copy's event_id and its times,
-// with its topic and dedupe key, which the caller sent itself, and none of what the other sender
-// wrote or who it is (payload, payload_summary, payload_ref, source, source_event_id,
-// source_session, sender, trace_id and the rest).
+// may carry it. The request's own copy (its own event_id, which the bus's resend or a role
+// send's own earlier forward or keep stored) is answered whole, and so is a copy whose source
+// and source_session are the request's, where, when the copy names a session and the request
+// proved one with a broker token, that is the copy's. A copy that names no session names no
+// owner a token could prove, so a same-source caller with no session reads it whole with or
+// without a token, as a caller on the shared bearer always could. Any other copy is another
+// sender's message under a key this caller repeated, which may be known or guessed (a Dispatch
+// mention key, a role key taken verbatim), so the answer says only that the key is taken: the
+// copy's event_id and its times, with the topic and dedupe key it was stored under, and none of
+// what the other sender wrote or who it is (payload, payload_summary, payload_ref, source,
+// source_event_id, source_session, sender, trace_id and the rest).
 //
 // A caller that names no session and the source dispatch reads Dispatch's own copies whole: the
 // route trusts a caller's source and an empty session as it always has (sessionNotBound).
 func (s requestSender) answer(held contracts.Envelope) contracts.Envelope {
-	if held.Source == s.source && held.SourceSession == s.session && (!s.proven || held.SourceSession == s.tokenSession) {
+	if held.EventID == s.eventID ||
+		held.Source == s.source && held.SourceSession == s.session &&
+			(!s.proven || held.SourceSession == "" || held.SourceSession == s.tokenSession) {
 		return held
 	}
 	return contracts.Envelope{

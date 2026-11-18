@@ -242,6 +242,8 @@ func (s *roleSend) deliveredHeld(ctx context.Context, seq uint64, outcome sendOu
 	}
 	held.DedupeKey = strings.TrimPrefix(held.DedupeKey, roleForwardDedupePrefix)
 	s.duplicate = held.EventID != s.item.EventID
+	asked := s.item
+	s.record.asked = &asked
 	s.item = s.sender.answer(held)
 	s.record.item = &s.item
 	s.delivered(outcome)
@@ -313,6 +315,12 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	if kept.repeat {
 		s.record.charge.forgive()
 	}
+	// A repeat's kept copy is another request's when its event_id is not this send's, which the
+	// 202 says with duplicate as a 200 does (deliveredHeld), and which tells a client the shorter
+	// answer another sender gets (requestSender.answer) from a whole one.
+	duplicate := kept.repeat && kept.item.EventID != s.item.EventID
+	asked := s.item
+	s.record.asked = &asked
 	s.item = s.sender.answer(kept.item)
 	s.holder = result.Holder
 	s.holderState = result.HolderState
@@ -326,6 +334,7 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 		Kept:         true,
 		KeptReason:   result.State,
 		KeptUntil:    kept.until,
+		Duplicate:    duplicate,
 	}
 	if result.LastSeen != 0 {
 		answer.LastSeen = &result.LastSeen

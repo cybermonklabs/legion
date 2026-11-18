@@ -153,9 +153,10 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 			map[string]any{"idempotency_key": key["idempotency_key"], "message": "the repeat's own body"}))
 		kept := heldCopy(t, rig.harness.client, bus.KeptRoleSubject(role))
 		for _, answer := range []struct {
-			what string
+			what      string
+			duplicate bool
 			heldAnswer
-		}{{"the first publish to the unclaimed role", first}, {"the repeated publish to the unclaimed role", repeat}} {
+		}{{"the first publish to the unclaimed role", false, first}, {"the repeated publish to the unclaimed role", true, repeat}} {
 			answer.requireStatus(t, answer.what, http.StatusAccepted)
 			if !reflect.DeepEqual(answer.envelope, kept) {
 				t.Fatalf("%s answered %+v, want the kept copy field for field: %+v", answer.what, answer.envelope, kept)
@@ -163,8 +164,8 @@ func TestARolePublishRepeatedUnderOneIdempotencyKeyAnswersTheStoredCopy(t *testi
 			var fields struct {
 				Kept bool `json:"kept"`
 			}
-			if err := json.Unmarshal([]byte(answer.raw), &fields); err != nil || !fields.Kept {
-				t.Fatalf("%s answered %s (%v), want kept: true", answer.what, answer.raw, err)
+			if err := json.Unmarshal([]byte(answer.raw), &fields); err != nil || !fields.Kept || answer.Duplicate != answer.duplicate {
+				t.Fatalf("%s answered %s (%v), want kept: true and duplicate %t", answer.what, answer.raw, err, answer.duplicate)
 			}
 		}
 	})

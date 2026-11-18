@@ -13,6 +13,7 @@ import { z } from "zod";
 import { formatZodIssues, ToolInputError } from "./tool-input-errors";
 import {
   type ConnectionState,
+  type KeyTakenResult,
   type MessageMetadataInput,
   type PublishResult,
   type SessionInfo,
@@ -352,6 +353,26 @@ export function sendConfirmationText(result: {
       ? `unresponsive${since}, so it is stored until that session answers; ${UNRESPONSIVE_RULE}`
       : result.recipientState;
   return `sent ${result.envelope.event_id} to ${result.recipient} (${state})${result.confirmed ? "" : " (recipient unconfirmed by listener)"}`;
+}
+
+/**
+ * The line both hosts show the model for a send or a publish whose idempotency key another
+ * sender's message already holds ({@link KeyTakenResult}): nothing was delivered for this caller,
+ * and the line names that message's event id so the model does not read the key as its own.
+ */
+export function keyTakenText(result: KeyTakenResult): string {
+  return `not delivered: another sender's message (${result.keyTaken.eventId}) already holds this idempotency_key, so Envoy stored nothing for you; send it again under a new idempotency_key`;
+}
+
+/** The fields of a key-taken result both hosts hand the model beside {@link keyTakenText}, under
+ *  the listener's own snake_case names. */
+export function keyTakenDetails(result: KeyTakenResult) {
+  return {
+    event_id: result.keyTaken.eventId,
+    topic: result.keyTaken.topic,
+    delivered: false,
+    key_taken: true,
+  } as const;
 }
 
 /**

@@ -4,28 +4,32 @@
 package main
 
 import (
-	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 )
 
 // TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText is check c-other-sender-repeat.
-// Session A publishes to a team topic, sends to a live session, and publishes to a role whose
-// holder is live, each under its own key K and with words of its own. Session B then sends the
-// same request under K with words of its own: once naming its own source_session, and once with a
-// secrets-broker token that proves B as well. Each answer is 200 with duplicate and the stored
-// copy's event_id and times, and carries no payload, payload_summary, message or source_session,
-// and none of A's words. A third row stores a copy that names no session and repeats it with no
-// session and a token that proves B: the token's session is not the copy's, so it learns no more.
+// Session A publishes to a team topic, sends to a live session, publishes to a role whose holder
+// is live, and publishes to a role nobody claims, each under its own key K and with words of its
+// own. Session B then sends the same request under K with words of its own: once naming its own
+// source_session, and once with a secrets-broker token that proves B as well. Each answer is the
+// route's status (200, or 202 kept) with duplicate and the stored copy's event_id and times, and
+// carries no payload, payload_summary, payload_ref, source, source_session or sender, and none of
+// A's words; the request's record line names the copy's event_id and B, with B's own words.
 //
-// The control is A's own repeat under K, which gets the whole stored copy.
+// The controls: A's own repeat under K gets the whole stored copy; a copy that names no session
+// is read whole by a same-source caller with no session and a token that proves B, as a caller
+// on the shared bearer reads it; and a request with a token and no session gets its own kept copy
+// whole.
 func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 	rig := newSenderLimitRig(t)
 	const alice, bob = "ses_other_sender_alice", "ses_other_sender_bob"
@@ -35,10 +39,13 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 		// path and fields are the request's route and the body fields that name where it goes.
 		path   string
 		fields map[string]any
+		// status is the route's answer to a request it stored: 200, or 202 for a role nobody
+		// claims, whose copy the role's kept lane holds.
+		status int
 		// stored is the one copy the stream holds for the request, as the route answers it.
 		stored func(t *testing.T) contracts.Envelope
 	}
-	// routes is the three routes, each to a topic, a target or a role of its own.
+	// routes is the four routes, each to a topic, a target or a role of its own.
 	routes := func(t *testing.T) []route {
 		topic := "notifications.team.other-sender-" + id.New()
 		target := "ses_other_sender_target_" + id.New()
@@ -46,15 +53,19 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 		holder := "ses_other_sender_holder_" + id.New()
 		role := "other-sender-" + id.New()
 		claimRoleFor(t, rig.deps.registry, rig.deps.sessions, holder, role, nil)
+		unclaimed := "other-sender-unclaimed-" + id.New()
 		return []route{
-			{"topic publish", "/v1/messages/publish", map[string]any{"topic": topic}, func(t *testing.T) contracts.Envelope {
+			{"topic publish", "/v1/messages/publish", map[string]any{"topic": topic}, http.StatusOK, func(t *testing.T) contracts.Envelope {
 				return heldCopy(t, rig.harness.client, topic)
 			}},
-			{"send", "/v1/messages/send", map[string]any{"target_session": target}, func(t *testing.T) contracts.Envelope {
+			{"send", "/v1/messages/send", map[string]any{"target_session": target}, http.StatusOK, func(t *testing.T) contracts.Envelope {
 				return heldCopy(t, rig.harness.client, contracts.LegacyAgentSubject(target))
 			}},
-			{"role publish", "/v1/messages/publish", map[string]any{"topic": contracts.RoleTopicPrefix + role}, func(t *testing.T) contracts.Envelope {
+			{"role publish", "/v1/messages/publish", map[string]any{"topic": contracts.RoleTopicPrefix + role}, http.StatusOK, func(t *testing.T) contracts.Envelope {
 				return heldForward(t, rig.harness.client, holder)
+			}},
+			{"role publish kept", "/v1/messages/publish", map[string]any{"topic": contracts.RoleTopicPrefix + unclaimed}, http.StatusAccepted, func(t *testing.T) contracts.Envelope {
+				return heldCopy(t, rig.harness.client, bus.KeptRoleSubject(unclaimed))
 			}},
 		}
 	}
@@ -75,27 +86,26 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 		}
 		return held(t, serveLimited(t, rig.mux, rig.harness.logs.String, req))
 	}
-	// learnsOnlyTheKey fails unless answer is 200 with duplicate, kept's event_id and times, and
-	// none of what kept's sender wrote or who it is.
-	learnsOnlyTheKey := func(t *testing.T, what string, answer heldAnswer, kept contracts.Envelope, words string) {
+	// learnsOnlyTheKey fails unless answer is r's status with duplicate, kept's event_id and times,
+	// and none of what kept's sender wrote or who it is, and unless the request's record line names
+	// the copy's event_id and who asked: session, and the asker's own words.
+	learnsOnlyTheKey := func(t *testing.T, what string, r route, answer heldAnswer, kept contracts.Envelope, words, session, asked string) {
 		t.Helper()
-		answer.requireStatus(t, what, http.StatusOK)
+		answer.requireStatus(t, what, r.status)
 		if !answer.Duplicate {
 			t.Fatalf("%s answered %s, want duplicate", what, answer.raw)
 		}
 		got := answer.envelope
-		if got.EventID != kept.EventID || got.IssuedAt != kept.IssuedAt {
-			t.Fatalf("%s answered event %s issued_at %d, want the stored copy's %s and %d", what, got.EventID, got.IssuedAt, kept.EventID, kept.IssuedAt)
+		if got.EventID != kept.EventID || got.IssuedAt != kept.IssuedAt ||
+			!reflect.DeepEqual(got.ExpiresAt, kept.ExpiresAt) || !reflect.DeepEqual(got.KeptAt, kept.KeptAt) {
+			t.Fatalf("%s answered %s, want the stored copy's event_id and times: %+v", what, answer.raw, kept)
 		}
-		if got.Payload != "" || got.PayloadSummary != "" || got.SourceSession != "" || got.Sender != nil || strings.Contains(answer.raw, words) {
+		if got.Payload != "" || got.PayloadSummary != "" || got.PayloadRef != "" || got.Source != "" ||
+			got.SourceSession != "" || got.Sender != nil || strings.Contains(answer.raw, words) {
 			t.Fatalf("%s answered %s, which carries what the other sender wrote or who it is", what, answer.raw)
 		}
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal([]byte(answer.raw), &fields); err != nil {
-			t.Fatalf("%s: decode %s: %v", what, answer.raw, err)
-		}
-		if _, ok := fields["message"]; ok {
-			t.Fatalf("%s answered %s, which carries a message", what, answer.raw)
+		if answer.line["event_id"] != kept.EventID || answer.line["source_session"] != session || answer.line["payload_summary"] != asked {
+			t.Fatalf("%s wrote the line %v, want the copy's event_id %s, the asker's session %q and its own words %q", what, answer.line, kept.EventID, session, asked)
 		}
 	}
 
@@ -104,12 +114,20 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 			t.Run(r.name, func(t *testing.T) {
 				key := uuid.NewString()
 				words := "alice's own words " + id.New()
-				request(t, r, key, alice, words, "").requireStatus(t, "A's "+r.name, http.StatusOK)
+				request(t, r, key, alice, words, "").requireStatus(t, "A's "+r.name, r.status)
 				kept := r.stored(t)
 				if !strings.Contains(kept.PayloadSummary+kept.Payload, words) {
 					t.Fatalf("the stream holds %+v for A's %s, want A's words in it", kept, r.name)
 				}
-				request(t, r, key, alice, "alice again", "").requireHeld(t, "A's repeated "+r.name, kept, true)
+				repeat := request(t, r, key, alice, "alice again", "")
+				if r.status == http.StatusOK {
+					repeat.requireHeld(t, "A's repeated "+r.name, kept, true)
+					return
+				}
+				repeat.requireStatus(t, "A's repeated "+r.name, r.status)
+				if !reflect.DeepEqual(repeat.envelope, kept) || !repeat.Duplicate {
+					t.Fatalf("A's repeated %s answered %s, want the whole kept copy %+v with duplicate", r.name, repeat.raw, kept)
+				}
 			})
 		}
 	})
@@ -125,21 +143,39 @@ func TestARepeatByAnotherSenderLearnsTheKeyIsTakenAndNotTheText(t *testing.T) {
 				t.Run(r.name, func(t *testing.T) {
 					key := uuid.NewString()
 					words := "alice's own words " + id.New()
-					request(t, r, key, alice, words, "").requireStatus(t, "A's "+r.name, http.StatusOK)
-					learnsOnlyTheKey(t, "B's repeat of A's "+r.name, request(t, r, key, bob, "bob's words", row.token), r.stored(t), words)
+					request(t, r, key, alice, words, "").requireStatus(t, "A's "+r.name, r.status)
+					learnsOnlyTheKey(t, "B's repeat of A's "+r.name, r, request(t, r, key, bob, "bob's words", row.token), r.stored(t), words, bob, "bob's words")
 				})
 			}
 		})
 	}
 
-	t.Run("case: a token that proves B reads no more of a copy that names no session", func(t *testing.T) {
+	// A copy that names no session names no owner a token could prove: a same-source caller with
+	// no session reads it whole, with or without a token, as a caller on the shared bearer does.
+	t.Run("control: a token that proves B reads a copy that names no session, as a bearer caller does", func(t *testing.T) {
 		for _, r := range routes(t) {
 			t.Run(r.name, func(t *testing.T) {
 				key := uuid.NewString()
 				words := "sessionless words " + id.New()
-				request(t, r, key, "", words, "").requireStatus(t, "the sessionless "+r.name, http.StatusOK)
-				learnsOnlyTheKey(t, "B's tokened repeat of the sessionless "+r.name, request(t, r, key, "", "bob's words", bob), r.stored(t), words)
+				request(t, r, key, "", words, "").requireStatus(t, "the sessionless "+r.name, r.status)
+				kept := r.stored(t)
+				repeat := request(t, r, key, "", "bob's words", bob)
+				repeat.requireStatus(t, "B's tokened repeat of the sessionless "+r.name, r.status)
+				if !reflect.DeepEqual(repeat.envelope, kept) || !repeat.Duplicate {
+					t.Fatalf("B's tokened repeat of the sessionless %s answered %s, want the whole copy %+v with duplicate", r.name, repeat.raw, kept)
+				}
 			})
+		}
+	})
+
+	// A request's own copy is answered whole whoever proves what: a request with a token and no
+	// session is kept as its own copy, which its 202 answers.
+	t.Run("control: a request with a token and no session gets its own kept copy whole", func(t *testing.T) {
+		r := routes(t)[3]
+		first := request(t, r, uuid.NewString(), "", "my own words", bob)
+		first.requireStatus(t, "the tokened first publish to the unclaimed role", http.StatusAccepted)
+		if kept := r.stored(t); !reflect.DeepEqual(first.envelope, kept) || first.Duplicate {
+			t.Fatalf("the tokened first publish answered %s, want its own kept copy %+v whole with no duplicate", first.raw, kept)
 		}
 	})
 }

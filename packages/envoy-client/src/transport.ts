@@ -254,6 +254,53 @@ const PublishResponseSchema = EnvelopeResponseSchema.extend({
   kept_until: z.number().int().optional(),
 });
 
+/**
+ * A send's or a publish's answer when its idempotency key is already taken by another sender's
+ * message: `200` with `duplicate: true`, the stored message's `event_id`, `issued_at`, `topic` and
+ * `dedupe_key`, and none of what that sender wrote or who it is, whose string fields the listener
+ * sends empty (`requestSender.answer` in `cmd/listener/stored_copy.go`). It is told from a whole
+ * answer by its `payload_summary`, which a whole envelope never sends empty, so the two schemas
+ * never both read one answer.
+ */
+const KeyTakenWireSchema = z.object({
+  event_id: z.string().min(1),
+  topic: z.string(),
+  dedupe_key: z.string(),
+  issued_at: z.number().int(),
+  duplicate: z.literal(true),
+  payload_summary: z.literal("").optional(),
+});
+
+/**
+ * The result of a send or a publish whose idempotency key another sender's message already holds:
+ * Envoy stored nothing for this caller, so its message was not delivered, and says only that the
+ * key is taken: that message's event id, topic and when it was stored. Sending the message again
+ * under a new idempotency key delivers it. `keyTaken` tells it from a delivered result, which
+ * never carries it.
+ */
+export type KeyTakenResult = {
+  readonly keyTaken: {
+    readonly eventId: string;
+    readonly topic: string;
+    readonly issuedAt: number;
+  };
+  readonly delivered: false;
+};
+
+/** The key-taken result raw reads as, or undefined when raw is not that answer. */
+function keyTakenOf(raw: unknown): KeyTakenResult | undefined {
+  const taken = KeyTakenWireSchema.safeParse(raw);
+  if (!taken.success) return undefined;
+  return {
+    keyTaken: {
+      eventId: taken.data.event_id,
+      topic: taken.data.topic,
+      issuedAt: taken.data.issued_at,
+    },
+    delivered: false,
+  };
+}
+
 export type EnvoyFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export type EnvoyClientConfig = {
@@ -657,6 +704,8 @@ export type SendResult = {
   readonly lastSeen?: number;
   /** The listener already held a send under this target and idempotency key: delivered once. */
   readonly duplicate: boolean;
+  /** Never set on a delivered send: see {@link KeyTakenResult}. */
+  readonly keyTaken?: undefined;
 };
 
 export type PublishResult = {
@@ -696,6 +745,8 @@ export type PublishResult = {
    * drops it. Absent from a listener of an earlier release, which names no time and sends no
    * such message. */
   readonly keptUntil?: number;
+  /** Never set on a delivered publish: see {@link KeyTakenResult}. */
+  readonly keyTaken?: undefined;
 };
 
 /**
@@ -840,8 +891,11 @@ export type EnvoyClient = {
   readonly subscribe: (input: SubscribeInput) => Promise<SubscribeResult>;
   readonly unsubscribe: (input: UnsubscribeInput) => Promise<void>;
   readonly getInterest: (sessionID: string) => Promise<Interest>;
-  readonly send: (input: SendInput) => Promise<SendResult>;
-  readonly publish: (input: PublishInput) => Promise<PublishResult>;
+  /** The send's result, or {@link KeyTakenResult} when another sender's message already holds its
+   *  idempotency key, so nothing was delivered for this caller. */
+  readonly send: (input: SendInput) => Promise<SendResult | KeyTakenResult>;
+  /** The publish's result, or {@link KeyTakenResult} as for a send. */
+  readonly publish: (input: PublishInput) => Promise<PublishResult | KeyTakenResult>;
   /**
    * Deletes the session's registry entry. With `clientInstanceID` the listener deletes the entry
    * only when it carries the same instance id or none, so a departing client instance never
@@ -1103,7 +1157,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // attempt got: a first attempt can store the message and lose its answer, and the retry
       // then find the target gone.
       let unanswered = false;
-      let response: z.infer<typeof EnvelopeResponseSchema>;
+      let answered: KeyTakenResult | z.infer<typeof EnvelopeResponseSchema>;
       try {
         const answer = await post(
           "/v1/messages/send",
@@ -1124,14 +1178,19 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
               : { actingSession: input.sourceSessionID }),
           }
         );
-        // A 2xx whose body does not parse is the listener's word that cannot be read.
-        response = EnvelopeResponseSchema.parse(JSON.parse(answer));
+        // A 2xx whose body does not parse is the listener's word that cannot be read. An answer
+        // that says only that another sender's message holds the key is read before the whole
+        // envelope, which it never is (KeyTakenWireSchema).
+        const raw: unknown = JSON.parse(answer);
+        answered = keyTakenOf(raw) ?? EnvelopeResponseSchema.parse(raw);
       } catch (error) {
         if (error instanceof EnvoyApiError && error.details.status < 500 && !unanswered) {
           throw error;
         }
         throw new EnvoySendUnconfirmedError(input.targetSessionID, idempotencyKey, attempts, error);
       }
+      if ("keyTaken" in answered) return answered;
+      const response = answered;
       return {
         envelope: response,
         recipient: response.recipient ?? input.targetSessionID,
@@ -1146,27 +1205,28 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     },
     publish: async (input) => {
       const idempotencyKey = input.idempotencyKey ?? crypto.randomUUID();
-      const response = PublishResponseSchema.parse(
-        JSON.parse(
-          await post(
-            "/v1/messages/publish",
-            {
-              source: input.source ?? "agent",
-              ...sourceSession(input.sourceSessionID),
-              topic: input.topic,
-              message: input.message,
-              ...(input.payload === undefined ? {} : { payload: input.payload }),
-              idempotency_key: idempotencyKey,
-              ...messageMetadata(input),
-              // Omitted unless the caller set it, so an older listener sees an unchanged request.
-              ...(input.keep === undefined ? {} : { keep: input.keep }),
-            },
-            input.sourceSessionID === undefined || input.sourceSessionID === ""
-              ? {}
-              : { actingSession: input.sourceSessionID }
-          )
+      const raw: unknown = JSON.parse(
+        await post(
+          "/v1/messages/publish",
+          {
+            source: input.source ?? "agent",
+            ...sourceSession(input.sourceSessionID),
+            topic: input.topic,
+            message: input.message,
+            ...(input.payload === undefined ? {} : { payload: input.payload }),
+            idempotency_key: idempotencyKey,
+            ...messageMetadata(input),
+            // Omitted unless the caller set it, so an older listener sees an unchanged request.
+            ...(input.keep === undefined ? {} : { keep: input.keep }),
+          },
+          input.sourceSessionID === undefined || input.sourceSessionID === ""
+            ? {}
+            : { actingSession: input.sourceSessionID }
         )
       );
+      const taken = keyTakenOf(raw);
+      if (taken !== undefined) return taken;
+      const response = PublishResponseSchema.parse(raw);
       return {
         envelope: response,
         ...(response.holder === undefined ? {} : { holder: response.holder }),

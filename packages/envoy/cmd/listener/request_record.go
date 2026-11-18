@@ -96,8 +96,11 @@ type requestRecord struct {
 	lane    string
 	// item is the envelope the handler built, taken by pointer rather than copied, and nil on a
 	// request refused before the envelope exists (an undecodable body): that request still gets
-	// its line, with the envelope's four fields empty rather than no line at all.
+	// its line, with the envelope's four fields empty rather than no line at all. A route that
+	// answers a copy another request stored points item at that copy, and keeps the envelope it
+	// built in asked, whose source, source_session and payload_summary the line names.
 	item   *contracts.Envelope
+	asked  *contracts.Envelope
 	holder string
 	// charge is the message's take from its sender's count (senderLimit.admit), nil for a message
 	// the limit does not count, and refused the refusal of a message whose count was empty. The
@@ -193,11 +196,17 @@ func (rec *requestRecord) refuseSenderRateLimited(w http.ResponseWriter, refusal
 }
 
 // write emits the one line, INFO for a request this listener took and WARN for one it refused.
+// Its event_id is the envelope the request was answered with (item), and its source,
+// source_session and payload_summary are the request's own (asked, where a route answered a copy
+// another request stored), so a repeat of another sender's key is logged as who made it.
 func (rec *requestRecord) write(status int, outcome requestOutcome) {
 	var eventID, source, sourceSession, payloadSummary string
 	if rec.item != nil {
 		eventID, source = rec.item.EventID, rec.item.Source
 		sourceSession, payloadSummary = rec.item.SourceSession, rec.item.PayloadSummary
+	}
+	if rec.asked != nil {
+		source, sourceSession, payloadSummary = rec.asked.Source, rec.asked.SourceSession, rec.asked.PayloadSummary
 	}
 	attrs := make([]slog.Attr, 0, 9)
 	attrs = append(attrs,
