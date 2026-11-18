@@ -31,9 +31,10 @@ const scratch = join(dir, "tmp");
 // linked into the run's bin below can be a mise shim (jq is, on a devbox), which finds its version
 // through the caller's mise configuration, and the run's HOME is this directory.
 const miseState = join(dir, "mise-state");
-// The proc root the run's process walks read: refuse_leftovers in prerequisites and run_processes
-// in cleanup read `${proc_root:-/proc}`. Over the host's /proc refuse_leftovers runs three commands
-// for each process the host has, so the row's time, held to the run's 60 s, was the host's process
+// The proc root refuse_leftovers reads in prerequisites (`${proc_root:-/proc}`; run_processes in
+// cleanup reads the host's /proc, and a root of its own is #4357's). Over the host's /proc
+// refuse_leftovers runs three commands for each process the host has, so the row's time, held to
+// the run's 60 s, was the host's process
 // count, and a process an earlier run of the proof left anywhere on the host failed the row. The
 // run starts no process those walks are to find before it stops, and no earlier run's process is
 // the row's, so its root holds one entry alone: an unreal pid whose command line only

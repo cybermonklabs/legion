@@ -139,9 +139,10 @@ if (skip) {
   console.warn(`Skipped the test in ${import.meta.path} that runs the rig: ${reasons.join("; ")}.`);
 }
 const keyFile = join(dir, "model-key");
-// The proc root the run's process walks read: refuse_leftovers in prerequisites and run_processes
-// in cleanup read `${proc_root:-/proc}`. Over the host's /proc refuse_leftovers runs three commands
-// for each process the host has, so the row's time, held to the run's 60 s, was the host's process
+// The proc root refuse_leftovers reads in prerequisites (`${proc_root:-/proc}`; run_processes in
+// cleanup reads the host's /proc, and a root of its own is #4357's). Over the host's /proc
+// refuse_leftovers runs three commands for each process the host has, so the row's time, held to
+// the run's 60 s, was the host's process
 // count, and a process an earlier run of the proof left anywhere on the host made the first FAIL
 // line its own. The run starts no process those walks are to find before it stops, and no earlier
 // run's process is the row's, so its root holds one entry alone: an unreal pid whose command line

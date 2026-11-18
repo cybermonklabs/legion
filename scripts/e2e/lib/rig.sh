@@ -298,29 +298,28 @@ stop_tree() {
 # $work, and any whose command line names $work. A process whose working directory this user cannot
 # read is another user's, so it is none of the run's and gets no further look, as a kill of it would
 # fail anyway.
-# One `find` reads every <proc>/<pid>/cwd link, and the command lines are read by the shell itself:
+# One `find` reads every /proc/<pid>/cwd link, and the command lines are read by the shell itself:
 # a `readlink` and a `grep` for each of a devbox's thousands of /proc entries cost seconds of every
 # teardown, the sweeps of a checkpoint among them. `%l` is empty for a link find could not read.
-# It reads `${proc_root:-/proc}`: the host's /proc, unless a test points proc_root at a proc root of
-# the processes it started (links to their /proc entries), since a walk of the host's whole /proc
-# would hold the test to the host's process count. A pid is the entry's name.
 run_processes() {
-  local p cwd arg
+  local p cwd arg entry
   local -a args
-  while IFS= read -r -d '' p && IFS= read -r -d '' cwd; do
+  while IFS= read -r -d '' entry; do
+    p=${entry%% *}
+    cwd=${entry#* }
     [ -n "$cwd" ] || continue
     case "$cwd/" in
-      "$work"/*) printf '%s\n' "${p##*/}"; continue ;;
+      "$work"/*) printf '%s\n' "${p#/proc/}"; continue ;;
     esac
     args=()
     { mapfile -d '' -t args <"$p/cmdline"; } 2>/dev/null || continue
     for arg in ${args[@]+"${args[@]}"}; do
       case $arg in
-        *"$work"*) printf '%s\n' "${p##*/}"; break ;;
+        *"$work"*) printf '%s\n' "${p#/proc/}"; break ;;
       esac
     done
     # find exits 1 for the cwd links it cannot read, every root process's among them, which is no
     # error here: under the callers' `set -E` an unguarded status would run their ERR trap inside
     # this substitution and print a warning, or a check's FAIL line, on a run that is going well.
-  done < <(find "${proc_root:-/proc}"/[0-9]*/cwd -maxdepth 0 -printf '%h\0%l\0' 2>/dev/null || :)
+  done < <(find /proc/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0' 2>/dev/null || :)
 }

@@ -1,8 +1,7 @@
 import { beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { descendantsOf, notInRoot, procRootOf, unrealPid } from "./proc-root";
 
 // run_processes (lib/rig.sh) names the processes a run still has alive, and a teardown SIGKILLs
 // each one. It reads every /proc/<pid> on the devbox, thousands of them, so it does its reading in
@@ -10,11 +9,6 @@ import { descendantsOf, notInRoot, procRootOf, unrealPid } from "./proc-root";
 // each of a checkpoint's sweeps, seconds. The run below puts a `readlink` and a `grep` on PATH that
 // record every call and answer nothing, so a run that still calls one both fails to find the run's
 // processes and says which command it called.
-// It reads `${proc_root:-/proc}`, and the row hands it a proc root of the test's own children
-// (lib/proc-root.ts), the three processes it starts among them, each a link to its real /proc
-// entry: over the host's /proc the row's work, under Bun's 5 s default, was the host's process
-// count, which no test owns. A command run for each entry is still one call per process of the
-// root, which the stand-ins record.
 const rig = join(import.meta.dir, "rig.sh");
 const dir = temporaryDirectory("run-processes-test");
 const bin = join(dir, "bin");
@@ -52,22 +46,6 @@ test("names the run's processes by working directory and by command line, withou
     children.push(named);
     const other = Bun.spawn(["sleep", "60"], { cwd: dir, stdout: "ignore", stderr: "ignore" });
     children.push(other);
-    // The proc root: a link to the real /proc entry of every child the kernel lists for this
-    // test's process, the three among them. A verdict on a process is read as a pass only with
-    // that process in view, so a root without one of the three fails the row, naming it.
-    const proc = procRootOf(dir, descendantsOf(process.pid, false));
-    expect(
-      notInRoot(proc, [
-        ["the process inside", inside.pid],
-        ["the process naming the run", named.pid],
-        ["the process of neither kind", other.pid],
-      ])
-    ).toEqual([]);
-    // And one entry no /proc can hold, a pid above the kernel's pid_max whose working directory is
-    // the run's: run_processes names it only when it reads the root it is given, so a walk that went
-    // back to the host's /proc fails the row rather than only slowing it.
-    const unreal = unrealPid(proc);
-    symlinkSync(work, join(proc, unreal, "cwd"));
     const ran = Bun.spawnSync(
       [
         "bash",
@@ -82,18 +60,13 @@ work=${JSON.stringify(work)}
 . ${JSON.stringify(rig)}
 for p in $(run_processes); do echo "$p"; done`,
       ],
-      {
-        env: { PATH: `${bin}:${process.env.PATH ?? ""}`, proc_root: proc },
-        stdout: "pipe",
-        stderr: "pipe",
-      }
+      { env: { PATH: `${bin}:${process.env.PATH ?? ""}` }, stdout: "pipe", stderr: "pipe" }
     );
     expect(ran.stderr.toString()).toBe("");
     expect(ran.exitCode).toBe(0);
     const pids = ran.stdout.toString().split("\n").filter(Boolean);
     expect(pids).toContain(String(inside.pid));
     expect(pids).toContain(String(named.pid));
-    expect(pids).toContain(unreal);
     expect(pids).not.toContain(String(other.pid));
     expect(existsSync(calls) ? readFileSync(calls, "utf8") : "").toBe("");
   } finally {

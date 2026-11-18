@@ -42,19 +42,18 @@ if (set === undefined) throw new Error(`${scriptPath} has no top-level set line`
 // Read once, at module scope: a call inside the test body would print the warning per row.
 const skip = skipWithout("tmux");
 
-// The code under test reads `${proc_root:-/proc}`: run_processes (lib/rig.sh) a cwd link and a
-// command line for every process there, stop_agent_daemons (parked-decision-devbox.sh) a stat and
-// an environment for every process and run_processes once more. The row runs four such walks
-// (run_processes before and after, and stop_agent_daemons's two), so over the host's /proc its work
-// grew with the machine's processes, which no test owns: CI's runner has a few hundred, a devbox
-// tens of thousands, and with the row held to a ninth of one CPU on a devbox of about 20,000 the
-// fixed 30 s it had ran out inside stop_agent_daemons in 20 runs of 20. The row hands both a proc
-// root of its own processes instead (lib/proc-root.ts), so each walk reads those alone, and the
-// row keeps the 30 s it had: what is left of its work is a few process starts (a tmux server and
-// pane, the stand-in broker, three shells running the code under test) and waits on its processes'
-// events, none of which grows with the host. It is set as the file's default above every hook,
-// since Bun 1.4.4 gives a hook the default in force where it is registered, and the hooks end what
-// the row started.
+// stop_agent_daemons (parked-decision-devbox.sh) reads a stat and an environment for every process
+// of `${proc_root:-/proc}`. Over the host's /proc its work grew with the machine's processes, which
+// no test owns: CI's runner has a few hundred, a devbox tens of thousands, and with the row held to
+// a ninth of one CPU on a devbox of about 20,000 the fixed 30 s it had ran out inside
+// stop_agent_daemons in 20 runs of 20. The row hands it a proc root of its own processes instead
+// (lib/proc-root.ts), so its walk reads those alone, and the row keeps the 30 s it had. run_processes
+// (lib/rig.sh), which the row calls before and after and stop_agent_daemons calls once more, reads
+// the host's /proc in one `find` pass and runs nothing for each entry; a proc root of its own is
+// #4357's. What is left of the row's work is a few process starts (a tmux server and pane, the
+// stand-in broker, three shells running the code under test) and waits on its processes' events.
+// It is set as the file's default above every hook, since Bun 1.4.4 gives a hook the default in
+// force where it is registered, and the hooks end what the row started.
 setDefaultTimeout(30_000);
 const stopAgentDaemons = fn("stop_agent_daemons");
 
@@ -178,7 +177,7 @@ async function until(what: string, ok: () => boolean) {
 }
 
 // harness runs BODY with the script's `set` line, lib/rig.sh sourced as the script sources it (for
-// run_processes) and stop_agent_daemons taken from the script by name, both reading the row's proc
+// run_processes) and stop_agent_daemons taken from the script by name, which reads the row's proc
 // root PROC. $work comes in through the environment, so the harness's own command line does not
 // name it and run_processes does not name the harness.
 function harness(work: string, proc: string, body: string) {
@@ -331,8 +330,8 @@ wait
     // And one member of the broker's session no /proc can hold: a pid above the kernel's pid_max
     // whose stat names the broker's session and whose environment carries its runtime directory.
     // stop_agent_daemons signals it only when it reads the root it is given, so a walk that went
-    // back to the host's /proc fails the row rather than only slowing it. It has no cwd, so
-    // run_processes, which reads one first, passes over it.
+    // back to the host's /proc fails the row rather than only slowing it. run_processes reads the
+    // host's /proc, where no such pid is.
     const unreal = unrealPid(proc);
     writeFileSync(join(proc, unreal, "stat"), `${unreal} (sleep) S 1 ${leader} ${leader} 0\n`);
     writeFileSync(join(proc, unreal, "environ"), `OMP_DAEMON_RUNTIME_DIR=${runtime}\0`);

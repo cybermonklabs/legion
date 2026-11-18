@@ -556,8 +556,8 @@ wait_for_run_processes() {
 # OMP_DAEMON_RUNTIME_DIR or is one of the run's by run_processes's reading, so a session the kernel
 # later gave the same id is left alone. It finds nothing by working directory alone: what it misses,
 # a service whose broker did not end it among them, cleanup-is-complete's wait still names. It reads
-# `${proc_root:-/proc}`, as run_processes does: the host's /proc, unless a test points proc_root at
-# a proc root of the processes it started.
+# `${proc_root:-/proc}`: the host's /proc, unless a test points proc_root at a proc root of the
+# processes it started.
 stop_agent_daemons() {
   local file dir real leader p stat sid line env_dir i alive
   local -a run=() targets=() environ=()

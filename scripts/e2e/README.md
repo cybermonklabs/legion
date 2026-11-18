@@ -3195,6 +3195,7 @@ The transcript records the duration of each wait.
   On the pinned build each service runs in a session of its own and ends when its broker ends.
   For each `broker.pid` there, each process of that broker's session is stopped when it carries that runtime directory in `OMP_DAEMON_RUNTIME_DIR` or is one of the run's processes.
   No process is stopped for its working directory alone.
+  `stop_agent_daemons` reads `${proc_root:-/proc}`: the host's `/proc`, unless a test points `proc_root` at a proc root of the processes it started (`lib/parked-decision-teardown.test.ts`).
   Every process of the run then ends within 600 s; a survivor fails the check, and the check first prints its `ps` line (pid, ppid, process group, session, start time and command line).
   The branch `legion/<tree>` of each tree is gone from `sjawhar/legion-smoke` (GitHub answers 404).
   The work directory is gone.
@@ -5933,9 +5934,7 @@ Each item below names a function, then what it does.
 - `run_processes`
 
   prints every pid whose working directory or command line names `$work`.
-  It reads `${proc_root:-/proc}` in one `find` pass and runs no command for each entry: a devbox holds thousands of them, and a `readlink` and a `grep` apiece cost a teardown, and every sweep a checkpoint makes, seconds.
-  That is the host's `/proc`, unless a test points `proc_root` at a proc root of the processes it started (links to their `/proc` entries), since a walk of the host's whole `/proc` holds the test to the host's process count.
-  `stop_agent_daemons` (`parked-decision-devbox.sh`) reads it the same way.
+  It reads `/proc` in one `find` pass and runs no command for each entry: a devbox holds thousands of them, and a `readlink` and a `grep` apiece cost a teardown, and every sweep a checkpoint makes, seconds.
   A process whose working directory this user cannot read is another user's, so it is none of the run's
 
 - `real_bin_path DEST NAME…`
@@ -5950,9 +5949,8 @@ Each item below names a function, then what it does.
   Stage 1 prepends `real_bin_path "$work/realbin" tmux` to its daemon's PATH when its first tmux is a script or mise itself, and keeps a real tmux binary, such as CI's apt tmux, otherwise;
   Stage 2, the 4b.13b acceptance and the Claude Code backend proof, which do not call it, put a link to `mise which tmux` on their daemons' PATH the same way
 
-`lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over a proc root of the test's own children, the three processes it starts among them, under an `ERR` trap that prints, with a `readlink` and a `grep` on `PATH` that record every call and answer nothing:
+`lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` and a `grep` on `PATH` that record every call and answer nothing:
 it names the process working in the run's directory and the one naming it in its command line, leaves a process of neither kind alone, calls neither command, and trips no trap.
-A root without one of the three fails the row, naming it, and the root also holds one entry above the kernel's `pid_max` working in the run's directory, which `run_processes` names only when it reads that root, so a walk that went back to the host's `/proc` fails the row.
 
 ## lib/two-builds.sh
 
