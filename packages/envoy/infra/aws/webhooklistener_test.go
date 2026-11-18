@@ -16,6 +16,7 @@ import (
 
 	envoyaws "github.com/sjawhar/envoy/infra/aws"
 	"github.com/sjawhar/envoy/infra/aws/rendering"
+	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/infra/internal/pulumitest"
 )
 
@@ -559,6 +560,64 @@ func TestWebhookListenerRefusesAnInvalidInputBeforeRegistering(t *testing.T) {
 	m, _, err := runListener(t, args, true)
 	require.ErrorContains(t, err, "envoy-infra:aws:WebhookListener example-listener: subnetIds names no subnet")
 	require.Equal(t, []string{awsProviderType}, m.Types(), "nothing but the provider is registered")
+}
+
+// The sender limit reaches the listener container's environment in the task definition exactly as
+// it is given, each variable there when its input is set and absent when it is not. A limit
+// core.CheckSenderLimit refuses stops the constructor with the InputError naming the input, which
+// validate returns through rendering.ListenerEnv.Check, before anything but the provider
+// registers.
+func TestWebhookListenerSenderMessageLimit(t *testing.T) {
+	for _, row := range []struct {
+		name        string
+		rate, burst *int
+		want        []string
+	}{
+		{"no limit", nil, nil, nil},
+		{"a rate alone", pulumi.IntRef(4), nil, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4"}},
+		{"a rate and a burst", pulumi.IntRef(4), pulumi.IntRef(8), []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4", "ENVOY_SENDER_MESSAGE_BURST=8"}},
+	} {
+		t.Run("aws:WebhookListener renders "+row.name, func(t *testing.T) {
+			args := exampleListenerArgs()
+			args.SenderMessagesPerMinute, args.SenderMessageBurst = row.rate, row.burst
+			m, _, err := runListener(t, args, true)
+			require.NoError(t, err)
+			var containers []struct {
+				Environment []struct{ Name, Value string } `json:"environment"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(m.One(t, taskDefinitionType).Inputs["containerDefinitions"].StringValue()), &containers))
+			require.Len(t, containers, 1)
+			var got []string
+			for _, e := range containers[0].Environment {
+				if strings.HasPrefix(e.Name, "ENVOY_SENDER_") {
+					got = append(got, e.Name+"="+e.Value)
+				}
+			}
+			require.Equal(t, row.want, got)
+		})
+	}
+	for _, row := range []struct {
+		name        string
+		rate, burst *int
+		input       string
+	}{
+		{"a rate of 0", pulumi.IntRef(0), nil, "senderMessagesPerMinute"},
+		{"a rate of 60001", pulumi.IntRef(60001), nil, "senderMessagesPerMinute"},
+		{"a burst of 0", pulumi.IntRef(4), pulumi.IntRef(0), "senderMessageBurst"},
+		{"a burst with no rate", nil, pulumi.IntRef(8), "senderMessageBurst"},
+	} {
+		t.Run("aws:WebhookListener refuses "+row.name, func(t *testing.T) {
+			args := exampleListenerArgs()
+			args.SenderMessagesPerMinute, args.SenderMessageBurst = row.rate, row.burst
+			var refused *core.InputError
+			require.ErrorAs(t, args.Validate(), &refused)
+			require.Equal(t, row.input, refused.Input)
+
+			m, _, err := runListener(t, args, true)
+			require.ErrorContains(t, err, "envoy-infra:aws:WebhookListener example-listener: "+row.input+" ")
+			require.Equal(t, []string{awsProviderType}, m.Types(), "nothing but the provider is registered")
+		})
+	}
 }
 
 // without returns text with each part removed, requiring each to occur in it exactly once.
