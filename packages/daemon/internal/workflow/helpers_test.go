@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -37,11 +38,40 @@ const (
 
 // reviewBody is a review's body as a Legion role writes it: what the role said, then the Legion
 // footer naming the session that wrote it and the head it read (skills/legion-worker/SKILL.md).
-// The session it names decides nothing while the reviewer's claim records none, which is what
-// the shared fixtures seed (seedReviewOf): there the review App's login decides by itself
-// (byReviewer), and a fixture about the sessions writes its own body.
+// The session it names is the one the shared fixtures record on the reviewer's claim
+// (seedRoundOneRows), so it is the reviewer's own review, and a fixture about another session
+// writes its own body. It names no entry, so it decides its round and moves no commit the reviewer
+// read (record.PhaseRow.ReviewedHead): a fixture whose proof reads that commit writes its review
+// with roundReviewBody.
 func reviewBody(said, head string) string {
 	return said + "\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\",\"head\":\"" + head + "\"} -->"
+}
+
+// reviewBodyOfEntry is a review's body whose Legion footer names session, head and entry as the
+// entry of the round the review is of, the number the reviewer's task names (reviewround.EntryLabel),
+// written as the reviewer's texts have an agent write it, a quoted number (`"entry":"<n>"`). A
+// fixture about a review of the round that stands writes roundReviewBody, which reads that number;
+// one about a review of another round names that round's here.
+func reviewBodyOfEntry(said, session, head string, entry int64) string {
+	return said + "\n\n<!-- legion: {\"session\":\"" + session + "\",\"phase\":\"review\",\"head\":\"" + head + "\",\"entry\":\"" + strconv.FormatInt(entry, 10) + "\"} -->"
+}
+
+// roundReviewBody is the body of session's review of the round that stands, as the reviewer
+// writes it for the task it was given: its footer names the entry LEGION-208's reviewer row holds
+// when the review is built (record.PhaseRow.Entry), the number that task names. It is the one
+// helper of this package through which a fixture of the reviewer's own review ("ses-reviewer",
+// the session seedRoundOneRows records on the reviewer's claim) names its entry, and through which
+// a fixture of another session's review names the same entry, so that only the session tells the
+// two apart. Build the review after the round's entry is raised.
+func roundReviewBody(t *testing.T, pool *pgxpool.Pool, session, said, head string) string {
+	t.Helper()
+	return reviewBodyOfEntry(said, session, head, phaseRowOf(t, pool, claim.RoleReviewer).Entry)
+}
+
+// commentBody is reviewBody for the reviewer's COMMENT: its Legion footer names the reviewer's
+// session and no head, since a comment reads no head the round could be decided on.
+func commentBody(said string) string {
+	return said + "\n\n<!-- legion: {\"session\":\"ses-reviewer\",\"phase\":\"review\"} -->"
 }
 
 // reviewBodyOf is reviewBody for a review the review App submitted and what the author said for

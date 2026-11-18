@@ -47,7 +47,7 @@ on:
 
 jobs:
   bypass-check:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The checkout, two API reads at the push's head, and at most one dispatch.
     timeout-minutes: 10
     # The dispatch of ci.yaml needs `actions: write`, and `gh run list` needs no more than that;
