@@ -10,8 +10,10 @@ import (
 
 // `mise where` starts without either raw NATS seed the daemon holds.
 func TestMiseWhereGetsNoNATSSeed(t *testing.T) {
-	t.Setenv("NATS_NKEY_SEED", "pane-seed-value")
-	t.Setenv("NATS_DAEMON_NKEY_SEED", "daemon-seed-value")
+	// Unique values, so that only a variable a seed reached can hold one (envlisting).
+	paneSeed, daemonSeed := envlisting.Unique("pane-seed-"), envlisting.Unique("daemon-seed-")
+	t.Setenv("NATS_NKEY_SEED", paneSeed)
+	t.Setenv("NATS_DAEMON_NKEY_SEED", daemonSeed)
 	dir := t.TempDir()
 	dump := filepath.Join(dir, "env")
 	mise := filepath.Join(dir, "mise")
@@ -24,7 +26,10 @@ func TestMiseWhereGetsNoNATSSeed(t *testing.T) {
 		t.Fatalf("mise never ran: %v", err)
 	}
 	vars := envlisting.Vars(string(seen))
-	if name, leaked := envlisting.HoldingValue(vars, "pane-seed-value", "daemon-seed-value"); leaked || vars["PATH"] == "" {
-		t.Errorf("mise where's environment carries a NATS seed in %s (or is not the daemon's):\n%s", name, seen)
+	if name, leaked := envlisting.Carrying(vars, paneSeed, daemonSeed); leaked {
+		t.Errorf("mise where's environment carries a NATS seed in %s:\n%s", name, seen)
+	}
+	if vars["PATH"] == "" {
+		t.Errorf("mise where's environment is not the daemon's (no PATH):\n%s", seen)
 	}
 }

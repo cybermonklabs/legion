@@ -4,12 +4,16 @@
 // env prints one variable to a line, in the order its environment holds them, and the shell a
 // command runs under can reorder that environment first: dash writes a child's environment from
 // its own variable table, so a variable the daemon appends last can be the first line. And a
-// listing holds variables the test does not control, PWD among them, whose values can contain any
-// word. So a check reads each variable whole, by name or by its whole value, and never searches
-// the listing's text.
+// listing holds variables the test does not control, PWD and TMPDIR among them, whose values can
+// contain any word. So a check reads each variable whole, by name, and looks for a value the test
+// planted only when that value is Unique: no machine's path can hold a value made after it.
 package envlisting
 
-import "strings"
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"strings"
+)
 
 // Vars returns the variables of an env listing, by name.
 func Vars(listing string) map[string]string {
@@ -22,12 +26,23 @@ func Vars(listing string) map[string]string {
 	return vars
 }
 
-// HoldingValue returns the name of a variable of vars whose whole value is one of values, and
-// whether there is one.
-func HoldingValue(vars map[string]string, values ...string) (string, bool) {
+// Unique returns prefix followed by 16 random hex digits: a value a test plants in an
+// environment and then looks for, which no other variable can hold by chance.
+func Unique(prefix string) string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return prefix + hex.EncodeToString(b)
+}
+
+// Carrying returns the name of a variable of vars whose value contains one of values, and
+// whether there is one. Each value should be Unique, so that only a variable the planted value
+// reached can match, inside a longer value (a URL, a list) as well.
+func Carrying(vars map[string]string, values ...string) (string, bool) {
 	for name, value := range vars {
-		for _, want := range values {
-			if value == want {
+		for _, planted := range values {
+			if strings.Contains(value, planted) {
 				return name, true
 			}
 		}

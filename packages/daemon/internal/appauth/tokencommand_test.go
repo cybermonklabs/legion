@@ -608,9 +608,11 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	now := time.Date(2026, 11, 3, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
 	seen := filepath.Join(dir, "env")
-	t.Setenv("NATS_NKEY_SEED", "seed-value")
-	t.Setenv(TokenCommandOwner, "inherited")
-	t.Setenv(TokenCommandReadOnly, "inherited")
+	// Unique values, so that only a variable they reached can hold one (envlisting).
+	seed, inherited := envlisting.Unique("seed-"), envlisting.Unique("inherited-")
+	t.Setenv("NATS_NKEY_SEED", seed)
+	t.Setenv(TokenCommandOwner, inherited)
+	t.Setenv(TokenCommandReadOnly, inherited)
 	command := fmt.Sprintf(`env >%q; printf '{"installations":{"acme":{"installation_id":1,"token":"ghs_x","expires_at":"%s"}}}'`, seen, now.Add(time.Hour).Format(time.RFC3339))
 	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: command}}, Options{Now: func() time.Time { return now }})
 	if _, err := tokens.runTokenCommand(context.Background(), tokens.apps.Implement, mintRequest{role: Implement, owner: "acme"}); err != nil {
@@ -620,10 +622,11 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	// Each variable is read whole (envlisting): the daemon's own two can be the listing's first
 	// line, and a variable the test does not set, such as PWD, can contain any word.
 	vars := envlisting.Vars(string(env))
-	readOnly, readOnlySet := vars[TokenCommandReadOnly]
-	if name, leaked := envlisting.HoldingValue(vars, "seed-value", "inherited"); leaked || vars[TokenCommandOwner] != "acme" ||
-		!readOnlySet || readOnly != "" {
-		t.Fatalf("the command's environment (%s holds a value the daemon must not pass):\n%s", name, env)
+	if name, leaked := envlisting.Carrying(vars, seed, inherited); leaked {
+		t.Fatalf("the command's environment: %s carries a value the daemon must not pass:\n%s", name, env)
+	}
+	if readOnly, set := vars[TokenCommandReadOnly]; vars[TokenCommandOwner] != "acme" || !set || readOnly != "" {
+		t.Fatalf("the command's environment: want %s=acme and %s set and empty:\n%s", TokenCommandOwner, TokenCommandReadOnly, env)
 	}
 
 	slow := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "1", TokenCommand: "sleep 30"}}, Options{})

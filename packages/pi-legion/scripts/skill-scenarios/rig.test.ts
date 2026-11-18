@@ -856,7 +856,7 @@ fi
 {
   printf 'argv %s\\n' "$0" "$@"
   printf 'env %s\\n' "PWD=$PWD" "HOME=$HOME" "OMP_PROFILE=$OMP_PROFILE"
-  env | grep -q LEGION_E2E && echo "env LEGION_E2E set"
+  compgen -e | grep -q '^LEGION_E2E' && echo "env LEGION_E2E set"
   probe read-outside cat "$OUTSIDE"
   probe read-home-ssh ls "$OPERATOR_HOME/.ssh"
   probe list-work ls "$WORK/runs"
