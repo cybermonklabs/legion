@@ -13,7 +13,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 
 /** A model as the host names it: the provider and the id a model selector resolves to
  * (`ExtensionModelQuery`, `packages/coding-agent/src/extensibility/extensions/types.ts:579-597` in
- * Oh My Pi at tag `v18.18.6-sami.20261118-091112`, read on that build). */
+ * Oh My Pi at tag `v18.18.6-sami.20261118-101239`, read on that build). */
 export interface HostModel {
   readonly provider: string;
   readonly id: string;

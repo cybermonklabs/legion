@@ -279,7 +279,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
    * The plugin's own step down the chain, for a content filter the host did not walk: the host
    * leaves a refusal that lands after the model has already sent text where it is
    * (`turn-recovery.ts:1641-1675` and `:2715-2725` at the pinned tag
-   * `v18.18.6-sami.20261118-091112`).
+   * `v18.18.6-sami.20261118-101239`).
    *
    * The arming names the `model_change` entry **this** call wrote, read back from `getBranch()`
    * after it. The host's own fallback claim would not do: `pi.setModel` clears the active retry
@@ -333,7 +333,7 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
 
   const settled = async (event: AgentEndEvent, ctx: ModelFallbackContext): Promise<void> => {
     // The host is about to retry this turn itself, so it has not settled; acting on it would step
-    // the session down twice (`session/agent-session.ts:5876-5884` at the pinned tag).
+    // the session down twice (`session/agent-session.ts:5877-5885` at the pinned tag).
     if (event.willContinue === true) return;
     const applied = appliedThisTurn;
     appliedThisTurn = undefined;

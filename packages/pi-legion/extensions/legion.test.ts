@@ -731,10 +731,10 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:451-471): the
- * child's transcript sits inside a directory named after the parent's transcript file, minus
- * its `.jsonl` extension, so `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds
- * `parentFile`. */
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:484-504 at the
+ * pinned tag): the child's transcript sits inside a directory named after the parent's
+ * transcript file, minus its `.jsonl` extension, so
+ * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */
 async function createSubagentTranscriptPaths(): Promise<{
   readonly parentFile: string;
   readonly childFile: string;
