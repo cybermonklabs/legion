@@ -489,25 +489,31 @@ func requestWait(w http.ResponseWriter, raw string) (time.Duration, bool) {
 	return time.Duration(seconds) * time.Second, true
 }
 
-// readHeld reads request id for enrollmentID. It reads the request's owner and state
-// (Machine.OwnerAndState, one statement), refusing requests.ErrNotYours when the owner is another
-// enrollment; while the state is pending and deadline has not passed, it reads them again every
-// requestWaitStep; then it reads the whole request (Machine.Get) once. A deadline already passed
-// is the one read. The owner is checked at every step, so a request that moves to another
-// enrollment while the read is held (adopt moves a predecessor's requests to its successor) is
-// refused at the next step, as a new read of it is. Any other error is the store's, or ctx's when
-// ctx ended first.
+// readHeld reads request id for enrollmentID. It reads the request's owner, state and whether the
+// model judge holds it (Machine.OwnerAndState, one statement), refusing requests.ErrNotYours when
+// the owner is another enrollment; while the state is pending and deadline has not passed, it
+// reads them again every requestWaitStep; then it reads the whole request (Machine.Get) once. A
+// request the judge held at the first read and holds no more has been handed to its person, still
+// pending: that ends the hold too, so the caller learns at once who decides it now and where. A
+// deadline already passed is the one read. The owner is checked at every step, so a request that
+// moves to another enrollment while the read is held (adopt moves a predecessor's requests to its
+// successor) is refused at the next step, as a new read of it is. Any other error is the store's,
+// or ctx's when ctx ended first.
 func (s *server) readHeld(ctx context.Context, id, enrollmentID string, deadline time.Time) (requests.Request, error) {
+	first, heldByJudge := true, false
 	for {
-		owner, state, err := s.deps.Machine.OwnerAndState(ctx, id)
+		owner, state, judging, err := s.deps.Machine.OwnerAndState(ctx, id)
 		if err != nil {
 			return requests.Request{}, err
 		}
 		if owner != enrollmentID {
 			return requests.Request{}, requests.ErrNotYours
 		}
+		if first {
+			first, heldByJudge = false, judging
+		}
 		left := time.Until(deadline)
-		if state != "pending" || left <= 0 {
+		if state != "pending" || left <= 0 || (heldByJudge && !judging) {
 			return s.deps.Machine.Get(ctx, id)
 		}
 		select {
