@@ -457,15 +457,16 @@ def steps_of(found: dict) -> list[Step]:
 
 
 def spellings(path: str, workdir: str) -> set[str]:
-    """The ways a run: in workdir names path, a repository-relative file: its path from workdir,
-    bare or behind `./`."""
+    """The ways a run: in workdir names path, a repository-relative file: its path from workdir
+    behind `./`, and bare where that path holds a `/` (a bare name without one is looked up on
+    PATH by the shell, not in the directory)."""
     if workdir in ("", "."):
         relative = path
     elif path.startswith(f"{workdir}/"):
         relative = path[len(workdir) + 1:]
     else:
         return set()
-    return {relative, f"./{relative}"}
+    return {f"./{relative}"} | ({relative} if "/" in relative else set())
 
 
 def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
