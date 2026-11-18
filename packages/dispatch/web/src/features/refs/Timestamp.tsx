@@ -17,14 +17,12 @@ const TICK_INTERVAL_MS = 30_000;
 // setInterval, so a page with hundreds of timestamps (a long log, a comment thread) still
 // pays for exactly one timer.
 const listeners = new Set<() => void>();
-let scheduled = false;
 let pendingTick: ReturnType<typeof setTimeout> | undefined;
 
 function scheduleTick(): void {
-  scheduled = true;
   pendingTick = setTimeout(() => {
     if (listeners.size === 0) {
-      scheduled = false;
+      pendingTick = undefined;
       return;
     }
     for (const listener of listeners) {
@@ -36,7 +34,7 @@ function scheduleTick(): void {
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
-  if (!scheduled) {
+  if (pendingTick === undefined) {
     scheduleTick();
   }
   return () => {
@@ -51,7 +49,6 @@ function subscribe(listener: () => void): () => void {
 export function resetTimestampTick(): void {
   clearTimeout(pendingTick);
   pendingTick = undefined;
-  scheduled = false;
 }
 
 /** "4 minutes ago", "just now": the relative form every `<Timestamp>` shows, for a caller that

@@ -118,16 +118,6 @@ configure({ asyncUtilTimeout: 10_000 });
 afterEach(resetRouteAnswers);
 afterEach(forgetTestAnswers);
 
-// A request answered by nothing fails its test (`network.ts`), even one a page swallowed in a
-// `catch`, through the last `afterEach` of this file; one made after the file's last test - a
-// write loop's retry, which no test is left to fail - fails the file, through the `afterAll` beside
-// it.
-const reportReachedNetwork = () => {
-  const reached = requestsThatReachedNetwork();
-  if (reached.length === 0) return;
-  throw new Error(`requests reached the network, answered by nothing: ${reached.join(", ")}`);
-};
-
 class WebSocketStub {
   binaryType = "arraybuffer";
   identifier = 0;
@@ -238,10 +228,10 @@ afterEach(restoreQuietConsoleError);
 // or in a last row whose check was skipped, fails the file through the `afterAll` below, hence
 // "in or after this file's last row".
 //
-// That `afterAll` runs the same two checks the same way. It runs once per file under `--parallel`,
-// which `test:web` passes; a plain `bun test` over several files runs it once, at the end of the
-// run. Keep this block the last of the file, so its throws skip no other hook and its checks run
-// after every other: a hook added later goes above it.
+// That `afterAll` runs the same checks, once per file under `--parallel`, which `test:web` passes;
+// a plain `bun test` over several files runs it once, at the end of the run. Keep this block the
+// last of the file, so its throws skip no other hook and its checks run after every other: a hook
+// added later goes above it.
 //
 // The `beforeEach` puts back a spy of `quietConsoleError` that the row before left in place
 // because one of that row's own `afterEach` hooks threw before the one beside the clock restore
@@ -249,10 +239,20 @@ afterEach(restoreQuietConsoleError);
 installActMessageRecorder();
 beforeEach(restoreQuietConsoleError);
 
-/** Runs each check, and throws what failed: one error when more than one did. */
-function runChecks(...checks: (() => void)[]): void {
+// A request answered by nothing fails its test (`network.ts`), even one a page swallowed in a
+// `catch`, through the `afterEach` below; one made after the file's last test - a write loop's
+// retry, which no test is left to fail - fails the file, through the `afterAll` beside it.
+const reportReachedNetwork = () => {
+  const reached = requestsThatReachedNetwork();
+  if (reached.length === 0) return;
+  throw new Error(`requests reached the network, answered by nothing: ${reached.join(", ")}`);
+};
+
+/** Runs the network report and then the act check, which charges what it found to `where`, and
+ *  throws what failed: one error when both did. */
+function runChecks(where: string): void {
   const failures: Error[] = [];
-  for (const check of checks) {
+  for (const check of [reportReachedNetwork, () => failOnActMessages(where)]) {
     try {
       check();
     } catch (failure) {
@@ -262,7 +262,5 @@ function runChecks(...checks: (() => void)[]): void {
   if (failures.length > 1) throw new Error(failures.map((failure) => failure.message).join("\n"));
   if (failures.length === 1) throw failures[0];
 }
-afterEach(() => runChecks(reportReachedNetwork, () => failOnActMessages("in or before this row")));
-afterAll(() =>
-  runChecks(reportReachedNetwork, () => failOnActMessages("in or after this file's last row"))
-);
+afterEach(() => runChecks("in or before this row"));
+afterAll(() => runChecks("in or after this file's last row"));
