@@ -2454,17 +2454,18 @@ func judgeEnv() map[string]string {
 	return e
 }
 
-// TestLoadReadsTheJudgeSettings pins the judge's six: with none of the five set there is no
+// TestLoadReadsTheJudgeSettings pins the judge's seven: with none of the five set there is no
 // judge and every one of its fields is empty, and with all five set each is read as it was
 // given. The protocol is the one with a default, anthropic-messages, and each of the four it
-// takes is read as it was given.
+// takes is read as it was given. The account is optional: unset it reads empty, which is the
+// metadata server's identity token, and set it is read as given, without the space around it.
 func TestLoadReadsTheJudgeSettings(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.JudgeModelURL != "" || cfg.JudgeModel != "" || cfg.JudgeModelAudience != "" ||
-		cfg.JudgeDispatchURL != "" || cfg.JudgeDispatchTokenFile != "" {
+		cfg.JudgeDispatchURL != "" || cfg.JudgeDispatchTokenFile != "" || cfg.JudgeModelAccount != "" {
 		t.Fatalf("with none of them set the judge reads %+v; want every field empty", cfg)
 	}
 
@@ -2486,6 +2487,9 @@ func TestLoadReadsTheJudgeSettings(t *testing.T) {
 	if cfg.JudgeModelProtocol != "anthropic-messages" {
 		t.Errorf("the protocol with none named reads %q; want anthropic-messages", cfg.JudgeModelProtocol)
 	}
+	if cfg.JudgeModelAccount != "" {
+		t.Errorf("BROKER_JUDGE_MODEL_ACCOUNT unset reads %q; want empty, the metadata server's identity token", cfg.JudgeModelAccount)
+	}
 	for _, protocol := range []string{"anthropic-messages", "openai-responses", "openai-chat", "azure-anthropic"} {
 		e := judgeEnv()
 		e["BROKER_JUDGE_MODEL_PROTOCOL"] = protocol
@@ -2493,6 +2497,62 @@ func TestLoadReadsTheJudgeSettings(t *testing.T) {
 		if err != nil || cfg.JudgeModelProtocol != protocol {
 			t.Errorf("Load(BROKER_JUDGE_MODEL_PROTOCOL=%q) = (%q, %v); want it taken as it is", protocol, cfg.JudgeModelProtocol, err)
 		}
+	}
+	e = judgeEnv()
+	e["BROKER_JUDGE_MODEL_ACCOUNT"] = judgeAccount + " "
+	if cfg, err = Load(env(e)); err != nil || cfg.JudgeModelAccount != judgeAccount {
+		t.Errorf("Load(BROKER_JUDGE_MODEL_ACCOUNT=%q) = (%q, %v); want %q", e["BROKER_JUDGE_MODEL_ACCOUNT"], cfg.JudgeModelAccount, err, judgeAccount)
+	}
+}
+
+// judgeAccount is the service account a judge's account setting names here, a placeholder of the
+// form secrets.ValidServiceAccountEmail takes.
+const judgeAccount = "judge-model@example-project.iam.gserviceaccount.com"
+
+// TestTheJudgeAccountAloneIsRefused pins the second judge setting that is never missing: a
+// deployment that names whose identity token a judge presents and none of the five has named a
+// judge it never configured, the mistake of the protocol alone, so the start is refused naming
+// the setting, its value, and the five a judge needs, all of them missing.
+func TestTheJudgeAccountAloneIsRefused(t *testing.T) {
+	e := validEnv()
+	e["BROKER_JUDGE_MODEL_ACCOUNT"] = judgeAccount
+	_, err := Load(env(e))
+	if err == nil || !strings.Contains(err.Error(), "BROKER_JUDGE_MODEL_ACCOUNT") || !strings.Contains(err.Error(), strconv.Quote(judgeAccount)) ||
+		!strings.Contains(err.Error(), "needs "+strings.Join(judgeSettings, ", ")) {
+		t.Fatalf("Load(BROKER_JUDGE_MODEL_ACCOUNT alone) = %v; want a refusal naming the setting, its value and the five a judge needs", err)
+	}
+	if _, named, _ := strings.Cut(err.Error(), "missing "); named != strings.Join(judgeSettings, ", ") {
+		t.Errorf("Load(BROKER_JUDGE_MODEL_ACCOUNT alone) = %v; want all five named as missing", err)
+	}
+}
+
+// TestTheJudgeAccountIsHeldToOneServiceAccountEmail pins the rule BROKER_SERVICE_ACCOUNT_SECRETS'
+// accounts are held to: one user-managed service account's address in lowercase, and never a
+// Google-managed service agent. A person's address, a list, a capitalised address and a service
+// agent would each boot a judge whose every mint is refused, or one that mints as Google's own
+// service, so each is refused at start naming the setting and the value, and the placeholder
+// account is taken.
+func TestTheJudgeAccountIsHeldToOneServiceAccountEmail(t *testing.T) {
+	for _, c := range []struct{ name, value, want string }{
+		{"a person's address", "ada@example.com", "user-managed Google service account"},
+		{"two accounts", judgeAccount + ", another-judge@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"an upper-case address", "Judge-Model@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"a service agent", "service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := judgeEnv()
+			e["BROKER_JUDGE_MODEL_ACCOUNT"] = c.value
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), "BROKER_JUDGE_MODEL_ACCOUNT") || !strings.Contains(err.Error(), strconv.Quote(c.value)) ||
+				!strings.Contains(err.Error(), c.want) {
+				t.Errorf("Load(BROKER_JUDGE_MODEL_ACCOUNT=%q) = %v; want a refusal naming the setting and the value, saying %q", c.value, err, c.want)
+			}
+		})
+	}
+	e := judgeEnv()
+	e["BROKER_JUDGE_MODEL_ACCOUNT"] = judgeAccount
+	if cfg, err := Load(env(e)); err != nil || cfg.JudgeModelAccount != judgeAccount {
+		t.Errorf("Load(BROKER_JUDGE_MODEL_ACCOUNT=%q) = (%q, %v); want it taken as it is", judgeAccount, cfg.JudgeModelAccount, err)
 	}
 }
 
