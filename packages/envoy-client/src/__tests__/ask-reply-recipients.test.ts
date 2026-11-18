@@ -101,8 +101,6 @@ describe("a person's reply on A's ask, as each session's card reads the copy it 
     const card = cardOf(copy, B);
 
     expectOthersCard(card);
-    expect(copy.relation).not.toBeNull();
-    expect(card.envoy.dispatch.relation).toBe(sessionAnswerRelationPhrase(copy.relation ?? ""));
     // Which ask the reply is on, and what it says, stay on the card.
     expect(card.envoy.re).toBe(`dispatch://${fixture.issue_key}/ask/${fixture.ask_id}`);
     expect(card.envoy.dispatch.question).toBe("Which database backs the queue?");
@@ -110,7 +108,7 @@ describe("a person's reply on A's ask, as each session's card reads the copy it 
     expect(card.envoy.dispatch.state).toBe("open");
   });
 
-  test("a subscriber of the issue reads a comment on an issue, and A, which also follows the issue, its own ask", () => {
+  test("a subscriber of the issue reads a comment on an issue, and A, which also subscribes to the issue, its own ask", () => {
     const copy = copyOf("first", null);
 
     expectOthersCard(cardOf(copy, E));

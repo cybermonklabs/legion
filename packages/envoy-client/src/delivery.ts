@@ -545,14 +545,18 @@ export function carriedItem(
   return { resource, id, issueKey: event.issue_key };
 }
 
+/** Whether an event payload is a stand-in: the bus refused the event and the outbox published it
+ *  with its long fields dropped (`payload_omitted`). */
+function payloadWasOmitted(payload: unknown): boolean {
+  return isObject(payload) && payload["payload_omitted"] === true;
+}
+
 /** Whether an event payload says the body on it is not the item's body whole: the first part of
  *  it (`CarriedBodyPayload.body_truncated` in `@legion/contracts`), or none of it, because the
  *  bus refused the event and the outbox published a stand-in with its long fields dropped
  *  (`payload_omitted`). Either way the item itself answers the rest. */
 export function bodyWasCut(payload: unknown): boolean {
-  return (
-    isObject(payload) && (payload["body_truncated"] === true || payload["payload_omitted"] === true)
-  );
+  return (isObject(payload) && payload["body_truncated"] === true) || payloadWasOmitted(payload);
 }
 
 /** The Dispatch route that answers the whole item an event names. */
@@ -565,10 +569,9 @@ function wholeItemRoute(item: CarriedItem): string {
  *  carries the body whole. */
 function carriedBodyNote(event: DispatchEvent): string | undefined {
   if (!bodyWasCut(event.payload)) return undefined;
-  const what =
-    isObject(event.payload) && event.payload["payload_omitted"] === true
-      ? "this event carries no body: it was too large for the bus"
-      : "the body is its first part only";
+  const what = payloadWasOmitted(event.payload)
+    ? "this event carries no body: it was too large for the bus"
+    : "the body is its first part only";
   const item = carriedItem(event);
   return item === undefined ? what : `${what}; read it whole with ${wholeItemRoute(item)}`;
 }
@@ -1023,9 +1026,7 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
         notify: wireFrame.event.notify,
         quiet: wireFrame.event.quiet,
         delivery: targeted.data.delivery,
-        standIn:
-          isObject(targeted.data.event.payload) &&
-          targeted.data.event.payload["payload_omitted"] === true,
+        standIn: payloadWasOmitted(targeted.data.event.payload),
       };
     }
     const recoverable = RecoverableDispatchDeliveryFailureSchema.safeParse(value);
@@ -1063,7 +1064,7 @@ function parseDispatchFrame(rawPayload: string, wholeBody?: string): DispatchFra
     notify: wireEvent.notify,
     quiet: wireEvent.quiet,
     delivery: undefined,
-    standIn: isObject(parsed.data.payload) && parsed.data.payload["payload_omitted"] === true,
+    standIn: payloadWasOmitted(parsed.data.payload),
   };
 }
 export function inboundTimestamp(milliseconds: number | undefined): string {
@@ -1127,11 +1128,10 @@ export function renderInbound(
   let bodyNote: string | undefined;
   let cutItem: CarriedItem | undefined;
   let inReplyTo = envelope.in_reply_to;
-  // On an ask event the payload is the ask itself, whose author is another follower's
-  // session when this session merely replied; naming it is not a spoof to flag. Nor is naming
-  // the sessions that own the ask a reply is on (`ask_sessions`), which every copy carries.
-  let askAuthor: string | undefined;
-  let askSessions: readonly string[] = [];
+  // The sessions the event's own payload names, which no spoof check flags: on an ask event the
+  // ask's author, another follower's session when this session merely replied; on a reply in an
+  // ask's thread the sessions that own the ask (`ask_sessions`), which every copy carries.
+  let payloadSessions: readonly string[] = [];
   // Text that follows the card's TOON block: a person's edit's diff as a fenced `diff` block.
   let trailer = "";
   const dispatchRendered = envelope.source === "dispatch" && envelope.payload !== undefined;
@@ -1207,11 +1207,11 @@ export function renderInbound(
         const commentPayload = comment?.success === true ? comment.data : undefined;
         const ownsAsk = ownsRepliedAsk(commentPayload, frame.standIn, sessionID);
         const compact = dispatchCompact(frame.event, commentPayload, ownsAsk);
-        askSessions = commentPayload?.ask_sessions ?? [];
+        payloadSessions = commentPayload?.ask_sessions ?? [];
         if (frame.event.type.startsWith("ask.")) {
           const asked = AskAuthorPayloadSchema.safeParse(frame.event.payload);
           if (asked.success && asked.data.author.kind === "session") {
-            askAuthor = asked.data.author.id;
+            payloadSessions = [asked.data.author.id];
           }
         }
         if (inReplyTo !== undefined) {
@@ -1350,8 +1350,7 @@ export function renderInbound(
       if (
         match[0] !== envelope.source_session &&
         match[0] !== sessionID &&
-        match[0] !== askAuthor &&
-        !askSessions.includes(match[0])
+        !payloadSessions.includes(match[0])
       ) {
         foreignSession = match[0];
         break;

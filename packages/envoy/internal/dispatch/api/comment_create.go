@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -106,6 +105,9 @@ type commentThreadTarget struct {
 	// AskMoved says the ask is an approval request a version moved past the one its agent last
 	// handed to the human (approvalMoved): it waits on its agent whatever a reply's turn says.
 	AskMoved bool
+	// AskAuthorSession is the session that wrote the thread's ask, nil when a person wrote it
+	// or the thread is no ask's (describeAsk).
+	AskAuthorSession *string
 	// ReplyBlock is the block of the comment reply_to named that the reply answers, nil when it
 	// names none: that comment's, not the thread head's that ReplyTo then holds.
 	ReplyBlock *namedBlock
@@ -373,12 +375,13 @@ func (s *server) describeAsk(
 ) (commentThreadTarget, error) {
 	target := commentThreadTarget{AskID: askID}
 	err := tx.QueryRow(ctx, `
-		select a.question, a.state, `+approvalMoved+`
+		select a.question, a.state, `+approvalMoved+`,
+		       case when a.author->>'kind' = 'session' then a.author->>'id' end
 		from asks a
 		where a.id = $1
 		  and a.issue_key is not distinct from $2
 		  and a.artifact_id is not distinct from $3
-	`, *askID, owner.IssueKey, owner.ArtifactID).Scan(&target.AskQuestion, &target.AskState, &target.AskMoved)
+	`, *askID, owner.IssueKey, owner.ArtifactID).Scan(&target.AskQuestion, &target.AskState, &target.AskMoved, &target.AskAuthorSession)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return commentThreadTarget{}, errorf(http.StatusBadRequest, "INVALID_COMMENT", "ask_id must identify an ask on this owner")
 	}
@@ -386,26 +389,23 @@ func (s *server) describeAsk(
 }
 
 // askSessions is what a comment.created in askID's thread says about whose ask it is
-// (model.CommentEventPayload.AskSessions): the ask's author when a session wrote it, then each
-// session that follows it in the order asks.Followers reads them (since, then session id), each
-// once, and [] when no session owns it. tx must hold the comment's insert and the follow its
-// author takes (asks.FollowAuthor), so a session that replies is one of them.
-func askSessions(ctx context.Context, tx pgx.Tx, askID string) ([]string, error) {
-	sessions := []string{}
-	if err := tx.QueryRow(ctx, `
-		select coalesce(array_agg(session_id order by place, since, session_id), '{}')
-		from (
-			select session_id, min(place) as place, min(since) as since
-			from (
-				select author->>'id' as session_id, 0 as place, null::timestamptz as since
-				from asks where id = $1 and author->>'kind' = 'session'
-				union all
-				select session_id, 1, since from ask_followers where ask_id = $1
-			) owners
-			group by session_id
-		) sessions
-	`, askID).Scan(&sessions); err != nil {
-		return nil, fmt.Errorf("read the sessions that own ask %s: %w", askID, err)
+// (model.CommentEventPayload.AskSessions): author, the session that wrote the ask when one did
+// (describeAsk's AskAuthorSession), then each other session asks.Followers reads, in its order
+// (since, then session id), and [] when no session owns it. tx must hold the comment's insert and
+// the follow its author takes (asks.FollowAuthor), so a session that replies is one of them.
+func askSessions(ctx context.Context, tx pgx.Tx, askID string, author *string) ([]string, error) {
+	followers, err := asks.Followers(ctx, tx, askID)
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]string, 0, len(followers)+1)
+	if author != nil {
+		sessions = append(sessions, *author)
+	}
+	for _, follower := range followers {
+		if author == nil || follower.SessionID != *author {
+			sessions = append(sessions, follower.SessionID)
+		}
 	}
 	return sessions, nil
 }
@@ -984,7 +984,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		return
 	}
 	if comment.AskID != nil {
-		payload.AskSessions, err = askSessions(r.Context(), tx, *comment.AskID)
+		payload.AskSessions, err = askSessions(r.Context(), tx, *comment.AskID, threadTarget.AskAuthorSession)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

@@ -1226,7 +1226,7 @@ func TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
 	f.follow(t, http.MethodPut, askID, askSessionC)
 	owners := []string{askSessionA, askSessionC}
 	topicOf := contracts.LegacyAgentSubject
-	issueTopic := contracts.DispatchIssueTopicPrefix + f.issue + ".comment.created"
+	issueTopic := contracts.LegacyDispatchIssueSubject(f.issue, "comment.created")
 	published := &recordingOutboxPublisher{}
 
 	first := f.comment(t, map[string]any{"body": "Which pool size do you need?", "ask_id": askID}, "alice")

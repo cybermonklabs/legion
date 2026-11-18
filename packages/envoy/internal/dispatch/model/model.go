@@ -2257,9 +2257,10 @@ const (
 )
 
 // SessionAnswer relations: what an item is to the session Dispatch delivered it to, spelled as
-// SESSION_ANSWER_RELATIONS in packages/contracts/src/dispatch-api.ts spells them. The *_your_*
-// values are for a session that owns the ask: it wrote the ask or follows it (ask_followers).
-// Any other session the same answer or decline reached reads answered_an_ask or declined_an_ask.
+// SESSION_ANSWER_RELATIONS in packages/contracts/src/dispatch-api.ts spells them.
+// answered_your_ask, declined_your_ask and replied_on_your_ask are for a session that owns the
+// ask: it wrote the ask or follows it (ask_followers). Any other session the same answer or
+// decline reached reads answered_an_ask or declined_an_ask.
 const (
 	SessionAnswerRelationAnsweredYourAsk        = "answered_your_ask"
 	SessionAnswerRelationAnsweredAnAsk          = "answered_an_ask"
