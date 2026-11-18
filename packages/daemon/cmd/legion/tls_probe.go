@@ -319,9 +319,9 @@ func chromiumNavigationFailure(stderr string) string {
 // On top of the kept variables, each client runs with the probe's own values: a HOME of its own
 // in the state directory, which replaces the image's (tlsClientSpec.build), the settings its
 // command gives, and LEGION_TLS_URL naming the site. A client that reads its configuration from
-// its user's passwd home whatever HOME says also takes the flag that stops it reading any:
-// curl, the one such client measured, takes -q as its first argument (workerTLSClients). So no
-// credential variable of the pod's reaches a client, and no credential file one names or the
+// its user's passwd home where that HOME holds none also takes the flag that stops it reading
+// any: curl, the one such client measured, takes -q as its first argument (workerTLSClients). So
+// no credential variable of the pod's reaches a client, and no credential file one names or the
 // pod's home holds.
 //
 // A proxy variable of the pod's reaches no client either. That changes no verdict: Chromium already
@@ -454,7 +454,8 @@ func tlsCertificateError(detail string) bool {
 
 const tlsFetchProgram = `const response = await fetch(process.env.LEGION_TLS_URL); if (!response.ok) throw new Error("HTTP " + response.status);`
 
-// tlsClientSpec is one client of workerTLSClients, which build makes.
+// tlsClientSpec is one client of the TLS probe, which build makes: a client of workerTLSClients,
+// or the positive controls' curl (tlsPositiveControlSpec).
 type tlsClientSpec struct {
 	// name is the client's name in the probe's output.
 	name string
