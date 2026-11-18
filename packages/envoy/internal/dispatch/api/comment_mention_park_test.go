@@ -180,10 +180,15 @@ func TestAParkedLaneHoldsNoGoroutineAndKeepsTheLanesBounds(t *testing.T) {
 	for index := range 10 {
 		rig.enqueue("other-"+string(rune('a'+index)), "session:other-"+string(rune('a'+index)))
 	}
+	// A send is in the rig's list before its goroutine lets it go (claimedDuring) and leaves its
+	// lane (next), so the ten are done only once the sender holds the two parked sends alone and
+	// no goroutine serves a lane.
 	waitUntil(t, 10*time.Second, "the other recipients' sends", func() bool {
 		rig.mu.Lock()
-		defer rig.mu.Unlock()
-		return len(rig.sent) == 10
+		sent := len(rig.sent)
+		rig.mu.Unlock()
+		serving, _, _, queued := rig.state()
+		return sent == 10 && queued == 2 && serving == 0
 	})
 
 	// Six seconds parked, sampled every 10 ms between the lane's tries.

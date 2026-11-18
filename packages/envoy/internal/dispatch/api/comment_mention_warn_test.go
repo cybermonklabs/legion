@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -376,9 +377,10 @@ func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
 //
 // A second send of the owner that joins the lane that park made is no held copy either while the
 // lane waits behind no event (queueLocked stamps it only behind one): when both then go, past the
-// threshold, neither logs a WARN. When the head's try then waits behind event 42, that park stamps
-// the send that joined unstamped (park), so each WARN as they go names event 42 and a wait no
-// longer than the test has run, never the age of a send stamped at no time.
+// threshold, neither logs a WARN. When the head's try then waits behind event 42, for more than a
+// second, that park stamps the send that joined unstamped (park), so each WARN as they go names
+// event 42 and a wait of at least a second and no longer than the test has run: never the age of
+// a send stamped at no time, nor a wait measured backwards.
 func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -466,8 +468,14 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 							attempt: 1, claimed: time.Now(),
 						})
 					}
-					// The outage lasts past the threshold, then the read answers.
-					time.Sleep(60 * time.Millisecond)
+					// The outage lasts past the threshold, then the read answers. The wait behind
+					// event 42, once the head's try has met it, lasts more than a second, so a wait
+					// read backwards is a negative one at slog's rounding.
+					wait := 60 * time.Millisecond
+					if headTries.Load() > 0 {
+						wait = 1200 * time.Millisecond
+					}
+					time.Sleep(wait)
 					fire()
 				case <-tried:
 				case <-time.After(10 * time.Millisecond):
@@ -496,24 +504,22 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 				}
 				return
 			}
-			// Each send waited behind event 42 no longer than this row has run, however slow the
-			// box: a send stamped at no time would report the age of the zero time instead.
+			// Each send waited behind event 42 at least the second and more the test slept, and
+			// no longer than this row has run, however slow the box: a send stamped at no time
+			// would report the age of the zero time instead. Each field is read as the line's own
+			// (horizontest.Field), so a quoted value that holds "event_id=42" or "held_for=0s"
+			// cannot stand in for it.
 			ran := time.Since(began).Round(time.Second) + time.Second
 			second := false
 			for _, line := range lines {
-				// The key as its own field (a space before it), and its last one: warnHeld logs
-				// held_for after every other field, so a held_for= inside another field's quoted
-				// value cannot stand in for it.
-				at := strings.LastIndex(line, " held_for=")
-				found, value := at >= 0, ""
-				if found {
-					value, _, _ = strings.Cut(line[at+len(" held_for="):], " ")
-				}
+				event, _ := horizontest.Field(line, "event_id")
+				value, found := horizontest.Field(line, "held_for")
 				waited, err := time.ParseDuration(value)
-				if !strings.Contains(line, "event_id=42 ") || !found || err != nil || waited < 0 || waited > ran {
-					t.Fatalf("a WARN of a send that waited behind event 42 for at most %v names another wait: %s", ran, line)
+				if event != "42" || !found || err != nil || waited < time.Second || waited > ran {
+					t.Fatalf("a WARN of a send that waited behind event 42 for between 1s and %v names another wait: %s", ran, line)
 				}
-				second = second || strings.Contains(line, "comment=a-second ")
+				comment, _ := horizontest.Field(line, "comment")
+				second = second || comment == "a-second"
 			}
 			if !second {
 				t.Fatalf("a-second, which waited behind event 42 past the threshold, logged no WARN: %q", lines)
