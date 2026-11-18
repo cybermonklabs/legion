@@ -26,9 +26,11 @@ cd "$(dirname "$0")/.."
 broker='github.com/sjawhar/envoy/internal/broker'
 
 # EXPECTED_SKIPS: PACKAGE TEST, one per line, each followed by the reason it skips in every run.
-# FuzzAirlock needs AIRLOCK_MODEL, a built Lean model of the airlock; the airlock-lean job's
-# "Fuzz the Go airlock against the model" step builds one and runs it.
-EXPECTED_SKIPS='github.com/sjawhar/envoy/internal/broker/airlock FuzzAirlock needs AIRLOCK_MODEL'
+# FuzzAirlock and TestModelAgreesOnHostShapes need AIRLOCK_MODEL, a built Lean model of the
+# airlock; the airlock-lean job builds one, and its "Compare the Go airlock with the model over
+# the seed corpus" step runs both.
+EXPECTED_SKIPS='github.com/sjawhar/envoy/internal/broker/airlock FuzzAirlock needs AIRLOCK_MODEL
+github.com/sjawhar/envoy/internal/broker/airlock TestModelAgreesOnHostShapes needs AIRLOCK_MODEL'
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

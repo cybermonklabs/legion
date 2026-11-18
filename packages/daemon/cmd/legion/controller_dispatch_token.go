@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/brokerclient"
 )
 
@@ -81,8 +82,12 @@ func controllerDispatchBroker(ctx context.Context, stderr io.Writer) error {
 		return fmt.Errorf("dispatch_token_broker is set, so the controller's Dispatch credential is this machine's own identity, and %s names none",
 			brokerclient.IdentityVar)
 	}
-	broker := os.Getenv(brokerclient.BrokerURLVar)
-	if broker == "" {
+	// The address may carry a user name, a password, a query or a fragment, and this start names it
+	// in its refusal and on stderr, so it is held as a brokeraddr.Address from the moment it is read:
+	// each of those prints it through the Address, and only the token client reads its raw value, to
+	// build its request.
+	broker := brokeraddr.New(os.Getenv(brokerclient.BrokerURLVar))
+	if broker.Empty() {
 		return fmt.Errorf("%s names the identity this machine proves, so %s must name the secrets broker it proves it to",
 			brokerclient.IdentityVar, brokerclient.BrokerURLVar)
 	}

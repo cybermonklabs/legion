@@ -30,16 +30,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/buildversion"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 type config struct {
-	URL          string
+	// URL is AGENT_SECRETS_URL without its trailing slashes, as a brokeraddr.Address: the
+	// helper's log lines and errors name it only as a message may print it.
+	URL          brokeraddr.Address
 	Socket       string
 	OperatorFile string
 	MachineFile  string
@@ -84,7 +86,7 @@ type config struct {
 func loadConfig(getenv func(string) string) (config, error) {
 	home := getenv("HOME")
 	cfg := config{
-		URL:          brokerclient.WithoutTrailingSlashes(getenv(brokerclient.BrokerURLVar)),
+		URL:          brokeraddr.New(brokerclient.WithoutTrailingSlashes(getenv(brokerclient.BrokerURLVar))),
 		Socket:       getenv("AGENT_SECRETS_HELPER_SOCK"),
 		OperatorFile: getenv("AGENT_SECRETS_OPERATOR_FILE"),
 		MachineFile:  getenv("AGENT_SECRETS_MACHINE_FILE"),
@@ -239,7 +241,7 @@ func main() {
 // sessions it had registered and whether it held a launcher credential: the journal says why it
 // stopped even when the unit's own log says only that it ended.
 func serve(cfg config) error {
-	if strings.TrimSpace(cfg.URL) == "" {
+	if strings.TrimSpace(cfg.URL.Raw()) == "" {
 		return errors.New("AGENT_SECRETS_URL is required (the secrets broker, e.g. https://secrets.internal.example)")
 	}
 	hostname, err := os.Hostname()
@@ -321,8 +323,8 @@ func serve(cfg config) error {
 	go srv.SweepLoop(ctx, time.Minute)
 	// The version says which release a restart came up on. The credential's state is logged where
 	// it changes (the Broker's resume, machine-login, refresh, expiry-warning and drop lines). The
-	// broker's URL is logged without a credential it may carry.
-	log.Info("agent-secrets-helper listening", "socket", cfg.Socket, "broker", redact.URL(cfg.URL), "version", buildversion.String())
+	// broker's URL is an Address, which logs without a credential it may carry.
+	log.Info("agent-secrets-helper listening", "socket", cfg.Socket, "broker", cfg.URL, "version", buildversion.String())
 	return srv.Serve(ctx, ln)
 }
 

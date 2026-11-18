@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/brokeraddr"
 )
 
 // proofShaped matches what a bearer in a log line would look like: a JWS or JWT (base64url JSON,
@@ -32,7 +34,7 @@ func TestTheHelperLogsEveryChangeOfTheLauncherCredential(t *testing.T) {
 	var out syncBuffer
 	f := newFakeBroker(t)
 	operator := operatorFile(t, "ada@example.com")
-	b := &Broker{URL: f.srv.URL, OperatorFile: operator, MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operator, MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil))}
 	t.Cleanup(b.Close)
 	sess, _ := newSession(1, 1, "h:1:1", "", nil, nil)

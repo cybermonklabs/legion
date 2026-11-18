@@ -105,7 +105,8 @@ const maxJudgeSeconds = 900
 
 // Validate reports why the file is not valid, naming the entry by its secret name and its
 // index. It reads the entries in order and reports the first failure: a repeated name, an
-// entry with no host, a judge above 900 seconds, or a kind other than "", "aws" or "azure".
+// entry with no host, a judge above 900 seconds, a kind other than "", "aws" or "azure", or
+// a host that binds the secret nowhere (HostShapeOK).
 // Whether it answers nil is the same answer as the Lean model's validate, so a new refusal
 // here is a new refusal there.
 func Validate(rules Rules) error {
@@ -120,6 +121,13 @@ func Validate(rules Rules) error {
 			return fmt.Errorf("%s: judge %d is above %d seconds", entry(i, s), *s.Judge, maxJudgeSeconds)
 		case s.Kind != "" && s.Kind != "aws" && s.Kind != "azure":
 			return fmt.Errorf("%s: kind %q is not %q, %q or %q", entry(i, s), s.Kind, "", "aws", "azure")
+		}
+		// A host HostShapeOK refuses binds the secret nowhere, exactly as an entry with no host
+		// at all does: the command gets its placeholder and no call of it is ever swapped.
+		for _, h := range s.Hosts {
+			if !HostShapeOK(h) {
+				return fmt.Errorf("%s: host %q is not a DNS name or a %q suffix, so the airlock binds the secret nowhere", entry(i, s), h, "*.")
+			}
 		}
 		seen[s.Name] = true
 	}
@@ -201,6 +209,48 @@ func HostBound(hosts []string, host string) bool {
 			return true
 		}
 	}
+}
+
+// HostShapeOK reports whether an entry host is one the airlock can bind a request to: a host
+// name, which HostBound holds exactly, or "*." and one, a suffix it looks up. A label is
+// letters, digits and hyphens, never empty and never starting or ending with a hyphen, and the
+// last label is not all digits. Validate holds every entry host to it, and config holds the
+// local stack's stand-in token authority (BROKER_AIRLOCK_TEST_AZURE_AUTHORITY) to it, since a
+// token request reaches the proxy only at a host an entry binds.
+//
+// The host a request carries is a name alone: the CONNECT target's host, with its port taken
+// off and compared against 443 on its own. So a host written with a scheme, a path, a port, or
+// "*" without the "*." that HostBound looks up, matches no request ever.
+//
+// An IPv4 address matches the CONNECT host of a request to it, but check also holds the TLS
+// name to that host, and a TLS client names no address there: RFC 6066 section 3 keeps a
+// literal address out of server_name, and Go's crypto/tls and curl send none for one. So check
+// refuses every request to such an entry "sni mismatch", on a connection the proxy decrypts
+// because the entry binds its host, where without the entry it would be a tunnel. A host name
+// is told from a dotted-decimal address by its last label, which in a host name is never all
+// digits (RFC 1123 section 2.1), and that is the test here: it refuses an IPv4 literal, "*."
+// over a suffix only an address ends in, and any other host whose last label is all digits,
+// which is no host name either. An IPv6 literal holds a ':' that no label takes.
+func HostShapeOK(host string) bool {
+	name := strings.TrimPrefix(host, "*.")
+	if name == "" {
+		return false
+	}
+	labels := strings.Split(name, ".")
+	for _, label := range labels {
+		if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := range len(label) {
+			c := label[i]
+			switch {
+			case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-':
+			default:
+				return false
+			}
+		}
+	}
+	return strings.Trim(labels[len(labels)-1], "0123456789") != ""
 }
 
 // allowOK reports whether allow covers the request. A nil list allows any method and path;

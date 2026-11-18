@@ -681,12 +681,17 @@ func newDispatchFrontDoor(ctx *pulumi.Context, s dispatchSettings, service *tail
 		},
 	}
 	// The pod names the ConfigMap and the TLS Secret by their constant names, and the Deployment
-	// waits for both, so no pod waits on a missing volume and a ConfigMap the provider replaces
-	// changes nothing in the Deployment's inputs. It waits for the Tailscale Service because a
-	// node that advertises a Service before it exists is not approved when it appears
-	// (tailnetAdvertiseStuckSeconds), and for the Cloud SQL instance because an availability-type
-	// change updates that instance in place and restarts it: the name must come back only once
-	// the database it fronts is back.
+	// waits for both, so no pod waits on a missing volume. A serve config change updates the
+	// ConfigMap in place (the component's provider sets enableConfigMapMutable), which changes
+	// nothing in the Deployment's inputs, and no checksum annotation rolls the pods for it: the
+	// tailscale container mounts the ConfigMap as a directory, with no subPath, so the kubelet's
+	// update reaches the mounted serve.json, and containerboot watches the directory of
+	// TS_SERVE_CONFIG and applies the changed file live (cloudconfig.go, serveDir). A roll would
+	// add nothing but, at one replica, where Recreate stops the old pod first, a gap in the name.
+	// The Deployment waits for the Tailscale Service because a node that advertises a Service
+	// before it exists is not approved when it appears (tailnetAdvertiseStuckSeconds), and for the
+	// Cloud SQL instance because an availability-type change updates that instance in place and
+	// restarts it: the name must come back only once the database it fronts is back.
 	opts := []pulumi.ResourceOption{pulumi.DependsOn([]pulumi.Resource{serve, tlsSecret, service, instance})}
 	return pod, opts, nil
 }

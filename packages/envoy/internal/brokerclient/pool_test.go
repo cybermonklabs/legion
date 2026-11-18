@@ -59,7 +59,7 @@ func TestPoolIdentityMintsThroughTheSecurityTokenServiceAndIAMCredentials(t *tes
 		}
 	})
 	client, err := New(Config{
-		BrokerURL: broker.URL(),
+		BrokerURL: broker.Address(),
 		Key:       testKey(t),
 		Subject: &PoolIdentity{
 			Subject:                 NewProjectedToken(external),
@@ -135,7 +135,7 @@ func TestPoolIdentityRefusedByTheSecurityTokenServiceNamesIt(t *testing.T) {
 		return 200, map[string]any{"access_token": "never", "token_type": "DPoP", "expires_in": 60}
 	})
 	client, err := New(Config{
-		BrokerURL: broker.URL(), Key: testKey(t),
+		BrokerURL: broker.Address(), Key: testKey(t),
 		Subject: &PoolIdentity{
 			Subject: NewProjectedToken(external), Audience: "//iam.googleapis.com/example",
 			ServiceAccount: "example-fleet@example-project.iam.gserviceaccount.com", TokenAudience: "example-client",

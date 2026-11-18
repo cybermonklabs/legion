@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 )
@@ -38,7 +39,7 @@ func fullDisk(b *Broker) (restore func()) {
 // own goroutines never race a later write of b.Log.
 func loggedInBrokerLogging(t *testing.T, f *fakeBroker, log *slog.Logger) *Broker {
 	t.Helper()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log}
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(), Log: log}
 	t.Cleanup(b.Close)
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
 		t.Fatalf("login: %v", err)
@@ -132,7 +133,7 @@ func TestAHelperRestartedAfterAFailedSaveAsksNothing(t *testing.T) {
 	_ = b.refresh(context.Background())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	restarted := &Broker{URL: f.srv.URL, OperatorFile: b.OperatorFile, MachineFile: b.MachineFile, HTTP: f.srv.Client()}
+	restarted := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: b.OperatorFile, MachineFile: b.MachineFile, HTTP: f.srv.Client()}
 	t.Cleanup(restarted.Close)
 	if err := restarted.Start(ctx); err != nil {
 		t.Fatal(err)
@@ -194,7 +195,7 @@ func TestContractASaveFailingThroughTwoRestartsRevokesNothing(t *testing.T) {
 	}
 	cr.cancel()
 	restart := func() *Broker {
-		b := &Broker{URL: cr.broker.URL, OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile, HTTP: http.DefaultClient,
+		b := &Broker{URL: brokeraddr.New(cr.broker.URL), OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile, HTTP: http.DefaultClient,
 			Log: slog.New(slog.DiscardHandler)}
 		t.Cleanup(b.Close)
 		fullDisk(b)

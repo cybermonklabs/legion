@@ -323,8 +323,14 @@ func envVars(env []string) corev1.EnvVarArray {
 
 func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, cloud *dispatchCluster, database *dispatchDatabase) error {
 	dispatch := dispatchType + " " + name
+	// The provider is the component's own, so it can promise mutable ConfigMaps: pulumi-kubernetes
+	// replaces a ConfigMap whose data changes otherwise, deleting it first, and a front-door pod
+	// scheduled in that window fails to mount its serve config, ConfigMap <hostname>-serve. The
+	// update in place rolls no pod, and needs none (newDispatchFrontDoor says why).
 	provider, err := kubernetes.NewProvider(ctx, s.hostname+"-kubernetes", &kubernetes.ProviderArgs{
-		Kubeconfig: cloud.kubeconfig, EnableServerSideApply: pulumi.Bool(true),
+		Kubeconfig:             cloud.kubeconfig,
+		EnableServerSideApply:  pulumi.Bool(true),
+		EnableConfigMapMutable: pulumi.Bool(true),
 	}, pulumi.Parent(comp))
 	if err != nil {
 		return err

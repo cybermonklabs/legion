@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -80,7 +81,7 @@ func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
 				r.login(t)
 			}
 			if tc.refuse {
-				r.srv.Broker.URL = "http://127.0.0.1:1"
+				r.srv.Broker.URL = brokeraddr.New("http://127.0.0.1:1")
 			}
 			if tc.fail != nil {
 				r.fake.mu.Lock()
