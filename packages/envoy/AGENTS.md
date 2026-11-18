@@ -7172,7 +7172,9 @@ The two `accountAuthAfterRecordKind` rows declare `relaysDecisions` as well, and
 the handler is given the service `BROKER_SERVICE_LOGINS` says the calling account logs in as, a token of an account that list does not name is `403 ACCOUNT_NOT_LISTED` and every other refusal is `accountCaller`'s, and the class holds two routes, `POST /v1/oauth/exchange/pod-sessions` and `POST /v1/oauth/exchange/pod-sessions/release`.
 It is a class rather than a power of `accountAuth`'s because the two lists are two authorities:
 a deployment's daemon registering the pods it starts is not a caller that relays a person's decisions, and putting it on `BROKER_API_ACCOUNTS` would hand it the approval relays.
-A `serviceAuth` login is all a release needs, since a release touches only the caller's own registrations (`releasePodSessions`), while a registration needs an entry of `BROKER_POD_REGISTRARS` too (`registerPodSession`), since a session pod logs in as a service as well.
+A `serviceAuth` login is all a release needs, since a release touches only the registrations of the account the caller logs in as (`releasePodSessions`), while a registration needs an entry of `BROKER_POD_REGISTRARS` too (`registerPodSession`), since a session pod logs in as a service as well.
+That account, not the caller's pod, is the registrar, so every pod of an account paired with itself can release every registration that account wrote, by session name alone, with no token of the pod whose trade it ends.
+A deployment that wants its pods kept apart pairs no account with itself.
 `renewAuth` alone adds `ENROLLMENT_NOT_LIVE` for a valid session proof that names an ended enrollment.
 A store that cannot answer while authenticating is a 503 naming it.
 Every answer of the port but those net/http writes itself before any handler runs passes `answer.Middleware` (`internal/broker/answer`), which `cmd/broker` installs around the mux itself, inside `withRequestDeadline`, which writes no answer:
@@ -7375,11 +7377,19 @@ It logs `broker: the token exchange refused a pod's trade under a registration i
 A live row that names no registrar, which a broker of the build before migration 0033 wrote, holds no name and is answered as no row is, `pod_session_not_registered:`, and the next admitted write of its pod and name takes it whole.
 `POST /v1/oauth/exchange/pod-sessions/release` (`releasePodSessions`) is where a daemon releases the session names it registered, once the claim those names served ends.
 The Legion daemon (`packages/daemon`) does not call it yet.
-It is a `serviceAuth` route too, and `BROKER_POD_REGISTRARS` does not gate it: a release touches only the caller's own registrations, so a registrar whose entry was taken out still releases what it registered while it was listed.
+It is a `serviceAuth` route too, and `BROKER_POD_REGISTRARS` does not gate it: a release touches only the registrations of the account the caller logs in as, so a registrar whose entry was taken out still releases what it registered while it was listed.
+A release is that account's (`registrar.Subject`), not a pod's: it releases every live registration of each named session that the account wrote, whichever pod of the account logged in to write it.
+So every pod of an account paired with itself in `BROKER_POD_REGISTRARS`, which `BROKER_SERVICE_LOGINS` lists so that the pair registers anything, logs in as that registrar.
+Each such pod can release every registration that account wrote, by session name alone, with no token of the pod whose trade it ends.
+A deployment that wants its pods kept apart pairs no account with itself.
 The body is exactly `{"sessions": [...]}`, within `readJSON`'s 1 MiB, and a list that is missing, `null` or empty, or that holds more than `maxReleasedSessions` (4096) entries counted as sent, is `400 SESSIONS_INVALID`, naming the count.
-Any string is a name: one the registration route could never have taken (`exchange.ValidSession`) matches no row, so it is released with nothing to release.
+An entry that is not a string is `400 INVALID_REQUEST`, and so is a `null` entry, whose refusal names its index (`podSessionReleaseBody.UnmarshalJSON`).
+`readJSON` alone, decoding into a `[]string`, would read a `null` entry as the empty string, and the route would answer `200` to a body outside its shape.
+Any string is a name, the empty string included: one the registration route could never have taken (`exchange.ValidSession`) matches no row, so it is released with nothing to release.
+The store drops such a name before its query (`oauthstore.Store.ReleasePodSessions`).
+That also keeps a NUL byte (JSON's `\u0000`) out of the query: Postgres refuses a NUL byte in text, so without the drop the release would fail with a 500.
 `oauthstore.Store.ReleasePodSessions` is one read-committed transaction with no advisory lock, since it inserts no row:
-it marks released every live row of each name whose registrar is the caller, once (`released_at is null`), deletes nothing, moves no expiry, and then counts the caller's live released rows of those names.
+it marks released every live row of each name whose registrar is the caller's login account, once (`released_at is null`), deletes nothing, moves no expiry, and then counts that account's live released rows of those names.
 The answer is `200 {"sessions", "released"}`, the number of distinct names asked and that count, a fixed size whatever the list, and a repeat answers the same and changes nothing (`TestTheReleaseRouteReleasesOnlyTheCallersRegistrations`).
 A released row keeps its name bound to its registrar until it expires, so no other daemon takes a name while a token of the released pod can still be presented, and the registrar's next write of its pod and name takes it whole.
 The caller stops every write of the names it releases first, since a registration write after the release makes that registration live again.

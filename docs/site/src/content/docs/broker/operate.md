@@ -290,19 +290,26 @@ registers every pod whose token they hold, of each account an entry pairs with i
 run in included.
 
 The route checks the list before the caller's own pod, so listing a session account in
-`BROKER_SERVICE_LOGINS` for `agent-secrets enroll --pod` (above) gives its pods no authority here:
-a login no entry names is refused `403 POD_REGISTRAR_NOT_LISTED` for every pod, its own included.
-An entry that pairs such an account with itself lets its pods register one another, and only by
-token: a pod reaches another only while it holds that pod's own token, and a pod holding its own
-alone reaches nothing here, since its own is the one `POD_CALLER_IS_THE_POD` takes away. A pod
-that does hold a sibling's registers it, which is how one generation of a rollout registers the
-next. The authority goes no wider than the cluster's own rights to mint or read a pod's token — the
-same kind of access over that pod's account as the paragraph that opens "Whoever can get a token"
-(below) names over a listed one — and it stops short of them: the caller needs a
+`BROKER_SERVICE_LOGINS` for `agent-secrets enroll --pod` (above) gives its pods no authority to
+register a pod: a login no entry names is refused `403 POD_REGISTRAR_NOT_LISTED` for every pod,
+its own included. An entry that pairs such an account with itself lets its pods register one
+another, and only by token: a pod registers another only while it holds that pod's own token, and
+a pod holding its own alone registers no pod, since its own is the one `POD_CALLER_IS_THE_POD`
+takes away. A pod that does hold a sibling's registers it, which is how one generation of a rollout
+registers the next. The authority goes no wider than the cluster's own rights to mint or read a
+pod's token — the same kind of access over that pod's account as the paragraph that opens "Whoever
+can get a token" (below) names over a listed one — and it stops short of them: the caller needs a
 `BROKER_SERVICE_LOGINS` token of its own and a `BROKER_POD_REGISTRARS` entry that pairs its
 account with the pod's, and the pod's account must be one `BROKER_EXCHANGE_ACCOUNTS` lists,
 `403 POD_ACCOUNT_NOT_LISTED`. A deployment that does not want that pairs no such account with
 itself.
+
+A release (below) belongs to the account the caller logs in as, not to the caller's pod. Every pod
+of an account paired with itself can log in as that account: the pair registers nothing unless
+`BROKER_SERVICE_LOGINS` lists it. So each such pod can release every registration that account
+wrote, a sibling's included, by session name alone. It needs no token of that sibling. The token
+exchange then refuses the sibling's trade under that name until the account registers that pod
+and name again. A deployment that wants its pods kept apart pairs no account with itself.
 
 An account `BROKER_EXCHANGE_READ_ACCOUNTS` lists (below) is refused `409 SESSION_FIXED`, as is an
 account whose `BROKER_EXCHANGE_ACCOUNTS` entry fixes a session: such an entry fixes the session its
@@ -359,22 +366,30 @@ A daemon releases the session names it registered at
 `POST /v1/oauth/exchange/pod-sessions/release`, with the same login as the registration route,
 which answers `401` for a token that does not verify, `403 ACCOUNT_NOT_LISTED` for an account
 `BROKER_SERVICE_LOGINS` does not list, and `429` with `Retry-After`. `BROKER_POD_REGISTRARS` does
-not gate a release, since a release touches only the caller's own registrations, so a registrar
-whose entry was taken out still releases what it registered. Today's Legion daemon does not call
-this route yet, so the exchange honours each of its registrations until it lapses.
+not gate a release, since a release touches only the registrations of the account the caller logs
+in as. A registrar whose entry was taken out therefore still releases what it registered. A
+release is that account's, not the caller's pod's. So every pod of an account paired with itself
+can release every registration that account wrote, by session name alone (above). Today's Legion
+daemon does not call this route yet, so the exchange honours each of its registrations until it
+lapses, unless another caller that logs in as the daemon's account releases it.
 
 The body is `{"sessions": ["<name>", ...]}`. A list that is missing, `null` or empty, or that holds
 more than 4096 entries counted as sent, is `400 SESSIONS_INVALID`, and a body over 1 MiB is
-`413 REQUEST_TOO_LARGE`. An unknown field, or a body that is not JSON, is `400 INVALID_REQUEST`.
-Any string is a name: one the registration route could never have taken matches no registration,
-so it is released with nothing to release.
+`413 REQUEST_TOO_LARGE`. An unknown field, a body that is not JSON, and an entry that is not a
+string are `400 INVALID_REQUEST`. A `null` entry is not a string, so the broker refuses it
+`400 INVALID_REQUEST` too, naming its index.
+
+Any string is a name, the empty string included: one the registration route could never have
+taken matches no registration, so it is released with nothing to release. The broker drops such a
+name before it queries its store. That also keeps a NUL byte (JSON's `\u0000`) out of the query:
+Postgres refuses a NUL byte in text, so without the drop the release would fail with a `500`.
 
 In one transaction, the broker marks released every live registration of each named session that
-the caller registered. It deletes nothing, moves no expiry, and neither touches nor reveals a
-registration of another registrar. The answer is `200` with `sessions`, the number of distinct
-names asked, and `released`, the number of the caller's live registrations of those names that are
-released after the call. A repeat of the call answers the same and changes nothing, so a retry
-after a lost answer is safe.
+the caller's account registered, whichever of its pods wrote it. It deletes nothing, moves no
+expiry, and neither touches nor reveals a registration of another registrar. The answer is `200`
+with `sessions`, the number of distinct names asked, and `released`, the number of that account's
+live registrations of those names that are released after the call. A repeat of the call answers
+the same and changes nothing, so a retry after a lost answer is safe.
 
 Every other answer releases nothing, a `404` or `405` from a broker of an older build included.
 The broker logs each release at INFO, `broker: released a registrar's pod-session registrations`,
