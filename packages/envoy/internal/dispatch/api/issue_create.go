@@ -557,11 +557,18 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 // duplicateGateTimeout bounds the near-copy gate's whole read, on the context and as the read
-// transaction's own statement_timeout. Every create waits on it before it is written, so it is
-// held well under the second the title rule it replaces was given: past it the create goes in
-// and is told that no near-copy check was made, which is what a slow read must cost rather than
-// a project nobody can write to.
-const duplicateGateTimeout = 500 * time.Millisecond
+// transaction's own statement_timeout. Every create waits on it before it is written: past it the
+// create goes in and is told that no near-copy check was made, which is what a slow read must cost
+// rather than a project nobody can write to.
+//
+// 500 ms came from the replay on an idle machine (TestNearCopyRefusalReplay: p50 135 ms, p95
+// 228 ms, max 566 ms), which predicted it would cut 0.17% of creates. In production it cut 9 of
+// INFRA's first 29 creates in near_copy_checks (2026-11-17, build 4055c4a5, reason bound). 2 s is an
+// estimate, not a measurement: the rows hold no read time past the bound. If production's reads
+// are a uniform multiple of the replay's (about three times, which puts the replay's 70th
+// percentile at 500 ms), 2 s covers the replay's slowest read. How many reads 2 s still cuts is
+// read from near_copy_checks after it is deployed.
+const duplicateGateTimeout = 2 * time.Second
 
 // nearCopyOutcome is everything the near-copy gate decides for one create, settled once by
 // runNearCopyGate and then only copied: the 409 the create is refused with, what the

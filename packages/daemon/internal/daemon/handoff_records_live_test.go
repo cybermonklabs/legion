@@ -43,7 +43,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,6 +59,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -119,10 +119,25 @@ func TestHandoffRecordsLive(t *testing.T) {
 // daemon's store with those issues where each step starts them, and boots the daemon at Dispatch.
 func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 	t.Helper()
-	proof := newLiveProof(t, "scripts/e2e/handoff-records.sh")
+	r := startOnDispatch(t, "scripts/e2e/handoff-records.sh", "HR", "Handoff records live proof")
+	r.setUpDispatch()
+	r.seed()
+	r.boot()
+	return r
+}
+
+// startOnDispatch readies a whole-daemon proof over the real Dispatch, for this driver and for
+// review_range_live_test.go's, which embeds what it returns. It starts Dispatch, writes its agent
+// token where the daemon reads it and names it the daemon's dispatch_url, and creates the run's
+// project, prefix and six characters of the run's own, titled name, with liveRepo mapped to it as
+// its default. The caller creates its issues (createIssue), seeds them (seedIssues), sets github
+// and boots the daemon (boot).
+func startOnDispatch(t *testing.T, script, prefix, name string) *handoffRecordsLive {
+	t.Helper()
+	proof := newLiveProof(t, script)
 	// A Dispatch project key is at most ten characters (contracts ProjectKeyPattern), and the
 	// daemon's project is its Dispatch project, so the run's project is a short one of its own.
-	proof.cfg.Project = "HR" + randomSuffix(t)[:6]
+	proof.cfg.Project = prefix + randomSuffix(t)[:6]
 	proof.cfg.Projects = map[string]config.Project{proof.cfg.Project: {}}
 	proof.cfg.AdmissionCap = 8
 	var err error
@@ -153,75 +168,92 @@ func newHandoffRecordsLive(t *testing.T) *handoffRecordsLive {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
 	r.cfg.DispatchURL = r.dispatch.base
-	r.setUpDispatch()
-	r.seed()
-	o := fakeRuntime(r.rt, r.built)
-	o.workflowTokens = &workflowTokenRecorder{}
-	o.githubAPI = r.github
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 2*time.Minute)
-	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s; daemon at dispatch_url %s",
-		r.dispatch.base, r.cfg.Project, liveRepo, r.cfg.DispatchURL)
+	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": name}, http.StatusCreated, nil)
+	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
 	return r
 }
 
-// setUpDispatch creates the run's project on Dispatch, maps liveRepo to it as its default, and
-// creates the issues. The workflow's issues are in progress and carry the legion label, as a
-// running daemon leaves them; A6's issue and the two the `completion head` step reads are no
-// Legion issues and sit in the backlog.
-func (r *handoffRecordsLive) setUpDispatch() {
-	t := r.t
-	t.Helper()
-	r.dispatch.user(http.MethodPost, "/api/v1/projects", map[string]string{"key": r.cfg.Project, "name": "Handoff records live proof"}, http.StatusCreated, nil)
-	r.dispatch.user(http.MethodPut, "/api/v1/settings/repo-projects/"+liveRepo, map[string]any{"project": r.cfg.Project, "default": true}, http.StatusOK, nil)
-	create := func(title, status string, labels []string) string {
-		var created struct {
-			Key string `json:"key"`
-		}
-		r.dispatch.user(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": title}, http.StatusCreated, &created)
-		if created.Key == "" {
-			t.Fatalf("Dispatch created the issue %q with no key", title)
-		}
-		r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": status, "labels": labels}, http.StatusOK, nil)
-		return created.Key
-	}
-	r.a6 = create("A6: a 40 KB handoff round trip", "backlog", []string{})
-	r.a3 = create("A3: the planner's handoff under another session", "in_progress", []string{"legion"})
-	r.a7 = create("A7: a tester on a record the daemon's session wrote", "in_progress", []string{"legion"})
-	r.renew = create("HANDOFF_NOT_NEW: the implementer's second round", "in_progress", []string{"legion"})
-	r.a10 = create("A10: Dispatch stops under a completion", "in_progress", []string{"legion"})
-	// Dispatch refuses a second issue whose title shares most of a first one's words as a possible
-	// duplicate, so the step's two issues are titled apart.
-	r.headNamed = create("completion head: records naming the commit their work was done against", "backlog", []string{})
-	r.headNone = create("the control for bodies carrying no such field", "backlog", []string{})
+// boot boots the whole daemon at the run's Dispatch, with r.github as GitHub's REST API.
+func (r *handoffRecordsLive) boot() {
+	r.t.Helper()
+	o := fakeRuntime(r.rt, r.built)
+	o.workflowTokens = &workflowTokenRecorder{}
+	o.githubAPI = r.github
+	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), 2*time.Minute)
+	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s; daemon at dispatch_url %s",
+		r.dispatch.base, r.cfg.Project, liveRepo, r.cfg.DispatchURL)
 }
 
-// seed records the four workflow issues as the daemon would hold them: each the root of its own
-// tree with its admission slot and its lifecycle under the workflow; a3 and a10 in planning, a7 in
-// testing and renew implementing, the last two on open pull requests; and each phase's worker as
-// a launch a previous daemon began and never recorded, serving run 1, which this boot relaunches.
+// setUpDispatch creates the issues. The workflow's issues are in progress and carry the legion
+// label, as a running daemon leaves them; A6's issue and the two the `completion head` step reads
+// are no Legion issues and sit in the backlog.
+func (r *handoffRecordsLive) setUpDispatch() {
+	r.t.Helper()
+	r.a6 = r.createIssue("A6: a 40 KB handoff round trip", "backlog", []string{})
+	r.a3 = r.createIssue("A3: the planner's handoff under another session", "in_progress", []string{"legion"})
+	r.a7 = r.createIssue("A7: a tester on a record the daemon's session wrote", "in_progress", []string{"legion"})
+	r.renew = r.createIssue("HANDOFF_NOT_NEW: the implementer's second round", "in_progress", []string{"legion"})
+	r.a10 = r.createIssue("A10: Dispatch stops under a completion", "in_progress", []string{"legion"})
+	// Dispatch refuses a second issue whose title shares most of a first one's words as a possible
+	// duplicate, so the step's two issues are titled apart.
+	r.headNamed = r.createIssue("completion head: records naming the commit their work was done against", "backlog", []string{})
+	r.headNone = r.createIssue("the control for bodies carrying no such field", "backlog", []string{})
+}
+
+// createIssue creates an issue titled title in the run's project on Dispatch, with status and
+// labels, and returns its key.
+func (r *handoffRecordsLive) createIssue(title, status string, labels []string) string {
+	r.t.Helper()
+	var created struct {
+		Key string `json:"key"`
+	}
+	r.dispatch.user(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": title}, http.StatusCreated, &created)
+	if created.Key == "" {
+		r.t.Fatalf("Dispatch created the issue %q with no key", title)
+	}
+	r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+created.Key, map[string]any{"status": status, "labels": labels}, http.StatusOK, nil)
+	return created.Key
+}
+
+// seed records the four workflow issues as the daemon would hold them (seedIssues): a3 and a10 in
+// planning, a7 in testing and renew implementing, the last two on open pull requests.
 func (r *handoffRecordsLive) seed() {
 	t := r.t
 	t.Helper()
-	ctx := context.Background()
 	number, err := strconv.ParseInt(randomSuffix(t)[:6], 16, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The implementer's completion of implementing reads GitHub for the open pull request on its
 	// branch, so GitHub lists the one the record holds for the issue that completes rounds here.
-	r.github = handoffRecordsDaemonGitHub(t, "legion/"+r.renew, int(number)+2)
-	type seeded struct {
-		key   string
-		phase phase.Phase
-		role  claim.Role
-		pr    int
-	}
-	issues := []seeded{
-		{r.a3, phase.Planning, claim.RolePlanner, 0},
-		{r.a7, phase.Testing, claim.RoleTester, int(number) + 1},
-		{r.renew, phase.Implementing, claim.RoleImplementer, int(number) + 2},
-		{r.a10, phase.Planning, claim.RolePlanner, 0},
-	}
+	r.github = handoffRecordsDaemonGitHub(t, claim.IssueBranch(r.renew), int(number)+2)
+	r.seedIssues([]dispatchSeed{
+		{key: r.a3, phase: phase.Planning, role: claim.RolePlanner},
+		{key: r.a7, phase: phase.Testing, role: claim.RoleTester, pr: int(number) + 1, head: "head-" + r.a7},
+		{key: r.renew, phase: phase.Implementing, role: claim.RoleImplementer, pr: int(number) + 2, head: "head-" + r.renew},
+		{key: r.a10, phase: phase.Planning, role: claim.RolePlanner},
+	})
+}
+
+// dispatchSeed is one workflow issue seedIssues records: its key, the phase it stands in, the role
+// that works that phase, and its open pull request's number and head, none when pr is 0.
+type dispatchSeed struct {
+	key   string
+	phase phase.Phase
+	role  claim.Role
+	pr    int
+	head  string
+}
+
+// seedIssues records issues as the daemon would hold them: each the root of its own tree with its
+// admission slot and its lifecycle under the workflow, on generation 1 with its title, rank and
+// sequence as Dispatch lists them, on its open pull request when it has one; and each phase's
+// worker as a launch a previous daemon began and never recorded, serving run 1, which the boot
+// relaunches.
+func (r *handoffRecordsLive) seedIssues(issues []dispatchSeed) {
+	t := r.t
+	t.Helper()
+	ctx := context.Background()
 	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
 		for _, s := range issues {
 			listed := r.dispatch.issue(s.key)
@@ -234,7 +266,7 @@ func (r *handoffRecordsLive) seed() {
 			}
 			if s.pr != 0 {
 				if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{
-					State: record.PullRequestOpen, Issue: s.key, Repo: liveRepo, Number: s.pr, Branch: "legion/" + s.key, HeadSHA: "head-" + s.key, Failing: []string{},
+					State: record.PullRequestOpen, Issue: s.key, Repo: liveRepo, Number: s.pr, Branch: claim.IssueBranch(s.key), HeadSHA: s.head, Failing: []string{},
 				}); err != nil {
 					return err
 				}
@@ -422,7 +454,7 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 
 	reviewer := r.claimant(claim.RoleReviewer, r.a7, "ses_a7_reviewer")
 	task := reviewer.awaitPrompt()
-	want := fmt.Sprintf("Handoff: test version %d (dispatch handoff-read --issue %s --phase test --version %d).", rewritten.version, r.a7, rewritten.version)
+	want := handoffLine(r.a7, "test", rewritten.version)
 	if !strings.Contains(task.Message, want) {
 		t.Fatalf("the reviewer was prompted %q, want it to name %q", task.Message, want)
 	}
@@ -939,16 +971,44 @@ func (c *handoffClaimant) endTurn() {
 	}
 }
 
-// awaitPrompt waits for the next task the daemon prompts this claim with.
-func (c *handoffClaimant) awaitPrompt() shimwire.Prompt {
+// awaitPrompt waits for the next task the daemon prompts this claim with whose message holds each
+// of want, and returns it. A prompt before it that does not is noted and passed over, so a caller
+// that names its round's task reads that task and no other message the daemon sent the claim; a
+// caller naming nothing takes the next prompt. It waits two minutes, or what is left of the test
+// binary's deadline less a second when that is sooner (testwait.Bounded), and its failure names
+// the bound it waited.
+func (c *handoffClaimant) awaitPrompt(want ...string) shimwire.Prompt {
 	c.r.t.Helper()
-	select {
-	case prompt := <-c.prompts:
-		return prompt
-	case <-time.After(2 * time.Minute):
-		c.r.t.Fatalf("%s was prompted with no task within 2m", c.token)
-		return shimwire.Prompt{}
+	bound := testwait.Bounded(c.r.t, 2*time.Minute, time.Second)
+	deadline := time.After(bound)
+	for {
+		select {
+		case prompt := <-c.prompts:
+			if holdsAll(prompt.Message, want) {
+				return prompt
+			}
+			c.r.note("%s was first prompted with another task: %q", c.token, prompt.Message)
+		case <-deadline:
+			c.r.t.Fatalf("%s was prompted with no task holding %q within %s", c.token, want, bound)
+			return shimwire.Prompt{}
+		}
 	}
+}
+
+// holdsAll says whether text holds each of parts.
+func holdsAll(text string, parts []string) bool {
+	for _, part := range parts {
+		if !strings.Contains(text, part) {
+			return false
+		}
+	}
+	return true
+}
+
+// handoffLine is the part of a task that names the handoff of word on key at version (workflow's
+// task).
+func handoffLine(key, word string, version int) string {
+	return fmt.Sprintf("Handoff: %s version %d (dispatch handoff-read --issue %s --phase %s --version %d).", word, version, key, word, version)
 }
 
 // complete posts a completion for this claim with a grant minted for it now, as the `legion`
@@ -1120,7 +1180,7 @@ func (d *handoffDispatch) latest(key, word string) handoffRecord {
 // Every other route is a 404: nothing else of GitHub is read here.
 func handoffRecordsDaemonGitHub(t *testing.T, branch string, number int) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		switch parts := strings.Split(rest, "/"); {
 		case r.Method == http.MethodGet && isRepository && len(parts) == 2:
@@ -1131,7 +1191,5 @@ func handoffRecordsDaemonGitHub(t *testing.T, branch string, number int) string 
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
