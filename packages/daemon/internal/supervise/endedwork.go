@@ -251,10 +251,11 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	// A report read before the claim's last turn began has said nothing about that turn
 	// (pods.IdleClaim.Reported), so it is no report of it, though the background work it saw is
 	// kept above. LastTurnStart is the daemon's first word of the turn: its agent_start as read
-	// (beginTurn); the busy answer that recorded the turn, until that start is read
-	// (recordBusyTurn); or the agent's answer that it is streaming, which puts a restored ready or
-	// idle claim in working (sendPending's askFirst branch, answerAskFirstAfterDrop). A daemon
-	// restarted under a working claim reads the one the daemon before it stored.
+	// (beginTurn, and turnStartedWhileBusy for a turn begun under a compaction); the busy answer
+	// that recorded the turn, until that start is read (recordBusyTurn); or the agent's answer that
+	// it is streaming, which puts a restored ready or idle claim in working (sendPending's askFirst
+	// branch, answerAskFirstAfterDrop). A daemon restarted under a working claim reads the one the
+	// daemon before it stored.
 	ended.Reported = reported && !(ranTurn && report.At.Before(m.claim.LastTurnStart))
 	if !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) && (cause != m.relaunchCause || cause == noEnd) {
 		return

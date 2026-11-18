@@ -253,6 +253,51 @@ func TestTheRelaunchGuardRefusesAClaimWhoseSessionReportedInItsTurn(t *testing.T
 	}
 }
 
+// A turn Oh My Pi starts under a compaction — a follow-up an Envoy delivery queued while the
+// session was being compacted — is the claim's turn once the compaction ends and leaves the claim
+// working for it (compactEnded), so the guard reads the claim in that turn as it reads any other:
+// the turn here sits in a `wait` on a named `bash` service for 25 minutes, and its session's
+// heartbeat reported in it 4 minutes ago. Read against the start of the turn before the
+// compaction, which has ended, the claim would be in no turn, and the relaunch would cut the live
+// one. The daemon's sweep asks the guard of the stored claim, which the compaction's end wrote.
+func TestTheRelaunchGuardRefusesAClaimInATurnThatBeganUnderACompaction(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateIdle)
+	h.advance(time.Minute)
+	release := h.conn.HoldCompact()
+	compacted := make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+	h.must(StreamTurnStart{Claim: h.token})
+	release()
+	if err := <-compacted; err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	h.m.Wait()
+	h.wantState(StateWorking)
+	h.stepped("wait", "toolu_wait_0", `{"jobs":["activity-service"]}`, false)
+	h.advance(21 * time.Minute)
+	h.reportActivity()
+	stamp := h.clock.Now().UTC().Format(time.RFC3339)
+	h.advance(4 * time.Minute)
+	before := h.claim()
+
+	err := h.handle(h.relaunchOf(false))
+
+	if !errors.Is(err, ErrRelaunchGuard) || !strings.Contains(err.Error(), stamp) {
+		t.Fatalf("relaunch of a claim whose session reported 4 minutes ago in a turn begun under a compaction = %v, want the guard's refusal naming the report at %s", err, stamp)
+	}
+	h.wantState(StateWorking)
+	h.wantCalls("Suspend", 0)
+	h.wantCalls("Resume", 0)
+	if h.generation() != before.Generation {
+		t.Fatalf("generation = %d, want it unmoved at %d", h.generation(), before.Generation)
+	}
+	if why := RelaunchGuard(h.store.load(h.token), time.Time{}, h.clock.Now()); !strings.Contains(why, stamp) {
+		t.Fatalf("RelaunchGuard of the stored claim = %q, want a refusal naming the report at %s", why, stamp)
+	}
+}
+
 // A process that froze sends no report from then on, since its heartbeat runs on its own event
 // loop: 20 minutes after the turn's last report the guard lets the claim through, as it let every
 // quiet wait through before the heartbeat.

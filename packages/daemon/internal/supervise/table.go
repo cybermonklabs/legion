@@ -1877,10 +1877,15 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // starting under the compaction — a follow-up an Envoy delivery queued while the session was being
 // compacted — is recorded on the compaction: its end would otherwise reach an idle claim, where it
 // means nothing, and the compaction's end would send the owed task into a running agent
-// (compactEnded). That turn's start line is written here (startTurn), because its end writes the
-// end line (turnEnded): an operator reads an end with no start as a turn the daemon never saw
-// begin, and the daemon saw this one. The daemon prompted nothing for it, so it is no task's turn
-// and its line names no delivery.
+// (compactEnded). It is a turn of the claim's as any other, so the claim records when it began
+// (Claim.LastTurnStart), as turnEnded records the end of a turn that ends under a compaction
+// (Claim.LastTurnEnd), and the compaction's end writes both (compactEnded). A claim that end
+// leaves working for this turn is in it as its own record reads (inTurn), which the relaunch
+// guard reads: dated from the start of the turn before the compaction, which has ended, the claim
+// would read as in no turn, and a relaunch would cut this one while it runs. That turn's start
+// line is written here (startTurn), because its end writes the end line (turnEnded): an operator
+// reads an end with no start as a turn the daemon never saw begin, and the daemon saw this one.
+// The daemon prompted nothing for it, so it is no task's turn and its line names no delivery.
 //
 // The two never meet: a compaction is taken only from a ready or idle claim (compactStart), and a
 // busy answer records only a ready or idle one.
@@ -1892,6 +1897,7 @@ func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
 	if m.compacting == nil {
 		return nil
 	}
+	m.claim.LastTurnStart = m.deps.Clock.Now()
 	m.startTurn("")
 	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
 		"generation", m.claim.Generation)

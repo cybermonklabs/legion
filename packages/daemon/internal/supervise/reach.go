@@ -203,10 +203,11 @@ func RelaunchGuard(c Claim, steppedAt, now time.Time) string {
 
 // inTurn is whether c's agent is in a turn as the claim's own record says it: working, with a turn
 // start (Claim.LastTurnStart) later than its last turn's end. A claim whose record holds no turn
-// start has none a report can be dated against, so it is in none. A claim working for a
-// compaction reads as in a turn only until that turn's end is recorded, since a turn begun under
-// a compaction moves no turn start (turnStartedWhileBusy); the machine refuses a relaunch under a
-// compaction whatever the guard says (relaunchUnreachable).
+// start has none a report can be dated against, so it is in none. A turn begun under a compaction
+// moves the turn start too (turnStartedWhileBusy), so a claim the compaction's end leaves working
+// for that turn is in it; one working for a compaction with no turn begun under it is in none,
+// and the machine refuses a relaunch under a compaction whatever the guard says
+// (relaunchUnreachable).
 func (c Claim) inTurn() bool {
 	return c.State == StateWorking && c.LastTurnStart.After(c.LastTurnEnd)
 }
