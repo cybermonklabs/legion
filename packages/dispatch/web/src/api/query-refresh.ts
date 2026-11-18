@@ -153,9 +153,10 @@ export interface QueryOwner {
   /** Asks for a fetch begun from now, under the scheduler's rules: now, when the fetch out
    *  settles, or when the second since the last fetch began ends. It announces no refresh. */
   readonly read: () => void;
-  /** Lets the query go: no listener call and no read after it, and a read it asked for that is
-   *  still waiting is dropped, unless another owner still holds the query or an enabled observer
-   *  renders it. */
+  /** Lets the query go, once: no listener call after it, and a read it asked for that is still
+   *  waiting is dropped, unless another owner still holds the query or an enabled observer
+   *  renders it. Its holder calls `read` no more after it, as the Steps tab clears its timers in
+   *  the same cleanup. */
   readonly stop: () => void;
 }
 
@@ -183,16 +184,13 @@ export function ownQuery(
   owners.add(listener);
   return {
     read: () => {
-      if (!owners.has(listener)) {
-        return;
-      }
       const requestedAt = Date.now();
       state.owed.set(hash, Math.max(state.owed.get(hash) ?? requestedAt, requestedAt));
       drive(state, queryClient, hash);
     },
     stop: () => {
       owners.delete(listener);
-      if (owners.size === 0 && state.owners.get(hash) === owners) {
+      if (owners.size === 0) {
         state.owners.delete(hash);
       }
     },
