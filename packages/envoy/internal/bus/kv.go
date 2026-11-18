@@ -512,13 +512,16 @@ func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, step, stre
 // yet applied a create, which answers "stream not found" for it (bucketAppliedInterval): after a
 // create that answer is read again. A read the server leaves unanswered (unanswered) says nothing
 // of the stream, so it is read again, as sentAgain sends a request again. Each read is waited for
-// up to its read limit (firstReadLimit, doubled after each read left unanswered, nextReadLimit)
-// and then abandoned, its answer dropped (Bounded), so one lost read costs the start a fraction of
-// a second rather than the caller's whole ten second wait after the fact it waits for is true; a
-// read in flight when ctx ends is abandoned too.
+// up to its read limit and then abandoned, its answer dropped (Bounded), so one lost read costs the
+// start a fraction of a second rather than the caller's whole ten second wait after the fact it
+// waits for is true; a read in flight when ctx ends is abandoned too. The limit is firstReadLimit,
+// doubled after each read left unanswered (nextReadLimit), so a server that answers late is still
+// waited for, and back at firstReadLimit after each read the server answered, so lost reads early
+// in a wait do not make a lost read later in it cost more.
 func awaitStream(ctx context.Context, js nats.JetStreamContext, step, stream, want, waiting string, short func(*nats.StreamInfo) string) error {
 	behind := "no read of the stream answered yet"
-	limit := firstReadLimitOf(ctx)
+	first := firstReadLimitOf(ctx)
+	limit := first
 	for attempt := 1; ; attempt++ {
 		readCtx, cancelRead := context.WithTimeout(ctx, limit)
 		info, answered, err := Bounded(readCtx, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
@@ -534,10 +537,12 @@ func awaitStream(ctx context.Context, js nats.JetStreamContext, step, stream, wa
 			limit = nextReadLimit(limit)
 		case step == "create" && bucketMissing(err):
 			behind = "the member has not applied the create yet: " + err.Error()
+			limit = first
 		case err != nil:
 			return fmt.Errorf("%s %s: read the stream: %w", step, stream, err)
 		default:
 			behind = short(info)
+			limit = first
 		}
 		if behind == "" {
 			return nil
@@ -671,20 +676,21 @@ const (
 // to whichever member conn is on, which may not have applied it yet.
 //
 // sendAgain says the caller is EnsureKeyValue, so each send of that read is sent again when the
-// server leaves it unanswered (sentAgain), which a member whose meta leader is changing does. It
+// server leaves it unanswered (readAgain), which a member whose meta leader is changing does. It
 // is the caller and not created that decides this: a start whose buckets are already there
 // creates nothing, which is every restart of a deployment, and it loses an answer exactly as the
 // start that creates them does.
 //
 // A bucket missing and a request unanswered are two different answers and are waited out
 // differently: the first is a member that has not applied the create and is read again until it
-// has, the second is a request that drew nothing and is sent again. So each send is bounded by
-// RequestTimeout, as a lone read is; a start's waits, on the member and on an answer, last as long
-// as its ctx, which EnsureKeyValue bounds by the start's hang guard (startHangGuard); and any other
-// caller is one send. One send is right there because such a caller waits on a budget of its own:
-// roles.Buckets.bucket, for one, opens a bucket again under its own lock, on a request whose budget
-// is two seconds, and a read that kept it waiting longer would stop every role and session read of
-// the process rather than save a start.
+// has, the second is a request that drew nothing and is sent again. So a start's send is waited
+// for up to its read limit, 630 ms first and twice that after each send left unanswered, up to
+// RequestTimeout (readAgain); a start's waits, on the member and on an answer, last as long as its
+// ctx, which EnsureKeyValue bounds by the start's hang guard (startHangGuard); and any other
+// caller is one send, bounded by RequestTimeout as a lone read is. One send is right there because
+// such a caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again
+// under its own lock, on a request whose budget is two seconds, and a read that kept it waiting
+// longer would stop every role and session read of the process rather than save a start.
 func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {

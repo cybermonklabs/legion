@@ -170,3 +170,52 @@ func TestARaiseWhoseAnswerAndNextReadAreLostStillLands(t *testing.T) {
 			lost.updated.Load(), lost.readsLost.Load())
 	}
 }
+
+// scriptedReads answers each read of a stream as script says, in order, and as a stream with a
+// leader once the script is spent: "lost" holds the reply for RequestTimeout and then answers
+// nats.ErrTimeout, as a read the server lost does, "leaderless" answers a three-copy stream with no
+// leader yet. No server is behind it. lostAt is when the last lost read began; the counts are atomic
+// because a read the wait abandons at its limit runs on beside the next one.
+type scriptedReads struct {
+	nats.JetStreamContext
+	script []string
+	reads  atomic.Int32
+	lostAt atomic.Int64
+}
+
+func (s *scriptedReads) StreamInfo(stream string, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
+	step := "leader"
+	if n := int(s.reads.Add(1)) - 1; n < len(s.script) {
+		step = s.script[n]
+	}
+	info := &nats.StreamInfo{Config: nats.StreamConfig{Name: stream, Replicas: 3}, Cluster: &nats.ClusterInfo{Leader: "n1"}}
+	switch step {
+	case "lost":
+		s.lostAt.Store(time.Now().UnixNano())
+		time.Sleep(RequestTimeout)
+		return nil, nats.ErrTimeout
+	case "leaderless":
+		info.Cluster.Leader = ""
+	}
+	return info, nil
+}
+
+// A wait whose first reads are lost and then answered sets its read limit back after the answer, so
+// a read lost later in the same wait costs the first limit again and not the doubled one: here two
+// lost reads, a read that finds no leader yet, a lost read, and the read that finds the leader. Had
+// the limit stayed doubled, the third lost read would have cost four times firstReadLimit, 2.52 s,
+// and after four such reads the caller's whole ten second wait.
+func TestAnAnsweredReadSetsTheReadLimitBack(t *testing.T) {
+	reads := &scriptedReads{script: []string{"lost", "lost", "leaderless", "lost"}}
+	if err := awaitStreamLeader(t.Context(), reads, "open", "KV_envoy_limit_back_test"); err != nil {
+		t.Fatalf("a wait whose leader came after lost reads = %v, want nil", err)
+	}
+	answeredAt := time.Now()
+	if got := reads.reads.Load(); got != 5 {
+		t.Fatalf("the wait read the stream %d times, want 5: the script holds nothing otherwise", got)
+	}
+	if after := answeredAt.Sub(time.Unix(0, reads.lostAt.Load())); after > heldReadBound {
+		t.Fatalf("the wait answered %s after its last lost read began, want within %s: an answered read sets the limit back to %s",
+			after.Round(time.Millisecond), heldReadBound, firstReadLimit)
+	}
+}

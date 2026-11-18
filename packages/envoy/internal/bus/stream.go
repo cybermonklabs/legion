@@ -1175,13 +1175,10 @@ func unanswered(err error) bool {
 // (requestsUnder) is not sent in a loop.
 // Any answer, the server's refusal included, is returned at once, so a refused create is sent
 // once. A refusal the server reports on the connection rather than in the request's answer
-// arrives here as an answer too, because EnsureKeyValue's lookup and create read the connection's
-// record of it before they hand this function a request's silence (refusedSend): on a connection
-// a client owns, a request of theirs the grant does not cover is sent once. The handle open and
-// ensureStreamWithConfig's read and create read no such record, so a request of theirs the grant
-// does not cover is sent again until ctx ends; for a bucket's handle open that cannot happen,
-// since the lookup before it publishes to the same subject and ends the call at its first refused
-// send.
+// arrives here as an answer too, because every request of a start goes through a JetStream
+// context that reads the connection's record of it as it arrives (readsRefusals, refusedBy):
+// EnsureKeyValue's lookup, create, raise and handle open, and ensureStreamWithConfig's read and
+// create. So on a connection a client owns, a request the grant does not cover is sent once.
 //
 // Two programs starting at once each reconcile the one ENVOY_NOTIFICATIONS stream, and the start
 // that loses the answer to its own stream read is the listener that dies ten seconds after it
@@ -1254,7 +1251,8 @@ func sentAgain[T any](ctx context.Context, request string, send func() (T, error
 // The limit decides no result: each read the server leaves unanswered doubles the next one's
 // limit, up to RequestTimeout (nextReadLimit), so a server that answers slower than the
 // measurement is waited for at the caller's own wait after a few reads, and only the start's hang
-// guard ends the wait.
+// guard ends the wait. A read the server answers sets the limit back to this one (awaitStream),
+// so lost reads early in a wait do not make a lost read later in it cost more.
 const firstReadLimit = 630 * time.Millisecond
 
 // firstReadLimitKey is the context key a test that counts a start's requests sets its first read
