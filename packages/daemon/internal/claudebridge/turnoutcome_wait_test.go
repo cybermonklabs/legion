@@ -210,10 +210,13 @@ func TestAReportWaitsAnHourForADaemonThatNeverServesAndThenGivesUp(t *testing.T)
 	if waited != time.Hour {
 		t.Fatalf("the report waited %s over %d pauses, want an hour", waited, len(wait.pauses))
 	}
-	if want := "could not report the outcome of turn 1 (refused): the Legion daemon was unreachable"; !strings.Contains(logged.String(), want) {
-		t.Fatalf("the bridge logged:\n%s\nwant it to say %q", logged, want)
-	}
-	if want := "and stayed so for 1h0m0s"; !strings.Contains(logged.String(), want) {
-		t.Fatalf("the bridge logged:\n%s\nwant it to say %q", logged, want)
+	for _, want := range []string{
+		"the outcome of turn 1 (refused) is being sent again for up to 60 minutes",
+		"could not report the outcome of turn 1 (refused): the Legion daemon was unreachable",
+		"and stayed so for 60 minutes",
+	} {
+		if !strings.Contains(logged.String(), want) {
+			t.Fatalf("the bridge logged:\n%s\nwant it to say %q", logged, want)
+		}
 	}
 }

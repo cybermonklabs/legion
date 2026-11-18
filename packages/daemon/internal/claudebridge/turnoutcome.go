@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/timewords"
 )
 
 // A report waits for a daemon that is not serving as every call an Oh My Pi worker may send again
@@ -180,11 +181,11 @@ func (r *turnReports) deliver(request claim.TurnOutcomeRequest, body []byte) (da
 		}
 		remaining := deadline.Sub(r.wait.now())
 		if remaining <= 0 {
-			return daemonAnswer{}, fmt.Errorf("the Legion daemon was unreachable (%s) and stayed so for %s", why, config.StallDaemonWait)
+			return daemonAnswer{}, fmt.Errorf("the Legion daemon was unreachable (%s) and stayed so for %s", why, timewords.Words(config.StallDaemonWait))
 		}
 		if !waiting {
 			r.log.Printf("the Legion daemon is unreachable, most likely restarting (%s); the outcome of turn %d (%s) is being sent again for up to %s",
-				why, request.Sequence, request.Outcome, config.StallDaemonWait)
+				why, request.Sequence, request.Outcome, timewords.Words(config.StallDaemonWait))
 		}
 		r.wait.sleep(min(pause, remaining))
 		pause = min(2*pause, longestPause)
