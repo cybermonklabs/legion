@@ -29,8 +29,10 @@ import {
 // Oh My Pi keeps nothing a `context` handler returns, so what reaches the model, where the list
 // sits and where the binary puts its cache anchors can only be read off the requests it sends. One
 // stand-in is the model gateway, the Envoy listener and Dispatch, whose answers route serves a list
-// each case controls. LEGION_TEST_OMP names the binary, as in dispatch-first-omp.test.ts. A run
-// without one skips, except on GitHub Actions.
+// each case controls. The file also holds one case on Envoy cards, (s), because it needs the same
+// harness, its deliveries and its restart: the `delivered:` line src/card-age.ts adds to a card
+// keeps its bytes across a resume. LEGION_TEST_OMP names the binary, as in
+// dispatch-first-omp.test.ts. A run without one skips, except on GitHub Actions.
 const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 
@@ -67,23 +69,27 @@ type Step =
  * `extensions/envoy.ts` sends a delivery, `deliverAs: "steer"` and `triggerTurn: true`, and
  * `/deliver-quiet <text>` the same with no turn. The host queues a send and `sendMessage`
  * returns nothing to await, so the quiet command polls for the condition itself: it returns once
- * the branch holds the message.
+ * the branch holds one more entry with the text than before it sent, the text as an entry's JSON
+ * holds it (a newline escaped), so a text of several lines and one the branch holds already are
+ * waited for too.
  */
 const DELIVERER = `export default function deliverer(pi) {
   for (const [name, triggerTurn] of [["deliver", true], ["deliver-quiet", false]]) {
     pi.registerCommand(name, {
       description: "Send an envoy-message",
       handler: async (args, context) => {
+        const encoded = JSON.stringify(args).slice(1, -1);
+        const holding = () =>
+          context.sessionManager
+            .getBranch()
+            .filter((entry) => entry.type === "custom_message" && JSON.stringify(entry).includes(encoded))
+            .length;
+        const before = holding();
         pi.sendMessage(
           { customType: "envoy-message", content: args, display: true },
           { deliverAs: "steer", triggerTurn }
         );
-        while (
-          !triggerTurn &&
-          !context.sessionManager
-            .getBranch()
-            .some((entry) => entry.type === "custom_message" && JSON.stringify(entry).includes(args))
-        ) {
+        while (!triggerTurn && holding() === before) {
           await Bun.sleep(10);
         }
       },
@@ -1188,6 +1194,72 @@ test.skipIf(skipped)(
     expect(textOf(messagesOf(resumed).at(-1))).toBe("Fourth question.");
 
     expect(placed.text).toBe(sentList(renderSessionAnswers([item], { now: Date.now() })));
+  },
+  180_000
+);
+
+// Every request shows each Envoy card with `delivered:`, the time the session got it
+// (src/card-age.ts). The session records that time when it first uses it, so a process that resumes
+// the session shows the card with the bytes the process before it sent. A resumed process can also
+// write the same card again before its first request, as it replays a card whose ledger record the
+// process before it never wrote: that write takes the time the session records, and the card
+// already sent keeps its text. The duplicate is written quiet, with no turn, so its `message_end`
+// comes before the resumed process's first request; a duplicate that starts a turn is written after
+// that request's `context` handler has fixed the card's time. The restart puts the duplicate's write
+// more than a second past the first, in another second of the line.
+test.skipIf(skipped)(
+  "(s) an Envoy card keeps its delivered line after a resume, also when the resumed process writes it again before its first request",
+  async () => {
+    const card = [
+      "envoy:",
+      "  id: evt-s-card",
+      "  from: rec-peer",
+      "  topic: agent.rec",
+      `  at: ${new Date(Date.now() - 3 * MINUTE).toISOString()}`,
+      "  message: Card delivered before the restart",
+    ].join("\n");
+    const session = await runSession(binary(), [
+      { deliver: card },
+      { prompt: "First question." },
+      { restart: true },
+      // The same card, its event id and text, written again by the resumed process before its
+      // first request.
+      { deliver: card, quiet: true },
+      { prompt: "Second question." },
+    ]);
+
+    const [a, b, c, ...rest] = session.turns;
+    if (a === undefined || b === undefined || c === undefined) throw new Error("want three turns");
+    expect(rest).toEqual([]);
+    /** The texts of the request's card messages, in order: the first is the card the first
+     *  process wrote. */
+    const cardsOf = (request: Request): string[] =>
+      messagesOf(request)
+        .map(textOf)
+        .filter((text) => text.includes("\n  id: evt-s-card\n"));
+    const oldCard = (request: Request): string => {
+      const [found] = cardsOf(request);
+      if (found === undefined) throw new Error("the request carries no card");
+      return found;
+    };
+    // Printed whether or not the case passes, so a failure shows the line in every request.
+    const lines = [a, b, c].map(
+      (request) => /^ {2}delivered: .*$/m.exec(oldCard(request))?.[0] ?? "(no delivered line)"
+    );
+    // The resumed process writes the card again only after it was sent there, once it has
+    // started, and the first process fixed its time before request A: this gap is a lower bound.
+    const again = (session.sentAt[2] as number) - a.at;
+    console.log(
+      `(s) the old card's delivered line in requests A, B and C: ${JSON.stringify(lines)}; ` +
+        `the card went to the resumed process again ${again.toFixed(0)} ms after request A`
+    );
+
+    expectPrefixes([b, c]);
+    const sent = oldCard(a);
+    for (const request of [b, c]) expect(oldCard(request)).toBe(sent);
+    expect(sent).toMatch(/^ {2}delivered: /m);
+    // The resumed process wrote the card again before C.
+    expect(cardsOf(c)).toHaveLength(2);
   },
   180_000
 );
