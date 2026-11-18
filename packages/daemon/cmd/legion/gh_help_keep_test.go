@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -67,7 +68,7 @@ func readHelps(t *testing.T, gh string, env map[string]string) []string {
 	for name, value := range env {
 		caller = append(caller, name+"="+value)
 	}
-	keep := newGhHelpKeep(gh, env, ghChildEnviron(caller, map[string]string{"GH_CONFIG_DIR": env["GH_CONFIG_DIR"]}))
+	keep := newGhHelpKeep(context.Background(), gh, env, ghChildEnviron(caller, map[string]string{"GH_CONFIG_DIR": env["GH_CONFIG_DIR"]}))
 	var helps []string
 	for _, path := range [][]string{nil, {"api"}} {
 		help, err := keep.read(path)
@@ -96,7 +97,7 @@ func ghTargetOfKept(t *testing.T, argv []string, env map[string]string, help fun
 	keepEnv := map[string]string{"XDG_STATE_HOME": t.TempDir(), "GH_CONFIG_DIR": t.TempDir(), "XDG_DATA_HOME": t.TempDir()}
 	refused := map[string]bool{}
 	for _, call := range []string{"the call that keeps gh's help", "the call that reads the kept copies"} {
-		keep := newGhHelpKeep(gh, keepEnv, nil)
+		keep := newGhHelpKeep(context.Background(), gh, keepEnv, nil)
 		if keep.dir == "" {
 			t.Fatalf("a keep for %s keeps nothing", gh)
 		}
@@ -466,13 +467,13 @@ func TestGhHelpKeepIgnoresACopyThatIsNotTheUsersAlone(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			stub, log := loggingGh(t)
 			env := helpKeepEnv(t)
-			want, err := newGhHelpKeep(stub, env, os.Environ()).read(nil)
+			want, err := newGhHelpKeep(context.Background(), stub, env, os.Environ()).read(nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 			processes(t, log)
 			dir := filepath.Join(env["XDG_STATE_HOME"], "legion-gh", "help")
-			keep := newGhHelpKeep(stub, env, os.Environ())
+			keep := newGhHelpKeep(context.Background(), stub, env, os.Environ())
 			tc.tamper(t, dir, keep)
 			got, err := keep.read(nil)
 			if err != nil || got != want {

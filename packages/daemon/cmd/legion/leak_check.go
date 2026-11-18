@@ -40,6 +40,17 @@ func newLeakCheckCommand(stderr io.Writer) *cobra.Command {
 
 // leakCheckCommand is one shape of `legion leak-check`: it takes words words, and any other count
 // is a usage error, the guard's StatusSetupFailure, with usage on stderr.
+//
+// The guard starts each of its children, the shared check among them, in a process group of its
+// own (leakguard's Guard.run), which none of the terminal's signals reach: git runs its pre-push
+// hook, and so this command, in the terminal's foreground group with git. So the guard runs under
+// a context that ends on a SIGINT or a SIGTERM (main's signal.NotifyContext, which cobra hands
+// every command) and on a SIGHUP, which this command catches while the shape runs and reports
+// (hangupCancels), and the end of that context stops the child's group. Without the SIGHUP, a
+// pane that closes during a push would kill this command where it stood and leave the shared check
+// running, reparented and waited for by nobody. A signal that ended the context before the guard's
+// answer is reported ends the command with 128+<signal> rather than with the setup failure its
+// stopped check reads as (leakCheckReport), which refuses the push either way.
 func leakCheckCommand(use string, words int, usage, short string, do func(ctx context.Context, args []string, stderr io.Writer) int, stderr io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:    use,
@@ -50,7 +61,9 @@ func leakCheckCommand(use string, words int, usage, short string, do func(ctx co
 				fmt.Fprintln(stderr, usage)
 				return leakguard.StatusSetupFailure
 			}
-			return do(ctx, args, stderr)
+			guarded, stop := hangupCancels(ctx)
+			defer stop()
+			return do(guarded, args, stderr)
 		}),
 	}
 }
@@ -63,14 +76,14 @@ func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) i
 	what := leakguard.PushName(remote)
 	updates, err := leakguard.ParseUpdates(leakCheckStdin)
 	if err != nil {
-		return leakCheckReport(stderr, "", &leakguard.SetupFailure{What: what, Why: "git's update lines could not be read", Err: err})
+		return leakCheckReport(ctx, stderr, "", &leakguard.SetupFailure{What: what, Why: "git's update lines could not be read", Err: err})
 	}
 	dir, err := os.Getwd()
 	if err != nil {
-		return leakCheckReport(stderr, "", &leakguard.SetupFailure{What: what, Why: "the repository the hook runs in could not be read", Err: err})
+		return leakCheckReport(ctx, stderr, "", &leakguard.SetupFailure{What: what, Why: "the repository the hook runs in could not be read", Err: err})
 	}
 	guard := leakguard.New(leakguard.Options{})
-	return leakCheckReport(stderr, "", guard.Push(ctx, leakguard.PushRequest{
+	return leakCheckReport(ctx, stderr, "", guard.Push(ctx, leakguard.PushRequest{
 		Dir:     dir,
 		Remote:  remote,
 		URL:     url,
@@ -88,10 +101,10 @@ func runLeakCheckText(ctx context.Context, args []string, stderr io.Writer) int 
 	kind := args[0]
 	text, err := io.ReadAll(leakCheckStdin)
 	if err != nil {
-		return leakCheckReport(stderr, kind, &leakguard.SetupFailure{What: kind, Why: "the text could not be read", Err: err})
+		return leakCheckReport(ctx, stderr, kind, &leakguard.SetupFailure{What: kind, Why: "the text could not be read", Err: err})
 	}
 	guard := leakguard.New(leakguard.Options{})
-	return leakCheckReport(stderr, kind, guard.Text(ctx, leakguard.TextRequest{Text: string(text)}))
+	return leakCheckReport(ctx, stderr, kind, guard.Text(ctx, leakguard.TextRequest{Text: string(text)}))
 }
 
 // leakCheckReport prints one answer of the guard and is the status to exit with. A cleared write
@@ -109,7 +122,15 @@ func runLeakCheckText(ctx context.Context, args []string, stderr io.Writer) int 
 // what renames the write where the caller has a better word for it than the guard's own — the
 // text shape's kind — and leaves the guard's wording alone when it is empty, which is what the
 // push shape wants: the guard already calls it "the push to origin".
-func leakCheckReport(stderr io.Writer, what string, err error) int {
+//
+// A signal that ended ctx — main's SIGINT or SIGTERM, or the SIGHUP leakCheckCommand catches — is
+// the status whatever the guard answered, 128+<signal> (endedBySignal), and nothing is printed:
+// the guard's answer is then the setup failure of a check the signal stopped, which says nothing
+// about the write and is not reported as if it did. The push is refused either way.
+func leakCheckReport(ctx context.Context, stderr io.Writer, what string, err error) int {
+	if status, ok := signalled(ctx); ok {
+		return status
+	}
 	if err == nil {
 		return leakguard.StatusClean
 	}

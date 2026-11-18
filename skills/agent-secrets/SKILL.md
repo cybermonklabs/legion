@@ -301,9 +301,11 @@ source says why it had nothing:
 - **`machine: the broker at … names no exchange audience`.** The broker accepts no machine identity
   yet. The person signs in (`agent-secrets login`), or restarts the agent as a session:
   `agent-secrets register --wait 10 --exec -- <the agent's command>`.
-- **`this machine is not logged in to the secrets broker`.** The helper holds no machine credential.
-  `agent-secrets machine login-status` prints `issued` only while it holds one. The person logs the
-  machine in, as `/legion/broker/guides/log-a-machine-in/` in the documentation site shows.
+- **`this machine's agent-secrets-helper holds no credential at the secrets broker`.** The part after
+  `the helper:` names the cure. `run: agent-secrets machine login`: the person logs the machine in,
+  as `/legion/broker/guides/log-a-machine-in/` in the documentation site shows. `the helper's trade
+  loop is trading …`: the helper gets one itself; report it, and retry later. `the helper stopped
+  trading …`: nothing here cures it, so report it with the helper's log.
 
 A stopped helper is not a missing one. Where the helper is installed, or `AGENT_SECRETS_HELPER_SOCK`
 names its socket, and the socket is gone, the command exits 1 with

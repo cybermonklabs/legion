@@ -54,6 +54,6 @@ export const ACTOR_TOKEN_TYPE_MACHINE = "urn:envoy:params:oauth:token-type:machi
 export const TOKEN_TYPE_DPOP = "DPoP";
 
 /** Followed by a colon, begins the `error_description` of the broker's `invalid_grant` for a pod
- *  whose session no registration names yet (`oauthwire.PodSessionNotRegistered`): the one refusal
- *  of the broker's state a later trade cures, which a client trades again on rather than stop. */
+ *  whose session no registration names yet (`oauthwire.PodSessionNotRegistered`): a refusal of
+ *  the broker's state that a later trade cures, which a client trades again on rather than stop. */
 export const POD_SESSION_NOT_REGISTERED = "pod_session_not_registered";
