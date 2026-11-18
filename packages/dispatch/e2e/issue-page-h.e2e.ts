@@ -131,6 +131,114 @@ async function expectInsideSideways(page: Page, locator: Locator, what: string):
   ).toBeLessThanOrEqual(width + 1);
 }
 
+/** Each row's glyph in Details, the column before the row's name (`IssueMargin.tsx`'s `Row`). */
+const ROW_GLYPHS = '[data-margin-section] > div > div > div:first-child > span[aria-hidden="true"]';
+/** Each document's and file's mark of its kind, in Details' list of them. */
+const FILE_MARKS = '[data-testid="issue-files"] a > span[aria-hidden="true"]';
+/** The status's own mark, in the pill of the Status row, Development's first row. */
+const STATUS_MARK =
+  '[data-margin-section="development"] > div > div:first-child > div:last-child > span > span[aria-hidden="true"]';
+
+/** A font Chromium says it drew a text in (`CSS.getPlatformFontsForNode`). */
+interface DrawnFont {
+  readonly familyName: string;
+  readonly glyphCount: number;
+  readonly isCustomFont: boolean;
+  readonly postScriptName: string;
+}
+
+/** A glyph of Details: the row it is drawn in, what it holds, and the fonts its text is drawn
+ *  in. An icon holds no text, and so no font. */
+interface GlyphFonts {
+  readonly fonts: readonly DrawnFont[];
+  readonly icon: boolean;
+  readonly row: string;
+  readonly text: string;
+}
+
+/** What `drawnFonts` reads of a glyph in the page: the name of the row it is drawn in, followed
+ *  for a file's mark by the file's name, and what it holds. */
+function describeGlyph(this: Element): Omit<GlyphFonts, "fonts"> {
+  const label =
+    this.closest("[data-margin-section] > div > div")?.querySelector(
+      ":scope > div:first-child > span[data-page-chrome]"
+    )?.textContent ?? "";
+  const file = this.closest("a")?.querySelector("[data-author-text]")?.textContent;
+  return {
+    icon: this.querySelector("svg") !== null,
+    row: file === undefined || file === null ? label : `${label}, ${file}`,
+    text: this.textContent ?? "",
+  };
+}
+
+/** The glyphs of Details that `selectors` find, each with the fonts Chromium drew its text in, as
+ *  Chromium reports them (`CSS.getPlatformFontsForNode`), once the page's typeface has loaded. */
+async function drawnFonts(page: Page, selectors: readonly string[]): Promise<GlyphFonts[]> {
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("DOM.enable");
+    await cdp.send("CSS.enable");
+    const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+    const glyphs: GlyphFonts[] = [];
+    for (const selector of selectors) {
+      // Inside Details' panel (`marginSlot`).
+      const { nodeIds } = await cdp.send("DOM.querySelectorAll", {
+        nodeId: root.nodeId,
+        selector: `[data-testid="issue-margin"] ${selector}`,
+      });
+      for (const nodeId of nodeIds) {
+        const { object } = await cdp.send("DOM.resolveNode", { nodeId });
+        const { result } = await cdp.send("Runtime.callFunctionOn", {
+          functionDeclaration: describeGlyph.toString(),
+          objectId: object.objectId,
+          returnByValue: true,
+        });
+        const { fonts } = await cdp.send("CSS.getPlatformFontsForNode", { nodeId });
+        glyphs.push({ ...(result.value as Omit<GlyphFonts, "fonts">), fonts });
+      }
+    }
+    return glyphs;
+  } finally {
+    await cdp.detach();
+  }
+}
+
+/** Whether a glyph's text is drawn in a font other than the page's own typeface, or in none: a
+ *  face of the reader's machine draws it at that face's width, which no column holds on every
+ *  machine. Chromium names a font by the names in its file, so the page's cut of Inter
+ *  (`Dispatch Inter`, `styles.css`) is reported as a web font whose PostScript name is Inter's,
+ *  `InterVariable`. */
+function drawnOutsideThePagesTypeface({ fonts }: GlyphFonts): boolean {
+  return (
+    fonts.length === 0 ||
+    fonts.some((font) => !font.isCustomFont || !font.postScriptName.startsWith("Inter"))
+  );
+}
+
+/** A glyph's reading as a message says it: its row, its text with its code points, and each
+ *  font Chromium drew it in. */
+function glyphReading({ fonts, row, text }: GlyphFonts): string {
+  const points = [...text]
+    .map(
+      (character) =>
+        `U+${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`
+    )
+    .join(" ");
+  const drawn =
+    fonts.length === 0
+      ? "no font"
+      : fonts
+          .map(
+            (font) =>
+              `${font.familyName} (${font.postScriptName}, ${
+                font.isCustomFont ? "the page's" : "the machine's"
+              }, ${font.glyphCount} glyphs)`
+          )
+          .join(", ");
+  return `${row}: ${text} (${points}) in ${drawn}`;
+}
+
 /**
  * `assertWhole` on each of `locators` in Details, with the window made tall enough at its width
  * for every surface that scrolls between them and the document to hold its content whole, as
@@ -379,19 +487,22 @@ test("every property with a value is visible in Details at every width @phone", 
       ).toHaveText(ONE_DEVELOPMENT_ROWS);
       // Each row's glyph is drawn inside its own column, before the row's name (`Row`'s
       // `w-3.5`): the page's typeface drew Blocked by's ⊘ 19 px wide in that 14 px column, to
-      // 2 px from the name. The glyph's text is what is measured, since its span is the column
-      // itself, once the page's typeface has loaded, since that is what draws ⊘. Soft, so that a
-      // width it fails at does not stop the widths after it.
+      // 2 px from the name, and a face of the machine drew Opened by's ☺ 15.3 px wide in it. An
+      // icon is measured by its own box and a text glyph by its text, since the span around
+      // either is the column itself, once the page's typeface has loaded, since that is what
+      // draws ⊘. Soft, so that a width it fails at does not stop the widths after it.
       await page.evaluate(() => document.fonts.ready.then(() => undefined));
       const glyphs = await marginSlot(page)
-        .locator('[data-margin-section] > div > div > div:first-child > span[aria-hidden="true"]')
+        .locator(ROW_GLYPHS)
         .evaluateAll((spans) =>
           spans.map((span) => {
+            const icon = span.querySelector("svg");
             const text = document.createRange();
             text.selectNodeContents(span);
             return {
               column: span.getBoundingClientRect().width,
-              drawn: text.getBoundingClientRect().width,
+              drawn: (icon ?? text).getBoundingClientRect().width,
+              glyph: icon === null ? (span.textContent ?? "") : "icon",
               row: span.nextElementSibling?.textContent ?? "",
             };
           })
@@ -404,10 +515,53 @@ test("every property with a value is visible in Details at every width @phone", 
         .soft(
           glyphs
             .filter(({ column, drawn }) => drawn > column)
-            .map(({ column, drawn, row }) => `${row}: ${drawn} px in a column of ${column} px`),
+            .map(
+              ({ column, drawn, glyph, row }) =>
+                `${row}'s ${glyph}: ${drawn} px in a column of ${column} px`
+            ),
           `a row's glyph is drawn wider than its column at ${width} px`
         )
         .toEqual([]);
+      // Each glyph of Details that is text is drawn in the page's own typeface, as Chromium
+      // reports the fonts it drew it in, whatever fonts the machine holds: a character that face
+      // does not hold is drawn in one of the machine's faces, at that face's width, or in an
+      // emoji face, and a `unicode-range` that takes it in does not say the face holds it (Inter
+      // has no ⇄, which DejaVu Sans drew here). Each row's glyph that is text and each file's
+      // mark that is; and, apart, the status's own mark in the Status row's pill, which
+      // `issue-status.ts` draws. Soft, as above.
+      const textGlyphs = (await drawnFonts(page, [ROW_GLYPHS, FILE_MARKS])).filter(
+        ({ icon }) => !icon
+      );
+      expect(
+        textGlyphs.map(({ row }) => row),
+        `Details reads the fonts of no Blocked by glyph at ${width} px`
+      ).toContain(PROPERTY_LABELS.blocked_by);
+      expect
+        .soft(
+          textGlyphs.filter(drawnOutsideThePagesTypeface).map(glyphReading),
+          `a glyph of Details is drawn in a font the page does not ship at ${width} px`
+        )
+        .toEqual([]);
+      const statusMark = await drawnFonts(page, [STATUS_MARK]);
+      expect(
+        statusMark.map(({ row }) => row),
+        `Details reads no status mark in its Status row at ${width} px`
+      ).toEqual([PROPERTY_LABELS.status]);
+      expect
+        .soft(
+          statusMark.filter(drawnOutsideThePagesTypeface).map(glyphReading),
+          `the status mark's glyph is drawn in a font the page does not ship at ${width} px`
+        )
+        .toEqual([]);
+      // The readings, printed so that what each machine drew is on the record when the row
+      // passes too.
+      console.log(
+        `Details' glyphs at ${width} px: ${glyphs
+          .map(({ column, drawn, glyph, row }) => `${row} ${glyph} ${drawn} px in ${column} px`)
+          .join("; ")}\nDetails' glyph fonts at ${width} px: ${[...textGlyphs, ...statusMark]
+          .map(glyphReading)
+          .join("; ")}`
+      );
       const labels = detailsRow(page, PROPERTY_LABELS.labels).locator("[data-author-text]");
       await expect
         .poll(async () =>

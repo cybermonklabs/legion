@@ -44,6 +44,19 @@ import {
   IssueLine,
 } from "./BlockedByControl";
 import { DetailsErrorLine, useFocusHandOff, useSaidFailure } from "./details-error";
+import {
+  CIRCLED_DOT,
+  FLAG,
+  GRID_SQUARE,
+  HALF_FILLED_CIRCLE,
+  HOUSE,
+  LINED_SQUARE,
+  RIGHT_OVER_LEFT_ARROWS,
+  SMILING_FACE,
+  SQUARE_IN_SQUARE,
+  TICKED_BOX,
+  UPRIGHT_BAR,
+} from "./details-icons";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
 import { IssueAddMenu } from "./IssueAddMenu";
@@ -329,7 +342,7 @@ export function IssueMarginPanel({
         name="development"
         sections={sections}
       >
-        <Row glyph="◐" label={PROPERTY_LABELS.status}>
+        <Row glyph={HALF_FILLED_CIRCLE} label={PROPERTY_LABELS.status}>
           <span
             className={`inline-flex items-center gap-1 rounded-full border border-current px-2 text-xs leading-[18px] font-semibold ${statusTone(status)}`}
             {...pageChrome}
@@ -338,7 +351,7 @@ export function IssueMarginPanel({
             {issueStatusWord(status)}
           </span>
         </Row>
-        <Row glyph="▮" label={PROPERTY_LABELS.priority}>
+        <Row glyph={UPRIGHT_BAR} label={PROPERTY_LABELS.priority}>
           {issue.priority === null ? (
             none
           ) : (
@@ -460,7 +473,7 @@ export function IssueMarginPanel({
             nothing that waits on it, nothing while that answer is still out, and the failure
             where the read failed, as every other row of the panel says what it holds. This
             row's None takes the focus of the failure's Retry when it replaces that line. */}
-        <Row glyph="⊙" label={PROPERTY_LABELS.blocks} valueRef={blocksValue}>
+        <Row glyph={CIRCLED_DOT} label={PROPERTY_LABELS.blocks} valueRef={blocksValue}>
           {readFailed(blocking) ? (
             <DetailsErrorLine
               error={blocking.error}
@@ -483,7 +496,7 @@ export function IssueMarginPanel({
             <IssueList issues={blocks} />
           )}
         </Row>
-        <Row glyph="⌂" label={PROPERTY_LABELS.repository}>
+        <Row glyph={HOUSE} label={PROPERTY_LABELS.repository}>
           <RepoControl
             disabled={isClosed}
             inRow
@@ -495,7 +508,7 @@ export function IssueMarginPanel({
         </Row>
         {/* Each link reads GitHub as it is drawn (`GitHubLink`), so the links are drawn only
             while Details is open, as the panel's other reads are made. */}
-        <Row glyph="⇄" label={PROPERTY_LABELS.pull_request}>
+        <Row glyph={RIGHT_OVER_LEFT_ARROWS} label={PROPERTY_LABELS.pull_request}>
           {pullRequests.length === 0 ? none : null}
           {reading ? pullRequests.map((link) => <GitHubLink key={link.url} link={link} />) : null}
         </Row>
@@ -504,7 +517,7 @@ export function IssueMarginPanel({
             {reading ? otherLinks.map((link) => <GitHubLink key={link.url} link={link} />) : null}
           </Row>
         )}
-        <Row glyph="⚑" label={PROPERTY_LABELS.claim}>
+        <Row glyph={FLAG} label={PROPERTY_LABELS.claim}>
           <IssueClaimControl issue={issue} writes={writes} />
         </Row>
         <Row glyph="→" label={PROPERTY_LABELS.route} row="route">
@@ -552,11 +565,11 @@ export function IssueMarginPanel({
             />
           ) : null}
         </Row>
-        <Row glyph="▦" label={PROPERTY_LABELS.components}>
+        <Row glyph={GRID_SQUARE} label={PROPERTY_LABELS.components}>
           <IssueComponentsLine inRow issue={issue} />
         </Row>
         {issue.progress?.tasks === null || issue.progress?.tasks === undefined ? null : (
-          <Row glyph="☑" label={PROPERTY_LABELS.tasks}>
+          <Row glyph={TICKED_BOX} label={PROPERTY_LABELS.tasks}>
             <span data-testid="issue-progress-tasks" {...pageChrome}>
               <span {...authorText}>
                 {issue.progress.tasks.done}/{issue.progress.tasks.total}
@@ -586,7 +599,7 @@ export function IssueMarginPanel({
         </div>
       </PropertySection>
       <PropertySection drawerBox={drawerBox} name="people" sections={sections}>
-        <Row glyph="☺" label={PROPERTY_LABELS.opened_by}>
+        <Row glyph={SMILING_FACE} label={PROPERTY_LABELS.opened_by}>
           {issue.created_by == null ? (
             none
           ) : (
@@ -600,7 +613,7 @@ export function IssueMarginPanel({
       <PropertySection drawerBox={drawerBox} name="references" sections={sections}>
         {/* The approval steps with the reasons a reviewer gave, and Approve and Request changes
             wherever no approval request waits on the reader. */}
-        <Row glyph="▤" label={PROPERTY_LABELS.approval}>
+        <Row glyph={LINED_SQUARE} label={PROPERTY_LABELS.approval}>
           <ApprovalSteps
             actions={!approvalWaits}
             entries={approvalEntries}
@@ -644,7 +657,7 @@ export function IssueMarginPanel({
         {/* Every document and file of the issue, each opening its own address, folded after ten
             behind a count that opens the rest. */}
         <Row
-          glyph="▤"
+          glyph={LINED_SQUARE}
           label={
             <>
               {PROPERTY_LABELS.files} · <span {...authorText}>{artifacts.length}</span>
@@ -663,7 +676,7 @@ export function IssueMarginPanel({
                     to={buildIssuePath({ key: issue.key, kind: "artifact", slug: artifact.slug })}
                   >
                     <span aria-hidden="true" className={pageQuietText}>
-                      {artifact.kind === "image" ? "▣" : "▤"}
+                      {artifact.kind === "image" ? SQUARE_IN_SQUARE : LINED_SQUARE}
                     </span>
                     <span className="min-w-0 [overflow-wrap:anywhere]" {...authorText}>
                       {artifact.name}
@@ -859,24 +872,26 @@ function PropertySection({
   );
 }
 
-/** The glyphs of Details' rows drawn smaller than the row's text, each with its size, so that each
- *  fits its 14 px column (`Row`'s `w-3.5`) in the face that draws it. The page's typeface
- *  (`Dispatch Inter`, `styles.css`) draws ⊘ 19 px wide at the row's 14 px, to 2 px from the row's
- *  name; at 9 px it is 13 px wide. ☺ is outside that typeface's characters, so the reader's
- *  machine draws it in `Inter fallback`: Arial, or Liberation Sans, which has Arial's widths, both
- *  1 em wide for ☺ and scaled by 107%, so 15.3 px at 14 px; at 12 px it is 13.1 px. Where neither
- *  face is there, DejaVu Sans draws it narrower. Each size is its glyph's alone: every other glyph
- *  fits at the row's size, and a size they all shared would shrink them with it. */
-const GLYPH_SIZES: Readonly<Partial<Record<string, string>>> = {
-  "⊘": "text-[9px]",
-  "☺": "text-[12px]",
-};
+/** The one text glyph of Details' rows drawn smaller than the row's text, so that it fits its
+ *  14 px column (`Row`'s `w-3.5`): the page's typeface (`Dispatch Inter`, `styles.css`) draws ⊘
+ *  19 px wide at the row's 14 px, to 2 px from the row's name, and 13 px wide at 9 px. Every
+ *  other text glyph fits at the row's size, and each icon is drawn to the column. */
+const SMALL_GLYPH = "⊘";
+
+/** A text glyph as a row draws it. A symbol outside ASCII is followed by U+FE0E, the text
+ *  presentation selector, so that no emoji face takes it from the page's typeface; ASCII has no
+ *  emoji face to keep it from, and is drawn as it is. */
+function textGlyph(symbol: string): string {
+  return /^[\x20-\x7e]*$/.test(symbol) ? symbol : `${symbol}\uFE0E`;
+}
 
 /**
  * One row of Details (the prototype's `.frow`): a column of 112 px with the property's shape
  * and its name, and the value beside it; a `wide` row is one column, for a property whose own
- * control names it. `row` names the row a control elsewhere opens Details at
- * (`details-rows.ts`), and `valueRef` takes the box of the row's value.
+ * control names it. The shape is an icon of `details-icons.tsx` where the page's typeface does
+ * not hold the character, and otherwise that character as text (`textGlyph`). `row` names the
+ * row a control elsewhere opens Details at (`details-rows.ts`), and `valueRef` takes the box of
+ * the row's value.
  */
 function Row({
   children,
@@ -888,14 +903,13 @@ function Row({
   wide = false,
 }: {
   children: ReactNode;
-  glyph?: string;
+  glyph?: ReactNode;
   label?: ReactNode;
   row?: DetailsRow;
   testId?: string;
   valueRef?: Ref<HTMLDivElement>;
   wide?: boolean;
 }): ReactNode {
-  const glyphSize = glyph === undefined ? undefined : GLYPH_SIZES[glyph];
   return (
     <div
       className={`grid min-w-0 gap-2.5 border-b py-2 text-sm leading-5 ${
@@ -906,8 +920,11 @@ function Row({
     >
       {label === undefined ? null : (
         <div className={`flex min-w-0 items-start gap-[7px] ${pageQuietText}`}>
-          <span aria-hidden="true" className={`w-3.5 shrink-0 text-center ${glyphSize ?? ""}`}>
-            {glyph}
+          <span
+            aria-hidden="true"
+            className={`w-3.5 shrink-0 text-center ${glyph === SMALL_GLYPH ? "text-[9px]" : ""}`}
+          >
+            {typeof glyph === "string" ? textGlyph(glyph) : glyph}
           </span>
           <span className="min-w-0" {...pageChrome}>
             {label}
