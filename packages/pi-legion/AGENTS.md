@@ -100,7 +100,12 @@ the daemon's answer to an issue pod launcher's hello carries the cache trimmer's
 `volumeTrim`, the launcher reports a sweep that leaves the volume above its low mark, and a trimmer
 that switched itself off, in a new `launcher_volume_report` frame, and the state body's
 `settings.runtime.kubernetes` gains `volume_trim`, which the plugin parses loosely, so no shape the
-plugin parses moves), after contract 151's microVM issue pods (dispatch://INFRA-3729: the
+plugin parses moves), after contract 152's App-installation reach (dispatch://INFRA-2543: the
+GitHub App installation, and no longer the project's Dispatch repository mapping, decides which
+repositories a project works in, so the state's `repositories.mapped` is every repository the
+daemon serves and each entry gains `apps`, which `packages/contracts/src/legion-api.ts` reads as
+optional, the controller's GitHub credential answer carries `renames` and `installed`, and a role's
+gh bundle gains `renames.txt`), after contract 151's microVM issue pods (dispatch://INFRA-3729: the
 launcher's command line gains `--microvm` and its metadata flags, the daemon's answer to an issue
 pod launcher's hello gains `kernelKills`, `launcher_memory_kill` gains `cause`, and the state's
 settings carry `runtime.kubernetes.sandbox`, which the plugin parses loosely, so no shape the
