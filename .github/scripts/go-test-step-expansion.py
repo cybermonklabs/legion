@@ -102,10 +102,11 @@ How it reads a step:
     it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
-  * a step whose one line runs a script AUDITED_SCRIPTS names
+  * a step whose run: is one line holding nothing but the path of a script AUDITED_SCRIPTS names
     (`packages/envoy/scripts/database-skips.sh`) is read as the `go test` command that entry
-    gives, in the module it names; a step that passes such a script an argument is refused,
-    since each entry reads its script as called with none. This script reads no shell script itself: what a script runs
+    gives, in the module it names. A step that names such a script in any other form - with an
+    argument, an operator (`;`, `&&`, a redirection), another command, or over more lines - is
+    refused, since each entry reads its script alone and called with nothing. This script reads no shell script itself: what a script runs
     depends on its control flow, which a line-by-line reading cannot see (a `go test` under
     `if false`, a `cd` in a branch, a test run inside `$(…)`), so each entry is a person's reading
     of the script, pinned by the script's SHA-256. An edit to the script makes the entry stale,
@@ -454,31 +455,38 @@ def steps_of(found: dict) -> list[Step]:
 
 
 def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
-    """The step a run: whose one line runs an AUDITED_SCRIPTS script with no argument makes, read
-    as that entry's command in its module, or None where the run is no such line. A script whose
-    text no longer has the entry's SHA-256 is refused rather than read."""
-    lines = script_lines(script)
-    if len(lines) != 1:
-        return None
-    try:
-        words = shlex.split(lines[0])
-    except ValueError:
-        return None
-    if not words:
-        return None
-    path = (Path(workdir) / words[0]).as_posix().removeprefix("./")
+    """The step a run: that is exactly one line naming an AUDITED_SCRIPTS script makes, read as
+    that entry's command in its module, or None where the run names no such script. A run that
+    names one in any other form - with an argument, an operator, another command, or over more
+    lines than one - is refused rather than skipped, and so is a script whose text no longer has
+    its entry's SHA-256."""
     label = f"{workflow}'s {job} / {name}"
-    entry = AUDITED_SCRIPTS.get(path)
-    if entry is None:
+    lines = script_lines(script)
+    named = []
+    for line in lines:
+        try:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
+            lexer.whitespace_split = True
+            words = list(lexer)
+        except ValueError:
+            words = line.split()
+        for word in words:
+            path = (Path(workdir) / word).as_posix().removeprefix("./")
+            if path in AUDITED_SCRIPTS:
+                named.append((path, words))
+    if not named:
         return None
-    if len(words) > 1:
-        raise Refused(f"{label}: runs {path} with arguments, and its AUDITED_SCRIPTS entry reads "
-                      "the script as called with none")
+    path, words = named[0]
+    if len(lines) != 1 or len(named) != 1 or len(words) != 1:
+        raise Refused(f"{label}: runs {path} in a form its AUDITED_SCRIPTS entry does not read: "
+                      "the entry reads a run: that is that one path alone, with no argument, "
+                      "operator or other command")
+    entry = AUDITED_SCRIPTS[path]
     digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
     if digest != entry.sha256:
-        raise Refused(f"{label}: {path} has SHA-256 {digest}, and its "
-                      f"AUDITED_SCRIPTS entry was read from {entry.sha256}; read the script "
-                      "again and update the entry's command and digest")
+        raise Refused(f"{label}: {path} has SHA-256 {digest}, and its AUDITED_SCRIPTS entry was "
+                      f"read from {entry.sha256}; read the script again and update the entry's "
+                      "command and digest")
     return Step(workflow=workflow, job=job, name=name, workdir=entry.module, script=entry.command)
 
 
