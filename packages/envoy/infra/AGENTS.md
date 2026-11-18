@@ -264,9 +264,9 @@ versions. Never add the module to the root `go.work`.
   `gcp:ClusteredNatsHub` (with and without its tailnet entry) and `gcp:NatsHub` from
   production-shaped inputs, on placeholders, through the plugin's own Construct, and holds every
   register, read and invoke request and the construct's state to
-  `gcp/testdata/production-render.golden.json` byte for byte. A change that should leave a running
+  `gcp/testdata/production-render.golden` byte for byte. A change that should leave a running
   deployment as it is leaves that file alone. A change that moves it rewrites the file with
-  `PRODUCTION_RENDER_OUT="$PWD/gcp/testdata/production-render.golden.json" go test ./gcp -run
+  `PRODUCTION_RENDER_OUT="$PWD/gcp/testdata/production-render.golden" go test ./gcp -run
   '^TestProductionRender$'` (from this directory; go test runs the package in `gcp/`), and its
   pull request says what a consumer's
   preview will show. The same file, copied onto an older release tag, renders that release, so two

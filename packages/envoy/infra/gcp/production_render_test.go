@@ -48,7 +48,7 @@ import (
 // provider expands from the chart's values (the values are in the document; the objects are not).
 //
 // With PRODUCTION_RENDER_OUT set, TestProductionRender writes the document to that file. Without
-// it, the test compares the document against testdata/production-render.golden.json and fails on
+// it, the test compares the document against testdata/production-render.golden and fails on
 // any byte of difference, printing the first differing lines. TestProductionRenderSeesAOneInputChange
 // is the instrument's control: one input changed must change the document.
 // TestProductionRenderHarnessMatchesPulumitest holds the construct path the document takes to
@@ -58,7 +58,7 @@ import (
 // comparison against prodRenderGolden.
 const (
 	prodRenderOutEnv = "PRODUCTION_RENDER_OUT"
-	prodRenderGolden = "production-render.golden.json"
+	prodRenderGolden = "production-render.golden"
 )
 
 // prodRenderConsumer is the URN prefix of a resource of the consumer's own program, which an input
@@ -924,7 +924,7 @@ func prodRenderHunk(out *strings.Builder, a, b []string, i, j, nextI, nextJ int,
 
 // TestProductionRender renders production's calls twice in one process, requires the two
 // documents to be the same bytes, and then writes the document to PRODUCTION_RENDER_OUT or, with
-// that unset, requires it to be testdata/production-render.golden.json byte for byte.
+// that unset, requires it to be testdata/production-render.golden byte for byte.
 func TestProductionRender(t *testing.T) {
 	got := prodRenderDocument(t, prodRenderShapes())
 	if diff := prodRenderDiff(got, prodRenderDocument(t, prodRenderShapes())); diff != "" {
