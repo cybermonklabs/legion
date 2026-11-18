@@ -31,6 +31,15 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
 
+- A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
+  It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
+  It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
+
+- A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
+  `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag at the root and on each command, an unknown shell for `completion` and an unknown topic for `help` that each exit 2, print the word they refuse, are no Go runtime crash and make no contact with its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
+  The package documentation is the whole list and the rule each check holds.
+  It does not check what a command does with its arguments, its other exit codes or the shape of its tree, which each conversion's own tests hold, and it builds no binary: the caller hands it one.
+
 
 ## Bun tests
 
@@ -141,11 +150,13 @@ itself, whose tests import its sources by relative path.
   `nativesCache` in `packages/daemon/internal/testbin/natives.go` computes that same path with
   `os.UserCacheDir` and `OMPHome` hardlinks out of it, so moving the Bun side alone would split a
   cache that exists to be shared by both languages and either fills for the other. The Go build and
-  module caches of `scripts/e2e/lib/held-port.test.ts` and of the `go run` in `runDaemonPane`
+  module caches of the `go run` in `runDaemonPane`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
-  `test` job restores `~/.cache/go-build` and `~/go/pkg/mod` in its `go-cache` step, keyed
-  `go-daemon-<runner os>-go<version>`, immediately before the step that runs `bun test
-  scripts/e2e/lib` (`.github/workflows/ci.yaml`). The condition is the rename: `fillNativesCache` in
+  `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
+  `go-daemon-<runner os>-<runner arch>-go<version>`, before it runs that scenario
+  (`.github/workflows/ci-job-pi-legion.yaml`). Those of `scripts/e2e/lib/held-port.test.ts` stay
+  there too, although the `test` job that runs it restores no Go cache now that the daemon's Go
+  suite is `daemon-go`'s. The condition is the rename: `fillNativesCache` in
   `packages/pi-shared/test/omp-natives.ts` renames a directory inside the cache root, and a
   directory rename under `$HOME` panics the gVisor sandbox of a Legion pod and kills every role in
   it. So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its
@@ -214,20 +225,23 @@ go test -timeout 20m ./internal/dispatch/api
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
-CI's `envoy-go` job runs it that way, alone and before the module's other packages
-(`.github/workflows/ci.yaml`), and `envoy-go-race-api`, the race job that runs that package by
-itself, gives it 30 minutes; `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
+CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
+gives it 30 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
+steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
+tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
 (`docs/solutions/testing/the-dispatch-servers-go-suites-in-an-issue-pod-run-api-and-docs-alone-with-a-timeout-and-read-the-c-collation-docker-and-bun-failures-as-the-environment-LEGION-752.md`).
 
-`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. The test
-job now runs it only under the race detector, in its race step, once per job; the plain step
-("Test the Go daemon") leaves it out, and `go vet -tags e2e ./...` in the `typecheck` job still
-compiles it without the detector. On CI's runners, while the plain step still ran it, it took
-at most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to
-733.581 s in the jobs whose race step timed out (job 125688799071). Under `-race` it took up
+`packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI's
+`daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race
+detector, in its race step, once per job; the plain step ("Test the Go daemon") leaves it out,
+and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
+figures below were measured while these steps were the `test` job's. On CI's runners, while the
+plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
+2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
+125688799071). Under `-race` it took up
 to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
 measured, on main and on pull requests, and ran go test's own ten minutes out on main at
 job 125691048644 of run 41562777668; the race step gives it 30 minutes. On a busy machine it
@@ -265,13 +279,16 @@ It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable fro
 The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), which the `envoy_go_race_docs` filter selects.
+CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
 It is one of the nine slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
 A test that builds a `*Service` gives it a `t.Cleanup` that shuts it down.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
+A service that was shut down is still alive at the end of the run when a callback of one of its stopped timers holds it.
+`Timer.Stop` does not free the callback: the runtime keeps a stopped timer in the heap of the P that armed it until that P next clears its stopped timers or the timer's own time comes, and an idle P clears them only when it next runs, which depends on the machine's load.
+A settlement timer's callback therefore holds the service and the room's state weakly (`scheduleSettleAfterLocked` in `packages/envoy/internal/dispatch/docs/service.go`): held strongly, a stopped one kept its shut-down service for up to an hour under a test's `settle = time.Hour`, and the check failed on a loaded machine in nearly every run (dispatch://INFRA-3904).
 
 `packages/envoy/internal/dispatch/docs` is the only package of this repository that registers a cleanup today, and no repository-wide check holds that true:
 `grep -rn "runtime.AddCleanup\|runtime.SetFinalizer" --include=*.go .` finds those two sites and nothing else.
@@ -280,14 +297,23 @@ A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package comes 
 ## A database a Go test creates
 
 A Go test that creates a Postgres database writes `create database … strategy file_copy`, as
-`packages/envoy/internal/dispatch/store/storetest` and both modules' `internal/testpg` do. Without
+`packages/envoy/internal/dispatch/store/storetest`, the daemon's `internal/testpg` and Envoy's
+`internal/testpg/testdb` do. Without
 it, PostgreSQL 15 and later copy the source database through the write-ahead log, every page of it:
 4.4 MB of log for an empty database made from `template1`, and 6.4 MB for a clone of Dispatch's
 migrated template, which made one run of the `api` and `docs` packages write 16 GiB of log. A file
 copy writes a few hundred bytes. `storetest`'s own test fails when a clone writes more than a
-hundredth of its template's size, and each module's `internal/testpg` test
+hundredth of its template's size, and each module's `internal/textcheck` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
+
+In Envoy, a test that already holds a server's URL makes its database with
+`internal/testpg/testdb`'s `DatabaseOn`, never `internal/testpg`'s: `testpg` links
+testcontainers, whose package init walks every process on the machine before any test runs, and
+on a box running some 26,000 processes that cost a test binary about 9.8 seconds of start
+(`GODEBUG=inittrace=1`). `testpg.URL`, which may start a container, keeps that cost for the tests
+that need it. The broker's `storetest` holds itself to it: `TestStoretestLinksNoContainerRuntime`
+fails when its dependencies reach testcontainers.
 
 A test that needs the schema takes a clone of a template its package migrated once, rather than
 running the migrations itself: `packages/daemon/internal/testpg`'s `Clone` answers the clone's
@@ -352,9 +378,11 @@ so any transaction holding a transaction id on the Postgres instance holds it ba
 
 So a read that answered within `referencesSinceWait` was not held back: what it listed is what it
 owed, and a wrong answer fails the test at once. Only a read held past that wait is read again,
-bounded by `eventFeedWait`. The helper is `awaitSinceRead`
-(`packages/envoy/internal/dispatch/api/references_test.go`), which takes the read as a function, so
-each call site keeps its own reader.
+for as long as the horizon says it is held back (the wait of the next section, run as a
+`horizontest.Watch`). The helper is `awaitHorizonRead`, with `awaitSinceRead` for a since read
+(`packages/envoy/internal/dispatch/api/references_test.go`); it takes the read as a function, so
+each call site keeps its own reader. The event log route answers through the same horizon
+(`sinceHorizon`), and its tests read it with the same helper (`events_log_test.go`).
 
 A test that takes one read as final fails under a transaction someone else holds:
 `TestAnAnsweredAsksPartEdgesAreListedSince` failed about one run in six on main, 7 of 40 measured
@@ -374,7 +402,8 @@ done
 ```
 
 The holder must release each transaction: one that never commits holds the horizon back for good,
-so no bounded re-read succeeds under it and the test fails after `eventFeedWait`, naming the hold.
+so the re-read goes on while the horizon keeps warning, and the test fails once the run's own
+deadline is near, naming the hold.
 
 ## A test that waits for the event feed's first frame
 
@@ -386,16 +415,22 @@ No fixed deadline bounds that, and a deadline raised to fit the worst run anyone
 
 So the test waits on what the server says about itself.
 `events.StallWarning` is the message `Horizon.warnStall` logs, every `warnEvery`, while a pending observation is held back, naming the holder's kind, pid, database and query.
-`waitEventsStart` (`packages/envoy/cmd/dispatch/live_events_wait_test.go`, which `openLiveEvents` calls) reads the frame on a goroutine that sets no read deadline, because a gorilla connection is corrupt after a read timeout, and polls the process's output: while that warning keeps arriving the wait goes on, and it fails when the warning stops.
-Count the lines that hold the message, never `strings.Contains`: a contains check latches on the first warning and waits for ever.
+The wait is `horizontest.Wait` (`packages/envoy/internal/dispatch/horizontest`), an ordinary package so that the three packages whose tests wait on a horizon share it: `cmd/dispatch`'s `waitEventsStart` (`live_events_wait_test.go`, which `openLiveEvents` calls) reads the warnings out of the Dispatch process's output (`horizontest.Lines`), and `internal/dispatch/api` and `internal/dispatch/routes`, whose servers run in the test's own process, read them as records (`horizontest.WaitInProcess`, `PollInProcess`, `Listen`), so `pending_for` and `database` are typed values there and are not parsed.
+The event feed's frames are read on a goroutine that sets no read deadline, because a gorilla connection is corrupt after a read timeout; while the warning keeps arriving the wait goes on, and it fails when the warning stops.
+Count the warnings, never whether one was seen: a check that latches on the first warning waits for ever.
+In `api` the same wait covers every other wait behind the horizon: a live event, the relay's publishing and a subscription reaching it, the delivery hub's event feed and the deltas it drives, a persisted horizon, and a pass of the suggestion outcome sweep on a log that holds events, which reads only up to the horizon and awaits it on its first pass (`suggestion_outcomes_test.go`; the sweep's own settle is waited out first, on the database's clock, so the wait is on the horizon alone).
+A sweep over an empty log has nothing above its horizon to wait for, so `sweep_runners_test.go` and the two-process sweep row in `cmd/dispatch` keep their own bounds (measured under a 45 s and a 75 s hold: they pass at once).
+`cmd/dispatch`'s `multiprocess` row that waits on another process's event, on its own process's relay, polls the same way over that process's output (`pollBehindHorizon`).
+`Listen` hands every record on to the handler it replaced, and when that is slog's own default handler it writes as that handler does through a logger of its own: slog's handler writes through the log package, and a record handed to it while `slog.SetDefault` has the log package pointed back at the new handler deadlocks every goroutine that logs (`TestListenOverSlogsOwnDefaultHandlerPassesEveryRecordOn`).
 
-The wait still ends in a named failure, which is what the `eventFeedWait` rule above asks for; the bound is a signal rather than a clock.
-It fails when no warning at all has arrived within a base bound, when no new warning has arrived within an extension window, when a warning names the process's own database and says that observation has been pending at least `eventsStartOwnHoldBound` — a client of Dispatch's own database holding its readers back that long is the defect, not a stall to wait out — and a drain margin before the run's own deadline, so the failure prints rather than being cut off by the package timeout.
+The wait still ends in a named failure, rather than holding the run until the package's timeout; the bound is a signal rather than a clock.
+It fails when no warning at all has arrived within a base bound, when no new warning has arrived within an extension window, when a warning names the test's own database for a holder that has held the horizon back at least `horizontest.OwnHoldBound` — a client of Dispatch's own database holding its readers back that long is the defect, not a stall to wait out — and a drain margin before the run's own deadline, so the failure prints rather than being cut off by the package timeout.
+Silence alone does not fail a wait: the warnings come from a goroutine of the horizon's that a loaded machine can put off while a transaction still holds the horizon, so at the base bound or the end of an extension window the wait reads the instance's holder itself, with the query the diagnosis runs (`events.StallHolderSQL`), through the test's own pool or, for a Dispatch process, a connection of its own (`horizontest.Dialed`), and fails only when no transaction holds an id; a holder it finds counts as a warning.
 Each failure names the newest warning, so the holder is in the output; the own-database failure also names that client's `application_name` and pid out of the warning, because a transaction in that database can be anyone's — an operator's `psql`, another test's fixture — and not only Dispatch's own.
 The base bound and the extension window are each three times a measurement taken under load or read from the server's own constants; `events/horizon.go`'s `horizonDiagnosisTimeout` is in the window between two warnings, because `warnStall` logs after its `pg_stat_activity` diagnosis.
-The other two numbers are neither: `eventsStartPoll` (250 ms) is the rate at which the wait samples the process's output, below a tenth of the extension window so it costs that window nothing, and `eventsStartDrain` (30 s) is what the wait leaves of the run's own deadline so that its failure prints instead of being cut off by the package timeout, which would name no test.
-`eventsStartOwnHoldBound` (5 s) is three times a measurement of its own: sampling `pg_stat_activity` every 100 ms over 10 runs of that test under the load below, in this repository's pod on 2026-11-10, `nproc` 2, PostgreSQL 18.6, 202 samples caught a transaction holding a transaction id in a `dispatch_test_*` database, across 27 backends, all of them carrying no `application_name` — which is what Dispatch's own pools look like and what the test's own fixtures look like too, so the samples do not say whose the transactions were — and the worst age was 1.449 s.
-The bound is read from the warning's own `pending_for`, the age of the oldest pending observation, so the wait needs no clock of its own; a hold shorter than it extends the wait exactly as a foreign hold does.
+The other two numbers are neither: `horizontest.Poll` (250 ms) is the rate at which the wait samples the warnings, below a tenth of the extension window so it costs that window nothing, and `horizontest.Drain` (30 s) is what the wait leaves of the run's own deadline so that its failure prints instead of being cut off by the package timeout, which would name no test.
+`horizontest.OwnHoldBound` (5 s) is three times a measurement of its own: sampling `pg_stat_activity` every 100 ms over 10 runs of that test under the load below, in this repository's pod on 2026-11-10, `nproc` 2, PostgreSQL 18.6, 202 samples caught a transaction holding a transaction id in a `dispatch_test_*` database, across 27 backends, all of them carrying no `application_name` — which is what Dispatch's own pools look like and what the test's own fixtures look like too, so the samples do not say whose the transactions were — and the worst age was 1.449 s.
+The bound is read off the warning itself, so the wait needs no clock of its own: the shorter of the warning's `pending_for`, the age of the oldest pending observation, and the age of the holder it names, its `xact_start` against the warning's own time. `pending_for` alone is not the holder's: a foreign holder released since can have carried the oldest observation past the bound while the holder now named is a transaction of the test's own database that began a moment ago. A hold shorter than the bound extends the wait exactly as a foreign hold does.
 Short thresholds are why the Horizon runs one diagnosis at a time: at a `warnEvery` below that diagnosis bound, several scans at once would queue for the two connections of the horizon's own pool, ahead of the observation the waiting reader needs.
 
 The 2 s pulse above does not prove such a test: a hold shorter than the wait's own bound delays no `events_start` past it.
@@ -406,6 +441,25 @@ Measured in this repository's own pod on 2026-11-10, `nproc` 2, under 8 busy loo
 five runs are enough against that deadline because the rolling hold keeps a transaction open whenever the socket subscribes, so what fails it is the shape of the hold rather than the weight of a sample.
 The same one-shot 90 s holder shows both answers, which is why the condition and not the duration is what the recipe names:
 started about a second before `go test` it left the test green (82.11 s on a cold build cache, 72.65 s on a warm one), and started once Dispatch was connected to its own database it failed it (82.62 s, 51 s of that run being the build), each at `main`.
+
+## A document test that waits for a room's appends
+
+`settleCurrentGeneration` (`packages/envoy/internal/dispatch/docs/service_test.go`) waits for a room's live updates to reach its persistence and land, and then settles the room.
+That wait is a queue.
+A room's appends go through the service's room-appends pool of 8 connections, and a test whose subtests run in parallel drives one room per CPU on a single service.
+So the wait is as long as that queue, which grows with the machine's CPU count, its load and the other tests running beside it.
+A fixed 10 s clock on it failed `TestSetAskBlockTextRefusalOfEveryBrokenBodyLeadsToAValidDecision` (2026-11-16, 288 CPUs).
+At the timeout all 8 connections were in use, with 1449 s of acquire waiting in total, and the same wait issued again returned at once.
+
+`awaitRoomAppends` therefore waits on the room's idle signal and sets no span of its own, so the bound is a signal rather than a clock.
+It fails when the appends have stopped: no append lands anywhere in the service, and the room's own counts do not change, for `appendStall`.
+That bound is 16 s, three times the longest such stall measured: with it lifted to 10 min, the package as CI runs it (`GODEBUG=checkfinalizers=1 go test -v -count=1`, 288 CPUs, load 230 when it began, 2026-11-16) had 927 of these waits go more than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 for 5 s or more, and the longest went 5.363 s.
+The 9 s of `ShutdownDrainBudget` it was before, the time Shutdown gives the rooms' appends to land, was 1.7 times that stall.
+It also fails 30 s before the run's own deadline, so that the failure names the wait.
+Two scratch tests checked it, each with the 10 s clock and with this wait:
+
+- 24 rooms whose appends were each held 4 s on their connection settled in about 12 s. The clock failed 8 of the rooms in each of 2 runs, and this wait passed 3 of 3 with the 9 s bound and 1 of 1 with the 16 s one.
+- An append that another transaction's hold on the document's lock kept from landing failed both: the clock at 10 s, and this wait at 9.1 s with the 9 s bound and at 16.0 and 16.2 s with the 16 s one, naming the stall and the room's counts.
 
 ## A writer a test holds
 

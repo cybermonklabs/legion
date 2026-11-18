@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 )
 
@@ -102,7 +103,7 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	next := &Server{
 		Registry: NewRegistry(cr.sessionsPath),
-		Broker: &Broker{URL: cr.broker.URL, OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
+		Broker: &Broker{URL: brokeraddr.New(cr.broker.URL), OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
 			HTTP: http.DefaultClient, Log: log},
 		Hostname: "contract-test-host", PeerOf: PeerOf, Log: log, MinRenew: 50 * time.Millisecond,
 	}
@@ -131,7 +132,7 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resumed := next.register(ctx, peer, os.Getpid(), sessionID, 20*time.Second)
+	resumed := next.register(ctx, peer, os.Getpid(), sessionID, false, 0, 20*time.Second)
 	if !resumed.OK || resumed.EnrollmentID != reg.EnrollmentID {
 		t.Fatalf("the resumed session got %+v, want the enrollment it had, %s", resumed, reg.EnrollmentID)
 	}
@@ -219,7 +220,7 @@ func TestContractASessionThatDoesNotComeBackLosesItsGrant(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	next := &Server{
 		Registry: NewRegistry(cr.sessionsPath),
-		Broker: &Broker{URL: cr.broker.URL, OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
+		Broker: &Broker{URL: brokeraddr.New(cr.broker.URL), OperatorFile: cr.broker.OperatorFile, MachineFile: cr.machineFile,
 			HTTP: http.DefaultClient, Log: log},
 		Hostname: "contract-test-host", PeerOf: PeerOf, Log: log, MinRenew: 50 * time.Millisecond,
 	}

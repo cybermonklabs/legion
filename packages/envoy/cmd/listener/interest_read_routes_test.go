@@ -49,14 +49,14 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 		t.Fatalf("connect the listener's bus through the relay: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	// The control GET /v1/sessions below reports each session's roles, so it is refused the
 	// bus-unavailable 503 until the role claim view answers, whatever the bus is doing.
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 		}
 	}
 	if _, err := registry.Upsert(store.Interest{SessionID: cached, MachineID: "test-machine", Dir: "/test/" + cached},
-		[]string{contracts.AgentSubject(cached), topic}); err != nil {
+		[]string{contracts.LegacyAgentSubject(cached), topic}); err != nil {
 		t.Fatalf("write %s's interest record: %v", cached, err)
 	}
 	cachedIDs := func() []string {
@@ -117,7 +117,7 @@ func TestTheInterestReadRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *t
 			t.Fatalf("%s's topics = %v, want %v", info.SessionID, info.Topics, want)
 		}
 	}
-	cachedTopics := []string{contracts.AgentSubject(cached), topic}
+	cachedTopics := []string{contracts.LegacyAgentSubject(cached), topic}
 
 	// The control: with the bus answering, every request is served.
 	recorder, _ := list()

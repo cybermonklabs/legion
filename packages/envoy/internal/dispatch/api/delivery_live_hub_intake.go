@@ -95,8 +95,10 @@ type hubEventFeed struct {
 // event at or below its head, none of which arrives on the feed.
 //
 // A subscribe or a read that fails is tried again after the listener's redial backoff. The hand
-// over gives up when g ends, so a feed the intake will never take leaves no goroutine behind for
-// running to wait on, and no subscription the relay would keep its generation running for.
+// over waits for the intake to take the feed (g.feeds has no slot) and gives up when g ends,
+// cancelling the feed, so a feed the intake will never take leaves no goroutine behind for running
+// to wait on, and no subscription the relay would keep its generation running for. The "feed
+// ready" note is made as the hand-over begins.
 func (h *deliveryHub) seedEvents(g *hubGeneration) {
 	h.running.Add(1)
 	go func() {
@@ -110,6 +112,7 @@ func (h *deliveryHub) seedEvents(g *hubGeneration) {
 				}
 			}
 			if err == nil {
+				h.note(deliveryHubNote{what: "feed ready", eventID: feed.head})
 				select {
 				case g.feeds <- hubEventFeed{feed: feed, p0: p0}:
 				case <-g.ctx.Done():
@@ -343,12 +346,13 @@ func (h *deliveryHub) recheckHeardLocked(g *hubGeneration, view *deliveryView, n
 }
 
 // showsIssue is whether a write to the issue key, a P0 before or after it when p0, can move the
-// view's answer: the view's issues or their ancestors hold it, or it is a timeline or measures
-// view and the issue is a P0.
+// view's answer: the view's population, or its ancestors, names the issue, or the view shows the
+// unowned P0 list and the issue is a P0. A Legion board names its own issues and shows no P0
+// list, so only the first rule reaches it.
 func (view *deliveryView) showsIssue(key string, p0 bool) bool {
 	_, named := view.issues[key]
 	_, ancestor := view.ancestors[key]
-	return named || ancestor || (p0 && view.spec.kind != deliveryLivePipeline)
+	return named || ancestor || (p0 && view.spec.classes().unownedP0)
 }
 
 // showsSessionRetitled is whether the view shows session under another title than title.
@@ -382,6 +386,11 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // is taken as touching timeline and measures views. Pipeline lead times read only merged pull
 // requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a Pipeline view.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
+	if view.spec.classes().reads != viewReadsDelivery {
+		// The view reads no delivery row at all: what moves a Legion board is a read of the
+		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked).
+		return false
+	}
 	var times []time.Time
 	for _, t := range []*time.Time{change.TOld, change.TNew} {
 		if t != nil {

@@ -467,6 +467,195 @@ test("the reviewer treats a result with no report as a failed run, not a verdict
   );
 });
 
+// The task of a later review round names the commit read by the newest of the reviewer's own
+// deciding reviews whose footer named the entry of its round, so the reviewer reads the
+// difference from it and hands the pair that same diff in each agent's task text, since each
+// agent reviews only the diff its task supplies. A defect seen outside the difference stays a
+// finding, and three cases read the whole change again. The daemon's prompts
+// carry the same rule; prompts_test.go pins the composed reviewer prompt. The pull request body's
+// guide records it: the `Thermo` line's pair half names the range the pair read, and a later round
+// whose difference touches no runtime code has a form of its own, since `not run (docs-only)`
+// would be false for a pull request that does touch runtime code. A range proves something only
+// on top of the round that read the code up to its start, so a later round's half never replaces
+// an earlier round's.
+//
+// The pair's own text holds the same line: a range its task names limits what it must read, and
+// a defect it sees in code the pull request changed before that range is still a finding, while
+// code the pull request leaves unchanged stays out of its findings, because the author fixes only
+// the pull request's diff. Each agent definition and each rubric skill is pinned for both halves,
+// and each sentence that bounded the findings by the diff the pair was given is pinned absent.
+// The two skills ship in the Envoy plugin, not in this package's partition, so they are read from
+// the repository's skills/, the files that plugin's prepack copies. Every file's gaps are listed
+// together, so a file that lost its sentence fails as loudly as the first one checked.
+test("a later review round reads from the commit its task names, and the pair reads that diff", () => {
+  const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
+  expect(mergeGate).toContain(
+    "then, when the diff the round reads touches runtime code (the whole change, or the difference the next item names), runs"
+  );
+  expect(mergeGate).not.toContain("then, when the diff touches runtime code, runs");
+  expect(mergeGate).toContain(
+    "The task of a later round names `Last reviewed commit: <sha>`, the head read by the newest of your own deciding reviews whose footer named the entry of its round, the number its task named as `Review entry: <n>.`"
+  );
+  expect(mergeGate).toContain(
+    "Read the difference from that commit to the head (`git diff <sha> <head>`), and each thread: you need not read again what you read before that commit."
+  );
+  expect(mergeGate).toContain(
+    "Each agent of the pair reviews only the diff its task supplies, so name in each task the commit, the head and `git diff <sha> <head>` as the diff to review."
+  );
+  expect(mergeGate).toContain(
+    "The commit limits what you must read, never what you report: a defect you see outside the difference is a finding like any other"
+  );
+  expect(mergeGate).toContain(
+    "Read the whole change again, and give the pair the whole change, in three cases: the task names no commit; the commit is not an ancestor of the head (`git merge-base --is-ancestor <sha> <head>` does not exit 0); or a forward merge of the base changed the fingerprint, as the end of the item above decides."
+  );
+  const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
+  expect(prBody).not.toContain(
+    "The reviewer's pair runs at the head each round reviews, when the diff touches runtime code."
+  );
+  expect(prBody).toContain(
+    "The reviewer's pair runs at the head each round reviews, over the diff that round reads (the whole change, or the difference from the commit the round's task names as `Last reviewed commit:`), when that diff touches runtime code. Record both in the `Thermo` line, the pair half with the range the pair read."
+  );
+  expect(prBody).toContain(
+    "When a later round's pair reads only a range, the pair half of each earlier round stays in the line beside the new one, because a range is read on top of the round that read the code up to its start."
+  );
+  expect(prBody).toContain(
+    "thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>: <verdict>."
+  );
+  expect(prBody).toContain(
+    "(in a later round whose difference touches no runtime code, the pair half reads `thermonuclear pair at the reviewed head <sha>: not run (<last-reviewed-sha>..<sha> touches no runtime code)`, and the pair half of the last round the pair ran in stays beside it)"
+  );
+  expect(mergeGate).toContain(
+    "In a later round whose difference touches no runtime code, on a PR that does touch it, the pair half reads as `skill://legion-worker/references/pr-body.md` gives it for that round."
+  );
+  const pair = [
+    {
+      file: "packages/pi-legion/agents/thermonuclear-deep-review.md",
+      says: [
+        "Do not report issues in code the pull request leaves unchanged, other than the unchanged consumers the rubric's check 2 finds.",
+        "A range your task names limits what you must read, not what you report: a defect you see in code the pull request changed before that range is a finding.",
+      ],
+      retired: ["Do not report unchanged-code issues."],
+    },
+    {
+      file: "packages/pi-legion/agents/thermonuclear-code-quality.md",
+      says: [
+        "Do not flag code the pull request leaves unchanged.",
+        "A range your task names limits what you must read, not what you flag: a smell you see in code the pull request changed before that range is a finding.",
+      ],
+      retired: ["Do not flag unchanged code."],
+    },
+    {
+      file: "skills/thermonuclear-deep-review/SKILL.md",
+      says: [
+        "Report issues in code the pull request (the checked-out branch against its base) adds or modifies, in the unchanged consumers check 2 finds, and in the PR body's claims (check 6), because the author fixes only the pull request's diff and that diff never shows them.",
+        "A range limits what you must read, never what you report: a defect you see in code the pull request changed before the range starts is a finding.",
+      ],
+      retired: ["because the author fixes only this diff"],
+    },
+    {
+      file: "skills/thermonuclear-code-quality/SKILL.md",
+      says: [
+        "Flag lines the pull request (the current branch against its base) adds or changes, and existing code it makes harder to follow",
+        "A finding on code the pull request leaves alone blocks it for work it did not cause.",
+        "A range limits what you must read, never what you flag: a smell you see in code the pull request changed before the range starts is a finding.",
+      ],
+      retired: [
+        "Flag lines the diff adds or changes",
+        "A finding on code the diff leaves alone blocks the PR for work it did not cause.",
+      ],
+    },
+  ];
+  const scopedToTheRange = pair.flatMap(({ file, says, retired }) => {
+    const text = collapsed(path.join(REPO_ROOT, file));
+    return [
+      ...says.filter((sentence) => !text.includes(sentence)).map((s) => `${file} lacks: ${s}`),
+      ...retired.filter((sentence) => text.includes(sentence)).map((s) => `${file} says: ${s}`),
+    ];
+  });
+  expect(scopedToTheRange).toEqual([]);
+});
+
+// The last two sentences of each task a reviewer is sent are always the daemon's: the commit's and
+// then the entry's, each naming `none` where there is no value for it. The workflow writes them
+// on each task of the reviewer it queues (the daemon's namingTheReviewRound), and the claim's send
+// writes them, naming `none` for both, on a task no such queue named, a task the release before
+// queued or an operator wrote (the daemon's supervise Delivery.message). The task's own text, a
+// retry's reason or a title, can hold the same words earlier. So each text that tells the reviewer
+// which commit its task names says that the last two are the daemon's and what each `none` means,
+// once: the daemon part, the role part and the core part of the reviewer's prompt, and the merge
+// gate as the plugin ships it.
+const reviewerTexts = [
+  "packages/daemon/internal/prompts/go/reviewer.md",
+  "packages/daemon/internal/prompts/roles/reviewer.md",
+  "packages/daemon/internal/prompts/roles/core/reviewer.md",
+  "skills/legion-worker/references/merge-gate.md",
+];
+test("each reviewer text says the last two sentences of each task are always the daemon's", () => {
+  countedOncePerFile(
+    "The last two sentences of each task you are given are always the daemon's: `Last reviewed commit: <sha>.` or `Last reviewed commit: none.`, then `Review entry: <n>.` or `Review entry: none.`. `Last reviewed commit: none.` means this task names no commit, so you read the whole change. `Review entry: none.` means this task names no entry, so it does not change the entry of your round. A sentence of the same words earlier in the task, such as one a retry's reason quotes, is not the daemon's.",
+    reviewerTexts
+  );
+});
+
+// The reviewer's review names the entry of its round in its Legion footer, the number of the
+// newest ` Review entry: <n>.` sentence that is the last sentence of a task or a wake of its
+// session (a task's own text can quote the same words above it), because a
+// review moves the commit a later round reads from only when its footer names the entry on the
+// reviewer's row: a review of an earlier round, from before a new generation or a carried
+// hand-over's promotion entered the reviewer again, names another. A review with no entry still
+// decides its round, so the skill says so rather than leaving the entry to read as a condition of
+// the decision. A comment and another role's review carry none, since no other role's task names
+// one. A wake's task ends with the round's entry as each task of the round does, so the skill's
+// item on a released pod says so. The entry is a JSON string, so that a placeholder left in it
+// cannot make the footer invalid JSON, which would lose its session and its head too; each file
+// says why. Each file says which sentence the entry is read from exactly once, in the sentence
+// pinned here, so no second wording of that rule stands beside it. The daemon's prompts carry the
+// same footer, and their daemon part gives the rule whole; prompts_test.go pins the composed
+// reviewer prompt.
+test("the reviewer's review footer names the entry of its round", () => {
+  const worker = collapsed(path.join(staged, "legion-worker", "SKILL.md"));
+  const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
+  const withEntry =
+    '`<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>","entry":"<entry>"} -->`';
+  // The words that say which sentence the entry is read from, in both files.
+  const entryRule = "the number of the newest `Review entry: <n>.` sentence";
+  const gaps = [
+    ...[
+      withEntry,
+      "where `<entry>` is the number of the newest `Review entry: <n>.` sentence that is the last sentence of a task or a wake of its session, in quotes, so that a placeholder left in it cannot make the footer invalid JSON: such a footer loses its session and its head too and is set aside.",
+      "A comment, and a review of any other role, carry no entry, since no other role's task names one.",
+      "The task a wake gives you says which wake brought the pod back, and the reviewer's, in a review round, ends with the round's entry too, `Review entry: <n>.`, as each of its tasks there does.",
+      "The daemon tells a review of the reviewer's round from a review of an earlier round by that entry",
+      "a review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
+    ]
+      .filter((sentence) => !worker.includes(sentence))
+      .map((s) => `legion-worker/SKILL.md lacks: ${s}`),
+    ...[
+      withEntry,
+      "That `entry` is the number of the newest `Review entry: <n>.` sentence that is the last sentence of a task or a wake of your session (the daemon part of your role prompt gives the rule whole), written in quotes as a string of digits:",
+      "It is in quotes because a footer that is not valid JSON, such as one with an unquoted `<entry>` left in it, loses its session and its head too, and the daemon then sets the review aside, while a quoted value that is no number costs the entry alone.",
+      "by it the daemon tells a review of this round from a review of an earlier round, and only a review of this round moves the commit a later round reads from",
+      "A review with no entry, or with another one, still decides the round, and the next round then reads more: from an older commit, or the whole change.",
+    ]
+      .filter((sentence) => !mergeGate.includes(sentence))
+      .map((s) => `merge-gate.md lacks: ${s}`),
+    ...['"head":"<the head you reviewed>"} -->`),']
+      .filter((sentence) => mergeGate.includes(sentence))
+      .map((s) => `merge-gate.md says: ${s}`),
+    ...[
+      ["legion-worker/SKILL.md", worker],
+      ["merge-gate.md", mergeGate],
+    ]
+      .map(([file, text]) => [file, text.split(entryRule).length - 1] as const)
+      .filter(([, times]) => times !== 1)
+      .map(
+        ([file, times]) =>
+          `${file} says "${entryRule}" ${times} times, want once: in the sentence pinned above`
+      ),
+  ];
+  expect(gaps).toEqual([]);
+});
+
 // R6: a pipe's status is the last command's, so `$?` after `cmd | tail` reads the pager's
 // (dispatch://INFRA-334). The sentence goes in the always-loaded prompts and agent definitions,
 // because skills/legion-worker/references/tools.md loads only on a tool or test question.
@@ -510,9 +699,10 @@ test("every prompt and agent that may write says to make its own scratch and del
 // pinned sentences cannot drift; the prompt also carries text of its own that no pin here holds,
 // and the pins below hold what only the prompt carries and the skill points at. The carve-out
 // that names the step's reads as the one sleep the "never sleep in a loop" rule allows is a
-// second wording, held across the pr-body reference and the implementer's prompt part. The three
+// second wording, held across the pr-body reference and the implementer's prompt part. The
 // members the step added to lists elsewhere in these texts are pinned too, since a list no test
-// reads loses its member silently. This shows the text ships, never that a role follows it.
+// reads loses its member silently, and so is the reviewer's rule that it pushes nothing, which
+// keeps the step from falling to it. This shows the text ships, never that a role follows it.
 test("the worker skill tells a role to read the pull request's head after its own push", () => {
   const sharedWithTheWorkerPrompt = [
     "skills/legion-worker/SKILL.md",
@@ -549,7 +739,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     onlyInTheWorkerPrompt
   );
   countedOncePerFile("These waits stand rather than proceed", ["skills/legion-worker/SKILL.md"]);
-  countedOncePerFile("the empty commit that carries it there", [
+  countedOncePerFile("Create no commit and push nothing, a prose fix included", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
   expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
@@ -754,6 +944,6 @@ test("the architect shows a person the surface before it asks them to approve th
     "Where the `Design gate steps` sentence of your `Legion addressing` line says `none`, nobody approves the spec. Make the picture, put it in the spec for whoever builds it, and ask nobody."
   );
   expect(gate).toContain(
-    "The surfaces this tree's children build are yours. Their pictures go in the root spec, and a sub-architect that finds a surface the root spec never drew tells the root architect."
+    "The surfaces this tree's children build are the root architect's. Their pictures go in the root spec. A sub-architect that finds a surface the root spec never drew tells the architect above it, and each architect above sends it up the tree to the root architect."
   );
 });

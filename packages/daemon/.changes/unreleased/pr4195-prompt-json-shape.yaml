@@ -1,0 +1,2 @@
+kind: Changed
+body: 'The role prompts say a credential''s value may be a JSON document, checked by its key paths and the length of each leaf and never by printing a leaf.'

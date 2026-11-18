@@ -43,11 +43,11 @@ func newWriteRouteRig(t *testing.T) *writeRouteRig {
 		t.Fatalf("connect the listener's bus through the relay: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestTheWriteRoutesAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.
 	rig.register(t, control, controlLeaver, claimant, leaver)
 	for _, id := range []string{cachedSub, cachedUnsub} {
 		if _, err := rig.registry.Upsert(store.Interest{SessionID: id, MachineID: "test-machine", Dir: "/test/" + id},
-			[]string{contracts.AgentSubject(id), topic, otherTopic}); err != nil {
+			[]string{contracts.LegacyAgentSubject(id), topic, otherTopic}); err != nil {
 			t.Fatalf("write %s's interest record: %v", id, err)
 		}
 	}

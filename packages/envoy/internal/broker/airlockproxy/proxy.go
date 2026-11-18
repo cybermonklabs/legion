@@ -44,8 +44,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
@@ -65,13 +67,15 @@ const (
 	upstreamIdleConns   = 32
 )
 
-// watchInterval is how often a joined connection - a WebSocket the proxy upgraded - reads its
-// grant again (watchJoined). No request is read on such a connection after the upgrade, so this
-// is the whole of how long one may carry bytes once its grant has ended, and fifteen seconds is
-// short beside the shortest grant the broker issues. It costs one connection read per joined
-// connection per interval, the three indexed reads AirlockConnection makes, which a pod holding
-// a handful of sockets pays a few times a minute, and beside it a read of the policy version,
-// which is a pointer: the values a pod holds are read again only once that version has moved.
+// watchInterval is how often a call the proxy is carrying reads its grant again (watchCarried):
+// a WebSocket the proxy joined, a gRPC call whose answers stream, a server-sent event stream, a
+// long poll. No request is read on such a call once it has started, so this is the whole of how
+// long one may carry bytes once its grant has ended, and fifteen seconds is short beside the
+// shortest grant the broker issues. A call that ends within the interval reads nothing more. One
+// that runs longer costs one connection read per interval, the three indexed reads
+// AirlockConnection makes, which a pod holding a handful of long calls pays a few times a
+// minute, and beside it a read of the policy version, which is a pointer: the values a pod holds
+// are read again only once that version has moved.
 const watchInterval = 15 * time.Second
 
 // GrantSource is the reads of requests.Machine the proxy makes: one per connection, one per
@@ -112,9 +116,9 @@ type Options struct {
 	// either direction. Zero or less leaves a connection open for as long as the command holds
 	// it.
 	Idle time.Duration
-	// Watch is how often a joined connection reads its grant again (watchJoined); zero or
-	// less is watchInterval. A test sets a short one and ends a grant under an open
-	// WebSocket, rather than waiting out the real interval.
+	// Watch is how often a carried call reads its grant again (watchCarried); zero or less is
+	// watchInterval. A test sets a short one and ends a grant under an open WebSocket or
+	// stream, rather than waiting out the real interval.
 	Watch time.Duration
 	// HashBudget is how many bytes of body the proxy holds at once across every connection
 	// for the AWS calls it has to hash itself (aws.go); zero or less is hashedBodyBudget. A
@@ -157,15 +161,33 @@ type Options struct {
 	// services on loopback reachable, and the broker's own loopback port still refused.
 	// BROKER_AIRLOCK_TEST_DIAL_ALLOW is it.
 	DialAllow []string
+	// ClusterRanges is BROKER_AIRLOCK_CLUSTER_RANGES: the broker cluster's own Service, pod and
+	// node ranges. Such a range can be global unicast - a GKE Service range such as
+	// 34.118.224.0/20 is - so none of localRule's fixed rules refuses an address in it, and a
+	// tunnel there reaches a ClusterIP of the cluster the broker runs in. An address inside any
+	// of them is refused as a private one is, after those fixed rules; DialAllow still opens
+	// one it names. Nil refuses nothing beyond the fixed rules, which is a broker outside a
+	// cluster.
+	ClusterRanges []netip.Prefix
 	// KeepValues keeps a grant's values across the reread of one of its names and past the
 	// five-minute margin of a minted token's expiry, so a run can show what the airlock does
 	// when neither happens. BROKER_AIRLOCK_TEST_KEEP_VALUES is it, the negative control of
 	// the check that both halves belong to.
 	KeepValues bool
-	// NoKind turns the azure exchange and the AWS signing off, so an entry whose kind names
-	// one of them takes the plain header swap instead. BROKER_AIRLOCK_TEST_NO_KIND is it, the
-	// negative control of the check the two kinds belong to.
+	// NoKind turns off the azure kind's exchange of a command's token request and the AWS
+	// signing, so an entry whose kind names one of them takes the plain header swap instead, and
+	// a request carrying the federated token's placeholder in a header is still refused
+	// (serveBound). BROKER_AIRLOCK_TEST_NO_KIND is it, the negative control of the check the two
+	// kinds belong to.
 	NoKind bool
+	// AzureAuthority is the host of the token authority every exchange of the azure kind is
+	// made at (azure.go): a host name in lower case with no port, which the host of a token
+	// request's connection, ASCII lower-cased, must equal exactly, and "" for Microsoft's,
+	// login.microsoftonline.com. A token request to any other host an azure entry binds is
+	// refused, and so is an access slot that names one, since the exchange carries the broker's
+	// federated token. BROKER_AIRLOCK_TEST_AZURE_AUTHORITY is it in the broker's local stack,
+	// whose token authority is a stand-in.
+	AzureAuthority string
 }
 
 // Server is the broker's proxy port: one HTTP CONNECT proxy whose password is a placeholder of a
@@ -186,6 +208,9 @@ type Server struct {
 	// resolve answers the addresses a host has, the ones refuseLocalAddress reads. It is
 	// Options.Resolve, and net.DefaultResolver's lookup for a proxy given none.
 	resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+	// clusterRanges is Options.ClusterRanges, the broker cluster's own ranges, which localRule
+	// refuses after its fixed rules.
+	clusterRanges []netip.Prefix
 	// hashBudget is the bytes of AWS body the proxy may hold at once to hash
 	// (hashedBodyBudget, aws.go). One semaphore for the whole Server, because what it bounds
 	// is the pod's memory, which every connection shares.
@@ -196,6 +221,8 @@ type Server struct {
 	dialAllow  []string
 	keepValues bool
 	noKind     bool
+	// azureAuthority is Options.AzureAuthority, and microsoftAuthority for a proxy given none.
+	azureAuthority string
 
 	// outer serves the bound listener: CONNECT and absolute-URL proxy requests. inner serves
 	// what the outer one decrypted, through innerLn.
@@ -243,11 +270,11 @@ type connInfo struct {
 	host   string
 	port   uint16
 	// password is the proxy password this connection was opened with: a placeholder of the
-	// grant. Every request on the connection reads the grant again with it (serveBound), so a
-	// grant that has ended, been revoked or had one of its names withheld since the CONNECT
-	// stops at the next request rather than at the idle limit. A connection joined to a
-	// service reads no request again, so the watcher of that join reads with it instead
-	// (watchJoined).
+	// grant. Every request on the connection - every stream of an HTTP/2 one - reads the grant
+	// again with it (serveBound), so a grant that has ended, been revoked or had one of its
+	// names withheld since the CONNECT stops at the next request rather than at the idle
+	// limit. A call that runs on reads no request again, so its watcher reads with it instead
+	// (watchCarried).
 	password string
 	// grant is what that password proved when the connection was opened. Nothing is decided
 	// from it - each request is decided from the grant it read for itself - and what it is
@@ -266,29 +293,30 @@ type connKey struct{}
 // decryptedKey is the context key the decrypted connection itself travels under. A request that
 // is answered and done needs nothing of it - net/http owns the connection - and an upgrade does:
 // once the two connections are joined, closing this one is the only way the grant behind it
-// still reaches it (watchJoined).
+// still reaches it (watchCarried, cutJoined).
 type decryptedKey struct{}
 
 // New builds the proxy. Nothing is bound and nothing is served until Serve.
 func New(o Options) *Server {
 	s := &Server{
-		rules:      o.Rules,
-		grants:     o.Grants,
-		ca:         o.CA,
-		idle:       o.Idle,
-		watch:      o.Watch,
-		log:        o.Log,
-		answers:    o.Answers,
-		dial:       o.Dial,
-		now:        o.Now,
-		resolve:    o.Resolve,
-		dialAllow:  o.DialAllow,
-		keepValues: o.KeepValues,
-		noKind:     o.NoKind,
-		innerLn:    newChanListener(),
-		open:       map[io.Closer]struct{}{},
-		values:     map[string]*grantValues{},
-		access:     map[accessKey]*accessHeld{},
+		rules:         o.Rules,
+		grants:        o.Grants,
+		ca:            o.CA,
+		idle:          o.Idle,
+		watch:         o.Watch,
+		log:           o.Log,
+		answers:       o.Answers,
+		dial:          o.Dial,
+		now:           o.Now,
+		resolve:       o.Resolve,
+		clusterRanges: o.ClusterRanges,
+		dialAllow:     o.DialAllow,
+		keepValues:    o.KeepValues,
+		noKind:        o.NoKind,
+		innerLn:       newChanListener(),
+		open:          map[io.Closer]struct{}{},
+		values:        map[string]*grantValues{},
+		access:        map[accessKey]*accessHeld{},
 	}
 	if o.HashBudget <= 0 {
 		o.HashBudget = hashedBodyBudget
@@ -309,6 +337,10 @@ func New(o Options) *Server {
 	}
 	if s.watch <= 0 {
 		s.watch = watchInterval
+	}
+	s.azureAuthority = o.AzureAuthority
+	if s.azureAuthority == "" {
+		s.azureAuthority = microsoftAuthority
 	}
 	s.upstream = &http.Transport{
 		// The whole check-and-dial, so that a request to a bound host reaches the address
@@ -346,11 +378,23 @@ func New(o Options) *Server {
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       o.Idle,
 		ErrorLog:          errorLog,
+		// The two protocols connectBound's TLS offers, named rather than left to net/http's
+		// default, which a TLSNextProto map set beside it would narrow to HTTP/1 alone. The
+		// one switch that still takes HTTP/2 away is GODEBUG=http2server=0, which net/http
+		// reads whatever this says (onceSetNextProtoDefaults); with it, a client offering h2
+		// alone has its connection closed once its handshake is done.
+		Protocols: innerProtocols(),
+		// How many streams one HTTP/2 connection may have open at once: RFC 9113's floor
+		// (section 6.5.2), where net/http's default is 250. Each stream is a grant read of its
+		// own and a stream to the service, and a gRPC client queues a call past the limit
+		// rather than failing it.
+		HTTP2: &http.HTTP2Config{MaxConcurrentStreams: maxStreams},
 		// The CONNECT target and the grant of the connection this request arrived on, and the
-		// connection itself. The request's own Host header is checked against that target by
-		// airlock.Decide, so a request that names another host is refused rather than carried;
-		// the connection is there for an upgrade, whose handler holds it for as long as the
-		// two ends are joined (watchJoined).
+		// connection itself. The request's own Host header - an HTTP/2 stream's :authority - is
+		// checked against that target by airlock.Decide, so a request that names another host
+		// is refused rather than carried; the connection is there for an upgrade, whose handler
+		// holds it for as long as the two ends are joined (watchCarried). Every stream of an
+		// HTTP/2 connection has this context under its own.
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
 			info, _ := s.conns.Load(c)
 			ctx = context.WithValue(ctx, connKey{}, info)
@@ -364,6 +408,18 @@ func New(o Options) *Server {
 		},
 	}
 	return s
+}
+
+// maxStreams is the most streams one HTTP/2 connection of a bound host may have open at once.
+const maxStreams = 100
+
+// innerProtocols is what the inner server speaks: HTTP/1.1 and HTTP/2 over the TLS the proxy
+// opened, and HTTP/2 in the clear never.
+func innerProtocols() *http.Protocols {
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
+	protocols.SetHTTP2(true)
+	return &protocols
 }
 
 // Serve takes the proxy port's listener, and the inner server with it. It returns what
@@ -469,13 +525,13 @@ func (s *Server) refuseCredential(w http.ResponseWriter, r *http.Request, c call
 // as a bound connection's host is.
 func requestHost(r *http.Request) string {
 	if r.URL.IsAbs() {
-		return airlock.ASCIILower(r.URL.Hostname())
+		return fold.ASCII(r.URL.Hostname())
 	}
 	host, _, err := net.SplitHostPort(r.Host)
 	if err != nil {
 		host = r.Host
 	}
-	return airlock.ASCIILower(host)
+	return fold.ASCII(host)
 }
 
 // grantUnreadable is what a command is told when a read of its grant did not answer at all. It
@@ -565,7 +621,9 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, http.StatusBadRequest, codeConnectTarget, r.Host+" is no host and port")
 		return
 	}
-	host = airlock.ASCIILower(host)
+	// An address literal written as every address check reads it (netaddr.Host): the bound-host
+	// check, the certificate and the dial below all read this one spelling of the host.
+	host = netaddr.Host(fold.ASCII(host))
 	target = net.JoinHostPort(host, port)
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
@@ -628,12 +686,20 @@ func (s *Server) connectBound(w http.ResponseWriter, hijacker http.Hijacker, pla
 	}
 	cut := &cutConn{Conn: newIdleConn(client, s.idle)}
 	decrypted := tls.Server(cut, &tls.Config{
-		// http/1.1 alone, and deliberately: an HTTP/2 request carries its authority in the
-		// :authority pseudo-header, which net/http puts in Host, but it also lets one
-		// connection carry requests for several authorities. Offering only HTTP/1.1 keeps one
-		// connection to one host, so the Host check airlock.Decide makes covers every request
-		// that crosses it.
-		NextProtos: []string{"http/1.1"},
+		// http/1.1 first and h2 after it, and crypto/tls answers the first protocol of this
+		// list the client offers too, so a client that offers both - net/http's own, curl,
+		// git - speaks HTTP/1.1 here, and a client that offers h2 alone - every gRPC client -
+		// speaks HTTP/2. One HTTP/2 connection carries many requests at once, each a stream
+		// with its own :authority, which net/http puts in r.Host; each stream is one request
+		// to serveBound, which reads the grant again for it and has airlock.Decide check its
+		// Host against the CONNECT target, and what it forwards goes to that target whatever
+		// the stream named. So the Host check covers every stream, as it covers every
+		// request of an HTTP/1.1 connection.
+		NextProtos: []string{"http/1.1", "h2"},
+		// HTTP/2 over TLS needs 1.2 at least (RFC 9113, section 9.2). It is crypto/tls's own
+		// default for a server, written here so the HTTP/2 this connection speaks never rests
+		// on a default.
+		MinVersion: tls.VersionTLS12,
 		GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
 			// The CONNECT target's host, not the ClientHello's name: a client that sends no
 			// SNI still gets the certificate of the host it asked for, and a client whose SNI
@@ -719,7 +785,7 @@ func (s *Server) connectTunnel(w http.ResponseWriter, r *http.Request, hijacker 
 // servePlain answers an absolute-URL proxy request, which is plain HTTP: a command that asked
 // for http:// rather than https://.
 func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection) {
-	host := airlock.ASCIILower(r.URL.Hostname())
+	host := netaddr.Host(fold.ASCII(r.URL.Hostname()))
 	// Whether any name of this grant may carry a secret to this host, from the one function
 	// that says what is bound (candidates). It is asked about 443 because that is the only
 	// port an entry's hosts speak about, while the refusal below is about no port at all: a

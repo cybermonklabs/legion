@@ -94,7 +94,7 @@ func TestARegistrationWritesTheKnownSessionRecordWithTheRegisteredTopics(t *test
 	if !slices.Contains(record.Topics, team) {
 		t.Errorf("the record's topics are %v, want the team topic %q the registration stored", record.Topics, team)
 	}
-	if !slices.Contains(record.Topics, contracts.AgentSubject("ses_registered")) {
+	if !slices.Contains(record.Topics, contracts.LegacyAgentSubject("ses_registered")) {
 		t.Errorf("the record's topics are %v, want the session's own agent subject", record.Topics)
 	}
 	if filter := rig.filters(t, "ses_registered"); !slices.Contains(filter, team) {
@@ -292,7 +292,7 @@ func TestAListenerWhoseKnownSessionBucketIsNotOpenCarriesNeitherCount(t *testing
 		t.Fatalf("connect the listener's user: %v", err)
 	}
 	t.Cleanup(client.Close)
-	known, err := session.OpenKnownSessions(client.Conn, session.WithKnownSessionReplicas(1))
+	known, err := session.OpenKnownSessions(t.Context(), client.Conn, session.WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the known-session store over a bucket the grant does not carry: %v", err)
 	}

@@ -41,13 +41,15 @@ type connectionContextKey struct{}
 type ownerVerifiedContextKey struct{}
 
 // ownerVerifiedToken is installed only on the server's own calls, by a caller that already
-// knows the document's owner state: a settlement, which holds the owner row locked in its
-// transaction; the publish of a committed live write, whose transaction held that row until it
-// committed; the block-id backfill, which is a command run against a database nobody is
-// serving from; or one of a comment's anchor operations under WithCommentMarks, whose caller
-// holds the owner row locked and decided under it that the comment is written. Their injections
-// skip the issue read in allowInject - for the settlement that read would be a second pooled
-// connection taken while its transaction is open (store.ErrNestedAcquire), for the publish a
+// knows the document's owner state or has no use for it: a settlement, which holds the owner row
+// locked in its transaction, and its warm-up load, which applies nothing; the publish of a
+// committed live write, whose transaction held that row until it committed; the block-id
+// backfill, which is a command run against a database nobody is serving from; or one of a
+// comment's anchor operations under WithCommentMarks, whose caller holds the owner row locked
+// and decided under it that the comment is written. Their injections skip the issue read in
+// allowInject - for the settlement that read would be a second pooled connection taken while
+// its transaction is open (store.ErrNestedAcquire), for its warm-up a refusal its closed issue
+// does not make (a closed issue's document settles as an open one's does), for the publish a
 // read other writers' connections can starve (see publishLiveUpdate), for the backfill a
 // question already answered, and for a comment's anchor a refusal its closed issue does not make.
 type ownerVerifiedToken struct{ _ byte }
@@ -141,6 +143,28 @@ func withShutdownLoad(ctx context.Context) context.Context {
 
 func isShutdownLoad(ctx context.Context) bool {
 	load, _ := ctx.Value(shutdownLoadContextKey{}).(bool)
+	return load
+}
+
+type settlementLoadContextKey struct{}
+
+// withSettlementLoad marks the settlement a browser's departure runs (settleLastPeer) and the
+// Apply that retires the room its warm-up loaded (retireSettlementRoom). A departure's
+// settlement loads a room only when the document's room has left ygo's map before it: a close
+// took the room out from under the departing browser, and the load would put back a room no one
+// asked for. A timer's settlement carries no mark, and the room it loads idles out as any room
+// does. ygo runs a room's load hook only on the goroutine whose call created the room, and hands
+// it that call's context (sjawhar/ygo v1.55.1-sami.2, provider/websocket/server.go:1755-1769,
+// 1903-1921): a load whose context carries the mark was made by such a settlement's warm-up or
+// retire, not by a browser or a writer, and the room it publishes is the settlement's
+// (roomState.warmed, recorded by onLoadDocument). A load the injection only waited for, made by
+// another caller, never sees the mark.
+func withSettlementLoad(ctx context.Context) context.Context {
+	return context.WithValue(ctx, settlementLoadContextKey{}, true)
+}
+
+func isSettlementLoad(ctx context.Context) bool {
+	load, _ := ctx.Value(settlementLoadContextKey{}).(bool)
 	return load
 }
 
@@ -238,10 +262,11 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 // that itself, so it needs no room-sync lane and waits on no later notification. An update the
 // room took before the close and whose append reaches the gate after it - queued behind the
 // room's earlier appends, waiting on the document's lock behind a settlement or a compaction, or
-// handed here by the close of the room itself (setRoomIssueOpen) - is stored, and settled once
-// the issue reopens, a compaction's fold of the history meanwhile included: a room closing for
-// its issue takes in no catch-up while its close waits for this append (holdOpen), and that close
-// is the reload a folded history needs.
+// handed here by the close of the room itself (setRoomIssueOpen) - is stored, a compaction's fold
+// of the history meanwhile included: a room closing for its issue takes in no catch-up while its
+// close waits for this append (holdOpen), and that close is the reload a folded history needs.
+// The document's next settlement saves it as it saves any stored update, whether or not the issue
+// is closed (settleRoomWithin).
 //
 // A replaced history fails the room, as any failed append does: the room reloads from the store,
 // which is the close-and-reload a replaced history needs (plan D3.3), and the browser resends the
@@ -468,9 +493,9 @@ func (s *Service) refuseIfRebuilding(room string) error {
 }
 
 // allowInject decides whether ygo may apply an injection to a room. Its issue read goes
-// through the shared pool for a caller that need hold no connection of its own (the
-// settlement warm-up in settleRoom), and that is outside the pool's deadlock cycle only
-// because ygo runs OnInject before getOrCreateRoom (sjawhar/ygo v1.55.1-sami.2,
+// through the shared pool for a caller that need hold no connection of its own (the unmark of
+// a settled room's expired marks, unmarkExpired), and that is outside the pool's deadlock
+// cycle only because ygo runs OnInject before getOrCreateRoom (sjawhar/ygo v1.55.1-sami.2,
 // provider/websocket/inject.go:319-328): an injection refused here has published no room
 // placeholder for a connection-holder to park on, so nothing holding a connection is waiting
 // on this read. A vendored reordering of those two calls puts it back in the cycle.
@@ -647,6 +672,13 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	state := s.lockState(room)
 	state.recordIssueLocked(issue)
 	open := !state.closed
+	// A room a late departure's settlement loaded is that settlement's until a browser or a writer
+	// takes it up (withSettlementLoad, retireSettlementRoom). It is known by this load's token as
+	// well as its document, so an earlier room's unload, which may run before ygo hands this room
+	// to anyone, does not read as this room's end (warmedRoom).
+	if isSettlementLoad(ctx) {
+		state.warmed = &warmedRoom{doc: doc, load: counted}
+	}
 	// The room has counted itself loaded here since roomLoaded, above, and stays counted until its
 	// unload (roomLoadedHere), so a socket's admission offers it no preload from then on
 	// (offerPreload). An offer that checked before that count and has stored its preload is under
@@ -665,19 +697,22 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		state.observeAskBlocks(askBlocks, nil)
 	}
 	// The document owes a settlement no settlement committed: one a shutdown's budget cut short,
-	// or one a room failure dropped (failRoomLocked). Its timer lived in the process or the room
-	// that is gone, so an open room settles once rather than waiting for an edit to arm one - unless
-	// the load is a settlement's own warm-up, which settles it next. Its authors are in the
-	// document's pending authors, which that settlement reads; the room restores only the latest
-	// edit source the settlement names. A closed room keeps the row; it settles only after its
-	// issue reopens. A room that failed again while this load ran leaves the row for its own
-	// replacement.
+	// one a room failure dropped (failRoomLocked), or one its issue's close stopped
+	// (closeRecordLocked). Its timer lived in the process or the room that is gone, so the room
+	// settles once, whether or not its issue is closed, rather than waiting for an edit to arm
+	// one - unless the load is a settlement's own warm-up, which settles it next. Its authors are
+	// in the document's pending authors, which that settlement reads; the room restores only the
+	// latest edit source the settlement names. A room that failed again while this load ran
+	// leaves the row for its own replacement.
 	//
 	// The row is that source as the store has it, so it replaces whatever the record held for a
 	// room that has gone (a forced close keeps the record, evictRoom): a row naming none - an edit
 	// any of several connected browsers could have made - leaves the settlement its own actor
 	// rather than the last source an earlier room saw, and no row leaves no source, as on a fresh
-	// record. The record keeps its own when the row may be older than it (rowIsCurrent).
+	// record. The record keeps its own when the row may be older than it (rowIsCurrent). A closed
+	// issue's record takes no source from the row either: the close moved the record's source to
+	// the row and left the record none, which the reopen restores from the row (restoreLastActor),
+	// and a settlement takes its actor from the row itself (settlementAuthors).
 	switch {
 	case !open || !mark.rowIsCurrent(state):
 	case owed && lastActor != nil:
@@ -687,7 +722,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		state.lastActor = nil
 		state.unsettled = false
 	}
-	if state.failed == nil && open && owed && !state.settleWarming {
+	if state.failed == nil && owed && !state.settleWarming {
 		s.scheduleSettleLocked(room, state)
 	}
 	s.unlockState(room, state)
@@ -1073,7 +1108,7 @@ func (s *Service) unchangedCredit(room string, origin any, hold *roomHold) *Upda
 func connectedCreditLocked(state *roomState) *inflightCredit {
 	record := &inflightCredit{authors: make(map[string]model.Actor, len(state.connected))}
 	for _, actor := range state.connected {
-		record.authors[actorKey(actor)] = actor
+		mergeAuthor(record.authors, actor)
 	}
 	record.lastActor, _ = soleConnectedActor(state.connected)
 	return record
@@ -1116,6 +1151,12 @@ func (s *Service) removeConnection(room string, id uint64) {
 // returned. It counts itself as running (settling) from the moment it takes the timer, as the timer
 // it replaces counted as armed: a write that opens before the settlement reaches its own count
 // then takes the settlement over (openLiveWrite) rather than ending it with nobody to arm it again.
+// ygo can run this after a close of the room has returned (sjawhar/ygo v1.55.1-sami.2,
+// provider/websocket/inject.go:483-485), so its settlement may load the document into a room of
+// its own, which its mark records as the settlement's (withSettlementLoad). The departing browser
+// still holds the room's record here, registered and admitted, and lets go of it only as its
+// socket ends, which is where that room is retired unless someone took it up meanwhile
+// (ServeHTTP, retireSettlementRoom).
 func (s *Service) settleLastPeer(_ context.Context, room string) {
 	state := s.lockExistingState(room)
 	if state == nil {
@@ -1134,5 +1175,5 @@ func (s *Service) settleLastPeer(_ context.Context, room string) {
 		state.settling--
 		s.unlockState(room, state)
 	}()
-	s.settleRoom(room, generation)
+	s.followUpSettlement(room, s.settleRoomWithin(withSettlementLoad(context.Background()), room, generation, false))
 }

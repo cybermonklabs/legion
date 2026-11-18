@@ -14,7 +14,7 @@ import (
 )
 
 // twoNameRules are the entries the connection tests release behind: a stored key pair, whose two
-// slots prove that any slot of a grant opens a connection, and a google-login, whose kind the
+// slots prove that any slot of a grant opens a connection, and a google-login, whose type the
 // connection answers.
 func twoNameRules() airlock.Rules {
 	return airlock.Rules{Secrets: []airlock.SecretRule{rule("AWS_KEY", "aws"), rule("LOGIN_KEY", "")}}
@@ -27,13 +27,13 @@ func twoNameGrant(t *testing.T, reason string) (m *Machine, enrollmentID, grantI
 	m, enrollmentID, key, _ := newPlaceholderFixture(t, twoNameRules())
 	retag(t, m,
 		policytest.Secret("AWS_KEY", fixtureOperator, policy.TierAgent, `{"access_key_id":"AKIAONE","secret_access_key":"real-secret"}`),
-		policytest.KindSecret("LOGIN_KEY", fixtureOperator, policy.TierAgent, policy.KindGoogleLogin, policytest.KindValue(policy.KindGoogleLogin)),
+		policytest.TypeSecret("LOGIN_KEY", fixtureOperator, policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)),
 	)
-	m.Minters = map[string]Minter{policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+	m.Minters = map[string]Minter{policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 		return secrets.Minted{Value: "real-access-token"}, nil
 	}}
 	_, grantID = grantOf(t, m, enrollmentID, key, reason, "AWS_KEY", "LOGIN_KEY")
-	release, err := m.Values(t.Context(), grantID, enrollmentID, nil)
+	release, err := m.Values(t.Context(), grantID, enrollmentID, nil, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values: %v", err)
 	}
@@ -42,7 +42,7 @@ func twoNameGrant(t *testing.T, reason string) (m *Machine, enrollmentID, grantI
 
 // TestAirlockConnectionAnswersEverySlotOfALiveGrant: a connection opened with any one of a live
 // grant's placeholders proves the whole grant — its ids, its expiry, the issue its request named,
-// and every airlock name with its slots and its kind — so the proxy can swap any of them.
+// and every airlock name with its slots and its type — so the proxy can swap any of them.
 func TestAirlockConnectionAnswersEverySlotOfALiveGrant(t *testing.T) {
 	m, enr, grantID, release := twoNameGrant(t, "deploy for INFRA-1352 today")
 	for slot, placeholder := range maps.Clone(release.Airlock.Names["AWS_KEY"].Slots) {
@@ -65,11 +65,11 @@ func TestAirlockConnectionAnswersEverySlotOfALiveGrant(t *testing.T) {
 		if got, want := conn.Names["AWS_KEY"].Slots, release.Airlock.Names["AWS_KEY"].Slots; !maps.Equal(got, want) {
 			t.Errorf("AWS_KEY's slots = %v, want the released %v", got, want)
 		}
-		if got := conn.Names["AWS_KEY"].Kind; got != "" {
-			t.Errorf("AWS_KEY's kind = %q, want empty: it is a stored secret", got)
+		if got := conn.Names["AWS_KEY"].Type; got != "" {
+			t.Errorf("AWS_KEY's type = %q, want empty: it is a stored secret", got)
 		}
-		if got := conn.Names["LOGIN_KEY"].Kind; got != policy.KindGoogleLogin {
-			t.Errorf("LOGIN_KEY's kind = %q, want %s", got, policy.KindGoogleLogin)
+		if got := conn.Names["LOGIN_KEY"].Type; got != policy.TypeGoogleLogin {
+			t.Errorf("LOGIN_KEY's type = %q, want %s", got, policy.TypeGoogleLogin)
 		}
 	}
 }
@@ -130,7 +130,7 @@ func TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	_, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 
@@ -148,8 +148,8 @@ func TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames(t *testing.T) {
 	if want := map[string]string{SlotValue: "auto-v1"}; !maps.Equal(held.Slots, want) {
 		t.Fatalf("AUTO_TOKEN's slots = %v, want %v: a stored secret is its value slot alone", held.Slots, want)
 	}
-	if !held.Expires.IsZero() || held.Kind != "" {
-		t.Fatalf("AUTO_TOKEN = %+v; want no expiry and no kind: a stored value is read again only when its name is", held)
+	if !held.Expires.IsZero() || held.Type != "" {
+		t.Fatalf("AUTO_TOKEN = %+v; want no expiry and no type: a stored value is read again only when its name is", held)
 	}
 }
 
@@ -159,7 +159,7 @@ func TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames(t *testing.T) {
 func TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged(t *testing.T) {
 	m, enr, key, digests := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	if _, err := m.Values(t.Context(), grantID, enr, nil); err != nil {
+	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 
@@ -181,7 +181,7 @@ func TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged(t *testing.T) {
 func TestTheSweeperDeletesThePlaceholdersOfGrantsThatHaveEnded(t *testing.T) {
 	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, ended := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	if _, err := m.Values(t.Context(), ended, enr, nil); err != nil {
+	if _, err := m.Values(t.Context(), ended, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 	if deleted, err := m.deleteSpentPlaceholders(t.Context()); err != nil || deleted != 0 {

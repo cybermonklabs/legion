@@ -39,7 +39,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - Work on three issues at most, fewer when each needs your attention. Change no status, priority or board rank to make room.
 - Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
 - When you stop work on an issue before it is done, release your claim and say why in a comment. Set its status to the one it had when you took it (`todo` for an issue from the queue). Change no priority or board rank.
-- Record each wait in that comment. A wait on any project's issue also goes in a `blocked_by` link, and one on a person in a `dispatch ask`.
+- Record each wait in that comment. A wait on any project's issue also goes in a `blocked_by` link.
 - `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. A one-project credential links only its own issues (`PROJECT_SCOPE`).
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
 - Name an issue's priority: `--advance <id>`; `dispatch priorities` lists what advances no priority.
@@ -58,7 +58,7 @@ A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to r
 
 - One issue per deliverable, its content the issue's document.
 - A message replies to a person or tells them what they must know now.
-- Text a person must read to decide belongs in the spec. An artifact is a real file.
+- Text a person must read to decide belongs in the spec. An artifact is a real file; markdown uploads as `.md` whatever its local name, never `.txt`.
 
 ## Architecture components
 

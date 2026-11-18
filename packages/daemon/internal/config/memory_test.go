@@ -119,7 +119,7 @@ func TestProjectMemoryRefusals(t *testing.T) {
 // role's pod and the image probe see only those and the image: a sub_path mount of the file, an
 // item a directory mount of a ConfigMap projects, or any file under a whole Secret volume. A path
 // no mount holds, a directory mount itself and a key the projection leaves out are refused at
-// load, which is what `legion start --check-config` runs.
+// load, which is what `legion config check` runs.
 func TestProjectMemoryUnderKubernetesMustBeInTheOperatorsMounts(t *testing.T) {
 	for _, tc := range []struct{ name, files, want string }{
 		{"the operator's own sub_path mount", "[/etc/legion-operator/overlay.yml]", ""},

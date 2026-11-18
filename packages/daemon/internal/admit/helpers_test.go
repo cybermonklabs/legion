@@ -64,8 +64,9 @@ const handed = true
 
 var fixedNow = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 
-// testRepositories serves every repository the admission tests record issues on, each at main, and
-// leaves out acme/gadgets, whose review App is not installed.
+// testRepositories is every repository the admission tests record issues on, each at main, and
+// leaves out acme/gadgets, whose review App is not installed. A repository it does not name is
+// one no preparation has read GitHub for, which the daemon answers as unread (its lookup).
 var testRepositories = servedRepositories{"sjawhar/legion": "main", "acme/widgets": "main", "acme/tools": "release/v7.1"}
 
 type servedRepositories map[string]string
@@ -77,7 +78,7 @@ func (r servedRepositories) ResolveRepository(resolved string) (workflow.Resolut
 	if resolved == "acme/gadgets" {
 		return workflow.Resolution{Refusal: "the review App is not installed on acme/gadgets", LeftOut: true}, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + testProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
 func newAdmission(t *testing.T, cap int, log *slog.Logger) *Admission {
@@ -110,6 +111,31 @@ func newAdmissionForProject(t *testing.T, project string, cap int, steps []recor
 	admission := New(record.NewStore(), engine, cap, project, log)
 	admission.now = func() time.Time { return fixedNow }
 	return admission
+}
+
+// architectStart is the task admission queues with the start of a root architect
+// (workflow.ArchitectStartTask), derived from the record exactly as admission derives it: what
+// workflow.ArchitectStartOf reads of the root as it stands now — whether a hand-over carried it in,
+// the design gate rows it holds and the run its architect claim last served — under the gate
+// steps its own admission runs, and what its tree is owed where a person decided something on it
+// while nobody in the tree could hear them (decided). A test about what admission writes names the
+// task through this helper; which shape each root gets, and the whole text of each shape, are
+// pinned in internal/workflow (TestTheArchitectTaskOfEachShape, TestTheArchitectTaskShapeRule)
+// and the delivery to a launched architect in internal/daemon
+// (TestAFreshAdmissionGivesItsArchitectItsStartTask).
+func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key, decided string) string {
+	t.Helper()
+	root := issue(t, pool, key)
+	var start workflow.ArchitectStart
+	inTx(t, pool, func(tx pgx.Tx) {
+		var err error
+		start, err = workflow.ArchitectStartOf(context.Background(), tx, record.NewStore(), admission.engine.GatedSteps(), root)
+		if err != nil {
+			t.Fatalf("read what the architect task of %s is derived from: %v", key, err)
+		}
+	})
+	start.Decided = decided
+	return workflow.ArchitectStartTask(start)
 }
 
 func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, fact intake.DispatchIssue, engine intake.Handler) {

@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The `gcp:Dispatch` component's Kubernetes provider updates a ConfigMap in place
+  (`enableConfigMapMutable`). Before, a change to the serve configuration replaced the
+  `<hostname>-serve` ConfigMap by deleting it first, so a front-door pod scheduled in that
+  window could not mount its serve configuration. On a deployed stack the next `pulumi up`
+  updates the provider in place and replaces nothing under it, and no pod rolls: the front door
+  reads a changed `serve.json` while it runs.

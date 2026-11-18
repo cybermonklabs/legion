@@ -1,0 +1,14 @@
+# The spec job of ACME. It checks the tree of the spec files and prints one approved statement.
+# No step of this job runs spec-check to compare the files with the approved spec.
+name: spec
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  spec:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the tree of the spec files
+        run: spec-check tree --dir .dispatch/spec
+      - name: Print the approved text of one statement
+        run: spec-check print --approved a.json --id an-order-survives-a-restart

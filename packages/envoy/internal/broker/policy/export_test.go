@@ -8,3 +8,7 @@ func SetNow(c *Current, now func() time.Time) {
 	defer c.unlock()
 	c.now = now
 }
+
+// ForgetLegacyTypeTagLines forgets every secret id this process has written LegacyTypeTagMessage
+// for, so a test that counts those lines counts its own whatever ran before it in the process.
+func ForgetLegacyTypeTagLines() { legacyTypesLogged.Clear() }

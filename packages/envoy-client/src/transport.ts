@@ -12,7 +12,7 @@ import {
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { z } from "zod";
 import type { RequestCredential } from "./bearer";
-import { messageFor } from "./errors";
+import { messageFor, withoutUserinfo } from "./errors";
 import { machineID } from "./machine";
 import { streamDeliversNothing } from "./stream-topics";
 import type { TmuxPlace } from "./tmux-place";
@@ -22,7 +22,8 @@ import type { TmuxPlace } from "./tmux-place";
  * nothing else (dispatch://INFRA-392): `live` within the live window (5 minutes), `unresponsive`
  * past it and inside the gone horizon (an hour), `gone` past that or with no record at all. An
  * unresponsive session is not dead — it keeps its role and issue claims, a message sent to it is
- * stored for it, and nothing starts a replacement for it.
+ * stored for it, a message to a role it holds is kept for that role for an hour, and nothing
+ * starts a replacement for it.
  */
 const SessionStateSchema = z.enum(["live", "unresponsive", "gone"]);
 
@@ -31,13 +32,14 @@ export type SessionState = z.infer<typeof SessionStateSchema>;
 /**
  * What an agent must do about a session that stopped answering (dispatch://INFRA-392). Every
  * answer that names a session in that state says this, in one wording: the tool descriptions
- * (`tool-contract.ts`), the send confirmation, and the refusal an unresponsive holder's role
- * lookup or publish gets, which is read at the moment an agent decides whether its peer is
- * alive. A publish answer counts its recipients and names none, so it says nothing of the kind.
- * The minutes are counted from the holder's last registration (`last_seen`) and are
- * `ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS` itself, the sum the Dispatch server refuses another
- * agent's take by, so a change of that constant changes this sentence with it rather than
- * leaving it saying a number nothing enforces.
+ * (`tool-contract.ts`), the send confirmation, the publish confirmation of a message kept for an
+ * unresponsive role holder, and the refusal that an unresponsive holder's role lookup, or a
+ * publish with `keep: false` to its role, gets. Each is read at the moment an agent decides
+ * whether its peer is alive. A publish to a topic counts its recipients and names none, so its
+ * confirmation says nothing of the kind. The minutes are counted from the holder's last
+ * registration (`last_seen`) and are `ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS` itself, the sum the
+ * Dispatch server refuses another agent's take by, so a change of that constant changes this
+ * sentence with it rather than leaving it saying a number nothing enforces.
  */
 export const UNRESPONSIVE_RULE =
   "An unresponsive session is not dead: it keeps its role claims and its issue claims, and a " +
@@ -76,6 +78,15 @@ const DeliveryAnswerWireSchema = z.object({
   consumer_start: z.number().int().nonnegative().optional(),
 });
 
+// A list the listener may write as null (a session with no interest record, dispatch://INFRA-742),
+// as an absent key (a listener that predates the field), or as a real array. The reader answers []
+// for the first two and still refuses a wrong element type, so listSessions refuses such a row
+// rather than reading it as empty.
+const StringListWireSchema = z
+  .array(z.string())
+  .nullish()
+  .transform((list) => list ?? []);
+
 const SessionWireSchema = z.object({
   session_id: z.string(),
   machine_id: z.string(),
@@ -90,9 +101,9 @@ const SessionWireSchema = z.object({
   dir: z.string(),
   port: z.number().int(),
   title: z.string(),
-  topics: z.array(z.string()),
-  roles: z.array(z.string()).optional(),
-  capabilities: z.array(z.string()).optional(),
+  topics: StringListWireSchema,
+  roles: StringListWireSchema,
+  capabilities: StringListWireSchema,
   self_subscribed: z.boolean(),
   last_seen: z.number().int().optional(),
   state: WireStateSchema,
@@ -150,14 +161,17 @@ const RoleHeldWireSchema = z.object({
 const ErrorWireSchema = z.object({
   error: z.string(),
   code: z.string().optional(),
-  // Why the listener refused a registration it can give the session no consumer. This list is
-  // the one every other comment in these packages points at, and it is the listener's own
-  // (`cmd/listener/session_delivery.go`'s delivery reason constants and the refusals that carry
-  // them): 503 `consumer_error` (a consumer call that failed, or a listener holding no
-  // session-consumer connection), 503 `no_grant` (the listener's NATS user may not manage
-  // session consumers), 503 `consumer_limit` (the stream holds as many consumers as its
-  // `max_consumers` allows, so the server creates no more), 409 `not_requested` (the
-  // registration asked for no consumer) and 409 `invalid_session_id` (the id names no consumer).
+  // Why the listener refused. This list is the one every other comment in these packages points
+  // at, and it is the listener's own (`cmd/listener/session_delivery.go`'s delivery reason
+  // constants and the refusals that carry them, and `cmd/listener/sender_limit.go`'s
+  // `senderRateLimitedAnswer`). A registration it can give the session no consumer: 503
+  // `consumer_error` (a consumer call that failed, or a listener holding no session-consumer
+  // connection), 503 `no_grant` (the listener's NATS user may not manage session consumers), 503
+  // `consumer_limit` (the stream holds as many consumers as its `max_consumers` allows, so the
+  // server creates no more), 409 `not_requested` (the registration asked for no consumer) and 409
+  // `invalid_session_id` (the id names no consumer). A send or a publish: 429
+  // `sender_rate_limited` (its agent session sent faster than the listener lets one session send,
+  // so this message was not stored; `retry_after_seconds` says when it can be sent again).
   reason: z.string().optional(),
   expected: z.array(z.string()).optional(),
   state: SessionStateSchema.optional(),
@@ -166,6 +180,8 @@ const ErrorWireSchema = z.object({
   last_seen: z.number().int().optional(),
   /** Always false on a lapsed role's 404: a lookup releases no claim, whatever the state. */
   claim_released: z.boolean().optional(),
+  /** A `sender_rate_limited` refusal's wait: the whole seconds until the sender may send again. */
+  retry_after_seconds: z.number().int().positive().optional(),
 });
 
 /**
@@ -201,9 +217,11 @@ const EnvelopeResponseSchema = EnvelopeSchema.extend({
   holder_state: SessionStateSchema.optional(),
   recipient_state: SessionStateSchema.optional(),
   state: z.string().optional(),
-  // The recipient's last registration (epoch ms), which the listener sends with an unresponsive
-  // or a stopped recipient's state so the sender can say how long it has been silent; omitted
-  // when it knows none, and absent from a listener predating the field.
+  // The last registration (epoch ms) of a send's recipient, which the listener sends with an
+  // unresponsive or a stopped recipient's state so the sender can say how long it has been
+  // silent, or of a role publish's holder, which a 202 kept for a holder that is not live names
+  // beside its state; omitted when the listener knows none, and absent from a listener predating
+  // the field.
   last_seen: z.number().int().optional(),
   duplicate: z.boolean().optional(),
   recipients: z.number().int().nonnegative().optional(),
@@ -211,20 +229,26 @@ const EnvelopeResponseSchema = EnvelopeSchema.extend({
 });
 
 /**
- * The publish route's answer. A role topic has three of them, told apart by status: 200, a
+ * The publish route's answer. A role topic has three of them, told apart by status: 200, a live
  * session holds the role and the stream stored the forward for its consumer, with `holder`; 202,
- * nobody holds the role, so the listener kept the message on the role's kept lane and hands it to
- * the role's next holder, with `kept` and `kept_reason: "unclaimed"`, the one state a listener of
- * this build keeps for; 404, nothing was kept and the sender's own fallback must run, which
- * `request` throws as an `EnvoyApiError`. 202 is a success answer, so it passes `response.ok` and
- * reaches this schema — load-bearing: without it a kept message would read as a refusal.
+ * no live session holds the role, so the listener kept the message on the role's kept lane for
+ * one hour and hands it to the next session that holds the role live within that hour, with
+ * `kept`, `kept_reason` and `kept_until`; 404, nothing was kept and the sender's own fallback
+ * must run, which `request` throws as an `EnvoyApiError`. A 202 is answered for a role nobody
+ * claims (`kept_reason: "unclaimed"`) and for a claim whose holder is unresponsive or gone
+ * (`"holder_lapsed"`), which also names that `holder`, its `holder_state` and its `last_seen`
+ * (read by the schema this one extends). A 404 comes when the listener keeps nothing: the
+ * publish sent `keep: false`, the role's token is one no claim can name, or the keep failed. A
+ * listener of an earlier release also answers it for a holder that is not live.
+ * 202 is a success answer, so it passes `response.ok` and reaches this schema — load-bearing:
+ * without it a kept message would read as a refusal.
  */
 const PublishResponseSchema = EnvelopeResponseSchema.extend({
   kept: z.boolean().optional(),
-  /** `holder_lapsed` stays readable though no listener of this build sends it: envoy 29.4.0 kept
-   *  for a lapsed claim and answered 202 with that reason, and a reader that refused it would
-   *  read a kept message from such a listener as a refusal. */
   kept_reason: z.enum(["unclaimed", "holder_lapsed"]).optional(),
+  /** The end of the kept copy's hour, in epoch milliseconds. Absent from a listener of an earlier
+   *  release, which keeps the copy for a time it does not name. */
+  kept_until: z.number().int().optional(),
 });
 
 export type EnvoyFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -468,9 +492,10 @@ export type UnsubscribeInput = {
    * The client instance handing these interests back: the same id its registration carries
    * ({@link SubscribeInput.clientInstanceID}). The listener frees only the role claims that
    * name this process, and never forces one from another, so a second process that resumed
-   * this session id keeps the role it holds. A release that names no process frees a claim
-   * that names none, and marks one it cannot free handed back, which stops that claim's
-   * renewal and frees the role a live window and up to one reap interval later. A role lane
+   * this session id keeps the role it holds. A release that names no process frees no claim,
+   * and marks the claim of each role lane topic it names handed back, whether that claim names
+   * a process or none, which stops that claim's renewal and frees the role a live window and
+   * up to one reap interval later. A role lane
    * topic whose claim the release did not free stays on the session's record, because that
    * topic is the interest half of a claim that still stands and the record's role topics are
    * what a deregistration of the session expands into the claims it frees; the answer names
@@ -545,10 +570,12 @@ export type PublishInput = (AgentSourceInput | HumanSourceInput) &
     readonly payload?: string;
     readonly idempotencyKey?: string;
     /**
-     * Only a role topic reads this. Unset, or true, keeps a message no live holder took on the
-     * role's kept lane for the role's next holder, which the listener answers 202 (`kept`).
-     * False keeps nothing, so the listener answers 404 and the sender's own fallback runs. The
-     * field is omitted from the wire unless set, so an older listener sees an unchanged request.
+     * Only a role topic reads this. Unset, or true, keeps a message that no live session took,
+     * for a role nobody claims or a holder that is unresponsive or gone, on the role's kept lane
+     * for one hour, for the next session that holds the role live; the listener answers 202
+     * (`kept`, `keptUntil`). False keeps nothing, so the listener answers 404 and the sender's
+     * own fallback runs. The field is omitted from the wire unless set, so an older listener
+     * sees an unchanged request.
      */
     readonly keep?: boolean;
   };
@@ -631,9 +658,15 @@ export type SendResult = {
 
 export type PublishResult = {
   readonly envelope: Envelope;
-  /** A role publish's resolved holder, and the state the listener's record puts it in. */
+  /** A role publish's resolved holder, and the state the listener's record puts it in: on a 200
+   *  the live holder the message was stored for, on a 202 kept for `holder_lapsed` the holder
+   *  that is not live. */
   readonly holder?: string;
   readonly holderState?: SessionState;
+  /** That holder's last registration in epoch milliseconds, which the listener sends beside a
+   *  holder that is not live on a 202 kept for it. Absent when the listener knows none, and from
+   *  a listener predating the field. */
+  readonly lastSeen?: number;
   /**
    * How many sessions other than the sender get this message, counted just before it was
    * published; a stopped session Envoy still knows is one of them. Absent for a role topic, whose
@@ -644,15 +677,22 @@ export type PublishResult = {
   /** How many of {@link PublishResult.recipients} are running now; absent whenever that is. */
   readonly recipientsConnected?: number;
   /**
-   * True on the listener's 202: no live holder took the message, so the listener kept it on the
-   * role's kept lane and hands it to the role's next holder. The message is not lost, so this is
-   * a success answer, not a refusal. Absent unless the listener answered it.
+   * True on the listener's 202: no live session holds the role, so the listener kept the message
+   * on the role's kept lane and hands it to the next session that holds the role live before
+   * `keptUntil`. The message is not lost, so this is a success answer, not a refusal. Absent
+   * unless the listener answered it.
    */
   readonly kept?: boolean;
-  /** Why the message was kept. A listener of this build keeps only for a role nobody claims, so
-   * it sends `unclaimed` alone; `holder_lapsed` is what envoy 29.4.0 sent for a lapsed claim. Read
-   * from the answer's own schema, so a reason a later listener adds is added in one place. */
+  /** Why the message was kept: `unclaimed` for a role nobody claims, `holder_lapsed` for a claim
+   * whose holder is unresponsive or gone. Read from the answer's own schema, so a reason a later
+   * listener adds is added in one place. */
   readonly keptReason?: z.infer<typeof PublishResponseSchema>["kept_reason"];
+  /** The end of the kept copy's hour, in epoch milliseconds. If no session takes the copy by
+   * then, the listener drops it and sends the publish's source session a message that names it,
+   * unless no walk had claimed the copy and its hour ended more than an hour before the walk that
+   * drops it. Absent from a listener of an earlier release, which names no time and sends no
+   * such message. */
+  readonly keptUntil?: number;
 };
 
 /**
@@ -686,9 +726,9 @@ export class EnvoyApiError extends Error {
   /** The listener's machine-readable `code`, when its error body carries one. */
   readonly code: string | undefined;
   /**
-   * Why the listener refused, when its error body carries one: the reason a registration no
-   * session consumer can be given is refused with, one of those `ErrorWireSchema.reason` names
-   * above.
+   * Why the listener refused, when its error body carries one: one of the names
+   * `ErrorWireSchema.reason` lists above, such as the reason a registration no session consumer
+   * can be given is refused with, or `sender_rate_limited`.
    */
   readonly reason: string | undefined;
   /** The session the refusal is about: a role's holder, where its body names one. */
@@ -702,10 +742,18 @@ export class EnvoyApiError extends Error {
    *  lapsed role and it is always false: a lookup or a publish takes nothing from a holder,
    *  whatever its state. */
   readonly claimReleased: boolean | undefined;
+  /**
+   * The whole seconds until the sender may send again, when the body names them: a
+   * `sender_rate_limited` refusal's `retry_after_seconds`. The client never sends a refused
+   * message again by itself (`request` retries nothing below 500), so a caller that wants the
+   * message sent waits this long and sends it again.
+   */
+  readonly retryAfterSeconds: number | undefined;
 
   constructor(
     readonly details: {
       readonly method: string;
+      /** The request's URL as text names it: without the user and password it may carry. */
       readonly url: string;
       readonly status: number;
       readonly responseBody: string;
@@ -732,6 +780,7 @@ export class EnvoyApiError extends Error {
     this.sessionState = parsed?.holder_state ?? parsed?.state;
     this.lastSeen = parsed?.last_seen;
     this.claimReleased = parsed?.claim_released;
+    this.retryAfterSeconds = parsed?.retry_after_seconds;
   }
 }
 
@@ -876,6 +925,9 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
     // and stands or falls on the listener's own answer. A listener that did want one answers 401
     // or 403, and that is reported as the failed trade it really is, below.
     let unminted: unknown;
+    // One deadline for the whole attempt: the credential is given it, so a broker credential
+    // waiting on a pod's missing registration stops at it, and the request runs on what is left.
+    const deadline = AbortSignal.timeout(deadlineMs);
     try {
       const headers = new Headers(init.headers);
       // Awaited only when the credential answers with a promise. A bearer answers at once, and
@@ -883,16 +935,19 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // drain at shutdown — start before this request leaves.
       let presented: Readonly<Record<string, string>> | undefined;
       try {
-        const ready = credential?.headers(init.method ?? "GET", url, actingSession);
+        const ready = credential?.headers(init.method ?? "GET", url, actingSession, deadline);
         presented = ready instanceof Promise ? await ready : ready;
       } catch (error) {
         unminted = error;
       }
+      // A credential stopped by the deadline leaves nothing to send: the attempt is unanswered,
+      // in the credential's own words (a pending registration names its session).
+      if (unminted !== undefined && deadline.aborted) return { unanswered: unminted };
       for (const [name, value] of Object.entries(presented ?? {})) headers.set(name, value);
       response = await config.fetch(url, {
         ...init,
         headers,
-        signal: AbortSignal.timeout(deadlineMs),
+        signal: deadline,
       });
     } catch (error) {
       return { unanswered: error };
@@ -903,7 +958,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
       // come back — and the error names both halves.
       return {
         unanswered: new Error(
-          `${init.method ?? "GET"} ${url} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
+          `${init.method ?? "GET"} ${withoutUserinfo(url)} answered ${response.status}, and this machine's Envoy credential could not be minted: ${messageFor(unminted)}`,
           { cause: unminted }
         ),
       };
@@ -947,10 +1002,12 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
 
       const error = new EnvoyApiError({
         method: init.method ?? "GET",
-        url,
+        url: withoutUserinfo(url),
         status: response.status,
         responseBody: body,
       });
+      // Only a 5xx is sent again. A 4xx is the listener's answer to this message, and so is a 429
+      // `sender_rate_limited`: the agent reads its sentence and decides when to send it again.
       if (response.status >= 500) {
         options.onUnanswered?.();
         if (attempt + 1 < tries) {
@@ -1080,11 +1137,7 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         // Only `stopped` is stopped: an answer with no state is an older listener's, and a word
         // this build does not know says nothing about the target that is worth acting on.
         state: response.state === "stopped" ? "stopped" : "connected",
-        // Omitted rather than zero when the listener names none, so a reader never reads 1970
-        // as a last registration.
-        ...(response.last_seen === undefined || response.last_seen <= 0
-          ? {}
-          : { lastSeen: response.last_seen }),
+        ...lastSeenOf(response.last_seen),
         duplicate: response.duplicate === true,
       };
     },
@@ -1115,12 +1168,14 @@ export function createEnvoyClient(config: EnvoyClientConfig): EnvoyClient {
         envelope: response,
         ...(response.holder === undefined ? {} : { holder: response.holder }),
         ...(response.holder_state === undefined ? {} : { holderState: response.holder_state }),
+        ...lastSeenOf(response.last_seen),
         ...(response.recipients === undefined ? {} : { recipients: response.recipients }),
         ...(response.recipients_connected === undefined
           ? {}
           : { recipientsConnected: response.recipients_connected }),
         ...(response.kept === undefined ? {} : { kept: response.kept }),
         ...(response.kept_reason === undefined ? {} : { keptReason: response.kept_reason }),
+        ...(response.kept_until === undefined ? {} : { keptUntil: response.kept_until }),
       };
     },
     unregisterSession: async (input) => {
@@ -1220,4 +1275,12 @@ function messageMetadata(input: MessageMetadataInput) {
  */
 function sourceSession(sessionID: string | undefined) {
   return sessionID === undefined || sessionID === "" ? {} : { source_session: sessionID };
+}
+
+/**
+ * A listener's `last_seen` as a result's `lastSeen`: omitted rather than zero when the listener
+ * names none, so a reader never reads 1970 as a last registration.
+ */
+function lastSeenOf(lastSeen: number | undefined) {
+  return lastSeen === undefined || lastSeen <= 0 ? {} : { lastSeen };
 }

@@ -31,6 +31,15 @@ const PROBE = { intervals: [50, 50, 100, 200, 500] };
 const decisionBlock =
   ':::ask{#decision urgency="high" multiple="false" state="open"}\nShip now?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n';
 
+/** The decision block as a saved version holds it once the close's withdrawal is in it. */
+const resolvedDecision = ':::ask{#decision urgency="high" multiple="false" state="resolved"';
+
+/** The number of the newest version the document has saved. */
+async function newestVersion(artifactId: string): Promise<number> {
+  const { versions } = await getArtifact(artifactId, { login: "alice" });
+  return Math.max(...(versions ?? []).map((version) => version.number));
+}
+
 interface Seeded {
   /** Every open ask of the issue: the plain ask, the decision block's and the approval request. */
   askIds: string[];
@@ -148,7 +157,7 @@ async function expectWithdrawn(
 }
 
 // SLOW(>=2s): two pages of the issue, one of them the document editor with its own socket, then a
-// close, the version history, a reopen and a reload.
+// close, the version history, the closed issue's settlement, a reopen and a reload.
 // @pr: Create through answer to close: the Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings them back.
 test("a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back @pr", async ({
   browser,
@@ -157,19 +166,20 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
   const opened = await openIssueAndInbox(browser, seeded, { clock: true });
   const { decision, inbox, page, sockets } = opened;
   try {
+    // The close writes no version of its own, so the version it leaves is the newest one saved
+    // before it.
+    const before = await newestVersion(seeded.artifactId);
     await page.getByRole("button", { name: "Close issue" }).click();
     await expectWithdrawn(opened, seeded, "alice");
 
-    // The newest saved version predates the close: opened from the history, it still shows the
-    // decision as it was then, open, and nothing of the withdrawal.
-    const { versions } = await getArtifact(seeded.artifactId, { login: "alice" });
-    const latest = Math.max(...(versions ?? []).map((version) => version.number));
-    expect((await getArtifactVersion(seeded.artifactId, latest)).markdown).toContain(
-      ":::ask{#decision"
+    // That version, opened from the history, still shows the decision as it was then, open, and
+    // nothing of the withdrawal, whatever the closed issue's settlement has saved since.
+    expect((await getArtifactVersion(seeded.artifactId, before)).markdown).toContain(
+      ':::ask{#decision urgency="high" multiple="false" state="open"'
     );
-    await page.getByRole("combobox", { name: "Version" }).selectOption(String(latest));
+    await page.getByRole("combobox", { name: "Version" }).selectOption(String(before));
     const saved = page
-      .getByRole("region", { name: `Document version ${latest}` })
+      .getByRole("region", { name: `Document version ${before}` })
       .locator('[data-dispatch-ask-block="decision"]');
     await expect(saved).toContainText("Ship now?");
     await expect(saved.locator('ul[aria-label="Options"] li')).toHaveCount(2);
@@ -189,6 +199,24 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
     await expect(page.getByText("Reload to edit.")).toHaveCount(0);
+    // The close's block writes left the document owing a settlement, and a closed issue's
+    // document settles as an open one's does: the version it saves shows the withdrawn decision's
+    // block resolved. The room's load for the reconnect above arms that settlement if nothing
+    // armed it sooner, and it runs 250 ms later (`DISPATCH_TEST_SETTLE_DELAY`,
+    // `e2e/run-server.sh`), well inside the poll's deadline; the resumption would reach the
+    // document only a minute or more after the close (`settlementResumeAge` and
+    // `SettlementResumeInterval`, `packages/envoy/internal/dispatch/docs/resume.go`). The version
+    // is read before the Reopen, whose block writes put the block back to open.
+    await expect
+      .poll(async () => {
+        const newest = await newestVersion(seeded.artifactId);
+        if (newest <= before) return `no version after version ${before}`;
+        const { markdown } = await getArtifactVersion(seeded.artifactId, newest);
+        return markdown.includes(resolvedDecision)
+          ? "the decision saved resolved"
+          : `version ${newest} reads:\n${markdown}`;
+      }, PROBE)
+      .toBe("the decision saved resolved");
     await page.getByRole("button", { name: "Reopen" }).click();
     await expect(page.getByRole("button", { name: "Close issue" })).toBeVisible();
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (3)");

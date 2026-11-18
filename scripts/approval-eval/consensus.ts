@@ -149,6 +149,12 @@ export interface ConsensusRecord {
   answer: string;
   rowsRead: number;
   rowsUnreadable: number;
+  /**
+   * The slice's judgements whose last row carries the `model` fault (`readingsOf`): verdicts no
+   * record ties to their arm's model, which every case reading here leaves out, as it does every
+   * row of a round written before rows recorded their served model.
+   */
+  rowsModelFault: number;
   ranAt: string;
 }
 
@@ -371,25 +377,29 @@ export function sliceCaseIds(
  * curve needs of it — the cases of this slice alone, and the readings by arm and case.
  *
  * The arms are the ones `readRound` returns, each already naming the recipe and model its rows
- * carry, so the slice's rows are walked for them once and not again here.
+ * carry, so the slice's rows are walked for them once and not again here. `modelFaults` is the
+ * judgements of the slice whose last row carries the `model` fault, summed over the arms from
+ * `readRound`'s own count (`faultsByKind`), so it counts what these readings leave out.
  */
 export function readingsOf(
   rows: readonly JudgementRow[],
   corpus: ReadonlyMap<string, CaseRow>,
   caseIds: readonly string[]
-): { arms: ArmName[]; byArm: Map<string, Map<string, CaseReading>> } {
+): { arms: ArmName[]; byArm: Map<string, Map<string, CaseReading>>; modelFaults: number } {
   const wanted = new Set(caseIds);
   const ofSlice = rows.filter((row) => wanted.has(row.caseId));
   const byArm = new Map<string, Map<string, CaseReading>>();
   const arms: ArmName[] = [];
+  let modelFaults = 0;
   for (const arm of readRound(ofSlice, corpus).arms) {
     byArm.set(arm.name, new Map(arm.cases.map((one) => [one.caseId, one])));
     // A reading widens the recipe its rows carry to a string, for an arm with no row at all;
     // every arm here has one, and `JudgementRow` says what a recipe of one is.
     arms.push({ name: arm.name, recipe: arm.recipe as RecipeName, model: arm.model });
+    modelFaults += arm.faultsByKind.model ?? 0;
   }
   arms.sort((one, two) => one.name.localeCompare(two.name));
-  return { arms, byArm };
+  return { arms, byArm, modelFaults };
 }
 
 /** The whole curve, every group read over the same slice and ordered by coverage. */
@@ -414,7 +424,12 @@ export function renderConsensus(record: ConsensusRecord): string[] {
     `slice             ${record.slice.name}, ${record.slice.kind} cases: ` +
       `${count(record.slice.cases)}, which every coverage below is a share of`,
     `arms              ${record.arms.length}: ${record.arms.map((arm) => arm.name).join(", ")}`,
-    `rows              ${count(record.rowsRead)} read, ${count(record.rowsUnreadable)} unreadable`,
+    `rows              ${count(record.rowsRead)} read, ${count(record.rowsUnreadable)} ` +
+      `unreadable, ${count(record.rowsModelFault)} of the model fault` +
+      (record.rowsModelFault === 0
+        ? ""
+        : ", none of them a returned judgement: to ask them again, resume a copy of the round " +
+          "directory with run-round.ts, since a resume rewrites the rows it holds"),
     `bound             one-sided Clopper-Pearson at ${num(100 * DEFAULT_CONFIDENCE, 0)} percent`,
     `read at           ${record.ranAt}`,
     "",
@@ -504,7 +519,7 @@ async function consensus(flags: Flags): Promise<number> {
         "knows: --round takes a directory run-round.ts wrote"
     );
   }
-  const { arms, byArm } = readingsOf(rows, corpus.byCaseId, caseIds);
+  const { arms, byArm, modelFaults } = readingsOf(rows, corpus.byCaseId, caseIds);
   const lines = consensusLines(groupsOf(arms), byArm, caseIds);
   const cases = caseIds
     .map((caseId) => corpus.byCaseId.get(caseId))
@@ -520,6 +535,7 @@ async function consensus(flags: Flags): Promise<number> {
     answer: answerOf(lines),
     rowsRead: read,
     rowsUnreadable: unreadable,
+    rowsModelFault: modelFaults,
     ranAt: new Date().toISOString(),
   };
   for (const line of renderConsensus(record)) console.log(line);

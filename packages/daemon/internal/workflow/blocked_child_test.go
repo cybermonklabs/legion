@@ -115,14 +115,18 @@ func TestAChildReleasedWhileABlockerIsUnfinishedStaysAdmitted(t *testing.T) {
 	if got := phaseOf(t, pool, "LEGION-210"); got != phase.Planning {
 		t.Fatalf("the unblocked child = %s once the line reached it, want planning", got)
 	}
-	// The second notice is the architect's: every child the line starts tells it so
-	// (ChildStartedNotice), whether a blocker held it or its tree's gate did.
-	assertOutboxKinds(t, pool, []string{"issue_branch", "dispatch_status", "supervise", "notice", "notice"})
+	// The first supervise row is the child's own architect's start, queued behind its branch row
+	// and before its planner's (Engine.gateOpened). The second notice is the child-status that
+	// every child the line starts tells the architect above it (ChildStartedNotice), whether a
+	// blocker held it or its tree's gate did.
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
 }
 
-// The close of the last issue a held child waited on starts it: its branch row, the in_progress
-// its entry into planning writes to Dispatch, its planner's start behind the branch row, and one
-// child-status notice to the tree's architect naming the issues it waited on.
+// The close of the last issue a held child waited on starts it: its branch row, its own
+// architect's start behind that row, the in_progress its entry into planning writes to Dispatch,
+// its planner's start behind the branch row, and one child-status notice to the architect above it
+// (here the tree's) naming the issues it waited on and saying that the child's own architect owns
+// it while that architect holds its role.
 func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
@@ -145,10 +149,10 @@ func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Planning {
 		t.Fatalf("the child = %s once every issue it waited on is done, want planning", got)
 	}
-	assertOutboxKinds(t, pool, []string{"issue_branch", "dispatch_status", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
 	assertBranchRow(t, pool, "LEGION-209", 4)
 	assertPlannerStart(t, pool, "LEGION-209")
-	want := "LEGION-209 starts planning under LEGION-208: every issue it waited on (LEGION-300, LEGION-301) is done"
+	want := "LEGION-209 starts planning under LEGION-208: every issue it waited on (LEGION-300, LEGION-301) is done" + childStartedOwnership
 	if got := childStatusNotices(t, pool); len(got) != 1 || got[0] != want {
 		t.Fatalf("child-status notices = %#v, want one reading %q", got, want)
 	}
@@ -158,8 +162,9 @@ func TestAHeldChildStartsWhenItsLastBlockerCloses(t *testing.T) {
 // starts at the next look: left admitted, it would stand unstarted with nothing naming it, since
 // the state's `blocked` names only a child with an unfinished blocker and the edit, which changes
 // no status, is not one the engine's handling of the event acts on. It starts as a child its tree's
-// gate opened onto does, and its tree's architect is told so by the same child-status notice a
-// blocker's close sends, its reason saying the links were taken off: no issue it waited on closed.
+// gate opened onto does, and the architect above it (here its tree's) is told so by the same
+// child-status notice a blocker's close sends, its reason saying it reached the front of the
+// waiting line, since no issue it waited on closed.
 func TestAHeldChildWhoseLinksAreTakenOffStarts(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
@@ -189,7 +194,7 @@ func TestAHeldChildWhoseLinksAreTakenOffStarts(t *testing.T) {
 	}
 	assertBranchRow(t, pool, "LEGION-209", 4)
 	assertPlannerStart(t, pool, "LEGION-209")
-	want := "LEGION-209 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot"
+	want := "LEGION-209 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot" + childStartedOwnership
 	if got := childStatusNotices(t, pool); len(got) != 1 || got[0] != want {
 		t.Fatalf("child-status notices = %#v, want one reading %q", got, want)
 	}
@@ -216,10 +221,10 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool) []record.BlockedIssue {
 	return blocked
 }
 
-// The opening of a tree's design gate tells every phase holder of the tree and its architect, and
-// releases every admitted member it was holding, and the waiting line then starts each of them at
-// its own slot — except one that waits on an unfinished issue of its own, whose own blockers hold
-// it where the gate left it.
+// The opening of a tree's design gate tells every phase worker of the tree and the root's
+// architect, and releases every admitted member it was holding, and the waiting line then starts
+// each of them at its own slot — except one that waits on an unfinished issue of its own, whose own
+// blockers hold it where the gate left it.
 func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
@@ -239,7 +244,7 @@ func TestTheGateOpeningDoesNotStartAHeldChild(t *testing.T) {
 	if got := phaseOf(t, pool, "LEGION-210"); got != phase.Planning {
 		t.Fatalf("the child that waits on nothing = %s once the line reached it, want planning", got)
 	}
-	assertOutboxKinds(t, pool, []string{"role_message", "role_message", "notice", "issue_branch", "dispatch_status", "supervise", "notice", "notice"})
+	assertOutboxKinds(t, pool, []string{"role_message", "role_message", "notice", "issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
 }
 
 // An unblocked child whose tree would not start it now is in no line either: the tree's gate is
@@ -315,6 +320,40 @@ func TestTheGateOpeningLeavesARootWaitingOnItsBlockerWithItsSlotGivenBack(t *tes
 				t.Fatalf("the root's planner was started %d times, want never while its blocker is open", started)
 			}
 		})
+	}
+}
+
+// R2: the notice that reports the move out of admitted carries no role. The gate's opening is
+// the one move out of that phase (Table), and admitted is the architect's own (phase.RoleFor), so
+// a role on the notice would tell the architect that its own phase ended. noticeFor writes the
+// notice of a move out of admitted with no role.
+func TestThePhaseFinishedNoticeOutOfAdmittedCarriesNoRole(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 4, Status: "in_progress", Rank: "U",
+		LastDispatchSeq: 1})
+	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2})
+	seedTreeLifecycle(t, pool, "LEGION-208")
+	seedMirror(t, pool, "LEGION-208", "in_progress")
+
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	applyMirrored(t, pool, engine, "approved", intake.DispatchArtifact{
+		Key: "LEGION-208", ArtifactID: "artifact-208", Kind: intake.DispatchArtifactApproved, Version: 2})
+	startUnblockedChildren(t, pool, engine)
+
+	if got := phaseOf(t, pool, "LEGION-208"); got != phase.Planning {
+		t.Fatalf("the admitted root = %s when its tree's gate opened, want planning", got)
+	}
+	// The role is written only when there is one (record.Notice's own encoding), so an absent
+	// key and an empty one both read as "no role".
+	var kind, role, from string
+	if err := pool.QueryRow(t.Context(),
+		`select payload->>'kind', coalesce(payload->>'role', ''), payload->>'phase' from outbox
+		where kind = 'notice' and payload->>'kind' = 'phase-finished'`).Scan(&kind, &role, &from); err != nil {
+		t.Fatalf("read the phase-finished notice of the gate's opening: %v", err)
+	}
+	if kind != "phase-finished" || role != "" || from != string(phase.Admitted) {
+		t.Fatalf("notice = %s role %q phase %s, want a phase-finished for admitted carrying no role", kind, role, from)
 	}
 }
 
@@ -507,6 +546,14 @@ func assertPlannerStart(t *testing.T, pool *pgxpool.Pool, issue string) {
 		t.Fatalf("supervise row = %s %s %s, want a planner start for %s", gotIssue, op, role, issue)
 	}
 }
+
+// childStartedOwnership is how every child-status notice of a child's start ends, after its
+// reason: the child's own architect starts with it and owns it while that architect holds its
+// role, so the architect it tells hears only what goes above that architect (ChildStartedNotice).
+const childStartedOwnership = ". Its own architect starts with it and owns it while that architect holds its role: its " +
+	"decomposition, its children and its acceptance. You hear its child-status and child-closed notices, a worker-died or " +
+	"worker-stalled of its architect, and its other notices while its architect does not hold its role, which the daemon's " +
+	"holdsRole decides"
 
 func childStatusNotices(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()

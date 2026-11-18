@@ -1,0 +1,5 @@
+kind: Fixed
+body: '`architecture-check` names `--allow-empty` when it refuses a directory that does not exist or holds no note: the line ends `, and architecture-check reads it as the empty set only with --allow-empty`, so its user learns the way out. The exit status stays 2, and every other line is as before.'
+time: 2026-11-16T14:54:25.368608419Z
+custom:
+    Issue: pr4215

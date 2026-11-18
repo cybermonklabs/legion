@@ -55,9 +55,21 @@ async function roveToSilent(page: Page): Promise<Locator> {
   const row = agentRow(page, "silent-session");
   await expect(row).toBeVisible();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  // Each `j` moves focus to the next row in a render after the key, so each turn waits for focus
+  // to leave the row it was on before it reads which row it reached.
+  let focused = "";
   for (const _ of [1, 2, 3, 4]) {
+    const before = focused;
     await page.keyboard.press("j");
-    if (await row.evaluate((node) => node === document.activeElement)) break;
+    await expect
+      .poll(async () => {
+        focused = await page.evaluate(
+          () => document.activeElement?.getAttribute("data-agent-row") ?? ""
+        );
+        return focused;
+      })
+      .not.toBe(before);
+    if (focused === "silent-session") break;
   }
   await expect(row).toBeFocused();
   return row;

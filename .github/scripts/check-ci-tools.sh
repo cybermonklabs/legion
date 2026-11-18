@@ -43,10 +43,11 @@
 #      that install fetches the right bytes and then fails to find the tool inside them. Where
 #      that is found depends on the side the member is written on. A stale `primary_member`
 #      breaks the install that reads the primary, which for the one row that names one, uv, is
-#      .github/actions/install-uv in ci.yaml's `test` job, on every pull request that selects
-#      it; a stale member on the second side is read only where that source is, which is
-#      ci.yaml's `tool-fallback` job, a job of about five minutes (129885098900 ran 14:15:38Z
-#      to 14:20:22Z, 284 s). This gate says it in lint, in a second.
+#      .github/actions/install-uv in the `daemon-go` job (.github/workflows/ci-job-daemon-go.yaml),
+#      on every pull request that selects it; a stale member on the second side is read only
+#      where that source is, which is the `tool-fallback` job
+#      (.github/workflows/ci-job-tool-fallback.yaml), a job of about five minutes (129885098900
+#      ran 14:15:38Z to 14:20:22Z, 284 s). This gate says it in lint, in a second.
 #      A version-shaped token is a dotted run of digits — 1.2, 0.13.5, 2026.8.12 — so a member
 #      that holds none is left alone, which is what keeps `./jj`, `package/bin/bun` and
 #      `uv-x86_64-unknown-linux-gnu/uv` right, and an empty member is left alone too.
@@ -76,6 +77,12 @@
 #      pin the plugin at.
 #      The `crane`, `changie`, `elan` and `pulumi-cli` rows are their own pins: their installs
 #      hold no version of their own and install the version the row names.
+#      A row whose name ends in `-aarch64` is the arm64 build of the row named without that
+#      suffix, and carries that row's `version`, so it answers to that row's pin: the jobs on
+#      ubuntu-24.04-arm install the one and the jobs on ubuntu-24.04 the other, and they are one
+#      release of one tool. Such a row with no row of its base name is refused too, since it then
+#      answers to no pin at all. The bun rows are left to the .bun-version clause above, which
+#      holds all three of them, aarch64 one included, to one pin.
 #      Each refusal names both values and both files, and the uv and pulumi-docker ones name
 #      which of the two to move.
 #
@@ -296,6 +303,8 @@ MEMBER_FIELDS = ("primary_member", "mirror_member", "npm_member", "second_member
 # A version as this gate reads one inside a member: a dotted run of digits, 1.2, 0.13.5 or
 # 2026.8.12. What that shape can and cannot see is stated with rule 1 in the header.
 VERSION_TOKEN = re.compile(r"\d+(?:\.\d+)+")
+# The suffix of a row that is the arm64 build of the row named without it (rule 2).
+ARM64_SUFFIX = "-aarch64"
 
 
 def one_of(words: tuple[str, ...]) -> str:
@@ -805,6 +814,12 @@ if pulumitest_text is not None:
             f"and the pulumi-docker row of {CI_TOOLS} carries what it pins"
         )
 
+# The rows by name, which the -aarch64 clause below reads the base row of. A name two rows share
+# is refused by rule 1, and the first of them is the one kept here.
+rows_by_name: dict[str, dict] = {}
+for row in readable:
+    rows_by_name.setdefault(str(row["name"]).strip(), row)
+
 for row in readable:
     name = str(row["name"]).strip()
     version = str(row["version"]).strip()
@@ -871,6 +886,23 @@ for row in readable:
             f"install the plugin this row names at the version that constant holds: move this "
             f"row to the constant's version, or the constant to the row's."
         )
+    if name.endswith(ARM64_SUFFIX) and not name.startswith("bun-"):
+        base_name = name[: -len(ARM64_SUFFIX)]
+        base = rows_by_name.get(base_name)
+        if base is None:
+            problems.append(
+                f"{CI_TOOLS}:{key_line(row, 'name')}: the {name} row is the arm64 build of a "
+                f"{base_name} row this file does not hold. An -aarch64 row carries the version of "
+                f"the row of its base name, which is what holds it to a pin, so this one answers to "
+                f"none: add the {base_name} row beside it, or name this row after the tool it is."
+            )
+        elif version != str(base["version"]).strip():
+            problems.append(
+                f"{CI_TOOLS}:{key_line(row, 'version')}: the {name} row's version is {version} and "
+                f"the {base_name} row's is {str(base['version']).strip()}. The jobs on "
+                f"ubuntu-24.04-arm install this row and the jobs on ubuntu-24.04 that one, and "
+                f"they are one release of one tool: move the two rows together."
+            )
 
 # ---------------------------------------------------------------- rule 3: the addresses
 # This repository's own release assets are bytes it publishes and installs nowhere, and

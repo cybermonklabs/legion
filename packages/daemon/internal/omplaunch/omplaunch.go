@@ -1,8 +1,8 @@
 // Package omplaunch is how a Legion process launches a local Oh My Pi: the OMP invocation resolved
 // from omp_invocation or LEGION_OMP_PATH, the operator's launch prefix before it, and the one
-// --append-system-prompt word. A tmux pane, the daemon's boot gate on the plugin every pane loads,
-// and `legion controller start` on the operator's machine each launch it this way, so none of
-// them depends on the tmux runtime to do it.
+// --append-system-prompt word, the path of the file the prompt is written to. A tmux pane, the
+// daemon's boot gate on the plugin every pane loads, and `legion controller start` on the
+// operator's machine each launch it this way, so none of them depends on the tmux runtime to do it.
 package omplaunch
 
 import (
@@ -21,13 +21,28 @@ import (
 // miseInvocation is the one configured invocation shape the daemon launches through mise.
 var miseInvocation = regexp.MustCompile(`^mise x (\S+) -- omp$`)
 
+// keepPathHead is what `mise x` starts in OMP's place, OMP's path and arguments after it: a shell
+// that puts the first entry of the PATH the launch ran under back in front and then execs OMP.
+// Every launch runs the fragment under a PATH led by its launcher directory (workerbin.Path): a
+// pane's shell exports it, the boot gate runs under tmux.PaneEnvironment, and `legion controller
+// start` under controllerEnvironment. `mise x` puts the tool's directories and each `_.path` entry
+// of the mise config it reads ahead of that, and such an entry, a dotfiles shims directory say,
+// can hold a gh, git or jj that is not Legion's. The launch's shell expands "${PATH%%:*}" before
+// mise runs; the shell mise starts is /bin/sh by its absolute path, since a lookup would read
+// mise's PATH; and its exec leaves OMP in the process the launch started, as mise's own exec does,
+// so a pane's process, its marker and a search of /proc by name still find OMP. The rest of the
+// PATH stays as mise made it, the launcher directory in it again where mise left the launch's.
+const keepPathHead = `/bin/sh -c 'PATH=$1:$PATH && shift && exec "$@"' sh "${PATH%%:*}"`
+
 // ResolveInvocation is the OMP launch fragment every pane and boot probe runs, resolved from
 // the configured invocation and the daemon's own environment (resolveOmpInvocation, environment.ts).
 // `LEGION_OMP_PATH` names a binary directly — the worker image, a build under test — and is used
-// as its resolved real path. Otherwise the invocation must be `mise x <tool> -- omp`: mise resolves
-// the configured tool's own `bin/omp`, and the fragment still runs it through `mise x` so the
-// tool's declared environment is activated. The result is a shell fragment: each path is quoted
-// for the pane's shell.
+// as its resolved real path: nothing runs between the launch and OMP, so OMP holds the launch's
+// PATH as it is. Otherwise the invocation must be `mise x <tool> -- omp`: mise resolves the
+// configured tool's own `bin/omp`, and the fragment still runs it through `mise x` so the tool's
+// declared environment is activated, with the launch's first PATH entry put back ahead of what
+// mise prepends (keepPathHead). The result is a shell fragment for a POSIX shell: each path is
+// quoted for the pane's shell.
 //
 // An empty invocation — the file set no omp_invocation — is refused by name unless LEGION_OMP_PATH
 // is set. The daemon holds no copy of the OMP fork pin, whose one home is the repository's
@@ -59,7 +74,7 @@ func ResolveInvocation(invocation string, env func(string) string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	return shellprefix.Word(mise) + " x " + match[1] + " -- " + shellprefix.Word(omp), nil
+	return shellprefix.Word(mise) + " x " + match[1] + " -- " + keepPathHead + " " + shellprefix.Word(omp), nil
 }
 
 // resolveMiseOmp resolves the configured tool's own OMP executable before any pane exists. `mise
@@ -133,34 +148,13 @@ func resolveExecutable(path string) (string, bool) {
 	return real, true
 }
 
-// doubleQuoteEscaper escapes the four characters a shell still interprets inside double quotes.
-var doubleQuoteEscaper = strings.NewReplacer(`\`, `\\`, `"`, `\"`, `$`, `\$`, "`", "\\`")
-
 // SystemPromptArgument is the one `--append-system-prompt` word every pane's OMP receives, and
-// the operator-launched controller's (`legion controller start`). OMP's
-// flag is last-wins, so every fragment rides a single value, in order: the role prompt files, the
-// addressing text, the deployment instructions file, then one file per variant the launch runs
-// in, in the order the project's file declares the experiments, separated by a blank line. It is
-// one double-quoted word holding `$(cat <files>)`, so the pane's own shell reads the files —
-// their size and quoting never pass through tmux's argv — and the addressing text is escaped for
-// the double quotes (systemPromptArguments and shellDoubleQuoted, runtime-tmux.ts). The caller
-// has checked there is a role prompt. A launch in no experiment, and one whose variants name no
-// instructions file, names none of them and ends at the deployment's own (runtime.PromptParts).
-func SystemPromptArgument(parts runtime.PromptParts) string {
-	fragments := []string{"$(cat " + shellprefix.Command(parts.RolePromptPaths) + ")"}
-	if parts.Addressing != "" {
-		fragments = append(fragments, doubleQuoteEscaper.Replace(parts.Addressing))
-	}
-	if parts.DeploymentInstructionsPath != "" {
-		fragments = append(fragments, "$(cat "+shellprefix.Word(parts.DeploymentInstructionsPath)+")")
-	}
-	for _, path := range parts.VariantInstructionsPaths {
-		if path == "" {
-			continue
-		}
-		fragments = append(fragments, "$(cat "+shellprefix.Word(path)+")")
-	}
-	return `--append-system-prompt "` + strings.Join(fragments, "\n\n") + `"`
+// the operator-launched controller's (`legion controller start`): the path of the file the
+// launch's composed system prompt was written to (runtime.WriteSystemPrompt, which says why it is
+// a file and why it is written first), quoted for the pane's shell. OMP's flag is last-wins, so
+// the whole prompt rides that one file.
+func SystemPromptArgument(promptFile string) string {
+	return "--append-system-prompt " + shellprefix.Word(promptFile)
 }
 
 // WithPrefix prepends the configured launch prefix, each element quoted on its own

@@ -616,6 +616,97 @@ All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an u
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 
+`e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
+(dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they
+were given to Dispatch, to measure which of our listed addresses that device reaches. What it
+measures is TCP connects from that device to the listed addresses and ports, nothing more: it
+cannot see a service the origin itself forwards by path or by Host on its own host and port, and
+it must run on the device itself, not in a VM, a container or a remote shell, whose network is
+another one. It is handed to that person as the one file with its target list, so it sources
+nothing and needs only bash (3.2, as macOS ships it, or later), curl 7.40 or later and sleep, all
+three on a stock macOS or Linux; curl's own `--connect-timeout` and `--max-time` bound every
+probe, so it needs no GNU `timeout`. A run takes about 29 seconds. Started by a shell that is not
+bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash` and stops; the
+`sh` of macOS is bash, and runs it. Its inputs:
+
+- `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`, an IPv6 host in brackets, its
+  host on the rule a target's host follows;
+- `OUTSIDE_PATH_TARGETS`, a file, or a pipe such as `/dev/stdin`, of `name host port` lines, one
+  per internal target (the hub, the listeners, the secrets broker, the other Dispatch origin),
+  ending in LF or CRLF. `#` starts a comment, and comments are ASCII like the rest of the list.
+  `host` is a name or a literal address; a name has no empty label (`a..b`, `.example`); an IPv4
+  address must be four numbers of 0 to 255 with no leading zero (curl reads `172.020.000.021` in
+  octal, another host); an IPv6 address must be hexadecimal digits and colons alone, so curl reads
+  none as a URL range (it reads `[1-1:1]` as one), and must not be IPv4-mapped however it is
+  written: its text must not start with `ffff:` once its leading zeros and colons are dropped, as
+  `::ffff:a00:1` and `0:0::ffff:a00:1` do (write `10.0.0.1`), since a v6-only device reaches no
+  mapped address; and a `svc:` selector, which resolves nowhere, is refused. **The list must hold
+  each of our services' addresses on the path as lines of their own, not names alone**: a name
+  line proves only where that name resolves on the person's device, so a name that resolves
+  elsewhere there says nothing of the address behind it. A list of names alone prints a warning.
+  **The list is ASCII**: every byte must be printable ASCII, a tab or LF, but a CR that comes
+  directly before an LF and a UTF-8 byte-order mark at offset 0, which the script drops before
+  anything parses the list. Any other byte, a NUL, a control character or any byte above 0x7E (so
+  any non-ASCII text, in a comment too), refuses the run, naming the byte and its offset counted
+  from 0: `read` splits only on LF, and a reader that split on that byte would put the next target
+  in the line's comment, where it would be lost. The script reads the list once, to its end, with
+  the device's `TMOUT` unset, since bash's `read` takes it as a timeout; a read that stops before
+  the end refuses the run.
+
+```bash
+OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
+  bash outside-path-reach.sh
+```
+
+It asks the origin for `/healthz` (200) and for `/api/v1/projects` with no credential (401, with
+Dispatch's own `NO_IDENTITY` refusal), then probes the origin's own host and port and every target
+in five rounds started 6 s apart (0, 6, 12, 18 and 24 s), every host of a round at once. The
+rounds are 6 s apart because a tunnel whose first handshake packet was lost stays down until
+WireGuard sends it again, after its `RekeyTimeout` of 5 s plus up to 334 ms; probes started
+together would all fall inside that.
+Its curls ignore the device's `~/.curlrc` and any proxy, and read no URL as a pattern (`-g`), so
+the run measures what that device itself reaches. Each probe is judged by whether TCP connected,
+not by curl's exit code alone, since our services accept a connection and then wait for the
+client:
+
+| curl's answer | Class |
+|---|---|
+| a completed connect (`time_connect` above zero), whatever the exit | `REACHED` |
+| no connect, in a round in which the origin did not connect either | `uncounted` |
+| exit 7, refused | `unreachable` |
+| exit 28, timed out, with no lookup completed | `unresolved (lookup timed out)` |
+| exit 28 after a lookup of under a second | `unreachable` |
+| exit 28 after a lookup of a second or more, too little of the 3 s left to connect | `UNKNOWN`, naming the lookup time |
+| exit 6, the name does not resolve | `unresolved` |
+| anything else | `UNKNOWN` |
+
+A target's round counts only when the probe connected to the origin in that same round: a round
+in which the device reached not even the origin proves nothing of a target, which reads
+`uncounted` there unless it connected, so `PASS` needs the origin reached in every round. A
+target is `REACHED` when any of its five rounds connected and `unreachable` only when all five
+counted and were, so a network that loses packets does not hide one easily. Measured with a
+reachable listener whose incoming packets were dropped at random, 120 runs per row: at 70% loss
+no run printed `PASS` under bash 3.2 or 5.2 (194 and 201 of 600 rounds missed), where the same
+rig with three rounds printed `PASS` in 8 of 240; at 50% loss three rounds already printed none
+in 240. Heavier or longer loss can still miss all five. `PASS` (exit 0) needs Dispatch's
+answers, a connect to the origin itself in every round and every target unreachable; `FAIL`
+(exit 1) names each target reached, or an origin that served a read with no credential; every
+run that proved nothing is `UNKNOWN` (exit 2), never a pass. Its classify mode,
+`OUTSIDE_PATH_CLASSIFY="<exit> <namelookup> <connect>"`, classifies one recorded probe, and five
+of them separated by `;` are judged as one target's rounds in order; that mode exits 4, never
+`PASS`'s 0. The script's own header has every rule. A path that puts a sign-in of its own in front
+of Dispatch, such as an identity-aware proxy, answers a request with no credential with that
+sign-in, not Dispatch's, so the run reads `UNKNOWN` there.
+`cd packages/dispatch && bun test e2e/__tests__/outside-path-reach` drives it against real
+listeners, from four files: `outside-path-reach-input.test.ts` for what it decides before any
+probe (the inputs it refuses, the origin's two answers and its classifier),
+`outside-path-reach.test.ts` for the runs that probe, `outside-path-reach-blackhole.test.ts` for
+the two runs that need a network dropping TEST-NET-1, which skip with the reason printed where the
+network refuses that address at once, and `outside-path-reach-tmout.test.ts` for a list on a pipe,
+a named pipe or a process substitution under an inherited `TMOUT`. Each row carries its own
+timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
+zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
+
 ## Acceptance run against the deployed image
 
 The `dispatch.acceptance.compose.yml` Compose file builds a Dispatch image from this tree and runs
@@ -684,7 +775,7 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 same projects but the two stubbed ones and the three `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
 the three wall-clock projects are out of the default selection. Listed at this head, a deployed
-run holds 1,238 rows in 160 files, and the other 54 are a wall-clock run of its own, under the
+run holds 1,302 rows in 169 files, and the other 51 are a wall-clock run of its own, under the
 same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
@@ -699,6 +790,10 @@ well, `@webkit` and `@firefox`: each tagged row exercises one engine behaviour t
 the project in `e2e/playwright.config.ts` names, and a comment beside the tag names which.
 `webkit` covers where a caret lands beside a collaborator's cursor, and `firefox` covers text
 typed over what follows a block's last line break, which that engine's own editing mishandles.
+Both run `e2e/download-names.e2e.ts`, which reads how the engine names a download from the
+`filename*` and `filename` of its `Content-Disposition`, and whether it asks the server again
+for a download address it holds. WebKit writes each space of the name it reads from `filename*`
+as `_`, which that file's row of a name with spaces expects.
 `firefox-download-navigation` runs the one row of
 `e2e/shell.e2e.ts` that follows a Download link before a chunk fails. `webkit-iphone` runs the
 phone-layout rows of `e2e/agent-view.e2e.ts`, `e2e/agent-view-settings.e2e.ts` and
@@ -724,7 +819,7 @@ stream's worst case comes back inside 1.2 seconds on the fastest of up to eight 
 the Agents page paints six hundred sessions inside 100 milliseconds while holding the main
 thread under 150 ms, the first load inside both of those bounds of up to twenty taken), and
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
-Each sets `default: false`, so a run that names no project holds none of their 54 rows, and each
+Each sets `default: false`, so a run that names no project holds none of their 51 rows, and each
 caps its own workers at one.
 What holds a reading to a quiet machine is the run being one worker wide, and the three files
 reach that in two ways: `e2e/main-thread-hold.ts` fails a measuring row of

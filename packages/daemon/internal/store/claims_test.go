@@ -71,6 +71,10 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt = time.Time{}, time.Time{}
 	gotFailed, wantFailed := got.FailedAt, want.FailedAt
 	got.FailedAt, want.FailedAt = time.Time{}, time.Time{}
+	// The handshake's two moments are timestamptz columns too, compared the same way.
+	gotHandshake, wantHandshake := got.Handshake, want.Handshake
+	got.Handshake.QueuedAt, got.Handshake.ConfirmedAt = time.Time{}, time.Time{}
+	want.Handshake.QueuedAt, want.Handshake.ConfirmedAt = time.Time{}, time.Time{}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("claim read back differs:\n got %+v\nwant %+v", got, want)
 	}
@@ -79,6 +83,10 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	}
 	if !gotFailed.Equal(wantFailed) {
 		t.Errorf("the claim failed at %v, want %v", gotFailed, wantFailed)
+	}
+	if !gotHandshake.QueuedAt.Equal(wantHandshake.QueuedAt) || !gotHandshake.ConfirmedAt.Equal(wantHandshake.ConfirmedAt) {
+		t.Errorf("the claim's handshake was queued at %v and confirmed at %v, want %v and %v",
+			gotHandshake.QueuedAt, gotHandshake.ConfirmedAt, wantHandshake.QueuedAt, wantHandshake.ConfirmedAt)
 	}
 	if (gotPending == nil) != (wantPending == nil) {
 		t.Fatalf("pending delivery read back = %+v, want %+v", gotPending, wantPending)
@@ -263,6 +271,42 @@ func TestARePutDeliveryCarriesItsInterruption(t *testing.T) {
 
 	if got := onlyClaim(t, store).Pending; got == nil || got.ID != "delivery-2" || !got.Interrupted || !got.OutOfMemory {
 		t.Fatalf("delivery read back = %+v, want the re-put delivery, interrupted and out of memory", got)
+	}
+}
+
+// The fact that a reviewer's task ends with the daemon's two sentences of its review round
+// (supervise.Delivery.RoundNamed) reaches the store with the delivery and comes back from it, in
+// both directions, through a re-put that replaces the delivery: a restarted daemon sends what it
+// reads back, and a fact lost on the way would send a task of this release with the daemon's
+// sentences naming nothing after its own, or keep one the release before queued from them. A
+// delivery the release before wrote, which names no such column, reads back without the fact.
+func TestADeliveryCarriesTheFactThatItNamesItsReviewRound(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-212-reviewer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	named := supervise.Delivery{ID: "outbox:7", Task: "Continue. Phase: reviewing. Last reviewed commit: none. Review entry: 1.", Phase: phase.Reviewing, QueuedAt: at(1), RoundNamed: true}
+	for _, put := range []supervise.Delivery{named, {ID: "outbox:8", Task: "Continue. Phase: reviewing.", Phase: phase.Reviewing, QueuedAt: at(2)}, named} {
+		if err := store.PutDelivery(ctx, c.Token, put); err != nil {
+			t.Fatalf("put the delivery %s: %v", put.ID, err)
+		}
+		if got := onlyClaim(t, store).Pending; got == nil || got.ID != put.ID || got.RoundNamed != put.RoundNamed {
+			t.Fatalf("the delivery read back = %+v, want %s with the fact %v", got, put.ID, put.RoundNamed)
+		}
+	}
+	// The release before writes a delivery naming no round_named, so a delivery it writes on a
+	// claim that holds none takes the column's default.
+	if _, err := store.pool.Exec(ctx, `delete from pending_task_deliveries where claim_token = $1`, string(c.Token)); err != nil {
+		t.Fatalf("retire the delivery: %v", err)
+	}
+	if _, err := store.pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, phase, generation, queued_at)
+		values ($1, 'outbox:9', 'Continue. Phase: reviewing.', 'reviewing', 1, now())`, string(c.Token)); err != nil {
+		t.Fatalf("write the delivery as the release before writes it: %v", err)
+	}
+	if got := onlyClaim(t, store).Pending; got == nil || got.ID != "outbox:9" || got.RoundNamed {
+		t.Fatalf("the delivery read back = %+v, want outbox:9 with no fact: the release before named no round", got)
 	}
 }
 
@@ -810,10 +854,7 @@ func TestIssueRunsElsewhereNamesOnlyAClaimOfAnotherTreeThatHoldsAProcess(t *test
 			t.Fatalf("put %s %s: %v", implementer.Token, state, err)
 		}
 	}
-	all := []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching, supervise.StateShimConnected,
-		supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle, supervise.StateSuspended,
-		supervise.StateFailed, supervise.StateRetired}
-	for _, state := range all {
+	for _, state := range supervise.States() {
 		put(state, false)
 		named := elsewhere("LEGION-209") == "legion-LEGION-209-implementer:"+string(state)
 		if runs := !(supervise.Claim{State: state}).RunsNothing(); named != runs {
@@ -867,9 +908,7 @@ func TestClaimUnretiredIsEveryStoredStateButRetired(t *testing.T) {
 	if unretired() {
 		t.Fatalf("ClaimUnretired(%s) with no claim stored = true, want false", controller.Token)
 	}
-	for _, state := range []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
-		supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle,
-		supervise.StateSuspended, supervise.StateFailed, supervise.StateRetired} {
+	for _, state := range supervise.States() {
 		controller.State = state
 		if err := store.PutClaim(ctx, controller); err != nil {
 			t.Fatalf("put %s %s: %v", controller.Token, state, err)

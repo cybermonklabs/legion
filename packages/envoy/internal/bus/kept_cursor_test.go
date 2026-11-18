@@ -11,30 +11,45 @@ import (
 
 // The drain cursor's body is read by both writers of a role's kept lane - the listener's walk,
 // which is its only writer, and the handover Dispatch's outbox makes behind a keep of its own -
-// so the two numbers and the tags they are written under are this package's, not either
-// caller's. A tag that drifted would decode as zero, which reads as a lane drained to its start
-// and leads every handover astray, so the encoding is pinned here: what a walk writes decodes
-// back to itself, and a body written exactly as a walk writes it decodes to the numbers in it.
+// so the numbers, the dead letter's reason and the tags they are written under are this
+// package's, not either caller's. A tag that drifted would decode as zero, which reads as a lane
+// drained to its start and leads every handover astray, so the encoding is pinned here: what a
+// walk writes decodes back to itself, and a body written exactly as a walk writes it decodes to
+// the numbers in it. A dead letter's claim carries each of the four values a walk writes, the two
+// of a copy whose forward may have reached the holder among them; a forward's claim and a cursor
+// with nothing claimed carry no dead_letter key at all, and a body with no dead_letter key decodes
+// with no reason.
 func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
-	written := bus.KeptRoleCursor{Kept: 11, Claiming: 12}
-	body, err := json.Marshal(written)
-	if err != nil {
-		t.Fatalf("encode the cursor a walk writes: %v", err)
-	}
-	if want := `{"kept":11,"claiming":12}`; string(body) != want {
-		t.Fatalf("a walk's cursor encodes as %s, want %s: the tags are what the lane's other reader decodes by", body, want)
-	}
-	var back bus.KeptRoleCursor
-	if err := json.Unmarshal(body, &back); err != nil {
-		t.Fatalf("decode the cursor a walk writes: %v", err)
-	}
-	if back != written {
-		t.Fatalf("the cursor decoded back as %+v, want the %+v it was written as", back, written)
+	for _, tc := range []struct {
+		written bus.KeptRoleCursor
+		body    string
+	}{
+		{bus.KeptRoleCursor{Kept: 11, Claiming: 12}, `{"kept":11,"claiming":12}`},
+		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "expired"}, `{"kept":11,"claiming":12,"dead_letter":"expired"}`},
+		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "delivery_mode"}, `{"kept":11,"claiming":12,"dead_letter":"delivery_mode"}`},
+		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "expired_unconfirmed"}, `{"kept":11,"claiming":12,"dead_letter":"expired_unconfirmed"}`},
+		{bus.KeptRoleCursor{Kept: 11, Claiming: 12, DeadLetter: "delivery_mode_unconfirmed"}, `{"kept":11,"claiming":12,"dead_letter":"delivery_mode_unconfirmed"}`},
+	} {
+		body, err := json.Marshal(tc.written)
+		if err != nil {
+			t.Fatalf("encode the cursor a walk writes, %+v: %v", tc.written, err)
+		}
+		if string(body) != tc.body {
+			t.Fatalf("a walk's cursor %+v encodes as %s, want %s: the tags are what the lane's other reader decodes by", tc.written, body, tc.body)
+		}
+		var back bus.KeptRoleCursor
+		if err := json.Unmarshal(body, &back); err != nil {
+			t.Fatalf("decode the cursor a walk writes, %s: %v", body, err)
+		}
+		if back != tc.written {
+			t.Fatalf("the cursor decoded back as %+v, want the %+v it was written as", back, tc.written)
+		}
 	}
 
 	// A walk that passed a copy over, or confirmed the one it forwarded, writes the cursor with
-	// nothing claimed; a body with no claiming at all is the same cursor.
-	for _, stored := range []string{`{"kept":7,"claiming":0}`, `{"kept":7}`} {
+	// nothing claimed; a body with no claiming at all is the same cursor, and one with no
+	// dead_letter, or an empty one, is a cursor whose claim is no dead letter's.
+	for _, stored := range []string{`{"kept":7,"claiming":0}`, `{"kept":7}`, `{"kept":7,"claiming":0,"dead_letter":""}`} {
 		var cursor bus.KeptRoleCursor
 		if err := json.Unmarshal([]byte(stored), &cursor); err != nil {
 			t.Fatalf("decode %s: %v", stored, err)
@@ -42,6 +57,13 @@ func TestAKeptRoleCursorEncodesUnderTheTagsBothItsReadersExpect(t *testing.T) {
 		if want := (bus.KeptRoleCursor{Kept: 7}); cursor != want {
 			t.Fatalf("%s decoded as %+v, want %+v", stored, cursor, want)
 		}
+	}
+	var forward bus.KeptRoleCursor
+	if err := json.Unmarshal([]byte(`{"kept":7,"claiming":8}`), &forward); err != nil {
+		t.Fatalf("decode a forward's claim: %v", err)
+	}
+	if want := (bus.KeptRoleCursor{Kept: 7, Claiming: 8}); forward != want {
+		t.Fatalf("a claim written with no dead_letter decoded as %+v, want %+v with no DeadLetter reason", forward, want)
 	}
 }
 

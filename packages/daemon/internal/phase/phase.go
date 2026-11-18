@@ -147,9 +147,15 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
 // writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
-// awaiting_person, done, held — has none. Accepting is the tree architect's, a
-// claim per tree that no row starts: every site that starts, resumes or reports a phase's worker
-// skips it (workflow's start, admit's startMidPhaseMembers, workflow's booted and Stranded).
+// awaiting_person, done, held — has none. Admitted and accepting are the architect's, and neither
+// phase starts a worker. On a root both are its own architect's. On a child both are the
+// architect that owns it: its own while that claim holds its role, else the one above. At
+// admitted that is the one above, since the child's own architect has not started yet or a leave
+// suspended or retired it, unless a person set the child back to todo while it ran or was held:
+// that re-entry starts and stops nothing, so a child's own architect that held its role still
+// holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's worker
+// skips the architect, so it skips both phases (workflow's start, admit's startMidPhaseMembers,
+// workflow's booted and Stranded).
 //
 // It stands in this package, with the phase vocabulary it reads, rather than in internal/workflow,
 // which starts the roles: the state projection names the role each issue's entry numbers are of
@@ -167,7 +173,7 @@ func RoleFor(p Phase) claim.Role {
 		return claim.RoleTester
 	case Reviewing:
 		return claim.RoleReviewer
-	case Accepting:
+	case Admitted, Accepting:
 		return claim.RoleArchitect
 	case Merging:
 		return claim.RoleMerger
@@ -180,8 +186,8 @@ func RoleFor(p Phase) claim.Role {
 // that role works: RoleFor read the other way round, the one phase each role works, and, for the
 // implementer, which works two, implementing while the issue stands before retro and retro once
 // it stands past it. A completion that arrives after the issue moved on without its role is of
-// this phase (Of). The architect works accepting with its sign-off and completes nothing, so it
-// leaves no phase here.
+// this phase (Of). The architect works admitted and accepting, signs accepting off and completes
+// nothing, so it leaves no phase here.
 func LeftBy(role claim.Role, at Phase) Phase {
 	switch role {
 	case claim.RolePlanner:
@@ -205,7 +211,10 @@ func LeftBy(role claim.Role, at Phase) Phase {
 // (RoleFor), and otherwise the phase role has left (LeftBy). The workflow records a completion on
 // this phase (workflow's leftItsPhase) and the completion route reads its handoff record against
 // it (api's handoffComplete), so the two read one answer. It is "" for the architect anywhere but
-// accepting, since the architect leaves no phase.
+// admitted and accepting, the two phases it works, since the architect leaves no phase. At
+// admitted that answer is the issue's phase, the one the route read for the architect's
+// completion while RoleFor named no role there, and the workflow refuses an architect's
+// completion before it reads this at all.
 func Of(role claim.Role, at Phase) Phase {
 	if RoleFor(at) == role {
 		return at

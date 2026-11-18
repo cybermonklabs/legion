@@ -32,16 +32,16 @@ func TestAKeyValueHandleRefusesAKeyNATSWouldRefuse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	created, err := EnsureKeyValue(client.Conn, js, &nats.KeyValueConfig{Bucket: "kv_key_check", Storage: nats.MemoryStorage})
+	created, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: "kv_key_check", Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("create bucket: %v", err)
 	}
 	t.Cleanup(func() { _ = js.DeleteKeyValue("kv_key_check") })
-	found, err := EnsureKeyValue(client.Conn, js, &nats.KeyValueConfig{Bucket: "kv_key_check", Storage: nats.MemoryStorage})
+	found, err := EnsureKeyValue(t.Context(), client.Conn, js, &nats.KeyValueConfig{Bucket: "kv_key_check", Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("find bucket: %v", err)
 	}
-	opened, err := OpenKeyValue(client.Conn, js, "kv_key_check")
+	opened, err := OpenKeyValue(context.Background(), client.Conn, js, "kv_key_check")
 	if err != nil {
 		t.Fatalf("open bucket: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestRefusesReadAnswersTheSameRefusalAGetOfTheKeyAnswers(t *testing.T) {
 			t.Fatalf("store the %d-byte key as an earlier listener did: %v", len(key), err)
 		}
 	}
-	kv, err := OpenKeyValue(client.Conn, js, bucket)
+	kv, err := OpenKeyValue(context.Background(), client.Conn, js, bucket)
 	if err != nil {
 		t.Fatalf("open bucket: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestAKeyAnEarlierListenerStoredStaysListableAndDeletable(t *testing.T) {
 			t.Fatalf("store the %d-byte key as an earlier listener did: %v", len(key), err)
 		}
 	}
-	kv, err := OpenKeyValue(client.Conn, js, "kv_legacy")
+	kv, err := OpenKeyValue(context.Background(), client.Conn, js, "kv_legacy")
 	if err != nil {
 		t.Fatalf("open bucket: %v", err)
 	}

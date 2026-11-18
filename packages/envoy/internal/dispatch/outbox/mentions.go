@@ -757,9 +757,10 @@ func (h mentionHolds) liveUnnamed() bool {
 //
 // The copy that asks it is a role route's forward (roleCopyWaitsForAMention), and it is the one
 // copy of the comment that waits in the event's list past that lease rather than being held as
-// a comment_fallback_copies row: nothing else delivers a role copy - a keep waits for the
-// role's next claim and a forward is the holder's one copy - so a copy taken out of the list
-// would let the owner's later events reach that holder first (destination.waiting, planChains).
+// a comment_fallback_copies row: nothing else delivers a role copy - a keep waits up to its hour
+// for the role's next live holder and a forward is the holder's one copy - so a copy taken out of
+// the list would let the owner's later events reach that holder first (destination.waiting,
+// planChains).
 // What the wait costs while it holds is the re-read mentionPendingDelay sets, and the holder's
 // later events of the issue, which the waiting forward holds behind its key for up to
 // unnamedForwardBound - the cost that bound exists to cap (planChains). Every other destination
@@ -892,7 +893,7 @@ const (
 // fallback row's, so no copy of the comment goes out under the event's own key while a send of
 // that mention is still owed.
 func (d *destinations) leftToMention(sessionID string) bool {
-	return d.leftTo(d.mentions.holds(), sessionID, contracts.AgentSubject(sessionID), false) != copyGoes
+	return d.leftTo(d.mentions.holds(), sessionID, contracts.LegacyAgentSubject(sessionID), false) != copyGoes
 }
 
 // workingSessionHold is that same rule asked of a session the owner's own work names - the
@@ -900,7 +901,7 @@ func (d *destinations) leftToMention(sessionID string) bool {
 // which reads what the comment's unpinned attempts whose holder this read could not name hold
 // back beside its own key's attempts.
 func (d *destinations) workingSessionHold(sessionID string) copyHold {
-	return d.leftTo(d.mentions.holds(), sessionID, contracts.AgentSubject(sessionID), true)
+	return d.leftTo(d.mentions.holds(), sessionID, contracts.LegacyAgentSubject(sessionID), true)
 }
 
 // leftTo reports what becomes of the copy of the comment at destination, which key's attempts
@@ -1054,7 +1055,7 @@ func routeTopic(route string) string {
 	case "role":
 		return contracts.RoleTopicPrefix + parsed.ID
 	case "session":
-		return contracts.AgentSubject(parsed.ID)
+		return contracts.LegacyAgentSubject(parsed.ID)
 	}
 	return ""
 }
@@ -1232,7 +1233,7 @@ type fallbackCopy struct {
 // the holder it reaches (suppressesCurrentRoute, holdsTheForwardAsARow,
 // roleCopyWaitsForAMention).
 func (c fallbackCopy) ofASessionsOwnTopic() bool {
-	return c.kind == sessionMentions && c.destination == contracts.AgentSubject(c.key)
+	return c.kind == sessionMentions && c.destination == contracts.LegacyAgentSubject(c.key)
 }
 
 // fallbackEvent is the comment.created event a fallback copy is the envelope of, and the slug of

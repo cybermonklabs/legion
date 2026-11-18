@@ -49,10 +49,10 @@ func usedAudits(t *testing.T, machine *Machine, grantID string) []map[string]any
 // in for each other. Each release's audit row records the narrowing it applied.
 func TestANarrowedReleaseLeavesTheGrantOwnerWide(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
-	retag(t, machine, requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""))
+	retag(t, machine, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var got []*secrets.GitHubNarrowing
 	machine.Minters = map[string]Minter{
-		policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 			got = append(got, req.GitHubNarrowing)
 			if req.GitHubNarrowing != nil {
 				return secrets.Minted{Value: "narrowed-token"}, nil
@@ -60,7 +60,7 @@ func TestANarrowedReleaseLeavesTheGrantOwnerWide(t *testing.T) {
 			return secrets.Minted{Value: "owner-wide-token"}, nil
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "APP_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "APP_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want a grant", request, err)
 	}
@@ -70,7 +70,7 @@ func TestANarrowedReleaseLeavesTheGrantOwnerWide(t *testing.T) {
 		narrowing *secrets.GitHubNarrowing
 		want      string
 	}{{nil, "owner-wide-token"}, {narrowing, "narrowed-token"}, {nil, "owner-wide-token"}} {
-		release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, step.narrowing)
+		release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, step.narrowing, ReleaseCall{})
 		if err != nil || release.Values["APP_KEY"] != step.want {
 			t.Fatalf("release %d = %v, %v; want APP_KEY=%s", i, release.Values, err, step.want)
 		}
@@ -85,35 +85,35 @@ func TestANarrowedReleaseLeavesTheGrantOwnerWide(t *testing.T) {
 }
 
 // TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing: a release that asks to narrow a
-// GitHub App token from a grant that holds none (a stored secret, another kind) is refused and
+// GitHub App token from a grant that holds none (a stored secret, another type) is refused and
 // releases nothing, rather than every value whole as though no narrowing were asked for. In a grant
 // that holds one, the narrowing reaches its github-app minter, and every other value is released
 // as it is.
 func TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine,
-		requestKindSecret("LOGIN_KEY", policy.KindGoogleLogin, policy.TierAgent, ""),
-		requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""),
+		requestTypeSecret("LOGIN_KEY", policy.TypeGoogleLogin, policy.TierAgent, ""),
+		requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),
 		policytest.Secret("PLAIN_KEY", fixtureOperator, policy.TierAgent, "plain-v1"),
 	)
 	var googleNarrowings, githubNarrowings []*secrets.GitHubNarrowing
 	machine.Minters = map[string]Minter{
-		policy.KindGoogleLogin: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGoogleLogin: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 			googleNarrowings = append(googleNarrowings, req.GitHubNarrowing)
 			return secrets.Minted{Value: "access-token"}, nil
 		},
-		policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 			githubNarrowings = append(githubNarrowings, req.GitHubNarrowing)
 			return secrets.Minted{Value: "narrowed-token"}, nil
 		},
 	}
 	narrowing := &secrets.GitHubNarrowing{Owner: "ada", ReadOnly: true}
 	for _, names := range [][]string{{"PLAIN_KEY"}, {"LOGIN_KEY"}, {"LOGIN_KEY", "PLAIN_KEY"}} {
-		request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", names...), "")
+		request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", names...), "", nil)
 		if err != nil || request.GrantID == nil {
 			t.Fatalf("Create(%v) = %+v, %v; want a grant", names, request, err)
 		}
-		if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing); !errors.Is(err, ErrNarrowingNotApplicable) || release.Values != nil {
+		if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing, ReleaseCall{}); !errors.Is(err, ErrNarrowingNotApplicable) || release.Values != nil {
 			t.Fatalf("narrowed Values(%v) = %v, %v; want ErrNarrowingNotApplicable and no value", names, release.Values, err)
 		}
 	}
@@ -121,11 +121,11 @@ func TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing(t *testing.T) {
 		t.Fatalf("the Google login minter ran %d times for refused releases, want none", len(googleNarrowings))
 	}
 
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY", "LOGIN_KEY", "PLAIN_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY", "LOGIN_KEY", "PLAIN_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(APP_KEY, LOGIN_KEY, PLAIN_KEY) = %+v, %v; want a grant", request, err)
 	}
-	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing)
+	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing, ReleaseCall{})
 	if err != nil || release.Values["APP_KEY"] != "narrowed-token" || release.Values["LOGIN_KEY"] != "access-token" || release.Values["PLAIN_KEY"] != "plain-v1" {
 		t.Fatalf("narrowed Values(APP_KEY, LOGIN_KEY, PLAIN_KEY) = %v, %v; want each value", release.Values, err)
 	}
@@ -143,21 +143,21 @@ func TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing(t *testing.T) {
 func TestANarrowingToAnUnlistedOwnerReleasesNothing(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
 	retag(t, machine,
-		requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""),
+		requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),
 		policytest.Secret("PLAIN_KEY", fixtureOperator, policy.TierAgent, "plain-v1"),
 	)
 	minted := 0
 	machine.Minters = map[string]Minter{
-		policy.KindGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 			minted++
 			return secrets.Minted{Value: "token"}, nil
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY", "PLAIN_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY", "PLAIN_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want a grant", request, err)
 	}
-	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, &secrets.GitHubNarrowing{Owner: "outsider", ReadOnly: true})
+	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, &secrets.GitHubNarrowing{Owner: "outsider", ReadOnly: true}, ReleaseCall{})
 	if !errors.Is(err, ErrNarrowingOwnerNotListed) || release.Values != nil || !strings.Contains(err.Error(), "APP_KEY") || !strings.Contains(err.Error(), "outsider") {
 		t.Fatalf("Values narrowed to an unlisted owner = %v, %v; want ErrNarrowingOwnerNotListed naming APP_KEY and outsider, no value", release.Values, err)
 	}
@@ -168,7 +168,7 @@ func TestANarrowingToAnUnlistedOwnerReleasesNothing(t *testing.T) {
 		t.Fatalf("a refused narrowing wrote grant.used rows %v, want none", audits)
 	}
 	for _, narrowing := range []*secrets.GitHubNarrowing{{Owner: "ada", ReadOnly: true}, nil} {
-		if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing); err != nil || release.Values["APP_KEY"] != "token" || release.Values["PLAIN_KEY"] != "plain-v1" {
+		if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, narrowing, ReleaseCall{}); err != nil || release.Values["APP_KEY"] != "token" || release.Values["PLAIN_KEY"] != "plain-v1" {
 			t.Fatalf("Values narrowed to %+v = %v, %v; want both values", narrowing, release.Values, err)
 		}
 	}
@@ -179,17 +179,17 @@ func TestANarrowingToAnUnlistedOwnerReleasesNothing(t *testing.T) {
 // refusal and not as ErrMintFailed, the class whose ERROR line tells the operator to fix the App.
 func TestANarrowingTheMinterRefusesIsNotAMintFailure(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
-	retag(t, machine, requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""))
+	retag(t, machine, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	machine.Minters = map[string]Minter{
-		policy.KindGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 			return secrets.Minted{}, fmt.Errorf("%w: GitHub answered HTTP 422", secrets.ErrMintNarrowingRefused)
 		},
 	}
-	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY"), "")
+	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read", "APP_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create = %+v, %v; want a grant", request, err)
 	}
-	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"missing"}})
+	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"missing"}}, ReleaseCall{})
 	if !errors.Is(err, secrets.ErrMintNarrowingRefused) || errors.Is(err, ErrMintFailed) || release.Values != nil {
 		t.Fatalf("Values = %v, %v; want ErrMintNarrowingRefused, not ErrMintFailed, and no value", release.Values, err)
 	}
@@ -206,12 +206,12 @@ func TestANarrowingTheMinterRefusesIsNotAMintFailure(t *testing.T) {
 func TestANarrowingOfAGrantBehindTheAirlockReleasesNothing(t *testing.T) {
 	machine, enrollmentID, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("APP_KEY", "")}})
 	retag(t, machine,
-		requestKindSecret("APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""),
-		requestKindSecret("OPEN_APP_KEY", policy.KindGitHubApp, policy.TierAgent, ""),
+		requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),
+		requestTypeSecret("OPEN_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),
 	)
 	var narrowings []*secrets.GitHubNarrowing
 	machine.Minters = map[string]Minter{
-		policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 			narrowings = append(narrowings, req.GitHubNarrowing)
 			return secrets.Minted{Value: `{"installations":{"ada":{"installation_id":7,"token":"ghs_the_real_installation_token"}}}`}, nil
 		},
@@ -219,7 +219,7 @@ func TestANarrowingOfAGrantBehindTheAirlockReleasesNothing(t *testing.T) {
 	narrowing := &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"proofs"}, ReadOnly: true}
 	_, behind := grantOf(t, machine, enrollmentID, key, "read the App key", "APP_KEY", "AUTO_TOKEN")
 
-	release, err := machine.Values(t.Context(), behind, enrollmentID, narrowing)
+	release, err := machine.Values(t.Context(), behind, enrollmentID, narrowing, ReleaseCall{})
 	if !errors.Is(err, ErrNarrowingBehindAirlock) || release.Values != nil || release.Airlock != nil {
 		t.Fatalf("narrowed Values of a grant behind the airlock = %+v, %v; want ErrNarrowingBehindAirlock and no release", release, err)
 	}
@@ -234,7 +234,7 @@ func TestANarrowingOfAGrantBehindTheAirlockReleasesNothing(t *testing.T) {
 	}
 
 	// The same grant releases as it always did when it asks for no narrowing.
-	release, err = machine.Values(t.Context(), behind, enrollmentID, nil)
+	release, err = machine.Values(t.Context(), behind, enrollmentID, nil, ReleaseCall{})
 	if err != nil || release.Airlock == nil || release.Airlock.Names["APP_KEY"].Value == "" {
 		t.Fatalf("Values of the same grant with no narrowing = %+v, %v; want the airlock's placeholders", release, err)
 	}
@@ -245,7 +245,7 @@ func TestANarrowingOfAGrantBehindTheAirlockReleasesNothing(t *testing.T) {
 
 	// A grant no name of which the rules name narrows as it did before the airlock.
 	_, open := grantOf(t, machine, enrollmentID, key, "read the other App key", "OPEN_APP_KEY")
-	release, err = machine.Values(t.Context(), open, enrollmentID, narrowing)
+	release, err = machine.Values(t.Context(), open, enrollmentID, narrowing, ReleaseCall{})
 	if err != nil || !strings.Contains(release.Values["OPEN_APP_KEY"], "ghs_the_real_installation_token") {
 		t.Fatalf("narrowed Values of a grant the rules do not name = %v, %v; want the minted value", release.Values, err)
 	}

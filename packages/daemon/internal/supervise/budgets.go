@@ -52,8 +52,9 @@ type Limits struct {
 type FailureCause string
 
 const (
-	// CauseLaunchRefused: the runtime refused the launch until the launch budget ran out
-	// (launchNow), with no other cause pending for the relaunch it refused.
+	// CauseLaunchRefused: the runtime refused the launch until the launch budget ran out, or
+	// refused it in a way no try changes, a system prompt past the start frame (launchNow,
+	// promptRefused), with no other cause pending for the relaunch it refused.
 	CauseLaunchRefused FailureCause = "launch_refused"
 	// CauseDied: the process died until the deaths or the launch budget ran out (died, directly
 	// and through relaunchAfterFailure).

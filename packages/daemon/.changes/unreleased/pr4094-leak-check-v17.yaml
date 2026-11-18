@@ -1,9 +1,0 @@
-kind: Changed
-body: |-
-  The worker image pins the shared public leak check at `leak-check-v17` (`ARG LEAK_CHECK_TAG`),
-  in place of `leak-check-v15`. Each push from a pod runs this check before it writes. Measured
-  from an issue pod on 2026-11-15 against cybermonklabs/legion, a push of a ref at an existing
-  commit took 3.1 to 3.2 s with `leak-check-v17` and 9.4 to 13.2 s with `leak-check-v15`, and
-  both tags refused a commit that names a Tailscale MagicDNS host. `legion gh`'s list of reads
-  is proven against `leak-check-v17` too (`ghReadsProvenCheck`), so a call that writes nothing
-  still skips the visibility read in a pod on the new pin.

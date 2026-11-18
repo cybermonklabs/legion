@@ -49,7 +49,10 @@ type RoleRenewal struct {
 // RenewRoleClaims stamps the moment clientInstanceID's process last answered on every claim
 // sessionID holds that names that process (RoleClaim.RenewedAt), which is what makes a claim's
 // renewal its holder's heartbeat rather than the instant the role was taken: the listener calls
-// it from POST /v1/interests/subscribe, the registration every client repeats while it runs.
+// it from POST /v1/interests/subscribe, the registration every client repeats while it runs. A
+// claim of sessionID that names no process is adopted by the first such registration that
+// states a process, and by no registration after its holder has renewed it stating none
+// (renewRoleClaim).
 //
 // The roles it weighs (RoleRenewal.Set) are the role topics of record and the roles the role
 // claim copy names for sessionID (RolesHeldBy), sorted and without repeats, and each is renewed
@@ -66,11 +69,16 @@ type RoleRenewal struct {
 //
 // A registration that states no process (an empty clientInstanceID) renews the claims of its own
 // session that name no process, and adopts none: an absent instance names no process, so it
-// matches no claim that names one, and a claim naming none is adopted by the process that
-// registers and never by the one that cannot say which it is. That arm is what keeps a claim
-// standing at a deploy renewed by the client that holds it: such a claim names no process until
-// a registration that states one adopts it, a client built before registrations carried an
-// instance states none, and nothing else moves that claim's renewal. Without it that renewal
+// matches no claim that names one. Such a renewal also notes on the claim that it was renewed
+// by a registration that states no process (RoleClaim.RenewedWithoutProcess), and from then on
+// no registration that states a process adopts it: the claim's holder is answering for it, and
+// a process that states its instance under the same session id may be a second process that
+// resumed that id. A claim nothing has renewed so is adopted by the first registration of its
+// session that states a process: a claim standing at a deploy, whose holder's next heartbeat
+// adopts it, and a session pod's claim of its launch role, which the pod's role claimer writes
+// naming no process for the session the pod's agent registered. That is the one heartbeat in
+// which such a claim is open to any process of its session. The renewal that states no process
+// is what keeps a claim of an older client renewed while that client runs: without it that renewal
 // would age out while the holder is still registering, and POST /v1/roles/set would hand the
 // role to a second process claiming it under the same session id, since that route decides a
 // claim held under the claimant's own session id on the renewal alone and reads no session
@@ -154,11 +162,16 @@ func rolesOfTopics(topics []string) []string {
 }
 
 // roleOfTopic is the role whose lane topic (contracts.RoleTopicPrefix) topic is, and false for a
-// topic that is not a role lane's. A lane topic whose role is empty, or holds a subscription
-// wildcard (* or >), names no one role and answers false too. It is the one reading of a topic's
-// role, so a release of named topics (releaseRoleClaims) and a record's roles (rolesOfTopics)
-// read a topic the same way.
+// topic that is not a role lane's. The lane is read in either form: the new form names a project
+// before the role (contracts.RoleSubject), and its old form (contracts.LegacyTwin) is the role's
+// lane as a record of the old form holds it. A lane topic whose role is empty, or holds a
+// subscription wildcard (* or >), names no one role and answers false too. It is the one reading
+// of a topic's role, so a release of named topics (releaseRoleClaims) and a record's roles
+// (rolesOfTopics) read a topic the same way.
 func roleOfTopic(topic string) (string, bool) {
+	if twin, ok := contracts.LegacyTwin(topic); ok {
+		topic = twin
+	}
 	role, ok := strings.CutPrefix(topic, contracts.RoleTopicPrefix)
 	if !ok || role == "" || strings.ContainsAny(role, "*>") {
 		return "", false
@@ -172,11 +185,15 @@ func roleOfTopic(topic string) (string, bool) {
 // roles it is asked about is RenewRoleClaims' set, from the registration's interest record and
 // the role claim copy; whether one is renewed is this read of its record alone. A registration
 // that states a process renews the claim naming that very process (RoleClaim.HeldByProcess), and
-// adopts one naming none by writing its instance in: the first registration of the session
-// holding a claim written before claims named a process, after which every renewal takes the
-// first arm. A registration that states no process renews the claims of its session that name
-// none, leaving them naming none, and matches no claim that names one - an absent instance names
+// adopts one naming none by writing its instance in, while no registration that states no
+// process has renewed it (RoleClaim.RenewedWithoutProcess): the first registration of its
+// session after it was written, after which every renewal takes the first arm. A registration
+// that states no process renews the claims of its session that name none, leaving them naming
+// none and noting that renewal, and matches no claim that names one - an absent instance names
 // no process, so it can neither be a holder's heartbeat nor adopt what another process holds.
+// Once its holder has renewed a claim that names no process so, a registration that states a
+// process is no longer the claim's first heartbeat: it may be a second process that resumed the
+// session's id while the holder still answers, and it leaves the claim as it stands.
 //
 // A claim marked handed back (RoleClaim.HandedBack) is renewed by nobody, its own process
 // included: the mark is the release's word that the holder gave the role up, so the claim ages
@@ -186,9 +203,10 @@ func roleOfTopic(topic string) (string, bool) {
 // is a role with no claim record at all, which the read answers as a zero claim and so a zero
 // revision (RoleClaim).
 //
-// Only RenewedAt, and on adoption ClientInstanceID, are written: HolderSessionID, ClaimedAt and
-// PreviousSessionID are the claim's own provenance and are carried over untouched, so a renewal
-// never re-dates a claim or rewrites who took it from whom.
+// Only RenewedAt, on adoption ClientInstanceID, and on a renewal that states no process
+// RenewedWithoutProcess, are written: HolderSessionID, ClaimedAt and PreviousSessionID are the
+// claim's own provenance and are carried over untouched, so a renewal never re-dates a claim or
+// rewrites who took it from whom.
 //
 // A lost compare-and-swap (nats.ErrKeyExists for the wrong last sequence, nats.ErrKeyNotFound for
 // a claim deleted in between) means another claim landed after this call read the record. The
@@ -218,12 +236,18 @@ func (r *Registry) renewRoleClaim(ctx context.Context, role, sessionID, clientIn
 		role:     role,
 		attempts: 1,
 		writes: func(claim RoleClaim) bool {
-			return claim.HolderSessionID == sessionID && !claim.HandedBack &&
-				(claim.ClientInstanceID == "" || claim.HeldByProcess(clientInstanceID))
+			if claim.HolderSessionID != sessionID || claim.HandedBack {
+				return false
+			}
+			if claim.ClientInstanceID == "" {
+				return clientInstanceID == "" || !claim.RenewedWithoutProcess
+			}
+			return claim.HeldByProcess(clientInstanceID)
 		},
 		send: func(claim RoleClaim) (uint64, error) {
 			renewed := claim
 			renewed.ClientInstanceID = clientInstanceID
+			renewed.RenewedWithoutProcess = clientInstanceID == ""
 			renewed.RenewedAt = r.now().UnixMilli()
 			data, err := json.Marshal(renewed)
 			if err != nil {

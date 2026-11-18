@@ -38,7 +38,7 @@ func newNarrowingServer(t *testing.T) *narrowingServer {
 	s := &narrowingServer{}
 	s.testServer = newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
-			policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+			policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 				s.mu.Lock()
 				defer s.mu.Unlock()
 				s.minted = append(s.minted, req.GitHubNarrowing)
@@ -52,7 +52,7 @@ func newNarrowingServer(t *testing.T) *narrowingServer {
 			},
 		}
 	})
-	s.Secrets.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+	s.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	s.Secrets.Put(policytest.Secret("PLAIN_KEY", testApprover, policy.TierAgent, "plain-v1"))
 	for _, name := range []string{"APP_KEY", "PLAIN_KEY"} {
 		if status, body := s.req(t, http.MethodPost, "/v1/secrets/"+name+"/reread", nil, nil); status != http.StatusOK {
@@ -154,7 +154,8 @@ func TestABadNarrowingIs400AndMintsNothing(t *testing.T) {
 	}{
 		{"a repository with its owner", map[string]any{"owner": "ada", "repositories": []string{"ada/proofs"}}, "github_app.repositories names ada's repositories by name alone"},
 		{"an empty repository list", map[string]any{"owner": "ada", "repositories": []string{}}, "github_app.repositories is empty"},
-		{"a field the broker does not read", map[string]any{"owner": "ada", "permissions": map[string]string{"administration": "write"}}, "permissions"},
+		{"a field the broker does not read", map[string]any{"owner": "ada", "permissions": map[string]string{"administration": "write"}}, "github_app.permissions"},
+		{"a field of the wrong type", map[string]any{"owner": "ada", "read_only": "yes"}, "github_app.read_only"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			status, body := s.values(t, s.grantID, map[string]any{"github_app": tc.narrowing})
@@ -231,5 +232,41 @@ func TestANarrowingTheSecretCannotServeIsTheCallersAndNotAMintFailure(t *testing
 		if recorded != 1 {
 			t.Fatalf("logged %d %q records of %s naming APP_KEY, want 1 beside the refused narrowing's line: %s", recorded, answer.RefusalMessage, code, logged.String())
 		}
+	}
+}
+
+// TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure: a release whose mint finds no
+// installation of the App on the account the narrowing names answers 502 MINT_FAILED with the
+// minter's words, as the release always has, and not the 422 NARROWING_REFUSED the request route
+// answers for the same cause before the approval (R2 of dispatch://INFRA-3099). The release wraps
+// that refusal in requests.ErrMintFailed and still carries secrets.ErrMintNoInstallation. Only
+// createRequest answers that sentinel 422, in an arm of its own. writeNarrowingRefusal, which
+// grantValues shares, does not answer it, so the release stays at 502 whatever order grantValues'
+// arms come in, and this fails once the shared helper answers the sentinel ahead of
+// ErrMintFailed.
+func TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure(t *testing.T) {
+	s := newTestServerWith(t, func(d *api.Deps) {
+		d.Machine.Minters = map[string]requests.Minter{
+			policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+				if req.GitHubNarrowing == nil {
+					return secrets.Minted{Value: "owner-wide"}, nil
+				}
+				return secrets.Minted{}, fmt.Errorf("%w: github app 123456 has no installation on %s", secrets.ErrMintNoInstallation, req.GitHubNarrowing.Owner)
+			},
+		}
+	})
+	s.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
+	if status, body := s.req(t, http.MethodPost, "/v1/secrets/APP_KEY/reread", nil, nil); status != http.StatusOK {
+		t.Fatalf("reread APP_KEY = %d %s", status, body)
+	}
+	enrollmentID, key := s.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
+	created := s.requestAs(t, key, enrollmentID, "APP_KEY")
+	if created.GrantID == nil {
+		t.Fatalf("POST /v1/requests for APP_KEY = %+v, want an automatic grant", created)
+	}
+	status, body := s.session(t, key, enrollmentID, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", map[string]any{"github_app": map[string]any{"owner": "ada"}})
+	reply := decode[wireError](t, body)
+	if status != http.StatusBadGateway || reply.Code != "MINT_FAILED" || !strings.Contains(reply.Error, "has no installation on ada") || strings.Contains(string(body), `"values"`) {
+		t.Fatalf("POST values = %d %s, want 502 MINT_FAILED naming the account with no installation and no value", status, body)
 	}
 }

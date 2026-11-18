@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -26,7 +27,7 @@ import (
 // the route's answer carries the same.
 func publishedSender(t *testing.T, state *listenerDeps, source, target string) *contracts.EnvelopeSender {
 	t.Helper()
-	probe, err := state.client.Conn.SubscribeSync(contracts.AgentSubject(target))
+	probe, err := state.client.Conn.SubscribeSync(contracts.LegacyAgentSubject(target))
 	if err != nil {
 		t.Fatalf("subscribe to %s: %v", target, err)
 	}
@@ -372,7 +373,7 @@ func TestARecreatedRoleBucketIsNeverAnsweredAsAHolderWithoutItsRole(t *testing.T
 		put(fmt.Sprintf("filler-%04d", i), filler)
 	}
 	put("reviewer", holder)
-	if err := registry.Rewatch(client.Conn); err != nil {
+	if err := registry.Rewatch(context.Background(), client.Conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 

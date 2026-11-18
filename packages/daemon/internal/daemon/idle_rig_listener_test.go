@@ -21,8 +21,8 @@ import (
 
 // idleRigListener is the real Envoy listener of packages/envoy/cmd/listener, built once per test
 // process (testbuild.EnvoyBinary) and run as its own process for the rig: the one component that
-// sees a message published to a role topic nobody holds and a message sent to the agent subject
-// of a session that is gone, and reports both to the daemon on notifications.legion.wake.
+// sees a message published to a role topic no live session holds and a message sent to the agent
+// subject of a session that is gone, and reports both to the daemon on notifications.legion.wake.
 //
 // It is started the way scripts/e2e/envoy-session-delivery.sh starts one — a build of this
 // checkout's cmd/listener, then PORT, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and a HOME of
@@ -62,9 +62,13 @@ func startIdleRigListenerOn(t *testing.T, natsURL, machine string, port int) *id
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, binary)
 	cmd.Dir = home
+	// The unplaceable window is ten seconds rather than the shipped minute: a copy stored on the
+	// agent subject of a session with no record is held for that window before the listener gives
+	// it up and reports the wake (cmd/listener's unplaceableAgentDelivery), so a pod woken that
+	// way comes back inside the rig's pod wait with room to spare.
 	cmd.Env = append(os.Environ(),
 		"HOME="+home, "PORT="+fmt.Sprint(port), "ENVOY_LISTEN_HOST=127.0.0.1",
-		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL)
+		"ENVOY_MACHINE_ID="+machine, "NATS_URLS="+natsURL, "ENVOY_UNPLACEABLE_RETRY_WINDOW=10s")
 	cmd.Stdout, cmd.Stderr = file, file
 	if err := cmd.Start(); err != nil {
 		cancel()
@@ -121,8 +125,8 @@ func (l *idleRigListener) log() string {
 }
 
 // publish publishes one message to a topic, as a sender's envoy_publish does. It answers the
-// listener's status and body, since a publish to a role topic nobody holds is the 404 that
-// reports the wake.
+// listener's status and body, since a publish to a role topic no live session holds is answered
+// 202 kept or 404, and either answer says what the listener found of the role's holder.
 func (l *idleRigListener) publish(body map[string]any) (int, string) {
 	l.t.Helper()
 	return l.call("/v1/messages/publish", body)
@@ -134,15 +138,40 @@ func (l *idleRigListener) send(body map[string]any) (int, string) {
 	return l.call("/v1/messages/send", body)
 }
 
+// freeClaims removes a session's interest record and frees every role claim the session holds,
+// as an operator's DELETE /v1/interests/<session> does (the listener's forced release). It is
+// how the rig frees the claim a released session left standing at once: the listener's role
+// claim reaper frees it only past the live window and at its own interval, neither of which the
+// rig's listener shortens. It answers the listener's status and body.
+func (l *idleRigListener) freeClaims(session string) (int, string) {
+	l.t.Helper()
+	request, err := http.NewRequest(http.MethodDelete, l.url+"/v1/interests/"+session, nil)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	return l.answer(request)
+}
+
 func (l *idleRigListener) call(path string, body map[string]any) (int, string) {
 	l.t.Helper()
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		l.t.Fatal(err)
 	}
-	response, err := l.client.Post(l.url+path, "application/json", bytes.NewReader(encoded))
+	request, err := http.NewRequest(http.MethodPost, l.url+path, bytes.NewReader(encoded))
 	if err != nil {
-		l.t.Fatalf("POST %s: %v", path, err)
+		l.t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	return l.answer(request)
+}
+
+// answer makes one request of the listener and answers its status and body.
+func (l *idleRigListener) answer(request *http.Request) (int, string) {
+	l.t.Helper()
+	response, err := l.client.Do(request)
+	if err != nil {
+		l.t.Fatalf("%s %s: %v", request.Method, request.URL.Path, err)
 	}
 	defer response.Body.Close()
 	read, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))

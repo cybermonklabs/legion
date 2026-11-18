@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -131,7 +133,14 @@ func TestACompactionKeepsTheSessionAndSendsTheOwedTaskAgain(t *testing.T) {
 
 // The compaction carries the instructions that make Oh My Pi's summary text: without them it
 // archives the history onto snapcompact's images, which a worker resumed on them needs a vision
-// model to read back (shimwire.Compact). The bound it is asked within is the operation's own
+// model to read back (shimwire.Compact). They keep word for word the reviewer's entry, since a
+// reviewer whose summary dropped it writes no entry. Only the last sentence of a task is the
+// daemon's (reviewround.Sentences): a task's own text can quote `Review entry: 2.` above it, and a
+// task can end with `Review entry: none.`, which does not change the entry of the round. So the
+// instructions name the entry in exactly one sentence, and that sentence and the one before it are
+// the rule: take the last sentence of each task, then keep the newest of those that names a
+// number. After a true entry 3, then a task that quotes `Review entry: 2.` and ends `Review entry:
+// none.`, that rule keeps `Review entry: 3.`. The bound it is asked within is the operation's own
 // ten minutes, not the RPC timeout.
 func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	h := compactHarness(t, nil)
@@ -149,6 +158,24 @@ func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	}
 	if !strings.Contains(asked[0].CustomInstructions, "Write the summary as text.") {
 		t.Errorf("the compaction's instructions are %q, want them to ask for a text summary", asked[0].CustomInstructions)
+	}
+	// The sentences of the instructions, in order, and the ones among them that name the entry.
+	sentences := strings.SplitAfter(asked[0].CustomInstructions, ". ")
+	var naming []int
+	for i := range sentences {
+		sentences[i] = strings.TrimSpace(sentences[i])
+		if strings.Contains(sentences[i], reviewround.EntryLabel) {
+			naming = append(naming, i)
+		}
+	}
+	rule := []string{
+		"Find the last sentence of each task you were given.",
+		"Of these sentences, keep word for word the newest that starts \"" + reviewround.EntryLabel + ":\" and names a number.",
+	}
+	if len(naming) != 1 || naming[0] == 0 || !slices.Equal(sentences[naming[0]-1:naming[0]+1], rule) {
+		t.Errorf("the compaction's instructions are %q, want them to name %q in exactly one sentence, which with the one before it is %q: "+
+			"after a true entry 3, then a task that quotes \"%s: 2.\" and ends \"%s: none.\", the sentence kept is \"%s: 3.\"",
+			asked[0].CustomInstructions, reviewround.EntryLabel, rule, reviewround.EntryLabel, reviewround.EntryLabel, reviewround.EntryLabel)
 	}
 	if asked[0].Bound != runtime.CompactTimeout {
 		t.Errorf("the compaction was bounded at %s, want the operation's own %s", asked[0].Bound, runtime.CompactTimeout)
@@ -473,7 +500,7 @@ func TestAStartDropsTheDaemonsHoldAndTheIdleClaimItLeavesIsCompacted(t *testing.
 
 	wantFreshSessionRefusal(t, refused, http.StatusConflict, claimInATurn,
 		heldSuspensionRefusal(token, freshSessionName, "a compaction", wantCompactionLive))
-	if err := m.StartedBy(h.ctx, 42); err != nil {
+	if err := m.StartedBy(h.ctx, 42, nil); err != nil {
 		t.Fatalf("the start run against the held claim: %v", err)
 	}
 	if err := m.Handle(h.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {

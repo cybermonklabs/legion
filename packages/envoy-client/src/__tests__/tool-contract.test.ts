@@ -16,6 +16,7 @@ import {
   toMessageMetadata,
 } from "../tool-contract";
 import { ToolInputError } from "../tool-input-errors";
+import { createEnvoyClient, UNRESPONSIVE_RULE } from "../transport";
 
 /** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server
  *  refuses a claim take by: the rule's text must carry that number, and a change of the constant
@@ -133,8 +134,10 @@ describe("envoyToolSpecs", () => {
       expect(description).not.toContain("live only");
     }
     // The ways a role publish ends in an error: the holder's refusal (403), and the window the
-    // listener spends waiting for the stream (504). No holder is not one of them: the listener
-    // keeps the message for the role's next holder.
+    // listener spends waiting for the stream (504). On a listener of this release whose keep
+    // succeeded, no live holder is not one of them: the listener keeps the message for the role's
+    // next live holder. A keep that failed answers 404, and so does a listener of an earlier
+    // release for a holder that is not live (holder_lapsed).
     expect(publish?.description).toContain(
       "the holder refuses the message, or the forward is not stored within four seconds"
     );
@@ -150,19 +153,24 @@ describe("envoyToolSpecs", () => {
     // 200: a live holder's own consumer holds the forward, once the stream stored it. No holder
     // confirms a forward.
     expect(publish?.description).toContain(
-      "a session holds the role, and the stream stores the forward for that holder's consumer"
+      "a live session holds the role, and the stream stores the forward for that holder's consumer"
     );
-    // 202: nobody holds the role, so the listener keeps the message. This is not a refusal.
+    // 202: no live session holds the role, so the listener keeps the message. This is not a
+    // refusal, and a holder that stopped answering is one of the two cases: it keeps its role,
+    // and the message waits for it or for the next live holder (dispatch://INFRA-2846, R4).
     expect(publish?.description).toContain(
-      "The listener then keeps the message, and gives it to the next session that claims that role in the hour that follows. This is a success"
+      "Second, no live session holds the role: nobody claims it, or its holder is unresponsive or gone. The listener then keeps the message for one hour. This is a success."
     );
-    // 404: nothing was kept, and the one state that reaches it - a holder that stopped
-    // answering, which keeps its role - must tell the model to publish again rather than to
-    // treat the message as waiting for that holder (dispatch://INFRA-392, R3 and R7).
+    expect(publish?.description).toContain(
+      "The next session to hold the role live before kept_until gets the message. That can be the same holder when it answers again."
+    );
+    // 404: nothing was kept. The tool sends no `keep: false`, so on a listener of this release
+    // whose keep succeeded a holder that is not live never reaches it, and nothing tells the model
+    // that no copy waits for such a holder. A keep that failed, and a listener of an earlier
+    // release, answer such a holder 404 holder_lapsed.
     expect(publish?.description).toContain("the listener keeps nothing and errs");
-    expect(publish?.description).toContain(
-      "A holder that stopped answering keeps its role but was not sent the message, and nothing waits for it, so publish the message again once that holder's holder_state reads live, and start no replacement for that session."
-    );
+    expect(publish?.description).not.toContain("nothing waits for it");
+    expect(publish?.description).not.toContain("in the hour that follows");
   });
 
   test("says what the recipient counts and the stopped state mean", () => {
@@ -181,41 +189,141 @@ describe("envoyToolSpecs", () => {
 });
 
 describe("publishConfirmationText", () => {
-  test("says a kept answer is a success, and that the message waits for the role's next holder", () => {
-    const line = publishConfirmationText({
-      envelope: { event_id: "event-kept", topic: "notifications.role.architect" },
-      kept: true,
+  // The listener keeps a role message that no live session holds for one hour, and names the end
+  // of that hour as kept_until. At that end it drops a copy no session took and sends the
+  // publish's source session a message that names it (dispatch://INFRA-2846, R3). A listener of
+  // an earlier release keeps for a time it does not name and sends no such message.
+  test("a kept publish says until when it is kept", async () => {
+    const keptUntil = Date.UTC(2026, 10, 15, 10, 30);
+    const until = "2026-11-15T10:30:00.000Z";
+    const lastSeen = Date.UTC(2026, 10, 15, 9, 20);
+    const answers: Record<string, unknown>[] = [
+      { kept: true, kept_reason: "unclaimed", kept_until: keptUntil },
+      {
+        kept: true,
+        kept_reason: "holder_lapsed",
+        kept_until: keptUntil,
+        holder: "ses_reviewer",
+        holder_state: "unresponsive",
+        last_seen: lastSeen,
+      },
+      {
+        kept: true,
+        kept_reason: "holder_lapsed",
+        kept_until: keptUntil,
+        holder: "ses_merger",
+        holder_state: "gone",
+      },
+      // A listener of an earlier release: kept, and no time named.
+      { kept: true, kept_reason: "unclaimed" },
+    ];
+    const client = createEnvoyClient({
+      baseUrl: "http://listener.test",
+      fetch: async (_input, init) => {
+        const body = JSON.parse(String(init?.body)) as { readonly topic: string };
+        return new Response(
+          JSON.stringify({
+            event_id: "event-kept",
+            source: "agent",
+            source_event_id: "agent.ses_sender.event-kept",
+            source_session: "ses_sender",
+            topic: body.topic,
+            dedupe_key: "agent.role.event-kept",
+            issued_at: 3,
+            payload_summary: "the worker is stalled",
+            trace_id: "trace-kept",
+            ...answers.shift(),
+          }),
+          { status: 202, headers: { "Content-Type": "application/json" } }
+        );
+      },
     });
+    const publish = (role: string) =>
+      client.publish({
+        sourceSessionID: "ses_sender",
+        topic: `notifications.role.${role}`,
+        message: "the worker is stalled",
+      });
+    const named = { senderNamed: true };
 
-    expect(line).toBe(
-      "published event-kept. Envoy kept it for the role: no session holds it yet, and the message waits for the session that claims it next."
+    // A role nobody claims: the line names kept_until as a UTC time, and says that a message
+    // comes if no session takes the copy by then.
+    const unclaimed = await publish("legion-architect");
+    expect(unclaimed).toMatchObject({ kept: true, keptReason: "unclaimed", keptUntil });
+    expect(publishConfirmationText(unclaimed, named)).toBe(
+      `published event-kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late.`
     );
-  });
+    // A publish that named no session is sent no such message, so its line promises none.
+    const unnamed = publishConfirmationText(unclaimed, { senderNamed: false });
+    expect(unnamed).toBe(
+      `published event-kept. Envoy kept it for the role until ${until}: no live session holds the role now. The next session to hold the role before then gets it.`
+    );
 
-  test("names no holder on a kept answer whose resolution named one", () => {
-    // `holder` on a kept answer is the session the resolution read, which never got the
-    // message, so naming it as the holder would be a lie.
-    const line = publishConfirmationText({
-      envelope: { event_id: "event-lapsed", topic: "notifications.role.architect" },
-      holder: "ses_lapsed",
+    // A holder that is unresponsive: the line names it and its state, and keeps the warning that
+    // such a holder is not dead and that the sender starts no replacement for it.
+    const unresponsive = await publish("reviewer");
+    expect(unresponsive).toMatchObject({
       kept: true,
+      keptReason: "holder_lapsed",
+      keptUntil,
+      holder: "ses_reviewer",
+      holderState: "unresponsive",
+      lastSeen,
     });
+    const warned = publishConfirmationText(unresponsive, named);
+    expect(warned).toBe(
+      `published event-kept. Envoy kept it for the role until ${until}: its holder ses_reviewer is unresponsive, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late. ${UNRESPONSIVE_RULE}`
+    );
+    expect(warned).toContain("An unresponsive session is not dead");
+    expect(warned).toContain("Start no replacement for it");
 
-    expect(line).not.toContain("ses_lapsed");
-    expect(line).toContain("kept it for the role");
+    // A holder that is gone: named with its state, and with no warning, which is for an
+    // unresponsive session alone.
+    const gone = await publish("merger");
+    expect(gone).toMatchObject({ keptReason: "holder_lapsed", holder: "ses_merger" });
+    expect(gone.lastSeen).toBeUndefined();
+    expect(publishConfirmationText(gone, named)).toBe(
+      `published event-kept. Envoy kept it for the role until ${until}: its holder ses_merger is gone, so no live session holds the role now. The next session to hold the role before then gets it. If none does, Envoy drops it and sends you a message that names it, unless it drops it more than an hour late.`
+    );
+
+    // A listener of an earlier release names no time: the line says kept, with no time, and
+    // promises neither a hand-over nor a message.
+    const earlier = await publish("controller");
+    expect(earlier).toMatchObject({ kept: true, keptReason: "unclaimed" });
+    expect(earlier.keptUntil).toBeUndefined();
+    const timeless = publishConfirmationText(earlier, named);
+    expect(timeless).toBe(
+      "published event-kept. Envoy kept it for the role: no live session holds the role now. Envoy did not say until when it keeps it."
+    );
+
+    // The tool's description names the hour, kept_until, and the message that follows it.
+    const description =
+      envoyToolSpecs.find((spec) => spec.name === "envoy_publish")?.description ?? "";
+    expect(description).toContain("The listener then keeps the message for one hour.");
+    expect(description).toContain("its kept_until is the time that hour ends");
+    expect(description).toContain(
+      "If no session takes the message by kept_until, Envoy drops it. If the publish named your session as its source, Envoy then sends your session a message that names the dropped message, unless it dropped it more than an hour late."
+    );
+    expect(description).toContain(
+      "For a holder that is not live, the result also names that holder and its state."
+    );
   });
 
   test("names the holder a delivered role message reached, and nothing else for a plain topic", () => {
     expect(
-      publishConfirmationText({
-        envelope: { event_id: "event-held", topic: "notifications.role.architect" },
-        holder: "ses_architect",
-      })
+      publishConfirmationText(
+        {
+          envelope: { event_id: "event-held", topic: "notifications.role.architect" },
+          holder: "ses_architect",
+        },
+        { senderNamed: true }
+      )
     ).toBe("published event-held. Its role holder is ses_architect.");
     expect(
-      publishConfirmationText({
-        envelope: { event_id: "event-team", topic: "notifications.team.deploy-squad.all" },
-      })
+      publishConfirmationText(
+        { envelope: { event_id: "event-team", topic: "notifications.team.deploy-squad.all" } },
+        { senderNamed: true }
+      )
     ).toBe("published event-team.");
   });
 
@@ -298,14 +406,13 @@ describe("publishConfirmationText", () => {
 
   test("names a role publish's holder and the state the listener resolved it in", () => {
     expect(
-      publishConfirmationText({
-        envelope,
-        holder: "ses_holder",
-        holderState: "live",
-      })
+      publishConfirmationText(
+        { envelope, holder: "ses_holder", holderState: "live" },
+        { senderNamed: true }
+      )
     ).toBe("published evt_1. Its role holder is ses_holder (live).");
     // A listener predating the field names the holder alone, and the line says only that.
-    expect(publishConfirmationText({ envelope, holder: "ses_holder" })).toBe(
+    expect(publishConfirmationText({ envelope, holder: "ses_holder" }, { senderNamed: true })).toBe(
       "published evt_1. Its role holder is ses_holder."
     );
   });
@@ -314,9 +421,10 @@ describe("publishConfirmationText", () => {
   // bucket) is answered with the envelope alone, so the line names the event and nothing else.
   test("says only that a topic publish was published", () => {
     expect(
-      publishConfirmationText({
-        envelope: { event_id: "evt_1", topic: "notifications.team.deploy-squad.all" },
-      })
+      publishConfirmationText(
+        { envelope: { event_id: "evt_1", topic: "notifications.team.deploy-squad.all" } },
+        { senderNamed: true }
+      )
     ).toBe("published evt_1.");
   });
 });
@@ -483,6 +591,8 @@ describe("sessionsOnMachine", () => {
     port: 0,
     title: "",
     topics: [],
+    roles: [],
+    capabilities: [],
     self_subscribed: true,
     state: "live" as const,
   });
@@ -510,6 +620,8 @@ describe("sessionsOnMachine", () => {
       port: 0,
       title: "",
       topics: [],
+      roles: [],
+      capabilities: [],
       self_subscribed: true,
       state: "live" as const,
     };
@@ -579,24 +691,31 @@ describe("sendConfirmationText for a state", () => {
 
 describe("publishConfirmationText counts", () => {
   const envelope = { event_id: "evt_02", topic: "notifications.team.deploy-squad.all" };
+  const named = { senderNamed: true };
 
   test("counts the other sessions that get the message, and how many run now", () => {
-    const text = publishConfirmationText({ envelope, recipients: 3, recipientsConnected: 2 });
+    const text = publishConfirmationText(
+      { envelope, recipients: 3, recipientsConnected: 2 },
+      named
+    );
 
     expect(text).toBe("published evt_02 to 3 other sessions (2 running now)");
   });
 
   test("one other session takes the singular", () => {
-    expect(publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 1 })).toBe(
-      "published evt_02 to 1 other session (1 running now)"
-    );
-    expect(publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 0 })).toBe(
-      "published evt_02 to 1 other session (0 running now)"
-    );
+    expect(
+      publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 1 }, named)
+    ).toBe("published evt_02 to 1 other session (1 running now)");
+    expect(
+      publishConfirmationText({ envelope, recipients: 1, recipientsConnected: 0 }, named)
+    ).toBe("published evt_02 to 1 other session (0 running now)");
   });
 
   test("a count of none says the message reached nobody, and names the topic", () => {
-    const text = publishConfirmationText({ envelope, recipients: 0, recipientsConnected: 0 });
+    const text = publishConfirmationText(
+      { envelope, recipients: 0, recipientsConnected: 0 },
+      named
+    );
 
     expect(text).toBe(
       "published evt_02; no other session subscribes to notifications.team.deploy-squad.all, so no other session gets it"

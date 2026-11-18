@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -70,8 +71,9 @@ type routeShape struct {
 	// Opaque is why this route's answer carries no schema, for a route that relays or pre-renders
 	// its bytes rather than modelling them; empty for every other route.
 	Opaque string
-	// OpaqueContentType is the media type an Opaque answer is served as; empty where Opaque is.
-	OpaqueContentType string
+	// OpaqueContentTypes are the media types an Opaque answer is served as, one for each kind of
+	// bytes the route answers; empty where Opaque is.
+	OpaqueContentTypes []string
 	// OpaqueRequest is why this route's body carries no schema, for a route that reads the bytes
 	// whole rather than modelling them; empty for every other route, and never beside Request.
 	OpaqueRequest string
@@ -251,6 +253,16 @@ type issueReferencesQuery struct {
 	Versions string `query:"versions"`
 }
 
+// referenceTargetsQuery is GET /api/v1/reference-targets's query: the references to resolve.
+type referenceTargetsQuery struct {
+	// Ref is one reference to resolve, given once per reference, at most
+	// referenceTargetsMax of them; naming none is 400 INVALID_REFERENCE and naming more
+	// than the cap is 400 CAP_EXCEEDED. An item id or a block id written short in it is
+	// resolved in the scope the reference names, and a prefix two or more items carry
+	// answers that member gone with ambiguous: true, and every other member is answered.
+	Ref []string `query:"ref"`
+}
+
 // referencesQuery is GET /api/v1/references's query: the edges of one node.
 type referencesQuery struct {
 	// To reads the backlinks of this dispatch:// reference; exactly one of To and From is
@@ -390,6 +402,20 @@ type relatedChecksQuery struct {
 	To string `query:"to"`
 }
 
+// nearCopyChecksQuery is GET /api/v1/near-copy-checks's query.
+type nearCopyChecksQuery struct {
+	// Project is the project whose rows are listed; the handler refuses a request without one.
+	Project string `query:"project"`
+	// From is the window's start, RFC3339.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive.
+	To string `query:"to"`
+	// After is the id of the row the page starts after: the last page's next_after.
+	After string `query:"after"`
+	// Limit is the page size, 1 to 1000, default 1000.
+	Limit int `query:"limit"`
+}
+
 // sessionAnswersQuery is GET /api/v1/agents/{session_id}/answers's query.
 type sessionAnswersQuery struct {
 	// Since is the window's start, one RFC3339 time no older than the route's bound and not
@@ -424,6 +450,18 @@ type artifactTextQuery struct {
 	// version, every one of them rendered from the one tree, so no write by another session
 	// splits a listing. Any other value carries no blocks.
 	Blocks bool `query:"blocks"`
+}
+
+// artifactVersionQuery is the query the four version reads share: GET
+// /api/v1/artifacts/{id}/versions/{number}, GET
+// /api/v1/issues/{key}/artifacts/{slug}/versions/{number}, GET
+// /api/v1/projects/{key}/artifacts/{slug}/versions/{number} and GET
+// /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}.
+type artifactVersionQuery struct {
+	// Download, `true`, answers a download: `Content-Disposition: attachment` with the file's
+	// name, `Cache-Control: private, no-cache`, and a document as its Markdown rather than the
+	// JSON that wraps it. Any other value answers as without it.
+	Download bool `query:"download"`
 }
 
 // openAsksQuery is GET /api/v1/asks/open's query: exactly one of the two scopes is required.
@@ -492,9 +530,9 @@ type liveWritePauseQuery struct {
 var routeShapes = map[string]routeShape{
 	"GET /api/v1": {Status: http.StatusOK, Response: routeIndex{}},
 	"GET /api/v1/schema/blocks": {
-		Status:            http.StatusOK,
-		Opaque:            "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",
-		OpaqueContentType: "application/json",
+		Status:             http.StatusOK,
+		Opaque:             "the block schema is pre-rendered JSON bytes (pmdoc.SchemaJSON), written as they stand",
+		OpaqueContentTypes: []string{"application/json"},
 	},
 	"GET /api/v1/limits": {Status: http.StatusOK, Response: model.DispatchLimits{}},
 	"POST /api/v1/markdown/round-trip": {
@@ -564,6 +602,19 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/settings/new-issue": {Status: http.StatusOK, Response: newIssueSettings{}},
 	"POST /api/v1/settings/new-issue/_test": {
 		Status: http.StatusOK, Response: newIssueSettings{}, Request: newIssueSettingsInput{},
+	},
+	"GET /api/v1/projects/{key}/legion/daemon": {
+		Status: http.StatusOK, Response: legion.Settings{},
+		// A project that names no daemon answers 200 and the JSON literal `null`
+		// (settings_legion.go).
+		Nullable: true,
+	},
+	"PUT /api/v1/projects/{key}/legion/daemon": {
+		Status: http.StatusOK, Response: legion.Settings{}, Request: putLegionSettingInput{},
+	},
+	"DELETE /api/v1/projects/{key}/legion/daemon": {Status: http.StatusNoContent},
+	"GET /api/v1/projects/{key}/legion/board": {
+		Status: http.StatusOK, Response: legionBoardResponse{},
 	},
 	"GET /api/v1/delivery/timeline": {
 		Status: http.StatusOK, Response: deliveryTimelineWithMeasures{}, Params: deliveryWindowQuery{},
@@ -650,8 +701,13 @@ var routeShapes = map[string]routeShape{
 	// The references read answers graphReferencesRead, whose node carries its text's tree and
 	// whose pin carries the pinned text's, so the row names that read for the same reason the
 	// architecture row above does.
-	"GET /api/v1/references":                               {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
-	"GET /api/v1/references/questions":                     {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
+	"GET /api/v1/references":           {Status: http.StatusOK, Response: graphReferencesRead{}, Params: referencesQuery{}},
+	"GET /api/v1/references/questions": {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
+	"GET /api/v1/reference-targets": {
+		Status: http.StatusOK, Response: model.ReferenceTargets{}, Params: referenceTargetsQuery{},
+		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
+		Also: []routeAnswer{{Status: http.StatusNotModified}},
+	},
 	"GET /api/v1/block-links":                              {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},
 	"GET /api/v1/issues/{key}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}": {Status: http.StatusNoContent},
@@ -684,9 +740,13 @@ var routeShapes = map[string]routeShape{
 	"PUT /api/v1/issues/{key}/design-gates": {
 		Status: http.StatusOK, Response: issueDesignGates{}, Request: issueDesignGatesInput{},
 	},
-	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"PUT /api/v1/issues/{key}/role-holders": {
+		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
+	},
+	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
+	"GET /api/v1/handoffs/{id}":             {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":             {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks":      {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -720,13 +780,17 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/related-checks": {
 		Status: http.StatusOK, Response: model.RelatedChecksReport{}, Params: relatedChecksQuery{},
 	},
+	"GET /api/v1/near-copy-checks": {
+		Status: http.StatusOK, Response: model.NearCopyChecksPage{}, Params: nearCopyChecksQuery{},
+	},
+	"GET /api/v1/near-copy-checks/{id}": {Status: http.StatusOK, Response: model.NearCopyCheck{}},
 	"POST /api/v1/going/requests": {
 		Status: http.StatusCreated, Response: goingRequest{}, Request: createGoingRequestInput{},
 	},
 	"GET /api/v1/going/requests/{id}/stream": {
-		Status:            http.StatusOK,
-		Opaque:            "the run's answer is a text/event-stream of hand-written id:/event:/data: frames, not one JSON body",
-		OpaqueContentType: "text/event-stream",
+		Status:             http.StatusOK,
+		Opaque:             "the run's answer is a text/event-stream of hand-written id:/event:/data: frames, not one JSON body",
+		OpaqueContentTypes: []string{"text/event-stream"},
 	},
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
@@ -747,9 +811,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}": {Status: http.StatusOK, Response: artifactRead{}},
 	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": {
-		Status:            http.StatusOK,
-		Opaque:            "a conversation holds files and images alone, so a version download is that file's bytes under its own content type (serveFileVersion)",
-		OpaqueContentType: "application/octet-stream",
+		Status: http.StatusOK, Params: artifactVersionQuery{},
+		Opaque:             "a conversation holds files and images alone, so a version is that file's bytes under its own content type, named by Content-Disposition with the file's name (serveFileVersion)",
+		OpaqueContentTypes: []string{"application/octet-stream"},
 	},
 	"POST /api/v1/broadcasts": {
 		Status: http.StatusCreated, Response: broadcastCreated{}, Request: createBroadcastInput{},
@@ -841,9 +905,9 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
 	},
 	"GET /api/v1/artifacts/{id}/versions/{number}": {
-		Status: http.StatusOK, Response: artifactVersionText{},
-		Opaque:            "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",
-		OpaqueContentType: "application/octet-stream",
+		Status: http.StatusOK, Response: artifactVersionText{}, Params: artifactVersionQuery{},
+		Opaque:             "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
+		OpaqueContentTypes: []string{"application/octet-stream", "text/markdown"},
 	},
 	"POST /api/v1/artifacts/{id}/versions": {
 		Status: http.StatusCreated, Response: model.Version{}, Request: createVersionInput{},
@@ -862,9 +926,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks": {Status: http.StatusOK, Response: []model.ArtifactBlock{}},
 	"GET /api/v1/issues/{key}/artifacts/{slug}/versions/{number}": {
-		Status: http.StatusOK, Response: artifactVersionText{},
-		Opaque:            "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",
-		OpaqueContentType: "application/octet-stream",
+		Status: http.StatusOK, Response: artifactVersionText{}, Params: artifactVersionQuery{},
+		Opaque:             "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
+		OpaqueContentTypes: []string{"application/octet-stream", "text/markdown"},
 	},
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions": {
 		Status: http.StatusCreated, Response: model.Version{}, Request: createVersionInput{},
@@ -883,9 +947,9 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: artifactText{}, Params: artifactTextQuery{},
 	},
 	"GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number}": {
-		Status: http.StatusOK, Response: artifactVersionText{},
-		Opaque:            "a file version answers that file's bytes under its own content type (serveFileVersion); only a document version carries the JSON above",
-		OpaqueContentType: "application/octet-stream",
+		Status: http.StatusOK, Response: artifactVersionText{}, Params: artifactVersionQuery{},
+		Opaque:             "a file version answers that file's bytes under its own content type, named by Content-Disposition (serveFileVersion); with download=true a document version answers its Markdown as text/markdown; only a document version read without that parameter carries the JSON above",
+		OpaqueContentTypes: []string{"application/octet-stream", "text/markdown"},
 	},
 	"GET /api/v1/projects/{key}/artifacts/{slug}/blocks": {Status: http.StatusOK, Response: []model.ArtifactBlock{}},
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions": {
@@ -1000,6 +1064,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"DELETE /api/v1/artifacts/{id}/_test/live-write-pauses/{point}": {Status: http.StatusOK, Response: liveWritePauseState{}},
 	"POST /api/v1/writes/_test/slow":                                {Status: http.StatusOK, Response: testHookOK{}, Request: slowWriteInput{}},
+	"GET /api/v1/messages/_test/queued":                             {Status: http.StatusOK, Response: queuedMessages{}},
 }
 
 // shapelessRoutes names every mounted row routeShapes does not name. A row with no shape is a

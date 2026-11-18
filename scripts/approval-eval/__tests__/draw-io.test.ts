@@ -9,6 +9,7 @@ import {
   corpusSlicesPath,
   type DrawRecord,
   drawPath,
+  type FinalTestTree,
   readDraw,
   readSlices,
   rootFactsOf,
@@ -227,6 +228,59 @@ describe("readDraw", () => {
     expect((await readDraw(path))?.roots).toEqual([
       { key: "INFRA-1", parent: null, labels: [], status: "backlog", primaryArtifactId: null },
     ]);
+  });
+
+  test("reads the final test's trees, and none from a draw that recorded none", async () => {
+    const trees: FinalTestTree[] = [
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-0", "r-0-1"] },
+      { group: "tree:RES-1", slice: null, cases: ["r-1-0"] },
+    ];
+    const path = await written({ ...draw(), finalTest: { reference: "claim:test", trees } });
+    expect((await readDraw(path))?.finalTestTrees).toEqual(trees);
+    // A final test recorded before its trees were, and a draw that read no reserve, carry none.
+    const before = await written({ ...draw(), finalTest: { reference: "claim:test" } });
+    expect(await readDraw(before)).not.toHaveProperty("finalTestTrees");
+    expect(await readDraw(await written({ ...draw(), finalTest: null }))).not.toHaveProperty(
+      "finalTestTrees"
+    );
+  });
+
+  test("stops the reading where a final-test tree cannot be counted", async () => {
+    const withTrees = (trees: unknown): Promise<string> =>
+      written({ ...draw(), finalTest: { reference: "claim:test", trees } });
+    const record = await written({ ...draw(), finalTest: "claim:test" });
+    await expect(readDraw(record)).rejects.toThrow(`${record} holds a finalTest that is no record`);
+    const list = await withTrees("tree:RES-0");
+    await expect(readDraw(list)).rejects.toThrow(`${list} holds finalTest trees that are no list`);
+    const group = await withTrees([{ slice: "report", cases: [] }]);
+    await expect(readDraw(group)).rejects.toThrow(`${group} finalTest tree 1 names no group`);
+    // A tree in no slice is written with a slice of null; one with no slice at all is no tree,
+    // and a claim draw puts every eligible tree in report, so one in fit is no such draw.
+    for (const slice of [undefined, "test", "fit"]) {
+      const path = await withTrees([{ group: "tree:RES-0", slice, cases: ["r-0-0"] }]);
+      await expect(readDraw(path)).rejects.toThrow(
+        `${path} finalTest tree tree:RES-0 names no slice, or another than report`
+      );
+    }
+    const cases = await withTrees([{ group: "tree:RES-0", slice: "report", cases: "r-0-0" }]);
+    await expect(readDraw(cases)).rejects.toThrow(
+      `${cases} finalTest tree tree:RES-0 holds no list of cases`
+    );
+    const twice = await withTrees([
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-0"] },
+      { group: "tree:RES-1", slice: "report", cases: ["r-0-0"] },
+    ]);
+    await expect(readDraw(twice)).rejects.toThrow(
+      `${twice} names the case r-0-0 in the trees tree:RES-0 and tree:RES-1`
+    );
+    // One tree written as two, with no case in common, would count twice.
+    const split = await withTrees([
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-0"] },
+      { group: "tree:RES-0", slice: "report", cases: ["r-0-1"] },
+    ]);
+    await expect(readDraw(split)).rejects.toThrow(
+      `${split} names the finalTest tree tree:RES-0 twice`
+    );
   });
 });
 

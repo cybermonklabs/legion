@@ -8,21 +8,26 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"slices"
 	"strings"
 	"testing"
 )
 
-// troubleshootingPage is the repository's own troubleshooting page, read from this package's
-// directory as the shipped-example test reads the shipped legion.yaml.
-const troubleshootingPage = "../../../../docs/site/src/content/docs/legion/troubleshooting.md"
+// troubleshootingExtract is the copy of the troubleshooting page's refusal table committed beside
+// this package: the heading of docs/site/src/content/docs/legion/troubleshooting.md's section on a
+// daemon that will not start, and the table under it, in the page's own bytes. The rows are read
+// there and never in the page itself: a test that reads the page puts the page in this job's
+// filter - a declared read applies to every compiled source file of a run - and a documentation
+// edit would then start the whole daemon Go lane. What holds the copy to the page is
+// internal/textcheck's TestTheTroubleshootingRefusalsExtractIsTheGuidesRefusalTable, in the job
+// whose subject is a file's words (INFRA-1413); the copy's header says the rest.
+const troubleshootingExtract = "troubleshooting_refusals_extract.txt"
 
 // daemonWillNotStart is the heading of the refusal table every row below is taken from.
 const daemonWillNotStart = "## The daemon will not start"
 
 // refusalFixtures is every row of that table a fixture drives: the row's refusal text, as the
-// `It says` cell writes it, and a fixture that makes `legion start --check-config` — the loader
+// `It says` cell writes it, and a fixture that makes `legion config check` — the loader
 // (config.LoadForValidation) and the boot gate (daemon.CheckStart) behind it — print a message
 // the row matches. A row whose wording the code no longer produces fails here, printing the row
 // and the message, which is the whole point of the table: an operator reads the row and greps the
@@ -143,6 +148,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	`projects.<KEY>.experiments.<NAME>.unit must be tree or issue (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {plan-length: {unit: pod, variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
 	},
+	`projects.<KEY>.experiments.<NAME>.roles names "…", which is not a Legion issue role (…)`: func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {plan-length: {roles: [controller], variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
+	},
 	"projects.<KEY>.experiments.<NAME>.variants is required: an experiment draws among the variants its block lists": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {plan-length: {mode: random}}\n"}.refuse(t)
 	},
@@ -182,24 +190,24 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 }
 
 // refusalsNoFixtureDrives is every row of that table no fixture can drive, and why. Neither is a
-// refusal the configuration's own read makes, which is all `legion start --check-config` runs.
+// refusal the configuration's own read makes, which is all `legion config check` runs.
 var refusalsNoFixtureDrives = map[string]string{
 	"<PROJECT> is already running (pid <n>)": "`legion start` itself prints it, from this machine's registry of running daemons, " +
-		"after the configuration is read: a fixture would have to register a daemon, and --check-config, which claims no team, never reads the registry",
+		"after the configuration is read: a fixture would have to register a daemon, and `legion config check`, which claims no team, never reads the registry",
 	`capability <name> is open: <detail>; to record a decision, add to legion.yaml: capabilities.decided.<name>: "<reason>"`: "the row marks it a report rather than a refusal: " +
 		"the check prints it after the Config OK line and exits 0, so no fixture makes it the message a refusal carries",
 }
 
 // Every row of the troubleshooting page's refusal table (the table under `## The daemon will not
-// start`) is held to a message the daemon can produce. A row is matched this one way: the row's
-// refusal text is a pattern in which `…` and every `<…>` placeholder stand for one or more
-// characters of any kind and every other character stands for itself, and the pattern
-// must match the fixture's message whole, from its first character to its last — so a row that
-// quotes wording the code no longer produces fails, and a row cannot pass by being a prefix of
-// something else. A row whose cell quotes two texts joined by "or" is satisfied by either; the
-// bare key names such a cell also quotes (`daemon_url`, `advertise_host`) hold no space and are no
-// texts. A row in neither table fails naming the row, as does a table row naming no row of the
-// page.
+// start`, as troubleshootingExtract copies it) is held to a message the daemon can produce. A row
+// is matched this one way: the row's refusal text is a pattern in which `…` and every `<…>`
+// placeholder stand for one or more characters of any kind and every other character stands for
+// itself, and the pattern must match the fixture's message whole, from its first character to its
+// last — so a row that quotes wording the code no longer produces fails, and a row cannot pass by
+// being a prefix of something else. A row whose cell quotes two texts joined by "or" is satisfied
+// by either; the bare key names such a cell also quotes (`daemon_url`, `advertise_host`) hold no
+// space and are no texts. A row in neither table fails naming the row, as does a table row naming
+// no row of the copy.
 func TestTheTroubleshootingTableHoldsEveryRefusalToAMessageTheLoaderProduces(t *testing.T) {
 	rows := troubleshootingRows(t)
 	named := make(map[string]bool, len(rows))
@@ -298,23 +306,25 @@ func refusalTexts(cell string) []string {
 }
 
 // troubleshootingRows is the `It says` cell of every row of the table under `## The daemon will
-// not start`, in the page's order.
+// not start`, in the page's order, read out of troubleshootingExtract in this package's directory.
 func troubleshootingRows(t *testing.T) []string {
 	t.Helper()
-	_, source, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate command test source")
-	}
-	page, err := os.ReadFile(filepath.Join(filepath.Dir(source), troubleshootingPage))
+	body, err := os.ReadFile(troubleshootingExtract)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read %s: %v", troubleshootingExtract, err)
 	}
-	at := strings.Index(string(page), daemonWillNotStart+"\n")
+	// The header is the run of `#` lines the copy opens with; what stands under it is the page's
+	// own bytes, the heading's line first.
+	page := string(body)
+	for strings.HasPrefix(page, "#") {
+		_, page, _ = strings.Cut(page, "\n")
+	}
+	at := strings.Index(page, daemonWillNotStart+"\n")
 	if at < 0 {
-		t.Fatalf("%s has no %q heading", troubleshootingPage, daemonWillNotStart)
+		t.Fatalf("%s has no %q heading", troubleshootingExtract, daemonWillNotStart)
 	}
 	var rows []string
-	for _, line := range strings.Split(string(page)[at+len(daemonWillNotStart):], "\n") {
+	for _, line := range strings.Split(page[at+len(daemonWillNotStart):], "\n") {
 		if strings.HasPrefix(line, "## ") {
 			break
 		}
@@ -332,15 +342,15 @@ func troubleshootingRows(t *testing.T) []string {
 		rows = append(rows, says)
 	}
 	if len(rows) == 0 {
-		t.Fatalf("%s holds no row under %q", troubleshootingPage, daemonWillNotStart)
+		t.Fatalf("%s holds no row under %q", troubleshootingExtract, daemonWillNotStart)
 	}
 	return rows
 }
 
-// refusalFile is the legion.yaml one fixture writes: a file `legion start --check-config` passes,
+// refusalFile is the legion.yaml one fixture writes: a file `legion config check` passes,
 // minus every base line drop names and plus the fixture's own keys, so a fixture's refusal is the
 // one thing it asks for. Its Postgres is unreachable and its App keys are never run, as every
-// check-config fixture's are: the base is the one main_test.go's own passing fixtures are built
+// `legion config check` fixture's are: the base is the one main_test.go's own passing fixtures are built
 // from (tmuxCheckKeys, kubernetesCheckKeys, kubernetesCheckRuntime, checkConfigKubeconfig), so a
 // key a passing file needs is written once for both.
 type refusalFile struct {
@@ -351,17 +361,17 @@ type refusalFile struct {
 	project    string   // extra lines of projects.DEMO, four spaces in
 }
 
-// refuse runs the real `legion start --check-config` over the file and answers the one refusal it
-// printed, without the `legion start: ` the command prefixes it with.
+// refuse runs the real `legion config check` over the file and answers the one refusal it
+// printed, without the `legion config check: ` the command prefixes it with.
 func (f refusalFile) refuse(t *testing.T) string {
 	t.Helper()
 	config := f.write(t)
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	const prefix = "legion start: "
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+	const prefix = "legion config check: "
 	says := errb.String()
 	if code != 1 || out.Len() != 0 || !strings.HasPrefix(says, prefix) || !strings.HasSuffix(says, "\n") {
-		t.Fatalf("legion start --check-config = %d, stdout %q, stderr %q; want 1, nothing, and one refusal", code, out.String(), says)
+		t.Fatalf("legion config check = %d, stdout %q, stderr %q; want 1, nothing, and one refusal", code, out.String(), says)
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(says, prefix), "\n")
 }

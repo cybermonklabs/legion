@@ -276,10 +276,10 @@ func refuseDispatchSeedInSecret(value pulumi.StringInput, dispatch, input string
 // the URL names a local server, which the pod's NATS clients can never reach through the tailnet
 // proxy. With natsInCluster there is no proxy, and core refuses a local URL only beside one, so a
 // local URL is refused here instead, before the config is built, and both call sites refuse alike:
-// the pods dial the URL themselves, and a loopback URL has them dial themselves. natsReplicas and
-// streamMaxBytes reach no refusal of core's own, since newDispatchSettings bounds them more
-// tightly (1 to bus.MaxReplicas, and at least 1) before anything registers, which is why every
-// refusal that is not socks5Proxy's is natsUrl's.
+// the pods dial the URL themselves, and a loopback URL has them dial themselves. natsReplicas,
+// streamMaxBytes and the sender limit reach no refusal of core's own, since newDispatchSettings
+// bounds them more tightly (1 to bus.MaxReplicas, at least 1, and core.CheckSenderLimit) before
+// anything registers, which is why every refusal that is not socks5Proxy's is natsUrl's.
 // The listener serves on every address of its pod, and its API refuses to start on a non-loopback
 // listen host without a bearer (packages/envoy/cmd/listener/apiauth.go), so the environment names
 // the bearer in Secret listenerSecret.
@@ -288,12 +288,14 @@ func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1
 		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
 	}
 	env, err := (core.ListenerConfig{
-		MachineID:      s.hostname,
-		Port:           core.DefaultListenerPort,
-		ListenHost:     "0.0.0.0",
-		SOCKS5Proxy:    s.socks5Proxy(),
-		NATSReplicas:   s.natsReplicas,
-		StreamMaxBytes: s.streamMaxBytes,
+		MachineID:               s.hostname,
+		Port:                    core.DefaultListenerPort,
+		ListenHost:              "0.0.0.0",
+		SOCKS5Proxy:             s.socks5Proxy(),
+		NATSReplicas:            s.natsReplicas,
+		StreamMaxBytes:          s.streamMaxBytes,
+		SenderMessagesPerMinute: s.senderMessagesPerMinute,
+		SenderMessageBurst:      s.senderMessageBurst,
 	}).Env([]string{url})
 	if err != nil {
 		var input *core.InputError
@@ -321,8 +323,14 @@ func envVars(env []string) corev1.EnvVarArray {
 
 func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, cloud *dispatchCluster, database *dispatchDatabase) error {
 	dispatch := dispatchType + " " + name
+	// The provider is the component's own, so it can promise mutable ConfigMaps: pulumi-kubernetes
+	// replaces a ConfigMap whose data changes otherwise, deleting it first, and a front-door pod
+	// scheduled in that window fails to mount its serve config, ConfigMap <hostname>-serve. The
+	// update in place rolls no pod, and needs none (newDispatchFrontDoor says why).
 	provider, err := kubernetes.NewProvider(ctx, s.hostname+"-kubernetes", &kubernetes.ProviderArgs{
-		Kubeconfig: cloud.kubeconfig, EnableServerSideApply: pulumi.Bool(true),
+		Kubeconfig:             cloud.kubeconfig,
+		EnableServerSideApply:  pulumi.Bool(true),
+		EnableConfigMapMutable: pulumi.Bool(true),
 	}, pulumi.Parent(comp))
 	if err != nil {
 		return err
@@ -656,13 +664,23 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// The four sign-in variables render together or not at all, in the place they always held, so
 	// a deployment with sign-in on renders what it always rendered (gcp/testdata/dispatch-pod.golden)
 	// and one without it names no client, no issuer and no domain: Dispatch then asks nobody to
-	// sign in. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
-	// output's own derivation (serverURL) and never a second spelling of it.
+	// sign in. DISPATCH_SIGNIN_OUTSIDE follows the domain only with signInOutside, which needs
+	// sign-in on. DISPATCH_SERVER_URL is the address a reader is sent back to, so it is the url
+	// output's own derivation (serverURL) and never a second spelling of it, and
+	// DISPATCH_OUTSIDE_ORIGIN follows it only with outsideOrigin, so a deployment that sets neither
+	// outside input renders byte for byte what it always rendered.
 	if s.signInOn {
 		appEnv = append(appEnv, secretEnv("DISPATCH_SIGNIN_CLIENT_SECRET", dispatchSecretName, "DISPATCH_SIGNIN_CLIENT_SECRET"),
 			valueEnv("DISPATCH_SIGNIN_ISSUER", "https://accounts.google.com"), valueEnv("DISPATCH_SIGNIN_CLIENT_ID", s.signIn.clientID), valueEnv("DISPATCH_SIGNIN_DOMAIN", s.signIn.domain))
+		if s.signInOutside {
+			appEnv = append(appEnv, valueEnv("DISPATCH_SIGNIN_OUTSIDE", "1"))
+		}
 	}
-	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()), valueEnv("DISPATCH_LISTEN_HOST", "0.0.0.0"),
+	appEnv = append(appEnv, valueEnv("DISPATCH_SERVER_URL", s.serverURL()))
+	if s.outsideOrigin != "" {
+		appEnv = append(appEnv, valueEnv("DISPATCH_OUTSIDE_ORIGIN", s.outsideOrigin))
+	}
+	appEnv = append(appEnv, valueEnv("DISPATCH_LISTEN_HOST", "0.0.0.0"),
 		corev1.EnvVarArgs{Name: pulumi.String("NATS_URLS"), Value: natsURL}, valueEnv("ENVOY_ALLOW_REMOTE_NATS", "1"), valueEnv("NATS_NKEY_SEED_FILE", "/var/run/secrets/envoy/nats-seed"))
 	// The proxy renders only in the SOCKS5 mode, and each JetStream number only when it is set,
 	// in the proxy's place in the list, so a deployment that sets neither renders byte for byte

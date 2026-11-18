@@ -161,6 +161,8 @@ export interface AgentVerdict {
   /** Why no answer came, or why it could not be read. Null on an answer. */
   fault: FaultKind | null;
   faultDetail: string | null;
+  /** The model the answer says served it, and null where it named none. */
+  servedModel: string | null;
   latencyMs: number;
 }
 
@@ -179,6 +181,8 @@ export interface FixtureReading {
   answer: string | null;
   /** Why the answer could not be read, and null where it was read. A fault is no decide. */
   fault: string | null;
+  /** The model the rule's answer says served it, and null where no call was made. */
+  servedModel: string | null;
   /** Whether the rule held it under the kind it was written to raise. */
   asWritten: boolean;
   /** What the agent answered, and null where the agent half was skipped. */
@@ -633,6 +637,7 @@ async function askAgent(
     chosen: answer.chosen,
     fault: answer.fault,
     faultDetail: answer.faultDetail,
+    servedModel: answer.servedModel ?? null,
     latencyMs: answer.latencyMs,
   };
 }
@@ -759,6 +764,7 @@ export async function refusalRun(plan: RefusalPlan, deps: RefusalDeps): Promise<
       source: answer?.source ?? "model",
       answer: answer?.answer ?? null,
       fault: answer?.fault ?? null,
+      servedModel: answer?.servedModel ?? null,
       asWritten: (answer?.held ?? false) && answer?.kind === RAISES[fixture.kind],
       agent: agents.get(fixture.id) ?? null,
     };

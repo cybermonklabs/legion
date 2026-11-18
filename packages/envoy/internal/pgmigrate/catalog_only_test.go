@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // catalogOnlyFixtureSQL is the database the census tests of this file judge their rows against,
@@ -115,7 +115,7 @@ func catalogOnlyDatabase(t *testing.T, ctx context.Context, rows int) *pgx.Conn 
 		t.Fatal("DISPATCH_TEST_DATABASE_URL is not a URL")
 	}
 	adminURL.Path = "/postgres"
-	conn := connect(t, ctx, testpg.DatabaseOn(t, adminURL.String(), "pgmigrate_catalog"))
+	conn := connect(t, ctx, testdb.DatabaseOn(t, adminURL.String(), "pgmigrate_catalog"))
 	if _, err := conn.Exec(ctx, catalogOnlyFixture(rows)); err != nil {
 		t.Fatalf("load the fixture: %v", err)
 	}

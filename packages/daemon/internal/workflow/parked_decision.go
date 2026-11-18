@@ -145,7 +145,7 @@ func (e *Engine) ParkedDecisionTask(ctx context.Context, tx pgx.Tx, root record.
 // no architect hands them over (HandOverKept). A nil kept enqueues payload as enqueueAt does.
 func EnqueueNaming(ctx context.Context, tx pgx.Tx, store record.Store, issue, tree string, payload record.OutboxPayload,
 	kept *record.KeptDecisions, at time.Time) error {
-	row, err := record.NewOutboxRow(issue, payload, at)
+	row, err := queuedRow(ctx, tx, store, issue, payload, at)
 	if err != nil {
 		return err
 	}
@@ -242,11 +242,21 @@ func CatchUpTheTreesOwed(ctx context.Context, tx pgx.Tx, store record.Store, ste
 // that names decisions (supervise's Deps.RootHears, the daemon's rootHears) never drift: a root
 // that hears is told at once, and one that does not keeps what it is owed until it runs again.
 func ArchitectHears(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue, steps []record.DesignStep) (bool, error) {
-	if !claim.IsTreeRoot(root.Key, root.Tree) || root.Lingers() || record.OutOfWorkflow(root.Status) {
+	if !ArchitectHearsSlotted(root) {
 		return false, nil
 	}
 	waits, err := record.WaitsForSlot(ctx, tx, store, root, steps)
 	return !waits, err
+}
+
+// ArchitectHearsSlotted is ArchitectHears for a root the caller already knows waits for no
+// admission slot, which reads nothing: record.WaitsForSlot answers false for such a root, so what
+// is left is the rest of that one reading. Admission asks it of the roots its selection holds
+// (admit's readSlotHolders, through architectServed): each holds a slot, stands past its review
+// in a tree that runs, or was released for a wait in a tree that runs, and no queued root is one
+// of those.
+func ArchitectHearsSlotted(root record.Issue) bool {
+	return claim.IsTreeRoot(root.Key, root.Tree) && !root.Lingers() && !record.OutOfWorkflow(root.Status)
 }
 
 // GatedSteps is the design-gate steps the deployment gates, in the order it names them, which

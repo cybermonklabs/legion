@@ -148,6 +148,12 @@ over both brokers' API ports and one over both proxy ports (`dev-airlock-stands
 front`, round-robin per connection), and enrols one pod session the way the Legion
 daemon does — a service login at `POST /v1/launcher-credentials/token`, then
 `POST /v1/enrollments` of kind `pod` — so `agent-secrets self` answers `kind: pod`.
+It keeps that session's lease alive for as long as it runs, with the renewer the
+Legion worker shim gives a pod: `agent-secrets renew --pod-token-file` on the pod
+token `dev-oidc-issuer` rewrites in place. The broker ends a session whose lease
+(`BROKER_LEASE_SECONDS`, 900 seconds by default) passes unrenewed, and every grant
+of it with it, so without the renewer a check that holds a grant for longer would
+have its calls refused 407 midway.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/dev-airlock.sh
@@ -170,9 +176,21 @@ Options: `--keep-values` and `--no-kind`, the two negative controls
 `dev-airlock.test.sh` proves the driver's own decisions behind fake binaries — the
 work directories under `TMPDIR`, two brokers with the whole airlock block on one
 database, one front over each pair of ports, the options reaching the brokers, the
-enrolment written beside the session key, the usage error, and the cleanup stopping
-everything it started — with no real Postgres, no network and no Go build; CI runs
-it in the `envoy-go` job of `.github/workflows/ci.yaml`.
+enrolment written beside the session key, the session's renewer, the usage error,
+and the cleanup stopping everything it started — with no real Postgres, no network
+and no Go build; CI runs it in the `envoy-go-checks` job
+(`.github/workflows/ci-job-envoy-go-checks.yaml`).
+
+`dev-airlock-lease.test.sh` proves the renewer works on the real stack: it starts
+the stack with one broker and `BROKER_LEASE_SECONDS=91`, the shortest lease the
+broker starts with at its default sweep, holds one 30-minute grant of
+`AIRLOCK_DEMO_TOKEN`, and calls S through the proxy front at once and again three
+leases later. Both calls must reach S with the real value, and the session must still
+be the one enrolled, with a later lease. It prints a `PASS:` or `FAIL:` line for each
+and ends `dev-airlock-lease: passed` or `dev-airlock-lease: failed (<n> of <m>)`. It
+needs what `dev-airlock.sh` needs, takes the stack's start plus about five minutes,
+and is not part of CI. Without the renewer, the second call is refused 407 "grant is
+expired, revoked, or its session ended".
 
 ## airlock-check.sh
 
@@ -247,9 +265,11 @@ from `VmHWM` in `/proc/<pid>/status`, which is the quantity `getrusage` reports 
 `ru_maxrss` for a process one can wait on — these two are `dev-airlock.sh`'s children,
 not the check's.
 
-It needs bash, curl, jq, go, python3, openssl, node and psql; `k2` and `k7` also need
-`gh` (the last released `agent-secrets` comes from the newest `legion-envoy-v*`
-release, and the consumers come from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
+It needs bash, curl, jq, go, python3, openssl, node and psql; `k2`, `k6` and `k7` also
+need `gh` (`k2`'s own step and the negative controls of `k2` and `k7` run the
+`agent-secrets` of the pinned release before the airlock, `OLD_CLI_DEFAULT_TAG` in the
+script, which `AIRLOCK_OLD_CLI_TAG` overrides, and `k6`'s and `k7`'s consumers come
+from `sjawhar/dotfiles`), `k6` and `k7` need `bun`,
 `wget`, `git`, `uv` and the clients `airlock-clients.sh` installs, `k9` needs `git`,
 and `k15` needs `lake` from the Lean toolchain the environment names. Each bound host
 listens on one loopback address and port 443, so only one stack runs on a machine at a
@@ -257,38 +277,130 @@ time.
 
 ## github-narrowing-check.sh
 
-Runs the three checks of `agent-secrets`' `--github-token` that need a broker, a
+Runs the four checks of `agent-secrets`' GitHub App narrowing that need a broker, a
 GitHub and a session — `k1`, `k2` and `k4` of dispatch://INFRA-2687's verification
-document — end to end on a local stack of its own, and prints one `PASS` or `FAIL`
-line for each property they name, then `all <n> assertions passed` when every one
-passed, so a reader tells a complete run from a cut-off one.
+document, and `k1` of dispatch://INFRA-3099's — end to end on a local stack of its
+own, and prints one `PASS` or `FAIL` line for each property they name, then `all <n>
+assertions passed` when every one passed, so a reader tells a complete run from a
+cut-off one.
 
 ```bash
 DEV_BROKER_POSTGRES_URL="$LEGION_TEST_PG_DSN" packages/envoy/scripts/github-narrowing-check.sh
 ```
 
-It starts `dev-broker.sh`, which holds the two `github-app` secrets and the stand-in
-GitHub they are minted against, and enrols one pod session of the service that owns
-them, as the Legion daemon enrols a worker pod, so each request for one is granted
-without asking. `k1` spends a narrowed token at the stand-in and reads back what the
-narrowed mint asked GitHub for; `k2` sets the stand-in to refuse the mint (HTTP 422)
-and then to answer wider than the narrowing asked, at the answer route the stack's
-banner names (`POST {"mode": "ordinary"|"refuse"|"widen"}`), since one stack drives
-all three answers; `k4` drives the secret whose release holds two installations,
-which no one token can be handed over for. Each check runs its own negative control,
-and every line names the exit status it read, because a property that failed and a
-command that never ran look alike in a transcript that holds neither.
+It starts `dev-broker.sh`, which holds the three `github-app` secrets and the
+stand-in GitHub they are minted against, and enrols one pod session of the service
+that owns two of them, as the Legion daemon enrols a worker pod, so each request for
+one of those is granted without asking. `k1` spends a narrowed token at the stand-in
+and reads back what the narrowed mint asked GitHub for; `k2` sets the stand-in to
+refuse the mint (HTTP 422) and then to answer wider than the narrowing asked, at the
+answer route the stack's banner names (`POST {"mode":
+"ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|"widen"|"fail-once",
+"repository": "<name>"}`), since one stack drives every answer this check needs;
+`k4` drives the secret whose
+release holds two installations, which no one token can be handed over for; and `k1`
+of INFRA-3099 drives the third secret, the one whose request reaches a person, with
+the stand-in refusing one repository, so that narrowing is refused before the
+approval request is opened: the command does not run, the refusal names the secret,
+that repository and the sentence it carries, its stderr names no page to approve
+anything on, the broker's own `credential_requests` gains no record, and the
+stand-in's records hold the search for the refused part and a revoke for every token
+it minted. Each check runs its own negative control — INFRA-3099's is the same
+request for a repository the stand-in reaches, approved on the broker's page as the
+person does, by `approve_record` and `approve_watch` copied from `airlock-check.sh`
+because each check script here stands alone — and every line names the exit status it
+read, because a property that failed and a command that never ran look alike in a
+transcript that holds neither.
 
 No line it prints is a credential: the child reads its token out of its own
 environment and prints the repository it asked for and the status it got, and a
 refusal is printed as `agent-secrets` wrote it, which names no part of any token. The
 child's `curl` calls carry no `--cacert` and no `--resolve`: the GitHub stand is
-served over plain http on `127.0.0.1`, because the broker mints a kind's value with
+served over plain http on `127.0.0.1`, because the broker mints a type's value with
 an HTTP client that trusts the host's own roots and nothing else.
 
 `--keep-stack` leaves the stack and the run's work directory up to look at a failure
-with, `--help` prints the usage, and a usage error exits 2. It needs bash, curl, jq,
-go and psql, and takes a few minutes.
+with, `--help` prints the usage, and a usage error exits 2.
+`DEV_BROKER_POSTGRES_URL` is required: the stack is driven against the server it
+names, and the record property is read from the broker's own database there, whose
+name the script takes from `dev-broker.sh`'s own log and puts in place of that URL's
+path, so no password is ever parsed out of a banner. It needs bash, curl, jq, go,
+psql and setsid, and takes a few minutes once Go's build cache holds the stack's
+binaries. On a cold cache `dev-broker.sh`'s six builds take longer than all the rest,
+so the script waits for them under a bound of their own, up to 30 minutes, and then
+for the stack's start under a short one. The stack runs in a session of its own and
+is stopped as one process group, so a stop during the build — the script's exit, a
+wait that ran out, Ctrl-C — ends that build with the stack.
+
+## backend-count.sh
+
+Counts, for each test it names, the runs that passed on each store backend: the test's
+own `aws` and `gcp` subtests (`onEachStore`, `cmd/agent-secrets/secret_kind_test.go`),
+so a store or use change cannot pass on one backend alone.
+
+```bash
+packages/envoy/scripts/backend-count.sh PACKAGE... -- TEST...
+```
+
+It runs only the named tests in only the named packages, `go test -json -count=1 -timeout 5m
+-run '^(TEST|…)$' PACKAGE...`, each package a `./` path under `packages/envoy`, and prints
+`TEST aws=N gcp=M` for each, then `go_test_exit=E`. It exits 1 when no package or no test is
+named, when a package is not a `./` path, when a name is not a Go test name, when a named test
+has no passing run on either backend (a test in none of the named packages included), or when go
+test failed. It counts only the tests it names, so the `aws` and `gcp` subtests of other tests
+cannot stand in for a new test's.
+`GO_TEST_SKIP` is go test's `-skip` pattern: the negative control
+`GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
+`GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
+in its time budget; the job runs it as "Count the store-form rows on each backend", over
+`./cmd/agent-secrets/` and `./internal/broker/api/`.
+
+## database-skips.sh
+
+Counts the tests of the broker's packages (`internal/broker/...`) that skipped, and fails on
+any: every database broker suite skips, which go test counts as a pass, when
+`BROKER_TEST_DATABASE_URL` is unset, and a `t.Skip` left in one skips it with the variable
+set.
+
+```bash
+BROKER_TEST_DATABASE_URL=postgres://… packages/envoy/scripts/database-skips.sh
+packages/envoy/scripts/database-skips.sh --report REPORT.json
+```
+
+With no argument it runs `go test -json -count=1 -timeout 15m ./internal/broker/...` and
+reads that report; `--report` reads a `go test -json` report instead and runs nothing. It
+prints `SKIP PACKAGE TEST` for each skip, then `database_skips=N` and, for a run of its own,
+`go_test_exit=E`. A report that is missing, empty or holds no broker test prints
+`database_skips=UNKNOWN`, names what it could not read, and exits 1. It exits 0 only when
+broker tests ran, none skipped and go test passed. The tests `EXPECTED_SKIPS` names in the
+script skip by their own design in every run, and are not counted. `GO_TEST_TIMEOUT`
+replaces the 15-minute `-timeout`, which bounds each package's test binary and not the run:
+the packages run several at a time, so one that starts late ends later. `ci.yaml`'s
+`envoy-go` job runs it as "Count the database broker suites' skips", with a step limit of
+its own (`timeout-minutes: 25`) that its time budget counts.
+
+## aws-moto-check.sh
+
+Runs the built `agent-secrets` against moto's AWS, with no AWS account:
+`cmd/agent-secrets/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
+`moto`), which creates IAM users `writer` and `nobody` in moto, writes them as profiles,
+turns moto's IAM checks on, and runs the secret forms under each source of the AWS SDK's
+own order: access keys in the environment, which outrank `AWS_PROFILE`; `AWS_PROFILE`;
+`AWS_DEFAULT_PROFILE`; and the rest of the default chain (a container credentials
+endpoint the test serves), reading each form's `using` line. A profile variable that names
+a profile the AWS config does not hold stops the command before that endpoint signs in.
+
+```bash
+packages/envoy/scripts/aws-moto-check.sh [BINARY]
+```
+
+It starts `moto[server]==5.2.5` through `uvx` on a free loopback port under the account
+the tests' key ARN names, runs the test with `AGENT_SECRETS_BINARY` set to BINARY (empty:
+the test builds the CLI from this tree), stops moto, and exits with go test's status; the
+test fails, and never skips, without `AGENT_SECRETS_MOTO_URL`. A release binary as BINARY
+is the negative control. moto ignores a policy's conditions and refuses with an XML
+`AccessDenied` rather than `AccessDeniedException`, so this proves no IAM policy, and
+the refusal's text is proved in process only. It needs uv, curl, python3 and go.
 
 ## airlock-lean-axioms.sh
 
@@ -450,8 +562,54 @@ while, so the target fails: a client that reached it then was refused the list
 
 `listener-deploy-probe.test.sh` proves the verdict over two fake tasks, one
 Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the
-kernel chose, behind a fake `getent`; CI runs it in the `envoy-go` job of
-`.github/workflows/ci.yaml`.
+kernel chose, behind a fake `getent`; CI runs it in the `envoy-go-checks` job,
+whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
+
+## daemon-release-gate.sh
+
+Says whether every production reader of a message name runs a build of cybermonklabs/legion at or
+after a commit: the reading a pull request quotes before it moves a producer onto the new form of a
+name (dispatch://INFRA-3862). A Legion daemon whose image predates the both-forms reader takes an
+issue event named in the new form for another project's and acknowledges it with no fact, so a
+producer that moves first stops the fleet's workflow in silence.
+
+```bash
+packages/envoy/scripts/daemon-release-gate.sh <commit>
+packages/envoy/scripts/daemon-release-gate.sh --listeners <commit>
+```
+
+Without `--listeners` it reads the image each Legion daemon runs: each entry of
+theorem-labs/agent-infra `legion/Pulumi.prod.yaml`'s projects, its `daemonImage` when set, else its
+`image`; an entry at `replicas: 0` or `daemon: false` prints `SKIPPED` by name. An entry at
+`runtime: tmux` runs its daemon on the project's host VM from `host.legionWorker`'s legion, not from
+its `image` (agent-infra `legion/host.go`), and the gate reads no image for it: it prints `UNKNOWN`
+by name, as does an entry on any runtime but `kubernetes`, the default. With `--listeners`
+it reads the three listener pins: envoy's `listenerImage`, envoy-cluster's `envoyImage`, and
+dispatch's `listenerImage`, which that stack sets on its listener in place of `envoyImage`, the
+Dispatch server's; a dispatch stack that sets none reads `UNKNOWN`, since its deployment requires
+that key (agent-infra `dispatch/main.go`) and the listener runs no other image. Each pin's
+`org.opencontainers.image.source` and `.revision`
+labels are read with `docker buildx imagetools inspect`, an OCI image index one platform at a time
+(its `.Image.Config.Labels` is `null`), its `unknown/unknown` attestation entries left out, every
+platform agreeing. A pin built from `https://github.com/cybermonklabs/legion`, or from a name the
+deployment records as the same repository — the `repositoryRenames` pairs of `legion/Pulumi.prod.yaml`,
+which the daemon reads as `repository_renames`, so a build made as `sjawhar/legion` before the
+transfer is a build of this repository — passes when GitHub's compare of `<commit>...<revision>`
+answers `ahead` or `identical`, its line naming the rename; a pin built from any other repository
+is refused by name and never compared. A revision label that is not a commit id, 7 to 40 lowercase
+hex digits, prints `UNKNOWN` and is never compared: GitHub's compare resolves any ref, so a label
+naming a branch (`main`) would compare as wherever that branch points now.
+
+It prints a line per pin (`PASS`, `GATE SHUT`, `UNKNOWN` or `SKIPPED`) and the verdict on the last:
+`GATE OPEN` (exit 0) only when every pin it read passed and it read at least one, `GATE SHUT`
+(exit 1), or `UNKNOWN` (exit 3) for a pin, file or comparison it could not read. A usage error exits
+2. It needs `gh` with read access to both repositories, docker with buildx able to read each pin's
+registry (for ghcr.io, `gh auth token | docker login ghcr.io -u x --password-stdin` into a
+`DOCKER_CONFIG` of your own), `jq` and python3 with PyYAML.
+
+`daemon-release-gate.test.sh` proves every verdict behind a fake `gh` and a fake `docker` that
+answers a single image and an index the way the real one does; CI runs it in the
+`envoy-go-checks` job of `.github/workflows/ci.yaml`.
 
 ## Measuring search on a copy of the corpus
 

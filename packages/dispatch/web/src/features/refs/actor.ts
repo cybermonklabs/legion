@@ -19,6 +19,19 @@ export function askResolutionReason(resolution: AskResolution): string | undefin
   return resolution.reason;
 }
 
+/**
+ * The word for each way an ask is closed, as `askResolutionBadge` below spells it: the badge the
+ * card draws and the verb of its resolution line. The list of the new issue page's words reads
+ * this table (`NODE_STATE_WORDS.ask` in `features/issue-page/page-words.ts`), so an ask's row
+ * there says of a closed ask what its card says.
+ */
+export const ASK_RESOLUTION_WORDS = {
+  declined: "Declined",
+  resolved: "Resolved",
+  retracted: "Retracted",
+  withdrawn: "Withdrawn",
+} as const;
+
 /** The badge naming how an ask was resolved, which is also the verb of its resolution line. */
 export function askResolutionBadge(resolution: AskResolution): string {
   switch (resolution.kind) {

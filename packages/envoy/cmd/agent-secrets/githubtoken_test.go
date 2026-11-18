@@ -74,7 +74,7 @@ func TestTheGitHubTokenFlagWithoutAnOwnerExitsTwo(t *testing.T) {
 	if exit != 2 || strings.Contains(stdout, "ran-the-child") || !strings.Contains(stderr, "--github-token") || !strings.Contains(stderr, "--github-owner") {
 		t.Fatalf("exit %d, stdout %q, stderr %q; want exit 2 naming --github-token and --github-owner", exit, stdout, stderr)
 	}
-	if requests, releases := b.takeRequests(), len(b.take()); requests != 0 || releases != 0 {
+	if requests, releases := len(b.takeRequests(t)), len(b.take()); requests != 0 || releases != 0 {
 		t.Fatalf("the broker was asked %d requests and %d releases, want none", requests, releases)
 	}
 }
@@ -119,11 +119,13 @@ func TestAGrantWithNoGitHubAppReleaseRunsNothing(t *testing.T) {
 
 // TestOnlyAGitHubAppReleaseIsReadAsOne: githubTokensOf reads the object the broker mints and
 // nothing else. A document of another shape — no installations field, an entry short of a field,
-// a field of another type, an account that is no GitHub login — is no release, so its value is
-// handed over as it is rather than read for a token it does not hold. A release that carries a
-// field beside the ones read, at the top or in an entry, is still a release, as it is to the
-// daemon's own reader (packages/daemon/internal/appauth/tokencommand.go, parseRelease): the
-// broker may add one, and it rolls out without this client.
+// a field of another type, an account that is no GitHub login, among them a key holding a token
+// form short enough to pass a login's 39 characters — is no release, so its value is handed over
+// as it is rather than read for a token it does not hold. A login that merely opens like a token
+// (`ghs_acme`) holds no token form and is read. A release that carries a field beside the ones
+// read, at the top or in an entry, is still a release, as it is to the daemon's own reader
+// (packages/daemon/internal/appauth/tokencommand.go, parseRelease): the broker may add one, and it
+// rolls out without this client.
 func TestOnlyAGitHubAppReleaseIsReadAsOne(t *testing.T) {
 	const entry = `"ada":{"installation_id":8,"token":"ghs_one_installation","expires_at":"2100-01-01T00:00:00Z"}`
 	for _, tc := range []struct {
@@ -150,6 +152,8 @@ func TestOnlyAGitHubAppReleaseIsReadAsOne(t *testing.T) {
 		{"an entry with no installation id", `{"installations":{"ada":{"token":"ghs_one_installation","expires_at":"2100-01-01T00:00:00Z"}}}`, nil, false},
 		{"an installation id that is no number", `{"installations":{"ada":{"installation_id":"8","token":"ghs_one_installation","expires_at":"2100-01-01T00:00:00Z"}}}`, nil, false},
 		{"an account that is no login", `{"installations":{"ada/proofs":{"installation_id":8,"token":"ghs_one_installation","expires_at":"2100-01-01T00:00:00Z"}}}`, nil, false},
+		{"an account a token form names, shorter than a real token", `{"installations":{"ghs_0123456789abcdef":{"installation_id":8,"token":"ghs_one_installation","expires_at":"2100-01-01T00:00:00Z"}}}`, nil, false},
+		{"a login that merely opens like a token", `{"installations":{"ghs_acme":{"installation_id":8,"token":"ghs_one_installation","expires_at":"2100-01-01T00:00:00Z"}}}`, map[string]string{"ghs_acme": "ghs_one_installation"}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tokens, ok := githubTokensOf(tc.value)
@@ -169,7 +173,9 @@ func TestOnlyAGitHubAppReleaseIsReadAsOne(t *testing.T) {
 // a remedy the caller can take: a narrowing that leaves one installation, or the same run
 // without the flag. It never asks for --github-owner again, which the caller gave already and
 // which cannot make two installations one, since the mint compares the owner without regard to
-// case.
+// case. A release one of whose keys holds a token form is no release, so the refusal names the
+// secret and never that key, which the refusal of a release of two would otherwise list as an
+// account.
 func TestGitHubTokensAloneNamesNoToken(t *testing.T) {
 	values := map[string]string{"APP": githubTokenReleases["APP"], "PLAIN": githubTokenReleases["PLAIN"]}
 	if err := githubTokensAlone(values); err != nil {
@@ -192,5 +198,17 @@ func TestGitHubTokensAloneNamesNoToken(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "OTHER, PLAIN") || !strings.Contains(err.Error(), "--github-token") ||
 		strings.Contains(err.Error(), githubTokenReleases["PLAIN"]) {
 		t.Fatalf("githubTokensAlone of no release = %v, want a refusal naming both names and --github-token, and no value", err)
+	}
+
+	const tokenKey = "ghs_0123456789abcdef"
+	err = githubTokensAlone(map[string]string{"KEYED_APP": `{"installations":{` +
+		`"acme":{"installation_id":7,"token":"ghs_acme","expires_at":"2100-01-01T00:00:00Z"},` +
+		`"` + tokenKey + `":{"installation_id":8,"token":"ghs_ada","expires_at":"2100-01-01T00:00:00Z"}}}`})
+	if err == nil || !strings.Contains(err.Error(), "KEYED_APP") || !strings.Contains(err.Error(), "--github-token") {
+		t.Fatalf("githubTokensAlone of a release keyed by a token form = %v, want a refusal naming KEYED_APP and --github-token", err)
+	}
+	// The refusal is not printed here: in the failure this guards it holds the key.
+	if strings.Contains(err.Error(), tokenKey) {
+		t.Fatal("githubTokensAlone's refusal of a release keyed by a token form quotes that key")
 	}
 }

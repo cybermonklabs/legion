@@ -399,11 +399,12 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // the term-statistics refresh, the GitHub webhook redelivery sweep, the CI reconcile pass
 // (cireconcile.Lease), the architecture import, the delivery reconcile, the edit-notice sweep, the
 // document settlement resumption (docs.Service.RunSettlementResumption), the repair of closed and
-// reopened issues' asks (api.RunIssueAskRepair), one per delivery durable for the intake's
-// take-over (delivery.consumerLease, a name each for delivery-events and delivery-jobs) and the
-// server process registry's prune (processes.RunPrune), the embeddings project_key fill
-// (api.RunEmbeddingProjectKeyFill) and the display tree fill (texttreefill.fillLease) - one
-// caller each, since each intake
+// reopened issues' asks (api.RunIssueAskRepair), the Legion sampler's read of each project's
+// daemon (legion.RunSampler, one pass a minute, one process at a time), one per delivery durable
+// for the intake's take-over (delivery.consumerLease, a name each for delivery-events and
+// delivery-jobs) and the server process registry's prune (processes.RunPrune), the embeddings
+// project_key fill (api.RunEmbeddingProjectKeyFill) and the display tree fill
+// (texttreefill.fillLease) - one caller each, since each intake
 // takes its own durable's name from its own goroutine, so each of them can be inside Exclusive
 // at once. The fill is the one that is no loop of a cadence: it labels in a single pass of one
 // to two hours, holds its connection for the whole of it, tries for its lease again every five
@@ -429,6 +430,13 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // through. The document compaction holds only its lease here: each document it compacts reads and
 // writes on the compaction pool (Pool.Compaction).
 //
+// The Legion sampler is one of those callers, and one connection is what it costs the instance: a
+// serving process opens at most 113 rather than the 112 it would without it
+// (ConnectionsPerProcess), and the default tier's 500 connections less PostgreSQL's 3 reserved
+// slots still admit four app pods holding connections at once (452 of 497) and still refuse five
+// (565), exactly as they do at 112 (448 and 560), so it moves no replica boundary. A deployment on
+// another tier reads SHOW max_connections against its own roll, as sharedPoolSize's note says.
+//
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop
 // (LeaseCallers.For, cmd/dispatch/main.go), and the server refuses to serve unless the
@@ -441,7 +449,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 21
+const LeasePoolSize = 22
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass
@@ -1019,7 +1027,8 @@ type errRow struct {
 func (r errRow) Scan(...any) error { return r.err }
 
 // errBatchResults carries a refusal through the batch surface, which has no error return of
-// its own: every result the caller reads is the refusal.
+// its own: every result the caller reads is the refusal, and the refused batch begins no
+// transaction.
 type errBatchResults struct {
 	err error
 }
@@ -1028,3 +1037,4 @@ func (b errBatchResults) Exec() (pgconn.CommandTag, error) { return pgconn.Comma
 func (b errBatchResults) Query() (pgx.Rows, error)         { return nil, b.err }
 func (b errBatchResults) QueryRow() pgx.Row                { return errRow{err: b.err} }
 func (b errBatchResults) Close() error                     { return b.err }
+func (b errBatchResults) Tx() pgx.Tx                       { return nil }

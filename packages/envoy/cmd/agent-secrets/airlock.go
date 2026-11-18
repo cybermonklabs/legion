@@ -19,8 +19,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/fileowner"
 )
 
 // The slots of an airlock name, spelled as the broker's answer spells them
@@ -266,8 +267,8 @@ func checkAirlockRoot(root string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("the airlock directory %s is not a directory, so the grant's files have nowhere to go; remove it", root)
 	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
-		return fmt.Errorf("the airlock directory %s is owned by uid %d, not this user (uid %d), so the trust bundle written there is one its owner can replace; remove it, or run as its owner", root, st.Uid, os.Getuid())
+	if uid, ok := fileowner.Of(info); ok && uid != os.Getuid() {
+		return fmt.Errorf("the airlock directory %s is owned by uid %d, not this user (uid %d), so the trust bundle written there is one its owner can replace; remove it, or run as its owner", root, uid, os.Getuid())
 	}
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return fmt.Errorf("the airlock directory %s is mode %04o, which lets other users write the trust bundle this command verifies its direct calls against; run: chmod 700 %s", root, perm, root)
@@ -346,9 +347,13 @@ func airlockDirWorthKeeping(dir string, now time.Time) bool {
 // variables airlockVars will point at this one file) whose value names a file this process can
 // read, each file's bytes once and in the variables' own order, with the first system bundle
 // that exists standing behind an SSL_CERT_FILE that names nothing readable. A command whose
-// environment puts a private authority in NODE_EXTRA_CA_CERTS or REQUESTS_CA_BUNDLE rather than
-// in SSL_CERT_FILE keeps it: NO_PROXY sends its calls to that authority's hosts direct, and
-// those calls are verified against this bundle and nothing else.
+// environment puts a private authority in NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE or
+// GRPC_DEFAULT_SSL_ROOTS_FILE_PATH rather than in SSL_CERT_FILE keeps it: NO_PROXY sends its calls
+// to that authority's hosts direct, and those calls are verified against this bundle and nothing
+// else. The cost of one bundle is that a client whose variable replaces its own roots (all but
+// Node's) trusts the whole of it, the system roots and every other variable's file beside its
+// own, where it trusted its own file alone: each authority in it is one the command trusted for
+// some of its calls already.
 //
 // When nothing is readable at all the bundle is the proxy's certificate alone, and that costs
 // the command every other certificate authority: a request the proxy tunnels rather than carries
@@ -426,7 +431,10 @@ func wgetrcFor(environ []string, bundle string) []byte {
 }
 
 // airlockBundleVars are the variables that each name the trust bundle: one per client family that
-// reads its own. Every one of them takes a file holding a concatenation of PEM certificates.
+// reads its own. Every one of them takes a file holding a concatenation of PEM certificates. All
+// but NODE_EXTRA_CA_CERTS replace their client's own roots rather than add to them, and each is
+// read the same way: what an inherited one names joins the one bundle (trustBundle), and every one
+// of them names that bundle in the command's environment.
 var airlockBundleVars = []string{
 	"SSL_CERT_FILE",                      // OpenSSL, and everything that links it
 	"CURL_CA_BUNDLE",                     // curl
@@ -435,6 +443,10 @@ var airlockBundleVars = []string{
 	"GIT_SSL_CAINFO",                     // git over HTTPS
 	"CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE", // gcloud
 	"AWS_CA_BUNDLE",                      // the AWS CLI and SDKs
+	// gRPC's C core, under its Python, Ruby, C++ and PHP clients, which reads its roots from
+	// this file in place of its own (https://github.com/grpc/grpc/blob/master/doc/environment_variables.md).
+	// grpc-go reads the system roots, which SSL_CERT_FILE names.
+	"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
 }
 
 // airlockVars are the environment variables an airlock release adds to the command's

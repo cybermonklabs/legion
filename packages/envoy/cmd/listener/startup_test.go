@@ -95,7 +95,7 @@ func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
 	if err := json.Unmarshal([]byte(answer), &sent); err != nil {
 		t.Fatalf("decode the send answer %q: %v", answer, err)
 	}
-	message, err = client.JS().GetLastMsg(bus.Stream, contracts.AgentSubject(target))
+	message, err = client.JS().GetLastMsg(bus.Stream, contracts.LegacyAgentSubject(target))
 	if err != nil {
 		t.Fatalf("the sent message is not on the stream: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestARoleMessageReachesItsHolderOnceAcrossTwoTasksOfOneMachine(t *testing.T
 func receiveAsSession(t *testing.T, client *bus.Client, sessionID string) <-chan contracts.Envelope {
 	t.Helper()
 	frames := make(chan contracts.Envelope, 256)
-	subscription, err := client.Conn.Subscribe(contracts.AgentSubject(sessionID), func(msg *natsgo.Msg) {
+	subscription, err := client.Conn.Subscribe(contracts.LegacyAgentSubject(sessionID), func(msg *natsgo.Msg) {
 		var envelope contracts.Envelope
 		_ = json.Unmarshal(msg.Data, &envelope)
 		frames <- envelope
@@ -371,7 +371,7 @@ func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
 	roles, interests := bucket(bus.RoleClaimBucket, 0), bucket(bus.InterestBucket, 0)
 	sessions, records := bucket(bus.SessionBucket, 5*time.Minute), bucket(bus.CIStateBucket, 0)
 	put(roles, "reviewer", store.RoleClaim{HolderSessionID: "ses_live", ClaimedAt: now})
-	put(interests, "ses_live", store.Interest{SessionID: "ses_live", MachineID: "startup-legacy", Topics: []string{contracts.AgentSubject("ses_live")}, UpdatedAt: now})
+	put(interests, "ses_live", store.Interest{SessionID: "ses_live", MachineID: "startup-legacy", Topics: []string{contracts.LegacyAgentSubject("ses_live")}, UpdatedAt: now})
 	// Written straight to the bucket as an earlier build's listener wrote it, serving port and
 	// all: no registration carries a port since dispatch://INFRA-889, and this test is about
 	// what a listener makes of the records it finds on its start.
@@ -569,7 +569,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}

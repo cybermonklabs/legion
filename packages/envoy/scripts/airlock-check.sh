@@ -43,9 +43,11 @@
 #        the work directory up for a person to look at a failure with. --help prints this usage.
 #        A usage error exits 2.
 #
-# Needs bash, curl, jq, go, python3, openssl, node and psql; k2 and k7 also need gh (the last
-# released agent-secrets comes from a GitHub release, and k6's and k7's consumers come from
-# sjawhar/dotfiles), k6 and k7 need bun, wget, git, uv and the clients scripts/airlock-clients.sh
+# Needs bash, curl, jq, go, python3, openssl, node and psql; k2, k6 and k7 also need gh (k2's
+# own step and the negative controls of k2 and k7 run the agent-secrets of the pinned release
+# before the airlock, OLD_CLI_DEFAULT_TAG below, which AIRLOCK_OLD_CLI_TAG overrides, and k6's
+# and k7's consumers come from sjawhar/dotfiles), k6 and k7 need bun, wget, git, uv and the
+# clients scripts/airlock-clients.sh
 # installs (az, gcloud, pulumi and boto3), k9 needs git, and k15 needs lake from the Lean
 # toolchain this environment names. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh as it
 # is, so a pod with no container runtime names its test server there.
@@ -436,6 +438,9 @@ stored_value() { jq -r --arg n "$1" '.secrets[] | select(.name == $n) | .value' 
 header_of() { records "$1" | jq -r --argjson i "$2" --arg h "$3" '.[$i].header[$h][0] // ""'; }
 record_field() { records "$1" | jq -r --argjson i "$2" --arg f "$3" '.[$i][$f] // ""'; }
 
+# github_revokes is how many revokes of an installation token GitHub's stand-in has received.
+github_revokes() { records github | jq '[(. // [])[] | select(.method == "DELETE" and .path == "/installation/token")] | length'; }
+
 psql_stack() { psql "$STACK_DB_URL" -Atq -v ON_ERROR_STOP=1 "$@"; }
 
 ###############################################################################################
@@ -453,7 +458,7 @@ k1_case() { # <name> <label> <value> <bound true|false>
 	echo >>"$dir/needles"
 	chmod 600 "$dir/needles"
 	cat >"$dir/command.sh" <<EOF
-curl -fsS -H "Authorization: Bearer \$$name" $AIRLOCK_S_URL/ok >curl.out
+printf 'Authorization: Bearer %s' "\$$name" | curl -fsS -H @- $AIRLOCK_S_URL/ok >curl.out
 env > env.txt
 : > ready
 sleep 5
@@ -466,11 +471,34 @@ EOF
 	K1_REGIONS="$(jq -r '.regions' "$dir/scan.json")"
 	K1_SCANNED_BYTES="$(jq -r '.bytes' "$dir/scan.json")"
 	K1_SCAN_ERROR="$(jq -r '.scan_error' "$dir/scan.json")"
+	K1_ENVIRON_BYTES="$(jq -r '.environ_bytes' "$dir/scan.json")"
 	K1_FILES="$(grep -rlF "$value" "$dir" 2>/dev/null | grep -v '/needles$' | sed "s|$dir/||" | tr '\n' ' ')"
+	# What each place searched held, which the check requires above zero: a search of nothing
+	# finds nothing and proves nothing. env.txt is read with stat, not `wc -c <file`, because
+	# the shell opens the redirect before 2>/dev/null takes effect and a missing env.txt - the
+	# case where the CLI never ran the command - would print to this run's stderr and, under
+	# pipefail, end the run with no result block at all.
+	read -r K1_DIR_FILES K1_DIR_BYTES < <(find "$dir" -type f ! -name needles -printf '%s\n' 2>/dev/null | awk '{n++; t+=$1} END {print n+0, t+0}')
+	K1_ENV_FILE_BYTES="$(stat -c %s "$dir/env.txt" 2>/dev/null || echo 0)"
 	K1_HEADER="$(header_of s -1 Authorization)"
 	K1_PATH="$(record_field s -1 path)"
-	# The broker's own answer to the CLI for this name, read with a release of its own.
+	# S's record of this call, without the Authorization header the check reads on its own:
+	# the value belongs in that header and nowhere else in the record. `// empty` leaves it
+	# empty when S recorded nothing, where `// {}` would print two bytes and make the size
+	# below a guard that cannot fail.
+	K1_RECORD="$(records s | jq -c '.[-1] // empty | del(.header.Authorization)')"
+	K1_RECORD_BYTES="${#K1_RECORD}"
+	K1_RECORD_HITS=0
+	if contains "$value" "$K1_RECORD"; then K1_RECORD_HITS=1; fi
+	# The broker's own answer to the CLI for this name, read with a release of its own. The
+	# answer is cleared first: `release` leaves RELEASE_JSON as it was when the request fails,
+	# which would search the previous case's answer and call its size this case's coverage.
+	# GitHub's revokes are counted first too, so check_k1 can wait on the one this release gives
+	# back.
+	K1_GITHUB_REVOKES="$(github_revokes)"
+	RELEASE_JSON=""
 	release "$name" 10m >/dev/null 2>&1 || true
+	K1_ANSWER_BYTES="${#RELEASE_JSON}"
 	K1_ANSWER_HITS=0
 	if contains "$value" "$RELEASE_JSON"; then K1_ANSWER_HITS=1; fi
 	K1_ENV_FILE_HITS="$(grep -cF "$value" "$dir/env.txt" 2>/dev/null || true)"
@@ -478,7 +506,8 @@ EOF
 	if [ "$bound" = true ]; then
 		observe "$label: the command exited $K1_EXIT; S's last record is $K1_PATH and its Authorization is $(shape "$K1_HEADER") (compared by SHA-256 and length)"
 		observe "$label: the value is $(shape "$value"); scanned $K1_REGIONS readable regions ($K1_SCANNED_BYTES bytes) of the command's memory${K1_SCAN_ERROR:+ (scan error: $K1_SCAN_ERROR)}"
-		observe "$label: hits for the value — memory $K1_MEM, /proc/<pid>/environ $K1_ENVIRON, the broker's answer $K1_ANSWER_HITS, env.txt $K1_ENV_FILE_HITS, files under the working directory: ${K1_FILES:-none}"
+		observe "$label: hits for the value — memory $K1_MEM, /proc/<pid>/environ $K1_ENVIRON, the broker's answer $K1_ANSWER_HITS, S's record outside Authorization $K1_RECORD_HITS, env.txt $K1_ENV_FILE_HITS, files under the working directory: ${K1_FILES:-none}"
+		observe "$label: what each place held — S's record $K1_RECORD_BYTES bytes outside its Authorization header, the broker's answer $K1_ANSWER_BYTES bytes, /proc/<pid>/environ $K1_ENVIRON_BYTES bytes, env.txt $K1_ENV_FILE_BYTES bytes, and $K1_DIR_FILES files of $K1_DIR_BYTES bytes under the working directory"
 	else
 		# No record of S's is read here: a name with no rules entry has no proxy, so the
 		# command's call to a .test name no resolver answers never arrives, and S's last
@@ -487,19 +516,33 @@ EOF
 	fi
 }
 
+# k1_judge_places judges the case k1_case has just run: the value is in none of the places the
+# check searches, and each of those places held something to find it in, so that a place the run
+# never filled cannot read as a place the value is absent from. The two cases differ only in
+# what the value is, which is this function's one argument.
+#
+# The region count and the file count are printed, not judged: each is above zero whenever the bytes are.
+k1_judge_places() { # <what the value is>
+	judge "$([ "$K1_SCANNED_BYTES" -gt 0 ] && [ "$K1_RECORD_BYTES" -gt 0 ] && [ "$K1_ANSWER_BYTES" -gt 0 ] && [ "$K1_ENVIRON_BYTES" -gt 0 ] && [ "$K1_ENV_FILE_BYTES" -gt 0 ] && [ "$K1_MEM" = 0 ] && [ "$K1_ENVIRON" = 0 ] && [ "$K1_ANSWER_HITS" = 0 ] && [ "$K1_RECORD_HITS" = 0 ] && [ -z "$K1_FILES" ] && echo 0 || echo 1)" \
+		"$1 is in none of the five places, each of which held something to find it in" \
+		"memory $K1_MEM hits over $K1_SCANNED_BYTES scanned bytes of $K1_REGIONS regions, environ $K1_ENVIRON of $K1_ENVIRON_BYTES bytes, the broker's answer $K1_ANSWER_HITS of $K1_ANSWER_BYTES bytes, S's record $K1_RECORD_HITS of $K1_RECORD_BYTES bytes outside its Authorization header, env.txt $K1_ENV_FILE_HITS of $K1_ENV_FILE_BYTES bytes, files ${K1_FILES:-none} over $K1_DIR_FILES files of $K1_DIR_BYTES bytes"
+}
+
 check_k1() {
 	expect "S gets the stored secret's real value, and the github-app secret's minted token, in the Authorization header"
 	expect "each command exits 0"
 	expect "neither value is found in S's record aside: not in the broker's answer to the CLI, not in /proc/<pid>/environ, not in a scan of the command's readable memory, and not in any file under its working directory"
 	expect "the negative control, the same runs with the secret's entry removed, finds both in env.txt and in the command's environment"
+	expect "the session's own release of the github-app secret gives back to GitHub the token it minted for the slots, and the token the proxy sent S is still live at GitHub afterwards"
 
 	start_stack
 	stack_facts
 
 	local demo_value github_token
 	demo_value="$(stored_value "${STACK_SECRETS_PREFIX}airlock-demo-token")"
-	# The stand-in GitHub App mints ghs_standin_<owner> for each installation it is configured
-	# with, and the stack configures acme-org (dev-airlock.sh's GITHUB_OWNER).
+	# The stand-in GitHub App mints ghs_standin_<owner>_<n>, a token of its own for every request
+	# as GitHub mints one, and the stack configures acme-org (dev-airlock.sh's GITHUB_OWNER), so
+	# every token it mints for this run begins with this string.
 	github_token="ghs_standin_acme-org"
 
 	k1_case AIRLOCK_DEMO_TOKEN stored "$demo_value" true
@@ -507,18 +550,36 @@ check_k1() {
 	judge "$(contains "$demo_value" "$K1_HEADER" && echo 0 || echo 1)" \
 		"S gets the stored secret's real value in the Authorization header of GET /ok" \
 		"the header is $(shape "$K1_HEADER") and the stored value is $(shape "$demo_value"), compared by SHA-256 and length"
-	judge "$([ "$K1_SCANNED_BYTES" -gt 0 ] && [ "$K1_MEM" = 0 ] && [ "$K1_ENVIRON" = 0 ] && [ "$K1_ANSWER_HITS" = 0 ] && [ -z "$K1_FILES" ] && echo 0 || echo 1)" \
-		"the stored secret's value is in none of the five places" \
-		"memory $K1_MEM hits over $K1_SCANNED_BYTES scanned bytes, environ $K1_ENVIRON, the broker's answer $K1_ANSWER_HITS, files ${K1_FILES:-none}"
+	k1_judge_places "the stored secret's value"
 
 	k1_case AIRLOCK_GITHUB_APP github "$github_token" true
 	judge "$([ "$K1_EXIT" = 0 ] && echo 0 || echo 1)" "the github-app command exits 0" "it exited $K1_EXIT"
 	judge "$(contains "$github_token" "$K1_HEADER" && echo 0 || echo 1)" \
 		"S gets the minted installation token in the Authorization header" \
 		"the header is $(shape "$K1_HEADER") and the minted token is $(shape "$github_token"), compared by SHA-256 and length"
-	judge "$([ "$K1_SCANNED_BYTES" -gt 0 ] && [ "$K1_MEM" = 0 ] && [ "$K1_ENVIRON" = 0 ] && [ "$K1_ANSWER_HITS" = 0 ] && [ -z "$K1_FILES" ] && echo 0 || echo 1)" \
-		"the minted token is in none of the five places" \
-		"memory $K1_MEM hits over $K1_SCANNED_BYTES scanned bytes, environ $K1_ENVIRON, the broker's answer $K1_ANSWER_HITS, files ${K1_FILES:-none}"
+	k1_judge_places "the minted token"
+	# The session's own release of the name, which k1_case's last step made, minted a token only
+	# to learn the slots it hands placeholders for, and gives it back to GitHub in the background.
+	# The token the proxy sent S stays live: a give-back that ended it, as a stand-in that answers
+	# one string for every request would make it, would end the token the proxy holds for the
+	# grant the session is still running.
+	local proxy_token revokes_before revokes_after proxy_status
+	# The rule names no kind and k1 asks for no --github-token, so the proxy sent S the whole
+	# released value, the JSON object of installations; the token is its one installation's.
+	proxy_token="$(printf '%s' "${K1_HEADER#Bearer }" | jq -Rr '(fromjson? | .installations[]?.token) // empty' | head -n 1)"
+	revokes_before="$K1_GITHUB_REVOKES"
+	revokes_after="$revokes_before"
+	for _ in $(seq 30); do
+		revokes_after="$(github_revokes)"
+		[ "$revokes_after" -gt "$revokes_before" ] && break
+		sleep 0.5
+	done
+	# The token reaches curl on standard input, in no command line.
+	proxy_status="$(printf 'Authorization: Bearer %s' "$proxy_token" | curl -sS -o /dev/null -w '%{http_code}' -H @- "$AIRLOCK_GITHUB_URL/repos/acme-org/k1")"
+	observe "github: GitHub got $((revokes_after - revokes_before)) revoke(s) after the session's own release, and a read at GitHub with the token the proxy sent S, $(shape "$proxy_token"), answered $proxy_status"
+	judge "$([ -n "$proxy_token" ] && [ "$revokes_after" -gt "$revokes_before" ] && [ "$proxy_status" != 401 ] && echo 0 || echo 1)" \
+		"the session's release gives back the token it minted for the slots, and the token the proxy sent S is still live at GitHub" \
+		"$((revokes_after - revokes_before)) revoke(s) after the session's release; the proxy's token, $(shape "$proxy_token") (empty is a header no token was read from), answered $proxy_status, where 401 is a token GitHub no longer knows"
 
 	# The negative control: the same two runs for names the rules file does not hold. The stack
 	# takes its shape from its own rules file, so the control adds the two secrets to the
@@ -529,7 +590,7 @@ check_k1() {
 		'{"owner":"legion-daemon","tier":"agent"}' "$plain_value"
 	github_app="$(stored_value "${STACK_SECRETS_PREFIX}airlock-github-app")"
 	add_fake_secret "${STACK_SECRETS_PREFIX}airlock-plain-github" \
-		'{"owner":"legion-daemon","tier":"agent","kind":"github-app","github-owners":"acme-org"}' "$github_app"
+		'{"owner":"legion-daemon","tier":"agent","type":"github-app","github-owners":"acme-org"}' "$github_app"
 	reread_all AIRLOCK_PLAIN_TOKEN
 	reread_all AIRLOCK_PLAIN_GITHUB
 
@@ -547,41 +608,66 @@ check_k1() {
 # k2
 ###############################################################################################
 
-# fetch_old_cli puts the last released agent-secrets under the work directory and answers its
-# path, checking that it prints the tag the release carries. It is the one check that reaches
-# GitHub.
+# The airlock's own merge, and the release whose agent-secrets the old-CLI steps of k2 and k7
+# run: the last legion-envoy-v* release before that merge (legion-envoy-v29.40.0 is the merge's
+# own release, dispatch://INFRA-1352). Those steps ask what a CLI that knows nothing of the
+# airlock does, so the release is pinned rather than read as "the newest": every release from
+# v29.40.0 on carries the airlock, and a newest-release CLI answers the airlock's way and
+# proves nothing.
+AIRLOCK_MERGE_COMMIT="46c4162bc50a39852918cc016e3198944da1a5e7"
+OLD_CLI_DEFAULT_TAG="legion-envoy-v29.39.0"
+
+# fetch_old_cli puts that release's agent-secrets under the work directory, answers its path,
+# and proves the two things the steps that run it rest on: that the binary is the release it
+# asked for (its --version names the tag), and that the release is one GitHub puts before the
+# airlock merge. It answers non-zero when either fails, and OLD_CLI_WHY says which, so a step
+# that cannot run its old CLI fails rather than passing on a command that never ran.
+# AIRLOCK_OLD_CLI_TAG names another release instead, and is checked the same way.
 fetch_old_cli() {
-	local tag asset
-	tag="$(gh release list --repo cybermonklabs/legion --limit 100 --json tagName \
-		--jq '[.[] | select(.tagName | startswith("legion-envoy-v"))] | .[0].tagName')"
-	[ -n "$tag" ] || {
-		echo "airlock-check: no legion-envoy-v* release was listed" >&2
-		return 1
-	}
+	local tag asset status
+	tag="${AIRLOCK_OLD_CLI_TAG:-$OLD_CLI_DEFAULT_TAG}"
+	OLD_CLI_TAG="$tag"
+	OLD_CLI_VERSION=""
+	OLD_CLI_WHY=""
 	mkdir -p "$WORK_DIR/old-cli"
-	gh release download "$tag" --repo cybermonklabs/legion --pattern 'agent-secrets-amd64.tar.gz' \
-		--dir "$WORK_DIR/old-cli" --clobber >/dev/null
+	if ! gh release download "$tag" --repo cybermonklabs/legion --pattern 'agent-secrets-amd64.tar.gz' \
+		--dir "$WORK_DIR/old-cli" --clobber >"$WORK_DIR/old-cli/download.log" 2>&1; then
+		OLD_CLI_WHY="the release's agent-secrets-amd64.tar.gz did not download: $(tail -n 1 "$WORK_DIR/old-cli/download.log")"
+		return 1
+	fi
 	asset="$WORK_DIR/old-cli/agent-secrets-amd64.tar.gz"
 	tar -xzf "$asset" -C "$WORK_DIR/old-cli"
 	# The release's tarball holds agent-secrets/bin/agent-secrets beside its helper and its
 	# notices, so the binary is under that directory and is not the archive's own name.
 	OLD_CLI="$WORK_DIR/old-cli/agent-secrets/bin/agent-secrets"
 	chmod +x "$OLD_CLI"
-	OLD_CLI_TAG="$tag"
 	OLD_CLI_VERSION="$("$OLD_CLI" --version 2>&1 | tr -d '\n')"
+	contains "$tag" "$OLD_CLI_VERSION" || {
+		OLD_CLI_WHY="its --version prints '$OLD_CLI_VERSION', which does not name $tag"
+		return 1
+	}
+	# GitHub's compare of the tag with the airlock merge: `ahead` means the merge is ahead of
+	# the tag, so the tag's commit is an ancestor of it and that release has no airlock in it.
+	status="$(gh api "repos/cybermonklabs/legion/compare/$tag...$AIRLOCK_MERGE_COMMIT" --jq .status 2>&1 | tr -d '\n')"
+	[ "$status" = ahead ] || {
+		OLD_CLI_WHY="GitHub compares $tag with the airlock merge ${AIRLOCK_MERGE_COMMIT:0:12} as '$status', not 'ahead', so that release is not one from before the airlock"
+		return 1
+	}
 }
 
 check_k2() {
 	expect "POST /v1/grants/{id}/values for a grant of a secret the rules name answers the placeholder and the proxy's certificate in their new fields and leaves the name out of values"
-	expect "the last released agent-secrets exits without running the command and says that no value was released"
+	expect "the agent-secrets of the release before the airlock exits without running the command and says that no value was released"
 	expect "the negative control, the same call for a grant of a secret the rules do not name, answers the value under the name, and the old CLI runs its command"
 
 	start_stack
 	stack_facts
-	fetch_old_cli
-	observe "the last released agent-secrets is $OLD_CLI_TAG and prints: $OLD_CLI_VERSION"
-	judge "$(contains "$OLD_CLI_TAG" "$OLD_CLI_VERSION" && echo 0 || echo 1)" \
-		"the old CLI is the last release" "its --version prints $OLD_CLI_VERSION for tag $OLD_CLI_TAG"
+	local old_cli_ok=0
+	fetch_old_cli || old_cli_ok=1
+	observe "the agent-secrets of the release before the airlock is $OLD_CLI_TAG and prints: ${OLD_CLI_VERSION:-nothing}"
+	judge "$old_cli_ok" \
+		"the old CLI is the release it was asked for, and GitHub puts that release before the airlock" \
+		"${OLD_CLI_WHY:-its --version prints $OLD_CLI_VERSION, and GitHub compares $OLD_CLI_TAG with the airlock merge as ahead}"
 
 	release AIRLOCK_DEMO_TOKEN 30m
 	local values_keys airlock_keys ca_len name_value demo_value
@@ -661,20 +747,20 @@ P="\$AIRLOCK_SCOPED_TOKEN"
 out="$WORK_DIR/k3-out"
 : >"\$out"
 say() { printf '%s\n' "\$1" >>"\$out"; }
-say "authorization=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/read)"
+say "authorization=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/read)"
 say "xkey=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Key: \$P" $AIRLOCK_S_URL/read)"
 say "xother=\$(curl -sS -o /dev/null -w %{http_code} -H "X-Other: \$P" $AIRLOCK_S_URL/read)"
 say "query=\$(curl -sS -o /dev/null -w %{http_code} "$AIRLOCK_S_URL/read?k=\$P")"
 say "getbody=\$(curl -sS -o /dev/null -w %{http_code} -X GET --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody=\$(curl -sS -o /dev/null -w %{http_code} -X POST --data "k=\$P" $AIRLOCK_S_URL/read)"
 say "postbody_error=\$(curl -sS -X POST --data "k=\$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
-say "post=\$(curl -sS -o /dev/null -w %{http_code} -X POST -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/read)"
-say "post_error=\$(curl -sS -X POST -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
-say "other=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/other)"
-say "other_error=\$(curl -sS -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/other 2>&1 | tr '\n' ' ')"
-say "t=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$P" $AIRLOCK_T_URL/read)"
-say "mismatch_sni=\$(curl -sS --connect-to t.airlock.test:443:s.airlock.test:443 -H "Authorization: Bearer \$P" $AIRLOCK_T_URL/read 2>&1 | tr '\n' ' ')"
-say "mismatch_host=\$(curl -sS -H "Host: t.airlock.test" -H "Authorization: Bearer \$P" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
+say "post=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -X POST -H @- $AIRLOCK_S_URL/read)"
+say "post_error=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -X POST -H @- $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
+say "other=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/other)"
+say "other_error=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H @- $AIRLOCK_S_URL/other 2>&1 | tr '\n' ' ')"
+say "t=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_T_URL/read)"
+say "mismatch_sni=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS --connect-to t.airlock.test:443:s.airlock.test:443 -H @- $AIRLOCK_T_URL/read 2>&1 | tr '\n' ' ')"
+say "mismatch_host=\$(printf 'Authorization: Bearer %s' "\$P" | curl -sS -H "Host: t.airlock.test" -H @- $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 say "carries=\$(curl -sS -H "X-Key: \$(cat $WORK_DIR/k3-real)" $AIRLOCK_S_URL/read 2>&1 | tr '\n' ' ')"
 EOF
 	printf '%s' "$scoped_value" >"$WORK_DIR/k3-real"
@@ -757,8 +843,8 @@ EOF
 set -u
 out="$WORK_DIR/k3-control-out"
 : >"\$out"
-printf 'post=%s\n' "\$(curl -sS -o /dev/null -w %{http_code} -X POST -H "Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/read)" >>"\$out"
-printf 'other=%s\n' "\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/other)" >>"\$out"
+printf 'post=%s\n' "\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -X POST -H @- $AIRLOCK_S_URL/read)" >>"\$out"
+printf 'other=%s\n' "\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/other)" >>"\$out"
 EOF
 	agent-secrets AIRLOCK_DEMO_TOKEN -- bash "$WORK_DIR/k3-control.sh" >>"$WORK_DIR/k3-cli.log" 2>&1 || true
 	local crecs cpost cother
@@ -810,8 +896,8 @@ out="$WORK_DIR/k4-out"
 : >"\$out"
 say() { printf '%s\n' "\$1" >>"\$out"; }
 say "no_proxy=\$NO_PROXY"
-curl -sS -o /dev/null -w "%{certs}" -H "Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/ok >"$WORK_DIR/s-leaf.pem"
-say "s_status=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/ok)"
+printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w "%{certs}" -H @- $AIRLOCK_S_URL/ok >"$WORK_DIR/s-leaf.pem"
+say "s_status=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/ok)"
 curl -sS -o /dev/null -w "%{certs}" $AIRLOCK_T_URL/read >"$WORK_DIR/t-leaf.pem"
 say "t_body=\$(curl -sS -X POST --data 'the-bytes-the-command-sent' $AIRLOCK_T_URL/echo | tr '\n' ' ')"
 say "svc=\$(curl -sS --resolve stand.default.svc:$svc_port:127.0.0.1 --max-time 10 http://stand.default.svc:$svc_port/ 2>&1 | tr '\n' ' ')"
@@ -879,16 +965,16 @@ EOF
 	local s_mark short_now short_later withheld_before withheld_after
 	s_mark="$(records_count s)"
 	release AIRLOCK_DEMO_TOKEN 1m
-	short_now="$(curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H "Authorization: Bearer $PLACEHOLDER" "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	short_now="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	sleep 70
-	short_later="$(curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H "Authorization: Bearer $PLACEHOLDER" "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	short_later="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 
 	release AIRLOCK_DEMO_TOKEN 30m
-	withheld_before="$(curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H "Authorization: Bearer $PLACEHOLDER" "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	withheld_before="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	# Withholding a name from a session is an operator's act, and a pod session has no
 	# operator, so the row the broker reads is written here directly.
 	psql_stack -c "insert into withheld_secrets (enrollment_id, name) values ('$AIRLOCK_ENROLLMENT', 'AIRLOCK_DEMO_TOKEN')" >/dev/null
-	withheld_after="$(curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H "Authorization: Bearer $PLACEHOLDER" "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
+	withheld_after="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" --proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr '\n' ' ')"
 	psql_stack -c "delete from withheld_secrets where enrollment_id = '$AIRLOCK_ENROLLMENT'" >/dev/null
 	local tunnelled
 	tunnelled="$(($(records_count s) - s_mark))"
@@ -920,8 +1006,8 @@ EOF
 ###############################################################################################
 
 k5_call() { # <placeholder> -> prints the status
-	curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
-		--proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H "Authorization: Bearer $1" "$AIRLOCK_S_URL/ok"
+	printf 'Authorization: Bearer %s' "$1" | curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
+		--proxy "$(proxy_for "${AIRLOCK_PROXY_URL##*://}")" -H @- "$AIRLOCK_S_URL/ok"
 }
 
 # k5_stored drives the stored half of k5 against the stack this run started and answers through
@@ -1062,9 +1148,11 @@ approve_record() { # <record id>
 	curl -sS -H "Cookie: $session" -o "$d/page.html" "$AGENT_SECRETS_URL/approve/$rec"
 	local field
 	field() { sed -n "s/.*name=\"$1\" value=\"\([^\"]*\)\".*/\1/p" "$d/page.html" | head -n 1; }
-	curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
+	# The page's form token reaches curl on standard input (`--data-urlencode token@-`), in no
+	# command line.
+	printf '%s' "$(field token)" | curl -sS -o "$d/decided.html" -w '%{http_code}' -H "Cookie: $session" -H "Origin: $AGENT_SECRETS_URL" \
 		--data-urlencode "decision=approve" --data-urlencode "record=$(field record)" \
-		--data-urlencode "printed=$(field printed)" --data-urlencode "token=$(field token)" \
+		--data-urlencode "printed=$(field printed)" --data-urlencode token@- \
 		--data-urlencode "expires=$(field expires)" "$AGENT_SECRETS_URL/approve" >>"$d/decisions"
 	echo >>"$d/decisions"
 }
@@ -1318,6 +1406,8 @@ check_k6() {
 # at main and nothing of them is rewritten; what this check adds around them is a DOTFILES_DIR
 # of its own holding the files they read of each other (scripts/secret-run-reason and
 # agent-secrets/broker-url.sh), because secret-run resolves both relative to its own directory.
+# One consumer speaks gRPC, which offers h2 alone in its TLS handshake: Pulumi's gcpkms secrets
+# manager, whose Cloud KMS call the proxy carries in HTTP/2.
 #
 # The names are the consumers' own - GITHUB_ADMIN_PAT, GCLOUD_SAMI, GWS_THEOREM_READ_OAUTH and
 # the rest - and the hosts are the real ones, so this check needs a rules file the stack's does
@@ -1384,7 +1474,7 @@ k7_names() {
 	     {"name": "SLACK_BOT_TOKEN", "hosts": ["slack.com"]},
 	     {"name": "GITHUB_ADMIN_PAT", "hosts": ["api.github.com", "github.com"]},
 	     {"name": "TAILSCALE_API_KEY", "hosts": ["api.tailscale.com"]},
-	     {"name": "GCLOUD_SAMI", "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com"]},
+	     {"name": "GCLOUD_SAMI", "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"]},
 	     {"name": "GWS_THEOREM_READ_OAUTH", "hosts": ["www.googleapis.com", "oauth2.googleapis.com"]},
 	     {"name": "GWS_THEOREM_ADMIN_OAUTH", "hosts": ["admin.googleapis.com"]}
 	   ]' "$AIRLOCK_RULES_FILE" >"$d/rules.json"
@@ -1394,10 +1484,10 @@ k7_names() {
 	add_fake_secret "${STACK_SECRETS_PREFIX}slack-bot-token" '{"owner":"legion-daemon","tier":"agent"}' "$K7_SLACK"
 	add_fake_secret "${STACK_SECRETS_PREFIX}github-admin-pat" '{"owner":"legion-daemon","tier":"agent"}' "$K7_GITHUB"
 	add_fake_secret "${STACK_SECRETS_PREFIX}tailscale-api-key" '{"owner":"legion-daemon","tier":"agent"}' "$K7_TAILSCALE"
-	# The three Google logins are minted kinds: the broker mints each at the stack's stand-in
+	# The three Google logins are minted types: the broker mints each at the stack's stand-in
 	# Google token endpoint, so what the consumer holds a placeholder for is a minted value.
 	local google login
-	google='{"owner":"legion-daemon","tier":"agent","kind":"google-login"}'
+	google='{"owner":"legion-daemon","tier":"agent","type":"google-login"}'
 	login='{"type":"authorized_user","client_id":"the-stand-in-client","client_secret":"the-stand-in-client-secret","refresh_token":"the-stand-in-refresh-token"}'
 	add_fake_secret "${STACK_SECRETS_PREFIX}gcloud-sami" "$google" "$login"
 	add_fake_secret "${STACK_SECRETS_PREFIX}gws-theorem-read-oauth" "$google" "$login"
@@ -1455,16 +1545,23 @@ say "gh=\$(secret-run --reason 'k7: one gh api call with a fake admin token' GIT
 # pulumi preview of a program whose Tailscale provider calls tailscale:getDevices.
 say "pulumi=\$(cd $d/pulumi && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_URL=file://$d/pulumi/state TAILSCALE_API_KEY="\$TAILSCALE_API_KEY" TAILSCALE_TAILNET=example.com && pulumi stack init k7 >/dev/null 2>&1; pulumi preview --stack k7 --non-interactive 2>&1 | grep -iE 'error|refus|unauthor|401|403' | head -n 1 | tr -d '\r')"
 
+# A gRPC client: Pulumi's gcpkms secrets manager, which calls Cloud KMS over gRPC alone and offers
+# h2 and nothing else in its TLS handshake, makes a stack's data key at stack init with the
+# placeholder as its access token. The airlock carries it in HTTP/2 and Cloud KMS refuses the fake
+# value with gRPC's own UNAUTHENTICATED; a proxy that does not speak HTTP/2 fails the handshake
+# ("tls: no application protocol") and Pulumi says only "context deadline exceeded".
+say "kms=\$(cd $d/pulumi && export PULUMI_BACKEND_URL=file://$d/pulumi/state GOOGLE_OAUTH_ACCESS_TOKEN="\$GCLOUD_SAMI" && timeout 120 pulumi stack init k7kms --non-interactive --secrets-provider gcpkms://projects/airlock-k7/locations/global/keyRings/airlock-k7/cryptoKeys/airlock-k7 2>&1 | grep -iE 'error|unauthenticated|deadline|application protocol' | head -n 1 | tr -d '\r')"
+
 # gcloud-broker with gcloud projects list.
 say "gcloud=\$(GCLOUD_BROKER_INNER=1 GCLOUD_SAMI="\$GCLOUD_SAMI" bash $K7_DOTFILES/scripts/gcloud-broker -- gcloud projects list --format=json 2>&1 | grep -iE 'ERROR|reason:' | head -n 1 | tr -d '\r')"
 
 # One gws call under the theorem read tier: that tier's own command out of gws/accounts.json,
 # running the Drive call gws makes, since gws itself is no file of that repository.
 say "gws_tier=\$(jq -r '.theorem.tiers.read.command | @tsv' $K7_DOTFILES/gws/accounts.json 2>&1 | tr '\t' ' ')"
-say "gws=\$(secret-run --reason 'gws theorem read' GWS_THEOREM_READ_OAUTH -- sh -c 'curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$GWS_THEOREM_READ_OAUTH" "https://www.googleapis.com/drive/v3/about?fields=user"' 2>&1 | tail -n 1 | tr -d '\r')"
+say "gws=\$(secret-run --reason 'gws theorem read' GWS_THEOREM_READ_OAUTH -- sh -c 'printf "Authorization: Bearer %s" "\$GWS_THEOREM_READ_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://www.googleapis.com/drive/v3/about?fields=user"' 2>&1 | tail -n 1 | tr -d '\r')"
 
 # The google-workspace skill's Bearer call to admin.googleapis.com.
-say "admin=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$GWS_THEOREM_ADMIN_OAUTH" "https://admin.googleapis.com/admin/directory/v1/users?domain=theorem.dev" 2>&1 | tail -n 1)"
+say "admin=\$(printf 'Authorization: Bearer %s' "\$GWS_THEOREM_ADMIN_OAUTH" | curl -sS -o /dev/null -w %{http_code} -H @- "https://admin.googleapis.com/admin/directory/v1/users?domain=theorem.dev" 2>&1 | tail -n 1)"
 
 # git push --dry-run through scripts/airlock/credential-helper, which answers the placeholder,
 # with the proxy in git's own configuration. The pod's own GIT_CONFIG_* settings are cleared for
@@ -1474,13 +1571,37 @@ git init -q $d/repo
 (cd $d/repo && git -c user.email=k7@airlock.test -c user.name=k7 commit -q --allow-empty -m k7)
 say "git=\$(cd $d/repo && env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 -u GIT_CONFIG_KEY_1 -u GIT_CONFIG_VALUE_1 -u GIT_CONFIG_KEY_2 -u GIT_CONFIG_VALUE_2 -u GIT_CONFIG_KEY_3 -u GIT_CONFIG_VALUE_3 -u GIT_CONFIG_KEY_4 -u GIT_CONFIG_VALUE_4 git -c http.proxy="\$HTTPS_PROXY" -c credential.helper=$SCRIPT_DIR/airlock/credential-helper -c http.sslCAInfo="\$GIT_SSL_CAINFO" push --dry-run https://github.com/cybermonklabs/legion HEAD:refs/heads/k7-airlock-never-pushed 2>&1 | tail -n 2 | tr '\n' ' ')"
 
-# The plain clients to S, each with the fake value in the header it uses.
-say "curl=\$(curl -sS -o /dev/null -w %{http_code} -H "Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/curl)"
-say "wget=\$(wget -q -O /dev/null --header="Authorization: Bearer \$AIRLOCK_DEMO_TOKEN" $AIRLOCK_S_URL/wget && echo 200 || echo failed)"
+# The plain clients to S, each with the fake value in the header it uses, and none with it in its
+# command line: curl reads the header on standard input. wget reads a header from no pipe, so it
+# gets a startup file of its own, removed when this script exits: the airlock's WGETRC first,
+# whose ca_certificate is the one way the proxy's certificate reaches wget
+# (cmd/agent-secrets/airlock.go, wgetrcFor), then the header. --config would read that file in
+# place of WGETRC and lose the certificate, so the file is named as WGETRC for this one call.
+# wget follows a redirect by default and sends a startup file's header on every request, to the
+# origin a Location names too (wget 1.21.4, measured 2026-11-17), so --max-redirect=0 holds it to
+# the one request to S. -S prints that answer's status, which is what this records, and a 3xx is
+# recorded as refused. wget still reads a refused redirect's body to its end, and a chunked body
+# that never ends held it past 50 s (measured 2026-11-17), so timeout 30 bounds the call and the
+# line says when it ran out. curl follows no redirect here, and -q first keeps a .curlrc from
+# making it follow one. Python's urllib opener follows a redirect and keeps the Authorization
+# header on it (Python 3.12, measured 2026-11-17), so its line builds an opener whose redirect
+# handler refuses, and records a 3xx as refused, as the wget line does.
+say "curl=\$(printf 'Authorization: Bearer %s' "\$AIRLOCK_DEMO_TOKEN" | curl -q -sS -o /dev/null -w %{http_code} -H @- $AIRLOCK_S_URL/curl)"
+wgetrc=\$(mktemp)
+trap 'rm -f "\$wgetrc"' EXIT
+{ if [ -n "\${WGETRC:-}" ]; then cat "\$WGETRC"; echo; fi; printf 'header = Authorization: Bearer %s\n' "\$AIRLOCK_DEMO_TOKEN"; } >"\$wgetrc"
+say "wget=\$({ WGETRC="\$wgetrc" timeout 30 wget -q -S --max-redirect=0 -O /dev/null $AIRLOCK_S_URL/wget 2>&1; echo "wget-exit=\$?"; } | awk '/^  HTTP\\//{s=\$2} /^wget-exit=/{e=substr(\$0, 11)} END{if (s ~ /^3/) s = s " refused: a redirect, which a request that carries a credential does not follow"; if (s == "") s = "failed"; if (e == 124) s = s " (wget stopped after 30 s)"; print s}')"
 say "node=\$(node -e 'fetch("$AIRLOCK_S_URL/node", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}).then(r => console.log(r.status)).catch(e => console.log("error", e.message))')"
 say "bun=\$(bun -e 'const r = await fetch("$AIRLOCK_S_URL/bun", {headers: {authorization: "Bearer " + process.env.AIRLOCK_DEMO_TOKEN}}); console.log(r.status)' 2>&1 | tail -n 1)"
-say "urllib=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, urllib.request
-print(urllib.request.urlopen(urllib.request.Request("$AIRLOCK_S_URL/urllib", headers={"Authorization": "Bearer " + os.environ["AIRLOCK_DEMO_TOKEN"]})).status)' 2>&1 | tail -n 1)"
+say "urllib=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, urllib.error, urllib.request
+class Refuse(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args):
+        return None
+request = urllib.request.Request("$AIRLOCK_S_URL/urllib", headers={"Authorization": "Bearer " + os.environ["AIRLOCK_DEMO_TOKEN"]})
+try:
+    print(urllib.request.build_opener(Refuse).open(request).status)
+except urllib.error.HTTPError as error:
+    print(f"{error.code} refused: a redirect, which a request that carries a credential does not follow" if 300 <= error.code < 400 else error.code)' 2>&1 | tail -n 1)"
 say "requests=\$($AIRLOCK_BOTO3_PYTHON -c 'import os, requests
 print(requests.get("$AIRLOCK_S_URL/requests", headers={"Authorization": "Bearer " + os.environ["AIRLOCK_DEMO_TOKEN"]}).status_code)' 2>&1 | tail -n 1)"
 say "go=\$($STANDS_BIN probe-bound)"
@@ -1490,6 +1611,7 @@ EOF
 check_k7() {
 	expect "each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses"
 	expect "each real service refused the fake value"
+	expect "a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value"
 	expect "the gh consumer's own call is refused the fake value by GitHub"
 	expect "S got the fake value in each client's call"
 	expect "the command's exit status is 3, and the CLI's stderr has the line agent-secrets: NAME from …"
@@ -1542,6 +1664,7 @@ check_k7() {
 	observe "slack.com/api/auth.test under bun: ${K7[slack]-}"
 	observe "gh api user under secret-run for GITHUB_ADMIN_PAT: ${K7[gh]-}"
 	observe "pulumi preview with the Tailscale provider calling tailscale:getDevices: ${K7[pulumi]-}"
+	observe "pulumi stack init with a gcpkms secrets provider, Cloud KMS over gRPC: ${K7[kms]-}"
 	observe "gcloud projects list under gcloud-broker: ${K7[gcloud]-}"
 	observe "the gws theorem read tier (${K7[gws_tier]-}) answered: ${K7[gws]-}"
 	observe "the google-workspace skill's Bearer call to admin.googleapis.com answered: ${K7[admin]-}"
@@ -1566,6 +1689,7 @@ check_k7() {
 	k7_refused gws "${K7[gws]-}"
 	k7_refused admin "${K7[admin]-}"
 	k7_refused git "${K7[git]-}"
+	k7_refused kms "${K7[kms]-}"
 	observe "what each real service answered the fake value${refusals}"
 	observe "the gh consumer: $(printf '%s' "${K7[gh]-}" | head -c 300)"
 
@@ -1582,8 +1706,15 @@ check_k7() {
 	judge "$([ "$logged" -ge 10 ] && [ "$swapped" -ge 10 ] && echo 0 || echo 1)" \
 		"each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses" \
 		"$logged calls to a bound host were logged by the proxy, $swapped of them allowed and so swapped"
-	judge "$([ "$refused" = 6 ] && echo 0 || echo 1)" \
-		"each real service refused the fake value" "$refused of the 6 consumers that can run in this pod refused it${refusals}"
+	judge "$([ "$refused" = 7 ] && echo 0 || echo 1)" \
+		"each real service refused the fake value" "$refused of the 7 consumers that can run in this pod refused it${refusals}"
+	# The gRPC consumer on its own: Google's own UNAUTHENTICATED is what says the call crossed the
+	# proxy in HTTP/2 and reached Cloud KMS, and a call line naming its host is the proxy's side.
+	local kms_calls
+	kms_calls="$(jq -s '[.[] | select(.host == "cloudkms.googleapis.com")] | length' <<<"$calls")"
+	judge "$(printf '%s' "${K7[kms]-}" | grep -qi 'unauthenticated' && ! printf '%s' "${K7[kms]-}" | grep -qi 'application protocol' && [ "$kms_calls" -ge 1 ] && echo 0 || echo 1)" \
+		"a gRPC client reaches its service through the proxy in HTTP/2, and the service refuses the fake value" \
+		"Pulumi's gcpkms secrets manager said '$(printf '%s' "${K7[kms]-}" | head -c 300)', and the proxy logged $kms_calls calls to cloudkms.googleapis.com"
 	if [ -z "$K7_GH_DIR" ]; then
 		fail "the gh consumer's own call is refused the fake value by GitHub — this step did not run: LEGION_GH_PATH is unset or names no runnable file in this pod, and it names the only real GitHub CLI here. shims/gh's own admin line is \`secret-run … GITHUB_ADMIN_PAT -- sh -c 'GH_TOKEN=\$GITHUB_ADMIN_PAT exec gh …'\`, and the other gh on PATH is Legion's wrapper, which refuses a call whose GH_TOKEN is set and refuses to run at all when another gh is ahead of it, so running the step against the wrapper would prove nothing about the airlock. Set LEGION_GH_PATH to the real CLI and run this check again."
 	else
@@ -1606,19 +1737,23 @@ check_k7() {
 		"the command's exit status is 3, and the CLI's stderr has the line agent-secrets: NAME from …" \
 		"it exited $three_status and said '$three_err'"
 
-	# The negative control: the last released CLI, which is the CLI without this change. It is
-	# released no value for a name the rules name, so nothing it runs reaches the proxy port.
-	fetch_old_cli
+	# The negative control: the agent-secrets of the release before the airlock, which is the
+	# CLI without this change. It is released no value for a name the rules name, so nothing it
+	# runs reaches the proxy port. A control that counts zero calls proves that only once the
+	# binary it counted them for is the one it asked for: a missing or wrong binary makes no
+	# call either, so fetch_old_cli's answer is part of the verdict.
+	local old_cli_ok=0
+	fetch_old_cli || old_cli_ok=1
 	local before_control after_control old_out old_status
 	before_control="$(bound_call_lines "$WORK_DIR/k7/broker.log" | wc -l)"
 	old_out="$(AGENT_SECRETS_URL="$K7_API_URL" "$OLD_CLI" GITHUB_ADMIN_PAT -- sh -c 'curl -sS -o /dev/null -w %{http_code} https://api.github.com/user' 2>&1)"
 	old_status=$?
 	after_control="$(bound_call_lines "$WORK_DIR/k7/broker.log" | wc -l)"
-	control "the last released agent-secrets ($OLD_CLI_TAG, the CLI without this change) exited $old_status saying '$(printf '%s' "$old_out" | tail -n 1)'"
+	control "the agent-secrets of $OLD_CLI_TAG, the release before the airlock and so the CLI without this change, exited $old_status saying '$(printf '%s' "$old_out" | tail -n 1)'"
 	control "the proxy logged $((after_control - before_control)) further calls to a bound host while it ran"
-	judge "$([ "$((after_control - before_control))" = 0 ] && echo 0 || echo 1)" \
+	judge "$([ "$old_cli_ok" = 0 ] && [ "$((after_control - before_control))" = 0 ] && echo 0 || echo 1)" \
 		"negative control: with a CLI built without the change no call goes through the proxy port" \
-		"$((after_control - before_control)) calls to a bound host were logged while the old CLI ran, which exited $old_status"
+		"${OLD_CLI_WHY:+$OLD_CLI_WHY; }$((after_control - before_control)) calls to a bound host were logged while the agent-secrets of $OLD_CLI_TAG ran, which exited $old_status"
 
 	stop_stack
 }
@@ -1913,8 +2048,8 @@ check_k9() {
 	# that a call through the front reaches the broker that is still up.
 	local after_stop="" status ok=0 i
 	for i in 1 2 3 4; do
-		status="$(curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
-			--proxy "$proxy" -H "Authorization: Bearer $PLACEHOLDER" "$AIRLOCK_S_URL/ok" 2>&1 | tr -d '\n')"
+		status="$(printf 'Authorization: Bearer %s' "$PLACEHOLDER" | curl -sS -o /dev/null -w '%{http_code}' --noproxy '' --cacert "$AIRLOCK_CA_CERT_FILE" \
+			--proxy "$proxy" -H @- "$AIRLOCK_S_URL/ok" 2>&1 | tr -d '\n')"
 		after_stop="$after_stop $status"
 		[ "$status" = 200 ] && ok=$((ok + 1))
 	done

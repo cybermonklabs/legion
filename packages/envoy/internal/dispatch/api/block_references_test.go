@@ -466,7 +466,7 @@ func TestReferencesToABlockListOnlyLinksNamingIt(t *testing.T) {
 	toBlock := graphEdges(t, handler, url.Values{"to": {blockRef}})
 	issueKey := issue.Key
 	changedAt := latestVersion(t, database, issue.PrimaryArtifactID).CreatedAt
-	alice := []model.Actor{{Kind: "user", ID: "alice"}}
+	alice := []model.Actor{{Kind: "user", ID: "alice", Proven: true}}
 	wantNode := model.GraphNode{
 		Kind: "block", ID: nodeID, BlockID: "ship_it", IssueKey: &issueKey, Project: "CORE", Ref: blockRef,
 		Document: specRef, ChangedVersion: 1, Text: shipIt("Ship it."),
@@ -843,7 +843,7 @@ func TestAPinnedReferenceToADeletedBlockSaysItWasRemoved(t *testing.T) {
 		t.Fatalf("pinned read of the deleted block: status=%d body=%s, want 200 with no edges", response.Code, response.Body.String())
 	}
 	issueKey := issue.Key
-	alice := []model.Actor{{Kind: "user", ID: "alice"}}
+	alice := []model.Actor{{Kind: "user", ID: "alice", Proven: true}}
 	madeAt, removedAt := versionOf(t, database, issue.PrimaryArtifactID, 1).CreatedAt, versionOf(t, database, issue.PrimaryArtifactID, deleted.Number).CreatedAt
 	// Version 1 made the block, the deletion is its last change, and version 2, the latest indexed
 	// before it, is the last that held it.

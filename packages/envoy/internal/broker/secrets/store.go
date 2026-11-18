@@ -25,7 +25,7 @@ var ErrNotFound = errors.New("secret not found in the store")
 // ErrValueNotText is what Read's error wraps for a current value that is not text the broker can
 // hand a command - an empty value, a Secrets Manager SecretBinary with no SecretString, a Secret
 // Manager payload that is not UTF-8 - so no release and no mint could use it. It is the value's
-// fault and not the read's, so the policy refuses such a kind secret as it refuses one its
+// fault and not the read's, so the policy refuses such a type secret as it refuses one its
 // decoder refuses (policy.ReasonValueMalformed), rather than reading it again at every load.
 var ErrValueNotText = errors.New("value is not a non-empty UTF-8 string")
 
@@ -80,8 +80,23 @@ type Listing struct {
 	// AWSCURRENT, or the Secret Manager version versions/latest resolves to; "" when
 	// HasCurrentValue is false. It comes from the call that answers HasCurrentValue, so it costs
 	// no call of its own, and it is the store's own id, never a digest of the value. The policy
-	// decodes a kind secret's value once for each version, kind and shape it lists
-	// (policy.Current), so a write of a new value is decoded at the next load and an unchanged one
-	// is read at no load.
+	// decodes a type secret's value once for each version and type it lists (policy.Current), so a
+	// write of a new value is decoded at the next load and an unchanged one is read at no load.
 	Version string
+	// Created is when the store created the secret, and the zero time where its answer named none.
+	// The policy reads it for an Unfilled secret alone: one created less than
+	// policy.PendingValueWindow ago is a create still waiting for its value.
+	Created time.Time
+	// Unfilled is whether the secret carries CreateLabel and holds no version at all: a secret
+	// `agent-secrets secret create` made before its value and has not given one. A secret with any
+	// version (a disabled one included), or without the label, is not.
+	Unfilled bool
 }
+
+// CreateLabel is the label `agent-secrets secret create` puts on a Secret Manager secret it makes
+// before its value, set to a random value of that create's own. The broker reads only whether a
+// secret carries it, never its value, and never as a tag the policy weighs: on Secret Manager it is
+// a label, which no listing's Tags carries. On Secrets Manager no create writes it, since a create
+// there makes the secret with its value; the AWS store reads a tag of that name the same way
+// (aws.go, unfilled), which only another writer, such as the local store a test fills, can set.
+const CreateLabel = "agent-secrets-create"

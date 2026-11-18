@@ -7,6 +7,7 @@ import {
   DELIVERY_DUPLICATE_WINDOW_MS,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
+  DISPATCH_READ_ONLY_TOKEN,
   DISPATCH_SIGN_IN_REQUIRED,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
@@ -38,6 +39,7 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
+  REFERENCE_TARGETS_MAX,
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
@@ -88,7 +90,15 @@ import {
 } from "../src/going";
 import { controllerToken } from "../src/legion-roles";
 import {
+  agentSubject,
+  DISPATCH_ISSUE_TOPIC_PREFIX,
+  dispatchIssueSubject,
+  legacyAgentSubject,
+  legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
+  legionWakeSubject,
+  NO_PROJECT,
+  roleSubject,
   SUBJECT_MAX_BYTES,
   SUBJECT_SEGMENT_REPLACED,
   uncapturedTopicRefusal,
@@ -186,6 +196,50 @@ const uncapturedTopicRefusalText = goConcat(
   ["topic", "sessionID"]
 );
 
+// Each builder of a project's message names is read at sentinels for its values, so the Go twin
+// writes the very text the builder writes: a project token, an issue key and a type, a session
+// and a role each stand in for one value. Any text that appears nowhere else in the name will do.
+const issueSentinel = "zzissuezz";
+const typeSentinel = "zztypezz";
+const roleSentinel = "zzrolezz";
+const dispatchIssueSubjectText = goConcat(
+  splitAtSentinels(
+    dispatchIssueSubject(projectSentinel, issueSentinel, typeSentinel),
+    projectSentinel,
+    issueSentinel,
+    typeSentinel
+  ),
+  ["project", "issueKey", "typ"]
+);
+const agentSubjectText = goConcat(
+  splitAtSentinels(
+    agentSubject(projectSentinel, sessionSentinel),
+    projectSentinel,
+    sessionSentinel
+  ),
+  ["project", "session"]
+);
+const legacyAgentSubjectText = goConcat(
+  splitAtSentinels(legacyAgentSubject(sessionSentinel), sessionSentinel),
+  ["session"]
+);
+const legacyDispatchIssueSubjectText = goConcat(
+  splitAtSentinels(
+    legacyDispatchIssueSubject(issueSentinel, typeSentinel),
+    issueSentinel,
+    typeSentinel
+  ),
+  ["issueKey", "typ"]
+);
+const roleSubjectText = goConcat(
+  splitAtSentinels(roleSubject(projectSentinel, roleSentinel), projectSentinel, roleSentinel),
+  ["project", "role"]
+);
+const legionWakeSubjectText = goConcat(
+  splitAtSentinels(legionWakeSubject(projectSentinel), projectSentinel),
+  ["token"]
+);
+
 const keep = `func ValidateWire(raw []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -224,6 +278,15 @@ func validateWireNonEmpty(fields map[string]json.RawMessage, field, path string)
 
 const AgentTopicPrefix = "notifications.agent."
 const RoleTopicPrefix = "notifications.role."
+
+// DispatchIssueTopicPrefix begins every issue's event, in either form. Generated from
+// DISPATCH_ISSUE_TOPIC_PREFIX in packages/contracts.
+const DispatchIssueTopicPrefix = ${JSON.stringify(DISPATCH_ISSUE_TOPIC_PREFIX)}
+
+// NoProject is the project token of a message name that belongs to no project: an agent message
+// or a role lane outside every project. No project key (ProjectKeyPattern) can be it. Generated
+// from NO_PROJECT in packages/contracts.
+const NoProject = ${JSON.stringify(NO_PROJECT)}
 
 // GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
 const GithubTopicPrefix = "notifications.github."
@@ -283,6 +346,11 @@ const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
+
+// ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
+// from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
+// batches are one number.
+const ReferenceTargetsMax = ${REFERENCE_TARGETS_MAX}
 
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the \`dispatch search\`
@@ -567,12 +635,47 @@ const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 
+// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
+// that holds only the scope read, to a route the read list does not name: the route ran nothing,
+// and the request wrote only the row of its spent DPoP proof. Generated from
+// DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
+// reading of it cannot drift apart.
+const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
+
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
-func AgentSubject(session string) string {
-	return AgentTopicPrefix + session
+// DispatchIssueSubject names an issue's event under its project and then its key
+// (notifications.dispatch.issue.INFRA.INFRA-12.comment.created), AgentSubject one session's
+// message under its project, RoleSubject a role's lane under the project it works for, each with
+// NoProject for none, and LegionWakeSubject the wake lane of the Legion deployment whose project
+// token is token. LegacyAgentSubject is a session's agent subject in the old form, with no
+// project, which every reader takes too until the old form is refused (subject_project.go).
+// Generated from dispatchIssueSubject, agentSubject, roleSubject, legionWakeSubject and
+// legacyAgentSubject in packages/contracts, so the two languages write one name.
+func DispatchIssueSubject(project, issueKey, typ string) string {
+	return ${dispatchIssueSubjectText}
+}
+
+func AgentSubject(project, session string) string {
+	return ${agentSubjectText}
+}
+
+func LegacyAgentSubject(session string) string {
+	return ${legacyAgentSubjectText}
+}
+
+func LegacyDispatchIssueSubject(issueKey, typ string) string {
+	return ${legacyDispatchIssueSubjectText}
+}
+
+func RoleSubject(project, role string) string {
+	return ${roleSubjectText}
+}
+
+func LegionWakeSubject(token string) string {
+	return ${legionWakeSubjectText}
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one

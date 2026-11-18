@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -27,6 +29,12 @@ import (
 // lane's server is sized from. And it refuses a start the server it meets cannot serve. The fix is
 // the server's size, never the pools: pools shrunk for tests would test a shape production does
 // not run.
+//
+// The check reads max_connections, not the slots in use: a server whose slots other clients hold
+// (this binary's own pools, another test binary, any other program) passes it and refuses the
+// process later. A process that exits before it is healthy on such a refusal fails its test
+// naming the server's max_connections and the client backends open on it
+// (connectionRefusalCause).
 //
 // dispatchProcessesRunning is the count of Dispatch processes running in this test binary. It is
 // one count for the whole binary because one `go test` binary is what one lane's server serves,
@@ -89,6 +97,41 @@ func requireConnectionCeiling(t *testing.T, databaseURL string) (release func())
 		"issue's volume with -c max_connections=%d and point DISPATCH_TEST_DATABASE_URL at it.",
 		processes, opened, store.ConnectionsPerProcess, allowed, reserved, need, suite, suite, suite)
 	return release
+}
+
+// tooManyConnections is how a Dispatch process's output carries a connection Postgres refused
+// because the server had no slot left for it: pgx ends the error with its SQLSTATE,
+// too_many_connections.
+const tooManyConnections = "(SQLSTATE 53300)"
+
+// connectionRefusalCause is the reason a Dispatch process that exited before it was healthy gives
+// when refused, a line of its output, says Postgres turned it away for too many clients. It quotes
+// the line and reads, through databaseURL, the server's max_connections and the client backends
+// open on it now, which say whether the server is too small or other clients hold its slots. The
+// process has exited, so the count holds none of its connections once Postgres has ended their
+// backends.
+func connectionRefusalCause(refused, databaseURL string) string {
+	reason := "Postgres refused it a connection for too many clients (SQLSTATE 53300):\n" + refused + "\n"
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var allowed, open int
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err == nil {
+		defer conn.Close(ctx)
+		err = conn.QueryRow(ctx, `
+			select current_setting('max_connections')::int, count(*)
+			from pg_stat_activity
+			where backend_type = 'client backend' and pid <> pg_backend_pid()`).Scan(&allowed, &open)
+	}
+	if err != nil {
+		return reason + fmt.Sprintf("Reading the server's max_connections and its open client backends failed too: %v", err)
+	}
+	return reason + fmt.Sprintf("The server allows max_connections=%d and has %d client backends open now "+
+		"(pg_stat_activity), while %d other Dispatch process(es) of this test binary run, each of which may "+
+		"open %d (store.ConnectionsPerProcess). The connection ceiling check counts only those processes; "+
+		"the rest are this binary's own pools and the server's other clients. Free the server's "+
+		"connections, or raise max_connections.",
+		allowed, open, dispatchProcessesRunning.Load(), store.ConnectionsPerProcess)
 }
 
 // serverInt is one integer setting of the server this test's database is on.

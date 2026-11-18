@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The README and the `dispatch` command's source comment name the upstream issue about a Claude
+  Code subagent's Bash environment as Claude Code issue 46696.

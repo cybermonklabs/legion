@@ -322,7 +322,7 @@ func (s *serverChangeSoak) startStandIn(t *testing.T) {
 	}
 	t.Cleanup(conn.Close)
 	s.standIn = conn
-	agentSubject := contracts.AgentSubject(serverChangeSession)
+	agentSubject := contracts.LegacyAgentSubject(serverChangeSession)
 	if _, err := conn.Subscribe(bus.DeliverSubject(serverChangeSession), s.receive); err != nil {
 		t.Fatalf("the stand-in subscribe its relay subject: %v", err)
 	}

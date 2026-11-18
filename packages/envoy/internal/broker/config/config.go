@@ -26,10 +26,12 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -73,8 +75,8 @@ type Config struct {
 	// names a user and an RDS endpoint host, pgx finds no password for it, and it verifies that
 	// host.
 	DatabaseIAM bool
-	// BROKER_PUBLIC_URL: the broker's own address as its callers reach it, an absolute URL with no
-	// path. Required. Every signed proof and request object names it, so a client's
+	// BROKER_PUBLIC_URL: the broker's own address as its callers reach it, an absolute http or
+	// https URL with no path. Required. Every signed proof and request object names it, so a client's
 	// AGENT_SECRETS_URL must be exactly this.
 	PublicURL string
 	// BROKER_MACHINE_LOGIN_URL: the absolute http(s) URL of the page where a person types a
@@ -138,10 +140,28 @@ type Config struct {
 	// trimmed; no variable carries the secret itself, so BROKER_SIGNIN_CLIENT_SECRET is refused),
 	// the Google Workspace domain a person's ID token must name in its hd claim, and how many
 	// seconds a sign-in lasts (an absolute expiry nothing extends, at most 86400, 24 hours, the
-	// default). The first four are required: a broker missing any of them refuses to start,
-	// naming the ones missing, since nobody could approve a secret request on a page nobody can
-	// sign in to.
+	// default). The first four are required unless BROKER_SIGNIN is off: a broker that signs
+	// people in and is missing any of them refuses to start, naming the ones missing, since
+	// nobody could approve a secret request on a page nobody can sign in to. With BROKER_SIGNIN
+	// off every one of the five is refused, and SignIn is empty.
 	SignIn approval.SignIn
+	// BROKER_SIGNIN: unset, or exactly off, which turns the broker's person sign-in off. Unset,
+	// the broker signs people in to its approval page through BROKER_SIGNIN_ISSUER,
+	// BROKER_SIGNIN_CLIENT_ID, BROKER_SIGNIN_CLIENT_SECRET_FILE and BROKER_SIGNIN_DOMAIN, as it
+	// always has. off is a broker that signs nobody in, for a deployment whose way of signing
+	// people in is not settled yet: it needs none of those settings and serves no
+	// approval page (every route under /approve and /signin/ is a 404), and a request naming a
+	// secret whose answer would be a person's approval — a human-tier secret, another person's
+	// agent-tier secret, one the session's operator withheld from it — is denied at once, its
+	// detail naming this setting, rather than left pending for a person who cannot come. Of the
+	// requests a broker with sign-in on left or leaves pending, the next sweep expires the
+	// overdue ones first, then denies the rest whose signed record verifies for this broker. What
+	// the policy grants at once (a person's own or a shared agent-tier secret for their sessions,
+	// a service's own secret for its pods) is granted as with sign-in on, and a machine login,
+	// which a person decides on Dispatch's page, is unchanged. off refuses to start beside any
+	// BROKER_SIGNIN_* setting, naming the ones set, and beside the model judge, which decides
+	// only a request that waits for a person; any other value refuses naming it.
+	SignInOff bool
 	// BROKER_SIGNIN_DEVICE_AUDIENCE: the audience a person's own Google identity token must
 	// carry to be traded at the RFC 8693 token exchange, where such a token is a subject token
 	// (urn:envoy:params:oauth:token-type:person-google-identity) and the machine the person
@@ -151,12 +171,14 @@ type Config struct {
 	// since Google puts the client's id in an ID token's aud. Its issuer is
 	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise, and the person
 	// it names is held to BROKER_SIGNIN_DOMAIN through the hd claim, exactly as a person
-	// signing in to the broker's own approval page is. Needs BROKER_GOOGLE_OIDC_AUDIENCE, whose
-	// machines are the boxes a person may sign in on. Unset, the broker accepts no person's
-	// sign-in and registers neither token type, so a caller presenting either is refused by
-	// name. It is not one of the four SignInSettings, which are required together: those are
-	// what a person approves a secret request through and no broker serves without them, where
-	// this one is optional, as the whole Google exchange is.
+	// signing in to the broker's own approval page is. Needs BROKER_GOOGLE_OIDC_AUDIENCE and
+	// BROKER_VM_SERVICES: the listed machines are the boxes a person may sign in on. Unset, the
+	// broker accepts no person's sign-in and registers neither token type, so a caller presenting
+	// either is refused by name. It is not one of the four SignInSettings, which are required
+	// together: those are what a person approves a secret request through and no broker that
+	// signs people in serves without them, where this one is optional, as the whole Google
+	// exchange is. Beside BROKER_SIGNIN=off it is refused with them, since that broker holds no
+	// BROKER_SIGNIN_DOMAIN to hold a person to.
 	SignInDeviceAudience string
 	// BROKER_SECRETS_STORE: which secret store the agent secrets live in: aws-secrets-manager (the
 	// default when unset, AWS Secrets Manager with the agent-secrets key in AWS KMS) or
@@ -224,6 +246,20 @@ type Config struct {
 	// command that is gone; a short bound costs a long-polling client its connection, which it
 	// opens again.
 	AirlockIdleSeconds int
+	// BROKER_AIRLOCK_CLUSTER_RANGES: the broker cluster's own Service range, and each of its
+	// pod and node ranges that RFC 1918 does not already make private, as a comma-separated list
+	// of CIDR prefixes, IPv4 or IPv6, such as 34.118.224.0/20. The airlock proxy refuses to dial
+	// an address inside any of them, as it refuses a private one: a GKE Service range is global
+	// unicast, so without this a command under an airlock grant could tunnel to a ClusterIP of the
+	// cluster the broker runs in. Each prefix is read as its network (34.118.230.7/20 is
+	// 34.118.224.0/20); an empty element, a prefix that does not parse and an IPv4-mapped IPv6
+	// prefix refuse the start, naming the element's position. With BROKER_AIRLOCK_RULES_FILE set
+	// and KUBERNETES_SERVICE_HOST set to a non-empty value, which Kubernetes sets in every
+	// container to the address of the cluster's kubernetes Service, it is required, and the start
+	// is refused unless KUBERNETES_SERVICE_HOST is an IP address inside one of the ranges, so a
+	// list that misses the cluster's Service range cannot pass silently. Outside a cluster
+	// (KUBERNETES_SERVICE_HOST empty or unset) it is optional.
+	AirlockClusterRanges []netip.Prefix
 	// BROKER_AIRLOCK_TEST_GITHUB_API_BASE: the base URL a github-app secret is minted against,
 	// in place of https://api.github.com, so a release of one mints at a stand-in GitHub
 	// (internal/broker/airlock/airlocktest, cmd/dev-airlock-stands). For the broker's local
@@ -269,6 +305,13 @@ type Config struct {
 	// belong to. For the broker's local stack alone: a production start, which is one with
 	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	AirlockTestNoKind bool
+	// BROKER_AIRLOCK_TEST_AZURE_AUTHORITY: the host of the token authority the airlock proxy
+	// makes every exchange of an azure entry's federated token at, in place of
+	// login.microsoftonline.com, so the exchange is made at a stand-in Microsoft. A host name an
+	// airlock rules entry can bind, in lower case and with no "*."; anything else refuses the
+	// start. For the broker's local stack alone: a production start, which is one with
+	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	AirlockTestAzureAuthority string
 	// BROKER_JUDGE_MODEL_URL: the base URL the broker's model judge calls its model at, an
 	// absolute http(s) URL. Required with the rest of JudgeSettings, which are all-or-none:
 	// with none of the five set there is no judge, and every human-tier request waits for the
@@ -307,6 +350,19 @@ type Config struct {
 	// control of the check the judge belongs to. For the broker's local stack alone: a
 	// production start, which is one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	JudgeTestSkipChecks bool
+	// BROKER_PROJECT_ACCESS_URL: the base URL of the Dispatch the broker asks whether a project
+	// is private, whether a person may see it, and what kind of member a person is
+	// (internal/broker/projectaccess), an absolute http(s) URL, read without the slashes it ends
+	// in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks
+	// Dispatch nothing. A token that names no project, and an operator entry's token, whose
+	// project that operator's own setting chose, are minted as before; a person's trade that
+	// names a project is refused, since nothing could say that person may see it.
+	ProjectAccessURL string
+	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
+	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
+	// asks and not at boot, through brokertoken.AccountToken, which reads the file again once what
+	// it last read is 30 seconds old. Set with BROKER_PROJECT_ACCESS_URL or not at all.
+	ProjectAccessTokenFile string
 	// BROKER_AZURE_TOKEN_FILE: the path of the broker pod's projected ServiceAccount token for
 	// azure-login releases, default /var/run/secrets/azure/tokens/azure-identity-token. Read only
 	// on release, not at boot, and read anew each time so the rotated token is used. The token's
@@ -319,7 +375,7 @@ type Config struct {
 	// projected token, for example AZURE_LOGIN. Empty (the default) disables azure-login
 	// releases. Must be an uppercase agent-secret name, not its store id or slug. That secret
 	// must be human tier in the policy snapshot checked for each release, with a person's
-	// approval recorded for that name in its grant. Another secret with kind=azure-login,
+	// approval recorded for that name in its grant. Another secret with type=azure-login,
 	// the named secret retagged to agent tier, or an automatic grant releases no token.
 	AzureLoginSecret string
 	// BROKER_SERVICE_ACCOUNT_SECRETS: the one Google service account each google-service-account
@@ -348,7 +404,7 @@ type Config struct {
 	// between this build and the apply that writes its bindings, and it is deliberately the
 	// safe side of the change: a broker that went on minting on the stored value alone until
 	// the setting arrived is the very thing the setting exists to stop. Nothing else needs it:
-	// a broker with no binding still boots and still serves every other kind. The policy loader
+	// a broker with no binding still boots and still serves every other type. The policy loader
 	// reads it as well (policy.Loader.ServiceAccounts), for one rule — a secret bound to a
 	// dev-<name> account is one person's own, so it may list no registered service among its
 	// requesters.
@@ -401,12 +457,15 @@ type Config struct {
 	// turns Google identity tokens on at all.
 	GoogleOIDCIssuer string
 	// BROKER_GOOGLE_OIDC_AUDIENCE: the audience a machine's Google identity token must carry,
-	// at the RFC 8693 token exchange, where such a token is a
-	// subject token (urn:envoy:params:oauth:token-type:google-identity). Its issuer is
-	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise. Needs
-	// BROKER_VM_SERVICES, since an audience no VM service is listed for could accept no token.
-	// Unset, the broker accepts no Google identity token, and BROKER_VM_SERVICES,
-	// BROKER_VM_PROJECTS, BROKER_VM_INSTANCES and BROKER_VM_EXCHANGE_ACCOUNTS are refused.
+	// both for a caller listed in BROKER_API_ACCOUNTS and at the RFC 8693 token exchange, where
+	// it is a subject token (urn:envoy:params:oauth:token-type:google-identity). Its issuer is
+	// BROKER_GOOGLE_OIDC_ISSUER, Google's own unless a dev stack says otherwise. Needs a Google
+	// caller, a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES, since
+	// with neither no token for it could ever be accepted; API callers need no VM service. The
+	// exchange accepts only accounts listed in BROKER_VM_SERVICES, and
+	// BROKER_SIGNIN_DEVICE_AUDIENCE needs a VM service for its machine actor token. Unset, the
+	// broker accepts no Google identity token, and BROKER_VM_SERVICES, BROKER_VM_PROJECTS,
+	// BROKER_VM_INSTANCES, BROKER_VM_EXCHANGE_ACCOUNTS and BROKER_SIGNIN_DEVICE_AUDIENCE are refused.
 	GoogleOIDCAudience string
 	// BROKER_VM_SERVICES: the VM services, whitespace-separated name=<service account email>
 	// entries, such as example-service=example-fleet@example-project.iam.gserviceaccount.com. A name
@@ -460,13 +519,35 @@ type Config struct {
 	// projected token, whitespace-separated
 	// <service account>=<project>=<person>[=<session>] entries, such as
 	// system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com. The token minted
-	// for a pod of the account may write that one project, acts for that person, and writes under
+	// for a pod of the account may write that one project, a project key that exchange.NewSet
+	// refuses the start over when it is not one, acts for that person, and writes under
 	// the session the entry fixes; an entry that fixes none requires the pod to name its own
-	// session. The session is everything after the third "=", so it alone may carry one. A
+	// session. An entry may name no project (<service account>==<person>): the shared
+	// public-session account's, whose tokens act for that person and name no project. The
+	// session is everything after the third "=", so it alone may carry one. A
 	// namespace's default account is refused, as is an account listed twice. Needs
 	// BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present.
 	// Unset, no account exchanges.
 	ExchangeAccounts []exchange.AccountEntry
+	// BROKER_EXCHANGE_READ_ACCOUNTS: the Kubernetes service accounts whose pods exchange their
+	// projected token for one that only reads, whitespace-separated
+	// <service account>=<service>=<session> entries, such as
+	// system:serviceaccount:example-ns:example-reader=example-reader=example-reader-session. The
+	// token minted for a pod of the account holds only the OAuth scope read, the project scope
+	// none, the service and the session, and names no person and no project: Dispatch serves it
+	// on the routes its read list names and refuses it everywhere else, and every other service
+	// that reads the broker's tokens, the Envoy listener among them, refuses it. That token reads the
+	// whole answer of GET /api/v1/projects/{key}/architecture for every project that has an
+	// architecture source: each source, each component, and every issue of the project, closed and
+	// iceboxed ones included. No setting holds a read entry to some projects.
+	// The session is everything after the second "=", so it alone may carry one. A namespace's
+	// default account is refused, as is a service that is not lowercase letters, digits and
+	// hyphens, at most 64, or is shared, an account listed twice, and an account
+	// BROKER_EXCHANGE_ACCOUNTS lists too. Needs BROKER_K8S_OIDC_ISSUER and
+	// BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present. A broker of a build older
+	// than this setting does not read it, so it mints those accounts no token at all. Unset, no
+	// account exchanges for a read-only token.
+	ExchangeReadAccounts []exchange.ReadEntry
 	// BROKER_EXCHANGE_WORKFLOWS: the GitHub workflows whose runs exchange their token,
 	// whitespace-separated <repository>=<workflow path>=<ref>=<project>=<person>[=<session>]
 	// entries, such as
@@ -559,9 +640,22 @@ const (
 	signInDomainSetting       = "BROKER_SIGNIN_DOMAIN"
 )
 
-// SignInSettings are those four settings, every one of them required. Every message that names
-// them names them in this order.
+// SignInSettings are those four settings, every one of them required unless BROKER_SIGNIN is
+// off. Every message that names them names them in this order.
 var SignInSettings = []string{signInIssuerSetting, signInClientIDSetting, signInClientSecretSetting, signInDomainSetting}
+
+// signInSwitchSetting is the one setting that turns the broker's person sign-in off, and
+// signInOffValue the one value it takes; unset, the broker signs people in.
+const (
+	signInSwitchSetting = "BROKER_SIGNIN"
+	signInOffValue      = "off"
+)
+
+// signInOffRefuses are the settings BROKER_SIGNIN=off refuses beside it, in the order every
+// message naming them uses: the four of the sign-in client, how long a sign-in lasts, and the
+// audience a person's own device sign-in is traded at, which holds the person to the sign-in's
+// domain.
+var signInOffRefuses = append(slices.Clone(SignInSettings), "BROKER_SIGNIN_SESSION_SECONDS", "BROKER_SIGNIN_DEVICE_AUDIENCE")
 
 // airlockProxySettings are the settings the airlock's proxy port cannot run without, every one of
 // them required with BROKER_AIRLOCK_RULES_FILE. Every message that names them names them in this
@@ -600,11 +694,12 @@ var judgeModelProtocols = []string{"anthropic-messages", "openai-responses", "op
 const noUIToken = "the broker's approval routes take the calling service's own Kubernetes ServiceAccount token, verified against BROKER_K8S_OIDC_ISSUER, so list that account in BROKER_API_ACCOUNTS instead of sharing a bearer with Dispatch's server"
 
 // noDispatchCredential is why the broker's five Dispatch variables are gone: they named a
-// Dispatch the broker asked and issued in, which it still does not do. The one thing it reads
-// there now, whether an issue is open, is the model judge's read under its own settings, so a
-// deployment that still sets one of the five is configured for a Dispatch the broker never
-// writes to and a credential it never holds.
-const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; its model judge reads one thing there, whether an issue is open, at BROKER_JUDGE_DISPATCH_URL and with the broker's own projected ServiceAccount token (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and writes nothing"
+// Dispatch the broker asked and issued in, which it still does not do. What it reads there now is
+// two things, each under settings of its own: the model judge's read of whether an issue is open,
+// and the token exchange's read of whether a person may see a project. So a deployment that still
+// sets one of the five is configured for a Dispatch the broker never writes to and a credential it
+// never holds.
+const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; it reads two things there, each with its own projected ServiceAccount token, and writes nothing: its model judge, whether an issue is open, at BROKER_JUDGE_DISPATCH_URL (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and its token exchange, whether a person may see a project, at BROKER_PROJECT_ACCESS_URL (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
 
 // noDatabasePassword is why BROKER_DATABASE_PASSWORD and its placeholder are gone: BROKER_DATABASE_URL
 // alone says how the broker signs in.
@@ -622,8 +717,8 @@ const noRulesFile = "the broker reads each secret's owner and tier from the secr
 // secret carries default-grant=session.
 const noGrantCap = "a request's --ttl chooses a shorter grant lifetime, otherwise its grant lasts 12 hours, or until the requesting session ends for a secret tagged default-grant=session"
 
-// noMintTargets is why BROKER_MINT_TARGETS is gone: each secret's kind tag names its minter.
-const noMintTargets = "the broker no longer reads one list of mint targets; each secret's kind tag names the minter it is served by"
+// noMintTargets is why BROKER_MINT_TARGETS is gone: each secret's type tag names its minter.
+const noMintTargets = "the broker no longer reads one list of mint targets; each secret's type tag names the minter it is served by"
 
 // removedVars are environment variables the broker no longer reads. A stale deployment still
 // setting one must fail loudly rather than silently running on configuration that means nothing
@@ -975,31 +1070,80 @@ func exchangeFields(text string, want int) ([]string, bool) {
 	return nil, false
 }
 
+// podAccountRefusal refuses, naming setting and the entry text, an account no exchange entry for
+// a pod may name: one that is not system:serviceaccount:<namespace>:<name>, and a namespace's
+// default account. It answers nil for an account such an entry may name, and is to a pod's
+// account what vmAccountRefusal is to a VM's.
+func podAccountRefusal(setting, text, account string) error {
+	switch {
+	case !serviceAccountPattern.MatchString(account):
+		return fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)
+	case isDefaultServiceAccount(account):
+		return fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it, so its token says nothing about which pod is asking; name a dedicated account", setting, text)
+	}
+	return nil
+}
+
 // parseExchangeAccounts reads setting's whitespace-separated
 // <service account>=<project>=<person>[=<session>] entries, the identities BROKER_EXCHANGE_ACCOUNTS
-// lists, in order. It refuses, naming the entry: one not of that form or with a blank field; an
-// account that is not system:serviceaccount:<namespace>:<name>; a namespace's default account; and
-// an account listed twice, since one account writes as one identity. exchange.NewSet is the second
-// gate, and the session name's own form is its to refuse.
+// lists, in order. The project may be empty (<service account>==<person>), which is the shared
+// public-session account's entry: its named tokens act for the person and name no project. It
+// refuses, naming the entry: one not of that form or with a blank account or person; an account
+// that is not system:serviceaccount:<namespace>:<name>, or a namespace's default account
+// (podAccountRefusal); and an account listed twice, since one account writes as one identity.
+// exchange.NewSet is the second gate, and the session name's own form is its to refuse.
 func parseExchangeAccounts(setting, value string) ([]exchange.AccountEntry, error) {
 	var entries []exchange.AccountEntry
 	seen := map[string]bool{}
 	for _, text := range strings.Fields(value) {
 		fields, ok := exchangeFields(text, 4)
-		if !ok || fields[0] == "" || fields[1] == "" || fields[2] == "" {
-			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the session everything after the third =, got %q", setting, text)
+		if !ok || fields[0] == "" || fields[2] == "" {
+			return nil, fmt.Errorf("%s must be <service account>=<project>=<person>[=<session>] entries, the project empty for an entry naming none and the session everything after the third =, got %q", setting, text)
 		}
-		if !serviceAccountPattern.MatchString(fields[0]) {
-			return nil, fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)
-		}
-		if isDefaultServiceAccount(fields[0]) {
-			return nil, fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it, so its token says nothing about which pod is asking; name a dedicated account", setting, text)
+		if err := podAccountRefusal(setting, text, fields[0]); err != nil {
+			return nil, err
 		}
 		if seen[fields[0]] {
 			return nil, fmt.Errorf("%s names the service account %s twice; one account writes as one identity, so name it once", setting, fields[0])
 		}
 		seen[fields[0]] = true
 		entries = append(entries, exchange.AccountEntry{Account: fields[0], Project: fields[1], Person: fields[2], Session: fields[3]})
+	}
+	return entries, nil
+}
+
+// parseExchangeReadAccounts reads setting's whitespace-separated
+// <service account>=<service>=<session> entries, the read entries BROKER_EXCHANGE_READ_ACCOUNTS
+// lists, in order. Every field is required and the session is everything after the second "=",
+// so it alone may carry one. It refuses, naming the setting and the entry: one with fewer than
+// three fields or a blank one; an account that is not system:serviceaccount:<namespace>:<name>,
+// or a namespace's default account (podAccountRefusal); a service that is not a service's name,
+// or is policy.OwnerShared, the rule parseServiceAccounts holds a service to; and an account
+// listed twice, since one account reads as one identity. An account BROKER_EXCHANGE_ACCOUNTS
+// lists too is Load's to refuse, since it reads both settings. exchange.NewSet is the second
+// gate, and the session name's own form is its to refuse.
+func parseExchangeReadAccounts(setting, value string) ([]exchange.ReadEntry, error) {
+	var entries []exchange.ReadEntry
+	seen := map[string]bool{}
+	for _, text := range strings.Fields(value) {
+		// An entry with no session comes back with a blank one (exchangeFields), which the blank
+		// check refuses as it refuses any other blank field: a read entry's session is required.
+		fields, ok := exchangeFields(text, 3)
+		if !ok || fields[0] == "" || fields[1] == "" || fields[2] == "" {
+			return nil, fmt.Errorf("%s must be <service account>=<service>=<session> entries, every field required and the session everything after the second =, got %q", setting, text)
+		}
+		account, service, session := fields[0], fields[1], fields[2]
+		if err := podAccountRefusal(setting, text, account); err != nil {
+			return nil, err
+		}
+		if !record.ValidService(service) || service == policy.OwnerShared {
+			return nil, fmt.Errorf("%s must name services of lowercase letters, digits and hyphens, at most 64, not %s, got %q", setting, policy.OwnerShared, text)
+		}
+		if seen[account] {
+			return nil, fmt.Errorf("%s names the service account %s twice, got %q again; one account reads as one identity, so name it once", setting, account, text)
+		}
+		seen[account] = true
+		entries = append(entries, exchange.ReadEntry{Account: account, Service: service, Session: session})
 	}
 	return entries, nil
 }
@@ -1078,9 +1222,95 @@ func parseAirlockTestResolve(value string) (map[string]netip.Addr, error) {
 		if hosts == nil {
 			hosts = map[string]netip.Addr{}
 		}
-		hosts[host] = addr.Unmap()
+		hosts[host] = netaddr.Canonical(addr)
 	}
 	return hosts, nil
+}
+
+// parseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES' comma-separated CIDR prefixes, in
+// order, each as its network; spaces around a comma are allowed, and a blank value is none. It
+// refuses, naming the element's position and never the element, which could be anything an
+// operator pasted: an empty element, one netip.ParsePrefix does not read, and an IPv4-mapped IPv6
+// prefix, which no address the proxy checks is ever inside, since the proxy reads every address as
+// the IPv4 address it holds.
+func parseAirlockClusterRanges(value string) ([]netip.Prefix, error) {
+	const setting = "BROKER_AIRLOCK_CLUSTER_RANGES"
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	elements := strings.Split(value, ",")
+	ranges := make([]netip.Prefix, 0, len(elements))
+	for i, element := range elements {
+		text := strings.TrimSpace(element)
+		if text == "" {
+			return nil, fmt.Errorf("%s: element %d is empty; the setting is a comma-separated list of CIDR prefixes such as 34.118.224.0/20", setting, i+1)
+		}
+		prefix, err := netip.ParsePrefix(text)
+		if err != nil {
+			return nil, fmt.Errorf("%s: element %d is not a CIDR prefix such as 34.118.224.0/20", setting, i+1)
+		}
+		if prefix.Addr().Is4In6() {
+			return nil, fmt.Errorf("%s: element %d is an IPv4-mapped IPv6 prefix, which no address the proxy checks is ever inside; write it as an IPv4 prefix", setting, i+1)
+		}
+		ranges = append(ranges, prefix.Masked())
+	}
+	return ranges, nil
+}
+
+// requireClusterRanges is the check of BROKER_AIRLOCK_CLUSTER_RANGES against the cluster a broker
+// with the airlock on runs in. KUBERNETES_SERVICE_HOST, which Kubernetes sets in every container
+// to the ClusterIP of the cluster's kubernetes Service, says the broker runs in a cluster; empty
+// or unset, the broker runs outside one and the ranges are optional. Set to a non-empty value,
+// they are required and must hold that address: it is drawn from the cluster's Service range, so
+// a list that does not hold it has missed the one range the proxy's fixed rules cannot refuse.
+// Each refusal names both variables, and a KUBERNETES_SERVICE_HOST that is no address is not
+// quoted.
+func requireClusterRanges(ranges []netip.Prefix, serviceHost string) error {
+	// Empty or unset is outside a cluster, and nothing else is: any non-empty value is a cluster,
+	// a value of spaces among them, which is refused below as a missing setting or as no address.
+	if serviceHost == "" {
+		return nil
+	}
+	serviceHost = strings.TrimSpace(serviceHost)
+	if len(ranges) == 0 {
+		return errors.New("BROKER_AIRLOCK_CLUSTER_RANGES is required: BROKER_AIRLOCK_RULES_FILE turns the airlock on and KUBERNETES_SERVICE_HOST is set, so the broker runs in a cluster, and its proxy must refuse that cluster's own Service, pod and node ranges, which only this setting names")
+	}
+	host, err := netip.ParseAddr(serviceHost)
+	if err != nil {
+		return errors.New("KUBERNETES_SERVICE_HOST is not an IP address, so the broker cannot check that BROKER_AIRLOCK_CLUSTER_RANGES holds the cluster's Service range")
+	}
+	// The address the proxy reads (netaddr.Canonical): a zone is no part of whether it is inside
+	// a range, and the refusal below repeats a parsed address and nothing after a zone's %.
+	host = netaddr.Canonical(host)
+	named := make([]string, len(ranges))
+	for i, own := range ranges {
+		if own.Contains(host) {
+			return nil
+		}
+		named[i] = own.String()
+	}
+	return fmt.Errorf("KUBERNETES_SERVICE_HOST %s is inside no range BROKER_AIRLOCK_CLUSTER_RANGES names (%s): the setting misses the cluster's Service range, and the airlock proxy would dial the cluster's ClusterIPs",
+		host, strings.Join(named, ", "))
+}
+
+// parseAirlockTestAzureAuthority reads BROKER_AIRLOCK_TEST_AZURE_AUTHORITY, the host the proxy
+// holds every exchange to and compares the ASCII lower-cased host of a token request's
+// connection with, exactly. It refuses, naming the value, a host no rules entry can bind
+// (airlock.HostShapeOK: a scheme, a port, a path, an empty label, a label opening or closing
+// with "-", a last label of digits alone, which an address has), since a token request reaches
+// the proxy only at a host an entry binds; a "*." suffix, which is no one host; and a capital
+// letter, since the proxy compares the value as it is written with a lower-cased host. A value
+// of any of those would refuse every exchange.
+func parseAirlockTestAzureAuthority(value string) (string, error) {
+	const setting = "BROKER_AIRLOCK_TEST_AZURE_AUTHORITY"
+	host := strings.TrimSpace(value)
+	if host == "" {
+		return "", nil
+	}
+	if !airlock.HostShapeOK(host) || strings.HasPrefix(host, "*.") || strings.ToLower(host) != host {
+		return "", fmt.Errorf("%s must be a host name in lower case that an airlock rules entry can bind, with no scheme, port, path, address or \"*.\", got %q", setting, host)
+	}
+	return host, nil
 }
 
 // testOnlySwitch reads one of the local stack's test-only switches, the airlock's two and
@@ -1239,6 +1469,13 @@ func Load(getenv func(string) string) (Config, error) {
 	if strings.Contains(getenv("BROKER_DATABASE_URL"), databasePasswordPlaceholder) {
 		return Config{}, fmt.Errorf("BROKER_DATABASE_URL names the removed %s placeholder; %s", databasePasswordPlaceholder, noDatabasePassword)
 	}
+	// The switch is read first, so off beside a sign-in setting is refused as that, before any
+	// refusal of the setting on its own (BROKER_SIGNIN_DEVICE_AUDIENCE's, below) could name a
+	// gap the operator never meant to fill.
+	signInOff, err := parseSignInSwitch(getenv)
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		ListenAddr:                orDefault(getenv("BROKER_LISTEN_ADDR"), "127.0.0.1:13380"),
 		MetricsListenAddr:         orDefault(getenv("BROKER_METRICS_LISTEN_ADDR"), "127.0.0.1:13382"),
@@ -1261,6 +1498,8 @@ func Load(getenv func(string) string) (Config, error) {
 		JudgeModelAudience:        strings.TrimSpace(getenv("BROKER_JUDGE_MODEL_AUDIENCE")),
 		JudgeDispatchURL:          strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_URL")),
 		JudgeDispatchTokenFile:    strings.TrimSpace(getenv("BROKER_JUDGE_DISPATCH_TOKEN_FILE")),
+		ProjectAccessURL:          strings.TrimRight(strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_URL")), "/"),
+		ProjectAccessTokenFile:    strings.TrimSpace(getenv("BROKER_PROJECT_ACCESS_TOKEN_FILE")),
 		AzureTokenFile:            orDefault(getenv("BROKER_AZURE_TOKEN_FILE"), secrets.DefaultAzureTokenFile),
 		AzureLoginSecret:          getenv("BROKER_AZURE_LOGIN_SECRET"),
 		K8sOIDCIssuer:             getenv("BROKER_K8S_OIDC_ISSUER"),
@@ -1269,6 +1508,7 @@ func Load(getenv func(string) string) (Config, error) {
 		GoogleOIDCAudience:        strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_AUDIENCE")),
 		EnvoyURL:                  getenv("BROKER_ENVOY_URL"),
 		TrustedProxyHeader:        getenv("BROKER_TRUSTED_PROXY_HEADER"),
+		SignInOff:                 signInOff,
 	}
 	// The local stack's test-only settings, the airlock's and the judge's: each is read
 	// whatever the rules file says, since the two minter bases are read with no airlock at all.
@@ -1285,6 +1525,9 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AirlockTestNoKind, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_NO_KIND", getenv("BROKER_AIRLOCK_TEST_NO_KIND")); testSwitchErr != nil {
+		return Config{}, testSwitchErr
+	}
+	if cfg.AirlockTestAzureAuthority, testSwitchErr = parseAirlockTestAzureAuthority(getenv("BROKER_AIRLOCK_TEST_AZURE_AUTHORITY")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.JudgeTestSkipChecks, testSwitchErr = testOnlySwitch("BROKER_JUDGE_TEST_SKIP_CHECKS", getenv("BROKER_JUDGE_TEST_SKIP_CHECKS")); testSwitchErr != nil {
@@ -1316,11 +1559,13 @@ func Load(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("%s is required", req.name)
 		}
 	}
-	var err error
 	if cfg.DatabaseIAM, err = databaseIAM(cfg.DatabaseURL); err != nil {
 		return Config{}, err
 	}
-	if parsed, err := url.Parse(cfg.PublicURL); err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Path != "" {
+	// publicURL is BROKER_PUBLIC_URL parsed, held to an absolute URL with no path here and to an
+	// http or https scheme by Load's last check.
+	publicURL, parseErr := url.Parse(cfg.PublicURL)
+	if parseErr != nil || publicURL.Scheme == "" || publicURL.Host == "" || publicURL.Path != "" {
 		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an absolute URL with no path: %q", redact.URL(cfg.PublicURL))
 	}
 	// Optional, and still held to its form when it is given: a page the broker cannot build an
@@ -1330,6 +1575,11 @@ func Load(getenv func(string) string) (Config, error) {
 		if err := httpURLSetting("BROKER_MACHINE_LOGIN_URL", cfg.MachineLoginURL); err != nil {
 			return Config{}, err
 		}
+	}
+	// The broker cluster's own ranges, read whatever the rules file says: a list the broker could
+	// not act on is a mistake in the deployment whether or not its airlock is on today.
+	if cfg.AirlockClusterRanges, err = parseAirlockClusterRanges(getenv("BROKER_AIRLOCK_CLUSTER_RANGES")); err != nil {
+		return Config{}, err
 	}
 	// A broker that reads the airlock's rules but cannot proxy would hold back the value of
 	// every name the file names and release nothing in its place, so the three settings the
@@ -1356,6 +1606,11 @@ func Load(getenv func(string) string) (Config, error) {
 		// ("proxy:13381") boots and then fails every airlock run one command at a time, with
 		// a refusal in the CLI rather than in the pod that was configured wrong.
 		if err := httpURLSetting("BROKER_AIRLOCK_PROXY_URL", cfg.AirlockProxyURL); err != nil {
+			return Config{}, err
+		}
+		// And, in a cluster, the cluster's own ranges, which no fixed rule of the proxy covers
+		// (requireClusterRanges).
+		if err := requireClusterRanges(cfg.AirlockClusterRanges, getenv("KUBERNETES_SERVICE_HOST")); err != nil {
 			return Config{}, err
 		}
 	}
@@ -1401,6 +1656,29 @@ func Load(getenv func(string) string) (Config, error) {
 		if !slices.Contains(judgeModelProtocols, cfg.JudgeModelProtocol) {
 			return Config{}, fmt.Errorf("%s must be one of %s, got %q",
 				judgeModelProtocolSetting, strings.Join(judgeModelProtocols, ", "), cfg.JudgeModelProtocol)
+		}
+	}
+	// A judge decides a request that waits for a person, and with sign-in off no request waits:
+	// every one is refused at once (requests.Machine.SignInOff). So a judge beside off is a
+	// setting that configures nothing, refused as the broker refuses every other such setting.
+	// A judge named in part, or by its protocol alone, was refused above.
+	if cfg.SignInOff && len(judgeMissing) == 0 {
+		return Config{}, fmt.Errorf("%s=%s refuses at once every request that would wait for a person, so the broker's model judge, which decides such a request, would never run: unset the judge's settings (%s) or %s",
+			signInSwitchSetting, signInOffValue, strings.Join(JudgeSettings, ", "), signInSwitchSetting)
+	}
+	// The project-access settings are both or neither, as the judge's are: a URL with no token to
+	// present would be refused at every call, and a token with nowhere to present it asks nothing,
+	// so either alone is a deployment that meant to turn the check on and did not.
+	switch {
+	case cfg.ProjectAccessURL == "" && cfg.ProjectAccessTokenFile == "":
+		// No project-access check, which is every deployment with no private project.
+	case cfg.ProjectAccessTokenFile == "":
+		return Config{}, errors.New("BROKER_PROJECT_ACCESS_URL is set and BROKER_PROJECT_ACCESS_TOKEN_FILE is not: the broker presents its own projected ServiceAccount token from that file on every call to Dispatch, so set both or neither")
+	case cfg.ProjectAccessURL == "":
+		return Config{}, errors.New("BROKER_PROJECT_ACCESS_TOKEN_FILE is set and BROKER_PROJECT_ACCESS_URL is not: that URL names the Dispatch the broker asks about projects, so set both or neither")
+	default:
+		if err := httpURLSetting("BROKER_PROJECT_ACCESS_URL", cfg.ProjectAccessURL); err != nil {
+			return Config{}, err
 		}
 	}
 	switch cfg.SecretsStore {
@@ -1449,8 +1727,8 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	if cfg.GoogleOIDCAudience != "" && len(vmServices) == 0 {
-		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs BROKER_VM_SERVICES: with no VM service listed, no VM identity token for that audience could ever be accepted")
+	if cfg.SignInDeviceAudience != "" && len(vmServices) == 0 {
+		return Config{}, fmt.Errorf("BROKER_SIGNIN_DEVICE_AUDIENCE needs BROKER_VM_SERVICES: a person's device sign-in requires a listed machine's Google identity token as its actor")
 	}
 	for _, entry := range vmServices {
 		if cfg.VMServicesByAccount == nil {
@@ -1554,6 +1832,11 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(cfg.GoogleAPIAccounts) > 0 && cfg.GoogleOIDCAudience == "" {
 		return Config{}, fmt.Errorf("BROKER_API_ACCOUNTS names a Google service account, which needs BROKER_GOOGLE_OIDC_AUDIENCE, the audience its caller's Google identity token must carry")
 	}
+	// The audience is for a Google caller of either kind, and needs one: with neither, the broker
+	// would read Google's keys at boot and then accept no Google identity token at all.
+	if cfg.GoogleOIDCAudience != "" && len(cfg.GoogleAPIAccounts) == 0 && len(cfg.VMServicesByAccount) == 0 {
+		return Config{}, fmt.Errorf("BROKER_GOOGLE_OIDC_AUDIENCE needs a Google caller: a google: entry in BROKER_API_ACCOUNTS or a VM service in BROKER_VM_SERVICES; with neither, no Google identity token for that audience could ever be accepted")
+	}
 	githubIssuer, githubAudience, err := oidc.ConfigFromEnv(getenv, "BROKER_EXCHANGE_GITHUB_ISSUER", "BROKER_EXCHANGE_GITHUB_AUDIENCE")
 	if err != nil {
 		return Config{}, err
@@ -1568,6 +1851,26 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if len(cfg.ExchangeAccounts) > 0 && cfg.ExchangeK8sAudience == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
+	}
+	if cfg.ExchangeReadAccounts, err = parseExchangeReadAccounts("BROKER_EXCHANGE_READ_ACCOUNTS", getenv("BROKER_EXCHANGE_READ_ACCOUNTS")); err != nil {
+		return Config{}, err
+	}
+	if len(cfg.ExchangeReadAccounts) > 0 {
+		if cfg.ExchangeK8sAudience == "" {
+			return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
+		}
+		// One account mints one kind of token: listed in both settings, it would have two
+		// answers, a token that writes as its person and one that only reads. exchange.NewSet
+		// refuses it too, but only this refusal can name both settings.
+		writers := make(map[string]bool, len(cfg.ExchangeAccounts))
+		for _, entry := range cfg.ExchangeAccounts {
+			writers[entry.Account] = true
+		}
+		for _, entry := range cfg.ExchangeReadAccounts {
+			if writers[entry.Account] {
+				return Config{}, fmt.Errorf("BROKER_EXCHANGE_READ_ACCOUNTS and BROKER_EXCHANGE_ACCOUNTS both name the service account %s; one account mints one kind of token, a read-only one or one that writes as its person, so name it in one of them", entry.Account)
+			}
+		}
 	}
 	if cfg.ExchangeWorkflows, err = parseExchangeWorkflows("BROKER_EXCHANGE_WORKFLOWS", getenv("BROKER_EXCHANGE_WORKFLOWS")); err != nil {
 		return Config{}, err
@@ -1609,8 +1912,10 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 		*i.dst = n
 	}
-	if cfg.SignIn, err = parseSignIn(getenv, time.Duration(sessionSeconds)*time.Second); err != nil {
-		return Config{}, err
+	if !cfg.SignInOff {
+		if cfg.SignIn, err = parseSignIn(getenv, time.Duration(sessionSeconds)*time.Second); err != nil {
+			return Config{}, err
+		}
 	}
 	// A gap of up to leasetime.NotServingSweeps sweeps still reads as a broker serving, so none
 	// of it is given back and a lease that ran out inside it is simply over. Surviving one is
@@ -1626,14 +1931,57 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("BROKER_LEASE_SECONDS (%d) is too short for BROKER_SWEEP_SECONDS (%d): a session must outlive a gap of %d s that still counts as a broker serving and the time its renewer then takes to renew. The shortest lease that survives both renewers at this sweep is %d s.",
 			cfg.LeaseSeconds, cfg.SweepSeconds, leasetime.NotServingSweeps*cfg.SweepSeconds, int(model.Shortest(sweep)/time.Second))
 	}
+	// BROKER_PUBLIC_URL's scheme, http or https and nothing else: every proof, request object and
+	// metadata endpoint the broker names is under this URL, which its clients reach over HTTP.
+	// approval.New refuses any other scheme too, but a broker with BROKER_SIGNIN=off builds no
+	// page, so the rule is held here. It is Load's last check, so every other refusal comes first,
+	// in the order it always did, and only a configuration the page would have refused is refused
+	// here. The scheme alone is printed: it holds no credential.
+	if publicURL.Scheme != "https" && publicURL.Scheme != "http" {
+		return Config{}, fmt.Errorf("BROKER_PUBLIC_URL must be an http or https URL, got the scheme %q", publicURL.Scheme)
+	}
 	return cfg, nil
 }
 
+// parseSignInSwitch reads BROKER_SIGNIN: unset (or empty) is a broker that signs people in,
+// exactly off one that signs nobody in, and any other value, a word a person would read as off
+// included, refuses naming the setting and the value, so a misspelled off never starts a broker
+// whose sign-in its operator thought was off, nor one whose sign-in they thought they had kept.
+// off refuses beside every setting signInOffRefuses lists that is set, naming each one: a
+// deployment that names a sign-in and turns sign-in off has said two things, and the broker
+// does not pick one for it. A setting holding only spaces counts as unset, as parseSignIn reads
+// it.
+func parseSignInSwitch(getenv func(string) string) (bool, error) {
+	switch value := getenv(signInSwitchSetting); value {
+	case "":
+		return false, nil
+	case signInOffValue:
+	default:
+		return false, fmt.Errorf("%s must be %s or unset, got %q", signInSwitchSetting, signInOffValue, value)
+	}
+	var set []string
+	for _, setting := range signInOffRefuses {
+		if strings.TrimSpace(getenv(setting)) != "" {
+			set = append(set, setting)
+		}
+	}
+	if len(set) > 0 {
+		verb := "is"
+		if len(set) > 1 {
+			verb = "are"
+		}
+		return false, fmt.Errorf("%s=%s turns the broker's person sign-in off, and %s %s set: set %s=%s or the sign-in settings, not both",
+			signInSwitchSetting, signInOffValue, strings.Join(set, ", "), verb, signInSwitchSetting, signInOffValue)
+	}
+	return true, nil
+}
+
 // parseSignIn reads the broker's sign-in client, its session lasting sessionLifetime, the
-// BROKER_SIGNIN_SESSION_SECONDS Load read. All four of the client's settings are required, since
-// a broker nobody can sign in to is a broker on which no secret request is ever approved. It
-// refuses: any of them missing, naming each one; an issuer that is not an absolute https URL, or
-// http to a loopback host; and an unreadable or blank secret file. No refusal carries the secret.
+// BROKER_SIGNIN_SESSION_SECONDS Load read. Load calls it unless BROKER_SIGNIN is off, and then
+// all four of the client's settings are required, since a broker that signs people in and that
+// nobody can sign in to is a broker on which no secret request is ever approved. It refuses: any
+// of them missing, naming each one; an issuer that is not an absolute https URL, or http to a
+// loopback host; and an unreadable or blank secret file. No refusal carries the secret.
 func parseSignIn(getenv func(string) string, sessionLifetime time.Duration) (approval.SignIn, error) {
 	signIn := approval.SignIn{SessionLifetime: sessionLifetime}
 	// One destination per SignInSettings entry, read in that order, so the missing ones are named
@@ -1674,8 +2022,8 @@ func signInIssuerOK(issuer string) bool {
 		return true
 	case "http":
 		host := parsed.Hostname()
-		ip := net.ParseIP(host)
-		return host == "localhost" || ip != nil && ip.IsLoopback()
+		addr, err := netip.ParseAddr(host)
+		return host == "localhost" || err == nil && netaddr.Canonical(addr).IsLoopback()
 	}
 	return false
 }

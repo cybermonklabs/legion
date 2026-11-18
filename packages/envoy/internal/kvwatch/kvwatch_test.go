@@ -316,7 +316,7 @@ func bucket(t *testing.T, uri string) (*natsgo.Conn, bus.KeyValue) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	kv, err := bus.EnsureKeyValue(conn, js, &natsgo.KeyValueConfig{Bucket: "kvwatch-test"})
+	kv, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{Bucket: "kvwatch-test"})
 	if err != nil {
 		t.Fatalf("bucket: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestAFirstStartFailingAfterARewatchLeavesTheLiveWatcherHealthy(t *testing.T
 	firstConn.Close()
 	into := newSeen()
 	w := kvwatch.New("test cache", first, into)
-	if err := w.Rewatch(liveConn); err != nil {
+	if err := w.Rewatch(context.Background(), liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	live := w.KV()
@@ -544,7 +544,7 @@ func TestAFailedFirstStartLogsItsErrorOnlyWhileItIsTheLiveWatch(t *testing.T) {
 		into := newSeen()
 		w := kvwatch.New("test cache", first, into, kvwatch.WithLogger(logger))
 		t.Cleanup(w.Stop)
-		if err := w.Rewatch(liveConn); err != nil {
+		if err := w.Rewatch(context.Background(), liveConn); err != nil {
 			t.Fatalf("rewatch: %v", err)
 		}
 
@@ -612,7 +612,7 @@ func TestAFirstStartFailingDuringARewatchScanWaitsForThatScan(t *testing.T) {
 	}
 	w := kvwatch.New("test cache", first, withApply{seen: into, before: apply})
 	t.Cleanup(w.Stop)
-	if err := w.Rewatch(liveConn); err != nil {
+	if err := w.Rewatch(context.Background(), liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	select {
@@ -649,7 +649,7 @@ func TestAWatcherThatEndsOnItsOwnRecordsItsError(t *testing.T) {
 	eventually(t, "the ended watcher's error", func() bool { return w.Err() != nil })
 
 	liveConn, _ := bucket(t, uri)
-	if err := w.Rewatch(liveConn); err != nil {
+	if err := w.Rewatch(context.Background(), liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	live := w.KV()
@@ -676,7 +676,7 @@ func TestAReplacedWatcherEndingRecordsNothing(t *testing.T) {
 	w := kvwatch.New("test cache", first, newSeen())
 	w.Start()
 	eventually(t, "the first scan", w.Ready)
-	if err := w.Rewatch(secondConn); err != nil {
+	if err := w.Rewatch(context.Background(), secondConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	firstConn.Close()
@@ -792,7 +792,7 @@ func TestCheckReportsABucketRecreatedUnderALiveWatcher(t *testing.T) {
 			into.has("ghost"), w.Following(), w.Servable())
 	}
 
-	if err := w.Rewatch(conn); err != nil {
+	if err := w.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	if err := w.Err(); err != nil {
@@ -821,7 +821,7 @@ func TestStopMakesTheEndSilentAndRewatchANoOp(t *testing.T) {
 	}
 
 	liveConn, _ := bucket(t, uri)
-	if err := w.Rewatch(liveConn); err != nil {
+	if err := w.Rewatch(context.Background(), liveConn); err != nil {
 		t.Fatalf("a Rewatch after Stop returned an error: %v", err)
 	}
 	live := w.KV()
@@ -973,7 +973,7 @@ func TestAStaleEpisodeOutlastsFailedReadsUntilOneCompletes(t *testing.T) {
 	eventually(t, "the early end's error", func() bool { return w.Err() != nil })
 	closed := testnats.Connect(t, uri)
 	closed.Close()
-	if err := w.Rewatch(closed); err == nil {
+	if err := w.Rewatch(context.Background(), closed); err == nil {
 		t.Fatal("a Rewatch on a closed connection succeeded")
 	}
 	now.advance(31 * time.Second)
@@ -982,7 +982,7 @@ func TestAStaleEpisodeOutlastsFailedReadsUntilOneCompletes(t *testing.T) {
 		t.Fatal("NeedsRead = false for a copy no read is under way to repair")
 	}
 
-	if err := w.Rewatch(conn); err != nil {
+	if err := w.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	eventually(t, "the complete read", w.Following)
@@ -1007,7 +1007,7 @@ func TestAFailedRewatchLeavesAFollowingWatcherServing(t *testing.T) {
 
 	closed := testnats.Connect(t, uri)
 	closed.Close()
-	if err := w.Rewatch(closed); err == nil {
+	if err := w.Rewatch(context.Background(), closed); err == nil {
 		t.Fatal("a Rewatch on a closed connection succeeded")
 	}
 	now.advance(time.Hour)
@@ -1103,7 +1103,7 @@ func TestATimedOutReadIsReadAgainByTheWatcher(t *testing.T) {
 
 	t.Run("a newer read disarms it", func(t *testing.T) {
 		w, into, arm, _, conn := timedOut(t)
-		if err := w.Rewatch(conn); err != nil {
+		if err := w.Rewatch(context.Background(), conn); err != nil {
 			t.Fatalf("rewatch: %v", err)
 		}
 		completed(t, w, into)
@@ -1137,7 +1137,7 @@ func TestAReadThatEndsEarlyCompletesNothing(t *testing.T) {
 	}
 	refuses(t, w, "before any read completed")
 
-	if err := w.Rewatch(conn); err != nil {
+	if err := w.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	eventually(t, "the complete read", w.Following)
@@ -1200,7 +1200,7 @@ func TestADisconnectStartsAStaleEpisodeThatTheReadAfterTheReconnectEnds(t *testi
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	kv, err := bus.EnsureKeyValue(client.Conn, client.JS(), &natsgo.KeyValueConfig{Bucket: testBucketName})
+	kv, err := bus.EnsureKeyValue(t.Context(), client.Conn, client.JS(), &natsgo.KeyValueConfig{Bucket: testBucketName})
 	if err != nil {
 		t.Fatalf("bucket: %v", err)
 	}
@@ -1224,7 +1224,7 @@ func TestADisconnectStartsAStaleEpisodeThatTheReadAfterTheReconnectEnds(t *testi
 	serves(t, w, "within the bound of the disconnect")
 	now.advance(staleBound + time.Second)
 	refuses(t, w, "past the bound of the disconnect")
-	if err := w.Rewatch(client.Conn); err == nil {
+	if err := w.Rewatch(context.Background(), client.Conn); err == nil {
 		t.Fatal("a Rewatch while the server is down succeeded")
 	}
 	refuses(t, w, "after a Rewatch failed during the outage")
@@ -1317,7 +1317,7 @@ func TestAReplacedWatchersBufferedEntryIsDropped(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	rewatched := make(chan error, 1)
 	go func() {
-		err := w.Rewatch(secondConn)
+		err := w.Rewatch(context.Background(), secondConn)
 		rewatched <- err
 	}()
 	eventually(t, "the Rewatch waiting for the held apply", waitingForTheApplyLock)
@@ -1416,7 +1416,7 @@ func TestConcurrentRewatchesOntoARecreatedBucketKeepTheNewKeys(t *testing.T) {
 	}
 
 	doneA := make(chan error, 1)
-	go func() { err := w.Rewatch(conn); doneA <- err }()
+	go func() { err := w.Rewatch(context.Background(), conn); doneA <- err }()
 	select {
 	case <-slow.entered:
 	case <-time.After(5 * time.Second):
@@ -1425,7 +1425,7 @@ func TestConcurrentRewatchesOntoARecreatedBucketKeepTheNewKeys(t *testing.T) {
 	if !into.has("ghost") {
 		t.Fatal("the old bucket's key was dropped when A's read began, before any read of the new bucket completed")
 	}
-	if err := w.Rewatch(conn); err != nil {
+	if err := w.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch B: %v", err)
 	}
 	eventually(t, "B's read to complete", w.Following)
@@ -1527,7 +1527,7 @@ func TestAWatchOfTheOldStreamDoesNotReplaceANewerOne(t *testing.T) {
 		t.Fatalf("put: %v", err)
 	}
 	liveConn, _ := bucket(t, uri)
-	if err := w.Rewatch(liveConn); err != nil {
+	if err := w.Rewatch(context.Background(), liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	eventually(t, "the newer watcher's scan", func() bool { return into.has("fresh") })
@@ -1587,7 +1587,7 @@ func TestADiscardedWatchOfTheOldStreamIsDrainedUntilItEnds(t *testing.T) {
 	}
 	testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: "kvwatch-test"})
 	liveConn, _ := bucket(t, uri)
-	if err := w.Rewatch(liveConn); err != nil {
+	if err := w.Rewatch(context.Background(), liveConn); err != nil {
 		t.Fatalf("rewatch: %v", err)
 	}
 	close(held.release)
@@ -1652,7 +1652,7 @@ func TestAReplacedWatchersSentinelDoesNotReleaseReadiness(t *testing.T) {
 	}
 	liveConn, _ := bucket(t, uri)
 	done := make(chan error, 1)
-	go func() { done <- w.Rewatch(liveConn) }()
+	go func() { done <- w.Rewatch(context.Background(), liveConn) }()
 	eventually(t, "the Rewatch waiting for the held apply", waitingForTheApplyLock)
 	slow.Store(true)
 	releaseOnce.Do(func() { close(release) })
@@ -1738,7 +1738,7 @@ func TestARewatchOntoABucketRestoredWithAnOlderStreamRefillsTheCache(t *testing.
 		t.Fatalf("Check: %v", err)
 	}
 	for tick := 1; tick <= 3; tick++ {
-		if err := w.Rewatch(conn); err != nil {
+		if err := w.Rewatch(context.Background(), conn); err != nil {
 			t.Fatalf("tick %d Rewatch: %v", tick, err)
 		}
 		time.Sleep(300 * time.Millisecond)

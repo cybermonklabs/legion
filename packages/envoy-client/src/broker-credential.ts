@@ -133,15 +133,22 @@ interface Held {
  */
 const CLIENTS = new Map<string, Map<string, Held>>();
 
+/** Closes every client `entries` made, so none goes on waiting out a missing registration. */
+function closeAll(entries: Map<string, Held> | undefined): void {
+  for (const held of entries?.values() ?? []) held.made?.client?.close();
+}
+
 /** Drops what this process made, so a test drives a broker of its own from nothing. */
 export function forgetBrokerClients(): void {
+  for (const entries of CLIENTS.values()) closeAll(entries);
   CLIENTS.clear();
 }
 
 /**
  * Drops what this process traded for callers acting as `session`: their client, the key pair it
- * made, the token renewing under it, and the sign-ins it was refused. A caller acting as no
- * session is kept apart (`CLIENTS`), so it keeps its own, whatever `AGENT_SECRETS_SESSION` names.
+ * made, the token renewing under it, the trade it may still be retrying while that session's
+ * registration is missing, and the sign-ins it was refused. A caller acting as no session is kept
+ * apart (`CLIENTS`), so it keeps its own, whatever `AGENT_SECRETS_SESSION` names.
  *
  * For the host that has left that session, once it has made its last call for it — Oh My Pi's
  * pass once the role of the session it left is handed back, Claude Code's handoff once the old
@@ -151,7 +158,9 @@ export function forgetBrokerClients(): void {
  * trades afresh, as one this process never traded for does.
  */
 export function forgetBrokerSession(session: string): void {
-  CLIENTS.delete(session.trim());
+  const key = session.trim();
+  closeAll(CLIENTS.get(key));
+  CLIENTS.delete(key);
 }
 
 /** A sign-in as Go's `SignInAuthority` names one: the person, and the box key's thumbprint. */
@@ -296,7 +305,8 @@ export function brokerCredential(
     async headers(
       method: string,
       url: string,
-      acting?: string
+      acting?: string,
+      signal?: AbortSignal
     ): Promise<Readonly<Record<string, string>>> {
       const { entry, made } = await clientFor(env, own(acting));
       const { client } = made;
@@ -307,7 +317,7 @@ export function brokerCredential(
       }
       let token: BrokerToken;
       try {
-        token = await client.token();
+        token = await client.token(signal);
       } catch (error) {
         if (made.signIn !== "" && isFinalRefusal(error)) entry.refused.set(made.signIn, error);
         throw error;

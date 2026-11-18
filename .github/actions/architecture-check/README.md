@@ -74,7 +74,9 @@ Each line that the command prints about the directory or an entry of it names th
 
 - **Exit 2: the command did not judge the set.**
   The directory does not exist, cannot be read, or holds no note.
-  The log holds one line that names the directory and the case.
+  The log holds a warning for each entry that is not a note (see [Warnings](#warnings)), then one line that names the directory and the case.
+  For a directory that does not exist or holds no note, the line ends `, and architecture-check reads it as the empty set only with --allow-empty`.
+  The input `allow-empty: true` gives the command that flag.
   The command prints no count line, so the action sets no `count`.
 
 ## Warnings
@@ -144,6 +146,7 @@ A caller that needs `GOPROXY`, `GOPRIVATE` or `GONOSUMDB` sets them as environme
 The build also sets `GOWORK=off`, because the root `go.work` of this repository is above the action.
 It sets `GOTOOLCHAIN=local` and an empty `GOFLAGS`, and it unsets `GOOS` and `GOARCH`.
 So a Go flag or a target platform of the caller's job does not change the build.
+The script `.github/scripts/build-envoy-command.sh` of this repository makes this build, and the build of the [spec-file check](../spec-check/README.md#the-go-toolchain) too, so the two actions build with the same settings.
 
 ## The cache
 

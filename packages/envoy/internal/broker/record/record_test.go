@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/sjawhar/envoy/internal/broker/proof"
@@ -927,5 +928,60 @@ func TestIssueKeyInReason(t *testing.T) {
 		if got := IssueKeyInReason(c.reason); got != c.want {
 			t.Errorf("IssueKeyInReason(%q) = %q, want %q", c.reason, got, c.want)
 		}
+	}
+}
+
+// TestSanitizeLeavesNoRefusedRune pins the filter that text the broker records with nobody to
+// refuse it to goes through — a model judge's words, a session call's reason — over two bounds:
+// every rune validateReason refuses is gone, and what is left is no longer than the bound.
+func TestSanitizeLeavesNoRefusedRune(t *testing.T) {
+	refused := "\u0000\u0001\u200b\u202e\u2028\u2029\ufeff\n\r\t"
+	for _, c := range []struct {
+		name  string
+		in    string
+		limit int
+		want  string
+	}{
+		{"a reason of refused runes alone", refused, MaxReasonRunes, ""},
+		{"a reason around them", "a" + refused + "b", MaxReasonRunes, "ab"},
+		{"a reason at its bound", strings.Repeat("é", 500), MaxReasonRunes, strings.Repeat("é", MaxReasonRunes)},
+		{"a longer text at its bound", strings.Repeat("x", 50_000), 2000, strings.Repeat("x", 2000)},
+		{"a string inside both bounds", "plain words", MaxReasonRunes, "plain words"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := Sanitize(c.in, c.limit)
+			if got != c.want {
+				t.Errorf("Sanitize(%q, %d) = %q; want %q", c.in, c.limit, got, c.want)
+			}
+			for _, r := range got {
+				if unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Co, unicode.Zl, unicode.Zp) {
+					t.Errorf("Sanitize kept %q, a rune a reason may not carry", r)
+				}
+			}
+		})
+	}
+}
+
+// TestClipArgumentBacksUpOverOneCharacterAtMost: ClipArgument cuts an argument to 256 bytes,
+// backing up over the continuation bytes of the one character the cut would split, and over no
+// more than a character holds, so what it answers is always long enough for the rule at the cut
+// to read its end as where a secret may have been cut through. A long run of stray continuation
+// bytes does not pull the cut back past them.
+func TestClipArgumentBacksUpOverOneCharacterAtMost(t *testing.T) {
+	for _, c := range []struct {
+		name, arg string
+		want      int
+	}{
+		{"a two-byte character across the cut", strings.Repeat("a", 255) + "é", 255},
+		{"a three-byte character across the cut", strings.Repeat("a", 254) + "€", 254},
+		{"stray continuation bytes across the cut", strings.Repeat("a", 200) + strings.Repeat("\x80", 100), 253},
+		{"an argument within the cut", "short", 5},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got := ClipArgument(c.arg)
+			if len(got) != c.want || !strings.HasPrefix(c.arg, got) {
+				t.Errorf("ClipArgument kept %d bytes, want the first %d", len(got), c.want)
+			}
+		})
 	}
 }

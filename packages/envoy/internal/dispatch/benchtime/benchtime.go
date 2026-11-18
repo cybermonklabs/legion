@@ -85,7 +85,7 @@ type Runner struct {
 // Open connects to the measurement database, records the server settings every number is read
 // beside, and binds the subjects. databaseURL is what DatabaseURLEnv names, read by the caller:
 // a non-test file of internal/dispatch may not read the process environment, which
-// cmd/dispatch's TestNoReaderBypassesTheSettingsTable holds, so each _test.go caller passes
+// internal/textcheck's TestNoReaderBypassesTheSettingsTable holds, so each _test.go caller passes
 // os.Getenv(benchtime.DatabaseURLEnv) in. The gate itself stays here: an empty URL skips t,
 // which is how CI never runs a measurement, and the three callers share that one sentence
 // rather than each keeping a copy of it.

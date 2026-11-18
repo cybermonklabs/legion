@@ -28,7 +28,7 @@ import (
 // this package cannot be imported (INFRA-1404).
 //
 // Each shape is asserted four ways: the verdict a write of it gets; the CPU time the parse spends
-// on it, under heavyBodyCPUBudget (heavy_body_budget.go); and, for every stored shape, growth in
+// on it, under heavyBodyCPUBudget (below); and, for every stored shape, growth in
 // proportion to its length, measured at an eighth of what it grows to and then at the whole of it
 // (growsLinearly, linear_test.go) - of the parse alone, and of the parse and the encode of the
 // document a write makes of the body together.
@@ -47,6 +47,15 @@ import (
 // time bound they have. It is the guard over the parse's own costs as well - the block ids a
 // document's blocks are minted from, and the tab-indentation check each open block runs on each
 // line - which a regression would make superlinear again.
+
+// heavyBodyCPUBudget is the most CPU time the parse of one body at the body cap may spend
+// (heavy_bodies_test.go). A body a caller writes is read on a request's own goroutine, and the
+// bodies that froze a reader's browser tab are the heaviest a caller may send; the slowest of
+// them measured about 0.5 s here, so a second is the bound with the slack a loaded runner needs
+// and still catches a cost that has grown with the square of a body's length again. This
+// package's tests run plain, never under the race detector, so the bound measures this package's
+// own work in every run of them.
+const heavyBodyCPUBudget = time.Second
 
 // Every shape at the block bound is stored or refused as it is, and the parse of it spends less
 // CPU time than heavyBodyCPUBudget allows.

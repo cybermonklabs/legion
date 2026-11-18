@@ -76,6 +76,7 @@ export function renderAdvice(
   opts: {
     isAskReply?: boolean;
     isPrimarySpec?: boolean;
+    isPlan?: boolean;
     setsStatus?: boolean;
     replyToOwnAsk?: boolean;
   }
@@ -219,7 +220,14 @@ export function renderAdvice(
   // name the document just written: it names those issues, and it is silent for every other
   // document. Absent (an older Dispatch keeps no such record), empty, and anything that is not a
   // list of gates all print no clause, which is the safe direction - a reader told nothing asks
-  // the tree's architect, a reader told a gate that is not there stops working for no reason.
+  // the issue's architect, a reader told a gate that is not there stops working for no reason.
+  //
+  // A plan's approval comes back through its plan review, and no request for approval restores
+  // it: Dispatch refuses one on every plan with 409 PLAN_APPROVED_BY_REVIEW, whoever approved it,
+  // a plan a person approved from its document header included. So the document being a plan
+  // decides the last clause - the caller reads it from the artifact Dispatch answers
+  // (`documentPlaysPlan`) - and on a plan that clause names `dispatch plan-approve` instead. Every
+  // other document keeps the clause naming `dispatch request-approval`.
   const superseded = advice.superseded_approval;
   if (superseded !== undefined && (tool === "dispatch_doc_edit" || tool === "dispatch_artifact")) {
     const gates = Array.isArray(superseded.design_gates) ? superseded.design_gates : [];
@@ -233,7 +241,9 @@ export function renderAdvice(
       );
     }
     parts.push(
-      "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan."
+      opts.isPlan === true
+        ? `A plan is approved by its plan review, and Dispatch refuses a request for a person's approval of a plan. Once a plan review approves version ${superseded.version}, record it with \`dispatch plan-approve --issue ${key} --version ${superseded.version}\`.`
+        : "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan."
     );
     lines.push(parts.join(" "));
   }

@@ -861,6 +861,100 @@ describe("DispatchClient", () => {
     }
   });
 
+  // A Dispatch URL may carry a user and a password: the config accepts such a URL, and the
+  // requests go to it as configured. Every message that names the request or the Dispatch names
+  // the URL without them: a gateway's answer, a refused listing, a write whose answer was lost, a
+  // review route the build lacks, and a write whose attempt heard nothing.
+  test("names the Dispatch URL without its user and password in every refusal that names it", async () => {
+    const user = "user-7f2a";
+    const secret = "pw-4c7e19";
+    const configured = `https://${user}:${secret}@host.example`;
+    const { fetchImpl, requests } = fakeFetch([
+      new Response("<html><body><h1>502 Bad Gateway</h1></body></html>", {
+        status: 502,
+        statusText: "Bad Gateway",
+        headers: { "Content-Type": "text/html" },
+      }),
+      jsonResponse([]),
+      jsonResponse({ issues: [], total: 0, limit: 2, offset: 0 }),
+      jsonResponse({ code: "KEY_COMMITTED", error: "the write was made" }, 409),
+      jsonResponse(
+        { code: "NOT_FOUND", error: "no route for POST /api/v1/artifacts/a-1/versions/2/reviews" },
+        404
+      ),
+    ]);
+    const client = new DispatchClient(configured, bearerCredential("bearer-1"), fetchImpl, {
+      writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [], withinMs: 0 },
+      retryNoRoute: false,
+    });
+    // An attempt that hears nothing until the client cuts it off for silence.
+    const silent = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const { promise, reject } = Promise.withResolvers<Response>();
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      return promise;
+    }) as typeof fetch;
+    const unanswered = new DispatchClient(configured, bearerCredential("bearer-1"), silent, {
+      writeRetry: {
+        ...DISPATCH_WRITE_RETRY,
+        pausesMs: [],
+        withinMs: 0,
+        inFlightWithinMs: 0,
+        silenceMs: 20,
+      },
+    });
+    const refusal = (call: Promise<unknown>) =>
+      call.then(
+        () => {
+          throw new Error("expected a refusal");
+        },
+        (error: Error) => error.message
+      );
+
+    const messages = [
+      await refusal(client.getIssue("DSP-1")),
+      await refusal(client.listIssuePage({}, { limit: 2, offset: 0 })),
+      await refusal(client.listAllIssues({})),
+      await refusal(client.message("DSP-1", { body: "Shipped.", actor })),
+      await refusal(client.reviewArtifact("a-1", 2, { state: "approved" })),
+      await refusal(unanswered.message("DSP-1", { body: "Shipped.", actor })),
+    ];
+
+    expect(requests.map((request) => request.url)).toEqual([
+      `${configured}/api/v1/issues/DSP-1`,
+      `${configured}/api/v1/issues?limit=2&offset=0`,
+      `${configured}/api/v1/issues`,
+      `${configured}/api/v1/issues/DSP-1/messages`,
+      `${configured}/api/v1/artifacts/a-1/versions/2/reviews`,
+    ]);
+    expect(messages[0]).toStartWith(
+      "GET https://host.example/api/v1/issues/DSP-1 answered 502 Bad Gateway with a body"
+    );
+    expect(messages[1]).toStartWith(
+      "GET https://host.example/api/v1/issues?limit=2&offset=0 asked for a page"
+    );
+    expect(messages[2]).toBe(
+      "GET https://host.example/api/v1/issues asked for the unpaged listing and got a page, so " +
+        "this Dispatch pages a request that carries no limit and no offset."
+    );
+    expect(messages[3]).toStartWith(
+      "POST https://host.example/api/v1/issues/DSP-1/messages was made, but its answer was lost"
+    );
+    expect(messages[4]).toStartWith(
+      "Dispatch at https://host.example answered no route for " +
+        "POST /api/v1/artifacts/a-1/versions/2/reviews each time the review was sent"
+    );
+    expect(messages[4]).toContain("GET https://host.example/healthz names the commit");
+    expect(messages[5]).toBe(
+      "POST https://host.example/api/v1/issues/DSP-1/messages made no progress for 0.02 s, so it " +
+        "was cut off (its only attempt), and an attempt of the write may have reached Dispatch, " +
+        "so it may or may not have taken effect: check whether it did before retrying it."
+    );
+    for (const message of messages) {
+      expect(message).not.toContain(user);
+      expect(message).not.toContain(secret);
+    }
+  });
+
   // Whatever answers at the Dispatch URL (a repository's own `.envoy/envoy.json` can name it)
   // controls the body, and the excerpt is built synchronously on the host's event loop, before the
   // 120-character cut. Each pass over the body must stay linear and the scan bounded, or a page of

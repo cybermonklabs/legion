@@ -41,13 +41,17 @@ import type { StallLimits } from "./stall-limits";
 
 /**
  * Publishes one Envoy message (`EnvoyClient.publish`), typed as the part of the listener's answer
- * this reminder reads: `kept` alone. This sender publishes with `keep: false`, so every listener
- * this code knows answers an unheld or lapsed role 404 and keeps nothing, and a kept answer is
- * one none of them gives. It is read all the same (`tellArchitect`), because a listener that
- * ignored the flag would otherwise have the run record an architect as told that no architect was
- * ever handed the notice; reading it costs one field.
+ * this reminder reads: `kept` and `keptUntil`. The notice sends no `keep` field, so a listener
+ * keeps it for an architect role no live session holds and answers 202 kept, which tells no
+ * architect (`tellArchitect`). `keptUntil` says whether the next attempt may send the same key
+ * again: a listener that names it answers a repeat with the copy it still holds, or keeps a new
+ * copy once that copy has been forwarded or its hour has ended. A listener of an earlier release
+ * names none, and answers a repeat inside its stream's 72-hour duplicate window as the first copy,
+ * which it may already have dropped.
  */
-export type EnvoyPublish = (input: PublishInput) => Promise<Pick<PublishResult, "kept">>;
+export type EnvoyPublish = (
+  input: PublishInput
+) => Promise<Pick<PublishResult, "kept" | "keptUntil">>;
 
 export interface PhaseReminderLog {
   readonly debug: (message: string, context?: Record<string, unknown>) => void;
@@ -123,18 +127,15 @@ export interface PhaseReminder {
 export const RECORD_READ_BOUND_MS = 5_000;
 
 /**
- * The listener's "no live session holds that role": a 404 whose body names `unclaimed` or
- * `holder_lapsed` (`packages/envoy/cmd/listener/api.go`). Nobody was told, so `reported` stays
- * false and the next delivered reminder publishes the same notice again, under the same
- * idempotency key, until a session holding the role takes it.
+ * The listener's "no live session holds that role, and nothing was kept": a 404 whose body names
+ * `unclaimed` or `holder_lapsed` (`packages/envoy/cmd/listener/api.go`). Nobody was told, so
+ * `reported` stays false and the next delivered reminder publishes the same notice again, under
+ * the same idempotency key, until a session holding the role takes it.
  *
- * It is the only answer an unheld or lapsed architect role gets here, because this notice is
- * published with `keep: false` (INFRA-839). That is what the kept lane reserves the flag for: a
- * sender that holds a retry of its own, as the daemon's notice publisher does
- * (`packages/daemon/internal/notify/notify.go`). This sender's retry is the reminding itself —
- * reminders never stop while the phase is open, so every one after this one tries the notice
- * again — while a kept copy waits out the listener's window and is then dropped with nothing
- * left to send it again.
+ * The notice sends no `keep` field, so a listener keeps it for a role no live session holds and
+ * answers 202 kept rather than this (`tellArchitect`). This 404 comes when the listener's keep
+ * failed, and from a listener of an earlier release for a holder that is not live, which such a
+ * listener keeps nothing for.
  *
  * It stays a debug line rather than a warning because an architect that is away is not this
  * worker's doing, and the retry is already in hand.
@@ -250,12 +251,14 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * D5: this session's own issue record, read as `read_record` reads it, bounded. The reminder is
    * dropped when the record says this role no longer works this phase — the shape of a worker
    * that completed its phase from the shell instead of the tool — and when the daemon has failed
-   * this role's claim, which is the daemon's own word that this session is finished: a claim the
-   * daemon failed is replaced by a retry in a session of its own, and a reminder written into
-   * this one reaches nobody who can act on it. That is what stops Claude Code's reminder, which
-   * has no refused-turn settle of its own for a turn the provider never answered. Everything else
-   * fails open and is logged at debug: an unreachable daemon is exactly when a stalled worker
-   * must still be nudged.
+   * this role's claim, which is the daemon's own word that this process is finished: a claim the
+   * daemon failed runs no further turn in this process — its retry relaunches this session in a
+   * new process, or starts a new session once the daemon's `forgetSession` (its supervise package)
+   * has dropped this one — and a reminder written now reaches nobody who can act on it. That is
+   * what stops Claude Code's reminder, which has no
+   * refused-turn settle of its own for a turn the provider never answered. Everything else fails
+   * open and is logged at debug: an unreachable daemon is exactly when a stalled worker must still
+   * be nudged.
    */
   const recordCheck = async (): Promise<RecordCheck> => {
     const claim = deps.claim();
@@ -299,9 +302,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * D6: one Envoy message to the issue's architect, when a delivered reminder brought the count to
    * the threshold. `reportKey` is minted at the first attempt of a run of reminders and kept until
    * the count resets, so a publish that timed out after the listener accepted it is not delivered
-   * twice, and a failure leaves `reported` false for the next reminder to try again. The key also
-   * names the run an acceptance belongs to: one that lands after the run ended acknowledges
-   * nothing.
+   * twice, and a failure leaves `reported` false for the next reminder to try again. A kept answer
+   * from a listener that names no `keptUntil` clears it early, so the next attempt mints a new
+   * one (below). The key also names the run an acceptance belongs to: one that lands after the
+   * run ended acknowledges nothing.
    */
   const tellArchitect = async (record: LegionIssue | undefined): Promise<void> => {
     const claim = deps.claim();
@@ -342,23 +346,25 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         }),
         idempotencyKey: key,
         sourceSessionID: claim.sessionID,
-        // This sender keeps its own retry, so the listener is to keep nothing: an unheld or
-        // lapsed role is answered 404 (`roleUnheld`) and the next reminder tries again, rather
-        // than a kept copy that is dropped when its window passes and that this run would read
-        // as the architect having been told.
-        keep: false,
       });
       // The publish has no deadline of its own, so the worker's own turn may have reset the count
       // while it was in flight, and a later run may have begun. That run has a key of its own, or
       // none yet: this acceptance is not its notice.
       if (reportKey !== key) return;
-      // A listener that kept the notice all the same (202, `PublishResult.kept`) has told no
-      // architect, and its copy is dropped once the kept window passes. It is read as the 404 is:
-      // nobody was told, so the run's next reminder publishes the same notice again under the
-      // same key. No listener this code knows answers it, since the publish above sends
-      // `keep: false`; it is read because one that ignored the flag would otherwise have this run
-      // record an architect as told that no architect was ever handed the notice.
+      // A kept answer (202, `PublishResult.kept`) means that no live session holds the architect
+      // role: the listener kept the notice on the role's kept lane for the next session that holds
+      // the role live, and its wake report can bring a released architect back. That has told no
+      // architect yet, and a copy no session takes in its hour is dropped, so the run's next
+      // reminder publishes the notice again. A listener that names `keptUntil` answers a repeat of
+      // the key with the copy it still holds, or keeps a new copy once the first one has been
+      // forwarded or its hour has ended, so the key stays. A listener of an earlier release names
+      // no time and answers a repeat inside its stream's duplicate window as the first copy, which
+      // it may have dropped already: the key is cleared, so the next attempt mints a new one.
       if (answer.kept === true) {
+        if (answer.keptUntil === undefined) {
+          reportKey = undefined;
+          writeEntry();
+        }
         deps.log.debug("legion: the listener kept the architect notice; telling it again later", {
           issue: claim.issue,
           reminders,

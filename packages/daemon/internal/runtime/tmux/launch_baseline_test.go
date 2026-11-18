@@ -35,11 +35,12 @@ var baselineRoleFiles = map[claim.Role][]string{
 // (runtime.tmux.pi_config_files), as memoryRuntime's fixture names one.
 const baselineOperatorOverlay = "/etc/legion-operator/overlay.yml"
 
-// baselineInvocation is the Oh My Pi boot resolved for every pane here, and baselineInstructions
-// the deployment instructions file every pane's prompt word ends with.
+// baselineInvocation is the Oh My Pi boot resolved for every pane here, and baselineStateDir the
+// state directory the launcher's command is built under: a fixed path rather than a temporary
+// directory's, so the prompt file the command names is the same bytes on every host.
 const (
-	baselineInvocation   = "/opt/bin/omp"
-	baselineInstructions = "/state/deployment-instructions.md"
+	baselineInvocation = "/opt/bin/omp"
+	baselineStateDir   = "/state"
 )
 
 // baselineRoles are the roles the baseline covers: the six of the workflow, in the order the
@@ -51,15 +52,24 @@ func baselineRoles() []claim.Role {
 // baselineSpec is role's launch under a deployment that declares no memory block at all —
 // memoryRuntime's shape with no memory overlays: testSpec's pane for a workflow role, the
 // controller's own launch, which runs in no tree, for the controller. Neither carries a variant
-// (SpawnSpec.Variants) and neither names variant instructions. The prompt files are named by
-// fixed paths rather than a temporary directory's, since nothing here reads them: the pane's own
-// shell does, as `$(cat …)` inside the prompt word.
+// (SpawnSpec.Variants) and neither names variant instructions. Its role prompt and deployment
+// instructions are written under a temporary directory, since the daemon reads them to compose the
+// prompt; the golden records their text, never their paths.
 func baselineSpec(t *testing.T, role claim.Role) runtime.SpawnSpec {
 	t.Helper()
+	dir := t.TempDir()
+	write := func(name, text string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
 	spec := testSpec()
 	spec.Prompt = runtime.PromptParts{
-		RolePromptPaths:            []string{"/roles/" + string(role) + ".md"},
-		DeploymentInstructionsPath: baselineInstructions,
+		RolePromptPaths:            []string{write(string(role)+".md", "You are the "+string(role)+".\n")},
+		DeploymentInstructionsPath: write("deployment-instructions.md", "# Deployment instructions\n\nRun the checks.\n"),
 	}
 	if role == claim.RoleController {
 		spec.Claim, spec.Role = claim.ControllerToken(spec.Project), role
@@ -75,8 +85,8 @@ func baselineSpec(t *testing.T, role claim.Role) runtime.SpawnSpec {
 	return spec
 }
 
-// launchBaseline is what the golden records for one role: the two values a launch hands the pane's
-// Oh My Pi.
+// launchBaseline is what the golden records for one role: the values a launch hands the pane's Oh
+// My Pi — its PI_CONFIG_FILES and its one --append-system-prompt word.
 type launchBaseline struct {
 	PiConfigFiles      string `json:"PI_CONFIG_FILES"`
 	AppendSystemPrompt string `json:"--append-system-prompt"`
@@ -96,11 +106,12 @@ func pairValue(variables []string, name string) (string, bool) {
 // The launch bytes a deployment with no experiment of its own and no `memory` block produces
 // today, whose memory arms name no file, for every role Legion launches in a pane: the golden
 // pins two values per role — the pane's PI_CONFIG_FILES, the operator's own overlays first and
-// then the role's own, and the one --append-system-prompt word of the pane's command, as the
-// pane's shell receives it, its `$(cat …)` fragments unexpanded.
-// Both are kept non-empty for all seven roles by the fixture (baselineOperatorOverlay and
-// baselineRoleFiles), so a later change that drops an overlay, reorders the list, or moves a
-// prompt fragment shows here as a diff to read.
+// then the role's own; and the one --append-system-prompt word of the pane's command, the path
+// runtime.WriteSystemPrompt wrote the claim's prompt to under the state directory, written as
+// /state. Both are kept non-empty for all seven roles by the fixture (baselineOperatorOverlay,
+// baselineRoleFiles and baselineSpec), so a later change that drops an overlay, reorders the list
+// or moves the prompt file shows here as a diff to read. What the file holds is a real spawn's
+// (TestAPromptOver131072BytesLaunchesInAPaneAsAPath, and the real-tmux lifecycle test).
 //
 // The pairs are read from panePairs, the pane's own -e pairs, and are proven to be what
 // PaneVariables tells a caller that runs Oh My Pi under the pane's environment itself; the prompt
@@ -133,15 +144,23 @@ func TestLaunchBaselineOfADeploymentWithNoExperiment(t *testing.T) {
 		if got, ok := pairValue(variables, "PI_CONFIG_FILES"); !ok || got != told {
 			t.Fatalf("PaneVariables tells the %s PI_CONFIG_FILES = %q (set %v), want the pane's own %q", role, got, ok, told)
 		}
-		inner, _, err := launcher.Launch(spec, Host{StateDir: stateDir, Legion: "/opt/legion/legion"})
+		prompt, err := runtime.ComposePrompt(spec.Prompt)
+		if err != nil {
+			t.Fatalf("the %s's system prompt: %v", role, err)
+		}
+		promptFile, err := runtime.WriteSystemPrompt(stateDir, string(spec.Claim), prompt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inner, _, err := launcher.Launch(spec, Host{StateDir: stateDir, Legion: "/opt/legion/legion"}, promptFile)
 		if err != nil {
 			t.Fatalf("the %s's pane command: %v", role, err)
 		}
-		_, prompt, ok := strings.Cut(inner, "--append-system-prompt ")
-		if !ok || prompt == "" {
+		_, word, ok := strings.Cut(inner, "--append-system-prompt ")
+		if !ok || word == "" {
 			t.Fatalf("the %s's pane command names no --append-system-prompt word:\n%s", role, inner)
 		}
-		baseline[string(role)] = launchBaseline{PiConfigFiles: told, AppendSystemPrompt: prompt}
+		baseline[string(role)] = launchBaseline{PiConfigFiles: told, AppendSystemPrompt: strings.Replace(word, stateDir, baselineStateDir, 1)}
 	}
 	if len(baseline) != len(baselineRoles()) {
 		t.Fatalf("the baseline holds %d roles, want %d", len(baseline), len(baselineRoles()))

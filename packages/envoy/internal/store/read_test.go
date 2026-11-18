@@ -147,7 +147,7 @@ func (kv *delayingKV) Get(key string) (natsgo.KeyValueEntry, error) {
 // buckets are empty, so nothing more reaches the cache through the watcher replaced here.
 func rebuiltRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, *holdingCache, *delayingKV) {
 	t.Helper()
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestAReadThroughOfABucketSinceRecreatedIsDropped(t *testing.T) {
 	}
 	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: 1, Storage: natsgo.FileStorage})
 	putInterest(t, recreated, Interest{SessionID: "ses_a", MachineID: "m1", Topics: []string{"notifications.new"}})
-	if err := reg.Rewatch(conn); err != nil {
+	if err := reg.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitFor(t, 5*time.Second, func() bool { return reg.watcher.Epoch() == 1 && reg.watcher.Following() })
@@ -427,7 +427,7 @@ func TestTheReaperKeepsARowWrittenWhileItsCopyHeldNoRevisionForTheKey(t *testing
 	// still holds the old bucket's row and no revision of the new bucket's for it.
 	apply := held.holdApply(t, "ses_x")
 	completion := held.holdCompletion(t, nil)
-	if err := reg.Rewatch(conn); err != nil {
+	if err := reg.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	waitClosed(t, apply.reached, "the new bucket's read to deliver ses_x")

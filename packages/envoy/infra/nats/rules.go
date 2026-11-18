@@ -1,6 +1,6 @@
 // Package nats holds the schema types every NATS component takes, whatever cloud it runs on, so a
-// consumer running more than one spells a user's rules alike and a single-cloud consumer's SDK
-// shows no other cloud's types. It imports no cloud package.
+// consumer running more than one spells a user's rules and an authorization callout alike and a
+// single-cloud consumer's SDK shows no other cloud's types. It imports no cloud package.
 package nats
 
 import (

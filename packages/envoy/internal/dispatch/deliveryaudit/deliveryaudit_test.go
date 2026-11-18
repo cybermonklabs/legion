@@ -388,7 +388,7 @@ func (r *rig) expectAddressedAsRecorded(t *testing.T, row map[string]string) {
 	}
 	subject := ""
 	if session, ok := strings.CutPrefix(row["target"], "session:"); ok {
-		subject = contracts.AgentSubject(session)
+		subject = contracts.LegacyAgentSubject(session)
 	} else if role, ok := strings.CutPrefix(row["target"], "role:"); ok {
 		subject = contracts.RoleTopicPrefix + role
 	}

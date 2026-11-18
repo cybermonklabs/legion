@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 const (
@@ -140,9 +141,10 @@ const issueUploadRoute = http.MethodPost + " /api/v1/issues/{key}/artifacts"
 // (drainBeforeAnswer), so a client that sends it whole before it reads the answer gets the
 // answer. register mounts it ahead of the keyed layer, so the refusal claims no key. The handler's
 // locked check still decides an issue that closes meanwhile; this one only spares the spool. A
-// caller that resolves to nobody is left to the route's own 401, and a malformed Idempotency-Key
-// to the keyed layer's 400, which spools no body either and refuses the request's form before
-// anything is looked up.
+// caller that resolves to nobody is left to the 401 written further in (the keyed layer's for a
+// keyed upload, the handler's for an unkeyed one), and a malformed Idempotency-Key to the keyed
+// layer's 400, which spools no body either and refuses the request's form before anything is
+// looked up.
 //
 // The refusal stands in for the handler, so it answers only a request whose handler would run. A
 // repeat under a key the keyed layer answers itself (requestKeyAnswersItself) - its first upload's
@@ -658,9 +660,11 @@ func (s *server) storeArtifact(
 	var diff *string
 	if !created && kind == "doc" {
 		// This route writes its version itself rather than through the document service, so its
-		// open approval request follows that version just as every other version write does.
+		// open approval request follows that version just as every other version write does. An
+		// upload is no settlement's version, so the request moves to its agent whatever text it
+		// stores (docs.MoveApprovalAsk).
 		movedEvents, err = docs.MoveApprovalAsk(
-			r.Context(), tx, s.deps.Events, artifact.ID, version, actor, s.deps.ServerURL,
+			r.Context(), tx, s.deps.Events, artifact.ID, version, documentMarkdown, actor, false, s.deps.ServerURL,
 		)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -992,7 +996,7 @@ func (s *server) blockReferences(ctx context.Context, artifactID string) (map[st
 }
 
 // artifactVersionText is the body the document arm of GET …/artifacts/…/versions/{number}
-// answers, on all three artifact patterns.
+// answers without `download=true`, on all three artifact patterns.
 type artifactVersionText struct {
 	Markdown string `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
@@ -1001,6 +1005,9 @@ type artifactVersionText struct {
 	model.Version
 }
 
+// getArtifactVersion answers one version of an artifact on all four version routes: a document's
+// text as artifactVersionText, or as its Markdown under its file name at the download address,
+// and a file's or an image's bytes (serveFileVersion).
 func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1010,16 +1017,38 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_VERSION", http.StatusBadRequest, "version number must be positive")
 		return
 	}
+	// Exactly `true` asks for the download, as `blocks=true` asks for the blocks of the /text
+	// routes; any other value, `1` included, answers as without the parameter.
+	download := r.URL.Query().Get("download") == "true"
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	latest := 0
+	for _, version := range artifact.Versions {
+		latest = max(latest, version.Number)
+	}
+	// The file name is the artifact's name as this read finds it, so a renamed document downloads
+	// under its new name, and an older version's carries its number (versionFilename).
+	filename := versionFilename(artifact.Name, artifact.Kind, number, latest)
 	if artifact.Kind == "doc" {
 		var markdown string
 		version, err := s.loadVersion(r.Context(), s.deps.Store.Pool, artifact.ID, number, &markdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
+			return
+		}
+		if download {
+			// The download is the Markdown file itself, not the JSON that wraps it: the text the
+			// JSON's `markdown` field holds, with no display tree read.
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("Content-Disposition", attachmentDisposition(filename))
+			w.Header().Set("Cache-Control", downloadCacheControl)
+			w.Header().Set("Content-Length", strconv.Itoa(len(markdown)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, markdown)
 			return
 		}
 		hash := sha256.Sum256([]byte(markdown))
@@ -1050,7 +1079,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.serveFileVersion(w, r, artifact.ID, number, content, contentType, sha, size)
+	s.serveFileVersion(w, r, artifact.ID, filename, number, download, content, contentType, sha, size)
 }
 
 // deref is the string a nullable column holds, or "".
@@ -1670,11 +1699,11 @@ func documentsNearest(reference string, documents []model.Artifact) []model.Arti
 // letters are folded because Go and JavaScript lowercase other letters differently, and
 // envoy-client's documentCloseness must rank alike.
 func documentCloseness(reference, slug, name string) (int, bool) {
-	wanted := []rune(asciiLower(reference))
+	wanted := []rune(fold.ASCII(reference))
 	limit := max(2, len(wanted)/3)
 	distance := -1
 	for _, candidate := range []string{slug, name} {
-		label := []rune(asciiLower(candidate))
+		label := []rune(fold.ASCII(candidate))
 		edits := boundedEditDistance(wanted, label, limit)
 		if (len(wanted) >= 4 && strings.Contains(string(label), string(wanted))) ||
 			(len(label) >= 4 && strings.Contains(string(wanted), string(label))) {
@@ -1690,16 +1719,6 @@ func documentCloseness(reference, slug, name string) (int, bool) {
 		return limit + 1, false
 	}
 	return distance, true
-}
-
-// asciiLower lowercases the ASCII letters of text and leaves every other character as it is.
-func asciiLower(text string) string {
-	return strings.Map(func(r rune) rune {
-		if 'A' <= r && r <= 'Z' {
-			return r + ('a' - 'A')
-		}
-		return r
-	}, text)
 }
 
 // boundedEditDistance is the Levenshtein distance between a and b in characters, or limit+1 once
@@ -2064,18 +2083,22 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 }
 
 // documentPlays reports whether an artifact already read plays role: it carries that role, or it
-// carries none and its slug is the role's, for a row a rolling deploy left with no role because
-// the build that created it did not know the column. It is documentRolePredicate's answer about
-// one row, so every reader — the queries that find a document by its role and the routes that
-// judge the document in hand — agrees about the same row.
+// is an issue's document that carries none and its slug is the role's, for a row a rolling deploy
+// left with no role because the build that created it did not know the column. A role belongs to
+// an issue's documents alone - documentRole gives none to any other, and the constraint
+// artifacts_role_is_an_issue_document (migration 20261102110000_artifact_document_roles) holds the
+// column to them - so a project document whose slug is a role's, a project's plan.md, plays no
+// role and is a plain document. It is documentRolePredicate's answer about one row, so every
+// reader — the queries that find a document by its role and the routes that judge the document in
+// hand — agrees about the same row.
 func documentPlays(artifact model.Artifact, role string) bool {
-	return artifact.Role == role || (artifact.Role == "" && artifact.Slug == roleSlugs[role])
+	return artifact.Role == role || (artifact.Role == "" && artifact.IssueKey != nil && artifact.Slug == roleSlugs[role])
 }
 
 // documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
 // true for, asked of the row as every other reader asks it. A row plays at most one of them - a
-// row that carries a role carries one of them, and a row that carries none falls back to its
-// slug, which the map pairs with a single role - so the order this walks the map in cannot
+// row that carries a role carries one of them, and an issue's row that carries none falls back to
+// its slug, which the map pairs with a single role - so the order this walks the map in cannot
 // change the answer. Asking documentPlays rather than reading artifacts.role is what gives a row
 // whose role column is still null the role its slug decides, which is the state a rolling deploy
 // leaves behind. A document that plays none of them answers "", which omits the field of a
@@ -2099,13 +2122,15 @@ func isSpecDocument(artifact model.Artifact) bool {
 }
 
 // documentRolePredicate holds the artifacts row of the table aliased `alias` to the issue's
-// document of one role: the role itself, or the slug a document of that name carries, for a row
-// a rolling deploy left with no role. `alias` is empty where the query names no alias.
+// document of one role: the role itself, or, for an issue's row a rolling deploy left with no
+// role, the slug a document of that name carries. A project document never plays a role
+// (documentPlays), whatever its slug. `alias` is empty where the query names no alias.
 func documentRolePredicate(alias, role string) string {
 	if alias != "" {
 		alias += "."
 	}
-	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `slug = '` + roleSlugs[role] + `'))`
+	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `issue_key is not null and ` +
+		alias + `slug = '` + roleSlugs[role] + `'))`
 }
 
 // verificationRolePredicate is documentRolePredicate for the Verification document of a query

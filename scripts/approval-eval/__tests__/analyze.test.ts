@@ -7,7 +7,10 @@ import {
   type Analysis,
   type ArmCoverage,
   analyseRound,
+  type CaseReading,
+  type ClaimThreshold,
   chooseWinner,
+  claimMeasureOf,
   classTable,
   confidenceTableOf,
   main,
@@ -16,11 +19,13 @@ import {
   readCase,
   readRound,
   renderReport,
+  type SendBackCase,
+  sendBackFiguresOf,
 } from "../analyze";
 import type { CaseKind, CaseRow, CaseVerdict } from "../build-corpus";
-import type { Corpus } from "../corpus-io";
+import { type Corpus, CorpusError } from "../corpus-io";
 import { TARGETS } from "../draw";
-import type { SliceName } from "../draw-io";
+import type { FinalTestTree, SliceName } from "../draw-io";
 import type { RecipeName } from "../recipes";
 import type { CaseNeighbours, Endpoint, JudgementRow } from "../round-io";
 import { MINIMUM_DECIDED, mcnemarExact } from "../stats";
@@ -131,10 +136,13 @@ function judgementRow(
 ): JudgementRow {
   const faulted = options.fault === true;
   const endpoint = options.endpoint ?? "claude";
+  const model = options.model ?? (endpoint === "jev" ? "jev-latest" : "anthropic/claude-opus-5-5");
   return {
     arm,
     recipe: options.recipe ?? "bare",
-    model: options.model ?? (endpoint === "jev" ? "jev-latest" : "anthropic/claude-opus-5-5"),
+    model,
+    // The model the gateway answers under, which is the asked one, as a round now records it.
+    servedModel: model,
     endpoint,
     caseId,
     slice: options.slice ?? "report",
@@ -199,6 +207,7 @@ function corpusOf(rows: readonly CaseRow[]): Corpus {
       keptEvents: 1,
       readStartedAt: "2026-11-11T00:00:00Z",
       readFinishedAt: "2026-11-11T01:00:00Z",
+      reserve: null,
     },
     rows: [...rows],
     byCaseId: new Map(rows.map((row) => [row.caseId, row])),
@@ -359,6 +368,8 @@ describe("the threshold, fitted on the fit slice and applied to the report slice
     confidenceArm: null,
     wantedCases: null,
     seed: null,
+    finalTestTrees: null,
+    claimThreshold: "fitted",
   });
   const arm = analysis.arms[0];
 
@@ -429,6 +440,8 @@ describe("an arm missing more than 5 percent of its judgements", () => {
     confidenceArm: null,
     wantedCases: null,
     seed: null,
+    finalTestTrees: null,
+    claimThreshold: "fitted",
   });
   const arm = analysis.arms[0];
 
@@ -573,6 +586,8 @@ function analysisOf(options: {
   evidenceUnreadable?: number;
   confidenceTable?: boolean;
   confidenceArm?: string | null;
+  finalTestTrees?: readonly FinalTestTree[] | null;
+  claimThreshold?: ClaimThreshold;
 }): Analysis {
   return analyseRound({
     corpus: corpusOf(options.cases),
@@ -589,6 +604,8 @@ function analysisOf(options: {
     confidenceArm: options.confidenceArm ?? null,
     wantedCases: null,
     seed: null,
+    finalTestTrees: options.finalTestTrees ?? null,
+    claimThreshold: options.claimThreshold ?? "fitted",
   });
 }
 
@@ -1218,5 +1235,416 @@ describe("the command over files it cannot read", () => {
     expect(exitCode).toBe(2);
     expect(printed).toContain("--cases names the cases --confidence-table is read over");
     expect(printed).toContain("that table was not asked for");
+  });
+
+  test("--claim-threshold takes fitted or a number from 0 to 1, and nothing else", async () => {
+    for (const named of ["1.5", "-0.1", "most", ""]) {
+      // The `=` form, so that a value starting with a dash is read as the flag's value.
+      const argv = ["--corpus", "/nowhere", "--round", "/nowhere", `--claim-threshold=${named}`];
+      const { printed, exitCode } = await run(argv);
+      expect(exitCode).toBe(2);
+      expect(printed).toContain(
+        `--claim-threshold takes fitted or a number from 0 to 1, not ${named}`
+      );
+    }
+  });
+});
+
+/**
+ * The final test's trees over one arm whose fit slice fits a threshold of 1.0, as `fittedArm`'s
+ * does. T1 holds two requests the arm decides and gets right; T2 one it gets right and one it gets
+ * wrong; T3 one it split three to two on, under the threshold; T4 one the never-decide rule held,
+ * so in no slice and with no row; T6 a question alone. `faulted` fit-split cases lose every one
+ * of their judgements, which leaves the threshold where it is.
+ */
+function claimFixture(faulted = 0): {
+  cases: CaseRow[];
+  rows: JudgementRow[];
+  trees: FinalTestTree[];
+} {
+  const cases: CaseRow[] = [];
+  const rows: JudgementRow[] = [];
+  const add = (
+    caseId: string,
+    slice: SliceName | null,
+    chose: number,
+    selected: string[],
+    kind: CaseKind = "approval",
+    lost = 0
+  ): void => {
+    cases.push(caseRow(caseId, { kind, selected, artifactId: `${caseId}-document` }));
+    if (slice === null) return;
+    rows.push(...fiveRows("bare-opus", caseId, chose, { slice, kind, faulted: lost }));
+  };
+  for (let index = 0; index < 45; index += 1) add(`fit-clean-${index}`, "fit", 5, [APPROVE]);
+  for (let index = 0; index < 15; index += 1) {
+    add(`fit-split-${index}`, "fit", 3, [APPROVE], "approval", index < faulted ? 5 : 0);
+  }
+  for (let index = 0; index < 5; index += 1) add(`fit-wrong-${index}`, "fit", 3, [CHANGES]);
+  add("t1-a", "report", 5, [APPROVE]);
+  add("t1-b", "report", 5, [APPROVE]);
+  add("t2-a", "report", 5, [APPROVE]);
+  add("t2-b", "report", 5, [CHANGES]);
+  add("t3-a", "report", 3, [APPROVE]);
+  add("t4-a", null, 0, [APPROVE]);
+  add("t6-q", "report", 5, [APPROVE], "question");
+  const trees: FinalTestTree[] = [
+    { group: "tree:T1", slice: "report", cases: ["t1-a", "t1-b"] },
+    { group: "tree:T2", slice: "report", cases: ["t2-a", "t2-b"] },
+    { group: "tree:T3", slice: "report", cases: ["t3-a"] },
+    { group: "tree:T4", slice: null, cases: ["t4-a"] },
+    { group: "tree:T6", slice: "report", cases: ["t6-q"] },
+  ];
+  return { cases, rows, trees };
+}
+
+/** `count` trees of one request each, in report, which the arm decides at 1.0 and gets right. */
+function decidedTrees(count: number): {
+  readings: CaseReading[];
+  byCaseId: Map<string, CaseRow>;
+  trees: FinalTestTree[];
+} {
+  const cases = Array.from({ length: count }, (_, index) =>
+    caseRow(`d-${index}`, { artifactId: `d-${index}-document` })
+  );
+  const rows = cases.flatMap((row) => fiveRows("bare-opus", row.caseId, 5, { slice: "report" }));
+  const byCaseId = corpusOf(cases).byCaseId;
+  const trees = cases.map(
+    (row): FinalTestTree => ({ group: `tree:${row.caseId}`, slice: "report", cases: [row.caseId] })
+  );
+  return { readings: readRound(rows, byCaseId).arms[0]?.cases ?? [], byCaseId, trees };
+}
+
+describe("the claim's measure, over the final test's trees", () => {
+  test("counts trees, not requests, and keeps never-decide trees out of n", () => {
+    const { cases, rows, trees } = claimFixture();
+    const claim = analysisOf({ cases, rows, finalTestTrees: trees }).arms[0]?.claim;
+    expect(claim?.threshold).toBe(1);
+    expect(claim?.thresholdFrom).toBe("fitted");
+    expect(claim?.trees).toBe(5);
+    expect(claim?.withoutApproval).toBe(1);
+    // T1 and T2: four decided requests, but two trees, of which T2 disagrees once.
+    expect(claim?.decided).toBe(2);
+    expect(claim?.disagreeing).toBe(1);
+    // T3, under the threshold, T4, held, and T6, a question alone, decided no approval request:
+    // three never-decide trees of the five, as item 8 counts them, and two of the four trees
+    // holding an approval request, the share to read beside the one decided on development data.
+    expect(claim?.neverDecide).toEqual({
+      count: 3,
+      share: 0.6,
+      withApproval: { count: 2, share: 0.5 },
+    });
+    // One disagreeing tree of two: the bound solves 1 - p ^ 2 = 0.10.
+    expect(claim?.bound).toBeCloseTo(Math.sqrt(0.9), 10);
+    expect(claim?.withinRate).toBe(false);
+    expect(claim?.missing).toBeNull();
+    expect(claim?.rows).toEqual([
+      { group: "tree:T1", slice: "report", approvals: 2, decided: 2, disagreements: 0 },
+      { group: "tree:T2", slice: "report", approvals: 2, decided: 2, disagreements: 1 },
+      { group: "tree:T3", slice: "report", approvals: 1, decided: 0, disagreements: 0 },
+      { group: "tree:T4", slice: null, approvals: 1, decided: 0, disagreements: 0 },
+      { group: "tree:T6", slice: "report", approvals: 0, decided: 0, disagreements: 0 },
+    ]);
+  });
+
+  test("a threshold the claim names decides at that confidence and says so", () => {
+    const { cases, rows, trees } = claimFixture();
+    const named = analysisOf({ cases, rows, finalTestTrees: trees, claimThreshold: 0 });
+    const claim = named.arms[0]?.claim;
+    expect(claim?.threshold).toBe(0);
+    expect(claim?.thresholdFrom).toBe("named");
+    // T3's split verdict now counts; T4, held, and T6, a question alone, still decided nothing.
+    expect(claim?.decided).toBe(3);
+    expect(claim?.disagreeing).toBe(1);
+    expect(claim?.neverDecide).toEqual({
+      count: 2,
+      share: 0.4,
+      withApproval: { count: 1, share: 0.25 },
+    });
+    // The arm's own report reading is unchanged by the claim's threshold.
+    expect(named.arms[0]?.approval.fit.threshold).toBe(1);
+  });
+
+  test("no disagreeing tree among 45 bounds the share at 5.0 percent, and among 44 does not", () => {
+    const at45 = decidedTrees(45);
+    const of45 = claimMeasureOf(at45.trees, at45.readings, at45.byCaseId, 1, "named", null);
+    expect(of45.decided).toBe(45);
+    expect(of45.bound).toBeCloseTo(0.049_881, 5);
+    expect(of45.withinRate).toBe(true);
+    // Below the 45 the registration names, the bound is still printed, and is above 5 percent.
+    const at44 = decidedTrees(44);
+    const of44 = claimMeasureOf(at44.trees, at44.readings, at44.byCaseId, 1, "named", null);
+    expect(of44.bound).toBeCloseTo(0.050_986, 5);
+    expect(of44.withinRate).toBe(false);
+  });
+
+  test("an arm missing too many judgements prints its bound and does not read it against 0.05", () => {
+    const { trees, readings, byCaseId } = decidedTrees(45);
+    const missing = "no bound: this arm is missing 12.0 percent of its judgements";
+    const claim = claimMeasureOf(trees, readings, byCaseId, 1, "fitted", missing);
+    expect(claim.decided).toBe(45);
+    expect(claim.bound).toBeCloseTo(0.049_881, 5);
+    // Lost judgements can turn a disagreeing tree into a never-decide one, so 0.0499 is no pass.
+    expect(claim.withinRate).toBeNull();
+    expect(claim.missing).toBe(missing);
+  });
+
+  test("with no decided tree the bound is 1, and it is still reported", () => {
+    const { trees, readings, byCaseId } = decidedTrees(3);
+    // An arm the fit slice fitted no threshold for decides nothing.
+    const claim = claimMeasureOf(trees, readings, byCaseId, null, "fitted", null);
+    expect(claim.decided).toBe(0);
+    expect(claim.neverDecide).toEqual({
+      count: 3,
+      share: 1,
+      withApproval: { count: 3, share: 1 },
+    });
+    expect(claim.bound).toBe(1);
+    expect(claim.withinRate).toBe(false);
+  });
+
+  test("a tree naming a case the corpus does not hold stops the reading", () => {
+    const { trees, readings, byCaseId } = decidedTrees(2);
+    const ghost: FinalTestTree = { group: "tree:ghost", slice: "report", cases: ["ghost-1"] };
+    expect(() => claimMeasureOf([...trees, ghost], readings, byCaseId, 1, "named", null)).toThrow(
+      CorpusError
+    );
+  });
+
+  test("the report prints the measure over a draw with trees, and nothing of it over one without", () => {
+    const { cases, rows, trees } = claimFixture();
+    const withTrees = renderReport(analysisOf({ cases, rows, finalTestTrees: trees })).join("\n");
+    expect(withTrees).toContain("## The claim's measure, over the final test's trees");
+    expect(withTrees).toContain("1.000 (fitted)");
+    const without = analysisOf({ cases, rows });
+    expect(without.arms[0]?.claim).toBeNull();
+    expect(renderReport(without).join("\n")).not.toContain("The claim's measure");
+  });
+
+  test("the report says an arm short of judgements is not read against 0.05, and why", () => {
+    const { cases, rows, trees } = claimFixture(4);
+    const analysis = analysisOf({ cases, rows, finalTestTrees: trees });
+    expect(analysis.arms[0]?.bounded).toBe(false);
+    const text = renderReport(analysis).join("\n");
+    expect(text).toContain("at most 0.949 | not read");
+    expect(text).toContain(
+      "bare-opus: this arm is missing 5.6 percent of its judgements (335 of 355 " +
+        "answered), and the plan gives no bound past 5 percent. Its bound above is printed"
+    );
+  });
+});
+
+/** How many trees `sendBackCases` has named, so each request it makes alone is in a new one. */
+let sendBackTrees = 0;
+
+/**
+ * `times` requests as the send-back figures read them: each in a tree of its own, or every one
+ * of them in the tree `tree` names.
+ */
+function sendBackCases(
+  times: number,
+  person: CaseVerdict,
+  arm: CaseVerdict | null,
+  tree?: string
+): SendBackCase[] {
+  return Array.from({ length: times }, () => {
+    sendBackTrees += 1;
+    return { tree: tree ?? `tree:own-${sendBackTrees}`, person, arm };
+  });
+}
+
+describe("the send-back figures beside item 8", () => {
+  test("a hand table: each class, a request not decided on each side, another option's answer", () => {
+    const figures = sendBackFiguresOf([
+      ...sendBackCases(3, "request_changes", "request_changes"),
+      ...sendBackCases(1, "request_changes", "approve"),
+      ...sendBackCases(1, "request_changes", null),
+      ...sendBackCases(1, "request_changes", "other"),
+      ...sendBackCases(6, "approve", "approve"),
+      ...sendBackCases(2, "approve", "request_changes"),
+      ...sendBackCases(2, "approve", null),
+      ...sendBackCases(1, "other", "approve"),
+      ...sendBackCases(1, "approve", "other"),
+    ]);
+    expect(figures.label).toBe("chosen option");
+    expect(figures.requests).toBe(18);
+    // Another option the person chose is no send-back, and is counted in the figures.
+    expect(figures.otherAnswers).toBe(1);
+    // Another option the arm decided is no send-back; a request it did not decide is wrong.
+    expect(figures.caught).toBe(3);
+    expect(figures.missed).toBe(3);
+    expect(figures.cleared).toBe(8);
+    expect(figures.falseSendBacks).toBe(4);
+    expect(figures.notDecided).toEqual({ missed: 1, falseSendBacks: 2 });
+    // The intervals are checked against an exact binomial bisection, not against stats.ts.
+    expect(figures.recall.share).toBe(0.5);
+    expect(figures.recall.interval?.lower).toBeCloseTo(0.118_117, 5);
+    expect(figures.recall.interval?.upper).toBeCloseTo(0.881_883, 5);
+    // The registration counts a request not decided as wrong in every figure, precision too.
+    expect(figures.precision.count).toBe(3);
+    expect(figures.precision.total).toBe(7);
+    expect(figures.precision.interval?.lower).toBeCloseTo(0.098_988, 5);
+    expect(figures.precision.interval?.upper).toBeCloseTo(0.815_948, 5);
+    expect(figures.specificity.count).toBe(8);
+    expect(figures.specificity.total).toBe(12);
+    expect(figures.specificity.interval?.lower).toBeCloseTo(0.348_876, 5);
+    expect(figures.specificity.interval?.upper).toBeCloseTo(0.900_754, 5);
+    // The mean of 3 of 6 and 8 of 12, and of their exact intervals at 97.5 percent each.
+    expect(figures.balancedAccuracy.value).toBeCloseTo(7 / 12, 10);
+    expect(figures.balancedAccuracy.interval?.lower).toBeCloseTo(0.202_355, 5);
+    expect(figures.balancedAccuracy.interval?.upper).toBeCloseTo(0.913_644, 5);
+    expect(figures.agreement.count).toBe(11);
+    expect(figures.agreement.total).toBe(18);
+    expect(figures.agreement.interval?.lower).toBeCloseTo(0.357_451, 5);
+    expect(figures.agreement.interval?.upper).toBeCloseTo(0.827_014, 5);
+    expect(figures.alwaysApprove.recall).toBe(0);
+    expect(figures.alwaysApprove.specificity).toBe(1);
+    expect(figures.alwaysApprove.balancedAccuracy).toBe(0.5);
+    expect(figures.alwaysApprove.agreement.count).toBe(12);
+    expect(figures.alwaysApprove.agreement.interval?.lower).toBeCloseTo(0.409_925, 5);
+    expect(figures.alwaysApprove.agreement.interval?.upper).toBeCloseTo(0.866_573, 5);
+    // One request to a tree: the effective size is the count, and both intervals are one.
+    expect(figures.recall.effectiveTotal).toBe(6);
+    expect(figures.recall.treeInterval?.lower).toBeCloseTo(0.118_117, 5);
+    expect(figures.balancedAccuracy.treeInterval?.upper).toBeCloseTo(0.913_644, 5);
+  });
+
+  test("at the edges each exact interval takes its closed form", () => {
+    const figures = sendBackFiguresOf([
+      ...sendBackCases(10, "request_changes", "request_changes"),
+      ...sendBackCases(10, "approve", "request_changes"),
+    ]);
+    // 10 of 10: the lower end is 0.025 ^ (1 / 10); 0 of 10: the upper end is 1 minus that.
+    expect(figures.recall.interval?.lower).toBeCloseTo(0.025 ** 0.1, 10);
+    expect(figures.recall.interval?.upper).toBe(1);
+    expect(figures.specificity.interval?.lower).toBe(0);
+    expect(figures.specificity.interval?.upper).toBeCloseTo(1 - 0.025 ** 0.1, 10);
+    // Each part at 97.5 percent, so each tail is 0.0125.
+    expect(figures.balancedAccuracy.value).toBe(0.5);
+    expect(figures.balancedAccuracy.interval?.lower).toBeCloseTo(0.0125 ** 0.1 / 2, 10);
+    expect(figures.balancedAccuracy.interval?.upper).toBeCloseTo(1 - 0.0125 ** 0.1 / 2, 10);
+    expect(figures.precision.share).toBe(0.5);
+  });
+
+  test("requests that share a tree are worth fewer than their count", () => {
+    // Ten send-backs in one tree, all caught, are one tree's worth: the exact interval leaves out
+    // a recall of 0.5, which one tree going one way cannot rule out, and the tree interval keeps it.
+    const oneTree = sendBackFiguresOf(sendBackCases(10, "request_changes", "request_changes", "A"));
+    expect(oneTree.recall.interval?.lower).toBeCloseTo(0.691_503, 5);
+    expect(oneTree.recall.effectiveTotal).toBe(1);
+    expect(oneTree.recall.treeInterval?.lower).toBeCloseTo(0.025, 10);
+    expect(oneTree.recall.treeInterval?.upper).toBe(1);
+    const noneOfOneTree = sendBackFiguresOf(sendBackCases(10, "request_changes", "approve", "A"));
+    expect(noneOfOneTree.recall.treeInterval?.upper).toBeCloseTo(0.975, 10);
+    // Trees of three and one: Kish's effective size is 16 / 10, and 3 of 4 is read at 1.6.
+    const twoTrees = sendBackFiguresOf([
+      ...sendBackCases(3, "request_changes", "request_changes", "B"),
+      ...sendBackCases(1, "request_changes", "approve", "C"),
+    ]);
+    expect(twoTrees.recall.share).toBe(0.75);
+    expect(twoTrees.recall.effectiveTotal).toBeCloseTo(1.6, 10);
+    // Checked against a power-series incomplete beta, not against stats.ts.
+    expect(twoTrees.recall.treeInterval?.lower).toBeCloseTo(0.033_892, 5);
+    expect(twoTrees.recall.treeInterval?.upper).toBeCloseTo(0.999_962, 5);
+  });
+
+  test("a class that holds no request gives no figure over it", () => {
+    const figures = sendBackFiguresOf(sendBackCases(4, "approve", "approve"));
+    expect(figures.recall).toEqual({
+      count: 0,
+      total: 0,
+      share: null,
+      interval: null,
+      effectiveTotal: null,
+      treeInterval: null,
+    });
+    // The arm sent nothing back, so precision is over nothing too.
+    expect(figures.precision.share).toBeNull();
+    expect(figures.specificity.share).toBe(1);
+    expect(figures.balancedAccuracy).toEqual({ value: null, interval: null, treeInterval: null });
+    expect(figures.alwaysApprove.recall).toBeNull();
+    expect(figures.alwaysApprove.balancedAccuracy).toBeNull();
+    expect(figures.alwaysApprove.specificity).toBe(1);
+  });
+
+  test("the claim reads them over every answered approval request of the eligible trees", () => {
+    const { cases, rows, trees } = claimFixture();
+    const figures = analysisOf({ cases, rows, finalTestTrees: trees }).arms[0]?.claim?.sendBack;
+    // T1 and T2's first: approved and decided approve. T2's second: sent back, decided approve.
+    // T3, under the threshold, and T4, held: approved, and not decided. T6 holds a question.
+    expect(figures?.requests).toBe(6);
+    expect(figures?.caught).toBe(0);
+    expect(figures?.missed).toBe(1);
+    expect(figures?.cleared).toBe(3);
+    expect(figures?.falseSendBacks).toBe(2);
+    expect(figures?.notDecided).toEqual({ missed: 0, falseSendBacks: 2 });
+    expect(figures?.recall.interval?.upper).toBeCloseTo(0.975, 10);
+    expect(figures?.precision.total).toBe(2);
+    expect(figures?.precision.interval?.upper).toBeCloseTo(0.841_886, 5);
+    expect(figures?.specificity.interval?.lower).toBeCloseTo(0.146_633, 5);
+    expect(figures?.balancedAccuracy.value).toBeCloseTo(0.3, 10);
+    expect(figures?.balancedAccuracy.interval?.lower).toBeCloseTo(0.057_167, 5);
+    expect(figures?.balancedAccuracy.interval?.upper).toBeCloseTo(0.975_406, 5);
+    // Specificity's five requests sit in trees of two, one, one and one: 25 / 7 of a request.
+    expect(figures?.specificity.effectiveTotal).toBeCloseTo(25 / 7, 10);
+    expect(figures?.specificity.treeInterval?.lower).toBeCloseTo(0.093_239, 5);
+    expect(figures?.specificity.treeInterval?.upper).toBeCloseTo(0.972_682, 5);
+    expect(figures?.balancedAccuracy.treeInterval?.lower).toBeCloseTo(0.033_307, 5);
+    expect(figures?.balancedAccuracy.treeInterval?.upper).toBeCloseTo(0.985_421, 5);
+    expect(figures?.alwaysApprove.agreement.share).toBeCloseTo(5 / 6, 10);
+    // At a named threshold of 0, T3's split verdict is decided, and only T4 is left undecided.
+    const named = analysisOf({ cases, rows, finalTestTrees: trees, claimThreshold: 0 });
+    const atZero = named.arms[0]?.claim?.sendBack;
+    expect(atZero?.cleared).toBe(4);
+    expect(atZero?.notDecided).toEqual({ missed: 0, falseSendBacks: 1 });
+  });
+
+  test("an approval case with no verdict stops the reading", () => {
+    const { cases, rows, trees } = claimFixture();
+    const unread = cases.map((row) => (row.caseId === "t1-a" ? { ...row, verdict: null } : row));
+    expect(() => analysisOf({ cases: unread, rows, finalTestTrees: trees })).toThrow(CorpusError);
+  });
+
+  test("the report prints them over requests, over trees, and beside the always-approve baseline", () => {
+    const { cases, rows, trees } = claimFixture();
+    const text = renderReport(analysisOf({ cases, rows, finalTestTrees: trees })).join("\n");
+    expect(text).toContain("### The send-back figures beside item 8");
+    expect(text).toContain("0.600 [0.147, 0.947] (3/5)");
+    expect(text).toContain("0.300 [0.057, 0.975]");
+    expect(text).toContain("[0.093, 0.973] at 3.6");
+    expect(text).toContain("0.833 [0.359, 0.996] (5/6)");
+  });
+});
+
+describe("the command over a draw that recorded the final test's trees", () => {
+  test("reads the trees from draw.json and prints the claim's measure", async () => {
+    const { cases, rows, trees } = claimFixture();
+    const corpus = await scratch();
+    const round = await scratch();
+    await mkdir(join(corpus, "slices"), { recursive: true });
+    await writeFile(
+      join(corpus, "snapshot.json"),
+      `${JSON.stringify({ person: "someone", throughEventId: 1 })}\n`,
+      "utf8"
+    );
+    await writeFile(
+      join(corpus, "corpus.jsonl"),
+      `${cases.map((row) => JSON.stringify(row)).join("\n")}\n`,
+      "utf8"
+    );
+    const finalTest = { reference: "claim:test", trees };
+    await writeFile(join(corpus, "slices", "draw.json"), `${JSON.stringify({ finalTest })}\n`);
+    await writeFile(
+      join(round, "rows.jsonl"),
+      `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+      "utf8"
+    );
+    const argv = ["--corpus", corpus, "--round", round, "--format", "json"];
+    const { printed } = await runReading(argv);
+    const claim = (JSON.parse(printed) as Analysis).arms[0]?.claim;
+    expect(claim?.trees).toBe(5);
+    expect(claim?.decided).toBe(2);
+    expect(claim?.disagreeing).toBe(1);
+    expect(claim?.sendBack.cleared).toBe(3);
   });
 });

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +58,15 @@ type DispatchIssue struct {
 	// not yet recorded, and clears this; the workflow fills a recorded issue's from its record, and
 	// never records an issue from a fact still missing it.
 	ResolvedRepoMissing bool
+	// RepositoryRefusal is why the GitHub reads this event's preparation made for a repository no
+	// repository mapping names record the issue on no repository: the role App that is not
+	// installed on it, a repository GitHub does not have, or a name that is no <owner>/<name> at
+	// all. It is read where the fact is applied, in place of what the daemon holds in memory
+	// (workflow.Engine.ResolveIssueRepository), because nothing of such a refusal is kept: the
+	// next preparation of the issue reads GitHub again, so an operator who installs the App is
+	// taken at that preparation with no wait, no restart and no mapping change. Empty for every
+	// other fact, the decode's own among them: only a preparation sets it.
+	RepositoryRefusal string
 	// Ancestry is the keys of the issue's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the issue: the chain release_children's own walk
 	// reads. It is read from Dispatch when the fact is prepared, outside the fact lock, for a
@@ -267,10 +278,12 @@ func (DispatchArtifact) isFact() {}
 
 // CarriedApprovalReasonPrefix opens the reason of a carried approval: the review Dispatch writes
 // in a person's name when their answer to a decision block was the whole change since the version
-// they approved, or when a later version's text is the text of the version they approved
-// (packages/envoy/internal/dispatch/docs/approval_carry.go, carryReason and restoreReason, whose
-// format is "Carried forward from the approval of version %d: ..."). The daemon cannot import that
-// package, so it holds the prefix before the version number as a literal of its own.
+// they approved, when a later version's text is the text of the version they approved, or when a
+// later version's text is that text with the questions a reopen opened again
+// (packages/envoy/internal/dispatch/docs/approval_carry.go, carryReason, restoreReason and
+// reopenReason, whose format is "Carried forward from the approval of version %d: ..."). The
+// daemon cannot import that package, so it holds the prefix before the version number as a
+// literal of its own.
 const CarriedApprovalReasonPrefix = "Carried forward from the approval of version"
 
 // CarriedApproval says whether the review is a carried approval, by its reason's prefix
@@ -613,16 +626,20 @@ func (r PullRequestReview) Decides() bool {
 }
 
 // legionFooterMarker opens the Legion footer every Legion role appends to a pull-request review:
-// a JSON object naming the session and phase that wrote it and the head it read
-// (skills/legion-worker/SKILL.md, the reviewer template prompts/roles/reviewer.md).
+// a JSON object naming the session and phase that wrote it and the head it read, and in the
+// reviewer's review the entry of the round it is of (skills/legion-worker/SKILL.md, the reviewer
+// template prompts/roles/reviewer.md).
 const legionFooterMarker = "<!-- legion:"
 
 // legionFooter is what the daemon reads out of that JSON object: the session that submitted the
-// review (LegionSession) and the head the review says it read (LegionHead). A role writes its
-// phase there too, which nothing here reads.
+// review (LegionSession), the head the review says it read (LegionHead) and the entry of the
+// round it says it is of (LegionEntry). A role writes its phase there too, which nothing here
+// reads. The entry is kept raw and read on its own, so an entry of the wrong JSON type costs the
+// entry alone and never the session and head beside it, which decide the round.
 type legionFooter struct {
-	Session string `json:"session"`
-	Head    string `json:"head"`
+	Session string          `json:"session"`
+	Head    string          `json:"head"`
+	Entry   json.RawMessage `json:"entry"`
 }
 
 // lastLegionFooter decodes the last Legion footer in the review's body: the JSON object between
@@ -672,6 +689,31 @@ func (r PullRequestReview) LegionHead() string {
 		return ""
 	}
 	return head
+}
+
+// LegionEntry is the entry of the round the review says it is of: the entry field of the last
+// Legion footer in the review's body (lastLegionFooter), the number the reviewer's task names
+// (reviewround.EntryLabel, record.PhaseRow.Entry). The reviewer's texts write it as a JSON
+// string of digits (`"entry":"<entry>"`), so a placeholder left unfilled keeps the footer JSON,
+// and it is read as a positive whole number written either that way or as a JSON integer. It is
+// 0 when the body carries no footer, the footer's JSON cannot be parsed, it names no entry, or
+// the entry is anything else: an unfilled placeholder, an empty string, a word, a fraction, an
+// exponent, a sign, zero, one past int64, null, a boolean, an array or an object names no entry.
+// Such a footer still names its session and head, so the review decides its round as before;
+// only the commit the reviewer read (record.PhaseRow.ReviewedHead) waits for a review that names
+// the entry that stands (workflow's review).
+func (r PullRequestReview) LegionEntry() int64 {
+	digits := string(r.lastLegionFooter().Entry)
+	if strings.HasPrefix(digits, `"`) {
+		if err := json.Unmarshal([]byte(digits), &digits); err != nil {
+			return 0
+		}
+	}
+	entry, err := strconv.ParseUint(digits, 10, 64)
+	if err != nil || entry > math.MaxInt64 {
+		return 0
+	}
+	return int64(entry)
 }
 
 // fullCommitSHA says whether s is a commit as GitHub names one: exactly 40 lowercase hexadecimal
@@ -758,11 +800,13 @@ type PullRequestMergeability struct {
 
 func (PullRequestMergeability) isFact() {}
 
-// PullRequestMerged records GitHub's terminal merged observation.
+// PullRequestMerged records GitHub's terminal merged observation: the merge commit, and HeadSHA,
+// the head the pull request merged at, "" when the observation names none.
 type PullRequestMerged struct {
 	Repo     string
 	Number   int
 	MergeSHA string
+	HeadSHA  string
 }
 
 func (PullRequestMerged) isFact() {}
@@ -825,7 +869,8 @@ func (PullRequestMissing) isFact() {}
 type Push struct {
 	Repo   string
 	Branch string
-	// Before is the head the push replaced, After the head it left.
+	// Before is the head the push replaced, After the head it left. A push that deleted the branch
+	// leaves no head: its After is record.NoCommit, which decodePush makes no fact.
 	Before string
 	After  string
 	// Pusher is the push's pusher login (the listener's `pusher`, GitHub's pusher.name).
@@ -1049,16 +1094,20 @@ type SessionStoreFault struct {
 func (SessionStoreFault) isFact() {}
 
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
-// was near its memory limit, as the pod's launcher reported it on the connection of the role
-// whose process it was (shimwire.LauncherMemoryKill). It is never decoded from an event: the
-// launcher's frame reaches the runtime, and the daemon's Kubernetes wiring applies one fact per
-// report under the id `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a
-// report the launcher sent twice is applied once (INFRA-3557).
+// was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
+// the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or
+// shimwire.MemoryKillCauseKernelProtected for a process that runs the role's session), as the pod's
+// launcher reported it on the connection of the role whose process it was
+// (shimwire.LauncherMemoryKill). It is never decoded from an event: the launcher's frame reaches
+// the runtime, and the daemon's Kubernetes wiring applies one fact per report under the id
+// `memory-guard-kill:<guard>:<sequence>`, which names the kill once, so a report the launcher sent
+// twice is applied once (INFRA-3557). For the kernel's kill, <guard> is the id of the launcher's
+// guest watch (memoryguard.Guest).
 //
 // Issue, Token and PodUID are the launcher session's own (the issue its pod is of, the claim of
 // the role the connection authenticated for, and that pod), never anything the report says.
-// The workflow tells that role, on its own role topic, which of its processes was ended and why
-// (workflow's memoryGuardKill).
+// The workflow tells that role, on its own role topic, which of its processes was ended and why,
+// in the note the report's Cause chooses (workflow's memoryGuardKill).
 type MemoryGuardKill struct {
 	Issue  string
 	Token  claim.Token
@@ -1070,9 +1119,9 @@ func (MemoryGuardKill) isFact() {}
 
 // ClaimReady is a claim ready to be prompted, from either of two sources: the supervision
 // observation of a launch's ready, its agent having taken its Envoy role and said it can be
-// prompted (workflowRuntime.applyTerminal), and a start the outbox runs that finds a tree's root
-// architect already running, whose launch has no second ready (the outbox's start). Launch is the
-// claim's launch generation the ready belongs to, the running one for the second source.
+// prompted (workflowRuntime.applyTerminal), and a start the outbox runs that finds an architect
+// already running, whose launch has no second ready (the outbox's start). Launch is the claim's
+// launch generation the ready belongs to, the running one for the second source.
 type ClaimReady struct {
 	Issue  string
 	Role   claim.Role
@@ -1089,8 +1138,8 @@ type ClaimReady struct {
 	// (supervise.EndedWork.Tells); "" otherwise. A record that still tells is one of the claim's
 	// current session's processes, since abandoning a session ends the record of its process
 	// (supervise's forgetSession). The first source alone sets it, from the claim its ready wrote
-	// (the daemon's applyTerminal): a root architect's catch-up opens with it (workflow's
-	// QueueCatchUp), because the first turn of a relaunched root architect can be that catch-up's
+	// (the daemon's applyTerminal): an architect's catch-up opens with it (workflow's
+	// QueueCatchUp), because the first turn of a relaunched architect can be that catch-up's
 	// rather than its prompt's. The catch-up's copy tells nothing: the record is told by the
 	// prompt the claim's machine sends, at that prompt's confirmation.
 	Relaunch string
@@ -1564,9 +1613,14 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 // SerializeFacts takes, for tx's life, the lock every fact applies under (ApplyFact): until tx
 // commits or rolls back, no fact resolves a repository and commits an issue recorded on it. The
 // boot's reconcile, which records issues in its own transaction, takes it, as does a refresh of
-// the repository mapping across its live-record snapshot, its subscription update and its
-// publication, so a repository an admission is recording an issue on is never unsubscribed under
-// it.
+// the repository mapping across its live-record snapshot and its publication, so a repository an
+// admission is recording an issue on is never unsubscribed under it. The subscription update
+// itself is outside this lock and outside any transaction of that pool: a stream call made under
+// either left every connection of the pool idle in a transaction waiting on JetStream
+// (cybermonklabs/legion#3786, dispatch://INFRA-3169), so the mapping's refresh publishes its
+// superset before it takes this lock and narrows after it has let it go, and a recording's own
+// update runs in the commit hook, after the transaction returned its connection and Postgres
+// released this lock (internal/daemon's hearRecorded).
 func SerializeFacts(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, "select pg_advisory_xact_lock(hashtext('legion.apply_fact'))")
 	return err

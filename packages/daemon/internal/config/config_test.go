@@ -37,7 +37,7 @@ github_apps:
 nats_urls: [nats://127.0.0.1:4222]
 `
 
-// The five `gates.design` shapes the configuration check drives `legion start --check-config`
+// The five `gates.design` shapes the configuration check drives `legion config check`
 // against: a list, the empty list, no `gates` key at all, a word the key does not take, and a
 // list naming one step twice. Each is a whole legion.yaml but for the one thing it tests, so the
 // check reads the OK line or the refusal and nothing else can be what failed. Their paths are
@@ -514,13 +514,14 @@ func slackChannelsFile(channels string, daemon, enrolled bool) string {
 	return body
 }
 
-// Only the controller the daemon launches, enrolled with the secrets broker, is granted the Slack
-// bot token (LEGION_SLACK_BOT_TOKEN, owned by the Legion daemon's service): the broker grants a
-// service's secret to that service's own pods and no one else. So a project names Slack channels
-// only where both hold, and anywhere else the loader refuses them, naming why, rather than start a
-// controller that hears mentions it can never answer. An empty list names no channel.
+// The controller the daemon launches answers a project's Slack mentions once it is enrolled with
+// the secrets broker: its enrollment gives it a broker identity, and the broker grants the Slack
+// bot token (LEGION_SLACK_BOT_TOKEN, a shared agent secret) to a session with one. So a project
+// names Slack channels only where both hold, and anywhere else the loader refuses them, naming
+// why, rather than start a controller that hears mentions it can never answer. An empty list
+// names no channel.
 func TestSlackChannelsNeedTheDaemonsControllerEnrolledWithTheBroker(t *testing.T) {
-	const why = "needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants the Slack bot token (LEGION_SLACK_BOT_TOKEN) only to the Legion daemon service's own pods"
+	const why = "needs controller: daemon and runtime.kubernetes.agent_secrets: Slack replies need the daemon-launched controller enrolled with the secrets broker, which grants it the Slack bot token (LEGION_SLACK_BOT_TOKEN)"
 	for _, tc := range []struct {
 		name, body, want string
 	}{
@@ -786,7 +787,7 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: "dispatch_url must be the dispatch service base URL, not the /mcp endpoint",
 		},
 		// Boot needs each of these for a workflow, so the loader refuses the file, in the words of
-		// its own refusal: `legion start --check-config` never passes a file `legion start` refuses.
+		// its own refusal: `legion config check` never passes a file `legion start` refuses.
 		{
 			name: "dispatch_url without dispatch_token_file",
 			body: strings.Replace(minimalFile, "dispatch_token_file: /var/run/legion/DISPATCH_TOKEN\n", "", 1),
@@ -823,11 +824,11 @@ func TestLoadRefusesEveryStage3Key(t *testing.T) {
 			want: `projects key "demo" must match ^[A-Z][A-Z0-9]*$`,
 		},
 		{
-			// The project's repositories are Dispatch's mapping, so a file that still names one is
-			// refused, naming where they are set.
+			// Dispatch holds the project's repository mapping, so a file that still names a
+			// repository is refused, naming where the mapping is set.
 			name: "a project names its repository",
 			body: strings.Replace(minimalFile, "DEMO: {}", "DEMO: { repo: acme/widgets }", 1),
-			want: `Unknown key "projects.DEMO.repo": the project's repositories are Dispatch's mapping (Settings → Repositories → Projects)`,
+			want: `Unknown key "projects.DEMO.repo": Dispatch holds the project's repository mapping (Settings → Repositories → Projects)`,
 		},
 		{
 			name: "review_workflows is no longer a key",
@@ -1639,7 +1640,7 @@ func TestLoadAcceptsAWakeRateOfZero(t *testing.T) {
 }
 
 // Every refused wake pacing value names its own key, which is what an operator reading
-// `legion start --check-config` needs: which of the two the daemon would not take. The assertion
+// `legion config check` needs: which of the two the daemon would not take. The assertion
 // is on the key's name rather than the sentence, so rewording a refusal is no test change.
 func TestLoadRefusesAWakePacingValueNamingItsKey(t *testing.T) {
 	for _, tc := range []struct{ name, line, key string }{
@@ -1775,7 +1776,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		},
 		{
 			key: "max_recursion_depth", line: "max_recursion_depth: 8", class: tossed,
-			want: "unknown key max_recursion_depth: an architect spawns no worker and no sub-architect (the daemon starts every phase, and only the operator starts any other claim), so there is no spawn recursion to bound",
+			want: "unknown key max_recursion_depth: no agent starts a worker or an architect: the daemon starts every phase worker and every child's architect, one per issue, and the admission cap bounds how many issues run, so there is no spawn recursion to bound",
 		},
 
 		{key: "dispatch_mcp_url", line: "dispatch_mcp_url: https://dispatch.example/mcp", class: migration, want: wantDispatchMcpURLMessage},
@@ -1862,7 +1863,7 @@ func TestAWarnedKeyLoadsWithEveryOtherValueIntact(t *testing.T) {
 // port, and the daemon adds the port itself (shimAddress, internal/daemon/daemon.go). So the loader
 // refuses, by its exact message, every value that is not an IP address or a DNS name: under
 // runtime: kubernetes, the one runtime that reads advertise_host, so no other refusal can stand in
-// for this one, rather than `legion start --check-config` passing a file no pod boots on.
+// for this one, rather than `legion config check` passing a file no pod boots on.
 func TestAdvertiseHostMustBeABareHost(t *testing.T) {
 	const refused = "advertise_host must be an IP address or a DNS name, with no scheme, port, path or brackets: the daemon adds worker_stream_port itself"
 	for _, tc := range []struct{ name, yaml, want string }{

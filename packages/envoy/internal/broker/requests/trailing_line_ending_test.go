@@ -30,11 +30,11 @@ func valueDigest(value string) string {
 func grantAndRelease(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, secret secrets.LocalSecret, name string) string {
 	t.Helper()
 	retag(t, m, secret)
-	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, "read "+name, name), "")
+	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, "read "+name, name), "", nil)
 	if err != nil || request.GrantID == nil {
 		t.Fatalf("Create(%s) = state %q, grant %v, %v; want an automatic grant", name, request.State, request.GrantID, err)
 	}
-	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, nil)
+	release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, nil, ReleaseCall{})
 	if err != nil {
 		t.Fatalf("Values(%s): %v", name, err)
 	}
@@ -98,8 +98,8 @@ func wantTrimLog(t *testing.T, captured string, changed, unchanged []string) {
 	}
 }
 
-// TestTheBrokerTrimsAStoredValuesTrailingLineEnding is what a release of a secret carrying no
-// shape tag hands over: the broker reads the value for itself (policy.TrimForShape), so a
+// TestTheBrokerTrimsAStoredValuesTrailingLineEnding is what a release of a secret hands over: the
+// broker reads the value for itself (policy.TrimLineEnding), so a
 // one-line credential loses its whole trailing run of carriage returns and line feeds, however
 // many and in whichever order, while a value holding a line ending inside it, and one that is
 // nothing but line endings, are released byte for byte. The rule reaches the input a minter is
@@ -138,21 +138,21 @@ func TestTheBrokerTrimsAStoredValuesTrailingLineEnding(t *testing.T) {
 		})
 	}
 
-	t.Run("a-minted-kinds-input", func(t *testing.T) {
+	t.Run("a-minted-types-input", func(t *testing.T) {
 		// The input is a value the github-app decoder reads, which the policy serves; the stored
 		// value is that with a line ending, which the rule removes before the minter sees it.
 		const secret, token = "MINTED_INPUT_KEY", "minted-token\n"
-		input := policytest.KindValue(policy.KindGitHubApp)
+		input := policytest.TypeValue(policy.TypeGitHubApp)
 		stored := input + "\n"
 		given := ""
 		m.Minters = map[string]Minter{
-			policy.KindGitHubApp: func(_ context.Context, request secrets.MintRequest) (secrets.Minted, error) {
+			policy.TypeGitHubApp: func(_ context.Context, request secrets.MintRequest) (secrets.Minted, error) {
 				given = request.Value
 				return secrets.Minted{Value: token}, nil
 			},
 		}
 		released := grantAndRelease(t, m, enrollmentID, key,
-			policytest.KindSecret(secret, fixtureOperator, policy.TierAgent, policy.KindGitHubApp, stored), secret)
+			policytest.TypeSecret(secret, fixtureOperator, policy.TierAgent, policy.TypeGitHubApp, stored), secret)
 		if got, want := valueDigest(given), valueDigest(input); got != want {
 			t.Errorf("the minter was given %s, want the stored value with its trailing line ending removed, %s", got, want)
 		}
@@ -168,63 +168,40 @@ func TestTheBrokerTrimsAStoredValuesTrailingLineEnding(t *testing.T) {
 	})
 }
 
-// TestTheShapeTagDecidesWhatTheBrokerReleases is what the shape tag does to a release: a secret
-// its owner tagged a document is released byte for byte, line ending and all, and one tagged a
-// token loses its whole trailing run of carriage returns and line feeds while keeping every line
-// ending inside it. The log holds one line for each value the broker changed and none for the
-// document. A token that is nothing but line endings is released as stored, whatever the tag
-// says, since an empty value reads to a caller as a credential that is not set, and it writes no
-// log line — which is why that row stands after the log row. The rows share one fixture and one
-// log capture and none is parallel. (The values below are fixtures, not credentials.)
-func TestTheShapeTagDecidesWhatTheBrokerReleases(t *testing.T) {
+// TestTheBrokerReleasesTheTrimmedValue: the broker reads a stored value by the one line-ending
+// rule (policy.TrimLineEnding) and by nothing else, so a secret a writer left a `shape` tag on
+// is released exactly as the same secret without the tag is: `tok\n` goes out as `tok` whichever
+// word the tag holds, and the log holds one line for each of them. The rows share one fixture
+// and one log capture and none is parallel. (The values below are fixtures, not credentials.)
+func TestTheBrokerReleasesTheTrimmedValue(t *testing.T) {
 	logged := policytest.CaptureLog(t)
 	m, enrollmentID, key, _ := newFixture(t)
-	shaped := func(name, shape, stored string) secrets.LocalSecret {
+	tagged := func(name, leftover, stored string) secrets.LocalSecret {
 		s := policytest.Secret(name, fixtureOperator, policy.TierAgent, stored)
-		s.Tags[policy.TagShape] = shape
+		if leftover != "" {
+			s.Tags["shape"] = leftover
+		}
 		return s
 	}
 
-	t.Run("a-document-keeps-its-line-feed", func(t *testing.T) {
-		// One line and one line feed: the untagged reading removes that line feed, so this row
-		// fails, in its value and in the log line it would then write, if the tag is not read.
-		const secret, stored = "DOCUMENT_SHAPE_KEY", "tok\n"
-		released := grantAndRelease(t, m, enrollmentID, key, shaped(secret, policy.ShapeDocument, stored), secret)
-		if got, want := valueDigest(released), valueDigest(stored); got != want {
-			t.Fatalf("%s released %s, want the stored value byte for byte, %s", secret, got, want)
-		}
-	})
-
-	t.Run("a-token-of-two-lines", func(t *testing.T) {
-		const secret, stored, spent = "TWO_LINE_TOKEN_KEY", "a\nb\n", "a\nb"
-		released := grantAndRelease(t, m, enrollmentID, key, shaped(secret, policy.ShapeToken, stored), secret)
-		if got, want := valueDigest(released), valueDigest(spent); got != want {
-			t.Fatalf("%s released %s, want the trailing line feed gone and the one inside kept, %s", secret, got, want)
-		}
-	})
-
-	t.Run("a-token-and-a-carriage-return-and-a-line-feed", func(t *testing.T) {
-		const secret, stored, spent = "TOKEN_CRLF_KEY", "tok\r\n", "tok"
-		released := grantAndRelease(t, m, enrollmentID, key, shaped(secret, policy.ShapeToken, stored), secret)
-		if got, want := valueDigest(released), valueDigest(spent); got != want {
-			t.Fatalf("%s released %s, want both the carriage return and the line feed gone, %s", secret, got, want)
-		}
-	})
+	for _, c := range []struct{ row, secret, leftover string }{
+		{"no-leftover-tag", "NO_LEFTOVER_KEY", ""},
+		{"a-leftover-document-tag", "DOCUMENT_SHAPE_KEY", "document"},
+		{"a-leftover-token-tag", "TOKEN_SHAPE_KEY", "token"},
+		{"a-leftover-tag-of-no-word-at-all", "BOGUS_SHAPE_KEY", "bogus"},
+	} {
+		t.Run(c.row, func(t *testing.T) {
+			const stored, spent = "tok\n", "tok"
+			released := grantAndRelease(t, m, enrollmentID, key, tagged(c.secret, c.leftover, stored), c.secret)
+			if got, want := valueDigest(released), valueDigest(spent); got != want {
+				t.Fatalf("%s released %s, want the trailing line feed gone, %s", c.secret, got, want)
+			}
+		})
+	}
 
 	t.Run("the-log-of-every-changed-value", func(t *testing.T) {
 		wantTrimLog(t, logged.String(),
-			[]string{"TWO_LINE_TOKEN_KEY", "TOKEN_CRLF_KEY"},
-			[]string{"DOCUMENT_SHAPE_KEY"})
-	})
-
-	t.Run("a-token-that-is-only-line-feeds", func(t *testing.T) {
-		const secret, stored = "ONLY_LINE_FEEDS_KEY", "\n\n"
-		released := grantAndRelease(t, m, enrollmentID, key, shaped(secret, policy.ShapeToken, stored), secret)
-		if got, want := valueDigest(released), valueDigest(stored); got != want {
-			t.Fatalf("%s released %s, want the stored value as it is, %s: an empty value reads as a credential that is not set", secret, got, want)
-		}
-		if got := trimLinesNaming(logged.String(), secret); got != 0 {
-			t.Errorf("the log holds %d lines of the shape rule naming %s, want none: the broker changed nothing", got, secret)
-		}
+			[]string{"NO_LEFTOVER_KEY", "DOCUMENT_SHAPE_KEY", "TOKEN_SHAPE_KEY", "BOGUS_SHAPE_KEY"},
+			nil)
 	})
 }

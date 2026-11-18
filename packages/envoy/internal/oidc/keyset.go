@@ -26,9 +26,12 @@ type keySet struct{ keys *Keys }
 
 // VerifySignature resolves the key raw's header names and returns the payload that key's
 // signature covers. go-oidc has parsed raw already and keeps the result on ctx under a key of its
-// own, which this package cannot read, so the token is parsed a second time here.
+// own, which this package cannot read, so the token is parsed a second time here, in the compact
+// serialization only (ParseSignedCompact): the JSON serialization go-jose's ParseSigned also takes
+// can carry text beside its signed members, so a payload verified from it need not be the token's
+// middle segment, which is what a reader of the raw token would take for it.
 func (s keySet) VerifySignature(ctx context.Context, raw string) ([]byte, error) {
-	signed, err := jose.ParseSigned(raw, keySetAlgorithms)
+	signed, err := jose.ParseSignedCompact(raw, keySetAlgorithms)
 	if err != nil {
 		return nil, fmt.Errorf("oidc: malformed token: %w", err)
 	}

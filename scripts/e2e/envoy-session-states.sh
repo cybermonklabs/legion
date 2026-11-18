@@ -783,16 +783,17 @@ echo "ok services"
 
 # ---- Dispatch's own surface ---------------------------------------------------------------------------
 # Every write names its own session as `actor`, the identity `dispatch claim` fills from the host's
-# own runtime, and reaches Dispatch over the run's agent token.
+# own runtime, and reaches Dispatch over the run's agent token, which curl reads on standard input,
+# in no command line.
 dispatch_project=ESS$(od -An -N2 -tu2 /dev/urandom | tr -d ' \n')
 
 dispatch_api() { # dispatch_api METHOD PATH [BODY]
   local method=$1 path=$2 body=${3:-}
   answer=$evidence/answers/$check.dispatch.$RANDOM.json
-  local -a args=(-sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method"
-    -H "Authorization: Bearer $(cat "$work/dispatch-token")")
+  local -a args=(-sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method" -H @-)
   [ -z "$body" ] || args+=(-H 'content-type: application/json' --data "$body")
-  api_status=$(curl "${args[@]}" "$dispatch_url$path" 2>>"$evidence/logs/curl.log") || api_status=000
+  api_status=$(printf 'Authorization: Bearer %s' "$(cat "$work/dispatch-token")" |
+    curl "${args[@]}" "$dispatch_url$path" 2>>"$evidence/logs/curl.log") || api_status=000
   [ "$api_status" = 200 ] || [ "$api_status" = 201 ]
 }
 
@@ -982,6 +983,10 @@ delivery_cards() {
 stored_cards_landed() {
   [ "$(delivery_cards "$1" "mention $2")" -ge 1 ] && [ "$(delivery_cards "$1" "direct $2")" -ge 1 ]
 }
+
+# kept_role_card_landed FILE MARKER: the role publish naming MARKER, which the listener kept on the
+# role's kept lane while its holder was unresponsive, has reached that session file.
+kept_role_card_landed() { [ "$(delivery_cards "$1" "role $2")" -ge 1 ]; }
 
 # shows_state FILE: FILE shows a session row carrying both `state` and `last_seen`. Each host
 # hands its model the listener's rows as JSON, and each of the two files this is asked of — an
@@ -1179,9 +1184,13 @@ check_send_to_stalled_session_is_stored() {
 # on a role route it holds — are stored while it is stalled and arrive when it answers again. Each
 # must show exactly once in the session's own transcript, no delivery may be reported failed,
 # deferred or given up, and nothing may land on the exceptions topic: a stored delivery is not a
-# failed one.
+# failed one. The role publish is kept on the role's kept lane for one hour and answered 202 with
+# kept_reason holder_lapsed. The holder keeps its claim through the stall, so no claim follows to
+# hand the lane over: the registration that makes the holder live again after SIGCONT hands the
+# copy over (subscribeHandler), and the listener's sweep, every five minutes (main.go), is only the
+# backstop behind that handover.
 check_stored_deliveries_arrive_once() {
-  local role=ess-stored-$$ issue marker transcript mention direct published
+  local role=ess-stored-$$ issue marker transcript mention direct published record claimed_at
   [ -n "$omp_pid" ] || omp_start || return 1
   [ -n "$omp_session" ] || omp_session=$(omp_session_id)
   wait_until 180 "the Oh My Pi session to be live" state_is "$port_a" "$omp_session" '' live || return 1
@@ -1192,6 +1201,8 @@ check_stored_deliveries_arrive_once() {
     refuse "could not create the proof's issue" || return 1
   dispatch_cli "$omp_session" claim --issue "$issue" >"$evidence/answers/$check.claim.txt" 2>&1 ||
     refuse "the session could not claim $issue" || return 1
+  record=$(role_record "$role")
+  claimed_at=$(jq -r '.claimed_at' <<<"$record")
   marker=ess-stored-$RANDOM$RANDOM
   kill -STOP "$omp_pid" || refuse "could not stop Oh My Pi" || return 1
   wait_until 180 "the session to read unresponsive" state_is "$port_a" "$omp_session" unresponsive unresponsive || return 1
@@ -1210,17 +1221,35 @@ check_stored_deliveries_arrive_once() {
     refuse "the direct message to the stalled session was refused $api_status: $(head -c 300 "$answer")" || return 1
   ! api "$port_a" POST /v1/messages/publish \
     "$(jq -cn --arg r "$role" --arg m "$marker" '{topic:("notifications.role." + $r),message:("role " + $m)}')" ||
-    refuse "the publish onto the role route of an unresponsive holder was accepted" || return 1
-  [ "$api_status" = 404 ] ||
-    refuse "the role publish answered $api_status: $(head -c 300 "$answer")" || return 1
-  jq -e '.holder_state == "unresponsive" and .claim_released == false' "$answer" >/dev/null ||
-    refuse "the role publish's refusal does not name the holder's unresponsive state and its kept claim" || return 1
+    refuse "the publish onto the role route of an unresponsive holder answered 200, as if that holder had taken it" || return 1
+  [ "$api_status" = 202 ] ||
+    refuse "the role publish answered $api_status, not 202 kept: $(head -c 300 "$answer")" || return 1
+  jq -e --arg h "$omp_session" \
+    '.kept == true and .kept_reason == "holder_lapsed" and .holder == $h and .holder_state == "unresponsive" and (.kept_until | numbers)' \
+    "$answer" >/dev/null ||
+    refuse "the role publish's 202 does not keep it for the unresponsive holder by name with a kept_until: $(head -c 300 "$answer")" || return 1
+  # The 202 carries no claim_released, which only the 404 has, so the claim is read where it is
+  # kept: the role record names the same holder at the same claimed_at.
+  record=$(role_record "$role")
+  [ "$(jq -r '.holder_session_id' <<<"$record")" = "$omp_session" ] ||
+    refuse "envoy_roles names $(jq -r '.holder_session_id' <<<"$record") after the kept publish, not $omp_session" || return 1
+  [ "$(jq -r '.claimed_at' <<<"$record")" = "$claimed_at" ] ||
+    refuse "the role's claimed_at moved at the kept publish: $(jq -r '.claimed_at' <<<"$record"), was $claimed_at" || return 1
   kill -CONT "$omp_pid" || refuse "could not continue Oh My Pi" || return 1
   wait_until 180 "the session to be live again" state_is "$port_a" "$omp_session" '' live || return 1
   wait_until 600 "the stored deliveries to reach the session's transcript" \
     stored_cards_landed "$transcript" "$marker" || return 1
+  # A wait of its own for the kept role copy: a minute for the card, since the registration that
+  # made the session live again starts the handover itself (subscribeHandler), which forwards the
+  # copy milliseconds after it. The wait keeps no margin for the sweep: the check is not meant to
+  # pass when the registration's handover fails, and it passes then only where a sweep happens to
+  # fall before the card is waited out. It ends before the settling sleep below, so a second
+  # forward would still land in time for the count.
+  wait_until 60 "the registration that made the session live again to hand it the kept role copy" \
+    kept_role_card_landed "$transcript" "$marker" || return 1
   # A second copy of a stored delivery would land behind the first, so the count is taken a
-  # settling period after both arrived, and the transcript it was taken from is kept as evidence.
+  # settling period after all three arrived, and the transcript it was taken from is kept as
+  # evidence.
   sleep 30
   cp -f "$transcript" "$evidence/answers/$check.transcript.jsonl"
   mention=$(delivery_cards "$transcript" "mention $marker")
@@ -1228,13 +1257,13 @@ check_stored_deliveries_arrive_once() {
   published=$(delivery_cards "$transcript" "role $marker")
   { [ "$mention" -eq 1 ] && [ "$direct" -eq 1 ]; } ||
     refuse "the session's transcript holds $mention delivery cards for the mention naming $marker and $direct for the direct message; each stored delivery arrives exactly once" || return 1
-  [ "$published" -eq 0 ] ||
-    refuse "the transcript holds $published delivery cards for the role publish naming $marker, which the listener refused" || return 1
+  [ "$published" -eq 1 ] ||
+    refuse "the transcript holds $published delivery cards for the role publish naming $marker, which the listener kept for its unresponsive holder; the kept copy arrives exactly once" || return 1
   ! grep -qE 'agent delivery failed|deferred|given up' "$evidence/logs/listener_a.log" ||
     refuse "the listener's log names a failed, deferred or given-up delivery for a stored message" || return 1
   [ ! -s "$work/exceptions.jsonl" ] ||
     refuse "an exception landed on notifications.envoy.exceptions.*: $(head -c 200 "$work/exceptions.jsonl")" || return 1
-  note "the mention and the direct message each arrived once after SIGCONT; the role publish was refused with the claim kept"
+  note "the mention and the direct message each arrived once after SIGCONT; the role publish was kept 202 for the unresponsive holder with the claim standing, and the registration that made the holder live again handed it over once"
 }
 
 # ---- 3c. a Dispatch event routed to a role reaches its holder ------------------------------------------------
@@ -1441,7 +1470,12 @@ check_role_route_reaches_its_holder() {
 # ---- 4. a role claim outlives every lookup --------------------------------------------------------------
 # What used to release a claim: a lookup, a publish through the listener, a message straight onto
 # the role's topic, and a reaper pass. None of them may now, while the holder is only unresponsive,
-# and each answer must say so rather than reading as "the role is free".
+# and each answer must say so rather than reading as "the role is free". The publish through the
+# listener is kept on the role's kept lane for the holder that is not live, so the heir's soft
+# claim below is handed that copy. The message straight onto the role's topic is plain text and no
+# envelope, so the role lane drops it at decode (`listener decode failed`) and keeps nothing for
+# it. No assertion after the soft claim reads the kept copy: it reaches the heir's own agent
+# subject, and the claim record is what this check judges.
 check_role_claim_survives_lookups() {
   local role=ess-lookup-$$ holder=ses_ess_lookup_holder_$$ heir=ses_ess_lookup_heir_$$
   local second=ses_ess_lookup_second_$$ i before after
@@ -1463,12 +1497,19 @@ check_role_claim_survives_lookups() {
   done
   ! api "$port_a" POST /v1/messages/publish \
     "$(jq -cn --arg r "$role" '{topic:("notifications.role." + $r),message:"a publish onto a lapsed holder'\''s role"}')" ||
-    refuse "the publish onto a lapsed holder's role was accepted" || return 1
-  [ "$api_status" = 404 ] ||
-    refuse "the publish answered $api_status: $(head -c 200 "$answer")" || return 1
-  jq -e '.claim_released == false' "$answer" >/dev/null ||
-    refuse "the publish's refusal does not say the claim was kept" || return 1
-  # The same topic from a bare bus client, which never asks the listener at all.
+    refuse "the publish onto a lapsed holder's role answered 200, as if that holder had taken it" || return 1
+  [ "$api_status" = 202 ] ||
+    refuse "the publish answered $api_status, not 202 kept: $(head -c 200 "$answer")" || return 1
+  jq -e --arg h "$holder" \
+    '.kept == true and .kept_reason == "holder_lapsed" and .holder == $h and .holder_state == "unresponsive" and (.kept_until | numbers)' \
+    "$answer" >/dev/null ||
+    refuse "the publish's 202 does not keep it for the lapsed holder by name with a kept_until: $(head -c 300 "$answer")" || return 1
+  # The 202 carries no claim_released, which only the 404 has, so the claim is read where it is
+  # kept.
+  [ "$(jq -r '.holder_session_id' <<<"$(role_record "$role")")" = "$holder" ] ||
+    refuse "envoy_roles no longer names $holder after the kept publish" || return 1
+  # The same topic from a bare bus client, which never asks the listener at all. Its body is no
+  # envelope, so the role lane drops it at decode and keeps nothing.
   nats_publish "notifications.role.$role" "a direct publish onto a lapsed holder's role" \
     >"$evidence/logs/nats-publish.log" 2>&1 ||
     refuse "the direct nats publish on notifications.role.$role failed; see $evidence/logs/nats-publish.log" || return 1
@@ -1480,7 +1521,7 @@ check_role_claim_survives_lookups() {
     refuse "envoy_roles names $(jq -r '.holder_session_id' <<<"$after") after a reaper pass, not $holder" || return 1
   [ "$(jq -r '.claimed_at' <<<"$after")" = "$(jq -r '.claimed_at' <<<"$before")" ] ||
     refuse "the claim's claimed_at moved: $after, was $before" || return 1
-  note "five lookups, a publish, a direct nats publish and a reaper pass left $role with $holder, claimed_at unchanged"
+  note "five lookups, a kept publish, a direct nats publish and a reaper pass left $role with $holder, claimed_at unchanged"
   # A soft claim is the one move that takes the role: a successor saying "this is me again", with
   # and without naming the predecessor it continues.
   registered "$heir" "notifications.agent.$heir" || return 1

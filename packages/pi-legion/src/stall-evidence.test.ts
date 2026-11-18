@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { LegionState } from "@legion/contracts/legion-api";
-import type { PublishInput } from "@legion/envoy-client/transport";
+import {
+  EnvoyApiError,
+  type PublishInput,
+  type PublishResult,
+} from "@legion/envoy-client/transport";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { EnvoyPublish } from "@legion/pi-shared/phase-reminder";
 import { DEFAULT_STALL_LIMITS, defaultCallBoundMs } from "@legion/pi-shared/stall-limits";
@@ -261,13 +265,21 @@ test("an argument far longer than the bound is cut to it rather than written who
 // The telling: who hears, and how often.
 // ---------------------------------------------------------------------------------------------
 
+/** What the rig's listener answers one publish: a string makes the publish throw that message,
+ * and an `EnvoyApiError` is thrown as the transport throws it. */
+type RigAnswer = Pick<PublishResult, "kept" | "keptUntil"> | string | EnvoyApiError;
+
 interface TellerRig {
   readonly teller: StallWatchdogTeller;
   readonly entries: StallWatchRecord[];
   readonly published: PublishInput[];
   readonly warnings: { readonly message: string; readonly context?: Record<string, unknown> }[];
-  /** What the listener answers; a string makes the publish throw that message. */
-  publishAnswer: { kept?: boolean } | string;
+  /** Each wait the teller asked its `sleep` for, in milliseconds; the fake resolves at once. */
+  readonly waits: number[];
+  /** What the listener answers every publish that `nextAnswers` does not. */
+  publishAnswer: RigAnswer;
+  /** What the listener answers the next publishes, one each, in order. */
+  nextAnswers: RigAnswer[];
   /** Whether Envoy is on for this session. */
   envoy: boolean;
   /** Whether `pi.appendEntry` takes the record. */
@@ -288,15 +300,19 @@ function tellerRig(
     entries: [],
     published: [],
     warnings: [],
+    waits: [],
     publishAnswer: {},
+    nextAnswers: [],
     envoy: true,
     transcriptWritable: true,
     state: daemonState("working"),
   };
   const publish: EnvoyPublish = async (input) => {
     state.published.push(input);
-    if (typeof state.publishAnswer === "string") throw new Error(state.publishAnswer);
-    return state.publishAnswer;
+    const answer = state.nextAnswers.shift() ?? state.publishAnswer;
+    if (typeof answer === "string") throw new Error(answer);
+    if (answer instanceof EnvoyApiError) throw answer;
+    return answer;
   };
   const teller = createStallTeller({
     now: options.now ?? (() => START),
@@ -324,6 +340,9 @@ function tellerRig(
       warn: (message, context) => state.warnings.push({ message, ...(context ? { context } : {}) }),
     },
     recordBoundMs: 200,
+    sleep: async (ms) => {
+      state.waits.push(ms);
+    },
   });
   return Object.assign(state, { teller });
 }
@@ -359,7 +378,7 @@ test("a phase worker's session tells the issue's own live architect, with the ev
   expect(notice.message).toContain('command="sleep 100000" pty=true');
   expect(JSON.parse(notice.payload as string)).toEqual(written);
   expect(notice.idempotencyKey).toBe("legion-stall:toolu_stuck");
-  expect(notice.keep).toBe(false);
+  expect(notice).not.toHaveProperty("keep");
   expect("sourceSessionID" in notice && notice.sourceSessionID).toBe("ses_worker");
 });
 
@@ -386,6 +405,35 @@ test("a root architect's own session tells the controller role", async () => {
   expect(rig.published).toHaveLength(1);
   expect(rig.published[0]?.topic).toBe("notifications.role.legion-legion-controller");
   expect(rig.published[0]?.message).toContain("The architect of INFRA-1000");
+});
+
+// The notice sends no `keep` field, so a listener keeps it for an owner's role that no live
+// session holds, and answers 202 kept. That has told no owner yet, and the teller does not send a
+// kept notice again, so it reports `ownerTold: false`: for the architect, and for the
+// controller, which owns a root architect's own call (dispatch://INFRA-2846, R6).
+test("the owner notice is kept", async () => {
+  const architect = tellerRig();
+  const controller = tellerRig({
+    session: { kind: "root-architect", tree: "INFRA-1000" },
+    claim: claimOf({ issue: "INFRA-1000", role: "architect", sessionID: "ses_root" }),
+  });
+  for (const [rig, topic] of [
+    [architect, "notifications.role.legion-legion-infra-1274-architect"],
+    [controller, "notifications.role.legion-legion-controller"],
+  ] as const) {
+    rig.publishAnswer = { kept: true, keptUntil: START + 60 * MINUTE };
+    expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+      evidenceWritten: true,
+      ownerTold: false,
+    });
+    expect(rig.published).toHaveLength(1);
+    expect(rig.published[0]?.topic).toBe(topic);
+    expect(rig.published[0]).not.toHaveProperty("keep");
+    expect(rig.warnings).toContainEqual({
+      message: "legion: the listener kept the stall notice; no owner has taken it",
+      context: expect.objectContaining({ topic }),
+    });
+  }
 });
 
 test("the controller's own session publishes nothing and writes its evidence instead", async () => {
@@ -442,11 +490,6 @@ test("a refused publish and a session with Envoy off leave a line in the log", a
     "legion: the owner was not told about this session's stuck tool call"
   );
 
-  // A listener that kept the notice has told no architect, so nobody was told.
-  const kept = tellerRig();
-  kept.publishAnswer = { kept: true };
-  expect((await kept.teller.tellOverdue(evidenceOf())).ownerTold).toBe(false);
-
   const off = tellerRig();
   off.envoy = false;
   expect(await off.teller.tellOverdue(evidenceOf())).toEqual({
@@ -502,6 +545,108 @@ test("each step and each stop is recorded, and a stop is told once", async () =>
   expect(rig.published).toHaveLength(1);
   expect(rig.published[0]?.message).toContain("cannot recover from on its own");
   expect(rig.published[0]?.idempotencyKey).toBe("legion-stall-stopped:toolu_stuck");
+});
+
+/** The 429 the listener answers a publish past this session's send limit with (an operator's
+ * values of 4 messages a minute and 2 at once), as the transport throws it. */
+function senderRateLimited(retryAfterSeconds: number): EnvoyApiError {
+  return refusal429({
+    error:
+      "Your sending is rate limited. This message was not sent. This listener lets one session " +
+      `send 4 messages a minute and 2 at once. You can send it again after ${retryAfterSeconds} seconds.`,
+    reason: "sender_rate_limited",
+    retry_after_seconds: retryAfterSeconds,
+    messages_per_minute: 4,
+    burst: 2,
+  });
+}
+
+function refusal429(body: Record<string, unknown>): EnvoyApiError {
+  return new EnvoyApiError({
+    method: "POST",
+    url: "http://listener.test/v1/messages/publish",
+    status: 429,
+    responseBody: JSON.stringify(body),
+  });
+}
+
+/** Lets the teller's detached resends run to their end. The rig's `sleep` and publish resolve at
+ * once, so the resends are microtasks only, and every microtask runs before a timer's callback. */
+function resendsSettled(): Promise<void> {
+  return Bun.sleep(0);
+}
+
+const GIVEN_UP = "it was given up after 4 sends";
+
+test("a stall notice rate limited by the listener is sent again under its key after the wait", async () => {
+  const rig = tellerRig();
+  rig.nextAnswers = [senderRateLimited(2)];
+  // The first answer comes back with the first publish's outcome: the wait holds no step.
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+  await resendsSettled();
+
+  expect(rig.waits).toEqual([2 * SECOND]);
+  expect(rig.published).toHaveLength(2);
+  expect(rig.published[1]?.idempotencyKey).toBe("legion-stall:toolu_stuck");
+  expect(rig.published[1]).toEqual(rig.published[0] as PublishInput);
+  // The resend was answered and not kept, so the owner was told, and the teller's record says so.
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: true,
+  });
+  expect(rig.published).toHaveLength(2);
+  expect(rig.warnings).toContainEqual({
+    message: expect.stringContaining("the wait the listener named"),
+    context: expect.objectContaining({ retryAfterSeconds: 2, sends: 1 }),
+  });
+  expect(rig.warnings).toContainEqual({
+    message: expect.stringContaining("its owner was told"),
+    context: expect.objectContaining({ sends: 2 }),
+  });
+});
+
+test("a stall notice rate limited 4 times is sent 4 times and then given up", async () => {
+  const rig = tellerRig();
+  // Each refusal names its own wait, and each wait is that refusal's.
+  rig.nextAnswers = [2, 3, 5, 7].map(senderRateLimited);
+  await rig.teller.tellOverdue(evidenceOf());
+  await resendsSettled();
+
+  expect(rig.published).toHaveLength(4);
+  for (const input of rig.published) expect(input).toEqual(rig.published[0] as PublishInput);
+  expect(rig.waits).toEqual([2 * SECOND, 3 * SECOND, 5 * SECOND]);
+  expect(rig.warnings.filter((line) => line.message.includes(GIVEN_UP))).toHaveLength(1);
+  expect(rig.warnings.at(-1)?.message).toContain(GIVEN_UP);
+  expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+    evidenceWritten: true,
+    ownerTold: false,
+  });
+});
+
+test("a 429 rate limited for another reason is not sent again", async () => {
+  for (const refusal of [
+    // A refusal whose reason is not the sender's rate starts no resend, whatever wait it names.
+    refusal429({ error: "too many requests", reason: "rate_limited", retry_after_seconds: 2 }),
+    // The listener's 429 for too many access tokens checked from one address, as it writes it.
+    refusal429({ error: "too many access tokens checked from this address" }),
+  ]) {
+    const rig = tellerRig();
+    rig.nextAnswers = [refusal];
+    expect(await rig.teller.tellOverdue(evidenceOf())).toEqual({
+      evidenceWritten: true,
+      ownerTold: false,
+    });
+    await resendsSettled();
+
+    expect(rig.published).toHaveLength(1);
+    expect(rig.waits).toEqual([]);
+    expect(rig.warnings.map((line) => line.message)).toContain(
+      "legion: the owner was not told about this session's stuck tool call"
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------------------------

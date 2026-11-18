@@ -22,7 +22,7 @@ says (the `held` and `worker-died` wakes, and
 you set it to `todo` with a comment on the root that cites the park's mark and says what you
 checked.
 [The walk](#the-walk) makes that check at every start and on each `tick`.
-Every other park, a person's, another session's or an operator's `legion status`, stays parked
+Every other park, a person's, another session's or an operator's `legion issue status`, stays parked
 until a person sets it to `todo`, the daemon queues a person's approval of its spec (**The
 notice**, the paragraph that begins "A person's own approval"), or a person asks you to start it:
 that request is a person's move, as the list of moves to `todo` in
@@ -62,10 +62,11 @@ itself, whoever parked it (`admission: queued a person's handover`, `source=appr
 approvals of a root's spec are not that handover and still come as notices: a carried approval,
 which Dispatch writes in the person's name with a reason that begins
 `Carried forward from the approval of version`, when their answer to a decision block was the
-whole change since the version they approved or when a later version's text is the text of the
-version they approved, and an approval on a root that keeps a Dispatch parent, as a child a linger
-handed to Legion does. The other spec notices are a request for changes and an approval of a
-document that is not the root's primary one.
+whole change since the version they approved, when a later version's text is the text of the
+version they approved, or when a later version's text is that text with the questions a reopen
+opened again, and an approval on a root that keeps a Dispatch parent, as a child a linger handed
+to Legion does. The other spec notices are a request for changes and an approval of a document
+that is not the root's primary one.
 
 ## Deciding
 
@@ -111,10 +112,10 @@ document that is not the root's primary one.
    returns, so the mark's line follows the park's within the turn, and a mark older than the park
    line belongs to an earlier park. Every other park is someone else's: a person's (`user
    <login>`), another session's, and one by `session legion-daemon:<PROJECT>` with no mark beside
-   it. The daemon writes an operator's `legion status` and a park you made because a person asked
-   under that same session, so the author alone does not show your own hold. A decision older than
-   the park is no reason to run: the park is the later word. When that run reaches the oldest such
-   line `Events:` shows, read the root's events through the API, which keeps more than 10: the
+   it. The daemon writes an operator's `legion issue status` and a park you made because a person
+   asked under that same session, so the author alone does not show your own hold. A decision older
+   than the park is no reason to run: the park is the later word. When that run reaches the oldest
+   such line `Events:` shows, read the root's events through the API, which keeps more than 10: the
    `curl` of [Triage a root](skill://legion-controller/references/triage.md#triage-a-root) step 2, whose
    events carry `type`, `actor`, `created_at` and `payload.status` or `payload.body`. When the run
    still reaches the oldest event you read, the park is that line or an older one, and you cannot

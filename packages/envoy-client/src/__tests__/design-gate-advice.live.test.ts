@@ -28,10 +28,17 @@ const PROJECT = "DGATE";
 const FIRST_TREE = "GATEA";
 const SECOND_TREE = "GATEB";
 
-/** The second sentence of a superseded-approval line, printed whether a gate records the document
- *  or not. */
+/** The second sentence of a superseded-approval line for a person's approval of any document but
+ *  a plan, printed whether a gate records the document or not. */
 const NEXT_STEP =
-  "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the tree's architect, and keep the next one in a comment or in the plan.";
+  "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan.";
+
+/** The second sentence for a plan, whoever approved it: Dispatch refuses a request for a person's
+ *  approval of any plan, so it names the command that records a plan review's approval of the
+ *  version the write stored. */
+function planNextStep(issue: string, version: number): string {
+  return `A plan is approved by its plan review, and Dispatch refuses a request for a person's approval of a plan. Once a plan review approves version ${version}, record it with \`dispatch plan-approve --issue ${issue} --version ${version}\`.`;
+}
 
 /** The first sentence: the version this write stored and the approval it staled. */
 function storedSentence(version: number, approvedBy: string): string {
@@ -59,7 +66,7 @@ describe.skipIf(!dispatchStackEnabled)(
   () => {
     let stack: DispatchStack | undefined;
 
-    const { asPerson, asMachine, createIssue, upload, docEdit } = dispatchCliLive({
+    const { asPerson, asMachine, createIssue, upload, docEdit, read } = dispatchCliLive({
       stack: () => stack,
       session: SESSION,
       person: PERSON,
@@ -115,7 +122,8 @@ describe.skipIf(!dispatchStackEnabled)(
     test("a plan a plan review approved names no gate", async () => {
       const issue = await createIssue(PROJECT, "Approved plan");
       const plan = await upload(issue.key, "plan.md", "# Plan\n\nOne task.\n");
-      // A plan is approved by the plan review an agent records over it, never by a person.
+      // The plan review an agent records over a plan approves it; the next row's person approves
+      // one from its document header.
       await asMachine("POST", `/api/v1/artifacts/${plan.artifact.id}/plan-reviews`, {
         actor: { kind: "session", id: SESSION },
         version: plan.version.number,
@@ -123,8 +131,37 @@ describe.skipIf(!dispatchStackEnabled)(
 
       const printed = await docEdit(issue.key, plan.artifact.id, "One more task.");
 
-      expect(printed).toEndWith(`${storedSentence(plan.version.number + 1, SESSION)} ${NEXT_STEP}`);
+      const stored = plan.version.number + 1;
+      expect(printed).toEndWith(
+        `${storedSentence(stored, SESSION)} ${planNextStep(issue.key, stored)}`
+      );
       expect(printed).not.toContain("design gate");
+    }, 120_000);
+
+    // Dispatch refuses a request for a person's approval on every plan (409
+    // PLAN_APPROVED_BY_REVIEW), whoever approved it, and a person approves a plan from its
+    // document header: the reviews route has no plan check. So a write that staled a person's
+    // approval of a plan names `dispatch plan-approve`, and so does the plan's `Approval:` line,
+    // each read off the role of the plan Dispatch answers.
+    test("a plan a person approved names dispatch plan-approve, in the write and on its Approval line", async () => {
+      const issue = await createIssue(PROJECT, "Plan a person approved");
+      const plan = await upload(issue.key, "plan.md", "# Plan\n\nOne task.\n");
+      const approved = await approve(plan.artifact.id);
+
+      const printed = await docEdit(issue.key, plan.artifact.id, "One more task.");
+
+      const stored = approved + 1;
+      expect(printed).toEndWith(
+        `${storedSentence(stored, PERSON)} ${planNextStep(issue.key, stored)}`
+      );
+      expect(printed).not.toContain("request-approval");
+
+      const summary = await read(issue.key, "plan.md");
+      const line = summary.split("\n").find((row) => row.startsWith("Approval:"));
+      expect(line).toStartWith(
+        `Approval: approved v${approved} by ${PERSON}, changed since (now v${stored}) - a plan review of this version records a new approval with dispatch plan-approve, content sha256:`
+      );
+      expect(line).toMatch(/, content sha256:[0-9a-f]{64}$/);
     }, 120_000);
 
     test("a child issue's own document, which no gate records, names none", async () => {

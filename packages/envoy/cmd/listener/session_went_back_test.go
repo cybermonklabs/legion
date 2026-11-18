@@ -54,11 +54,11 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	rig := newSessionConsumerRigOn(t, client, url)
 	ctx := context.Background()
 	const sessionID = "ses_went_back_registered"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 
 	// Another session's messages, so the session's own are above the stream's first sequence.
 	for range 5 {
-		rig.store(t, contracts.AgentSubject("ses_went_back_registered_bystander"))
+		rig.store(t, contracts.LegacyAgentSubject("ses_went_back_registered_bystander"))
 	}
 	streamID := rig.streamID(t)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
@@ -87,8 +87,16 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	resume := taken[len(taken)-1]
 	awaitAcked(t, rig.consumers, sessionID, resume)
 
+	awaitSessionConsumerStored(t, client.Conn, sessionID)
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
+	// The deregistration deletes the consumer off its own goroutine (deleteAfterAnswer), which
+	// holds the session's lock until the delete's reply comes. The server can drop the consumer
+	// before that reply has reached the listener, and the cut below stops the server: a reply lost
+	// to it keeps the lock for the delete's whole budget (sessionConsumerCallTimeout), and the
+	// second registration, waiting on that lock inside its own shorter budget, answers 503. So the
+	// cut waits for the listener's own delete to end, not only for the server to drop the consumer.
+	rig.deps.consumers.deletes.Wait()
 	if floor, err := resumeRecordFloor(client, sessionID); err != nil || floor != resume {
 		t.Fatalf("the session's resume record after its deregistration holds floor %d, %v; want %d, the last message it acked", floor, err, resume)
 	}
@@ -96,8 +104,12 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 	srv.CutStream(t, bus.Stream, func(int64) int64 { return 0 })
 
 	// Each of the rig's connections reconnects on its own: the listener's bus, its
-	// session-consumer connection and the test's view of the session consumers.
-	testwait.Eventually(t, "the listener's connections to reconnect and read the stream", func() bool {
+	// session-consumer connection and the test's view of the session consumers. The interest
+	// bucket is a stream of its own, which the restarted server can answer after the notification
+	// stream, and the registration below reads the session's row from it first: a read made
+	// before it answers is refused 503, "the message bus did not answer". So the wait ends only
+	// once that read answers too, with the row or with none, since the deregistration removed it.
+	testwait.Eventually(t, "the listener's connections to reconnect and read the stream and the interest bucket", func() bool {
 		if !client.Connected() {
 			return false
 		}
@@ -107,8 +119,13 @@ func TestASessionThatDeregisteredBeforeAWholeLossComesBackAtTheStreamsFirstSeque
 		if _, err := rig.deps.consumers.consumers.StreamID(ctx); err != nil {
 			return false
 		}
-		_, err := rig.consumers.StreamID(ctx)
-		return err == nil
+		if _, err := rig.consumers.StreamID(ctx); err != nil {
+			return false
+		}
+		readCtx, cancelRead := context.WithTimeout(ctx, time.Second)
+		defer cancelRead()
+		_, _, err := rig.deps.registry.RefreshAt(readCtx, sessionID)
+		return err == nil || errors.Is(err, natsgo.ErrKeyNotFound)
 	})
 	if _, last := rig.streamSeqs(t); last != 0 {
 		t.Fatalf("the stream's last sequence after the whole block was cut is %d, want 0", last)

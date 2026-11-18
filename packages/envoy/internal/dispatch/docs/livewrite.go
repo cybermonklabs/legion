@@ -303,6 +303,11 @@ func (s *Service) joinLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 // changed anything: a write that changed nothing publishes no update whose observer would arm one.
 // A settlement that got past its supersession check before the write opened commits its own work,
 // and the one the write arms then finds nothing new.
+//
+// A retirement of the room a late departure's settlement loaded that has reserved the record
+// (roomState.retiring) gives the slot to no one until ygo's close of that room has returned: the
+// write waits for it (awaitRetirement), and forks from the room the close was refused, or from the
+// store once it closed, never from a room the close then takes away under it.
 func (s *Service) openLiveWrite(ctx context.Context, ledger *Ledger, artifactID string) (*liveWrite, error) {
 	write := &liveWrite{artifactID: artifactID, clientID: crdt.NewClientID(), done: make(chan struct{})}
 	for {
@@ -312,9 +317,19 @@ func (s *Service) openLiveWrite(ctx context.Context, ledger *Ledger, artifactID 
 			slog.Warn("dispatch: refuse a write on a document room closing on a replaced stored history", "room", artifactID)
 			return nil, fmt.Errorf("%w: room %s", errRoomReloading, artifactID)
 		}
+		if retiring := state.retiring; retiring != nil {
+			s.unlockState(artifactID, state)
+			if err := s.awaitRetirement(ctx, artifactID, retiring); err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if state.liveWriter == nil {
 			state.liveWriter = write
 			state.roomGeneration = s.nextRoomGeneration()
+			// A writer takes up a room a late departure's settlement loaded: the room stays once
+			// that settlement has ended (retireSettlementRoom).
+			state.warmed = nil
 			// The take-over runs whatever the record already says, so it always stops an
 			// armed timer: `settleDeferred || takeOver…` would skip the call on a record
 			// that already defers one, and leave a timer to fire under this write.
@@ -842,8 +857,8 @@ func (s *Service) creditLiveWrite(write *liveWrite, actor model.Actor) {
 		write.credits = make(map[string]model.Actor)
 		write.creditedBy = make(map[string]persistence.Version)
 	}
+	mergeAuthor(write.credits, actor)
 	key := actorKey(actor)
-	write.credits[key] = actor
 	write.creditedBy[key] = write.versions[len(write.versions)-1]
 	write.actor = new(actor)
 	if write.state != nil {
@@ -868,11 +883,11 @@ func (s *Service) creditLiveWrite(write *liveWrite, actor model.Actor) {
 // update is armed here instead (scheduleSettle; the write's slot defers it to finishLiveWrite), so
 // the write is versioned a settle delay on, as a published one is; that settlement loads the room
 // it settles, and so does Shutdown's when a shutdown stops the armed timer (settleRoomWithin's
-// mayLoad). A closed issue's document is the one that loads no room for it: the warm-up's load is
-// refused (allowInject), and the settlement ends there, its pending-settlement row left for the
-// resumption once the issue reopens (settleRoomWithin). A load already under way when the write
-// committed was told of the write's versions before the commit (Ledger.takeRoomCursors) and is
-// listed by ygo from before its read of the store, so it is found here and published into:
+// mayLoad). A closed issue's document loads its room the same way: the warm-up's load carries the
+// service's own mark (withOwnerVerified), which allowInject admits, and the settlement saves the
+// write as it saves any closed issue's document (settleRoomWithin). A load already under way when
+// the write committed was told of the write's versions before the commit (Ledger.takeRoomCursors)
+// and is listed by ygo from before its read of the store, so it is found here and published into:
 // Server.Apply waits for its load. A room that retires between this check and the publish's
 // Apply is loaded again by that Apply, from a store that holds the write, and idles out like any
 // room a write loads.

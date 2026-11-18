@@ -29,8 +29,8 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    leave it. Note its `Assignee:`: that person answers the tree's asks, because their Inbox opens on the
    issues they hold. Never reassign it, because who holds an issue is the people's decision, made
    from the issue header.
-2. Find who set the label. `dispatch read` does not show who set a label, so list its events:
-   `curl -sS -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<issue>/events?limit=200"`,
+2. Find who set the label. `dispatch read` does not show who set a label, so list its events in bash:
+   `curl -sS -H @<(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")") "$DISPATCH_URL/api/v1/issues/<issue>/events?limit=200"`,
    oldest first, 200 a page. When a page holds 200 events, read the next with
    `&after=<the last event's seq>` until a page holds fewer: the setter is the newest transition,
    and the daemon reads the whole log. The event that added the label set it, and its `actor` is
@@ -102,5 +102,6 @@ Filing or admitting an issue, name each priority it advances (`--advance <id>` o
 `dispatch priorities` lists the ids, and names each issue in flight that advances no priority.
 
 Taking the label off a waiting root drops it from the waiting line; taking it off an admitted tree
-does not stop it. A child needs no label: it runs under its tree's architect once its root is
-admitted. A child outside a live tree is admitted as a root of its own and needs the label.
+does not stop it. A child needs no label: it runs in its tree once its root is admitted, and under
+its own architect once its first phase starts. A child outside a live tree is admitted as a root
+of its own and needs the label.

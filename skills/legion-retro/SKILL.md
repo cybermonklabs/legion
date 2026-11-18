@@ -33,8 +33,12 @@ would put a commit above the head the reviewer approved.
 When a step fails (the body cannot be computed, read or written, or Dispatch refuses a write), do
 not call `handoff_complete`. Report it with `envoy_publish` to the architect's
 topic in the `Legion addressing` line of your system prompt, with the command and its output. A
-check with no pass standing at the head goes back as step 1 says. The Dispatch message (step 5) is
-for a finished retro only.
+check with no pass standing at the head goes back as step 1 says. A defect you find in the work at
+any other step goes to the architect with its evidence, and you hold your completion until the
+architect answers: while retro holds the phase, `request_backward_move` is yours to make, and your
+`handoff_complete` moves the issue to `merging`, which takes that move from you. End each turn of
+that hold with a WAITING line naming the defect and the architect's answer you wait on. The
+Dispatch message (step 5) is for a finished retro only.
 
 ## Steps
 
@@ -53,7 +57,9 @@ for a finished retro only.
    fail, or its run concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not
    concluded, and read again where GitHub could not be read. Send a name that no run answers
    (`absent`) to the architect as a finding, because the words of the check are wrong. Neither
-   wait nor that finding moves the issue back. When a check has no pass standing at that head, or
+   wait nor that finding moves the issue back. A check whose `run` is a whole test suite has wrong
+   words too: send it to the architect the same way, and it moves the issue back no more than that
+   finding does. When any other check has no pass standing at that head, or
    a check with no `ci_check` has a unit suite as its only evidence, call the `legion` tool's
    `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check`
    check, or `to: testing` for the tester's result, its `reason` naming the check by its block

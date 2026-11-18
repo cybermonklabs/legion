@@ -53,7 +53,7 @@ func twoExperimentRuntime(t *testing.T, stateDir string, reversed bool) *fakeSer
 
 // drawnIntoBoth is f's launch of role for a tree drawn into the `on` arm of both experiments,
 // with the daemon's copies of the two arms' instructions written under dir, since a pane's
-// launch stats every prompt file. reversed is the same launch under the file that declares beta
+// launch reads every prompt file. reversed is the same launch under the file that declares beta
 // first: the arms reach the spec in the file's order, which is the one thing the two differ by.
 func drawnIntoBoth(t *testing.T, f *fakeServerRuntime, dir string, role claim.Role, reversed bool) runtime.SpawnSpec {
 	t.Helper()
@@ -69,7 +69,7 @@ func drawnIntoBoth(t *testing.T, f *fakeServerRuntime, dir string, role claim.Ro
 		{Experiment: "alpha", Name: "on", ConfigFiles: alphaOverlays},
 		{Experiment: "beta", Name: "on", ConfigFiles: betaOverlays},
 	}
-	instructions := []string{write("alpha-on.md", "Alpha instructions.\n"), write("beta-on.md", "Beta instructions.\n")}
+	instructions := []string{write("alpha-on.md", armInstructions["alpha-on.md"]+"\n"), write("beta-on.md", armInstructions["beta-on.md"]+"\n")}
 	if reversed {
 		slices.Reverse(variants)
 		slices.Reverse(instructions)
@@ -80,15 +80,32 @@ func drawnIntoBoth(t *testing.T, f *fakeServerRuntime, dir string, role claim.Ro
 	return spec
 }
 
-// promptWord is the one --append-system-prompt word of the pane's shell command, as the pane's
-// shell receives it, its `$(cat …)` fragments unexpanded.
-func promptWord(t *testing.T, role claim.Role, argv []string) string {
+// armInstructions are the texts drawnIntoBoth writes as the two `on` arms' instructions, by file
+// name, each written with a trailing newline the composed prompt drops.
+var armInstructions = map[string]string{"alpha-on.md": "Alpha instructions.", "beta-on.md": "Beta instructions."}
+
+// panePrompt is the system prompt the pane's Oh My Pi is started with: the contents of the file
+// the one --append-system-prompt word of the pane's shell command names, read as Oh My Pi reads
+// it. The word is the command's last, and is unquoted as the pane's shell unquotes it
+// (shellprefix.Word: bare, or single-quoted with each `'` closed, escaped and reopened).
+func panePrompt(t *testing.T, role claim.Role, argv []string) string {
 	t.Helper()
 	_, word, ok := strings.Cut(argv[len(argv)-1], "--append-system-prompt ")
-	if !ok {
+	if !ok || word == "" {
 		t.Fatalf("the %s's pane command names no --append-system-prompt word:\n%s", role, argv[len(argv)-1])
 	}
-	return word
+	path := word
+	if quoted, ok := strings.CutPrefix(word, "'"); ok {
+		path = strings.ReplaceAll(strings.TrimSuffix(quoted, "'"), `'\''`, "'")
+	}
+	if !filepath.IsAbs(path) {
+		t.Fatalf("the %s's --append-system-prompt word %s names no absolute path", role, word)
+	}
+	text, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the %s's prompt file: %v", role, err)
+	}
+	return string(text)
 }
 
 // A tree drawn into an arm of each of two experiments is told, for every role of the workflow,
@@ -124,13 +141,13 @@ func TestATreeInTwoExperimentsNamesEveryArmInTheFilesOrder(t *testing.T) {
 				if !slices.Contains(pairs, want) {
 					t.Errorf("the %s's pairs = %q, want %q", role, pairs, want)
 				}
-				word := promptWord(t, role, argv)
-				tail := "$(cat " + filepath.Join(dir, "deployment.md") + ")"
+				prompt := panePrompt(t, role, argv)
+				tail := "Deployment instructions."
 				for _, name := range tc.prompt {
-					tail += "\n\n$(cat " + filepath.Join(dir, name) + ")"
+					tail += "\n\n" + armInstructions[name]
 				}
-				if !strings.Contains(word, tail) {
-					t.Errorf("the %s's prompt word =\n%s\nwant it to end\n%s", role, word, tail)
+				if !strings.HasSuffix(prompt, tail) {
+					t.Errorf("the %s's system prompt =\n%s\nwant it to end\n%s", role, prompt, tail)
 				}
 			}
 		})
@@ -141,8 +158,10 @@ func TestATreeInTwoExperimentsNamesEveryArmInTheFilesOrder(t *testing.T) {
 }
 
 // A tree drawn into a control arm — one that names neither an overlay nor an instructions file —
-// launches the pane a tree in no experiment launches, byte for byte: a launch names the files
-// its arms name, and a control arm names none.
+// launches the pane a tree in no experiment launches, byte for byte but for one pair, and is
+// started with the same system prompt: a launch names the files its arms name, and a control arm
+// names none. The one pair is its spend attributes, which name the control arms in legion.arms, so
+// a call of a control tree reads as control rather than as a tree in no experiment.
 func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.T) {
 	stateDir := t.TempDir()
 	// One spec for both launches, so the two differ by the arms the spec carries alone.
@@ -151,10 +170,27 @@ func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.
 	none := control
 	none.Variants = nil
 
+	// Both launches write the one prompt file of the claim, so each is read before the next.
 	withControl, controlPairs := newWindow(t, twoExperimentRuntime(t, stateDir, false), control)
+	controlPrompt := panePrompt(t, claim.RoleTester, withControl)
 	without, nonePairs := newWindow(t, twoExperimentRuntime(t, stateDir, false), none)
-	if !slices.Equal(withControl, without) {
-		t.Errorf("a control tree's pane =\n%q\nwant the one a tree in no experiment gets:\n%q", withControl, without)
+	const arms = "," + runtime.SpendArmsAttribute + "=alpha%3Aoff%2Cbeta%3Aoff"
+	named := 0
+	unnamed := slices.Clone(withControl)
+	for i, word := range unnamed {
+		if value, ok := strings.CutPrefix(word, runtime.SpendAttributesVariable+"="); ok && strings.HasSuffix(value, arms) {
+			unnamed[i] = strings.TrimSuffix(word, arms)
+			named++
+		}
+	}
+	if named != 1 {
+		t.Errorf("a control tree's pane names %s %d times in %s, want once:\n%q", arms, named, runtime.SpendAttributesVariable, withControl)
+	}
+	if !slices.Equal(unnamed, without) {
+		t.Errorf("a control tree's pane, its arms aside =\n%q\nwant the one a tree in no experiment gets:\n%q", unnamed, without)
+	}
+	if nonePrompt := panePrompt(t, claim.RoleTester, without); controlPrompt != nonePrompt {
+		t.Errorf("a control tree's system prompt =\n%s\nwant the one a tree in no experiment gets:\n%s", controlPrompt, nonePrompt)
 	}
 	want := "PI_CONFIG_FILES=" + strings.Join(slices.Concat([]string{baselineOperatorOverlay}, baselineRoleFiles[claim.RoleTester]), ":")
 	for _, pairs := range [][]string{controlPairs, nonePairs} {

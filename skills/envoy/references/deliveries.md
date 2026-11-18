@@ -110,7 +110,8 @@ It depends on where a session takes its deliveries, not on whether the topic is 
   the listener finds the live holder and forwards the message to it, and drops the message when that holder is the message's source session.
   The stream keeps the forward on the holder's inbox, so the holder's session gets it once, also after a restart or while it was not running.
   No session answers a receipt for one: a publish returns once the stream stored the forward.
-  A role message no live holder can take is kept for the session that claims the role next, which is handed it once, within one hour of the keep.
+  A role message no live holder can take is kept for one hour, until the `kept_until` the publish answers with, and the next session to hold the role live in that hour is handed it once.
+  If no session takes it, Envoy drops it, and when the publish named a sender session, Envoy sends that session a message that names it, unless it dropped it more than an hour late.
 
 - Every other `notifications.` topic, one no source uses and the stream does not keep, is refused by name
   — at `envoy_publish` and at `envoy_subscribe` alike — because no session would ever receive it.

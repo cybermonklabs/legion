@@ -60,7 +60,7 @@ func newStaleHolderRig(t *testing.T, role, holder string, since time.Duration) s
 		t.Fatalf("claim the role: %v", err)
 	}
 	forwards := make(chan *natsgo.Msg, 4)
-	received, err := harness.client.Conn.Subscribe(contracts.AgentSubject(holder), func(message *natsgo.Msg) {
+	received, err := harness.client.Conn.Subscribe(contracts.LegacyAgentSubject(holder), func(message *natsgo.Msg) {
 		select {
 		case forwards <- message:
 		default:
@@ -117,20 +117,21 @@ func (r staleHolderRig) settled(t *testing.T, role string) (exceptionReason stri
 // holder (sessionIsLive, session.StateOf), which resolveCoreRoleHolder applies for the role lane:
 // a claim naming a session whose record is still in the session bucket, and so answers every
 // read, but whose last registration is past session.LiveWindow is a holder role delivery does not
-// forward to. The lane reports delivery_failed instead, because a message dropped into a session
-// that is not answering is costlier than telling its sender the role has no live holder. What the
-// lane does not do is take the role away: a holder inside session.GoneHorizon is unresponsive and
-// not gone, so its claim stands and only the role reaper, finding it gone, ever releases one, and
-// nothing is kept for it either, since a kept copy waits for a claim that is never made again
-// (roleKeepable). The same holder, registering, takes the message: the state of its record is
-// what separates the two, and nothing else about the two deliveries differs.
+// forward to, because a message dropped into a session that is not answering reaches nobody. The
+// lane keeps the message on the role's kept lane instead (roleKeepable), for the next session that
+// holds the role live - this holder answering again, or a successor - and publishes no delivery
+// exception, since the message is not lost. What the lane does not do is take the role away: a
+// holder inside session.GoneHorizon is unresponsive and not gone, so its claim stands and only the
+// role reaper, finding it gone, ever releases one. The same holder, registering, takes the
+// message: the state of its record is what separates the two, and nothing else about the two
+// deliveries differs.
 func TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating(t *testing.T) {
 	const (
 		role   = "reviewer"
 		holder = "ses_role_heartbeat"
 	)
 	roleTopic := contracts.RoleTopicPrefix + role
-	holderSubject := contracts.AgentSubject(holder)
+	holderSubject := contracts.LegacyAgentSubject(holder)
 	for _, tc := range []struct {
 		name          string
 		since         time.Duration
@@ -152,14 +153,16 @@ func TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating(t *testing.T) {
 					if err := json.Unmarshal(forwarded.Data, &delivered); err != nil {
 						t.Fatalf("decode the message the stale holder received: %v", err)
 					}
-					t.Fatalf("the role lane delivered event %s to %s on %s, whose session record last registered %s ago - past session.LiveWindow (%s); want no forward to the unresponsive holder, the delivery_failed exception and its claim left where it is",
+					t.Fatalf("the role lane delivered event %s to %s on %s, whose session record last registered %s ago - past session.LiveWindow (%s); want no forward to the unresponsive holder, the message kept and its claim left where it is",
 						delivered.EventID, holder, holderSubject, tc.since, session.LiveWindow)
 				}
-				if exceptionReason != "delivery_failed" || claimant != holder {
-					t.Fatalf("a role whose holder last registered %s ago: exception reason %q, claim now held by %q; want reason \"delivery_failed\" and the claim still held by %s",
+				if exceptionReason != "" || claimant != holder {
+					t.Fatalf("a role whose holder last registered %s ago: exception reason %q, claim now held by %q; want no exception, since the message is kept, and the claim still held by %s",
 						tc.since, exceptionReason, claimant, holder)
 				}
-				assertNothingKept(t, rig.harness.client, role)
+				if kept := waitForKeptRoleMessage(t, rig.harness.client, role, item.EventID); kept.Topic != roleTopic {
+					t.Fatalf("the kept copy's topic is %q, want the role topic %s it was published on", kept.Topic, roleTopic)
+				}
 				return
 			}
 			if forwarded == nil || exceptionReason != "" || claimant != holder {
@@ -185,9 +188,10 @@ func TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating(t *testing.T) {
 // rather than publishing an exception.
 //
 // So that sender gets the refusal it had before the kept lane, by the route's own shape: with
-// keep: false against a role nobody claims - the one state this build keeps for, since no
-// resolution releases a claim (roleKeepable) - nothing is kept and the answer is the 404 naming
-// unclaimed, which the Legion daemon reads as notify.ErrNoHolder.
+// keep: false against a role nobody claims - one of the two states the listener keeps for, beside
+// a claim whose holder is not live (roleKeepable), which
+// TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing covers - nothing is kept and
+// the answer is the 404 naming unclaimed, which the Legion daemon reads as notify.ErrNoHolder.
 func TestAPublishWithKeepFalseToAnUnclaimedRoleIsRefusedAndKeepsNothing(t *testing.T) {
 	const role = "reviewer"
 	harness := newListenerDeliveryHarness(t)

@@ -249,6 +249,16 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// yields an empty chain and still gets its own refusal inside the transaction, so no error
 	// changes order.
 	var outcome nearCopyOutcome
+	// nearCopyRecord is this create's near_copy_checks row, holding outcome.Check, the gate's
+	// answer, at each write: at the 409, or once the create has committed (recordNearCopyCheck),
+	// or in the create's transaction where recordInTx says so. A create the gate never ran for
+	// (outcome.Check nil) writes nothing, and a create refused later for another reason writes
+	// nothing either.
+	var nearCopyRecord nearCopyCheckRow
+	// recordInTx is set where the decision is made, for a near copy let in because its refusal's
+	// row could not be confirmed (nearCopyOutcome.unrecorded): its row is written in the create's
+	// transaction, under the id the refusal used, rather than after the commit.
+	recordInTx := false
 	if input.External == "" {
 		ancestors := []string{}
 		if parentKey != "" {
@@ -264,13 +274,26 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			spec = *input.Spec
 		}
 		outcome = s.runNearCopyGate(r.Context(), input.Project, input.Title, spec, ancestors, input.Force)
+		nearCopyRecord = nearCopyCheckRow{
+			id: s.newNearCopyRowID(), project: input.Project, actor: actor,
+			title: input.Title, spec: spec, parent: parentKey,
+		}
 		if len(outcome.Refuse) > 0 {
-			WriteJSON(w, http.StatusConflict, issueDuplicateError{
-				Candidates: outcome.Refuse,
-				Code:       "POSSIBLE_DUPLICATE",
-				Error:      fmt.Sprintf("possible duplicate of %s: %s", outcome.Refuse[0].Key, outcome.Refuse[0].Title),
-			})
-			return
+			if s.recordNearCopyRefusal(r.Context(), nearCopyRecord, outcome.Check) {
+				WriteJSON(w, http.StatusConflict, issueDuplicateError{
+					Candidates: outcome.Refuse,
+					Code:       "POSSIBLE_DUPLICATE",
+					Error:      fmt.Sprintf("possible duplicate of %s: %s", outcome.Refuse[0].Key, outcome.Refuse[0].Title),
+				})
+				return
+			}
+			// A refusal is answered only once its row is known to be written, so a count of the
+			// gate's refusals from near_copy_checks misses none. Otherwise it is a check not made,
+			// as a read past the gate's bound is: the create goes in, the filer is told what the
+			// gate found, and the create's row is written in its transaction under the same id, so
+			// it replaces the refused row if that insert landed unseen.
+			outcome = outcome.unrecorded()
+			recordInTx = true
 		}
 	}
 
@@ -330,14 +353,6 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// its own for it.
 	if assignee == nil {
 		assignee = defaultAssignee(actor, parentAssignee, projectDefaultAssignee)
-	}
-	// The project row is locked from here; the mapping check takes its key-share lock only now, in
-	// the project-then-mapping order every mapping write follows (lockRepoProjectWrite).
-	if repo != nil {
-		if err := checkIssueRepoMapped(r.Context(), tx, *repo, input.Project); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
 	}
 	key := fmt.Sprintf("%s-%d", input.Project, number)
 	actorJSON, err := encodeJSON(actor)
@@ -494,6 +509,17 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	advice := s.writeAdvice(
 		r.Context(), tx, "POST /api/v1/issues", key, actor, "", issue.Status, false,
 	)
+	nearCopyRecord.issue = key
+	// A near copy let in because its refusal's row could not be confirmed (recordInTx) writes its
+	// row in this transaction, under the id the refusal used: the create and the row that replaces
+	// a refused row under that id commit together or not at all, so no committed create keeps a
+	// refused row. Every other row is written after the commit.
+	if recordInTx {
+		if err := s.writeNearCopyCheck(r.Context(), tx, nearCopyRecord, outcome.Check); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -503,6 +529,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// transaction is durable.
 	s.deps.Docs.ScheduleSettlement(artifactID)
 	s.publish(r.Context(), event)
+	if !recordInTx {
+		s.recordNearCopyCheck(r.Context(), nearCopyRecord, outcome.Check)
+	}
 	if advice != nil && input.Spec != nil && strings.TrimSpace(*input.Spec) != "" {
 		advice.documentBlocks = documentBlocksFor(documentReadBack, markdown)
 	}
@@ -528,17 +557,24 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 }
 
 // duplicateGateTimeout bounds the near-copy gate's whole read, on the context and as the read
-// transaction's own statement_timeout. Every create waits on it before it is written, so it is
-// held well under the second the title rule it replaces was given: past it the create goes in
-// and is told that no near-copy check was made, which is what a slow read must cost rather than
-// a project nobody can write to.
-const duplicateGateTimeout = 500 * time.Millisecond
+// transaction's own statement_timeout. Every create waits on it before it is written: past it the
+// create goes in and is told that no near-copy check was made, which is what a slow read must cost
+// rather than a project nobody can write to.
+//
+// 500 ms came from the replay on an idle machine (TestNearCopyRefusalReplay: p50 135 ms, p95
+// 228 ms, max 566 ms), which predicted it would cut 0.17% of creates. In production it cut 9 of
+// INFRA's first 29 creates in near_copy_checks (2026-11-17, build 4055c4a5, reason bound). 2 s is an
+// estimate, not a measurement: the rows hold no read time past the bound. If production's reads
+// are a uniform multiple of the replay's (about three times, which puts the replay's 70th
+// percentile at 500 ms), 2 s covers the replay's slowest read. How many reads 2 s still cuts is
+// read from near_copy_checks after it is deployed.
+const duplicateGateTimeout = 2 * time.Second
 
 // nearCopyOutcome is everything the near-copy gate decides for one create, settled once by
 // runNearCopyGate and then only copied: the 409 the create is refused with, what the
-// issue.created event records, and what the response tells the filer. The zero value is the
-// create the gate never ran for - an external create - which records nothing and says nothing,
-// so no reader of the event log is told of a check that was never made.
+// issue.created event records, what the response tells the filer, and the near_copy_checks row.
+// The zero value is the create the gate never ran for - an external create - which records
+// nothing and says nothing, so no reader of the event log is told of a check that was never made.
 type nearCopyOutcome struct {
 	// Refuse is what a 409 POSSIBLE_DUPLICATE names, and is empty on every create that goes in:
 	// a create the gate refuses is never written.
@@ -565,6 +601,9 @@ type nearCopyOutcome struct {
 	// NearCopyCheck is advice.suggestions.near_copy_check: why the create went in unchecked,
 	// empty when the gate answered.
 	NearCopyCheck string
+	// Check is the gate's answer as its near_copy_checks row records it (recordNearCopyCheck),
+	// nil for a create the gate never ran for.
+	Check *nearCopyCheck
 }
 
 // runNearCopyGate runs the gate for a create and settles every record of it at once. Only a
@@ -580,26 +619,45 @@ func (s *server) runNearCopyGate(
 ) nearCopyOutcome {
 	gate := s.duplicateGate(ctx, project, title, spec, ancestors)
 	refusals := gate.refusals()
+	check := &nearCopyCheck{force: force, candidates: gate.Candidates}
 	switch {
 	case !gate.answered():
-		outcome := nearCopyOutcome{NearCopyCheck: gate.Unanswered}
+		check.outcome, check.reason = nearCopyNotMade, gate.NotMade
+		outcome := nearCopyOutcome{NearCopyCheck: s.nearCopyNotMadeNote(gate.NotMade), Check: check}
 		if force {
 			outcome.Forced = &model.ForcedCreate{Past: []string{}}
 		}
 		return outcome
 	case len(refusals) == 0:
+		check.outcome = nearCopyPassed
 		if force {
-			return nearCopyOutcome{}
+			return nearCopyOutcome{Check: check}
 		}
-		return nearCopyOutcome{LikelyDuplicate: gate.nudge()}
+		nudge := gate.nudge()
+		if nudge != nil {
+			check.outcome = nearCopyNudged
+		}
+		return nearCopyOutcome{LikelyDuplicate: nudge, Check: check}
 	case !force:
-		return nearCopyOutcome{Refuse: refusals}
+		check.outcome = nearCopyRefused
+		return nearCopyOutcome{Refuse: refusals, Check: check}
 	}
+	check.outcome = nearCopyForced
 	past := make([]string, 0, len(refusals))
 	for _, candidate := range refusals {
 		past = append(past, candidate.Key)
 	}
-	return nearCopyOutcome{Forced: &model.ForcedCreate{Past: past}, TitleMatches: refusals}
+	return nearCopyOutcome{Forced: &model.ForcedCreate{Past: past}, TitleMatches: refusals, Check: check}
+}
+
+// unrecorded is the outcome of a refusal whose near_copy_checks row could not be written: a
+// check not made (reason unrecorded), which lets the create go in, as a read past the gate's
+// bound does. Its row keeps the candidates the refusal read, and the note names the issue the
+// refusal would have named, so the filer can still read it and fold the create into it.
+func (outcome nearCopyOutcome) unrecorded() nearCopyOutcome {
+	check := *outcome.Check
+	check.outcome, check.reason = nearCopyNotMade, nearCopyNotMadeUnrecorded
+	return nearCopyOutcome{NearCopyCheck: nearCopyCheckUnrecorded(outcome.Refuse[0]), Check: &check}
 }
 
 // respondWithExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds

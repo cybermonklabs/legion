@@ -214,7 +214,7 @@ func TestAConditionalStopThatKeepsTheRecordLeavesTheConsumerAlone(t *testing.T) 
 		t.Run(kept.name, func(t *testing.T) {
 			rig := newRelayRig(t)
 			sessionID := "ses_kept_stop_" + id.New()
-			agent := contracts.AgentSubject(sessionID)
+			agent := contracts.LegacyAgentSubject(sessionID)
 			standIn := startSessionStandIn(t, rig.url, sessionID, answerReceived)
 			rig.subscribe(t, kept.registration(t, sessionID))
 			held, _ := rig.storeEvent(t, agent)
@@ -374,7 +374,7 @@ func relayHoldingOneMessage(t *testing.T, prefix string) (*relayRig, string, *se
 	sessionID := prefix + id.New()
 	standIn := startSessionStandIn(t, rig.url, sessionID, nil)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
-	stored, _ := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	stored, _ := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	requireFrames(t, standIn.collect(t, 1, 10*time.Second), stored)
 	awaitAckState(t, rig.consumers, sessionID, 1, 0)
 	return rig, sessionID, standIn, stored

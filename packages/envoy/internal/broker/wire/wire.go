@@ -27,7 +27,7 @@ type PendingEntry struct {
 	Session RecordSessionResp `json:"session"`
 	// A secret request's page on the broker, <BROKER_PUBLIC_URL>/approve/<record>, where a person
 	// signed in to the broker decides it; absent for a machine login, which is decided with its
-	// typed code.
+	// typed code, and on a broker with BROKER_SIGNIN=off, which serves no page.
 	ApproveURL string `json:"approve_url,omitempty"`
 }
 

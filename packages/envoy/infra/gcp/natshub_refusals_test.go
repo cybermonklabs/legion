@@ -418,6 +418,19 @@ func TestNatsHubRefusesASeedInAnyPlainInput(t *testing.T) {
 		{"a seed inside a listener machine id", "users[3].listenerMachineId", func(a *gcp.NatsHubArgs) {
 			a.Users[3].ListenerMachineID = pulumi.StringRef(inside)
 		}},
+		// The callout's fields are named by the hub's own path, never core's callout.issuer.
+		{"a seed as the callout's issuer", "authCallout.issuer", func(a *gcp.NatsHubArgs) {
+			a.AuthCallout = authCallout()
+			a.AuthCallout.Issuer = seed
+		}},
+		{"a lowercase seed as the callout's xkey", "authCallout.xkey", func(a *gcp.NatsHubArgs) {
+			a.AuthCallout = authCallout()
+			a.AuthCallout.XKey = lower
+		}},
+		{"a callout service user split by a hyphen", "authCallout.serviceUser", func(a *gcp.NatsHubArgs) {
+			a.AuthCallout = authCallout()
+			a.AuthCallout.ServiceUser = splitSeed(lower, "-")
+		}},
 		// A reader or a decoder takes a seed in lowercase, or split by '.', '-', '_' or whitespace, as
 		// the seed.
 		{"a lowercase seed as the hostname", "hostname", func(a *gcp.NatsHubArgs) { a.Hostname = lower }},

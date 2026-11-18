@@ -41,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -337,6 +338,23 @@ func main() {
 		agentStream = agentstream.NewNATS(streamConn)
 	}
 
+	// A person's targeted message to a session that neither the listener's registry nor its
+	// known-session store holds is queued on that session's own subject, published through the
+	// NATS client. With test hooks and no NATS it goes to an in-process recorder the e2e harness
+	// reads (GET /api/v1/messages/_test/queued) instead, and with neither such a message settles
+	// failed. Only a value that is there is put in the interface: a nil *bus.Client in it would
+	// read as a publisher.
+	var agentPublisher api.AgentPublisher
+	switch {
+	case natsClient != nil:
+		agentPublisher = natsClient
+	case boot.TestHooksEnabled:
+		agentPublisher = api.NewAgentPublishRecorder()
+		slog.Info("dispatch: targeted messages for a session no store holds go to the test hook's recorder")
+	default:
+		slog.Info("dispatch: a targeted message to a session no store holds fails: queueing it needs NATS")
+	}
+
 	database, err := store.Open(ctx, boot.DatabaseURL)
 	if err != nil {
 		slog.Error("dispatch: open database", "error", err)
@@ -505,6 +523,7 @@ func main() {
 		Events:         broker,
 		App:            appCfg,
 		AgentStream:    agentStream,
+		AgentPublisher: agentPublisher,
 		Files:          fileStore,
 		Lifetime:       ctx,
 	}
@@ -667,6 +686,9 @@ func main() {
 	// The display tree fill (texttreefill.Run): a leased loop like the rest, reserved here so
 	// that this process's count is the same whether or not it has work to do.
 	textTreeFillLeases := reserve("text tree fill")
+	// The Legion sampler (legion.RunSampler): a leased loop like the rest, reserved here so that
+	// this process's count is the same whether or not any project names a daemon.
+	legionSamplerLeases := reserve("Legion sampler")
 	// The intakes' six callers - a consumer lease, a hold and the hold's renewal per durable -
 	// whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -905,6 +927,12 @@ func main() {
 	}
 
 	go architecture.Run(ctx, appCtx.Architecture(), architectureImportLeases)
+
+	// dispatch://INFRA-1077: each project whose legion_settings row names a Legion daemon has its
+	// `GET /legion/v1/state` read once a minute from one replica, under the `legion-state` lease,
+	// and every value that moved recorded. It is a timer and not a woken loop for the reason the
+	// delivery reconcile below is: a remote daemon announces nothing Dispatch can listen for.
+	go legion.RunSampler(ctx, database.Pool, legionSamplerLeases)
 
 	// LEGION-567: the delivery timeline's 5-minute GitHub-App reconcile runs regardless of NATS
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
@@ -1820,6 +1848,11 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // checked against. Spent proofs are recorded in Dispatch's own database (store.DPoPProofs), which
 // the maintenance pass sweeps.
 //
+// It serves a read-only token (brokertoken.Options.ServesReadOnly): the scope read alone, which
+// the broker mints from a read entry. Dispatch is the one service that asks for it, because its
+// route table holds the read list such a token may call (readScopeRoutes in internal/dispatch/api)
+// and every other route answers it 403 READ_ONLY_TOKEN before anything of the route runs.
+//
 // A deployment with no broker gets nil: Dispatch then has no such credential kind, and a DPoP
 // presentation is refused as any non-bearer Authorization header has always been
 // (401 UNAUTHORIZED).
@@ -1836,6 +1869,9 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 		// its other buckets read; the check itself has none, so this says whose proxy header is
 		// trusted here (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
+		// The read list and its gate are Dispatch's own (internal/dispatch/api), so a read-only
+		// token reaches the routes that list names and no other.
+		ServesReadOnly: true,
 	})
 }
 

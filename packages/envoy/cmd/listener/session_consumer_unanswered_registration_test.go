@@ -22,6 +22,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -227,14 +228,15 @@ func (kv refusingEntryKV) Put(string, []byte) (uint64, error) {
 }
 
 // requireFilteredOnStoredRow fails the test unless sessionID's consumer filters on exactly what
-// the row the bucket holds builds (sessionConsumerFilter).
+// the row the bucket holds builds (sessionConsumerFilter, every form of which the consumer
+// carries: bus.SessionConsumerFilters).
 func requireFilteredOnStoredRow(t *testing.T, rig *sessionConsumerRig, sessionID string) {
 	t.Helper()
 	stored, _, err := rig.harness.registry.RefreshAt(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("read the stored interest row of %s: %v", sessionID, err)
 	}
-	want := slices.Compact(slices.Sorted(slices.Values(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))))
+	want := bus.SessionConsumerFilters(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("the consumer of %s filters on %v, want %v, the topics of the row the bucket holds", sessionID, got, want)
 	}

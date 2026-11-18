@@ -20,6 +20,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // RequestTyp is the JWS "typ" header for a credential-request object. It is disjoint from
@@ -62,11 +63,12 @@ func ValidID(id string) bool {
 	return idPattern.MatchString(id)
 }
 
-// CanonicalLogin lowercases and trims the name Dispatch signs a person in with, their email (a
-// record created before people were named by email keeps the GitHub login it was decided under).
-// Every login comparison in the module goes through this form on both sides.
+// CanonicalLogin trims the name Dispatch signs a person in with, their email (a record created
+// before people were named by email keeps the GitHub login it was decided under), and lowers its
+// ASCII letters (fold.ASCII) and nothing else. Every login comparison in the module goes through
+// this form on both sides.
 func CanonicalLogin(login string) string {
-	return strings.ToLower(strings.TrimSpace(login))
+	return fold.ASCII(strings.TrimSpace(login))
 }
 
 // HumanActor is the audit actor of a change a person made: "human:" and their canonical login,
@@ -282,15 +284,95 @@ func validateDetails(details []AuthorizationDetail) error {
 
 // MaxReasonRunes is the longest reason a request may sign, and ReasonRefuses the runes it may
 // not carry: Unicode categories Cc, Cf, Cs, Co, Zl and Zp (bidi overrides and zero-width
-// characters are Cf). Both are exported because the model judge holds what a model writes to
-// the same bound and the same categories (judge.sanitize, judge/model.go), which drops them
-// rather than refusing; one definition there and here keeps a reason a person reads in the
-// grant log and a reason a requester signed to one rule.
+// characters are Cf). validateReason refuses a reason that breaks either rule. Text the broker
+// records with nobody to refuse it to is held to the same rules by Sanitize, which drops those
+// runes and cuts the rest: what a model judge wrote (judge/model.go, judge/judge.go) and the
+// reason a session's call gave a release (requests.callReasonOf). One definition here keeps a
+// reason a person reads in the grant log and a reason a requester signed to one rule.
 const MaxReasonRunes = 400
 
 // ReasonRefuses reports whether r is a rune no reason may carry.
 func ReasonRefuses(r rune) bool {
 	return unicode.In(r, unicode.Cc, unicode.Cf, unicode.Cs, unicode.Co, unicode.Zl, unicode.Zp)
+}
+
+// Sanitize is s with every rune ReasonRefuses dropped and what is left cut to its first limit
+// runes by ClampRunes: the reason rules applied to text that is already in hand, where
+// validateReason would refuse it.
+func Sanitize(s string, limit int) string {
+	return ClampRunes(strings.Map(func(r rune) rune {
+		if ReasonRefuses(r) {
+			return -1
+		}
+		return r
+	}, s), limit)
+}
+
+// ClampRunes is s cut to at most n runes. It cuts on a rune boundary, so what it answers is
+// still the UTF-8 the caller handed it, and it walks s once without allocating.
+func ClampRunes(s string, n int) string {
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
+}
+
+// MaxCommandArguments and MaxCommandArgumentBytes bound the command a release of a grant records
+// (requests.loggedCommand): its first 32 arguments, each cut to 256 bytes. The agent-secrets
+// client sends no more than that (ClipCommand), which keeps a release's body far under the
+// broker's 1 MiB cap whatever the command, and the broker holds every body to the same bounds
+// again, since a session may send any body.
+const (
+	MaxCommandArguments     = 32
+	MaxCommandArgumentBytes = 256
+)
+
+// MaxRequestWaitSeconds is the longest wait GET /v1/requests/{id}?wait= takes, in whole seconds:
+// the broker refuses a longer one 400 REQUEST_WAIT_INPUT, and agent-secrets asks for no longer
+// one, so a client and a broker of one build agree on it. A held read of this length must end
+// inside cmd/broker's requestDeadline and the agent-secrets client's whole-call timeout,
+// leasetime.RenewClientTimeout, so neither cuts it short; a test beside each holds that order
+// (TestTheWaitLimitEndsInsideTheRequestDeadline, TestTheWaitLimitEndsInsideTheClientsCallTimeout).
+// A client that waits longer asks again.
+const MaxRequestWaitSeconds = 20
+
+// ClipArgument is arg cut to its first MaxCommandArgumentBytes bytes on a character's boundary:
+// it backs up over the continuation bytes of the one character the cut would split, and over no
+// more than a character holds, so a run of stray continuation bytes does not pull the cut back.
+// What it answers from a longer argument therefore always ReachesTheCut.
+func ClipArgument(arg string) string {
+	if len(arg) <= MaxCommandArgumentBytes {
+		return arg
+	}
+	cut := MaxCommandArgumentBytes
+	for back := 0; back < utf8.UTFMax-1 && !utf8.RuneStart(arg[cut]); back++ {
+		cut--
+	}
+	return arg[:cut]
+}
+
+// ReachesTheCut reports whether arg is as long as an argument ClipArgument cut, so that its end
+// may be where a secret was cut through: the rule a release's redaction applies to such an end
+// (requests.redactArgument).
+func ReachesTheCut(arg string) bool {
+	return len(arg) > MaxCommandArgumentBytes-utf8.UTFMax
+}
+
+// ClipCommand is command's first MaxCommandArguments arguments, each cut by ClipArgument: what a
+// client sends of the command a release starts. It answers nil for no command.
+func ClipCommand(command []string) []string {
+	if len(command) == 0 {
+		return nil
+	}
+	clipped := make([]string, min(len(command), MaxCommandArguments))
+	for i := range clipped {
+		clipped[i] = ClipArgument(command[i])
+	}
+	return clipped
 }
 
 // validateReason enforces: at most MaxReasonRunes runes, none a rune ReasonRefuses.

@@ -3,9 +3,8 @@
 A person who mentions the Legion Slack app in one of the project's Slack channels is talking to
 you, and you answer in that thread. The `Slack channels:` line of your system prompt names each
 channel `legion.yaml` gives the project (`projects.<KEY>.slack_channels`). Only the controller the
-daemon launches has one: the Slack bot token is the Legion daemon service's, which the secrets
-broker grants to that service's own pods alone. With no such line the project has no channel, and
-nothing here applies.
+daemon launches has one, because the daemon names a project's channels to that controller alone.
+With no such line the project has no channel, and nothing here applies.
 
 ## Your session subscribes for you
 
@@ -44,9 +43,9 @@ alone. Read the whole thread before you decide what the person wants. The read i
 (`skill://agent-secrets`):
 
 ```sh
-agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mention' --wait 0s -- sh -c '
+agent-secrets LEGION_SLACK_BOT_TOKEN --reason 'read the thread of a Slack mention' --wait 0s -- bash -c '
   curl -sS -G https://slack.com/api/conversations.replies \
-    -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" \
+    -H @<(printf "Authorization: Bearer %s" "$LEGION_SLACK_BOT_TOKEN") \
     --data-urlencode channel=<channel_id> \
     --data-urlencode ts=<thread_ts> \
     --data-urlencode limit=200'
@@ -101,7 +100,8 @@ a thread read, `channels:history` in a public channel or `groups:history` in a p
 person in the workspace can fix either, so say so in the next daily report rather than retrying.
 When it answers that the secrets broker has not granted `LEGION_SLACK_BOT_TOKEN` (its request waits
 for approval, or was denied), nothing was posted and no reply can be until the operator stores the
-token with owner `legion-daemon` and tier `agent`: name the error in the next daily report.
+token as a shared agent secret, owner `shared` and tier `agent`: name the error in the next daily
+report.
 
 ## Decide what the person wants
 
@@ -119,8 +119,12 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   says, so `admission.active` names some of a tree's waits as well as its work. Say what you
   read, citing for each fact the `read_state` field or the `dispatch read` line it came from.
 - **A request for work.** Someone wants a change made, a bug fixed, something investigated. Search
-  first (`skill://dispatch-first`): when an open issue already tracks it, reply with that issue and
-  file nothing. Otherwise file one issue in the project:
+  first (`skill://dispatch-first`).
+  When the open issue that tracks it is one Legion runs, the request is that tree's work: pass it
+  to its architect as **Something an issue's architect owns** below says, since a reply naming the
+  issue reaches nobody.
+  When the issue that tracks it is nobody's tree, reply with that issue and file nothing.
+  Otherwise file one issue in the project:
 
   ```text
   dispatch issue --project <PROJECT> --title '<the request, as a title>' --spec-file - <<'EOF'
@@ -145,13 +149,16 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   person's request says to wait or puts it out of scope. That request is the request itself, the
   deployment instructions, or a line of the weekly plan that names the person's request behind it.
 - **Something an issue's architect owns.** A question about a tree's design, a change of direction,
-  a decision only the tree's architect can make about an issue Legion runs. Find the tree: follow
-  `Links:` up through each `child_of` parent with `dispatch read` until you reach the issue
-  `read_state` records with an `architect`. When `issues.<ROOT>.architect.locator.claim` is there,
-  `envoy_publish` the person's words to `notifications.role.` followed by it, with the channel id
-  and `thread_ts` you reply on, and reply in the thread that you passed it to the architect that
-  owns `<ROOT>`, which answers on the issue. When the architect is not running (no locator), say
-  that in the thread instead and what `read_state` shows for the tree. Never invent a role token.
+  a decision only an architect of its tree can make about an issue Legion runs. Find the issue:
+  follow `Links:` up through each `child_of` parent with `dispatch read` until you reach an issue
+  `read_state` records, `<KEY>`. Its `issues.<KEY>.tree` is `<ROOT>`, the tree's root. Send it to
+  the nearest architect that runs on the chain from `<KEY>` up to `<ROOT>`: the first issue of
+  that chain, from `<KEY>` up, whose `issues.<ISSUE>.architect.locator.claim` is there.
+  `envoy_publish` the person's words to `notifications.role.` followed by that claim, with the
+  channel id and `thread_ts` you reply on, and reply in the thread that you passed it to that
+  architect, which answers on the issue. When no issue of that chain has a locator, no architect
+  of it is running: say that in the thread instead and what `read_state` shows for the tree. Never
+  invent a role token.
 - **Anything else** (a greeting, a question about Legion itself): answer it briefly in the thread.
 
 A request to approve a design is answered as `skill://legion-controller/references/wakes.md`

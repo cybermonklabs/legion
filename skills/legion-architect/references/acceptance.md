@@ -1,7 +1,8 @@
 # Acceptance, retro, the merge and the close
 
 Part of `skill://legion-architect`, sections 3, 5, 6 and 7. Read the section for the step you are
-at.
+at. Where it tells you to ask a person, a child's own architect sends the question to the
+architect above it instead (`skill://legion-architect`, "Every turn").
 
 ## Retro's result
 
@@ -32,21 +33,24 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 
 - The issue's Dispatch status stays `needs_review` in `accepting`; `sign_off` moves it to `retro`.
 - A `catch-up` whose `reason` names an issue as waiting for your acceptance is the wake for it: it
-  is in `accepting`, and the `phase-finished` that moved it there may never have reached you (a
-  failed architect's notice is dropped, so a retried one learns of the wait from its catch-up
-  alone). Accept it as this section says, a parent only after its last round (below).
+  is in `accepting`, and the `phase-finished` that moved it there may never have reached you.
+  While a root's architect has failed, its notices end undelivered. While a child's own architect
+  does not hold its role, the child's notices go to the architect above it. Either way, a retried
+  architect learns of the wait from its catch-up alone. Accept it as this section says, a parent
+  only after its last round (below).
 - The daemon refuses `sign_off` while an issue beneath the one you accept is still in the workflow
   (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): run each one to done, and sign off again.
   Park one with `park_child` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed,
   and say in a comment which of those it is. Ask the person about a child that can reach neither
-  `done` nor a park under that rule, and hold the acceptance until they answer. Hold it too, for
-  the root and for the issue you moved an unreleased child under, until the person answers the ask
-  on the root about that child (`skill://legion-architect`, section 3): release the child when they
-  say to run it; when they say to stop it, close it, or move it to `icebox` under the rule when
-  they say its work should wait, citing their answer. A parent: sign off only after its last round
-  (below). The daemon then closes a parent that is not the root at its own merge, which under this
-  rule comes after its children's. One issue beneath never holds it: one the daemon itself holds
-  at `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
+  `done` nor a park under that rule, and hold the acceptance until they answer. Until the person
+  answers the ask on the root about an unreleased child you moved, sign off neither the issue you
+  moved it under nor any issue above it that you accept (`skill://legion-architect`, section 3):
+  release the child when they say to run it; when they say to stop it, close it, or move it to
+  `icebox` under the rule when they say its work should wait, citing their answer. A parent: sign
+  off only after its last round (below). The daemon then closes a parent that is not the root at
+  its own merge, which under this rule comes after its children's. One issue beneath never holds
+  it: one the daemon itself holds at `admitted` under an ancestor it has already accepted, which
+  starts when that ancestor closes.
 - `request_backward_move` names the issue, because your grant serves the tree; the daemon starts
   that phase's role with your reason in its task.
 - `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head
@@ -73,13 +77,13 @@ proves a parent's check: such a result was recorded at the child's head and not 
 and a child carrying part of a parent's
 requirement proves it with a check on its own Verification document whose `serves` names that
 requirement. Nothing in the tree builds on the parent's own merge, which comes last: a child
-that waits for it waits forever, so work another child builds on is a child of its own, in a
-repository of its own or with a deploy of its own. While the approved head does not carry those
+that waits for it waits forever, so work another child builds on is a child of its own.
+While the approved head does not carry those
 merges, or a check in another repository has no pass standing since the close of a child it
 needs, leave the issue in `accepting` until each has closed (`child-closed`) or a park has
 already taken it out (`child-status`). That wait is no reason to park a child. Move a parked
-child's criterion to the root's own pull request or a released, open child first; never
-downgrade it. A root's requirement stays the root's, pending
+child's criterion to the parent's own pull request or a released, open child first; never
+downgrade it. The parent's requirement stays the parent's, pending
 until this round, where its head must meet it.
 Then, in one turn:
 
@@ -119,17 +123,21 @@ The daemon keeps this order from its fixed table; you start none of its steps:
    issue and no commit carries one.
 4. The merger reads the pull request and merges that head itself, as the implement App and with the
    head it read as the head GitHub must match
-   (`gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''`,
+   (into the default branch
+   `gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''`,
    whose explicit message keeps GitHub's default squash message from joining the branch's commit
-   messages onto the base; or `expectedHeadOid` on a
-   merge-queue base, where it enqueues the pull request); it never turns auto-merge on, and the
-   daemon submits no merge and changes no merge setting. The repository's required reviews and
+   messages onto the base; into another base, a merge commit (`--merge` in place of `--squash`)
+   where the repository allows one, because a squash there gives each pull request built on that
+   branch a conflict of history alone; or `expectedHeadOid` on a merge-queue base, where it
+   enqueues the pull request); it
+   never turns auto-merge on, and the daemon submits no merge and changes no merge setting. The
+   repository's required reviews and
    checks decide when it lands; Legion neither reads nor writes those rules, and a review only a
    person can give is waited for, never bypassed. Nothing compares that head with the approved one:
    a repository that wants a later push reviewed says so in its own rulesets. The merger's
    completion records its phase row and moves nothing, and the daemon posts no packet.
-5. The merge lands under the repository's rules, the daemon reads it and closes the issue; a
-   root's close waits until the rest of its tree has left the workflow.
+5. The merge lands under the repository's rules, the daemon reads it and closes the issue once
+   every issue beneath it has left the workflow (for a root, every other issue of its tree).
 
 A person's request after your sign-off is a requirement of this issue, filed nowhere else: in
 `retro` or `merging` the role holding the phase makes the `request_backward_move`.
@@ -144,6 +152,14 @@ move and you tell it which; from `accepting` you send an issue back only to `imp
   `squash_merge_commit_message` joins the branch's commit messages among them: the merger tells
   you, and only a person can change it. Ask one with `dispatch ask`, naming the pull request, the
   head and GitHub's refusal; never bypass a rule.
+- A squash into a base other than the default branch, where the repository allows only squash or
+  the base's rules require a linear history: the merger tells the architect its addressing line
+  names which open pull requests of the tree build on the merged branch. Each one whose issue
+  stands past `implementing` and that GitHub then reports `CONFLICTING` comes back to
+  `implementing` (*A conflicting head*, below), and the architect that owns its issue hears of it
+  by `checks-red`. For each pull request on that list whose issue is yours, tell its implementer
+  (`envoy_publish` to its role topic) to merge that base forward in its implementing round. One
+  whose issue is still in `implementing` gets no move, no task and no `checks-red` from the daemon.
 
 ## A conflicting head
 
@@ -186,8 +202,8 @@ The merge closes the issue: the daemon reads the merged pull request — from Gi
 from its own read of the issue — and writes `done`. An issue that reaches `merging` on a pull
 request GitHub has already merged closes at once.
 
-- A root whose merge lands while another issue of its tree is still in the workflow stays in
-  `merging`, its workers kept and live, until the last of
+- An issue whose merge lands while an issue beneath it is still in the workflow (for a root,
+  another issue of its tree) stays in `merging`, its workers kept and live, until the last of
   them is done or parked. One
   `pr-merged` notice names what it waits for and none follows as they depart, so read the pull
   request on GitHub.
@@ -215,11 +231,14 @@ a `pending`, the retry of a look nobody reported, or the check's own bound where
 When a person closes a root and it stays `done` through its linger, each child still in the
 workflow is handed to Legion as a root of its own: `todo` with the `legion` label, its phase, gate,
 phase records and pull request carried into a new generation, and that phase's role started. A
-child that never started is handed over too, carrying no run, whatever held it at `admitted`: it
-waits in the line for a slot and for any unfinished blocker, and its architect starts as a fresh
-root and registers its own spec. Only a child that finished, was parked or was never released
-stays. The child stays its own tree; reopening the old root does not take it back. The hand-over
-runs by itself and needs no action from you.
+child that had its own architect keeps that architect's session: the root's architect start
+resumes the same claim, and its next launch gives it the root architect's prompt. A child that ran
+without one gets a new architect session. A child that never started is handed over too,
+carrying no run, whatever held it at `admitted`: it waits in the line for a slot and for any
+unfinished blocker, and its architect starts as a fresh root and registers its own spec. Only a
+child that finished, was parked or was never released stays. The child stays its own tree;
+reopening the old root does not take it back. The hand-over runs by itself and needs no action
+from you.
 Park a child with `park_child` before then only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the child.
 Ask the person whether a child's work must end with the root. A root that is parked
 rather than closed hands over only a child in `merging` whose pull request is still open,
@@ -228,6 +247,9 @@ its own tree, merges that head. Ask the person whether that child's merge must w
 
 If you are that child's architect:
 
+- You may be the child's own architect from before the hand-over. Your session is the same, and
+  your role prompt is now the root architect's. Follow that prompt from your next `catch-up`,
+  which says `handed_over`.
 - Your catch-up says `handed_over` and `carried`: resume from the phase, and never register a spec
   or ask for approval again.
 - It says `handed_over` alone (no gate to carry): your workers already run their phases, so

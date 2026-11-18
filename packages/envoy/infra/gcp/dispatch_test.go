@@ -374,6 +374,20 @@ func TestDispatchRefusesAPprofPortBeforeRegistering(t *testing.T) {
 	require.ElementsMatch(t, []string{gcpProviderType, randomProviderType, tailscaleProviderType}, m.Types())
 }
 
+// A hostname that is an xn-- label the IDNA lookup profile takes, or that has "--" other than as
+// its third and fourth characters, is accepted: these rows mark where the reserved-label rule
+// stops, whose refusals TestDispatchResolverRefusesInvalidInputs holds.
+func TestDispatchHostnameTakesLabelsTheReservedLabelRuleTakes(t *testing.T) {
+	for _, hostname := range []string{"xn--bcher-kva", "xn--p1ai", "abc--d"} {
+		t.Run(hostname, func(t *testing.T) {
+			args := dispatchArgs()
+			args.Hostname = hostname
+			_, err := gcp.ResolveDispatch(args)
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 	cases := []struct {
 		name string
@@ -381,6 +395,15 @@ func TestDispatchResolverRefusesInvalidInputs(t *testing.T) {
 		err  []string
 	}{
 		{name: "an invalid hostname", edit: func(a *gcp.DispatchArgs) { a.Hostname = "dispatch-" }, err: []string{"hostname", "^[a-z][a-z0-9-]{0,24}[a-z0-9]$"}},
+		// A hostname with a label weborigin.ReservedLabel refuses is refused, in every mode, the
+		// cluster-only one included, with that function's reason; the labels it takes are in
+		// TestDispatchHostnameTakesLabelsTheReservedLabelRuleTakes.
+		{name: "a hostname of the reserved label form", edit: func(a *gcp.DispatchArgs) { a.Hostname = "ex--dispatch" }, err: []string{`hostname: host label "ex--dispatch"`, "certificate authorities"}},
+		{name: "a hostname that is an xn-- label the IDNA lookup profile refuses", edit: func(a *gcp.DispatchArgs) { a.Hostname = "xn--a" }, err: []string{`hostname: host label "xn--a"`, "Fake A-label"}},
+		{name: "a cluster-only hostname of the reserved label form", edit: func(a *gcp.DispatchArgs) {
+			*a = *dispatchClusterOnlyArgs()
+			a.Hostname = "ex--dispatch"
+		}, err: []string{`hostname: host label "ex--dispatch"`}},
 		{name: "an invalid tailnet DNS name", edit: func(a *gcp.DispatchArgs) { a.TailnetDnsName = "Example-Tailnet.ts.net" }, err: []string{"tailnetDnsName", "ts.net"}},
 		{name: "no tags", edit: func(a *gcp.DispatchArgs) { a.Tags = nil }, err: []string{"tags", "at least one"}},
 		{name: "an invalid tag", edit: func(a *gcp.DispatchArgs) { a.Tags = []string{"example-dispatch"} }, err: []string{"tags[0]", "tag:"}},
@@ -766,6 +789,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed in the front-door tools image", "frontDoorToolsImage", func(a *gcp.DispatchArgs) { a.FrontDoorToolsImage = "example.invalid/" + seed + digest }},
 		{"a seed as the sign-in client ID", "signInClientId", func(a *gcp.DispatchArgs) { a.SignInClientId = seed }},
 		{"a seed inside the sign-in domain", "signInDomain", func(a *gcp.DispatchArgs) { a.SignInDomain = lower + ".example.com" }},
+		{"a seed inside the outside origin", "outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = "https://" + lower + ".example.com" }},
 		{"a seed in the database version", "databaseVersion", func(a *gcp.DispatchArgs) { a.DatabaseVersion = pulumi.StringRef(seed) }},
 		{"a seed in the database tier", "databaseTier", func(a *gcp.DispatchArgs) { a.DatabaseTier = pulumi.StringRef(seed) }},
 		{"a seed as the database availability type", "databaseAvailabilityType", func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef(seed) }},
@@ -3019,6 +3043,58 @@ func requireKubernetesChild(t *testing.T, r pulumitest.Registration) {
 	require.Equal(t, "urn:pulumi:s::p::"+dispatchType+"::example-dispatch", r.RPC.GetParent())
 	require.Contains(t, r.RPC.GetProvider(), "pulumi:providers:kubernetes::example-dispatch-kubernetes::")
 	require.Contains(t, r.RPC.GetDependencies(), "urn:pulumi:s::p::"+dispatchType+"$gcp:container/cluster:Cluster::example-dispatch")
+}
+
+// Every Kubernetes provider the component builds applies server-side and updates ConfigMaps in
+// place. Without enableConfigMapMutable pulumi-kubernetes replaces a ConfigMap whose data changes,
+// deleting the fixed-name <hostname>-serve before it creates it again, and a front-door pod
+// scheduled in that window cannot mount its serve config. The test reads every provider
+// registration rather than one by name, in each shape the component builds, so a provider added
+// later without either setting fails here; the program the test runs declares no Kubernetes
+// provider of its own, so each one it finds is the component's. clusterOnly builds none
+// (dispatchClusterOnlyTypes).
+func TestDispatchKubernetesProvidersUpdateConfigMapsInPlace(t *testing.T) {
+	edited := func(edit func(*gcp.DispatchArgs)) *gcp.DispatchArgs {
+		args := dispatchArgs()
+		edit(args)
+		return args
+	}
+	for _, shape := range []struct {
+		name string
+		args *gcp.DispatchArgs
+	}{
+		{"a front door, NATS through its proxy", dispatchArgs()},
+		{"a front door, NATS in the cluster", edited(setInClusterNats)},
+		{"a front door without sign-in", dispatchTailnetWithoutSignInArgs()},
+		{"the broker relay and the GitHub App", dispatchBrokerAndAppArgs(t)},
+		{"the Azure embedder's key", edited(setAzureKey)},
+		{"the Azure embedder's federation", edited(setAzureFederation)},
+		{"the Azure answerer", edited(setAzureChat)},
+		{"the chat endpoint answerer", edited(setChatEndpoint)},
+		{"a priority class and every budget", edited(func(a *gcp.DispatchArgs) {
+			a.PriorityClassName = pulumi.StringRef("example-priority")
+			a.AppPdbMinAvailable = pulumi.IntRef(1)
+			a.FrontDoorPdbMinAvailable = pulumi.IntRef(1)
+			a.ListenerPdbMinAvailable = pulumi.IntRef(1)
+		})},
+		{"the sandbox, with no front door", dispatchSandboxArgs()},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			m, err := runDispatch(t, shape.args, true)
+			require.NoError(t, err)
+			var providers []string
+			for _, r := range m.Registrations() {
+				if r.Type != kubernetesProviderType {
+					continue
+				}
+				providers = append(providers, r.Name)
+				inputs := r.Inputs.Mappable()
+				require.Equal(t, true, inputs["enableServerSideApply"], "provider %s applies server-side", r.Name)
+				require.Equal(t, true, inputs["enableConfigMapMutable"], "provider %s updates ConfigMaps in place", r.Name)
+			}
+			require.NotEmpty(t, providers, "the component builds a Kubernetes provider")
+		})
+	}
 }
 
 // priorityClassName reaches every pod of the three Deployments: each template is the default's

@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  A session that registers hundreds of topics keeps its role claims renewed. The listener reduces
+  a registration's topics to its consumer's filters in a small part of the time it took before,
+  so that work no longer spends the time budget the registration's claim renewal runs on.

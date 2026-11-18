@@ -776,10 +776,17 @@ google_token() {
   printf '%s\n' "$token"
 }
 
-# gapi URL: a GET of a Google API with that token, its JSON on standard output.
+# gapi URL: a GET of a Google API with that token, its JSON on standard output. The token goes in
+# over curl's standard input as a config file, as gcurl's does, and the call is judged on curl's
+# own status for the reason gcurl gives.
 gapi() {
-  curl -fsS --max-time 60 -H "Authorization: Bearer $(google_token)" "$1" ||
-    die "GET $1 failed"
+  local status
+  set +e +o pipefail
+  printf 'header = "Authorization: Bearer %s"\n' "$(google_token)" |
+    curl -fsS --max-time 60 --config - "$1"
+  status=${PIPESTATUS[1]}
+  set -e -o pipefail
+  [ "$status" = 0 ] || die "GET $1 failed"
 }
 
 # gcurl TOKEN URL ARGS...: one call of a Google API with TOKEN, its answer on standard output

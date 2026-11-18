@@ -273,8 +273,13 @@ func (f *answersFixture) issuePlace(t *testing.T, item model.SessionAnswer, segm
 	}
 }
 
-// answersAlice is alice, the person every test writes as, as an item's author.
+// answersAlice is alice, the person every test writes as, as an answer item's author: the list
+// builds that author from the answer's login and act alone, which carry no Proven mark.
 var answersAlice = model.Actor{Kind: "user", ID: "alice"}
+
+// answersAliceProven is alice as the author of an item the list reads from a stored actor - a
+// comment, a message or a decline - which keeps the Proven mark her cookie gave the write.
+var answersAliceProven = model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
 	f := newAnswersFixture(t)
@@ -337,7 +342,7 @@ func TestSessionAnswersListsAPersonsReplyOnTheSessionsAsk(t *testing.T) {
 	if item.Kind != model.SessionAnswerKindComment || item.Relation != model.SessionAnswerRelationRepliedOnYourAsk || item.ID != reply {
 		t.Fatalf("item = %+v, want the reply %s on the session's ask", item, reply)
 	}
-	if item.Author != answersAlice || item.Text != "Which pool size do you need?" {
+	if item.Author != answersAliceProven || item.Text != "Which pool size do you need?" {
 		t.Fatalf("item words = %+v", item)
 	}
 	if item.Ask == nil || item.Ask.ID != askID || item.Ask.Question != "Which database backs the queue?" {
@@ -407,7 +412,7 @@ func TestSessionAnswersListsAPersonsReplyInAThreadOnADocumentTheSessionWrote(t *
 	reply := f.write(t, http.MethodPost, "/api/v1/artifacts/"+document.ID+"/comments", map[string]any{"body": "Then Monday.", "reply_to": root}, "alice")
 	f.publishOutbox(t)
 
-	if topics := f.destinations(t, "comment.created", reply); !slices.Contains(topics, contracts.AgentSubject(answersSession)) {
+	if topics := f.destinations(t, "comment.created", reply); !slices.Contains(topics, contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatalf("reply destinations = %v, want the session that wrote the document", topics)
 	}
 	listed := f.list(t, answersSession, "")
@@ -416,7 +421,7 @@ func TestSessionAnswersListsAPersonsReplyInAThreadOnADocumentTheSessionWrote(t *
 	}
 	item := listed.Items[0]
 	if item.ID != reply || item.Kind != model.SessionAnswerKindComment || item.Relation != model.SessionAnswerRelationRepliedInCommentThread ||
-		item.Author != answersAlice || item.Text != "Then Monday." || item.Ask != nil {
+		item.Author != answersAliceProven || item.Text != "Then Monday." || item.Ask != nil {
 		t.Fatalf("newest item = %+v, want alice's reply %s in the thread", item, reply)
 	}
 	if item.Owner == nil || item.Owner.Document == nil || item.Owner.Issue != nil ||
@@ -454,7 +459,7 @@ func TestSessionAnswersListsAMention(t *testing.T) {
 	if !f.sentCommentDelivery(t, comment, answersSession) {
 		t.Fatal("the mention was not delivered to the session")
 	}
-	if slices.Contains(f.destinations(t, "comment.created", comment), contracts.AgentSubject(answersSession)) {
+	if slices.Contains(f.destinations(t, "comment.created", comment), contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatal("the comment also reached the session's own topic; this case is the mention alone (S3)")
 	}
 
@@ -476,7 +481,7 @@ func TestSessionAnswersListsATargetedMessage(t *testing.T) {
 		t.Fatalf("answers = %+v, want the issue message then the direct one", listed)
 	}
 	for _, item := range listed.Items {
-		if item.Kind != model.SessionAnswerKindMessage || item.Relation != model.SessionAnswerRelationSentYouMessage || item.Author != answersAlice {
+		if item.Kind != model.SessionAnswerKindMessage || item.Relation != model.SessionAnswerRelationSentYouMessage || item.Author != answersAliceProven {
 			t.Fatalf("item = %+v, want a message alice sent the session", item)
 		}
 	}
@@ -521,7 +526,7 @@ func TestSessionAnswersListsAPersonsReplyToTheSessionsMessage(t *testing.T) {
 	root := f.message(t, map[string]any{"body": "The deploy is blocked on review."}, answersSession)
 	reply := f.message(t, map[string]any{"body": "I will review it now.", "in_reply_to": root}, "alice")
 	f.publishOutbox(t)
-	if topics := f.destinations(t, "message.answered", reply); !slices.Contains(topics, contracts.AgentSubject(answersSession)) {
+	if topics := f.destinations(t, "message.answered", reply); !slices.Contains(topics, contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatalf("the reply reached %v, want the session's own topic", topics)
 	}
 
@@ -538,7 +543,7 @@ func TestSessionAnswersLeavesOutAnAgentsCommentToTheSession(t *testing.T) {
 	reply := f.comment(t, map[string]any{"body": "Postgres, I would say.", "ask_id": askID}, answersOther)
 	f.publishOutbox(t)
 	// The ask's follower route ignores Notify, so the agent's reply did reach the session's topic.
-	if topics := f.destinations(t, "comment.created", reply); !slices.Contains(topics, contracts.AgentSubject(answersSession)) {
+	if topics := f.destinations(t, "comment.created", reply); !slices.Contains(topics, contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatalf("the agent's reply reached %v, want the session's own topic", topics)
 	}
 	f.empty(t, answersSession)
@@ -636,7 +641,7 @@ func TestSessionAnswersLeavesAFollowersReplyToTheDeliveredMentionAndListsItOnce(
 	if !f.sentCommentDelivery(t, reply, answersSession) {
 		t.Fatal("the mention was not delivered to the session")
 	}
-	if topics := f.destinations(t, "comment.created", reply); slices.Contains(topics, contracts.AgentSubject(answersSession)) {
+	if topics := f.destinations(t, "comment.created", reply); slices.Contains(topics, contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatalf("the reply reached %v, want the follower copy left to the delivered mention", topics)
 	}
 
@@ -663,7 +668,7 @@ func TestSessionAnswersListsACommentBothTheRouteAndAMentionHoldOnce(t *testing.T
 	// so the outbox publishes the route copy to the session's topic.
 	f.setCommentDelivery(t, comment, answersSession, "failed")
 	f.publishOutbox(t)
-	if !slices.Contains(f.destinations(t, "comment.created", comment), contracts.AgentSubject(answersSession)) {
+	if !slices.Contains(f.destinations(t, "comment.created", comment), contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatal("the route copy did not reach the session's topic")
 	}
 	// A retry delivers the mention: both sources now hold the comment.
@@ -828,7 +833,7 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 	f.publishOutbox(t)
 	topics := f.destinations(t, "ask.resolved", askID)
 	for _, session := range []string{answersSession, answersOther} {
-		if !slices.Contains(topics, contracts.AgentSubject(session)) {
+		if !slices.Contains(topics, contracts.LegacyAgentSubject(session)) {
 			t.Fatalf("the decline reached %v, want %s's own topic", topics, session)
 		}
 	}
@@ -837,7 +842,7 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 	if item.Kind != model.SessionAnswerKindDeclined || item.Relation != model.SessionAnswerRelationDeclinedYourAsk || item.ID != askID {
 		t.Fatalf("item = %+v, want the decline of ask %s under a kind and a relation of its own", item, askID)
 	}
-	if item.Author != answersAlice || item.Text != note || item.DispatchWords != model.DeclineDispatchWords {
+	if item.Author != answersAliceProven || item.Text != note || item.DispatchWords != model.DeclineDispatchWords {
 		t.Fatalf("item words = %+v, want alice's note and Dispatch's sentences apart", item)
 	}
 	// Nobody chose an option, so the item carries none: a reader drawing an answer's options under
@@ -909,7 +914,7 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 	}
 	f.publishOutbox(t)
 	for _, ask := range []string{retracted, withdrawn} {
-		if reached := f.destinations(t, "ask.resolved", ask); !slices.Contains(reached, contracts.AgentSubject(answersSession)) {
+		if reached := f.destinations(t, "ask.resolved", ask); !slices.Contains(reached, contracts.LegacyAgentSubject(answersSession)) {
 			t.Fatalf("the resolution of ask %s reached %v, want the session's own topic", ask, reached)
 		}
 	}
@@ -950,7 +955,7 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 			  and e.created_at >= $1
 			  and $2 = any(e.published_destinations)`
 		plan := planWithoutSeqScans(t, f.database, statement,
-			time.Now().UTC().Add(-72*time.Hour), contracts.AgentSubject(answersSession))
+			time.Now().UTC().Add(-72*time.Hour), contracts.LegacyAgentSubject(answersSession))
 		if explaintest.SeqScansRelation(t, plan, "events") {
 			t.Fatalf("%s scans events sequentially; want %s:\n%s", read.name, declineIndex, plan)
 		}

@@ -4928,15 +4928,85 @@ func snapshotAndCommitVersion(t *testing.T, service *Service, artifactID string,
 // settlement after a quiet settle delay does; settleNow settles the room as it stands.
 func settleCurrentGeneration(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to reach persistence: %v", err)
-	}
-	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to become durable: %v", err)
-	}
+	awaitRoomAppends(t, service, artifactID, "reach persistence", service.waitForPendingUpdates)
+	awaitRoomAppends(t, service, artifactID, "become durable", service.waitForDurableAppends)
 	settleNow(service, artifactID)
+}
+
+// appendStall is how long awaitRoomAppends lets the service land no append at all, while the room
+// it waits for still counts one, before it fails: three times the longest such stall measured, as
+// docs/testing.md asks of a bound. With this bound lifted to 10 min, the package as CI runs it, on
+// a 288-CPU machine at a load of 230 when it began (2026-11-16), had 927 of these waits go more
+// than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 5 s
+// or more; the longest went 5.363 s.
+const appendStall = 16 * time.Second
+
+// awaitRoomAppends waits until room's live updates have reached its persistence or landed, by
+// wait - the service's waitForPendingUpdates or waitForDurableAppends, which the room's idle
+// signal wakes - and fails the test if they do not. It puts no span on the wait: a room's appends
+// queue behind every other room's on the service's room-appends pool, so how long they take grows
+// with how many rooms the test drives at once, one per CPU for a test whose subtests run in
+// parallel, and with the machine's load. It fails on appends that have stopped instead: no append
+// landed anywhere in the service and the room's own counts unchanged for appendStall, or the run's
+// deadline 30 s away, so that the failure names this wait rather than the binary's timeout.
+func awaitRoomAppends(t *testing.T, service *Service, room, what string, wait func(context.Context, string) error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waited := make(chan error, 1)
+	go func() { waited <- wait(ctx, room) }()
+	type progress struct {
+		landed  uint64
+		pending int
+		durable int64
+	}
+	read := func() progress {
+		pending, durable := roomAppendCounts(service, room)
+		return progress{landed: service.appendFigures.batches.Load(), pending: pending, durable: durable}
+	}
+	last, movedAt := read(), time.Now()
+	deadline, bounded := t.Deadline()
+	check := time.NewTicker(100 * time.Millisecond)
+	defer check.Stop()
+	for {
+		select {
+		case err := <-waited:
+			if err != nil {
+				t.Fatalf("wait for live updates to %s: %v", what, err)
+			}
+			return
+		case now := <-check.C:
+			if current := read(); current != last {
+				last, movedAt = current, now
+			}
+			var why string
+			switch {
+			case now.Sub(movedAt) >= appendStall:
+				why = fmt.Sprintf("no append landed in the service for %s", appendStall)
+			case bounded && deadline.Sub(now) < 30*time.Second:
+				why = "the run's deadline is 30 s away"
+			default:
+				continue
+			}
+			cancel()
+			<-waited
+			t.Fatalf("wait for live updates to %s: %s, and the room counts %d updates its persistence has not taken and %d appends that have not landed",
+				what, why, last.pending, last.durable)
+		}
+	}
+}
+
+// roomAppendCounts is what room's record counts: updates its persistence has not taken, and
+// durable appends that have not landed. A room with no record counts neither.
+func roomAppendCounts(service *Service, room string) (pending int, durable int64) {
+	value, ok := service.rooms.Load(room)
+	if !ok {
+		return 0, 0
+	}
+	state := value.(*roomState)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.pendingUpdates, state.durableAppends.Load()
 }
 
 // settleNow runs the room's settlement at its current generation at once, whatever the room has not
@@ -6132,8 +6202,9 @@ func TestTreeOfRefusesAnUnloadedDocument(t *testing.T) {
 
 // A room evicted after settleRoom's generation check but before it reads the live document
 // (an Evict whose timer Stop misses the timer that already fired) must not make the settle
-// dereference a nil document and crash the server. The settle ends quietly and the next
-// write to the room settles on its own.
+// dereference a nil document and crash the server. The settle stops short, and since the
+// eviction moved the room's generation its retry arms nothing: the next write to the room settles
+// on its own.
 func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
@@ -6175,6 +6246,51 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	}
 	if markdown != "later\n" {
 		t.Fatalf("version %d markdown = %q, want %q", version.Number, markdown, "later\n")
+	}
+}
+
+// A settlement whose room a close retires between its warm-up and its read of the room, a close
+// that moves no room generation - ygo's idle sweep, the close of the room at its issue's reopen, a
+// repeated close of a record that already reads closed; the test closes the room through ygo
+// (CloseRoom), which moves none - has no room to settle from, and no load of the document follows
+// to arm its settlement again: the timer that ran it was its only arming. It stops short
+// (errRoomReplaced), and its retry warms the room again and settles the document. An eviction
+// moves the generation, so its settlement is not retried and the document is left to the reload
+// (TestSettleSurvivesEvictionBetweenWarmAndTreeRead).
+func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	versions := latestVersionNumber(t, service, artifactID)
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	waitForLandedAppends(t, service, artifactID)
+	var closed atomic.Bool
+	service.afterSettleWarm = func(room string) {
+		if room != artifactID || !closed.CompareAndSwap(false, true) {
+			return
+		}
+		if err := service.srv.CloseRoom(room, true); err != nil {
+			t.Errorf("close the room between the settlement's warm-up and its read: %v", err)
+		}
+	}
+	// The hook stays in place, one-shot through the CAS, so nothing races the settlement that
+	// reads it. The delay is written once, before the settlement it arms.
+	service.settle = 20 * time.Millisecond
+	service.scheduleSettle(artifactID)
+	waitFor(t, roomWait(t), "the document whose room closed under its settlement to settle", func() bool {
+		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
+		return err == nil && !owed
+	})
+	if !closed.Load() {
+		t.Fatal("no settlement reached the window between its warm-up and its read of the room")
+	}
+	if latest := latestVersionNumber(t, service, artifactID); latest != versions+1 {
+		t.Fatalf("latest version = %d, want %d: the retried settlement wrote no version", latest, versions+1)
+	}
+	requireLatestVersionMarkdown(t, service, artifactID, "after\n")
+	if err := service.roomFailure(artifactID); err != nil {
+		t.Fatalf("the document's room failed: %v", err)
 	}
 }
 

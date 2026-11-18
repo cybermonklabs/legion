@@ -76,8 +76,9 @@
 # carries no consumer of that session, and the session is resumed from its session file under the
 # same id: its consumer is created again, at the position recorded before the delete, and the
 # issue comments stored while it was away reach it exactly once. The run ends the same way, both
-# sessions stopped on their stdin's end of file, and the stream must then hold no `s-` consumer at
-# all.
+# sessions stopped on their stdin's end of file, and the stream must then hold no `s-` consumer of
+# either session the run registered; a consumer of any other session is another run's and is left
+# alone.
 #
 # A direct send is judged by its own answer. The listener stores a send to every session Envoy
 # knows, whether it holds a live registration for it or knows it only from its 30-day
@@ -86,13 +87,18 @@
 # answered 200 is expected once, since the session's own consumer hands the stored message over
 # when the session returns, and one answered 404 reaches nobody and is expected 0 times; any other
 # answer is a send that failed and stays expected once, so the table shows it as a miss. A role
-# reaches only a holder the listener holds a live registration for: one with none reads lapsed, so
-# neither a role publish nor a core publish on its role topic is forwarded to it. Those two events
-# are expected 0 times for such a session, as a Dispatch message Dispatch could not send is, and
-# publish_rest reads the registry of the listener it sends through to say which. Only window g ever
-# reads 0 there: a SIGKILLed session stays registered until its entry lapses, five minutes on. What
-# is stored for a session that is away — the followed issue's comments, the direct send and the
-# Dispatch message to it — is handed over on its return, and that is what window g proves.
+# publish is judged by its own answer too. The listener forwards it to a holder it holds a live
+# registration for and answers 200; for a holder with none it keeps the message on the role's kept
+# lane for an hour and answers 202 kept (`kept_reason: "holder_lapsed"`), and the registration
+# that makes that holder live again hands the kept copy over. So a role publish answered 200 or
+# 202 is expected once, and one answered 404 kept nothing and is expected 0 times (a `keep: false`
+# publish would be one, and this run sends none); any other answer stays expected once. A core
+# publish on a role topic is expected once in every window: the role lane forwards it to a live
+# holder and keeps it for one that is not. Window g's cleanly stopped Oh My Pi session has no
+# registration at all, and it comes back under the same id within the hour still holding its
+# role, so each of its role events reaches it once. What is stored for a session that is away —
+# the followed issue's comments, the direct send, the Dispatch message and the role messages to
+# it — is handed over on its return, and that is what window g proves.
 #
 # After each window, up to SESSION_DELIVERY_SETTLE_S for every marker to reach its session, then
 # SESSION_DELIVERY_HOLD_S more for a repeat. At the end every marker is counted in every
@@ -161,6 +167,12 @@
 # stream and max_tokens, how many tools and messages it carries, and the answer's status. It
 # writes no header value and no message text, so the log holds no key and no conversation. The
 # serve banner names the file. ANTHROPIC_BASE_URL is required with it: the proxy forwards there.
+#
+# --issue-topic-form old|new names the form of the issue topic each session is told to follow: old
+# (the default) is notifications.dispatch.issue.<KEY>.>, new is the form that names the key's
+# project first, notifications.dispatch.issue.<PROJECT>.<KEY>.> (dispatch://INFRA-3862). Dispatch
+# publishes in the old form until its producers move, so the new form's run is the proof that a
+# session following the new form receives what is published in the old one.
 #
 # Inputs (required ones refuse to start without them):
 #   LEGION_TEST_PG_DSN            required: a loopback Postgres with pgvector, as
@@ -239,6 +251,7 @@ disruptions="a,b,c,d,e,f,g,h"
 disruptions_given=""
 serve=""
 log_model_requests=""
+issue_topic_form=old
 while (($#)); do
   case $1 in
   --build-from) [ $# -ge 2 ] || refuse "--build-from needs a revision"; build_from=$2; shift 2 ;;
@@ -249,6 +262,11 @@ while (($#)); do
   --disruptions) [ $# -ge 2 ] || refuse "--disruptions needs a list"; disruptions=$2; disruptions_given=1; shift 2 ;;
   --serve) serve=1; shift ;;
   --log-model-requests) log_model_requests=1; shift ;;
+  --issue-topic-form)
+    [[ $# -ge 2 && ($2 == old || $2 == new) ]] || refuse "--issue-topic-form needs old or new"
+    issue_topic_form=$2
+    shift 2
+    ;;
   -h | --help) usage; exit 0 ;;
   *) refuse "unknown argument '$1' (--help lists them)" ;;
   esac
@@ -811,10 +829,12 @@ dispatch_user() {
   curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H "X-Dispatch-User: ${dispatch_person}" \
     ${3:+-d "$3"} -w '\n%{http_code}' "${dispatch_url}$2"
 }
-# dispatch_agent METHOD PATH BODY: a request as the session live-delivery-driver (the agent token).
+# dispatch_agent METHOD PATH BODY: a request as the session live-delivery-driver (the agent token,
+# which reaches curl on standard input, in no command line).
 dispatch_agent() {
-  curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H "Authorization: Bearer ${agent_token}" \
-    -d "$(jq -c '. + {actor: {kind: "session", id: "live-delivery-driver"}}' <<<"$3")" -w '\n%{http_code}' "${dispatch_url}$2"
+  printf 'Authorization: Bearer %s' "$agent_token" |
+    curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H @- \
+      -d "$(jq -c '. + {actor: {kind: "session", id: "live-delivery-driver"}}' <<<"$3")" -w '\n%{http_code}' "${dispatch_url}$2"
 }
 answer_ok() { [[ "${1##*$'\n'}" == 2?? ]]; }
 answer_body() { printf '%s' "${1%$'\n'*}"; }
@@ -827,7 +847,15 @@ followed_issue=$(answer_body "$answer" | jq -r .key)
 answer=$(dispatch_user POST /api/v1/issues '{"project":"LIVE","title":"Direct messages"}')
 answer_ok "$answer" || fail "Dispatch refused the messages issue: $answer"
 message_issue=$(answer_body "$answer" | jq -r .key)
-issue_topic="notifications.dispatch.issue.${followed_issue}.>"
+# issue_topic_of KEY: the topic of every event of issue KEY in the form --issue-topic-form names.
+issue_topic_of() {
+  if [[ $issue_topic_form == new ]]; then
+    printf 'notifications.dispatch.issue.%s.%s.>' "${1%%-*}" "$1"
+  else
+    printf 'notifications.dispatch.issue.%s.>' "$1"
+  fi
+}
+issue_topic=$(issue_topic_of "$followed_issue")
 note "Dispatch issues: ${followed_issue} (followed, ${issue_topic}) and ${message_issue} (direct messages)"
 second_topic=""
 second_issue=""
@@ -837,7 +865,7 @@ if [[ -n "$second_followed_issue" ]]; then
   answer=$(dispatch_user POST /api/v1/issues '{"project":"LIVE","title":"The second followed issue","force":true}')
   answer_ok "$answer" || fail "Dispatch refused the second followed issue: $answer"
   second_issue=$(answer_body "$answer" | jq -r .key)
-  second_topic="notifications.dispatch.issue.${second_issue}.>"
+  second_topic=$(issue_topic_of "$second_issue")
   note "second followed issue ${second_issue} (${second_topic}): both sessions follow two issue topics and a role"
 fi
 
@@ -1147,9 +1175,11 @@ for await (const m of messages) {
 }
 await nc.close();
 '
+# The stream holds the comments on the subject Dispatch publishes them on, which is the old form
+# whatever form the sessions follow (--issue-topic-form) until Dispatch's producers move.
 stored_comments() {
   (cd -- "$repo_root" && isolated_exec "" HOME="$work/bun-home" TMPDIR="$work" LIVE_NATS_URL="$nats_url" \
-    LIVE_SUBJECT="$issue_topic" -- bun -e "$stored_js") 2>>"$work/logs/stored-comments.log"
+    LIVE_SUBJECT="notifications.dispatch.issue.${followed_issue}.>" -- bun -e "$stored_js") 2>>"$work/logs/stored-comments.log"
 }
 
 # The window's events, in this order: Dispatch's writes (when Dispatch is up), the listener sends,
@@ -1195,20 +1225,13 @@ publish_rest() {
   # session), and answers it 200, so it is expected once, because the session's own consumer hands
   # it over when the session returns. A 404 is a session neither store knows: the send reaches
   # nobody and is expected 0 times. Any other answer is a send that failed, which stays expected
-  # once so the table shows it as a miss. The role publish and the core publish on the role topic
-  # reach only a holder the listener holds a live registration for: one with none reads lapsed, so
-  # neither is forwarded to it, and each is then published to nobody and expected 0 times, as a
-  # Dispatch message Dispatch could not send is. Only window g's cleanly stopped session has no
-  # registration here: a session SIGKILLed or cut off its NATS connection stays registered until
-  # its entry lapses, five minutes on (contracts.SessionLiveWindow).
-  local -A live=()
-  for label in pi cc; do
-    live[$label]=1
-    if ! registered "$via" "${sid[$label]}"; then
-      live[$label]=0
-      note "window $d: listener $via holds no live registration for $label (${sid[$label]}); its role's forwards reach nobody, and each is expected 0 times"
-    fi
-  done
+  # once so the table shows it as a miss. The role publish's expectation comes from its own answer
+  # the same way: 200 is a forward to a live holder and 202 a copy kept for a holder that is not
+  # live (window g's cleanly stopped session, whose claim stands), which the registration that
+  # makes it live again hands over, so both are expected once; 404 kept nothing and is expected 0
+  # times, and any other answer stays expected once. The core publish on the role topic is expected
+  # once in every window: the role lane forwards it to a live holder and keeps it for one that is
+  # not, as the route does.
   for label in pi cc; do
     next_marker
     text=$(text_for "$d" agent "POST /v1/messages/send to listener $via")
@@ -1223,13 +1246,15 @@ publish_rest() {
     text=$(text_for "$d" role "POST /v1/messages/publish to listener $via")
     answer=$(listener_post "$via" /v1/messages/publish "$(jq -nc --arg t "notifications.role.${role[$label]}" --arg m "$text" \
       '{topic: $t, source: "agent", source_session: "envoy-session-delivery", message: $m}')")
-    record "$d" role listener-publish "$label" "${live[$label]}" "$answer"
+    expected=1
+    [[ "${answer##*$'\n'}" != 404 ]] || expected=0
+    record "$d" role listener-publish "$label" "$expected" "$answer"
   done
   for label in pi cc; do
     next_marker
     text=$(text_for "$d" role "a core publish on notifications.role.${role[$label]}")
     answer=$(core_publish "notifications.role.${role[$label]}" "$text")
-    record "$d" role core-publish "$label" "${live[$label]}" "$answer"
+    record "$d" role core-publish "$label" 1 "$answer"
   done
   next_marker
   text=$(text_for "$d" team "POST /v1/messages/publish to listener $via")
