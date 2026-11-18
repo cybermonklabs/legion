@@ -326,8 +326,8 @@ func cmExplore(t *testing.T, v cmVariant, periods int) cmResult {
 // and write a row between a try's answer and its park and for a send to park after a failed read;
 // the full run (ENVOY_MENTION_ORDER_MODEL=full) adds the outage pair at four periods, enough for a
 // claim to lapse and the sweep to hand its send back, and CI guards what only they reach with
-// TestALostRefreshNeverRevivesALapsedClaim, TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim
-// and TestAHandOffAfterTheRetryCheckIsNotDropped on the database.
+// TestALostRefreshNeverRevivesALapsedClaim and TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim
+// on the database and TestAHandOffAfterTheRetryCheckIsNotDropped on a sender with stub statements.
 func TestTheMentionSenderClaimModel(t *testing.T) {
 	if model.DeliveryClaimLapse != cmLapsePeriods*mentionClaimRefresh {
 		t.Fatalf("the model counts a claim's lease as %d refresh periods; model.DeliveryClaimLapse is %v and mentionClaimRefresh %v",

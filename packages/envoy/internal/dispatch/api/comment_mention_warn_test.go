@@ -112,6 +112,10 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 		defer sender.mu.Unlock()
 		return len(sender.held) == 0
 	})
+	// A send leaves held (claimedDuring) before its goroutine logs its late WARN (reportLate):
+	// join that goroutine before reading the log.
+	stop()
+	sender.wait()
 	logged := logs.String()
 	t.Logf("WARN lines: %d", strings.Count(logged, marker))
 	for _, id := range []string{"a-first", "a-second"} {
@@ -439,12 +443,15 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			case <-time.After(5 * time.Second):
 				t.Fatal("the send neither went nor parked")
 			}
-			// reportLate runs after the try returns: wait for the goroutine to let the send go.
+			// reportLate runs after the send leaves held, on the goroutine that served it: wait
+			// for the send to go, then join that goroutine before reading the log.
 			waitUntil(t, 2*time.Second, "the sender to let the send go", func() bool {
 				sender.mu.Lock()
 				defer sender.mu.Unlock()
 				return len(sender.held) == 0
 			})
+			stop()
+			sender.wait()
 			const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
 			var line string
 			for l := range strings.SplitSeq(logs.String(), "\n") {

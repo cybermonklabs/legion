@@ -362,15 +362,18 @@ type cmArrival struct {
 // cmLock is the sender's lock under the model: the mutex that guards the sender's state, taken
 // by every caller, and, for the sender's own goroutines - those serving a lane, and the refresh -
 // a wait for the model to let it be taken, which makes each locked section a step. The model's
-// own calls into the sender (enqueue, unpark, wait) and its reads of the sender's state take the
-// mutex alone.
+// own calls into the sender (enqueue, unpark, wait) take the mutex alone, and its reads of the
+// sender's state take the embedded mutex directly. A lock taken from any other function of the
+// sender panics, naming it: a locked section the model does not know of would otherwise run
+// outside every step, and the search would miss each window it opens.
 type cmLock struct {
 	sync.Mutex
 	r *cmRun
 }
 
 func (l *cmLock) Lock() {
-	if site := cmCaller(1); site.lane || site.refresh {
+	switch site := cmCaller(1); {
+	case site.lane || site.refresh:
 		grant := make(chan struct{})
 		select {
 		case l.r.arrivals <- cmArrival{refresh: site.refresh, lock: grant, site: site.name}:
@@ -380,16 +383,19 @@ func (l *cmLock) Lock() {
 			}
 		case <-l.r.done:
 		}
+	case !site.model:
+		panic("the claim model: the sender takes its lock at " + site.name +
+			", which is neither a step of a lane goroutine or the refresh nor a call of the model's own (cmCaller)")
 	}
 	l.Mutex.Lock()
 }
 
 // cmSite is where a call came from: the function and line, and whose goroutine makes it - a lane
-// goroutine's (serve), the refresh's (refreshHeldClaims), or neither, the model's own call. Each
-// of the sender's functions that takes its lock, or calls its reread, runs on one of them only.
+// goroutine's (serve), the refresh's (refreshHeldClaims), or the model's own call. Each of the
+// sender's functions that takes its lock, or calls its reread, runs on one of them only.
 type cmSite struct {
-	name          string
-	lane, refresh bool
+	name                 string
+	lane, refresh, model bool
 }
 
 // cmSites caches cmCaller's answer by program counter.
@@ -414,6 +420,8 @@ func cmCaller(skip int) cmSite {
 		site.lane = true
 	case "refreshHeldClaims", "rereadUnsure":
 		site.refresh = true
+	case "enqueue", "unpark", "wait":
+		site.model = true
 	}
 	cmSites.Store(pc[0], site)
 	return site

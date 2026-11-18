@@ -301,15 +301,14 @@ type mentionSender struct {
 	done    sync.WaitGroup
 }
 
-// senderLock is the lock that guards a mention sender's state (mentionSender.mu): a plain
-// *sync.Mutex in every process, which newMentionSender gives each sender and this assertion pins,
-// so the lock is no wrapper and does no work of its own there.
+// senderLock is the lock that guards a mention sender's state (mentionSender.mu). In every process
+// it is a plain *sync.Mutex, which newMentionSender, the sender's one constructor, gives each
+// sender, so the lock is no wrapper and does no work of its own there; only the claim model puts
+// a lock of its own in its place.
 type senderLock interface {
 	Lock()
 	Unlock()
 }
-
-var _ senderLock = (*sync.Mutex)(nil)
 
 // startMentionSender builds the server's mention sender (register), which sends on the server's
 // lifetime and drains for at most mentionDrainTimeout once it ends. An attempt no sender reaches
