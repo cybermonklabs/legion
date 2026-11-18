@@ -432,7 +432,7 @@ each attempt's budget is `slow_command_timeout_seconds` (300 s by default), or, 
 From Sandbox creation through the probe container starting, the daemon allows a separate 300 s startup phase: the documented 213 s cold start fits that bound.
 Once it observes the probe container running, it starts the command phase for the attempt budget and gives `probe-image` a relative command budget 60 s shorter, leaving the command's deadline to report before the daemon collects its exit and log.
 Pod scheduling and image pull consume the startup phase, so the worst-case boot wait is the 300 s startup bound plus the attempt budget.
-Each TLS client has a bound of its own: 20 s for most, 60 s for `bq`, whose refusal of a chain retries three times and whose every call starts three Python interpreters, and 90 s for Chromium's cold start (`packages/daemon/cmd/legion/tls_probe.go`).
+Each TLS client has a bound of its own: 20 s for most, 60 s for `bq`, whose refusal of a chain tries its request three times, sleeping 2 and 4 s between the tries, and whose every call starts three Python interpreters, and 90 s for Chromium's cold start (`packages/daemon/cmd/legion/tls_probe.go`).
 The probe holds `gcloud`, `bq`, `az` and `mise` to the compromised chains only where each is on `PATH`.
 Where one is not, the probe reports it `absent` and fails nothing for it, because those four are outside the floor every deployment's image is held to.
 A command stopped by the aggregate budget is unavailable with `probe deadline`, so the image probe fails closed naming its client and site.
@@ -654,10 +654,10 @@ and `dig -v` prints its version on stdout, measured in a pod of the image (`dig 
 The step checks `yq` with `--version` rather than `-v`, which is mikefarah's verbose flag:
 `-v` emits `level=DEBUG` lines and reads stdin rather than printing a version.
 It reruns only when the toolchain or an earlier layer changes, so a commit that only rebuilds `legion` needs no package registry.
-A WebKit step follows it.
+A WebKit step runs earlier, as `legion`, right after the runtime stage copies Bun in.
 It downloads the WebKit build of the Playwright `packages/dispatch` locks, about 90 MB from Playwright's CDN, into a scratch directory it removes, and launches it once, headless, through Playwright's own host validation (`packages/daemon/docker/webkit-launch.mjs`).
 So a pull request that moves `packages/dispatch` to a Playwright whose WebKit needs a library the image lacks fails the `worker-image` job.
-Its layer reruns only when the base, the packages, the toolchain, the locked Playwright or `webkit-launch.mjs` changes, never for a change to `legion` alone.
+It reads Node from the toolchain stage's `/opt/node` and `playwright-core` from the plugin stage by bind mount, and BuildKit reads a bind mount's source by content, so its layer reruns only when the base or its packages, Bun, the Node pin, the locked Playwright or `webkit-launch.mjs` changes, never for a change to the plugins, the skills, the toolchain step or `legion`.
 To check a published image's toolchain end to end, a project Python install included:
 
 ```sh

@@ -62,13 +62,14 @@
 # and the license of every third-party piece of
 # all that at /usr/share/doc/legion/THIRD_PARTY_NOTICES (the notices stage; its Debian list comes from
 # the image's own dpkg database).
-# The last four RUNs gate the publish, as the runtime user: the first checks every binary runs on
-# the base, proves jj accepts the image's git with a network-free `jj git clone` of a scratch
-# repository, and links the CodeGraph plugin into the profile, which fetches Oh My Pi's natives; the second
-# runs every toolchain command, the language servers', Python's and the browser's included; the third
-# downloads the WebKit build of the Playwright packages/dispatch locks into a scratch directory and
-# launches it once, headless, through Playwright's own host validation, so a Playwright whose WebKit
-# needs a library the image lacks fails the build; the last
+# Four RUNs of the runtime stage gate the publish, each as the runtime user. The first downloads
+# the WebKit build of the Playwright packages/dispatch locks into a scratch directory and launches
+# it once, headless, through Playwright's own host validation, so a Playwright whose WebKit needs a
+# library the image lacks fails the build; the second checks every binary runs on the base, proves
+# jj accepts the image's git with a network-free `jj git clone` of a scratch repository, and links
+# the CodeGraph plugin into the profile, which extracts Oh My Pi's natives from its binary; the
+# third runs every toolchain command, the language servers', Python's and the browser's included;
+# the last
 # runs `legion version` and `legion probe-image`, which runs the three launch probes (the daemon's two
 # plus the session-storage probe), holds the Legion plugin to the daemon API contract and proves it
 # loads with the Envoy plugin, holds the claude-envoy root the same way — its built channel server,
@@ -184,7 +185,7 @@ ARG GCLOUD_SHA256=1f7233537c26bba94a3ea3f9085a60396745eaf44b21b8454fc6fdd15bb6fc
 # 2026-11-18. uv checks the CPython it downloads against the SHA-256 it carries for that release.
 # azure-cli's own version is no ARG: it lives in packages/daemon/docker/azure-cli/requirements.in,
 # its one home, and in the hashed lock beside it, requirements.txt.
-ARG AZURE_CLI_PYTHON=3.13.17
+ARG AZURE_CLI_PYTHON_VERSION=3.13.17
 # The language servers Oh My Pi's LSP tools start for TypeScript and Python install from the
 # committed lockfile at packages/daemon/docker/language-servers (COPY'd into the toolchain stage),
 # with scripts off (`npm ci --ignore-scripts`): a reproducible install off that lockfile, no ARG
@@ -585,10 +586,12 @@ RUN set -eu; \
     mv "$t/chrome-linux64" /out/chromium; \
     rm -rf "$t"
 # The Google Cloud SDK, in a RUN of its own after the one above, which makes /out/bin and
-# /out/licenses, so a bump of its pin rebuilds this layer and the azure-cli one below it and no
+# /out/licenses, so a bump of its pin rebuilds this layer and azure-cli's two layers below it and no
 # other. The archive is checked against GCLOUD_SHA256 (the ARG block says where that hash comes
 # from) before it is unpacked into /opt/google-cloud-sdk, and CLOUDSDK_CONFIG keeps the build's own
-# gcloud configuration in the scratch directory the RUN removes. `--usage-reporting false` and the
+# gcloud configuration in the scratch directory the RUN removes. install.sh lists the channel's
+# components, which reads the component list from dl.google.com, the archive's host.
+# `--usage-reporting false` and the
 # installation property component_manager/disable_update_check stop the SDK reporting usage and
 # looking for a newer release. The installation property core/custom_ca_certs_file points gcloud
 # and bq at Debian's root bundle. As the SDK ships, both trust the CA files it bundles, which hold
@@ -605,13 +608,16 @@ RUN set -eu; \
 # but the generated API clients compiled, and to 2.7-2.9 s with them too; a bq call went from
 # 11.2-16.8 s to 6.4-7.2 s. The generated API clients (lib/googlecloudsdk/generated_clients) hold
 # 144 MB of the 260 MB of bytecode a whole compile writes, for 212 APIs in 427 versions, of which a
-# gcloud command imports the one it calls, so they are left to compile at run time, except compute
-# v1, the client the TLS probe's gcloud call imports (5.8 MB). What the RUN compiles, about 124 MB,
-# sits beside the SDK's 428 MB (both read from a scratch install of 594.0.0). compileall's -x
-# leaves out the trees that hold the Python 2 sources the archive still carries, which Python 3
-# cannot compile: the python2/ trees, the two third_party/yaml trees (lib's constructor.py and
-# resolver.py are Python 2) and bq's third_party/gflags. Any other file that fails to compile fails
-# the build, so a version bump that adds one fails here and is read by a person. The installer's
+# gcloud command imports the one it calls, so the compile leaves them out, except compute v1, the
+# client the TLS probe's gcloud call imports (5.8 MB). The RUN's own `gcloud config set` calls run
+# as root before the compile and write the bytecode of what they import, which holds
+# generated_clients/apis/apis_map.py too. What the RUN compiles, about 124 MB, sits beside the
+# SDK's 428 MB (both read from a scratch install of 594.0.0). compileall's -x leaves out the trees
+# that hold the Python 2 sources the archive still carries, which Python 3 cannot compile: the
+# python2/ trees, lib's third_party/yaml tree (its constructor.py and resolver.py are Python 2) and
+# bq's third_party/gflags. bq's own third_party/yaml is PyYAML for Python 3, which bq imports on
+# every command, so it is compiled. Any other file that fails to compile fails the build, so a
+# version bump that adds one fails here and is read by a person. The installer's
 # .install/.backup goes too. gcloud and bq are linked from /out/bin and gsutil is not; the SDK's
 # LICENSE and its bundled CPython's LICENSE.txt go to the notices stage.
 ARG GCLOUD_VERSION
@@ -627,7 +633,7 @@ RUN set -eu; \
     /opt/google-cloud-sdk/bin/gcloud config set --installation component_manager/disable_update_check true; \
     /opt/google-cloud-sdk/bin/gcloud config set --installation core/custom_ca_certs_file /etc/ssl/certs/ca-certificates.crt; \
     sdkpython=/opt/google-cloud-sdk/platform/bundledpythonunix/bin/python3; \
-    "$sdkpython" -m compileall -q -j0 -x '/python2/|/third_party/yaml/|/third_party/gflags/|/generated_clients/' \
+    "$sdkpython" -m compileall -q -j0 -x '/python2/|/lib/third_party/yaml/|/third_party/gflags/|/generated_clients/' \
       /opt/google-cloud-sdk/lib /opt/google-cloud-sdk/platform/bq; \
     "$sdkpython" -m compileall -q -j0 /opt/google-cloud-sdk/lib/googlecloudsdk/generated_clients/apis/compute/v1; \
     rm -rf /opt/google-cloud-sdk/.install/.backup "$t"; \
@@ -636,9 +642,10 @@ RUN set -eu; \
     cp /opt/google-cloud-sdk/platform/bundledpythonunix/lib/python3.*/LICENSE.txt /out/licenses/google-cloud-sdk-python-LICENSE.txt
 # azure-cli, in a RUN of its own after the SDK's. Its tree is self-contained, as /opt/node, /opt/go
 # and /opt/aws-cli are: a virtual environment, /opt/azure-cli/env, on the CPython uv installs under
-# /opt/azure-cli/python (ARG AZURE_CLI_PYTHON), rather than on Debian's /usr/bin/python3, because
-# LINUX's worker-lean and linux-host images are Ubuntu, and a venv on this stage's python3 would not
-# run there when they copy /opt/azure-cli whole. The install takes wheels alone from the hashed lock,
+# /opt/azure-cli/python (ARG AZURE_CLI_PYTHON_VERSION), rather than on Debian's /usr/bin/python3,
+# because LINUX's worker-lean and linux-host images are Ubuntu, and a venv on this stage's python3
+# would not run there when they copy /opt/azure-cli whole. The install takes wheels alone from the
+# hashed lock,
 # packages/daemon/docker/azure-cli/requirements.txt, with --require-hashes and --no-deps, so every
 # byte it installs is one the lock names and nothing the lock leaves out comes in (requirements.in
 # beside it holds azure-cli's pin and the command that writes the lock). --compile-bytecode, because
@@ -652,21 +659,25 @@ RUN set -eu; \
 # nowhere else. `chmod -R a+rX,go-w` leaves it readable by the runtime user and writable by root
 # alone. /usr/local/bin/az, through /out/bin, is a link to /opt/azure-cli/bin/az,
 # packages/daemon/docker/azure-cli/az: the wrapper that sets azure-cli's CA-bundle and telemetry
-# defaults, and says why they are set there. The LICENSE.txt of the wheel and the one of the CPython
-# go to the notices stage.
-ARG AZURE_CLI_PYTHON
-COPY --chmod=0755 packages/daemon/docker/azure-cli/az /opt/azure-cli/bin/az
+# defaults, and says why they are set there. The wrapper is copied after the install, by a COPY
+# that makes it root's and mode 0755 itself, so an edit of it rebuilds that one layer and
+# reinstalls none of the 150 wheels. The LICENSE.txt of the wheel and the one of the CPython go to
+# the notices stage, each read from the python3.<minor> directory the RUN derives from ARG
+# AZURE_CLI_PYTHON_VERSION, so a bump of its minor reads the new directory.
+ARG AZURE_CLI_PYTHON_VERSION
 RUN --mount=type=bind,source=packages/daemon/docker/azure-cli/requirements.txt,target=/tmp/azure-cli/requirements.txt \
     set -eu; \
+    py="python${AZURE_CLI_PYTHON_VERSION%.*}"; \
     scratch="$(mktemp -d)"; export HOME="$scratch" UV_CACHE_DIR="$scratch/uv-cache"; \
-    UV_PYTHON_INSTALL_DIR=/opt/azure-cli/python /out/bin/uv venv --python "cpython-${AZURE_CLI_PYTHON}-linux-x86_64-gnu" /opt/azure-cli/env; \
+    UV_PYTHON_INSTALL_DIR=/opt/azure-cli/python /out/bin/uv venv --python "cpython-${AZURE_CLI_PYTHON_VERSION}-linux-x86_64-gnu" /opt/azure-cli/env; \
     /out/bin/uv pip install --python /opt/azure-cli/env/bin/python --require-hashes --only-binary :all: --no-deps \
       --compile-bytecode --no-cache -r /tmp/azure-cli/requirements.txt; \
     rm -rf /opt/azure-cli/python/.lock /opt/azure-cli/python/.temp /opt/azure-cli/python/.gitignore "$scratch"; \
     chmod -R a+rX,go-w /opt/azure-cli; \
     ln -s /opt/azure-cli/bin/az /out/bin/az; \
-    cp /opt/azure-cli/env/lib/python3.13/site-packages/azure_cli-*.dist-info/licenses/LICENSE.txt /out/licenses/azure-cli-LICENSE.txt; \
-    cp /opt/azure-cli/python/cpython-"${AZURE_CLI_PYTHON}"-linux-x86_64-gnu/lib/python3.13/LICENSE.txt /out/licenses/azure-cli-python-LICENSE.txt
+    cp /opt/azure-cli/env/lib/"$py"/site-packages/azure_cli-*.dist-info/licenses/LICENSE.txt /out/licenses/azure-cli-LICENSE.txt; \
+    cp /opt/azure-cli/python/cpython-"${AZURE_CLI_PYTHON_VERSION}"-linux-x86_64-gnu/lib/"$py"/LICENSE.txt /out/licenses/azure-cli-python-LICENSE.txt
+COPY --chmod=0755 packages/daemon/docker/azure-cli/az /opt/azure-cli/bin/az
 
 # ------------------------------------------------------------------------------------------------
 # runtime-base: debian:trixie-slim for its git (2.47; jj 0.45's git backend needs >= 2.42 — bookworm
@@ -901,8 +912,8 @@ RUN dpkg-query -W -f '${db:Status-Status} ${Package}\n' > /tmp/dpkg-packages \
 # the license files its archive ships beside them, which for five of them in 594.0.0 is none (attr,
 # cattr and pyparsing under lib/third_party, cachetools and pyglib under platform/bq/third_party,
 # read 2026-11-18). A missing or empty file fails the build. The
-# fetches depend only on the pins, so they come first, in a layer a source change reuses; the
-# assembly reads the other stages' outputs after them.
+# fetches depend only on the pins they read, so they come first, in a layer a source change
+# reuses; the assembly reads the other stages' outputs after them.
 FROM tools AS notices
 ARG BUN_VERSION
 ARG MISE_VERSION
@@ -912,14 +923,11 @@ ARG UV_VERSION
 ARG AWS_CLI_VERSION
 ARG KUBECTL_VERSION
 ARG YQ_VERSION
-ARG GCLOUD_VERSION
-ARG AZURE_CLI_PYTHON
 ARG GO_VERSION
 ARG GOPLS_VERSION
 COPY --from=plugin /out/codegraph-node-version /in/codegraph-node-version
 COPY packages/daemon/docker/language-servers/package.json /in/language-servers/package.json
 COPY packages/daemon/docker/codegraph/package.json /in/codegraph/package.json
-COPY packages/daemon/docker/azure-cli/requirements.in packages/daemon/docker/azure-cli/requirements.txt /in/azure-cli/
 # The twenty-two reads below (sixteen LICENSE/NOTICE fetches, six HEAD checks) are independent
 # of each other and left sequential rather than backgrounded: this whole RUN is the cached layer
 # the stage comment above describes (a source change, not a pin bump, reuses it, so it rebuilds
@@ -934,15 +942,10 @@ RUN set -eu; \
     pin() { sed -n "s|^ *\"$2\": \"\([^\"]*\)\".*|\1|p" "/in/$1/package.json"; }; \
     typescript_version=$(pin language-servers typescript); tsls_version=$(pin language-servers typescript-language-server); pyright_version=$(pin language-servers pyright); \
     codegraph_version=$(pin codegraph @colbymchenry/codegraph); \
-    azure_cli_version=$(sed -n 's/^azure-cli==//p' /in/azure-cli/requirements.in); \
     : "${typescript_version:?typescript pin not read from /in/language-servers/package.json}"; : "${tsls_version:?typescript-language-server pin not read from /in/language-servers/package.json}"; : "${pyright_version:?pyright pin not read from /in/language-servers/package.json}"; : "${codegraph_version:?@colbymchenry/codegraph pin not read from /in/codegraph/package.json}"; \
-    : "${azure_cli_version:?azure-cli pin not read from /in/azure-cli/requirements.in}"; \
-    printf 'omp_repo=%s\nomp_tag=%s\njj_repo=%s\njj_tag=%s\ngh_tag=%s\ncodegraph_node_tag=%s\ncodegraph_version=%s\ntypescript_version=%s\ntsls_version=%s\npyright_version=%s\nazure_cli_version=%s\n' \
+    printf 'omp_repo=%s\nomp_tag=%s\njj_repo=%s\njj_tag=%s\ngh_tag=%s\ncodegraph_node_tag=%s\ncodegraph_version=%s\ntypescript_version=%s\ntsls_version=%s\npyright_version=%s\n' \
       "$omp_repo" "$omp_tag" "$jj_repo" "$jj_tag" "$gh_tag" "$codegraph_node_tag" "$codegraph_version" \
-      "$typescript_version" "$tsls_version" "$pyright_version" "$azure_cli_version" > /in/tags.env; \
-    distributions="$(sed -n 's/^\([A-Za-z0-9._-]*==[^ ]*\).*/\1/p' /in/azure-cli/requirements.txt)"; \
-    : "${distributions:?no name==version pin read from /in/azure-cli/requirements.txt}"; \
-    printf 'azure-cli installs these Python distributions under /opt/azure-cli/env, each from its wheel, with the\nlicense file that wheel ships, where it ships one, and the METADATA that names its license, both in its\n*.dist-info directory under /opt/azure-cli/env/lib/python3.13/site-packages:\n%s\n' "$distributions" > /in/azure-cli-distributions; \
+      "$typescript_version" "$tsls_version" "$pyright_version" > /in/tags.env; \
     gh_raw_url() { printf 'https://raw.githubusercontent.com/%s/%s/%s' "$1" "$2" "$3"; }; \
     fetch() { curl -fsSL "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }; \
     fetch oven-sh/bun "bun-v${BUN_VERSION}" LICENSE.md bun-LICENSE.md; \
@@ -974,6 +977,14 @@ RUN set -eu; \
     printf 'kubectl links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/kubernetes/kubernetes/blob/v%s/go.mod, the module file of the release this image installs.\nThe k8s.io modules that file replaces with ./staging/src (kubectl itself, client-go, apimachinery, cli-runtime\nand component-base among them) are source of the Kubernetes release itself, each with its license file under\nhttps://github.com/kubernetes/kubernetes/tree/v%s/staging/src/k8s.io; the license of every other module is in\nhttps://github.com/kubernetes/kubernetes/tree/v%s/LICENSES/vendor.\n' "$KUBECTL_VERSION" "$KUBECTL_VERSION" "$KUBECTL_VERSION" > /in/kubectl-modules; \
     curl -fsSIo /dev/null "$(gh_raw_url mikefarah/yq "v${YQ_VERSION}" go.mod)"; \
     printf 'yq links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/mikefarah/yq/blob/v%s/go.mod, the module file of the release this image installs; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$YQ_VERSION" > /in/yq-modules
+# GCLOUD_VERSION, AZURE_CLI_PYTHON_VERSION and azure-cli's lock come in after the fetches, which
+# read none of them; the assembly RUN below is what reads them. BuildKit puts every ARG declared
+# before a RUN into that RUN's environment, and so into its cache key, and a COPY before a RUN
+# changes the layer it runs on, so above the fetches a gcloud or CPython bump or a new lock would
+# rerun the twenty-two reads.
+ARG GCLOUD_VERSION
+ARG AZURE_CLI_PYTHON_VERSION
+COPY packages/daemon/docker/azure-cli/requirements.in packages/daemon/docker/azure-cli/requirements.txt /in/azure-cli/
 COPY scripts/assemble-third-party-notices.sh /usr/local/bin/
 COPY --from=debian-packages /debian-packages /in/debian-packages
 COPY --from=go /out/go-notices /in/go-notices
@@ -992,6 +1003,11 @@ COPY --from=toolchain /opt/language-servers/node_modules/typescript-language-ser
 COPY --from=toolchain /opt/language-servers/node_modules/pyright/LICENSE.txt /in/pyright-LICENSE.txt
 COPY --from=toolchain /opt/language-servers/node_modules/pyright/dist/typeshed-fallback/LICENSE /in/pyright-typeshed-LICENSE
 RUN set -eu; mkdir -p /out; . /in/tags.env; \
+    azure_cli_version=$(sed -n 's/^azure-cli==//p' /in/azure-cli/requirements.in); \
+    : "${azure_cli_version:?azure-cli pin not read from /in/azure-cli/requirements.in}"; \
+    distributions="$(sed -n 's/^\([A-Za-z0-9._-]*==[^ ]*\).*/\1/p' /in/azure-cli/requirements.txt)"; \
+    : "${distributions:?no name==version pin read from /in/azure-cli/requirements.txt}"; \
+    printf 'azure-cli installs these Python distributions under /opt/azure-cli/env, each from its wheel, with the\nlicense file that wheel ships, where it ships one, and the METADATA that names its license, both in its\n*.dist-info directory under /opt/azure-cli/env/lib/%s/site-packages:\n%s\n' "python${AZURE_CLI_PYTHON_VERSION%.*}" "$distributions" > /in/azure-cli-distributions; \
     assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
       "Third-party software in the Legion worker image, with the license of each piece. Legion's own code is under the Apache License 2.0. The Debian packages the image installs, listed in the first section below, carry their terms in /usr/share/doc/<package>/copyright. npm packages installed unmodified carry their own license files beside them: the CodeGraph plugin and its dependencies under /opt/omp-plugins/node_modules, the CodeGraph CLI's dependencies under /opt/codegraph/lib/node_modules, and the language servers under /opt/language-servers/node_modules (their sections below). azure-cli's Python distributions carry their own license files in their *.dist-info directories under /opt/azure-cli/env, where a wheel ships one (azure-cli's sections below)." \
       "Debian packages installed in the image, one per line, each with its terms in /usr/share/doc/<package>/copyright" /in/debian-packages \
@@ -1018,7 +1034,7 @@ RUN set -eu; mkdir -p /out; . /in/tags.env; \
       "Google Cloud SDK ${GCLOUD_VERSION}, /opt/google-cloud-sdk (gcloud and bq at /usr/local/bin): the LICENSE its release archive ships; the libraries it vendors under /opt/google-cloud-sdk/lib/third_party, platform/bq/third_party and platform/gsutil/third_party carry the license files the archive ships beside them" /in/google-cloud-sdk-LICENSE \
       "Google Cloud SDK: the LICENSE.txt of the CPython it bundles, /opt/google-cloud-sdk/platform/bundledpythonunix" /in/google-cloud-sdk-python-LICENSE.txt \
       "azure-cli ${azure_cli_version}, /opt/azure-cli (az at /usr/local/bin): the LICENSE.txt its wheel ships" /in/azure-cli-LICENSE.txt \
-      "azure-cli: the LICENSE.txt of CPython ${AZURE_CLI_PYTHON}, /opt/azure-cli/python, which uv installs" /in/azure-cli-python-LICENSE.txt \
+      "azure-cli: the LICENSE.txt of CPython ${AZURE_CLI_PYTHON_VERSION}, /opt/azure-cli/python, which uv installs" /in/azure-cli-python-LICENSE.txt \
       "azure-cli: the Python distributions it installs" /in/azure-cli-distributions \
       "kubectl v${KUBECTL_VERSION}, /usr/local/bin/kubectl: LICENSE of github.com/kubernetes/kubernetes at v${KUBECTL_VERSION}" /in/kubectl-LICENSE \
       "kubectl: the Go modules it links" /in/kubectl-modules \
@@ -1041,6 +1057,31 @@ LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
 # Pinned Bun: the binary the plugin stage packed with (the copy of oven/bun:${BUN_VERSION}-slim).
 COPY --from=plugin /usr/local/bin/bun /usr/local/bin/bun
 RUN ln -s bun /usr/local/bin/bunx
+# The WebKit step, the check R7 of dispatch://INFRA-3257 asks for: it downloads the WebKit build of
+# the Playwright packages/dispatch locks (about 90 MB, from Playwright's CDN) and launches it once,
+# headless, through Playwright's own host validation (packages/daemon/docker/webkit-launch.mjs), so
+# a pull request that moves packages/dispatch to a Playwright whose WebKit needs a library the
+# runtime-base apt line lacks fails this build: ci.yaml's worker-image job runs on bun.lock and
+# packages/dispatch/package.json, and gates ci-ok. It keeps nothing. It runs as the runtime user, as
+# a role does, and the stage returns to root after it. It reads Node from the toolchain stage's
+# /opt/node (the image's own copy comes in later, with the toolchain) and playwright-core from the
+# plugin stage's /out/playwright-core, both by bind mount, so the image carries no copy of
+# playwright-core, and HOME, TMPDIR and PLAYWRIGHT_BROWSERS_PATH point into a scratch directory the
+# step removes, so the browser is downloaded there. Its layer follows runtime-base, Bun and the bunx
+# link alone, and BuildKit reads a bind mount's source by content, so it reruns only when the base
+# or its packages, Bun, the Node pin, the locked Playwright or webkit-launch.mjs changes — never for
+# a change to the plugins, the skills, the toolchain step or `legion`.
+USER 1000:1000
+RUN --mount=type=bind,from=plugin,source=/out/playwright-core,target=/tmp/playwright-core \
+    --mount=type=bind,from=toolchain,source=/opt/node,target=/opt/node \
+    --mount=type=bind,source=packages/daemon/docker/webkit-launch.mjs,target=/tmp/webkit-launch.mjs \
+    set -eu; \
+    scratch="$(mktemp -d)"; \
+    export HOME="$scratch" TMPDIR="$scratch" PLAYWRIGHT_BROWSERS_PATH="$scratch/browsers"; \
+    /opt/node/bin/node /tmp/playwright-core/cli.js install webkit; \
+    /opt/node/bin/node /tmp/webkit-launch.mjs /tmp/playwright-core; \
+    rm -rf "$scratch"
+USER root
 COPY --from=tools /opt/omp /opt/omp
 COPY --from=tools /opt/tools/jj /usr/local/bin/jj
 COPY --from=tools /opt/tools/gh /usr/local/bin/gh
@@ -1299,25 +1340,6 @@ RUN set -eu; \
     psql -X -q "$probe_dsn" -c 'drop database probe with (force)'; \
     LEGION_TESTPG_DIR="$scratch/testpg" legion-testpg stop; \
     rm -rf "$scratch"
-# The WebKit step, the check R7 of dispatch://INFRA-3257 asks for: it downloads the WebKit build of
-# the Playwright packages/dispatch locks (about 90 MB, from Playwright's CDN) and launches it once,
-# headless, through Playwright's own host validation (packages/daemon/docker/webkit-launch.mjs), so
-# a pull request that moves packages/dispatch to a Playwright whose WebKit needs a library the
-# runtime-base apt line lacks fails this build: ci.yaml's worker-image job runs on bun.lock and
-# packages/dispatch/package.json, and gates ci-ok. It keeps nothing. The playwright-core it runs is
-# the plugin stage's /out/playwright-core, bind-mounted, so the image carries no copy of it, and
-# HOME, TMPDIR and PLAYWRIGHT_BROWSERS_PATH point into a scratch directory the step removes, so the
-# browser is downloaded there. Its layer reruns only when the image's base, packages, toolchain, the
-# locked Playwright or webkit-launch.mjs changes (BuildKit reads both bind mounts by content), never
-# for a change to `legion` alone.
-RUN --mount=type=bind,from=plugin,source=/out/playwright-core,target=/tmp/playwright-core \
-    --mount=type=bind,source=packages/daemon/docker/webkit-launch.mjs,target=/tmp/webkit-launch.mjs \
-    set -eu; \
-    scratch="$(mktemp -d)"; \
-    export HOME="$scratch" TMPDIR="$scratch" PLAYWRIGHT_BROWSERS_PATH="$scratch/browsers"; \
-    node /tmp/playwright-core/cli.js install webkit; \
-    node /tmp/webkit-launch.mjs /tmp/playwright-core; \
-    rm -rf "$scratch"
 # Claude Code's pin, packages/daemon/docker/claude-code's package.json and package-lock.json, at
 # /opt/legion/claude-code (claudeCodePin, packages/daemon/internal/runtime/sandbox/names.go):
 # root's, under the root-owned /opt/legion the final step checks, and all of Claude Code this
@@ -1462,9 +1484,10 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # It needs the natives step 3 extracted, which the cached probe layer above carries. The step leaves no
 # residue: Oh My Pi's logs, and the Go telemetry counters the capability check's `go version` writes
 # under HOME (the toolchain step's XDG_CONFIG_HOME does not reach a probe that runs as a pod would).
-# The step also requires that the probe's gcloud, bq and az calls left no configuration in the
-# runtime user's home: neither /home/legion/.config/gcloud nor /home/legion/.azure may exist after
-# it.
+# The step also requires that the probe's gcloud, bq, az and mise calls left none of their state in
+# the runtime user's home (the TLS probe keeps it in a state directory of its own, mise's HOME and
+# every MISE_*_DIR included): none of /home/legion/.config/gcloud, /home/legion/.azure,
+# /home/legion/.cache/mise and /home/legion/.local/share/mise may exist after it.
 # Each plugin root's package.json must name the version of this checkout's manifest (bind-mounted
 # from the build context, so the image keeps no copy), or the release version a release passes
 # (PI_ENVOY_VERSION, PI_LEGION_VERSION): an image whose plugin roots name any other version, or no
@@ -1525,6 +1548,7 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     test "$version" = "$expected"; \
     legion probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy --claude-root /opt/legion/claude-envoy --claude-code-pin /opt/legion/claude-code --skip-agent-models; \
     test ! -e /home/legion/.config/gcloud; test ! -e /home/legion/.azure; \
+    test ! -e /home/legion/.cache/mise; test ! -e /home/legion/.local/share/mise; \
     agent-secrets --help >/dev/null; \
     rm -rf /home/legion/.omp/profiles/legion/logs /home/legion/.config/go
 # The Kubernetes runtime sets every container's command explicitly

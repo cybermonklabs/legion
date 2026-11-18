@@ -19,7 +19,7 @@ const (
 	tlsDefaultProbeTimeout  = 20 * time.Second
 	tlsChromiumProbeTimeout = 90 * time.Second
 	tlsDetailLimit          = 300
-	// bq's refusal of a chain retries its request three times, sleeping 2 and 4 s between the
+	// bq's refusal of a chain tries its request three times, sleeping 2 and 4 s between the
 	// tries, and each call starts three Python interpreters (the SDK's launcher, bq.py and the
 	// `gcloud config` subprocess bq runs): measured on 2026-11-18 at 5-13 s of wall time and
 	// 4.5-7 s of CPU a call on 2 vCPU.
