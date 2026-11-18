@@ -80,13 +80,12 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // shim that hands every call to the next gh on PATH, which is the wrapper, is caught when it
 // does: every real gh this command runs, for a help read or for the call itself, is given
 // leakguard.RunByRealGhVar, and a `legion gh` started under it refuses, exit 2, so the help read
-// that reached it fails and nothing runs again. Before this, each such run read the real gh's
-// help by running it, which ran this command, which read the help again, without end. The leak
-// guard blanks the variable for every child it runs (leakguard's Guard.env says why): a push
-// a real gh makes reaches the guard with it set, through git's pre-push hook, and the guard's
-// visibility reads, which come back through this command, are the guard's and not that gh's.
-// Each such read runs its own real gh under the variable again, so a real gh that leads back is
-// still refused one start later, with or without a caller's GH_TOKEN.
+// that reached it fails and nothing runs again. The leak guard blanks the variable for every child
+// it runs (leakguard's Guard.env says why): a push a real gh makes reaches the guard with it set,
+// through git's pre-push hook, and the guard's visibility reads, which come back through this
+// command, are the guard's and not that gh's. Each such read runs its own real gh under the
+// variable again, so a real gh that leads back is still refused one start later, with or without
+// a caller's GH_TOKEN.
 //
 // Everything this command starts before gh — the help reads (readGhHelp), and the leak guard's
 // children, the shared check and the visibility reads, which the guard starts under the context
@@ -131,11 +130,6 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		logCall = false
 		return answerVisibilityRead(beforeGh, read, stdout, stderr)
 	}
-	// Past the two answers above, gh's own git credential helper and the shared check's read,
-	// nothing a real gh runs is a `legion gh`: one started under the variable is a loop. The
-	// leak guard's own visibility reads, which a real gh's push reaches through git's pre-push
-	// hook, do not stop here: the guard blanks the variable for every child it runs, and the
-	// real gh each read runs below is given it again.
 	if real := env[leakguard.RunByRealGhVar]; real != "" {
 		fmt.Fprintf(stderr, "legion gh: the real gh %s ran `legion gh` again, so it is no real gh but a wrapper or shim that leads back to this one; set LEGION_GH_PATH to the real gh's install path\n", real)
 		return 2
@@ -616,8 +610,6 @@ func endedBySignal(cause error) (status int, ok bool) {
 	return 0, false
 }
 
-// errHangup is the cause hangupCancels cancels its context with on a SIGHUP, in the words
-// os/signal gives main's own signals, so a message that prints it reads as theirs do.
 var errHangup = errors.New(syscall.SIGHUP.String() + " signal received")
 
 // hangupCancels is ctx, cancelled with errHangup as well when a SIGHUP reaches this process before
@@ -648,22 +640,19 @@ func hangupCancels(ctx context.Context) (context.Context, func()) {
 		case <-done:
 		}
 	}()
-	var once sync.Once
-	return hup, func() {
-		once.Do(func() {
-			signal.Stop(signals)
-			close(done)
-			<-watched
-			// The watch may have taken done over a SIGHUP already in the channel; Stop has made
-			// sure no other comes.
-			select {
-			case <-signals:
-				cancel(errHangup)
-			default:
-			}
-			cancel(nil)
-		})
-	}
+	return hup, sync.OnceFunc(func() {
+		signal.Stop(signals)
+		close(done)
+		<-watched
+		// The watch may have taken done over a SIGHUP already in the channel; Stop has made
+		// sure no other comes.
+		select {
+		case <-signals:
+			cancel(errHangup)
+		default:
+		}
+		cancel(nil)
+	})
 }
 
 // forwardTo sends each signal it reads from signals on to process, until the returned stop is
@@ -1135,7 +1124,6 @@ func refuseLegionGhAsRealGh(gh, wrapper string) error {
 	return nil
 }
 
-// ghHelpTimeout bounds one help read (readGhHelp).
 var ghHelpTimeout = 30 * time.Second
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for

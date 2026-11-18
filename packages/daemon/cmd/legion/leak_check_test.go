@@ -153,10 +153,6 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 	}
 }
 
-// legionLeakCheckPrePush runs this test binary as `legion leak-check pre-push origin <url>` in a
-// process of its own, as git's pre-push hook runs it under the gh that pushes: in the repository
-// dir, with line on standard input and the environment legionGhCommand builds from env, whose PATH
-// leads to a pane's `gh` wrapper. It answers the status and what reached standard error.
 func legionLeakCheckPrePush(t *testing.T, dir string, env map[string]string, line, url string) (int, string) {
 	t.Helper()
 	cmd := legionGhCommand(t, dir, env)
