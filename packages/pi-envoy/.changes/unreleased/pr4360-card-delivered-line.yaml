@@ -10,9 +10,11 @@ body: |-
   no such entries: a resume of it takes an old card's time from its ledger record or its place in
   the session, also when the resumed process writes the card again before its first request. Its
   place is now read from the session's message entries alone, so a `custom` entry Oh My Pi wrote
-  before the card's entry with a later stamp no longer moves it. That time can still differ from
-  the one the earlier release showed: by seconds, when the ledger stamped the card late, and by one
-  second, when the estimate from its place falls in the second before the time shown.
+  before the card's entry with a later stamp no longer moves it. That time can still differ by
+  seconds from the one the earlier release showed: when the ledger stamped the card late, and when
+  the card has no ledger record and Oh My Pi stamped its entry with the time it was handed the card,
+  seconds before the earlier release's `message_end` when the card arrived while that process was
+  still starting.
 time: 2026-11-18T04:11:15Z
 custom:
     Issue: pr4360

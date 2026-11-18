@@ -112,9 +112,10 @@ interface CardText {
  * resumed the session replays a card whose ledger record the process before it never wrote, so
  * takes the delivery of the older entry of its event, never the time of its own write, and both
  * copies read the same; a card written for the first time takes its own entry's estimate when the
- * host wrote that entry before the write's handler ran, milliseconds from the write. Any of those
- * times but the session's own record is fixed when first used and recorded then. A card known by
- * none of them keeps its text as it is.
+ * host wrote that entry before the write's handler ran: a time no later than the write, and
+ * seconds before it when the card waited for the process to start. Any of those times but the
+ * session's own record is fixed when first used and recorded then. A card known by none of them
+ * keeps its text as it is.
  *
  * Each of those deliveries is remembered and recorded under the session it belongs to as well as
  * the event, because one process serves a session at a time and moves between sessions: a session
@@ -133,8 +134,10 @@ interface CardText {
  * difference. A card the session holds no readable record for (written by an older release, or one
  * whose record `CardAgesDeps.record` did not write) takes, after a resume, its ledger record's time
  * or its branch position, also when the resumed process writes it again before its first request.
- * That can differ from the time the process before showed by seconds, when the ledger stamped the
- * card late, and by one second, when the branch estimate falls in the second before that time.
+ * That can differ from the time the process before showed by seconds: when the ledger stamped the
+ * card late, and when the card has no ledger record and the host stamped its entry with the time
+ * it was handed the card, seconds before the earlier release's `message_end` when the card arrived
+ * while that process was still starting.
  */
 export class CardAges {
   readonly #deps: CardAgesDeps;
@@ -153,9 +156,9 @@ export class CardAges {
    * again, as a process that resumed the session replays a card whose ledger record the process
    * before it never wrote, takes the delivery of the older entry of its event, never the time of
    * its own write. A card written for the first time takes its own entry's estimate when the host
-   * wrote that entry before this handler ran, milliseconds from the write, else the time of the
-   * write. `branch` is that session's entries, read only when this process holds no delivery for
-   * the pair.
+   * wrote that entry before this handler ran (a time no later than the write, and seconds before it
+   * when the card waited for the process to start), else the time of the write. `branch` is that
+   * session's entries, read only when this process holds no delivery for the pair.
    */
   written(message: unknown, sessionID: string, branch: () => readonly unknown[]): void {
     const eventID = writtenCardIdentity(message)?.event_id;
