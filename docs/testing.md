@@ -81,11 +81,13 @@ itself, whose tests import its sources by relative path.
   whose `afterAll` puts the name back and removes the root. Anything staged under that root is
   staged in a hook too, since the name holds the caller's value until that `beforeAll` has run.
   Both forms take `root`, the directory the temporary one is made in, for a test that needs another
-  filesystem, such as `/dev/shm` for a rename that must cross one. Both remove a tree a test left
-  read-only: the removal chmods `u+rwX` down the tree first, following no symlink out of it and
-  leaving a file's own mode alone, because `rmSync` alone fails on the 0555 directories and 0444
-  files a Go module cache writes, and because a file in such a tree can be a hard link to one
-  outside it.
+  filesystem, such as `/dev/shm` for a rename that must cross one. `memoryRoot()` names `/dev/shm`
+  where it is a writable tmpfs that allows exec, else `tmpdir()`: a suite that makes or removes many
+  entries inside one row's or hook's time takes it as `root`, so a busy shared disk does not set
+  that time. Both remove a tree a test left read-only: the removal chmods `u+rwX` down the tree
+  first, following no symlink out of it and leaving a file's own mode alone, because `rmSync` alone
+  fails on the 0555 directories and 0444 files a Go module cache writes, and because a file in such
+  a tree can be a hard link to one outside it.
 
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held

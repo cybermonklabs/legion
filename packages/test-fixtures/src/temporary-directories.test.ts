@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import { temporaryDirectories, temporaryDirectory } from "./temporary-directories";
+import { memoryRoot, temporaryDirectories, temporaryDirectory } from "./temporary-directories";
 
 const makeDirectory = temporaryDirectories("test-fixtures-per-test");
 
@@ -105,6 +105,67 @@ describe("a one-shot directory a whole describe shares", () => {
 test("removed the one-shot directory when its suite ended", () => {
   expect(fromTheOneShot).not.toBe("");
   expect(existsSync(fromTheOneShot)).toBe(false);
+});
+
+/** The path the describe under a given root below made, which the row after it finds removed. */
+let fromTheGivenRoot = "";
+
+// The root is itself a one-shot directory, made by the outer `beforeAll` before the inner one
+// makes the directory under it and removed after the inner `afterAll`, so the row between the two
+// reads the inner directory gone from a root that is still there.
+describe("a one-shot directory under a root it is given", () => {
+  const root = temporaryDirectory("test-fixtures-given-root");
+
+  describe("the directory reserved under that root", () => {
+    const under = temporaryDirectory("test-fixtures-under-root", { root });
+
+    test("makes its directory under the root it is given", () => {
+      fromTheGivenRoot = under;
+      expect(existsSync(under)).toBe(true);
+      expect(dirname(under)).toBe(root);
+      expect(basename(under)).toStartWith("test-fixtures-under-root-");
+    });
+  });
+
+  test("removed the directory under the given root when its suite ended", () => {
+    expect(fromTheGivenRoot).not.toBe("");
+    expect(existsSync(root)).toBe(true);
+    expect(existsSync(fromTheGivenRoot)).toBe(false);
+  });
+});
+
+/** A mountinfo file holding the root mount, then `shm`, each a line of `/proc/self/mountinfo`. */
+function mountinfo(...shm: string[]): string {
+  const file = join(makeDirectory("mountinfo"), "mountinfo");
+  const lines = ["26 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw", ...shm];
+  writeFileSync(file, lines.map((line) => `${line}\n`).join(""));
+  return file;
+}
+
+/** `/dev/shm` as a Linux host mounts it: a tmpfs, read-write, without `noexec`. */
+const writableShm = "32 28 0:26 / /dev/shm rw,nosuid,nodev shared:3 - tmpfs tmpfs rw,inode64";
+const noexecShm = "32 28 0:26 / /dev/shm rw,nosuid,nodev,noexec shared:3 - tmpfs tmpfs rw";
+
+test("names /dev/shm where it is a writable tmpfs that allows exec", () => {
+  expect({
+    alone: memoryRoot(mountinfo(writableShm)),
+    // The last mount at a path is the one a process sees.
+    overNoexec: memoryRoot(mountinfo(noexecShm, writableShm.replace(/^32 /, "40 "))),
+  }).toEqual({ alone: "/dev/shm", overNoexec: "/dev/shm" });
+});
+
+test("names tmpdir() where /dev/shm is noexec, read-only, not a tmpfs or not mounted", () => {
+  const cases = {
+    noexec: mountinfo(noexecShm),
+    readOnly: mountinfo("32 28 0:26 / /dev/shm ro,nosuid,nodev shared:3 - tmpfs tmpfs ro"),
+    notTmpfs: mountinfo("32 26 8:1 /shm /dev/shm rw,relatime shared:1 - ext4 /dev/sda1 rw"),
+    notMounted: mountinfo(),
+    noexecOverWritable: mountinfo(writableShm, noexecShm.replace(/^32 /, "40 ")),
+    unreadable: join(makeDirectory("no-mountinfo"), "mountinfo"),
+  };
+  expect(
+    Object.fromEntries(Object.entries(cases).map(([name, file]) => [name, memoryRoot(file)]))
+  ).toEqual(Object.fromEntries(Object.keys(cases).map((name) => [name, tmpdir()])));
 });
 
 /** The path the skipped describe below reserved, which no hook of that describe ever makes. */
