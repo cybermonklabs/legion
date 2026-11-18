@@ -240,7 +240,7 @@
     "leaks": [
       {
         "row": "site-oidc-client-check",
-        "base": "25bfa0a5ad",
+        "base": "87112a0b71",
         "files": [
           "packages/envoy/internal/oidc/boundary_rows_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -249,7 +249,7 @@
       },
       {
         "row": "site-device-refresh",
-        "base": "e0915c551e",
+        "base": "87112a0b71",
         "files": [
           "packages/envoy/internal/brokerclient/boundary_rows_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -258,25 +258,25 @@
       },
       {
         "row": "site-ts-token-type-minted",
-        "base": "25bfa0a5ad",
+        "base": "87112a0b71",
         "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
         "row": "site-ts-issuer-said",
-        "base": "25bfa0a5ad",
+        "base": "87112a0b71",
         "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
         "row": "site-ts-signin-ended",
-        "base": "25bfa0a5ad",
+        "base": "87112a0b71",
         "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
         "row": "leak-launcher-exchange-failed",
-        "base": "e0915c551e",
+        "base": "87112a0b71",
         "files": [
           "packages/daemon/internal/launcher/metadata_redact_test.go",
           "packages/daemon/internal/launcher/metadata_test.go"
@@ -285,7 +285,7 @@
       },
       {
         "row": "site-oidc-discovery",
-        "base": "25bfa0a5ad",
+        "base": "87112a0b71",
         "files": [
           "packages/envoy/internal/oidc/boundary_rows_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -294,7 +294,7 @@
       },
       {
         "row": "site-gcloud-stderr",
-        "base": "e0915c551e",
+        "base": "87112a0b71",
         "files": [
           "packages/envoy/cmd/agent-secrets/remote_boundary_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -303,7 +303,7 @@
       },
       {
         "row": "site-gcp-userinfo",
-        "base": "e0915c551e",
+        "base": "87112a0b71",
         "files": [
           "packages/envoy/cmd/agent-secrets/remote_boundary_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"
@@ -312,7 +312,7 @@
       },
       {
         "row": "site-gcp-secret-manager-token",
-        "base": "e0915c551e",
+        "base": "87112a0b71",
         "files": [
           "packages/envoy/cmd/agent-secrets/secret_gcp_token_refusal_test.go",
           "packages/envoy/internal/redact/redacttest/redacttest.go"

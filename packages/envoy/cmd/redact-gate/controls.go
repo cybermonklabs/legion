@@ -103,9 +103,10 @@ const (
 	boxTSFile      = "packages/contracts/src/remote-text.ts"
 	printTable     = "packages/envoy/internal/redact/redacttest/printtable.go"
 	// githubRow is the GitHub check run's detail row, and githubBase the revision control (16)
-	// applies its test to: the tree before the box, whose detail quoted GitHub's message raw.
+	// applies its test to: main before this change, a commit on origin, whose detail quoted GitHub's
+	// message raw.
 	githubRow  = "results-ci"
-	githubBase = "22a20fadda"
+	githubBase = "87112a0b71"
 )
 
 const (
