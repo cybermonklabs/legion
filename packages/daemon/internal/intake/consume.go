@@ -52,7 +52,7 @@ const boundedReadsPerFact = 3
 // HandlerLimitCeiling is the derived limit above which a wedged handler's message no longer
 // returns to the stream within one operator's look, which is what the limit is for. Nothing
 // refuses a configuration whose window derives a limit above it; the daemon's boot line and
-// `legion start --check-config` say so instead (daemon.IntakeHandlerLimitLine), which is why it
+// `legion config check` say so instead (daemon.IntakeHandlerLimitLine), which is why it
 // is exported.
 const HandlerLimitCeiling = time.Hour
 

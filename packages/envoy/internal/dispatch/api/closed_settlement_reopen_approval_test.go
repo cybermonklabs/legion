@@ -19,7 +19,7 @@ import (
 
 // A close withdraws the spec's approval request and a reopen restores it with the turn it had, so
 // a person who was asked to approve the spec is asked again after the reopen, as before the close
-// (restoreIssueAsksTx). The settlements the closed period and the reopen leave owed save the
+// (prepareRestoration, recordRestoredAsksTx). The settlements the closed period and the reopen leave owed save the
 // blocks the close and the reopen wrote, and nothing else: neither is a change the request's agent
 // made to the text it handed the person. So after both have run, the request still waits on the
 // person, the spec still reads awaiting approval from the person, and the request is still in the

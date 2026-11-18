@@ -89,7 +89,9 @@ test("the control's Retry after a stopped save goes under that save's key", asyn
     const stopped = patchIssue.mock.calls.length;
 
     held.answering = true;
-    act(() => hook.result.current.retry());
+    const { retry } = hook.result.current;
+    expect(retry).toBeDefined();
+    act(() => retry?.());
     await tick(1_000);
 
     expect(patchIssue).toHaveBeenCalledTimes(stopped + 1);
@@ -124,7 +126,9 @@ test("a Retry after the control moved to another issue is of the stopped save's 
     hook.rerender();
     const shown = hook.result.current.error;
     held.answering = true;
-    act(() => hook.result.current.retry());
+    const { retry } = hook.result.current;
+    expect(retry).toBeDefined();
+    act(() => retry?.());
     await tick(1_000);
 
     expect(patchIssue).toHaveBeenCalledTimes(stopped + 1);
@@ -145,9 +149,10 @@ test("a Retry after the control moved to another issue is of the stopped save's 
   }
 });
 
-// A pick made during a save waits behind it, one per issue. A pick on another issue waits in a
-// place of its own rather than in place of the one already waiting, so that one is still saved,
-// not left on screen with no save behind it.
+// A pick made during a save waits behind it in its issue's line (`issue:<KEY>`). A pick on
+// another issue goes in that issue's own line rather than in place of the one already waiting,
+// so that one is still saved, not left on screen with no save behind it. Each line sends its
+// picks in the order they were made; the two lines are not ordered against each other.
 test("a pick waiting behind a save is still saved when a pick on another issue waits too", async () => {
   const first = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches()
@@ -169,20 +174,21 @@ test("a pick waiting behind a save is still saved when a pick on another issue w
       await first.promise;
     });
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(3));
-    expect(patchIssue.mock.calls.map(([key, input]) => [key, input])).toEqual([
+    const sent = patchIssue.mock.calls.map(([key, input]) => [key, input]);
+    expect(sent.filter(([key]) => key === "CORE-1")).toEqual([
       ["CORE-1", { assignee: "alice" }],
       ["CORE-1", { assignee: "bob" }],
-      ["CORE-2", { assignee: "carol" }],
     ]);
+    expect(sent.filter(([key]) => key === "CORE-2")).toEqual([["CORE-2", { assignee: "carol" }]]);
   } finally {
     hook.unmount();
     patchIssue.mockRestore();
   }
 });
 
-// A refused save rolls its issue's detail back to what that issue held, and a pick of another
-// issue waiting behind it keeps its own issue's: refused in turn, that pick rolls its issue
-// back to that issue's own detail, never to the detail of the issue the first save was of.
+// A refused save rolls its issue's detail back to what that issue held, and leaves a pick of
+// another issue out at the same time showing on that issue: refused in turn, that pick rolls its
+// issue back to that issue's own detail, never to the detail of the issue the first save was of.
 test("a refused pick of one issue after a refused save of another rolls back to its own detail", async () => {
   const first = Promise.withResolvers<Issue>();
   const second = Promise.withResolvers<Issue>();
@@ -201,16 +207,24 @@ test("a refused pick of one issue after a refused save of another rolls back to 
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     issueKey = "CORE-2";
     hook.rerender();
-    act(() => hook.result.current.submit("carol"));
+    // The pick joins its line in a microtask of the press, and shows once it has.
+    await act(async () => hook.result.current.submit("carol"));
     expect(client.getQueryData<IssueDetails>(["issue", "CORE-2"])).toEqual({
       ...core2,
       assignee: "carol",
     });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
 
     await act(async () => {
       first.reject(new Error("refused"));
     });
-    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(client.getQueryData<IssueDetails>(["issue", "CORE-1"])).toEqual(core1)
+    );
+    expect(client.getQueryData<IssueDetails>(["issue", "CORE-2"])).toEqual({
+      ...core2,
+      assignee: "carol",
+    });
     await act(async () => {
       second.reject(new Error("refused"));
     });

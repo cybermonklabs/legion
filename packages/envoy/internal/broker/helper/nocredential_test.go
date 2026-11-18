@@ -17,6 +17,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 )
 
+const noCredentialMsg = "no machine credential; run: agent-secrets machine login, and have a human approve it"
+
 // TestNoCredentialReasonNamesWhyTheHelperHoldsNone: every state login-status can report with no
 // credential held has its own reason, which the helper's journal and `machine login-status` both
 // print: a login in flight outranks a dropped credential, a dropped credential names the cause the
@@ -207,7 +209,7 @@ func TestALoginBetweenARefusalAndItsLineIsAnOrdinaryRetry(t *testing.T) {
 	if retry := waitForRecord(t, &out, "enroll failed; retrying"); retry["level"] != "WARN" {
 		t.Fatalf("the failed enroll: %v; want a WARN", retry)
 	}
-	noErrors(t, &out, dropRefused+"; cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)")
+	noErrors(t, &out, dropRefused+"; cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it")
 }
 
 // TestALoginWakesTheEnrollmentOfASessionRegisteredWithoutACredential: a session registered while

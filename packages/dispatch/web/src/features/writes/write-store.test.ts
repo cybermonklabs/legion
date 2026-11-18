@@ -1064,6 +1064,82 @@ test("dropping a line of writes starts none of the writes it drops", async () =>
   });
 });
 
+/** A kind that remembers something of the person signed in, and what the store tells it while a
+ *  row listens (`told`), in order: each store made, each write it is to undo, each moment it is
+ *  to let go. */
+let told: unknown[][] | undefined;
+const rememberingWrite = defineWriteKind<null>({
+  kept: (value): value is null => value === null,
+  name: "test-remembering",
+  opened: (client, writes) => {
+    told?.push(["opened", client, writes]);
+  },
+  reset: () => {
+    told?.push(["reset"]);
+  },
+  undone: () => {
+    told?.push(["undone"]);
+  },
+});
+
+// What a kind keeps of a client for the client's whole life begins with the client's store, not
+// with the first write of the kind: every kind is told once of each store as it is made.
+test("a store tells each kind of itself and its client once, as it is made", () => {
+  const tab = keptTab();
+  told = [];
+  try {
+    const client = signedIn();
+    const writes = new Writes(client, tab.page(), memoryFiles());
+    expect(told).toHaveLength(1);
+    const [what, of, store] = told[0] ?? [];
+    expect(what).toBe("opened");
+    expect(of).toBe(client);
+    expect(store).toBe(writes);
+  } finally {
+    told = undefined;
+    tab.close();
+  }
+});
+
+// A kind undoes a dropped write from what it remembers of its person's answers, so the store
+// drops the writes a change of who is signed in takes with it before it has the kinds let go of
+// that: another person's sign-in, and a lapse that is the person's sign-out in another tab
+// landing (`dropLogin`).
+test("a change of who is signed in undoes the writes it drops before the kinds let go of what they remembered", async () => {
+  await onFakeClock(async () => {
+    const changes: Record<string, (writes: Writes) => void> = {
+      "another person's sign-in": (writes) => writes.signedIn("bob"),
+      "a lapse that lands a sign-out in another tab": (writes) => {
+        writes.holdFor("alice");
+        writes.signedIn(undefined);
+      },
+    };
+    try {
+      for (const [name, change] of Object.entries(changes)) {
+        const { writes } = storeOf();
+        writes.signedIn("alice");
+        void writes
+          .run({
+            detail: null,
+            kind: rememberingWrite,
+            label: "CORE-1 remembered",
+            presentation: "indicator",
+            method: "POST",
+            write: () => Promise.withResolvers<never>().promise,
+          })
+          .catch(() => {});
+        await settle();
+        told = [];
+        change(writes);
+        expect([name, ...told.flat()]).toEqual([name, "undone", "reset"]);
+        expect(writes.rows()).toEqual([]);
+      }
+    } finally {
+      told = undefined;
+    }
+  });
+});
+
 // W48. A sign-out discards nothing until Dispatch answers it, and sends nothing of its person's
 // meanwhile: while it is out every other write of theirs stops trying after the attempt in flight
 // and none starts. Refused, it lets them go on, each where it stood; landed, they stay held until
@@ -1343,6 +1419,28 @@ test("409 KEY_COMMITTED is a landing: null, nothing kept, and every read refresh
     expect(invalidate).toHaveBeenCalledWith();
     await tick(60_000);
     expect(attempts).toBe(2);
+  });
+});
+
+// A landing is told before the store reads anything again: a listener that orders what Dispatch
+// answered by when each read went out (`issue-field-writes.ts`) counts every read the landing
+// starts as sent after it.
+test("a landing with no answer tells its outcome before it reads every query again", async () => {
+  await onFakeClock(async () => {
+    const { tab } = storeOf();
+    const client = signedIn();
+    const order: string[] = [];
+    spyOn(client, "invalidateQueries").mockImplementation(async () => {
+      order.push("read again");
+    });
+    const writes = new Writes(client, tab.page(), memoryFiles());
+    writes.onOutcome(({ kind }) => order.push(kind));
+    const landed = statusWrite(writes, () =>
+      Promise.reject(new ApiError(409, { code: "KEY_COMMITTED", error: "made" }))
+    );
+    await settle();
+    expect(await landed).toBeNull();
+    expect(order).toEqual(["landed", "read again"]);
   });
 });
 

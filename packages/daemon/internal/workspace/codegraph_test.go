@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -22,13 +23,15 @@ import (
 // uninitialized until `init` runs, which creates a `.codegraph/` directory in the directory it is
 // run from — real codegraph's own side effect, which nextCodegraphStep's dirExists check reads —
 // and reports initialized with a complete index from then on. It records every invocation's argv
-// and environment (one call per line, `argv\tenv` with `env` entries joined by a space) to
-// callLog so the test can see exactly what warmCodegraphIndex ran and with what environment.
+// to callLog, one call per line, and each invocation's environment, as env prints it, to a file
+// of its own named callLog.env.<random> (codegraphEnvironments reads them), so the test can see
+// exactly what warmCodegraphIndex ran and with what environment.
 func stubCodegraph(t *testing.T, callLog string) {
 	t.Helper()
 	dir := t.TempDir()
 	script := `#!/bin/sh
-printf '%s\t%s\n' "$*" "$(env | tr '\n' ' ')" >> '` + callLog + `'
+printf '%s\n' "$*" >> '` + callLog + `'
+env >"$(mktemp '` + callLog + `.env.XXXXXX')"
 marker=".codegraph/.codegraph-initialized"
 case "$1" in
 status)
@@ -49,6 +52,32 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// codegraphEnvironments returns the variables of each environment stubCodegraph recorded beside
+// callLog, one map per invocation, read whole by name (envlisting). It lists callLog's directory
+// and keeps the names that start with callLog's own, rather than matching a glob: a temporary
+// directory can hold a glob character, and an unclosed [ stops the pattern from compiling, while
+// a * or ? would make it match other paths too.
+func codegraphEnvironments(t *testing.T, callLog string) []map[string]string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(callLog))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := filepath.Base(callLog) + ".env."
+	var envs []map[string]string
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		listing, err := os.ReadFile(filepath.Join(filepath.Dir(callLog), entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		envs = append(envs, envlisting.Vars(string(listing)))
+	}
+	return envs
 }
 
 func TestWarmCodegraphIndexBuildsAnIndexWhenTheCliIsOnPath(t *testing.T) {
@@ -77,7 +106,7 @@ func TestWarmCodegraphIndexBuildsAnIndexWhenTheCliIsOnPath(t *testing.T) {
 		t.Fatalf("read codegraph call log after the second warm-up: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(calls)), "\n")
-	if len(lines) != before+1 || !strings.HasPrefix(lines[len(lines)-1], "status --json\t") {
+	if len(lines) != before+1 || lines[len(lines)-1] != "status --json" {
 		t.Fatalf("codegraph calls after a second warm-up = %v, want exactly one more status --json call", lines)
 	}
 }
@@ -164,10 +193,18 @@ func TestWarmCodegraphIndexNeverFailsWhenTheCliIsMissing(t *testing.T) {
 // other secret (GH_TOKEN here, standing in for any of them), and codegraph must never see it —
 // only the minimal PATH/HOME/DO_NOT_TRACK set codegraphEnvironment names.
 func TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable(t *testing.T) {
-	callLog := filepath.Join(t.TempDir(), "calls.log")
+	// The call log sits under a directory whose name holds a glob character, as a machine's
+	// temporary directory can, so the recorded environments must be read without a pattern.
+	logDir := filepath.Join(t.TempDir(), "tmp-glob[x")
+	if err := os.Mkdir(logDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	callLog := filepath.Join(logDir, "calls.log")
 	stubCodegraph(t, callLog)
-	t.Setenv("GH_TOKEN", "ghs_should-never-reach-codegraph")
-	t.Setenv("LEGION_GRANT", "grant-should-never-reach-codegraph")
+	// Unique values, so that only a variable they reached can hold one (envlisting).
+	token, grant := envlisting.Unique("ghs_"), envlisting.Unique("grant-")
+	t.Setenv("GH_TOKEN", token)
+	t.Setenv("LEGION_GRANT", grant)
 	dir := t.TempDir()
 
 	warmCodegraphIndex(context.Background(), dir, time.Now())
@@ -178,13 +215,22 @@ func TestWarmCodegraphIndexGivesCodegraphNoSecretLikeVariable(t *testing.T) {
 	if len(calls) == 0 {
 		t.Fatal("codegraph was never invoked")
 	}
-	if strings.Contains(string(calls), "ghs_should-never-reach-codegraph") ||
-		strings.Contains(string(calls), "grant-should-never-reach-codegraph") ||
-		strings.Contains(string(calls), "GH_TOKEN=") || strings.Contains(string(calls), "LEGION_GRANT=") {
-		t.Fatalf("codegraph's environment carried a secret-like variable: %s", calls)
+	envs := codegraphEnvironments(t, callLog)
+	if len(envs) != len(strings.Split(strings.TrimSpace(string(calls)), "\n")) {
+		t.Fatalf("%d environments recorded for the calls %q", len(envs), calls)
 	}
-	if !strings.Contains(string(calls), "DO_NOT_TRACK=1") {
-		t.Fatalf("codegraph's environment did not carry DO_NOT_TRACK=1: %s", calls)
+	for _, vars := range envs {
+		for _, name := range []string{"GH_TOKEN", "LEGION_GRANT"} {
+			if _, set := vars[name]; set {
+				t.Fatalf("codegraph's environment carried %s: %v", name, vars)
+			}
+		}
+		if name, leaked := envlisting.Carrying(vars, token, grant); leaked {
+			t.Fatalf("codegraph's environment carried a secret in %s: %v", name, vars)
+		}
+		if vars["DO_NOT_TRACK"] != "1" {
+			t.Fatalf("codegraph's environment did not carry DO_NOT_TRACK=1: %v", vars)
+		}
 	}
 }
 
@@ -460,8 +506,7 @@ func stubCalls(t *testing.T, callLog string) []string {
 	}
 	var argv []string
 	for line := range strings.Lines(strings.TrimSpace(string(calls))) {
-		args, _, _ := strings.Cut(line, "\t")
-		argv = append(argv, args)
+		argv = append(argv, strings.TrimSuffix(line, "\n"))
 	}
 	return argv
 }

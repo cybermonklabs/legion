@@ -1,8 +1,12 @@
 import {
+  type DefaultError,
+  type DefaultedQueryObserverOptions,
   notifyManager,
   type Query,
   QueryClient,
+  type QueryFunction,
   type QueryKey,
+  type QueryObserverOptions,
   type RefetchOptions,
   type RefetchQueryFilters,
 } from "@tanstack/react-query";
@@ -64,10 +68,62 @@ export function queryRetryDelay(
  * fetched once more when that fetch settles, so an invalidation a mutation makes mid-fetch still
  * ends on the answer composed after the write, and the first request is not left running on the
  * server with its answer thrown away. Calls for one query while it waits share that one follow-up
- * fetch. Every mutation's own `invalidateQueries` call keeps its shape.
+ * fetch. Every mutation's own `invalidateQueries` call keeps its shape. It also tells whoever
+ * listens each time a query calls its function (`onAttempt`).
  */
 export class DispatchQueryClient extends QueryClient {
+  readonly #attempts = new Set<(queryHash: string) => void>();
   readonly #followUps = new Map<string, Promise<void>>();
+  /** Every function `defaultQueryOptions` made, so that a wrapped function is never wrapped
+   *  again. */
+  readonly #told = new WeakSet<object>();
+
+  /** Tells `listener` the hash of a query each time the query calls its function from now on:
+   *  once for each attempt of a read - its first and each retry, which TanStack makes within one
+   *  fetch - as the attempt starts, and once for each page an infinite query reads. */
+  readonly onAttempt = (listener: (queryHash: string) => void): (() => void) => {
+    this.#attempts.add(listener);
+    return () => this.#attempts.delete(listener);
+  };
+
+  /** TanStack's defaults, with the query's function wrapped so that each call of it tells
+   *  `onAttempt`'s listeners first; the wrapper hands the function its context and returns what
+   *  the function returns, and a listener that throws fails no read. `skipToken`, an absent
+   *  function and a wrapped one are left as they are. Each observer's render passes a function
+   *  of its own, so a wrapper is made for each call rather than kept. */
+  override defaultQueryOptions<
+    TQueryFnData = unknown,
+    TError = DefaultError,
+    TData = TQueryFnData,
+    TQueryData = TQueryFnData,
+    TQueryKey extends QueryKey = QueryKey,
+    TPageParam = never,
+  >(
+    options:
+      | QueryObserverOptions<TQueryFnData, TError, TData, TQueryData, TQueryKey, TPageParam>
+      | DefaultedQueryObserverOptions<TQueryFnData, TError, TData, TQueryData, TQueryKey>
+  ): DefaultedQueryObserverOptions<TQueryFnData, TError, TData, TQueryData, TQueryKey> {
+    const defaulted = super.defaultQueryOptions(options);
+    const { queryFn, queryHash } = defaulted;
+    if (typeof queryFn !== "function" || this.#told.has(queryFn)) return defaulted;
+    const telling: QueryFunction<TQueryFnData, TQueryKey> = (context) => {
+      for (const listener of this.#attempts) {
+        try {
+          listener(queryHash);
+        } catch (error) {
+          queueMicrotask(() => {
+            throw error;
+          });
+        }
+      }
+      return queryFn(context);
+    };
+    this.#told.add(telling);
+    // A fresh object is the parent's own copy, which no caller holds yet.
+    if (defaulted === options) return { ...defaulted, queryFn: telling };
+    defaulted.queryFn = telling;
+    return defaulted;
+  }
 
   override refetchQueries<TTaggedQueryKey extends QueryKey = QueryKey>(
     filters?: RefetchQueryFilters<TTaggedQueryKey>,

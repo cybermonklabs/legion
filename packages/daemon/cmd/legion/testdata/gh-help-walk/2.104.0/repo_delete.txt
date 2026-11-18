@@ -1,0 +1,34 @@
+Delete a GitHub repository.
+
+With no argument, deletes the current repository. Otherwise, deletes the specified repository.
+
+For safety, when no repository argument is provided, the `--yes` flag is ignored 
+and you will be prompted for confirmation. To delete the current repository non-interactively, 
+specify it explicitly (e.g., `gh repo delete owner/repo --yes`).
+
+Deleting a private repository that is not itself a fork also deletes its forks, including
+forks you may not be able to see. If it has forks, you will be asked to confirm deleting
+them, even with `--yes`. Pass `--accept-cascading-deletion-of-private-forks`
+to skip that prompt. When not running interactively, it is required along with `--yes`.
+Like `--yes`, it is ignored when no repository argument is provided.
+
+Deletion requires authorization with the `delete_repo` scope.
+To authorize, run `gh auth refresh -s delete_repo`
+
+
+USAGE
+  gh repo delete [<repository>] [flags]
+
+FLAGS
+  --accept-cascading-deletion-of-private-forks[=true|false]   Accept that deleting a private repository also deletes its forks
+  --yes[=true|false]                                          Confirm deletion without prompting for confirmation
+
+INHERITED FLAGS
+  --help[=true|false]   Show help for command
+
+LEARN MORE
+  Use `gh <command> <subcommand> --help` for more information about a command.
+  Read the manual at https://cli.github.com/manual
+  Learn about exit codes using `gh help exit-codes`
+  Learn about accessibility experiences using `gh help accessibility`
+

@@ -4,8 +4,22 @@ import { type ReactNode, useContext, useState } from "react";
 import { usersQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
-import { badgeLow, badgePrimary, textMutedOnSurface } from "../../theme/classes";
-import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
+import { usePageWords } from "../../components/tooltips";
+import {
+  badgeLow,
+  badgePrimary,
+  pageLabelChip,
+  pagePaneBg,
+  pageQuietText,
+  textMutedOnSurface,
+} from "../../theme/classes";
+import {
+  badgeSelectBadge,
+  badgeSelectOverlay,
+  badgeSelectPageBadge,
+  badgeSelectPageWrapper,
+  badgeSelectWrapper,
+} from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
 import { useLiveRegistration } from "../writes/useKeyedWrite";
 import { AskHandOnLiveContext } from "./hand-on-live";
@@ -53,6 +67,7 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
   const people = useQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
   const write = useAskHandOn(ask);
+  const page = usePageWords();
   const onLive = useContext(AskHandOnLiveContext);
   // The ask held is the one the live hand-on is of, which is the card's own unless a host has
   // drawn the card for another ask since that press (`useAskHandOn`).
@@ -75,12 +90,27 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
   const handedOnBy = ask.asked_of_by ?? "";
   const handedOnAt = ask.asked_of_at ?? null;
   const tone = waitingOn === "" ? badgeLow : badgePrimary;
+  // Inside `NoTooltips` each colour is one of the new issue page's: the line is its quiet words,
+  // and the badge its label chip, or the quiet words on the same ground while `waitingOn` is
+  // empty (the ask names no login), as the assignee's badge is drawn there.
+  const badgeTone =
+    page === null
+      ? `${tone.bg} ${tone.text}`
+      : waitingOn === ""
+        ? `${pagePaneBg} ${pageQuietText}`
+        : pageLabelChip;
+  // Inside `NoTooltips` who the ask waits on and who handed it on are values, so each breaks
+  // anywhere and the badge's wrapper narrows to the line rather than keep its width; the select
+  // still covers the badge however many lines it takes (`badgeSelectPageWrapper`).
   return (
     <div
-      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${textMutedOnSurface}`}
+      className={`mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs ${page === null ? textMutedOnSurface : pageQuietText}`}
     >
-      <span className={badgeSelectWrapper}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
+      <span className={page === null ? badgeSelectWrapper : badgeSelectPageWrapper}>
+        <span
+          aria-hidden="true"
+          className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
+        >
           {write.pending
             ? "Handing on…"
             : waitingOn === ""
@@ -122,7 +152,7 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
         </select>
       </span>
       {handedOnBy === "" || handedOnAt === null ? null : (
-        <span>
+        <span className={page === null ? undefined : "min-w-0 max-w-full [overflow-wrap:anywhere]"}>
           handed on by {handedOnBy} <Timestamp at={handedOnAt} />
         </span>
       )}

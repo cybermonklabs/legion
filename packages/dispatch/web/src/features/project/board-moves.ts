@@ -14,6 +14,12 @@ export const staleBoardMessage =
 
 const everyIssue = () => true;
 
+/** What one board move sends: the issue (`key`) and its change (`input`). */
+export interface BoardMoveVariables {
+  readonly input: UpdateIssueInput;
+  readonly key: string;
+}
+
 /** What the board says of the move of `key` that did not land. One the reader stopped may have
  *  been made: the card goes back to where the page last read it, and the read that follows shows
  *  where Dispatch holds it. */
@@ -70,7 +76,7 @@ export function useBoardMoves(
   // the header's status, its fields, a components save.
   const patch = useKeyedWrite({
     inline: true,
-    label: ({ key }: { input: UpdateIssueInput; key: string }) => `${key} moved on the board`,
+    label: ({ key }: BoardMoveVariables) => `${key} moved on the board`,
     target: ({ key }) => `issue:${key}`,
     request: ({ input, key }) => issuePatchRequest(key, input),
     mutationKey: boardMoveMutationKey(project),

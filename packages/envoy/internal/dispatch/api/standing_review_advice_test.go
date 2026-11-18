@@ -276,7 +276,7 @@ func TestStandingSpecReviewRefusesAPlanReviewOfTheSpecification(t *testing.T) {
 		t.Fatalf("insert a plan review of the specification: %v", err)
 	}
 
-	review, err := standingSpecReview(context.Background(), database.Pool, issue.Key)
+	review, err := standingSpecReview(context.Background(), database.Pool, nil, issue.Key)
 	if err != nil {
 		t.Fatalf("read the standing review: %v", err)
 	}

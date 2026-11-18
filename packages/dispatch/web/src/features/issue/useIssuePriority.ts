@@ -1,47 +1,21 @@
-import { useQueryClient } from "@tanstack/react-query";
+import type { IssuePriority } from "../../api/types";
+import { type IssueFieldWrite, useIssueFieldWrite } from "./useIssueFieldWrite";
 
-import type { InboxRow, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
-import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
-
-export interface IssuePriorityWrite {
-  /** True after a save failed until the next attempt starts. */
-  failed: boolean;
-  pending: boolean;
-  /** Repeats the failed save; a no-op while one is in flight. */
-  retry: () => void;
-  /** What a save the reader stopped may have done and what Retry does with it, until the next
-   *  attempt; undefined after any other end. */
-  stopped: string | undefined;
-  /** Saves `priority`. A pick made while a save is in flight shows at once and is saved when
-   *  that save settles; the newest such pick is the one saved. */
-  submit: (priority: IssuePriority | null) => void;
-}
+/** The priority's write, without `error`: a refused one shows a fixed line (`PriorityControl`),
+ *  not the server's reason, and a stopped one what it may have done (`stopped`). `submit` takes a
+ *  priority, or null to unset it. */
+export type IssuePriorityWrite = Omit<IssueFieldWrite<IssuePriority | null>, "error">;
 
 /**
  * The one way the SPA writes an issue's priority. Every surface that renders it (issue header,
- * board cards, list rows, inbox rows) shares this: the new value lands optimistically in the
- * issue detail, every project issue list and every inbox query that shows the issue, rolls back
- * on failure, and the lists refetch once the server has answered (see `useIssueFieldWrite`).
+ * board cards, list rows, the tables of the Priorities view, inbox rows) shares this, as do the
+ * issue page's keys `0`-`3` and its palette: the pick's write shows the value on the issue detail,
+ * every list of issues and every inbox query that shows the issue, keeps it there over every
+ * answer until it lands, and puts back the value Dispatch last confirmed if it is refused (see
+ * `useIssueFieldWrite` and `issue-field-writes.ts`).
  */
 export function useIssuePriority(issueKey: string): IssuePriorityWrite {
-  const queryClient = useQueryClient();
-  const showPriority = (priority: IssuePriority | null, key: string) => {
-    queryClient.setQueryData<IssueDetails>(["issue", key], (current) =>
-      current === undefined ? undefined : { ...current, priority }
-    );
-    queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
-      current?.map((issue) => (issue.key === key ? { ...issue, priority } : issue))
-    );
-    queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-      current?.map((row) => (row.issue_key === key ? { ...row, priority } : row))
-    );
-  };
-  const write = useIssueFieldWrite<IssuePriority | null>(issueKey, {
-    label: (priority, key) => `${key} set to ${priority === null ? "no priority" : `P${priority}`}`,
-    patch: (priority) => ({ priority }),
-    show: showPriority,
-    what: (key) => `the priority of ${key}`,
-  });
+  const write = useIssueFieldWrite(issueKey, "priority");
   return {
     failed: write.failed,
     pending: write.pending,
