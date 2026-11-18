@@ -104,7 +104,13 @@ one line, and which the reader this plugin parses the state through takes as opt
 caller from a pod whose claims record a contract under 153 is served the state with neither
 (`api.stateFor`, `withoutPause`); and a resume of the release records carries `pause`, the pause
 that held its wake, which `read_release_records` counts as `heldByPause` and leaves out of its
-wake-to-first-turn seconds), after contract 146
+wake-to-first-turn seconds), after contract 152's repositories by App installation
+(dispatch://INFRA-2543: the GitHub App installation, and no longer the project's Dispatch
+repository mapping, decides which repositories a project works in, and each repository of the
+state's `repositories` block gains `apps`, which the reader this plugin parses the state through
+takes as optional), after contract 151's microVM issue pods (dispatch://INFRA-3729: four shapes
+of the launcher wire and the state's `runtime.kubernetes.sandbox` setting, which this plugin
+parses loosely), after contract 146
 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
