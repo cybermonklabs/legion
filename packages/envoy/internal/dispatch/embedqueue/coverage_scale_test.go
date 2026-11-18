@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // coverageScaleURLEnv names the Postgres server TestCoverageStatementScale builds its corpora on,
@@ -81,41 +82,105 @@ type coverageScale struct {
 	text  string
 }
 
-// coverageScalePoint is what one scale measured: the corpus's items (every covered kind's, as
-// the head's report counts them) and the median planning plus execution time of each statement.
-type coverageScalePoint struct {
-	scale      coverageScale
-	items      int64
-	head, base time.Duration
+// coverageScaleTables are the tables the corpus fills: analyzed before the record step, whose
+// statements are planned on their statistics, and vacuumed for the fresh state.
+const coverageScaleTables = "issues, artifacts, artifact_versions, embeddings, embedding_issue_sources"
+
+// visibilityState is one state of embeddings' visibility map the statements are measured in, as
+// R2 of dispatch://INFRA-4241 names them: its name; prepare, the statements that put the table in
+// it from the state measured before, each run on its own, since VACUUM runs in no transaction
+// block; and control, whether the negative control (coverageNegativeControl) is read in it.
+type visibilityState struct {
+	name    string
+	prepare []string
+	control bool
 }
 
-// TestCoverageStatementScale measures the search coverage statement (coverageIndexOnlyQuery, the
-// head) against the statement it replaced (mainCoverageQuery, the base) on a synthetic corpus at
-// each scale DISPATCH_COVERAGE_SCALES names, and states the corpus size at which the head would
-// reach its bound (coverageStatementTimeout), as a multiple of production's: R2 of
+// visibilityStates are the three states, in the order they are measured, each made from the one
+// before. Autovacuum is off on embeddings, so nothing else sets its visibility map or statistics.
+//
+//   - fresh: every table vacuumed and analyzed, as a quiet production table is, so nearly every
+//     page of embeddings is all-visible.
+//   - third: one row of every third heap page of embeddings updated, then the table analyzed, so
+//     about a third of its pages are not all-visible and its statistics say so, as an ANALYZE
+//     records them between two vacuums of a table the queue keeps writing. INFRA-4241's tester
+//     found b3756b91's statement, which left the planner free, reading the unembedded half of the
+//     windows by a Seq Scan of embeddings once a third or more of the pages were not all-visible.
+//   - all: one row of every page updated the same way, then the table analyzed, so no page is
+//     all-visible.
+var visibilityStates = []visibilityState{
+	{name: "fresh", prepare: []string{"vacuum (analyze) " + coverageScaleTables}},
+	{name: "third", prepare: []string{updateOneRowOfPages("where ((ctid::text::point)[0])::int % 3 = 0"), "analyze embeddings"}, control: true},
+	{name: "all", prepare: []string{updateOneRowOfPages(""), "analyze embeddings"}, control: true},
+}
+
+// updateOneRowOfPages updates one row of each heap page of embeddings that where selects (a WHERE
+// clause on the page's number, (ctid::text::point)[0]; empty for every page), setting
+// pending_since to its own value. The row's new version is one no vacuum has seen, so neither the
+// page that held the row nor the page its new version lands on is all-visible any more, and no
+// row's answer changes.
+func updateOneRowOfPages(where string) string {
+	return `update embeddings e set pending_since = e.pending_since
+		from (select distinct on ((ctid::text::point)[0]) ctid from embeddings ` + where + `
+		      order by (ctid::text::point)[0], ctid) s
+		where e.ctid = s.ctid`
+}
+
+// visibilityPoint is what one state measured at one scale: how many of embeddings' pages its
+// statistics record as all-visible, of how many; the plan planCoverage chose for the head; each
+// statement's median planning plus execution time; and, in a state that reads it, the negative
+// control's time and whether it read embeddings by a Seq Scan.
+type visibilityPoint struct {
+	visible, pages int64
+	plan           string
+	head, base     time.Duration
+	control        time.Duration
+	controlSeqScan bool
+}
+
+// coverageScalePoint is what one scale measured: the corpus's items (every covered kind's, as
+// the head's report counts them) and each state's point, in visibilityStates' order.
+type coverageScalePoint struct {
+	scale  coverageScale
+	items  int64
+	states []visibilityPoint
+}
+
+// TestCoverageStatementScale measures the search coverage statement as the route runs it (the
+// head: the text and settings planCoverage chooses by how much of embeddings is all-visible)
+// against the statement it replaced (mainCoverageQuery, the base) on a synthetic corpus at each
+// scale DISPATCH_COVERAGE_SCALES names, in each of three states of embeddings' visibility map
+// (visibilityStates), and states the corpus size at which the head would reach its bound
+// (coverageStatementTimeout) in the slowest of them, as a multiple of production's: R2 of
 // dispatch://INFRA-4241, which fails below 4. scripts/coverage-scale.sh runs it in a Job of its
 // own, with a Postgres of its own; a pod's test server is too small and too shared for corpora of
 // production's size, and CI never sets the URL that runs it.
 //
-// Each scale gets a database of its own, migrated by the store's own path (store.Migrate), the
-// corpus loaded (testdata/coverage_corpus.sql over this repository's prose), the record step run
-// to completion (recordSources) as the boot pass leaves a database, and the tables vacuumed, so
-// the head finds the visibility map a quiet production table has: the head is the text
-// planCoverage chooses while most of embeddings' pages are all-visible, read by index-only scans,
-// timed here with the planner free. The text it chooses below that share (coverageBitmapQuery),
-// for a table many of whose pages a write changed since its last vacuum, is not timed here. The
-// database is dropped before the next scale is built. The base's answer is compared with both
-// texts' in one snapshot (requireMainsAnswer), so the time read is the time of the same answer.
+// Each scale gets a database of its own, migrated by the store's own path (store.Migrate), with
+// autovacuum off on embeddings, so that nothing but the test sets its visibility map or its
+// statistics; the corpus loaded (testdata/coverage_corpus.sql over this repository's prose); and
+// the record step run to completion (recordSources) as the boot pass leaves a database. The
+// statements are then measured in each state in turn: freshly vacuumed; about a third of
+// embeddings' pages not all-visible after an ANALYZE; and every page not all-visible. In each
+// state the base's answer is compared with both texts' in one snapshot (requireMainsAnswer), so
+// the time read is the time of the same answer; and in the two states with pages that are not
+// all-visible, a negative control runs the index-only text once with the planner free, as
+// b3756b91 ran it, and logs whether it read embeddings by a Seq Scan. The database is dropped
+// before the next scale is built.
 //
 // The times are read on one connection, each statement once before the timed runs and then
 // alternately five times under EXPLAIN (ANALYZE, BUFFERS), each run's time its planning plus
-// execution, with no statement_timeout, so neither is cut off by a bound. Every run re-plans
-// (QueryExecModeDescribeExec, as benchtime's runner does): a cached prepared statement switches
-// to a generic plan from its sixth execution, which is not the plan a call gets.
+// execution. The base runs on the connection, under no setting. The head runs as Coverage runs
+// it, in a read-only transaction whose settings and text planCoverage chooses (runHead), but with
+// statement_timeout 0 where Coverage sets its bound, so neither statement is cut off by a bound.
+// Every run re-plans (QueryExecModeDescribeExec, as benchtime's runner does): a cached prepared
+// statement switches to a generic plan from its sixth execution, which is not the plan a call
+// gets.
 //
-// The size at which the head reaches the bound is taken from the two smallest scales' points,
-// fitted both linearly and as a power law t = a × s^k, since the base's time grew faster than
-// its corpus; the smaller of the two is the one stated. The last line it prints starts
+// In each state the size at which the head reaches the bound is taken from the two smallest
+// scales' points, fitted both linearly and as a power law t = a × s^k, since the base's time grew
+// faster than its corpus; the smaller of the two is that state's. The slowest state is the one
+// whose size is the smallest, and its size is the one judged. The last line it prints starts
 // `coverage-scale:` and names every number the verdict rests on, so a reader of the Job's log
 // judges it from its end.
 func TestCoverageStatementScale(t *testing.T) {
@@ -234,7 +299,8 @@ func serverDatabaseURL(t *testing.T, raw, database string) string {
 }
 
 // measureCoverageAtScale builds the corpus at scale in a database of its own, checks it, and
-// measures both statements on it, logging what it read; the database is dropped when t ends.
+// measures both statements on it in each state of visibilityStates, logging what it read; the
+// database is dropped when t ends.
 func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale coverageScale, prose [][]any, script string) coverageScalePoint {
 	ctx := context.Background()
 	var suffix [4]byte
@@ -265,44 +331,91 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate %s: %v", name, err)
 	}
+	// No autovacuum or autoanalyze of embeddings while the test sets its states: one would mark
+	// the pages a state left not all-visible all-visible again, or record a share of them the
+	// state did not set, and planCoverage chooses its plan by that share.
+	mustExec(t, database.Pool, `alter table embeddings set (autovacuum_enabled = false)`)
 
 	started := time.Now()
 	loadCoverageCorpus(t, databaseURL, scale, prose, script)
 	loaded := time.Since(started)
-	// Statistics before the record step, whose statements are planned on them; the vacuum after
-	// it is what sets the visibility map.
-	const tables = "issues, artifacts, artifact_versions, embeddings, embedding_issue_sources"
-	mustExec(t, database.Pool, "analyze "+tables)
+	// Statistics before the record step, whose statements are planned on them; the fresh state's
+	// vacuum is what sets the visibility map.
+	mustExec(t, database.Pool, "analyze "+coverageScaleTables)
 	started = time.Now()
 	recorded := recordOnce(t, database)
 	recording := time.Since(started)
-	mustExec(t, database.Pool, "vacuum (analyze) "+tables)
 	t.Logf("scale %s: corpus loaded in %v, %d issue sources recorded in %v",
 		scale.text, loaded.Round(time.Millisecond), recorded, recording.Round(time.Millisecond))
 	checkCoverageCorpus(t, database, scale, recorded)
 
-	_, heads := requireMainsAnswer(t, database, "scale "+scale.text)
-	var items int64
-	var report []string
-	for _, row := range heads {
-		if row.indexed {
-			items += row.items
+	conn := measurementConn(t, databaseURL)
+	point := coverageScalePoint{scale: scale}
+	for i, state := range visibilityStates {
+		stage := "scale " + scale.text + ", state " + state.name
+		for _, statement := range state.prepare {
+			mustExec(t, database.Pool, statement)
 		}
-		report = append(report, row.String())
-	}
-	slices.Sort(report)
-	t.Logf("scale %s: the head's report, kind by kind:\n  %s", scale.text, strings.Join(report, "\n  "))
-	var size int64
-	var sizeText string
-	if err := database.Pool.QueryRow(ctx, `select pg_database_size(current_database()), pg_size_pretty(pg_database_size(current_database()))`).Scan(&size, &sizeText); err != nil {
-		t.Fatalf("read the database's size: %v", err)
-	}
+		var measured visibilityPoint
+		var size int64
+		var sizeText string
+		if err := database.Pool.QueryRow(ctx, `select relallvisible::bigint, relpages::bigint,
+			pg_database_size(current_database()), pg_size_pretty(pg_database_size(current_database()))
+			from pg_class where oid = 'embeddings'::regclass`).Scan(&measured.visible, &measured.pages, &size, &sizeText); err != nil {
+			t.Fatalf("%s: read embeddings' statistics: %v", stage, err)
+		}
+		t.Logf("%s: the statistics record %d of embeddings' %d pages all-visible after the analyze; database %s (%d bytes)",
+			stage, measured.visible, measured.pages, sizeText, size)
 
-	head, base := timeCoverageStatements(t, databaseURL, scale)
-	point := coverageScalePoint{scale: scale, items: items, head: medianRun(head), base: medianRun(base)}
-	t.Logf("scale %s: %d items, database %s (%d bytes); head median %s (runs %s); base median %s (runs %s)",
-		scale.text, items, sizeText, size, inMilliseconds(point.head), runsInMilliseconds(head), inMilliseconds(point.base), runsInMilliseconds(base))
+		_, heads := requireMainsAnswer(t, database, stage)
+		// The states change no row's answer (updateOneRowOfPages), so the fresh state's report
+		// counts every state's items.
+		if i == 0 {
+			var report []string
+			for _, row := range heads {
+				if row.indexed {
+					point.items += row.items
+				}
+				report = append(report, row.String())
+			}
+			slices.Sort(report)
+			t.Logf("scale %s: %d items; the head's report, kind by kind:\n  %s", scale.text, point.items, strings.Join(report, "\n  "))
+		}
+
+		head, base, plan := timeCoverageStatements(t, conn, stage)
+		measured.plan, measured.head, measured.base = plan, medianRun(head), medianRun(base)
+		t.Logf("%s: planCoverage chose the %s plan; head median %s (runs %s); base median %s (runs %s)",
+			stage, plan, inMilliseconds(measured.head), runsInMilliseconds(head), inMilliseconds(measured.base), runsInMilliseconds(base))
+		if state.control {
+			measured.control, measured.controlSeqScan = coverageNegativeControl(t, conn, stage)
+			t.Logf("%s: negative control, coverageIndexOnlyQuery with no plan's settings: %s, embeddings read by a Seq Scan: %t",
+				stage, inMilliseconds(measured.control), measured.controlSeqScan)
+		}
+		point.states = append(point.states, measured)
+	}
 	return point
+}
+
+// measurementConn opens the one connection of databaseURL the statements are timed on, which t's
+// end closes. Its statement_timeout is 0, so no run is cut off by a bound, and every statement on
+// it is planned again at each run (QueryExecModeDescribeExec, as benchtime's runner does): a
+// cached prepared statement switches to a generic plan from its sixth execution, which is not the
+// plan a call gets.
+func measurementConn(t *testing.T, databaseURL string) *pgx.Conn {
+	t.Helper()
+	ctx := context.Background()
+	config, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatalf("parse the measurement database's URL: %v", err)
+	}
+	config.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("connect to measure: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close(context.Background()) })
+	mustExec(t, conn, `set statement_timeout = 0`)
+	return conn
 }
 
 // loadCoverageCorpus runs the corpus script at scale on one connection of databaseURL: the prose
@@ -331,8 +444,7 @@ func loadCoverageCorpus(t *testing.T, databaseURL string, scale coverageScale, p
 // checkCoverageCorpus fails t unless the database holds the corpus the scale makes: production's
 // counts times the scale, rounded as the script rounds them, of issues, document versions and
 // each window kind's rows; every issue's source recorded; and every issue's latest spec its
-// sampled size in turn, beginning `## Summary`. It logs the counts, and how many of embeddings'
-// pages the vacuum marked all-visible, which the head's index-only scans read the heap without.
+// sampled size in turn, beginning `## Summary`. It logs the counts.
 func checkCoverageCorpus(t *testing.T, database *store.Store, scale coverageScale, recorded int64) {
 	t.Helper()
 	ctx := context.Background()
@@ -402,77 +514,114 @@ func checkCoverageCorpus(t *testing.T, database *store.Store, scale coverageScal
 	if specs != issues || wrong > 0 {
 		t.Errorf("%d of %d issues have a latest spec, %d of them not of its sampled size or not beginning `## Summary`", specs, issues, wrong)
 	}
-	pages, visible := count(`select relpages from pg_class where oid = 'embeddings'::regclass`),
-		count(`select relallvisible from pg_class where oid = 'embeddings'::regclass`)
-	t.Logf("scale %s: %d issues (%d titled outside ASCII 33 to 126), %d document versions, window rows %s; %d latest specs of the sampled sizes; %d of embeddings' %d pages all-visible",
-		scale.text, issues, outsideASCII, versions, strings.Join(windows, ", "), specs-wrong, visible, pages)
+	t.Logf("scale %s: %d issues (%d titled outside ASCII 33 to 126), %d document versions, window rows %s; %d latest specs of the sampled sizes",
+		scale.text, issues, outsideASCII, versions, strings.Join(windows, ", "), specs-wrong)
 }
 
-// timeCoverageStatements times the head (coverageIndexOnlyQuery) and the base (mainCoverageQuery)
-// for the corpus's identity on one connection with no statement_timeout: one warm-up run of each,
-// then coverageScaleRuns runs of each, alternately, under EXPLAIN (ANALYZE, BUFFERS, FORMAT
-// JSON), each run's time its planning plus execution. It logs one plan of each in text form, from
-// an EXPLAIN (ANALYZE, BUFFERS) of its own after the timed runs.
-func timeCoverageStatements(t *testing.T, databaseURL string, scale coverageScale) (head, base []time.Duration) {
+// scaleQuerier is what the measurement runs a statement on: its connection, or the head's
+// transaction on it.
+type scaleQuerier interface {
+	querier
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
+// timeCoverageStatements times the base (mainCoverageQuery, on conn itself under no setting) and
+// the head (the text planCoverage chooses, as runHead runs it) for the corpus's identity on conn:
+// one warm-up run of each, then coverageScaleRuns runs of each, alternately, under EXPLAIN
+// (ANALYZE, BUFFERS, FORMAT JSON), each run's time its planning plus execution. It logs one plan
+// of each in text form, from an EXPLAIN (ANALYZE, BUFFERS) of its own after the timed runs, and
+// answers the name of the plan planCoverage chose for the warm-up, which every timed run must
+// choose too: nothing changes embeddings' statistics between them.
+func timeCoverageStatements(t *testing.T, conn *pgx.Conn, stage string) (head, base []time.Duration, plan string) {
+	t.Helper()
+	const baseName = "base (mainCoverageQuery)"
+	warm := func(q scaleQuerier, statement string) { mustExec(t, q, statement, configuredIdentity) }
+	warm(conn, mainCoverageQuery)
+	plan = runHead(t, conn, warm)
+	headName := "head (the " + plan + " plan)"
+	for range coverageScaleRuns {
+		took, _ := explainedRun(t, conn, stage+": "+baseName, mainCoverageQuery)
+		base = append(base, took)
+		chosen := runHead(t, conn, func(q scaleQuerier, statement string) {
+			took, _ := explainedRun(t, q, stage+": "+headName, statement)
+			head = append(head, took)
+		})
+		if chosen != plan {
+			t.Errorf("%s: planCoverage chose the %s plan for the warm-up and the %s plan for a timed run", stage, plan, chosen)
+		}
+	}
+	logTextPlan(t, conn, stage, baseName, mainCoverageQuery)
+	runHead(t, conn, func(q scaleQuerier, statement string) { logTextPlan(t, q, stage, headName, statement) })
+	return head, base, plan
+}
+
+// runHead runs the head on conn as Coverage runs it: in a read-only transaction,
+// statement_timeout set local to 0 where Coverage sets its bound (coverageStatementTimeout), so
+// no run is cut off by it, then planCoverage, which reads embeddings' statistics, runs its plan's
+// settings in the transaction and answers the plan. do then runs the plan's query in the
+// transaction, which is rolled back, undoing the settings. It answers the plan's name.
+func runHead(t *testing.T, conn *pgx.Conn, do func(q scaleQuerier, statement string)) string {
 	t.Helper()
 	ctx := context.Background()
-	config, err := pgx.ParseConfig(databaseURL)
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
-		t.Fatalf("parse the measurement database's URL: %v", err)
+		t.Fatalf("begin the head's transaction: %v", err)
 	}
-	config.DefaultQueryExecMode = pgx.QueryExecModeDescribeExec
-	conn, err := pgx.ConnectConfig(ctx, config)
+	defer func() { _ = tx.Rollback(ctx) }()
+	mustExec(t, tx, `set local statement_timeout = 0`)
+	plan, err := planCoverage(ctx, tx)
 	if err != nil {
-		t.Fatalf("connect to measure: %v", err)
+		t.Fatalf("plan the head as Coverage does: %v", err)
 	}
-	defer func() { _ = conn.Close(ctx) }()
-	mustExec(t, conn, `set statement_timeout = 0`)
-	statements := []struct {
-		name, sql string
-		runs      *[]time.Duration
-	}{
-		{"base (mainCoverageQuery)", mainCoverageQuery, &base},
-		{"head (coverageIndexOnlyQuery)", coverageIndexOnlyQuery, &head},
-	}
-	for _, statement := range statements {
-		mustExec(t, conn, statement.sql, configuredIdentity)
-	}
-	for range coverageScaleRuns {
-		for _, statement := range statements {
-			*statement.runs = append(*statement.runs, explainedTime(t, conn, statement.name, statement.sql))
-		}
-	}
-	for _, statement := range statements {
-		rows, err := conn.Query(ctx, "explain (analyze, buffers) "+statement.sql, configuredIdentity)
-		if err != nil {
-			t.Fatalf("explain the %s: %v", statement.name, err)
-		}
-		lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			t.Fatalf("read the plan of the %s: %v", statement.name, err)
-		}
-		t.Logf("scale %s: the %s's plan:\n%s", scale.text, statement.name, strings.Join(lines, "\n"))
-	}
-	return head, base
+	do(tx, plan.query)
+	return plan.name
 }
 
-// explainedTime is one run of statement under EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON): its
-// planning plus execution time as the run reports them. A plan missing either is a failure
-// rather than a zero, which would read as the fastest run there is.
-func explainedTime(t *testing.T, conn *pgx.Conn, name, statement string) time.Duration {
+// logTextPlan logs statement's plan for the corpus's identity on q in text form, from an EXPLAIN
+// (ANALYZE, BUFFERS) of its own.
+func logTextPlan(t *testing.T, q scaleQuerier, stage, name, statement string) {
 	t.Helper()
-	var plan []byte
-	if err := conn.QueryRow(context.Background(), "explain (analyze, buffers, format json) "+statement, configuredIdentity).Scan(&plan); err != nil {
+	rows, err := q.Query(context.Background(), "explain (analyze, buffers) "+statement, configuredIdentity)
+	if err != nil {
+		t.Fatalf("%s: explain the %s: %v", stage, name, err)
+	}
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("%s: read the plan of the %s: %v", stage, name, err)
+	}
+	t.Logf("%s: the %s's plan:\n%s", stage, name, strings.Join(lines, "\n"))
+}
+
+// coverageNegativeControl runs coverageIndexOnlyQuery once on conn under EXPLAIN (ANALYZE,
+// BUFFERS, FORMAT JSON) with no plan's settings, the planner free to read embeddings as its
+// estimates price it: the shape b3756b91's Coverage ran. It answers the run's planning plus
+// execution time and whether the plan read embeddings by a Seq Scan, which runs the blank test's
+// regex over every window's text again.
+func coverageNegativeControl(t *testing.T, conn *pgx.Conn, stage string) (time.Duration, bool) {
+	t.Helper()
+	took, plan := explainedRun(t, conn, stage+": negative control (coverageIndexOnlyQuery, the planner free)", coverageIndexOnlyQuery)
+	return took, explaintest.SeqScansRelation(t, plan, "embeddings")
+}
+
+// explainedRun is one run of statement on q under EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON): its
+// planning plus execution time as the run reports them, and its plan's one "Plan" node. A plan
+// missing either time is a failure rather than a zero, which would read as the fastest run there
+// is.
+func explainedRun(t *testing.T, q querier, name, statement string) (time.Duration, json.RawMessage) {
+	t.Helper()
+	var raw []byte
+	if err := q.QueryRow(context.Background(), "explain (analyze, buffers, format json) "+statement, configuredIdentity).Scan(&raw); err != nil {
 		t.Fatalf("explain the %s: %v", name, err)
 	}
 	var explained []struct {
-		Planning  *float64 `json:"Planning Time"`
-		Execution *float64 `json:"Execution Time"`
+		Plan      json.RawMessage `json:"Plan"`
+		Planning  *float64        `json:"Planning Time"`
+		Execution *float64        `json:"Execution Time"`
 	}
-	if err := json.Unmarshal(plan, &explained); err != nil || len(explained) != 1 || explained[0].Planning == nil || explained[0].Execution == nil {
-		t.Fatalf("read the %s's planning and execution times (%v): %s", name, err, bytes.TrimSpace(plan))
+	if err := json.Unmarshal(raw, &explained); err != nil || len(explained) != 1 || explained[0].Planning == nil || explained[0].Execution == nil {
+		t.Fatalf("read the %s's planning and execution times (%v): %s", name, err, bytes.TrimSpace(raw))
 	}
-	return time.Duration((*explained[0].Planning + *explained[0].Execution) * float64(time.Millisecond))
+	return time.Duration((*explained[0].Planning + *explained[0].Execution) * float64(time.Millisecond)), explained[0].Plan
 }
 
 // medianRun is the middle of an odd number of run times.
@@ -516,14 +665,18 @@ func dropScaleDatabase(t *testing.T, admin *pgx.Conn, name string) {
 	}
 }
 
-// judgeCoverageScale fits the head's time to the two smallest scales' points, logs the four
-// medians, the item count at which the head would reach bound by a linear fit and by a power law
-// t = a × s^k (k = ln(t2/t1) / ln(s2/s1)), the smaller of the two and that as a multiple of the
-// 1 × corpus's items, and whether the base's median at scale 1 is above the bound (the negative
-// control: the base is what timed out in production). It fails when the multiple is below
-// coverageScaleMinMultiple, or when the head's time does not grow between the two scales, where
-// neither fit is defined. Its last line starts `coverage-scale:` and is printed whatever the
-// verdict, on standard output rather than through t.Log, so the line begins with it in the log.
+// judgeCoverageScale fits the head's time in each state to the two smallest scales' points. For
+// each state it logs the four medians, the item count at which the head would reach bound by a
+// linear fit and by a power law t = a × s^k (k = ln(t2/t1) / ln(s2/s1)), and the smaller of the
+// two as a multiple of the 1 × corpus's items; the slowest state is the one whose multiple is the
+// smallest. It fails when that multiple is below coverageScaleMinMultiple, and when the head's
+// time in a state does not grow between the two scales, where neither fit is defined. Its last
+// line starts `coverage-scale:` and is printed whatever the verdict, on standard output rather
+// than through t.Log, so the line begins with it in the log. For each state it names the plan
+// planCoverage chose at both scales, the head's and the base's medians, the negative control's
+// times and whether it read embeddings by a Seq Scan where the state reads it, and the fits and
+// their multiple; then the slowest state and its multiple, or, where a state has no fit, that the
+// slowest state is not known, and the slowest of the others.
 func judgeCoverageScale(t *testing.T, scales []coverageScale, points []coverageScalePoint, bound time.Duration) {
 	t.Helper()
 	if len(points) < 2 {
@@ -533,47 +686,71 @@ func judgeCoverageScale(t *testing.T, scales []coverageScale, points []coverageS
 	slices.SortFunc(points, func(a, b coverageScalePoint) int { return cmp.Compare(a.scale.value, b.scale.value) })
 	first, second := points[0], points[1]
 	s1, s2 := float64(first.items), float64(second.items)
-	t1, t2 := float64(first.head), float64(second.head)
 	line := float64(bound)
 
 	oneX := s1 / first.scale.value
 	oneXFrom := fmt.Sprintf("scale %s's %d items divided by %s", first.scale.text, first.items, first.scale.text)
-	control := "not measured, since scale 1 is not among " + coverageScalesEnv
 	for _, point := range points {
 		if point.scale.value == 1 {
 			oneX, oneXFrom = float64(point.items), "scale 1"
-			control = fmt.Sprintf("the base's median at scale 1 is %s, above %v: %t", inMilliseconds(point.base), bound, point.base > bound)
 		}
 	}
-	t.Logf("the four medians: scale %s (%d items) head %s, base %s; scale %s (%d items) head %s, base %s",
-		first.scale.text, first.items, inMilliseconds(first.head), inMilliseconds(first.base),
-		second.scale.text, second.items, inMilliseconds(second.head), inMilliseconds(second.base))
-	t.Logf("negative control: %s", control)
-	medians := fmt.Sprintf("scales %s and %s: items %d and %d; head median %s and %s; base median %s and %s",
-		first.scale.text, second.scale.text, first.items, second.items,
-		inMilliseconds(first.head), inMilliseconds(second.head), inMilliseconds(first.base), inMilliseconds(second.base))
-	if !(s2 > s1) || !(t2 > t1) {
-		fmt.Printf("coverage-scale: FAIL: %s; the head's time does not grow from the smaller scale to the larger, so no fit is defined; negative control: %s\n", medians, control)
-		t.Fatalf("the head's median does not grow from scale %s to scale %s (%s to %s over %d to %d items), so neither fit is defined: "+
-			"measure at larger scales, where the head's time stands above the noise", first.scale.text, second.scale.text,
-			inMilliseconds(first.head), inMilliseconds(second.head), first.items, second.items)
+	var states, unfit, unfitStates []string
+	slowest, slowestMultiple := "", math.Inf(1)
+	for i, state := range visibilityStates {
+		a, b := first.states[i], second.states[i]
+		t.Logf("state %s: scale %s (%d items, %d of %d pages all-visible) head %s, base %s; scale %s (%d items, %d of %d pages all-visible) head %s, base %s",
+			state.name, first.scale.text, first.items, a.visible, a.pages, inMilliseconds(a.head), inMilliseconds(a.base),
+			second.scale.text, second.items, b.visible, b.pages, inMilliseconds(b.head), inMilliseconds(b.base))
+		summary := fmt.Sprintf("%s: plan %s and %s, head median %s and %s, base median %s and %s",
+			state.name, a.plan, b.plan, inMilliseconds(a.head), inMilliseconds(b.head), inMilliseconds(a.base), inMilliseconds(b.base))
+		if state.control {
+			summary += fmt.Sprintf(", negative control %s and %s, Seq Scan on embeddings %t and %t",
+				inMilliseconds(a.control), inMilliseconds(b.control), a.controlSeqScan, b.controlSeqScan)
+		}
+		t1, t2 := float64(a.head), float64(b.head)
+		if !(s2 > s1) || !(t2 > t1) {
+			states = append(states, summary+", no fit: the head's median does not grow")
+			unfitStates = append(unfitStates, state.name)
+			unfit = append(unfit, fmt.Sprintf("state %s: the head's median does not grow from scale %s to scale %s (%s to %s over %d to %d items), so neither fit is defined",
+				state.name, first.scale.text, second.scale.text, inMilliseconds(a.head), inMilliseconds(b.head), first.items, second.items))
+			continue
+		}
+		linear := s1 + (line-t1)*(s2-s1)/(t2-t1)
+		k := math.Log(t2/t1) / math.Log(s2/s1)
+		power := s1 * math.Pow(line/t1, 1/k)
+		smaller := math.Min(linear, power)
+		multiple := smaller / oneX
+		t.Logf("state %s: the head reaches %v at %.0f items by the linear fit and at %.0f items by the power law (k = %.3f); "+
+			"the smaller, %.0f items, is %.2f × the 1 × corpus's %.0f items (%s)", state.name, bound, linear, power, k, smaller, multiple, oneX, oneXFrom)
+		states = append(states, fmt.Sprintf("%s, the head reaches %v at %.0f items (linear) and %.0f items (power law, k = %.3f), %.2f x",
+			summary, bound, linear, power, k, multiple))
+		if multiple < slowestMultiple {
+			slowest, slowestMultiple = state.name, multiple
+		}
 	}
-
-	linear := s1 + (line-t1)*(s2-s1)/(t2-t1)
-	k := math.Log(t2/t1) / math.Log(s2/s1)
-	power := s1 * math.Pow(line/t1, 1/k)
-	smaller := math.Min(linear, power)
-	multiple := smaller / oneX
-	t.Logf("the head reaches %v at %.0f items by the linear fit and at %.0f items by the power law (k = %.3f); "+
-		"the smaller, %.0f items, is %.2f × the 1 × corpus's %.0f items (%s)", bound, linear, power, k, smaller, multiple, oneX, oneXFrom)
 	verdict := "pass"
-	if multiple < coverageScaleMinMultiple {
+	if len(unfit) > 0 || slowestMultiple < coverageScaleMinMultiple {
 		verdict = "FAIL"
 	}
-	fmt.Printf("coverage-scale: %s: %s; the head reaches %v at %.0f items (linear) and %.0f items (power law, k = %.3f); "+
-		"the smaller, %.0f items, is %.2f x the 1 x corpus's %.0f items, at least %g wanted; negative control: %s\n",
-		verdict, medians, bound, linear, power, k, smaller, multiple, oneX, coverageScaleMinMultiple, control)
-	if multiple < coverageScaleMinMultiple {
-		t.Errorf("the head would reach %v at %.2f × production's corpus, below the %g × R2 asks for", bound, multiple, coverageScaleMinMultiple)
+	var judged string
+	switch {
+	case slowest == "":
+		judged = "no fit is defined in any state, so the slowest state is not known"
+	case len(unfitStates) > 0:
+		judged = fmt.Sprintf("no fit is defined in %s, so the slowest state is not known; of the others, %s is the slowest, reaching %v at %.2f x the 1 x corpus's %.0f items, at least %g wanted",
+			strings.Join(unfitStates, " and "), slowest, bound, slowestMultiple, oneX, coverageScaleMinMultiple)
+	default:
+		judged = fmt.Sprintf("the slowest state, %s, reaches %v at %.2f x the 1 x corpus's %.0f items, at least %g wanted",
+			slowest, bound, slowestMultiple, oneX, coverageScaleMinMultiple)
+	}
+	fmt.Printf("coverage-scale: %s: scales %s and %s, items %d and %d; %s; %s\n",
+		verdict, first.scale.text, second.scale.text, first.items, second.items, strings.Join(states, "; "), judged)
+	for _, failure := range unfit {
+		t.Errorf("%s: measure at larger scales, where the head's time stands above the noise", failure)
+	}
+	if slowestMultiple < coverageScaleMinMultiple {
+		t.Errorf("the head would reach %v at %.2f × production's corpus in state %s, the slowest of the states with a fit, below the %g × R2 asks for",
+			bound, slowestMultiple, slowest, coverageScaleMinMultiple)
 	}
 }

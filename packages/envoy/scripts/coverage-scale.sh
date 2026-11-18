@@ -2,13 +2,15 @@
 # packages/envoy/scripts/coverage-scale.sh
 #
 # Measures the search coverage statement against the statement it replaced at production's size
-# and twice it, and states the corpus size at which it would reach its 10 s bound
-# (dispatch://INFRA-4241, R2): it runs TestCoverageStatementScale (internal/dispatch/embedqueue)
-# on a Postgres of its own. It is what a Job in the cluster's builds namespace runs, from
-# packages/envoy of a clone, on the worker image, which carries Go, the PostgreSQL 18 server with
-# pgvector and legion-testpg. Never run it in an issue pod: the pod's own test server already
-# holds 127.0.0.1:5433, and a corpus of production's size is more disk than the pod may use, so
-# the script refuses to start where a server already answers there.
+# and twice it, each in three states of the visibility map of embeddings (freshly vacuumed, about a
+# third of its pages not all-visible, none all-visible), and states the corpus size at which it
+# would reach its 10 s bound in the slowest of them (dispatch://INFRA-4241, R2): it runs
+# TestCoverageStatementScale (internal/dispatch/embedqueue) on a Postgres of its own. It is what a
+# Job in the cluster's builds namespace runs, from packages/envoy of a clone, on the worker image,
+# which carries Go, the PostgreSQL 18 server with pgvector and legion-testpg. Never run it in an
+# issue pod: the pod's own test server already holds 127.0.0.1:5433, and a corpus of production's
+# size is more disk than the pod may use, so the script refuses to start where a server already
+# answers there.
 #
 # COVERAGE_SCALE_SCRATCH (default /scratch) is the Job's scratch disk: the server's data directory
 # (LEGION_TESTPG_DIR), GOCACHE, GOTMPDIR, GOMODCACHE and the test's log go under it.
