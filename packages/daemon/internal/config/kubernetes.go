@@ -699,18 +699,6 @@ func readKubernetes(value *yaml.Node) (*Kubernetes, error) {
 	return block, nil
 }
 
-// namesKey reports whether the mapping value names the key name, whatever value follows it. It
-// reads the mapping's own keys, since describedMembers leaves out a member whose value is null, so
-// a removed key written with nothing after it is refused as well as one written with a value.
-func namesKey(value *yaml.Node, name string) bool {
-	for i := 0; i+1 < len(value.Content); i += 2 {
-		if value.Content[i].Value == name {
-			return true
-		}
-	}
-	return false
-}
-
 // readTestPostgres reads `runtime.kubernetes.test_postgres`, false when absent: whether every
 // issue pod serves its own PostgreSQL for tests. Only true or false, since the key turns one
 // thing on, and `false` reads as the default so an operator can write the key out.

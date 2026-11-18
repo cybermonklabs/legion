@@ -211,15 +211,10 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 	if err != nil {
 		return Project{}, nil, err
 	}
-	// The mapping itself is scanned for `deploys` rather than fields, which drops a null member:
 	// `deploys:` with nothing under it is a key the deployment still writes, so it warns too.
-	// describedMembers has already refused the key named twice, so this is at most one line.
 	var warnings []string
-	for index := 0; index+1 < len(value.Content); index += 2 {
-		if value.Content[index].Value == "deploys" {
-			warnings = []string{fmt.Sprintf("%s.deploys is set and ignored: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; remove it from the deployment's legion.yaml", key)}
-			break
-		}
+	if namesKey(value, "deploys") {
+		warnings = []string{fmt.Sprintf("%s.deploys is set and ignored: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; remove it from the deployment's legion.yaml", key)}
 	}
 	var project Project
 	if channels := fields["slack_channels"]; channels != nil {
