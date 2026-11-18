@@ -164,6 +164,19 @@ func fakeClaude() int {
 				emit(map[string]any{"type": "assistant", "message": map[string]any{"role": "assistant", "model": model,
 					"content": []map[string]any{text("answered")}}})
 			}
+		case strings.HasPrefix(body, "subagent "):
+			// The main conversation's model calls a subagent, which answers on a model of its
+			// own: Claude Code writes the subagent's messages as assistant lines that name the
+			// tool call they serve in parent_tool_use_id ("Follow subagent messages").
+			models := strings.Fields(strings.TrimPrefix(body, "subagent "))
+			emit(map[string]any{"type": "assistant", "parent_tool_use_id": nil, "message": map[string]any{"role": "assistant", "model": models[0],
+				"content": []map[string]any{{"type": "tool_use", "id": "tu-agent", "name": "Agent", "input": map[string]any{"prompt": "look"}}}}})
+			emit(map[string]any{"type": "assistant", "parent_tool_use_id": "tu-agent", "message": map[string]any{"role": "assistant", "model": models[1],
+				"content": []map[string]any{text("the subagent's answer")}}})
+			emit(map[string]any{"type": "user", "parent_tool_use_id": nil, "message": map[string]any{"role": "user", "content": []map[string]any{
+				{"type": "tool_result", "tool_use_id": "tu-agent"}}}})
+			emit(map[string]any{"type": "assistant", "parent_tool_use_id": nil, "message": map[string]any{"role": "assistant", "model": models[0],
+				"content": []map[string]any{text("answered")}}})
 		case strings.HasPrefix(body, "api-error-529 "):
 			assistant(text(strings.TrimPrefix(body, "api-error-529 ")))
 			providerFailed(529)
@@ -871,6 +884,21 @@ func TestTheBridgeNamesClaudesModel(t *testing.T) {
 	}
 	if want := []any{"claude-first-1", "claude-second-2"}; !slices.Equal(named, want) {
 		t.Fatalf("a turn two models answered in names %v, want %v: each message names the model that wrote it", named, want)
+	}
+
+	// A subagent answers on a model of its own, and its messages are no answer of the worker's: a
+	// turn whose main model calls one names the main model alone.
+	parent := newRig(t, "-p", "--resume", sessionID)
+	parent.prompt("p1", "subagent claude-sonnet-5 claude-haiku-4-5")
+	named = nil
+	for _, frame := range framesUntilResult(parent) {
+		if answerFrame(frame) {
+			message, _ := frame["message"].(map[string]any)
+			named = append(named, message["model"])
+		}
+	}
+	if want := []any{"claude-sonnet-5", "claude-sonnet-5"}; !slices.Equal(named, want) {
+		t.Fatalf("a turn whose model called a subagent on claude-haiku-4-5 names %v, want %v: a subagent's message is no answer of the worker's", named, want)
 	}
 
 	failed := newRig(t, "-p", "--resume", sessionID)

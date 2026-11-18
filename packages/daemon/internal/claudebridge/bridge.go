@@ -491,15 +491,19 @@ func (b *bridge) step(message string, blocks []json.RawMessage) {
 // fromClaude acts on one stream-json line of Claude Code's.
 func (b *bridge) fromClaude(line []byte) {
 	var head struct {
-		Type        string          `json:"type"`
-		Subtype     string          `json:"subtype"`
-		Message     json.RawMessage `json:"message"`
-		IsReplay    bool            `json:"isReplay"`
-		RequestID   string          `json:"request_id"`
-		IsError     bool            `json:"is_error"`
-		Errors      []string        `json:"errors"`
-		CommandUUID string          `json:"command_uuid"`
-		State       string          `json:"state"`
+		Type     string          `json:"type"`
+		Subtype  string          `json:"subtype"`
+		Message  json.RawMessage `json:"message"`
+		IsReplay bool            `json:"isReplay"`
+		// ParentToolUseID names the tool call an assistant line of a subagent serves; a line of
+		// the main conversation carries null ("Follow subagent messages" of Claude Code's headless
+		// docs). A subagent can run on a model of its own, so its lines name no model of the worker.
+		ParentToolUseID string   `json:"parent_tool_use_id"`
+		RequestID       string   `json:"request_id"`
+		IsError         bool     `json:"is_error"`
+		Errors          []string `json:"errors"`
+		CommandUUID     string   `json:"command_uuid"`
+		State           string   `json:"state"`
 		// TerminalReason is what a result says ended the turn: the prompt_result carries an
 		// error only for the one value a provider failure takes, `api_error` (result). It is a
 		// member of the result line itself, measured on the pinned Claude Code
@@ -518,7 +522,7 @@ func (b *bridge) fromClaude(line []byte) {
 	}
 	switch head.Type {
 	case "assistant":
-		b.assistant(head.Message)
+		b.assistant(head.Message, head.ParentToolUseID != "")
 	case "user":
 		// A user message Claude Code took from stdin comes back marked isReplay; the others are
 		// its own, which the bridge does not read: tool results.
@@ -660,9 +664,11 @@ func blocksOf(message json.RawMessage) []contentBlock {
 // that wrote the message as Oh My Pi's message_end does (message.provider and message.model), which
 // is what the daemon records as the model that served a step. A message no model wrote names none:
 // Claude Code marks its own answer to a provider's refusal `<synthetic>`
-// (testdata/api-error-429.jsonl:4). Nothing else of the message is read: the phase machine runs in
-// the pane's `legion` MCP server, driven by Claude Code's own hooks, and the bridge is transport.
-func (b *bridge) assistant(message json.RawMessage) {
+// (testdata/api-error-429.jsonl:4). A subagent's message names none either: the subagent runs
+// beside the worker's conversation, possibly on another model, and the step's model is the
+// worker's. Nothing else of the message is read: the phase machine runs in the pane's `legion` MCP
+// server, driven by Claude Code's own hooks, and the bridge is transport.
+func (b *bridge) assistant(message json.RawMessage, subagent bool) {
 	// One decode for both: an error leaves what did decode, as blocksOf's does, so the model a
 	// message names is read even where its content is not a list of blocks.
 	var m struct {
@@ -680,7 +686,7 @@ func (b *bridge) assistant(message json.RawMessage) {
 		}
 		b.emitRaw(map[string]any{"type": "tool_execution_start", "toolName": block.Name, "args": args})
 	}
-	if m.Model != "" && m.Model != shimwire.SyntheticModel {
+	if m.Model != "" && m.Model != shimwire.SyntheticModel && !subagent {
 		b.emitRaw(map[string]any{"type": "message_end", "message": map[string]any{
 			"role": "assistant", "provider": "anthropic", "model": m.Model}})
 	}
