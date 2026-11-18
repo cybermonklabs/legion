@@ -1001,7 +1001,10 @@ func (row faultRow) String() string {
 // as well; and the lines of the last report, as switchOff makes and sends it or as deliverLast
 // tries it again, where a panic ends the trimmer unless that report is still held when it comes,
 // which the trimmer then still tries: run after a line of switchOff's, and deliverLast at its next
-// attempt after the line of a failed one (switchOff, deliverLast).
+// attempt after the line of a failed one (switchOff, deliverLast). Where a line written once the
+// last report was sent panics, saidLeftOut's line of what the bound left out or deliverLast's line
+// that says the report was sent, run's closing line says the report panicked and was not tried
+// again, although the daemon has it.
 //
 // Each row counts the recovered panics of its kind since the last work of that kind ran to its
 // end (ran, tick), a panic tick recovered and one of the work run contained alike, and a panic of
