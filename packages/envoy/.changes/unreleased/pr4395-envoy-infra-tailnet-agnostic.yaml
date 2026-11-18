@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  `gcp:Dispatch` takes `publicOrigin`, the https origin it is served at with the tailnet inputs unset, behind an entrance the deployment builds itself, and `iapAudience`, the IAP door, which renders `DISPATCH_IDENTITY=iap`, `DISPATCH_IAP_AUDIENCE` and `DISPATCH_SIGNIN_DOMAIN` and needs `publicOrigin` and `signInDomain`.
+  `gcp:ClusteredNatsHub` takes its session listener as an input of its own, `listener`, beside the tailnet entry or without one, and the listener takes `clientNamespaces`, whose pods reach it at its cluster Service. With none of the new inputs set, both components render what they rendered before.
