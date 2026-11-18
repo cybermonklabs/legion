@@ -3824,7 +3824,7 @@
     },
     "/api/v1/credential-requests": {
       "get": {
-        "description": "List credential requests the caller may decide (?approver=me only): those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides, each secret request carrying approve_url, the secrets broker's page where it is decided; null without a configured secrets broker.",
+        "description": "List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker.",
         "operationId": "getApiV1CredentialRequests",
         "parameters": [
           {
@@ -4050,6 +4050,57 @@
         "x-oauth-scopes": [
           "person",
           "approve"
+        ],
+        "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/credential-requests/{id}/dismiss": {
+      "post": {
+        "description": "Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values.",
+        "operationId": "postApiV1CredentialRequestsByIdDismiss",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DismissResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
         ],
         "x-write-scope": "deployment"
       }
@@ -17219,6 +17270,10 @@
           "approve_url": {
             "type": "string"
           },
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "identifiers": {
             "items": {
               "type": "string"
@@ -17240,6 +17295,13 @@
           },
           "session": {
             "$ref": "#/components/schemas/CredentialSession"
+          },
+          "state": {
+            "enum": [
+              "pending",
+              "expired"
+            ],
+            "type": "string"
           }
         },
         "required": [
@@ -19088,6 +19150,26 @@
           "reached_production",
           "cancelled",
           "rate"
+        ],
+        "type": "object"
+      },
+      "DismissResponse": {
+        "properties": {
+          "dismissed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "dismissed_by": {
+            "type": "string"
+          },
+          "record_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "dismissed_by",
+          "dismissed_at"
         ],
         "type": "object"
       },

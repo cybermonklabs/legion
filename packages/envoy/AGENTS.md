@@ -7437,9 +7437,10 @@ a secret with `max-grant` refuses a missing or longer lifetime as `400 GRANT_REQ
 `requests.grantUnexpired` is the one liveness test).
 Reuse matches the lifetime, except that a no-lifetime request takes the live grant of a request written before migration 0013 was applied (`requests.writtenBeforeMigration13`:
 lifetime 43200 and `created_at` before migration 13's `applied_at`), keeping its expiry.
-A pending request holds each of its secret names for its session:
+A pending request holds each of its secret names for its session until its deadline:
 an identical request coalesces (`coalesced: true`), as does a no-lifetime request beside such a pre-migration pending request, and another lifetime or an overlapping name, with or without `--ttl`, is `409 REQUEST_PENDING` naming the request already in the approver's Inbox.
 No row written after the deploy matches, so the bridge ends on its own a day after it.
+A request past its deadline that the sweep has not ended yet holds nothing (`pendingRequest` reads `pending_expires_at > now()`): every decision of it is `requests.ErrExpired`, so a request that joined it would wait for an answer that cannot come, and the new request opens a record of its own, listed as pending beside the expired one.
 `POST /v1/requests` and `GET /v1/requests/{id}` echo `lifetime_seconds` (null for none), which the CLI checks against its `--ttl`, revoking the grant or cancelling the pending request this call made when a broker or helper from before the claim dropped it, and never touching a reused approved grant or a pending request it joined (`coalesced`);
 when every name is decided (`granted`/`denied`) with nothing pending, the request and, if granted, its grant are written with no record.
 `Create` and `Get` answer that record's approver (`approver` on `POST /v1/requests` and `GET /v1/requests/{id}`, read from `credential_requests.approver`, the column `PendingForApprover` lists by, never re-evaluated from the current policy), so the asking session names whose list holds it; a request with no record answers null.
@@ -7454,12 +7455,20 @@ once a shared human-tier secret is a person's, a request waiting on `anyone` is 
 a denial releases nothing, so the record's approver may still deny either), re-verifying its embedded request object, and writing the decision event (which records the deciding login), the request transition and the audit row in one transaction;
 a non-pending record, and one past its expiry that the sweeper has not yet expired, is `409 RECORD_TERMINAL` for its approver (a duplicate or late decision changes nothing)
 — but a record past its expiry, whether the sweeper has recorded it expired or not, answers with a message saying it expired before its approver acted (`requests.ErrExpired`), never that it was decided.
-An `agent_secret` record is pending while its request is:
-`GET /v1/pending` (`PendingForApprover`, which lists `anyone` records for every approver) lists it only then, and `ReadRecord`, which the broker's own approval page and `POST /v1/machine-logins/lookup` read a record through, reads it as pending only then;
-a decided record's terminal event names the decision, and a request cancelled with no cancelled event on its record, the shape an ended enrollment's requests had before `endEnrollment` wrote one, reads as `cancelled` from its request row.
-A machine login is pending while it carries no terminal event, and `PendingForApprover` lists a service's (approver `anyone`) for every approver.
+An undecided record is pending until its deadline and expired from then on, by one SQL rule (`requests.recordStateSQL`) that is exactly what a decision refuses as expired, with the database's `now()`:
+an `agent_secret` record by its request row, which is `expired`, or `pending` past its `pending_expires_at`, or `cancelled` at or after that deadline (a cancel that came after the deadline, which the session's cancel and its enrollment's end write on any pending request);
+a machine login by an `expired` event, or no terminal event with its `expires_at` passed.
+`GET /v1/pending` (`PendingForApprover`, which lists `anyone` records for every approver) gives each row its `state`, `pending` or `expired`, and its `expires_at`, a secret request's `pending_expires_at`.
+With no `?state=` it lists the records still pending by what is stored, their deadline passed or not, until the sweep ends them, which is what a Dispatch from before records had a state reads and what the broker's own approval page lists.
+With `?state=pending` and `?state=expired`, which Dispatch always sends, it lists the records a decision may still settle and the expired records nobody has dismissed, before the sweep and after it, the pending ones first and each state newest first (dispatch://INFRA-3921).
+`POST /v1/credential-requests/{record}/dismiss` (`Machine.Dismiss`) takes an expired record off every list for good, as the person Dispatch names, who must be its approver or anyone signed in for a record whose approver is `anyone`, and writes one row of `credential_request_dismissals` (migration 0033), so the first person to dismiss a shared request dismisses it for everyone;
+a second dismissal answers the first one's values, a record still pending is `409 RECORD_PENDING`, and a decided one or one cancelled before its deadline is `409 RECORD_TERMINAL`.
+Migration 0033 wrote a dismissal by `broker` for every record the sweep had already taken off the lists, so no request that expired before it comes back.
+`ReadRecord`, which the broker's own approval page and `POST /v1/machine-logins/lookup` read a record through, reads an undecided record past its deadline as `expired` with no decision, before the sweep and after it;
+a decided record's terminal event names the decision, and a request cancelled with no cancelled event on its record, the shape an ended enrollment's requests had before `endEnrollment` wrote one, reads as `cancelled` from its request row, whenever the cancel came.
 A pending record whose signed request does not verify for this broker — one signed for another `BROKER_PUBLIC_URL`, after the public URL changed while it waited or where a second broker shares the database, which reads `aud does not match` — is left out of `PendingForApprover`'s list, and the WARN `requests.PendingLeftOutMessage` names its `record_id` and `reason` once per process, so the approval page and `GET /v1/pending` list the approver's other records rather than answering 503 for all of them (dispatch://INFRA-3950).
-The process remembers that line until the later of the record's expiry and ten minutes after the last list that left it out (`leftOutRetention`), since the list reads a record past its expiry until the sweeper ends it.
+The process remembers that line until the later of the record's expiry and ten minutes after the last list that left it out (`leftOutRetention`), since a list with no `?state=` reads a record past its expiry until the sweeper ends it.
+An expired record that a list with `?state=` leaves out is not logged at all: that list reads it until somebody dismisses it, which nobody does to a record no list shows.
 `Values` releases a live grant's values, each read from the secret its request froze (its source: the ARN, or the Secret Manager resource name).
 A type source is `mint:<type>:<source>`:
 `Machine.release` parses it (`policy.ParseTypeSource`;

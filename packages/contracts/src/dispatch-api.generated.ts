@@ -972,7 +972,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List credential requests the caller may decide (?approver=me only): those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides, each secret request carrying approve_url, the secrets broker's page where it is decided; null without a configured secrets broker. */
+    /** @description List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker. */
     get: operations["getApiV1CredentialRequests"];
     put?: never;
     post?: never;
@@ -1027,6 +1027,23 @@ export interface paths {
     put?: never;
     /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. */
     post: operations["postApiV1CredentialRequestsByIdDeny"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/credential-requests/{id}/dismiss": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values. */
+    post: operations["postApiV1CredentialRequestsByIdDismiss"];
     delete?: never;
     options?: never;
     head?: never;
@@ -4170,12 +4187,16 @@ export interface components {
     };
     CredentialPendingRow: {
       approve_url?: string;
+      /** Format: date-time */
+      expires_at?: string;
       identifiers: string[] | null;
       kind: string;
       record_id: string;
       /** Format: date-time */
       requested_at: string;
       session: components["schemas"]["CredentialSession"];
+      /** @enum {string} */
+      state?: "pending" | "expired";
     };
     CredentialSession: {
       enrollment: null | string;
@@ -4585,6 +4606,12 @@ export interface components {
       concluded: number;
       rate: null | number;
       reached_production: number;
+    };
+    DismissResponse: {
+      /** Format: date-time */
+      dismissed_at: string;
+      dismissed_by: string;
+      record_id: string;
     };
     DispatchLimits: {
       ask_options: number;
@@ -8930,6 +8957,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["StateResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1CredentialRequestsByIdDismiss: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DismissResponse"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -14049,6 +14110,7 @@ export type DeliveryWaitingPR = components["schemas"]["DeliveryWaitingPR"];
 export type DeliveryWindowView = components["schemas"]["DeliveryWindowView"];
 export type DeployFrequency = components["schemas"]["DeployFrequency"];
 export type DeployRunSuccess = components["schemas"]["DeployRunSuccess"];
+export type DismissResponse = components["schemas"]["DismissResponse"];
 export type DispatchLimits = components["schemas"]["DispatchLimits"];
 export type DispatchUser = components["schemas"]["DispatchUser"];
 export type DocumentRead = components["schemas"]["DocumentRead"];

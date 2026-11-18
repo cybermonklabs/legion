@@ -192,8 +192,8 @@ var writeClasses = map[string]writeScope{
 
 	// The rows that write what belongs to the deployment: a project-scoped credential may not
 	// create another project, write a priority the whole deployment is steered by, remap a
-	// repository, change a deployment-wide setting, broadcast, decide a credential, or reach
-	// into this process.
+	// repository, change a deployment-wide setting, broadcast, decide or dismiss a credential
+	// request, or reach into this process.
 	"POST /api/v1/projects":                                scopeDeployment,
 	"POST /api/v1/priorities":                              scopeDeployment,
 	"PATCH /api/v1/priorities/{id}":                        scopeDeployment,
@@ -207,6 +207,7 @@ var writeClasses = map[string]writeScope{
 	"POST /api/v1/broadcasts":                              scopeDeployment,
 	"POST /api/v1/credential-requests/{id}/approve":        scopeDeployment,
 	"POST /api/v1/credential-requests/{id}/deny":           scopeDeployment,
+	"POST /api/v1/credential-requests/{id}/dismiss":        scopeDeployment,
 	"POST /api/v1/credential-requests/machine-lookup":      scopeDeployment,
 	"POST /api/v1/credential-grants/{id}/revoke":           scopeDeployment,
 	"POST /api/v1/machine-logins/{id}/revoke":              scopeDeployment,
@@ -364,6 +365,7 @@ var idRoutes = map[string]idRoute{
 	"POST /api/v1/credential-grants/{id}/revoke":    {Reason: "a credential grant id"},
 	"POST /api/v1/credential-requests/{id}/approve": {Reason: "a credential request id"},
 	"POST /api/v1/credential-requests/{id}/deny":    {Reason: "a credential request id"},
+	"POST /api/v1/credential-requests/{id}/dismiss": {Reason: "a credential request id"},
 	"GET /api/v1/delivery/runs/{id}":                {Reason: "a deploy-repository run id, a positive integer and no uuid at all"},
 	"PATCH /api/v1/delivery/session-groups/{id}":    {Reason: "a Delivery session group id"},
 	"DELETE /api/v1/delivery/session-groups/{id}":   {Reason: "a Delivery session group id"},
@@ -508,6 +510,10 @@ var routeScopes = map[string]routeScopeSet{
 	"GET /api/v1/signins":                                    {model.ScopePerson},
 	"GET /api/v1/credentials/capabilities":                   {model.ScopePerson},
 	"POST /api/v1/agents/{session_id}/stream/_test/publish":  {model.ScopePerson},
+	// Dismissing an expired credential request settles nothing: nobody decided it before its
+	// deadline and nobody can now, so taking it off the Inbox needs the person alone, as the
+	// Inbox's own Dismiss above does, and not approve.
+	"POST /api/v1/credential-requests/{id}/dismiss": {model.ScopePerson},
 
 	// The rows that settle what a person settles: a document's review, a credential's fate, and
 	// a personal token's own scopes, which a credential may not widen past its own.
@@ -836,9 +842,10 @@ func (s *server) routes() []apiRoute {
 		{http.MethodPut, "/api/v1/me/asks/{id}/snooze", authAny, "Snooze an inbox row for the caller until snoozed_until.", s.putAskSnooze},
 		{http.MethodDelete, "/api/v1/me/asks/{id}/snooze", authAny, "Un-snooze an inbox row for the caller.", s.deleteAskSnooze},
 		{http.MethodGet, "/api/v1/events/log", authAny, "Page the whole event log by id, whatever owns each event (an issue, a document, a project or none): the events with id > after (default 0), oldest first, at most limit (1 to 1000, default 1000). An event's actor carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it.", s.listEventLog},
-		{http.MethodGet, "/api/v1/credential-requests", authAny, "List credential requests the caller may decide (?approver=me only): those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides, each secret request carrying approve_url, the secrets broker's page where it is decided; null without a configured secrets broker.", s.listCredentialPending},
+		{http.MethodGet, "/api/v1/credential-requests", authAny, "List credential requests the caller may decide (?approver=me only), and the expired ones nobody has dismissed: those naming the caller, a shared secret's and a service's machine login, which anyone signed in decides. Each row's state is pending (a decision may still settle it) or expired (its deadline, expires_at, passed before anybody decided it, and an expired row stays until somebody dismisses it); the pending rows come first and then the expired, each newest first, and a row with no state, from a secrets broker older than states, is pending. Each secret request carries approve_url, the secrets broker's page where it is decided; null without a configured secrets broker.", s.listCredentialPending},
 		{http.MethodPost, "/api/v1/credential-requests/{id}/approve", authAny, "Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker.", s.approveCredentialRecord},
 		{http.MethodPost, "/api/v1/credential-requests/{id}/deny", authAny, "Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker.", s.denyCredentialRecord},
+		{http.MethodPost, "/api/v1/credential-requests/{id}/dismiss", authAny, "Dismiss an expired credential request as the caller, a secret request or a machine login whose deadline passed before anybody decided it: it leaves every list for good, the caller's and, for a shared request, everybody's. Only a person whose list holds it may dismiss it (403 NOT_APPROVER); a request that can still be decided is 409 RECORD_PENDING, one that was decided, or cancelled before its deadline, is 409 RECORD_TERMINAL, and a second dismissal answers the first one's values.", s.dismissCredentialRecord},
 		{http.MethodPost, "/api/v1/credential-requests/machine-lookup", authAny, "Resolve a pending machine login by its typed confirmation code, returning its facts.", s.lookupMachineCredential},
 		{http.MethodGet, "/api/v1/credential-grants", authAny, "List credential grants the caller may revoke (?approver=me only).", s.listCredentialGrants},
 		{http.MethodPost, "/api/v1/credential-grants/{id}/revoke", authAny, "Revoke a credential grant as the caller, its approver or its enrollment's operator.", s.revokeCredentialGrant},

@@ -1327,11 +1327,12 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("AgentSecretsURL = %q", boot.AgentSecretsURL)
 			}
 			refusedWith(t, map[string]string{"DISPATCH_AGENT_SECRETS_URL": "https://broker.example/v1", "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": tokenFile}, "DISPATCH_AGENT_SECRETS_URL")
-			// The broker the router relays credential requests to; without one it has none, and the
-			// pending list answers null.
+			// The broker the router relays credential requests to, which it asks for alice's
+			// pending and expired requests; without one it has none, and the pending list answers
+			// null.
 			t.Run("router", func(t *testing.T) {
-				if got := brokerReceived(t, "account-token"); !strings.HasPrefix(got, "GET /v1/pending?approver=alice ") {
-					t.Errorf("the broker DISPATCH_AGENT_SECRETS_URL names received %q, want alice's pending list", got)
+				if got := brokerReceived(t, "account-token"); !strings.HasPrefix(got, "GET /v1/pending?approver=alice&state=pending&state=expired ") {
+					t.Errorf("the broker DISPATCH_AGENT_SECRETS_URL names received %q, want alice's pending and expired requests", got)
 				}
 				request := signedIn(t, httptest.NewRequest(http.MethodGet, "/api/v1/credential-requests?approver=me", nil), "alice")
 				response := httptest.NewRecorder()

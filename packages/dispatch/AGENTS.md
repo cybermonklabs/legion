@@ -1307,18 +1307,19 @@ human from the request body on that caller's word, so Dispatch builds every deci
 body itself. `Approve` and `Deny` take an `agentsecrets.Decision{Approver, Code}`, where `Approver`
 is always `canonicalLogin` of the person `actingPerson` resolved and `Code` is the only field read from the
 browser's body; any other field the browser sends, an `approver` among them, is dropped.
-`RevokeByApprover`, `MachineLogins` and `RevokeMachineLogin` send only the caller's canonical login
-as the approver. Cookie-authenticated unsafe requests
+`RevokeByApprover`, `MachineLogins`, `RevokeMachineLogin` and `Dismiss` send only the caller's
+canonical login as the approver. Cookie-authenticated unsafe requests
 must be same-origin (`enforceCookieOrigin` in `packages/envoy/internal/dispatch/routes/router.go`),
 so another site cannot send a decision from a signed-in human's browser.
 `packages/envoy/internal/dispatch/api/credential_requests.go` mounts
-the eleven proxy rows every page above calls, each held to the `person` scope:
-`GET /api/v1/credential-requests`, `POST /api/v1/credential-requests/{id}/approve|deny`,
+the twelve proxy rows every page above calls, each held to the `person` scope:
+`GET /api/v1/credential-requests`, `POST /api/v1/credential-requests/{id}/approve|deny|dismiss`,
 `POST /api/v1/credential-requests/machine-lookup`, `GET /api/v1/credential-grants`,
 `POST /api/v1/credential-grants/{id}/revoke`, `GET /api/v1/machine-logins`,
 `POST /api/v1/machine-logins/{id}/revoke`, `GET /api/v1/signins`,
 `POST /api/v1/signins/{id}/revoke` and `GET /api/v1/credentials/capabilities`;
-each decision and revoke needs `approve` as well.
+each decision and revoke needs `approve` as well, and the dismissal of an expired request, which
+decides nothing, does not.
 Every handler is reached only past that scope gate (`gateRouteScopes`), then needs a
 configured client (`404 FEATURE_OFF` on a nil one), except the pending list, which answers `null`
 without a broker once its input is checked, and the capabilities row, which answers

@@ -984,6 +984,16 @@ nothing (`RECORD_TERMINAL`), and the page says what became of the record. A pend
 decides expires after 12 hours, a fixed time rather than
 a setting (`agentSecretPendingTTL` in `packages/envoy/cmd/broker/main.go`).
 
+A request or a machine login whose deadline passes before anybody decides it stays in its
+approver's Dispatch Inbox, marked **Expired** with its deadline, with no link to a page that
+decides it, until someone dismisses it with **Dismiss**. It is no longer counted as waiting on the
+person. The broker reads it as expired from the moment its deadline passes, before the sweep ends
+it and after, which is exactly what every decision of it refuses. A dismissal is the record's
+once, for every Inbox: the first person whose Inbox holds a shared request and who dismisses it
+takes it out of everyone's, and no route brings it back. The broker stores each dismissal
+(`credential_request_dismissals`); a request the sweep had already ended before it kept them was
+recorded as dismissed by `broker` and does not come back.
+
 A machine login is still decided in Dispatch, with its typed code
 ([Machine login](#machine-login)), and a person's revoke of a grant or a machine login is still made
 through Dispatch: Dispatch's server calls the broker as its own Kubernetes ServiceAccount, which the

@@ -973,6 +973,11 @@ var routeShapes = map[string]routeShape{
 		// the terminal state rather than a credential.
 		Status: http.StatusOK, Response: wire.StateResponse{}, Request: credentialDecisionInput{}, OptionalRequest: true,
 	},
+	"POST /api/v1/credential-requests/{id}/dismiss": {
+		// POST /v1/credential-requests/{record}/dismiss (agentsecrets.Client.Dismiss). Dispatch
+		// reads no body: the one field the broker takes, the approver, is the caller.
+		Status: http.StatusOK, Response: wire.DismissResponse{},
+	},
 	"POST /api/v1/credential-requests/machine-lookup": {
 		// POST /v1/machine-logins/lookup (agentsecrets.Client.MachineLookup). Dispatch forwards
 		// the body to the broker unparsed (readRelayBody) rather than reading it, but the broker
