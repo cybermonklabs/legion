@@ -182,6 +182,24 @@ test("a text holding any family of markup is read by the parse", () => {
   }
 });
 
+// A GFM table needs no pipe: a paragraph line followed by a delimiter row of one cell is a table
+// of one column, and its delimiter row may open with the colon that aligns the column. A running
+// build of this head's server read each text below as a table whose one header cell is the
+// paragraph line, the delimiter row no word of it, as the page's parse does; a delimiter cell
+// written after other words is no delimiter row, and stays words.
+test("a delimiter row that opens with a colon makes a table, read as the server reads it", () => {
+  for (const [text, words] of [
+    ["a\n:--", "a"],
+    ["Name\n:---:", "Name"],
+    ["one\n:-", "one"],
+    ["a b\n :--", "a b"],
+    ["Total\n:--- more", "Total :--- more"],
+  ] as const) {
+    expect(plainWordsRaw(text), text).toBe(words);
+    expect(collapsed(lineWordsRaw({ text })), text).toBe(words);
+  }
+});
+
 // A parsed reading is remembered while any holder that asked for its text lives, and shared:
 // another holder, and a caller that names none, read the same reading rather than a parse of
 // their own.
