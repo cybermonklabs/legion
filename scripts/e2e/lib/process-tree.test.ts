@@ -502,3 +502,155 @@ echo "scratch: $scratch"
     slow
   );
 });
+
+describe.skipIf(skip)("incarnation_pid, env_has and freeze_if", () => {
+  test(
+    "incarnation_pid names a pid only with its own start ticks, and refuses a reused, an ended and a malformed incarnation",
+    () => {
+      const r = run(`
+"$program" 600 </dev/null >/dev/null 2>&1 &
+pid=$!
+started+=("$pid")
+until_true 10 "the program to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$2" ]' sh "$pid" "$program"
+start=$(start_of "$pid")
+[ "$(incarnation_pid "$pid:$start")" = "$pid" ] && echo "its own ticks: named" || echo "its own ticks: refused"
+for inc in "$pid:$((start + 1))" "$pid" ":$start" "0$pid:$start" "$pid:x" "x:$start"; do
+  if incarnation_pid "$inc" >/dev/null; then echo "$inc: named"; else echo "refused"; fi
+done
+true &
+ended=$!
+wait "$ended"
+if incarnation_pid "$ended:$start" >/dev/null; then echo "ended: named"; else echo "ended: refused"; fi
+`);
+      expect(r.err).toBe("");
+      expect(r.out).toBe(`its own ticks: named\n${"refused\n".repeat(6)}ended: refused\n`);
+    },
+    slow
+  );
+
+  test(
+    "env_has says 0 for a name the environment holds even past the pipe buffer, 1 for one it does not, and 2 for an environment it cannot read",
+    () => {
+      // The name stands first in an environment of 200 KB: a `tr | grep -q` stops reading at it,
+      // tr dies of SIGPIPE, and pipefail made a negated check pass while the name was there.
+      const r = run(`
+pad=$(printf '%0100000d' 0)
+env -i LEGION_GRANT_FILE=/grant PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
+pid=$!
+started+=("$pid")
+until_true 10 "the program's environment" sh -c '[ "$(readlink /proc/$1/exe)" = "$2" ]' sh "$pid" "$program"
+for name in LEGION_GRANT_FILE LEGION_GRANT; do st=0; env_has "$pid" "$name" || st=$?; echo "$name $st"; done
+echo "value $(env_of "$pid" LEGION_GRANT_FILE)"
+st=0; env_has 1 HOME 2>/dev/null || st=$?; echo "unreadable $st"
+`);
+      expect(r.err).toBe("");
+      expect(r.out).toBe("LEGION_GRANT_FILE 0\nLEGION_GRANT 1\nvalue /grant\nunreadable 2\n");
+    },
+    slow
+  );
+
+  test(
+    "freeze_if signals a process only while it is the one that started then and its check holds, and otherwise thaws it and sends nothing",
+    async () => {
+      const r = run(`
+"$program" 600 </dev/null >/dev/null 2>&1 &
+pid=$!
+started+=("$pid")
+until_true 10 "the program to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$2" ]' sh "$pid" "$program"
+start=$(start_of "$pid")
+state() { local s; read -r s <"/proc/$1/stat"; s=\${s##*) }; printf '%s\\n' "\${s%% *}"; }
+st=0; freeze_if "$pid" "$((start + 1))" KILL || st=$?; echo "another start: $st, $(state "$pid")"
+st=0; freeze_if "$pid" "$start" KILL false || st=$?; echo "its check fails: $st, $(state "$pid")"
+st=0; freeze_if "$pid" "$start" TERM true || st=$?; echo "its check holds: $st"
+echo "pid $pid"
+`);
+      expect(r.err).toBe("");
+      const pid = Number(/^pid (\d+)$/m.exec(r.out)?.[1]);
+      expect(r.out).toBe(
+        `another start: 1, S\nits check fails: 1, S\nits check holds: 0\npid ${pid}\n`
+      );
+      expect(await gone(pid)).toBe(true);
+    },
+    slow
+  );
+});
+
+// stage3-4b13b-acceptance.sh's merger-pane-mints-no-grant reads the merger pane's environment for
+// LEGION_GRANT_FILE and LEGION_GRANT through env_has, and holds an absence only on its status 1.
+const carriesNoGrant = scriptFunctions(join(import.meta.dir, "..", "stage3-4b13b-acceptance.sh"))(
+  "carries_no_grant"
+);
+describe.skipIf(skip)("carries_no_grant", () => {
+  test(
+    "fails while a grant stands first in a 200 KB environment and when the environment cannot be read, and holds only for an environment without one",
+    () => {
+      const r = run(`${carriesNoGrant}
+pad=$(printf '%0100000d' 0)
+env -i LEGION_GRANT_FILE=/grant PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
+granted=$!
+started+=("$granted")
+env -i PADDING1="$pad" PADDING2="$pad" "$program" 600 </dev/null >/dev/null 2>&1 &
+clean=$!
+started+=("$clean")
+until_true 10 "both programs to run" sh -c '[ "$(readlink /proc/$1/exe)" = "$3" ] && [ "$(readlink /proc/$2/exe)" = "$3" ]' sh "$granted" "$clean" "$program"
+for p in "$granted" "$clean" 1; do
+  st=0
+  why=$(carries_no_grant "$p") || st=$?
+  echo "status $st: $why"
+done
+`);
+      expect(r.err).toBe("");
+      expect(r.out).toBe(
+        "status 1: still carries LEGION_GRANT_FILE\nstatus 0: \nstatus 1: has an environment that could not be read (env_has status 2)\n"
+      );
+    },
+    slow
+  );
+});
+
+// clean-session-stop-tmux.sh's kill_the_agent SIGKILLs the agent under a claim's pane, the pane
+// read from the claim's locator incarnation `<pid>:<start ticks>`. A pane is a copy of bash running
+// a `worker-shim` script, as `legion worker-shim` runs its agent, whose agent is the run's Oh My Pi,
+// a copy of sleep; claim_field, the daemon's answer, is a stub that applies the caller's own jq
+// filter to a locator holding the incarnation a row gives it.
+const cleanStop = scriptFunctions(join(import.meta.dir, "..", "clean-session-stop-tmux.sh"));
+const killTheAgent = [
+  "claim_pane_pid",
+  "kill_the_agent",
+  "agent_descendant",
+  "parent_pid",
+  "shimmed",
+]
+  .map(cleanStop)
+  .join("\n");
+describe.skipIf(skip)("kill_the_agent", () => {
+  test(
+    "kills the agent below the pane its incarnation names, and nothing when the incarnation's start ticks are not the pane's own",
+    async () => {
+      const r = run(`${killTheAgent}
+printf '"$1" 600\\n:\\n' >"$scratch/worker-shim"
+(cd "$scratch" && exec bash worker-shim "$program") </dev/null >/dev/null 2>&1 &
+pane=$!
+started+=("$pane")
+until_true 10 "the agent below the pane" launched "$pane" "$program"
+agent=$(launched "$pane" "$program")
+omp_bin=$program
+start=$(start_of "$pane")
+# The daemon's answer for the claim, read through the caller's own filter, as claim_json's is.
+claim_field() { jq -rn --arg inc "$INCARNATION" '{locator: {incarnation: $inc}}'" | $2"; }
+st=0; INCARNATION="$pane:$((start + 1))" kill_the_agent token omp >/dev/null 2>&1 || st=$?
+read -r s <"/proc/$agent/stat"; s=\${s##*) }
+echo "another pane's ticks: status $st, agent \${s%% *}"
+INCARNATION="$pane:$start" kill_the_agent token omp 2>/dev/null | grep -qE '^[0-9]+$' && echo "its own ticks: killed"
+echo "agent $agent"
+`);
+      expect(r.err).toBe("");
+      const agent = Number(/^agent (\d+)$/m.exec(r.out)?.[1]);
+      expect(r.out).toBe(
+        `another pane's ticks: status 1, agent S\nits own ticks: killed\nagent ${agent}\n`
+      );
+      expect(await gone(agent)).toBe(true);
+    },
+    slow
+  );
+});

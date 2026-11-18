@@ -2143,8 +2143,8 @@ GATES = [
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:139 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh:93 sources it"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:102 sources it"),
-        ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:143,157 runs it to hold a port for the daemon"),
-        ("scripts/e2e/lib/process-tree.sh", "scripts/e2e/lib/rig.sh:368 sources it"),
+        ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:144,158 runs it to hold a port for the daemon"),
+        ("scripts/e2e/lib/process-tree.sh", "scripts/e2e/lib/rig.sh:349 sources it"),
         ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:172 runs it over the checkout"),
         ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:229 copies its name, version and legion "
                                             "block with jq into the pi-legion plugin the proof's home holds"),

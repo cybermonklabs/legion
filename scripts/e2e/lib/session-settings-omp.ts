@@ -71,6 +71,9 @@ export class Omp {
       ENVOY_TOKEN_FILE: rig.envoyTokenFile,
       ENVOY_URL: rig.envoyUrl,
       HOME: rig.home,
+      // The run's mark, which the rig's teardown checks a pid for before it signals it (stop_omp,
+      // dispatch-session-settings.sh; run_marks, lib/process-tree.sh).
+      LEGION_E2E_RUN: process.env.LEGION_E2E_RUN ?? "",
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       PI_CODING_AGENT_DIR: rig.agentDir,
       TMPDIR: rig.tmp,

@@ -54,6 +54,10 @@ Every `legion.yaml` a proof writes for a Go daemon sets `worker_wakes_per_minute
 A proof starts roles and waits on bounded times, and at the default of 8 wakes a minute every wake after the first would spend those waits queueing for its turn.
 The three kind proofs write no such file: the Go live tests they drive write theirs, and each launches through the Sandbox runtime itself, where no wake is paced.
 
+Every stage proof marks each process it starts with `LEGION_E2E_RUN=$work` once its transcript runs, and its teardown and its checks that no process remains take only the processes that carry the mark ([`lib/process-tree.sh`](#libprocess-treesh)'s `marked_processes`):
+a person's shell or `tail -f` working under the run's directory is never signalled or waited on.
+A host that runs them needs GNU findutils 4.9 or later (`find -files0-from`, which Ubuntu 24.04 ships and 22.04's 4.8 does not): with an older `find` the port-holder read (`listening_holders`) exits 2 at every call.
+
 Each item below names a script, then what it proves.
 
 - `stage1-skeleton.sh`
@@ -5796,7 +5800,7 @@ Sourced, never run; Stage 2 and Stage 3 source it first.
 . "$root/scripts/e2e/lib/box-login.sh"
 take_box_login_lock || { echo "FAIL setup: another box-login proof is running on this box (the holder is named above)" >&2; exit 1; }
 …
-stop_box_login_processes $(run_processes)   # in the teardown
+stop_marked_processes "$work" "$box_login_stop_grace"   # in the teardown (lib/process-tree.sh)
 unlink_box_login_db "$profile_agent"
 ```
 
@@ -5807,7 +5811,7 @@ A taken lock fails at once, naming the holder the file records:
 `another box-login proof holds <file>: pid <pid> (<command>); one box-login proof runs at a time`, or that the pid has exited and a process it started still holds the lock.
 Every pane of a box-login run shares the operator's login database; one run at a time keeps the load on that login bounded and each run's evidence its own.
 
-`stop_box_login_processes PID…` sends SIGTERM to every pid, waits at most `box_login_stop_grace` (10) seconds for all of them to exit, then SIGKILLs only those still alive, so a pane in the middle of a token refresh can write the rotated token back before it goes.
+`box_login_stop_grace` (10) is the seconds a box-login teardown gives the run's marked processes after SIGTERM before any SIGKILL ([`stop_marked_processes`](#libprocess-treesh)), so a pane in the middle of a token refresh can write the rotated token back before it goes.
 `unlink_box_login_db
 AGENT_DIR` removes `AGENT_DIR/agent.db` when it is a symlink, the link itself and never what it names;
 the stages call it once the run's processes are gone, since a process that opened the database again after the link went would make a fresh database of its own in the profile.
@@ -5911,8 +5915,8 @@ It does this through a `tee` that ignores the signals a driver traps and SIGPIPE
 - busybox `tee` keeps writing every output and reports errors at EOF, so it picks `FILE` up again once its disk has room.
   It rejects `-p`, which is why the trap, not `-p`, carries SIGPIPE.
 
-- The `tee` is one of the run's processes: its argv names `FILE`, and its working directory is the caller's at the call.
-  [`lib/rig.sh`](#librigsh)'s `run_processes` matches `$work` in either, so a caller keeps both outside `$work`, or opens `FILE` on a descriptor and passes `/dev/fd/N`, as Stage 2 and `stage3-4b13b-acceptance.sh` do with their transcript under `$work`.
+- The `tee` must outlive the run's sweeps, which end every process that carries the run's mark ([`marked_processes`](#libprocess-treesh)).
+  A caller marks its run (`export LEGION_E2E_RUN=$work`) after `transcript_to`, so the `tee`, which takes the caller's environment as it stands at the call, carries no mark, whatever `FILE` and the caller's working directory are.
 
 ## lib/rig.sh
 
@@ -5995,7 +5999,7 @@ Each item below names a function, then what it does.
 - `stop_pid PID`
 
   TERM, then KILL after 10 s; best effort, so a failed cleanup never hides the check that failed.
-  An empty PID does nothing; a PID that cannot name one process of the run (0 however spelled, so any value with a leading zero, 1, a negative or non-numeric value, the calling shell or its process group's leader) is refused with a printed line, since `kill 0` signals the caller's whole process group
+  An empty PID does nothing; a PID that cannot name one process of the run (0 however spelled, so any value with a leading zero, 1, a negative or non-numeric value, the calling shell or its process group's leader) is refused with a printed line ([`signalable`](#libprocess-treesh)), since `kill 0` signals the caller's whole process group
 
 - `stop_tree PID`
 
@@ -6008,11 +6012,10 @@ Each item below names a function, then what it does.
 
 - `run_processes`
 
-  prints every pid whose working directory or command line names `$work`: the run's search for its leftovers, a process that left every tree the run recorded among them (a double-forked daemon the kernel gave to pid 1), so it reads every process of the machine.
-  One `find` reads each `/proc/<pid>/cwd` link and the shell reads each command line, with no command run for each entry: a devbox holds thousands of them, and a `readlink` and a `grep` apiece cost a teardown, and every sweep a checkpoint makes, seconds.
-  The shell's own glob lists the entries and hands them to `find` on stdin (`-files0-from -`), never as its arguments, which could not start past ARG_MAX: at about 80,000 processes `find /proc/[0-9]*/cwd` failed with E2BIG, and the empty answer read as a run with nothing left.
-  A process whose working directory this user cannot read is another user's, so it is none of the run's, and neither is one that ended during the walk.
-  Any other complaint of `find`'s, and a walk that read no process, prints the reason and exits 2, which the cleanup checkpoint's wait and the two stage proofs' last checks fail on
+  prints the pid of every process of the run still alive: each that carries the run's mark ([`marked_processes`](#libprocess-treesh)), which the run exports as `LEGION_E2E_RUN=$work` right after its transcript starts, or a daemon pane's `XDG_CONFIG_HOME` under `$work`.
+  A process that only works under `$work` or names it on its command line carries neither, so a person's shell `cd`'d there, a `tail -f` of the transcript, an editor on a file under it, or another agent's `grep -r` over it is none of the run's.
+  It prints why and exits 2 when the run's processes could not be read, which the cleanup checkpoint's wait and the two stage proofs' last checks fail on.
+  Each sweep that ends them is `stop_marked_processes "$work"`, which signals only the marked processes
 
 - `real_bin_path DEST NAME…`
 
@@ -6026,10 +6029,14 @@ Each item below names a function, then what it does.
   Stage 1 prepends `real_bin_path "$work/realbin" tmux` to its daemon's PATH when its first tmux is a script or mise itself, and keeps a real tmux binary, such as CI's apt tmux, otherwise;
   Stage 2, the 4b.13b acceptance and the Claude Code backend proof, which do not call it, put a link to `mise which tmux` on their daemons' PATH the same way
 
-`lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` and a `grep` on `PATH` that record every call and answer nothing:
-it names the process working in the run's directory and the one naming it in its command line, leaves a process of neither kind alone, calls neither command, and trips no trap.
-It names a process double-forked into the run's directory, which no tree the run started holds.
-Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none
+`lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` on `PATH` that records every call and answers nothing and a `grep` that counts its calls:
+it names a process that carries the run's mark and a pane-shaped one whose `XDG_CONFIG_HOME` is under the run's state, leaves a process working in the run's directory, a `tail -f` of its transcript and an unrelated one alone, runs a handful of greps and no `readlink`, and trips no trap.
+It names a marked process double-forked to pid 1, which no tree the run started holds.
+Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none.
+A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, and a run that has not marked itself has no processes to read.
+`stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
+with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;
+and it signals no pid whose start time is not the one its walk read
 
 ## lib/arg-max-force.sh
 
@@ -6047,6 +6054,7 @@ On a devbox at load 469 one such walk of 29,613 entries took 504 s; every other 
 and an entry read through `tr | grep -q` under `pipefail` reads as absent whenever grep stops before tr has written the rest, which missed 2 to 4 reads in 100 of a devbox's own environment and every read of one with a mebibyte after the variable.
 [`lib/rig.sh`](#librigsh) sources it, and `stage2-tmux-supervision.sh`, which sources no rig, sources it on its own.
 It needs nothing of its caller's.
+Its walks of every process (`procs_naming`) hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` hands them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) `listening_holders` always exits 2.
 
 ```sh
 . "$root/scripts/e2e/lib/process-tree.sh"     # sourced, never run
@@ -6057,7 +6065,42 @@ It needs nothing of its caller's.
   print PID's parent, its process group, and each of its children, one a line, from that process's own `/proc/PID/stat` (read past its last `) `, since a command name may hold both) and every thread's `/proc/PID/task/*/children`.
   None reads every process of the machine, as procps-ng's `ps -p` and `pgrep -P` do: one `ps -o args= -p PID` opened `/proc/<pid>/stat` 12,564 times at about 13,000 processes.
   Each prints nothing for a process that is gone; a host with no `/proc` asks `ps` and `pgrep`.
-  `signalable` and `stop_tree` ([`lib/rig.sh`](#librigsh)) and the skill-scenario rig's `stop_env_processes` use them
+  [`signalable`](#libprocess-treesh), `stop_pid` and `stop_tree` ([`lib/rig.sh`](#librigsh)) and the skill-scenario rig's `stop_env_processes` use them.
+  `proc_children` asks `pgrep` as well where a process's `task/<tid>/children` file is missing (a kernel built without `CONFIG_PROC_CHILDREN`), so `stop_tree` never leaves the children of such a process running
+
+- `proc_start PID`
+
+  prints PID's start time, field 22 of `/proc/PID/stat`, which the kernel sets at the fork and exec keeps, and nothing for a process that is gone, a zombie included:
+  a pid and its start name one process even once the kernel has given the pid to another
+
+- `signalable PID`
+
+  is whether PID can name one process the run started, refusing with a printed line 0 however spelled, 1, a negative or non-numeric value, the calling shell and its process group's leader
+
+- `incarnation_pid INCARNATION`
+
+  prints the pid of a tmux claim's locator incarnation `<pid>:<start ticks>` while that pid is still the process that started at those ticks, and refuses a malformed incarnation, an ended process and a reused pid.
+  Every rig that reads a pane from a claim's locator reads it through this, never through the pid before the colon alone
+
+- `freeze_if PID START SIGNAL [CHECK…]`
+
+  stops PID, then sends SIGNAL only while PID is still the process that started at START and `CHECK… PID` succeeds, and thaws it after any signal but KILL and STOP; on a mismatch it thaws PID and sends nothing.
+  A stopped process cannot end and hand its pid to another between the check and the signal
+
+- `env_of PID NAME`, `env_has PID NAME`, `process_args PID ARRAY`
+
+  read PID's environment or command line whole, in the calling shell, with no pipe between the read and the check: `env_of` prints every value of NAME, `env_has` is 0 when NAME is there, 1 when it is not and 2 when the environment cannot be read, so an absence holds only on 1
+
+- `names_dir DIR NAME… PID`, `procs_naming DIR NAME…`
+
+  are whether PID's environment gives one of the NAMEs the value DIR or a path under it, and `PID START` for every process whose environment does, read from every process of the machine (one `grep` per `xargs` batch, then each match read whole), failing with 2 when the walk could not read the machine
+
+- `marked_processes DIR`, `stop_marked_processes DIR [GRACE]`
+
+  are a stage proof's run's own processes and its sweep: each process that carries `LEGION_E2E_RUN=DIR`, which the run exports after its transcript starts, or the `XDG_CONFIG_HOME` under DIR that a daemon pane carries, its environment built from the daemon's allow-list (`paneEnvAllowList`, `packages/daemon/internal/runtime/tmux/environment.go`).
+  `marked_processes` refuses a run that has not marked itself.
+  `stop_marked_processes` signals each through `freeze_if`, so a pid that passed to another process since is left; with GRACE it gives each SIGTERM and GRACE seconds before SIGKILL.
+  Every stage proof's sweep is this one, and a start that clears its environment (`env -i`) names `LEGION_E2E_RUN` itself
 
 - `proc_describe PID…`
 

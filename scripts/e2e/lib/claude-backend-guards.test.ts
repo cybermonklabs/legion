@@ -6,13 +6,14 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { scriptFunctions } from "./script-functions";
 
 // The Claude Code backend proof's process guards (claude-backend-tmux.sh), taken from the script by
-// name and run under its own `set -Eeuo pipefail`, with lib/process-tree.sh sourced, against live
-// processes this suite starts: bridged, whether a claude's parent is the run's
-// `legion claude-bridge -- <claude>`; claude_pid, a pane's Claude Code process; and
-// endpoint_mismatch, an agent's environment against the rig.
+// name and run under its own `set -Eeuo pipefail`, with lib/rig.sh (and so lib/process-tree.sh)
+// sourced first, as the script sources it, against live processes this suite starts: bridged,
+// whether a claude's parent is the run's `legion claude-bridge -- <claude>`; claude_pid, a pane's
+// Claude Code process; and endpoint_mismatch, an agent's environment against the rig.
 const fn = scriptFunctions(join(import.meta.dir, "..", "claude-backend-tmux.sh"));
+const rig = join(import.meta.dir, "rig.sh");
+const root = join(import.meta.dir, "..", "..", "..");
 const guards = [
-  "process_args",
   "read_environ",
   "parent_pid",
   "agent_descendant",
@@ -61,7 +62,6 @@ const wrapped = join(dir, "real", "claude");
 const claudeWithTool = join(claudeDir, "claude-with-tool");
 const ompTool = join(dir, "real", "omp");
 const cwd = join(dir, "cwd");
-const processTree = join(import.meta.dir, "process-tree.sh");
 beforeAll(() => {
   if (skip) return;
   mkdirSync(work);
@@ -90,26 +90,25 @@ beforeAll(() => {
   writeFileSync(join(cwd, "600"), `${JSON.stringify(ompTool)} 600\n:\n`);
 });
 
-// run runs BODY after the guards, with the rig's globals set, a scratch directory of its own in
-// $scratch, and two helpers. spawn ARGS… starts ARGS in the background, its output away from the
-// test's pipes, and sets pid to its process. await_child EXE sets child to pid's first child once
-// that child is running EXE (its /proc/<pid>/exe), not merely once it exists: a forked child carries
-// its parent's command line until it execs, and a guard asked about it then answers for the parent.
-// Every process either names is killed when BODY ends.
+// run runs BODY after lib/rig.sh and the guards, with the rig's globals set, a scratch directory of
+// its own in $scratch, and two helpers. spawn ARGS… starts ARGS in the background, its output away
+// from the test's pipes, and sets pid to its process. await_child EXE sets child to pid's first child
+// once that child is running EXE (its /proc/<pid>/exe), not merely once it exists: a forked child
+// carries its parent's command line until it execs, and a guard asked about it then answers for the
+// parent. Every process spawn started goes, with everything below it, when BODY ends (stop_tree,
+// lib/rig.sh, which signals a process only while its parent is the one it was started under).
 function run(body: string, vars: Record<string, string> = {}) {
   const prelude = `set -Eeuo pipefail
+root=${JSON.stringify(root)} evidence=$SCRATCH timeout_hook=
+note() { :; }
+fail() { echo "fail: $*" >&2; exit 1; }
+. ${JSON.stringify(rig)}
 ${guards}
-. ${JSON.stringify(processTree)}
 work=$WORK claude_bin=$CLAUDE claude_exe=$(realpath -e -- "$CLAUDE") port_dispatch=1 port_listener=2 port_nats=3 state=/rig
 scratch=$(mktemp -d "$SCRATCH/run.XXXXXX")
 started=()
-# Each process a row started goes with everything below it.
-kill_tree() {
-  local c
-  for c in $(proc_children "$1"); do kill_tree "$c"; done
-  kill "$1" 2>/dev/null || true
-}
-trap 'for p in \${started[@]+"\${started[@]}"}; do kill_tree "$p"; done' EXIT
+# The shell's own notice of each job the trap stops goes nowhere: it is no output of a row.
+trap '{ for p in \${started[@]+"\${started[@]}"}; do stop_tree "$p"; done; } 2>/dev/null' EXIT
 spawn() {
   "$@" </dev/null >/dev/null 2>&1 &
   pid=$!

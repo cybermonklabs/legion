@@ -107,9 +107,10 @@ async function until(what: string, ok: () => boolean) {
 }
 
 // harness runs BODY with the script's `set` line, lib/rig.sh sourced as the script sources it (for
-// run_processes) and stop_agent_daemons taken from the script by name. $work comes in through the
-// environment, so the harness's own command line does not name it and run_processes does not name
-// the harness.
+// run_processes) and stop_agent_daemons taken from the script by name, its run marked as the script
+// marks it (LEGION_E2E_RUN). $work comes in through the environment, and the mark is exported only
+// once the shell runs, so the harness's own process carries no mark and run_processes does not name
+// it.
 function harness(work: string, body: string) {
   const ran = Bun.spawnSync(
     [
@@ -121,6 +122,7 @@ work=$WORK
 note() { printf '   %s\\n' "$*"; }
 fail() { printf 'FAIL: %s\\n' "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/rig.sh"
+export LEGION_E2E_RUN=$work
 ${fn("stop_agent_daemons")}
 ${body}`,
     ],
@@ -139,7 +141,7 @@ test.skipIf(skip)(
     const stale = join(work, "state/omp/profiles/p/run/daemons/fedcba9876543210");
     for (const d of [ws, home, runtime, stale, join(work, "tmux")])
       mkdirSync(d, { recursive: true });
-    // The stand-in broker lives outside $work, so only its working directory ties it to the run.
+    // The stand-in broker lives outside $work; its environment, the pane's, carries the run's mark.
     const broker = join(dir, "fake-broker.sh");
     writeFileSync(
       broker,
@@ -159,6 +161,7 @@ wait
     // for cleanup-is-complete's wait to name.
     const bystander = Bun.spawn(["setsid", "sleep", "303"], {
       cwd: ws,
+      env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work },
       stdout: "ignore",
       stderr: "ignore",
     });
@@ -175,7 +178,13 @@ wait
       [bystander.pid, stranger.pid].every((pid) => alive(pid) && sessionOf(pid) === pid)
     );
 
-    const env = { PATH: process.env.PATH ?? "", HOME: home, TMUX_TMPDIR: join(work, "tmux") };
+    // The run's tmux server, and so every pane, carries the run's mark, as a rig's own does.
+    const env = {
+      PATH: process.env.PATH ?? "",
+      HOME: home,
+      TMUX_TMPDIR: join(work, "tmux"),
+      LEGION_E2E_RUN: work,
+    };
     const pidFile = join(runtime, "broker.pid");
     // The stand-in broker the pane starts leads a session of its own and names it in broker.pid.
     // Ending that session is registered before the pane that starts it, so a wait below that times
@@ -216,7 +225,7 @@ wait
     Bun.spawnSync(["tmux", "-L", "teardown", "kill-server"], { env });
     await until("the pane to end", () => !alive(panePid));
     // The red half: the broker's whole session outlives the pane, and run_processes, the check's own
-    // reading, still names the members that work inside $work.
+    // reading, still names the members, which carry the run's mark.
     expect(members.every(alive)).toBe(true);
     const before = harness(work, "run_processes || true")
       .stdout.split("\n")
@@ -228,7 +237,7 @@ wait
     expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
     await until("every member of the broker's session to end", () => !members.some(alive));
     // What no broker of the run ties to the run is left alone, and the check still names the one that
-    // works inside $work.
+    // carries the run's mark.
     expect(alive(bystander.pid)).toBe(true);
     expect(alive(stranger.pid)).toBe(true);
     const after = harness(work, "run_processes || true")

@@ -538,16 +538,21 @@ describe("next_run", () => {
   });
 });
 
-// run_env_pids names each process whose environment carries a run under DIR, for the exit
-// handlers' stop_env_processes. It walks every process's environment, so a machine whose
-// /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its arguments:
-// past about 80,000 processes grep could not start, and the run had nothing to stop.
-describe("run_env_pids", () => {
+// run_env_pids names each process whose environment carries a run under DIR, with its start time,
+// for the exit handlers' stop_env_processes. It walks every process's environment, so a machine
+// whose /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its
+// arguments: past about 80,000 processes grep could not start, and the run had nothing to stop.
+describe("run_env_pids and stop_env_processes", () => {
   const force = path.join(root, "scripts/e2e/lib/arg-max-force.sh");
+  const processTree = path.join(root, "scripts/e2e/lib/process-tree.sh");
+  const start = (pid: number) =>
+    readFileSync(`/proc/${pid}/stat`, "utf8")
+      .replace(/^.*\) /, "")
+      .split(" ")[19];
 
   // Catches: a walk that hands grep every /proc/<pid>/environ at once, which under the force
   // (scripts/e2e/lib/arg-max-force.sh) cannot start and names nothing.
-  test("names a process of the run where a program handed every /proc/<pid>/environ would not start", () => {
+  test("names a process of the run, with its start time, where a program handed every /proc/<pid>/environ would not start", () => {
     const dir = freshDir("env-pids");
     const scratch = freshDir("env-pids-scratch");
     const run = Bun.spawn(["sleep", "60"], {
@@ -558,10 +563,45 @@ describe("run_env_pids", () => {
     try {
       const old = 'grep -lzsF -e "SKILL_SCENARIO_RUN=$2" /proc/[0-9]*/environ';
       const forced = bash(
-        `set -euo pipefail\n. ${JSON.stringify(force)}\n${fn("run_env_pids")}\narg_max_force environ 6144 "$1" ${JSON.stringify(old)}\nrun_env_pids "$2"`,
+        `set -euo pipefail\n. ${JSON.stringify(force)}\n. ${JSON.stringify(processTree)}\n${fn("run_env_pids")}\narg_max_force environ 6144 "$1" ${JSON.stringify(old)}\nrun_env_pids "$2"`,
         [scratch, dir]
       );
-      expect(forced).toEqual({ code: 0, stdout: `${run.pid}\n`, stderr: "" });
+      expect(forced).toEqual({ code: 0, stdout: `${run.pid} ${start(run.pid)}\n`, stderr: "" });
+    } finally {
+      run.kill("SIGKILL");
+    }
+  });
+
+  // Catches: a stop that trusts the walk's pid after the walk, so a pid that passed to another
+  // process of this user in between is stopped with its tree.
+  test("stops a process of the run only while it is the one the walk read: another start time leaves it running", async () => {
+    const dir = freshDir("env-stop");
+    const run = Bun.spawn(["sleep", "60"], {
+      env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: path.join(dir, "run-1") },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      const rig = path.join(root, "scripts/e2e/lib/rig.sh");
+      const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
+      const stale = bash(
+        `${prelude}\nrun_env_pids() { printf '%s %s\\n' ${run.pid} 1; }\nstop_env_processes "$1"; echo "status $?"`,
+        [dir]
+      );
+      expect(stale).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
+      await Bun.sleep(200);
+      expect(
+        readFileSync(`/proc/${run.pid}/stat`, "utf8")
+          .replace(/^.*\) /, "")
+          .slice(0, 1)
+      ).toBe("S");
+      const own = bash(
+        `${prelude}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
+        [dir]
+      );
+      expect(own).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
+      expect(await run.exited).not.toBe(0);
+      expect(run.signalCode).toBe("SIGKILL");
     } finally {
       run.kill("SIGKILL");
     }

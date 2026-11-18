@@ -73,10 +73,23 @@ proc_stat_field() {
 }
 proc_parent() { proc_stat_field "$1" 4 ppid; }
 proc_group() { proc_stat_field "$1" 5 pgid; }
+# proc_start PID prints PID's start time, field 22 of /proc/PID/stat: clock ticks since boot, which
+# the kernel sets once, at the fork, and exec keeps, so a pid and its start name one process even
+# once the kernel has given the pid to another. It prints nothing for a process that is gone, a
+# zombie included, since a zombie runs nothing any more. A host with no /proc asks ps for the start
+# as a date (lstart).
+proc_start() {
+  [ "$(proc_stat_field "$1" 3 state)" != Z ] || return 0
+  proc_stat_field "$1" 22 lstart
+}
+# proc_children asks pgrep, which walks every process for its parent, where /proc cannot answer: a
+# host with no /proc (macOS), and a kernel built without CONFIG_PROC_CHILDREN, whose /proc has no
+# task/<tid>/children file at all, so the read below would print no child of a process that has
+# children and stop_tree would leave them running.
 proc_children() {
   local list
   local -a more
-  if [ ! -d /proc/self ]; then
+  if [ ! -d /proc/self ] || { [ -d "/proc/$1" ] && [ ! -e "/proc/$1/task/$1/children" ]; }; then
     pgrep -P "$1" || true
     return 0
   fi
@@ -85,6 +98,213 @@ proc_children() {
     { read -r -a more <"$list"; } 2>/dev/null || :
     [ "${#more[@]}" = 0 ] || printf '%s\n' "${more[@]}"
   done
+}
+
+# signalable PID is whether PID can name one process the run started: a number without a leading
+# zero other than 1, this shell, and this shell's process group leader (proc_group, which reads this
+# shell's own /proc entry alone). 0, however many digits spell it, and a negative number name a
+# whole process group, so `kill -STOP 0` would stop the caller with everything else in its group and
+# a later `kill -KILL 0` end them all; no pid is written with a leading zero. A refusal is printed,
+# since a caller that hands one over has a bug.
+signalable() {
+  local pid=$1
+  case "$pid" in
+    '' | *[!0-9]* | 0* | 1) ;;
+    *)
+      [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] &&
+        [ "$pid" != "$(proc_group "$$")" ] && return 0
+      ;;
+  esac
+  echo "refused to signal pid '$pid': it is not one process this run started" >&2
+  return 1
+}
+
+# process_args PID NAME reads PID's arguments into the array NAME from the NUL-delimited
+# /proc/PID/cmdline, in this shell: no pipe stands between the read and the check, so nothing can
+# end early on it. It fails when the entry cannot be read or holds no argument (the process has
+# gone).
+process_args() {
+  local -n _args=$2
+  { mapfile -d '' -t _args <"/proc/$1/cmdline"; } 2>/dev/null && [ "${#_args[@]}" -gt 0 ]
+}
+# env_of PID NAME prints every value PID's environment gives NAME, one a line, read in this shell
+# from the NUL-delimited /proc/PID/environ with no pipe between the read and the check: a
+# `tr | grep -q` stops reading at its match, tr's SIGPIPE is the pipeline's status under pipefail,
+# and a negated check reads that as absent. It fails with 2 when the environment cannot be read or
+# is empty (the process has exited), which is never the same as a clean one.
+env_of() {
+  local entry
+  local -a entries=()
+  { mapfile -d '' -t entries <"/proc/$1/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
+  for entry in "${entries[@]}"; do
+    case $entry in "$2="*) printf '%s\n' "${entry#*=}" ;; esac
+  done
+}
+# env_has PID NAME succeeds when PID's environment names NAME, with any value or none, fails with 1
+# when it does not, and with 2 when it cannot be read (env_of). A check that a variable is absent
+# holds only on status 1.
+env_has() {
+  local entry
+  local -a entries=()
+  { mapfile -d '' -t entries <"/proc/$1/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
+  for entry in "${entries[@]}"; do
+    case $entry in "$2="*) return 0 ;; esac
+  done
+  return 1
+}
+
+# incarnation_pid INCARNATION prints the pid of the tmux runtime's incarnation `<pid>:<start ticks>`
+# (a claim's .locator.incarnation, packages/daemon/internal/runtime/tmux/tmux.go) while that pid is
+# still the process that started at those ticks (proc_start), and fails otherwise: a malformed
+# incarnation, a process that has ended, and a pid the kernel has since given to another process.
+# A pane is never known by its pid alone, as the daemon itself never knows it.
+incarnation_pid() {
+  local pid=${1%%:*} ticks=${1#*:}
+  case $1 in *:*) ;; *) return 1 ;; esac
+  case $pid in '' | 0* | *[!0-9]*) return 1 ;; esac
+  case $ticks in '' | *[!0-9]*) return 1 ;; esac
+  [ "$(proc_start "$pid")" = "$ticks" ] || return 1
+  printf '%s\n' "$pid"
+}
+
+# freeze_if PID START SIGNAL [CHECK…] signals PID with SIGNAL only while it is still the process
+# that started at START (proc_start) and CHECK, a command given PID as its last word, succeeds: it
+# stops PID first (SIGSTOP), so the process cannot end and its pid pass to another between the
+# check and the signal, checks, signals, and thaws it (SIGCONT) unless SIGNAL is KILL or STOP. On a
+# mismatch it thaws PID and fails, sending nothing; it fails too when PID cannot be signalled
+# (signalable) or stopped. A process of another user cannot be stopped at all, and one of this
+# user's that took the pid stands still only for the check.
+freeze_if() {
+  local pid=$1 start=$2 signal=$3
+  shift 3
+  signalable "$pid" || return 1
+  kill -STOP "$pid" 2>/dev/null || return 1
+  if [ "$(proc_start "$pid")" != "$start" ] || { [ "$#" -gt 0 ] && ! "$@" "$pid"; }; then
+    kill -CONT "$pid" 2>/dev/null || true
+    return 1
+  fi
+  kill -"$signal" "$pid" 2>/dev/null || true
+  case $signal in KILL | STOP) ;; *) kill -CONT "$pid" 2>/dev/null || true ;; esac
+}
+
+# names_dir DIR NAME… PID succeeds when PID's environment, read whole in this shell with no pipe,
+# gives one of the NAMEs the value DIR or a path under DIR; fails with 1 when none has that value,
+# and with 2 when the environment cannot be read or is empty (the process has gone). PID comes last,
+# so freeze_if can run it as a CHECK.
+names_dir() {
+  local dir=$1 pid=${!#} entry name
+  local -a names=("${@:2:$# - 2}") entries=()
+  { mapfile -d '' -t entries <"/proc/$pid/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
+  for entry in "${entries[@]}"; do
+    for name in "${names[@]}"; do
+      case $entry in "$name=$dir" | "$name=$dir"/*) return 0 ;; esac
+    done
+  done
+  return 1
+}
+
+# procs_naming DIR NAME… prints `PID START` (proc_start) for each process whose environment gives
+# one of the NAMEs the value DIR or a path under it (names_dir), this shell itself left out. It reads
+# every process's environment, since a process that left every tree the run recorded, a
+# double-forked daemon the kernel gave to pid 1, is one of them: one grep narrows the environments to
+# those holding a NAME=DIR anywhere, and each is then read whole, variable by variable. The shell's
+# glob hands the entries to grep through xargs, which splits them into calls that fit ARG_MAX: as
+# grep's own arguments, past about 80,000 processes, grep could not start. The start is read before
+# and after the environment, and a process that ended or whose start moved between is left out.
+# xargs exits 123 when a batch's grep exits 1 or 2 (no match in it, or an environment this user may
+# not read, another user's, or whose process ended during the walk), which is no error here. Any
+# other status is xargs's own, a batch it could not start or a grep a signal ended (125), and like a
+# machine with no /proc to read it makes procs_naming print why and fail with 2, so no caller reads
+# an unread machine as one with nothing left.
+procs_naming() {
+  local dir=$1 p pid before status=0 name
+  local -a names=("${@:2}") naming_patterns=() naming_files=()
+  [ -r /proc/self/environ ] || {
+    echo "procs_naming: there is no /proc/<pid>/environ to read, so the processes naming $dir were not read" >&2
+    return 2
+  }
+  for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
+  # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
+  # firing inside the substitution for the batches every walk has with no match.
+  mapfile -t naming_files < <(printf '%s\0' /proc/[0-9]*/environ | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
+  wait "$!" || status=$?
+  case $status in
+    0 | 123) ;;
+    *)
+      echo "procs_naming: xargs exited $status reading /proc/<pid>/environ, so the processes naming $dir were not read" >&2
+      return 2
+      ;;
+  esac
+  for p in ${naming_files[@]+"${naming_files[@]}"}; do
+    pid=${p#/proc/}
+    pid=${pid%/environ}
+    [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] || continue
+    before=$(proc_start "$pid")
+    [ -n "$before" ] || continue
+    names_dir "$dir" "${names[@]}" "$pid" || continue
+    [ "$(proc_start "$pid")" = "$before" ] || continue
+    printf '%s %s\n' "$pid" "$before"
+  done
+}
+
+# run_marks are the variables that mark a process as one of a stage proof's run, each naming the
+# run's scratch directory: LEGION_E2E_RUN, which the run exports once its transcript runs, so every
+# process it starts after carries it, and XDG_CONFIG_HOME, for the processes whose environment the
+# daemon builds from its allow-list (a pane's, paneEnvAllowList in
+# packages/daemon/internal/runtime/tmux/environment.go), which carries no variable of the run's own
+# but has its XDG directories moved under the daemon's state directory, which the run puts under its
+# scratch directory. A person's shell working in that directory, or a `tail -f` of a file there,
+# carries neither, whatever its working directory or command line, so no sweep ends it.
+run_marks=(LEGION_E2E_RUN XDG_CONFIG_HOME)
+
+# marked_processes DIR prints `PID START` for every process still alive that carries the mark of the
+# run whose scratch directory is DIR (run_marks, procs_naming). It fails with 2, saying why, when
+# the walk could not read the machine's processes, and when the caller has not marked its run:
+# LEGION_E2E_RUN in its own environment is not DIR.
+marked_processes() {
+  [ "${LEGION_E2E_RUN:-}" = "$1" ] || {
+    echo "marked_processes: the run under $1 has not marked its processes (LEGION_E2E_RUN is '${LEGION_E2E_RUN:-}')" >&2
+    return 2
+  }
+  procs_naming "$1" "${run_marks[@]}"
+}
+
+# stop_marked_processes DIR [GRACE] ends every process of the run under DIR (marked_processes), and
+# no other: each is signalled only through freeze_if, while it is the process the walk read and
+# still carries the run's mark, so a pid the kernel gave to another process since is thawed and left.
+# GRACE, in seconds (default 0), gives each SIGTERM first and that long for all of them to exit: a
+# pane's Oh My Pi in the middle of a token refresh gets the time to write the rotated token back to
+# the operator's database before it goes, where a plain SIGKILL could leave it a refresh token that
+# is already spent. A process still alive after GRACE, or every one with no GRACE, gets SIGKILL. It
+# prints why and fails with 2 when the run's processes could not be read, having signalled nothing.
+stop_marked_processes() {
+  local dir=$1 grace=${2:-0} pairs pid start i
+  local -a sent=() alive=()
+  pairs=$(marked_processes "$dir") || {
+    echo "stop_marked_processes: stopped no process of the run under $dir, since none could be named" >&2
+    return 2
+  }
+  [ -n "$pairs" ] || return 0
+  if [ "$grace" -gt 0 ]; then
+    while read -r pid start; do
+      freeze_if "$pid" "$start" TERM names_dir "$dir" "${run_marks[@]}" && sent+=("$pid $start")
+    done <<<"$pairs"
+    alive=("${sent[@]}")
+    for ((i = 0; i < grace * 5 && ${#alive[@]} > 0; i++)); do
+      sleep 0.2
+      sent=("${alive[@]}")
+      alive=()
+      for pid in "${sent[@]}"; do
+        [ "$(proc_start "${pid%% *}")" != "${pid#* }" ] || alive+=("$pid")
+      done
+    done
+    [ "${#alive[@]}" -gt 0 ] || return 0
+    pairs=$(printf '%s\n' "${alive[@]}")
+  fi
+  while read -r pid start; do
+    freeze_if "$pid" "$start" KILL names_dir "$dir" "${run_marks[@]}" || true
+  done <<<"$pairs"
+  return 0
 }
 
 # proc_describe PID... prints one line for each PID that runs: its pid, parent, process group,

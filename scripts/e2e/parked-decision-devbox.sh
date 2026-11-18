@@ -81,6 +81,11 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/model-endpoint.sh
 . "$root/scripts/e2e/lib/model-endpoint.sh"
 transcript_to "$evidence/transcript.log"
+# Every process the run starts from here on carries its mark, and the sweep in cleanup and
+# cleanup-is-complete's wait take what carries it and nothing else (marked_processes,
+# lib/process-tree.sh). The transcript's tee, started above, carries none, so it outlives the sweep
+# and writes the run's last line.
+export LEGION_E2E_RUN=$work
 ok=
 check=setup
 TZ=UTC printf -v check_started '%(%FT%TZ)T' -1 # when the current check began (lib/model-gateway-unserved.sh)
@@ -164,7 +169,7 @@ remove_run_branches() {
 }
 
 cleanup() {
-  local status=$? p
+  local status=$?
   set +e
   # Teardown is best effort: a command that fails here is a warning, never a check's FAIL line.
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
@@ -181,7 +186,7 @@ cleanup() {
   stop_pid "$dispatch_keeper_pid"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
   stop_agent_daemons
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  stop_marked_processes "$work" || true
   docker rm -f "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   close_unpassed_run_pull_requests
   remove_run_branches >&2
@@ -342,7 +347,7 @@ claim_session_text() {
 # the operator's Oh My Pi session's own variables unset (omp_session_unsets, lib/omp-home.sh: that
 # session, which runs this script, sets OMP_SESSION_ID) and the run's isolated profile, which holds
 # this checkout's pi-envoy and pi-legion and the model route. The window's command records the pid
-# of the command it runs in $evidence/logs/WINDOW.pid (record_pid_sh, lib/rig.sh), which execs in
+# of the command it runs in $evidence/logs/WINDOW.pid (record_pid_sh, lib/process-tree.sh), which execs in
 # that process, so the run knows each controller start by the pid it started.
 start_controller() {
   local window=$1 command
@@ -359,7 +364,7 @@ controller_token=legion-$ptoken-controller
 role_answer() { curl -sS --max-time 20 -o "$work/controller-role.json" -w '%{http_code}' -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/roles/$controller_token" 2>/dev/null; }
 role_unheld() { [ "$(role_answer)" = 404 ]; }
 # controller_runs WINDOW: the `legion controller start` WINDOW's command started still runs, by the
-# pid it recorded (recorded_pid, lib/rig.sh), never by a search of the machine's processes for its
+# pid it recorded (recorded_pid, lib/process-tree.sh), never by a search of the machine's processes for its
 # command line.
 controller_runs() { recorded_pid "$evidence/logs/$1.pid" "$work/legion" >/dev/null; }
 controller_gone() { ! controller_runs "$1"; }

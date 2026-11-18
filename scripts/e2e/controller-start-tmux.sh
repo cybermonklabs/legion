@@ -31,6 +31,10 @@ mkdir -p "$evidence/logs" "$evidence/checks"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+# Every process the run starts from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh). The transcript's tee, started
+# above, carries none, so it outlives the sweep and writes the run's last line.
+export LEGION_E2E_RUN=$work
 ok=
 daemon_pid=
 listener_pid=
@@ -72,7 +76,7 @@ cleanup() {
   TMUX_TMPDIR=$work/tmux tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1
   stop_pid "$listener_pid"
   stop_pid "$daemon_keeper_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
+  stop_marked_processes "$work"
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
   rm -rf "$work"
   [ -n "$ok" ] || echo "controller start e2e: FAIL (check $check)"
@@ -94,42 +98,11 @@ log_count() { jq -R --arg m "$1" 'fromjson? | select(.msg == $m)' "$daemon_log" 
 # daemon starts in it (start_kept).
 operator_shell=(env "${omp_session_unsets[@]}" HOME="$omp_home" OMP_PROFILE="$profile")
 operator_env() { "${operator_shell[@]}" "$@"; }
-# process_args PID NAME reads PID's arguments into the array NAME from the NUL-delimited
-# /proc/PID/cmdline, in this shell: no pipe stands between the read and the check, so nothing can
-# end early on it (claude-backend-tmux.sh). It fails when the entry cannot be read or holds no
-# argument (the process has gone).
-process_args() {
-  local -n _args=$2
-  { mapfile -d '' -t _args <"/proc/$1/cmdline"; } 2>/dev/null && [ "${#_args[@]}" -gt 0 ]
-}
-# env_of PID NAME prints every value PID's environment gives NAME, one a line, read in this shell
-# from the NUL-delimited /proc/PID/environ with no pipe between the read and the check: a
-# `tr | grep -q` stops reading at its match, tr's SIGPIPE is the pipeline's status under pipefail,
-# and a negated check reads that as absent. It fails with 2 when the environment cannot be read or
-# is empty (the process has exited), which is never the same as a clean one.
-env_of() {
-  local entry
-  local -a entries=()
-  { mapfile -d '' -t entries <"/proc/$1/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
-  for entry in "${entries[@]}"; do
-    case $entry in "$2="*) printf '%s\n' "${entry#*=}" ;; esac
-  done
-}
-# env_has PID NAME succeeds when PID's environment names NAME, with any value or none, fails with 1
-# when it does not, and with 2 when it cannot be read (env_of).
-env_has() {
-  local entry
-  local -a entries=()
-  { mapfile -d '' -t entries <"/proc/$1/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
-  for entry in "${entries[@]}"; do
-    case $entry in "$2="*) return 0 ;; esac
-  done
-  return 1
-}
 # controller_omp STATE_DIR CLI_PID: the pid of the Oh My Pi that the run's `legion controller start`,
-# the process CLI_PID its pane recorded as it started it (record_pid_sh, lib/rig.sh), launched for
-# STATE_DIR. The command starts Oh My Pi through `sh -c` (controller.go's exec.Command), so it is
-# the process below CLI_PID that runs the pinned Oh My Pi, $omp_exe (launched, lib/rig.sh), and its
+# the process CLI_PID its pane recorded as it started it (record_pid_sh, lib/process-tree.sh),
+# launched for STATE_DIR. The command starts Oh My Pi through `sh -c` (controller.go's exec.Command),
+# so it is the process below CLI_PID that runs the pinned Oh My Pi, $omp_exe (launched,
+# lib/process-tree.sh), and its
 # environment, read once in this shell with no pipe, must name STATE_DIR. Nothing searches the
 # machine's /proc for it: there it shares argv[0] with every other Oh My Pi and its own daemon
 # broker child, an Oh My Pi run through another name (an omp_invocation may name any program) has
@@ -353,7 +326,7 @@ pass
 
 begin controller-claims-the-role
 # The pane's command records the pid of the `legion controller start` it runs (record_pid_sh,
-# lib/rig.sh), which execs in that process, so the run knows the command by the pid it started.
+# lib/process-tree.sh), which execs in that process, so the run knows the command by the pid it started.
 tm new-session -d -s ctl1 -x 200 -y 50 "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/checks/ctl1.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl1.stderr'; echo \$? >'$evidence/checks/ctl1.exit'; sleep 600"
 until_true 180 "controllerLocator in the state" sh -c "'$work/legion' state --json --port $daemon_port | jq -e '.controllerLocator.sessionId != null'"
 locator1=$(state_json | jq -c .controllerLocator)

@@ -195,6 +195,10 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+# Every process the run starts from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh). The transcript's tee, started
+# above, carries none, so it outlives the sweep and writes the run's last line.
+export LEGION_E2E_RUN=$work
 # fd 7 keeps the transcript for cleanup: a signal runs the EXIT trap under the redirections of the
 # command it interrupted, whose output may be /dev/null or an evidence file.
 exec 7>&1
@@ -1085,7 +1089,7 @@ remove_app_tokens() {
 }
 
 cleanup() {
-  local status=$? p
+  local status=$?
   # A second signal must not cut the teardown short, and a closed output must not end it.
   trap '' HUP INT TERM PIPE
   exec >&7 2>&7
@@ -1116,7 +1120,7 @@ cleanup() {
   bridge_stop
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  stop_marked_processes "$work" || true
   docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
   remove_run_branch

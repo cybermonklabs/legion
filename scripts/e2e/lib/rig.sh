@@ -5,8 +5,9 @@
 #
 # Sourced, never run. The caller sets
 #   root           the checkout
-#   work           the run's scratch directory; every process whose command line or working
-#                  directory names it belongs to the run
+#   work           the run's scratch directory; every process that carries the run's mark, which
+#                  the caller exports as LEGION_E2E_RUN=$work (run_marks, lib/process-tree.sh),
+#                  belongs to the run
 #   evidence       the evidence directory; each service started by start_process logs to
 #                  $evidence/logs/<name>.log
 #   timeout_hook   empty, or a function a timed-out until_true runs before it fails
@@ -212,6 +213,9 @@ listening_holders() {
   wait "$!" || status=$?
   complaint=
   [ "$status" = 0 ] || complaint=$(proc_walk_complaint "$err") || complaint=
+  # GNU find exits 0 or 1 of its own accord; any other status is a find that a signal or the shell
+  # ended, and the lines it wrote before are no answer, even when it printed no complaint.
+  [ "$status" -le 1 ] || complaint=${complaint:-"find ended with status $status and printed nothing"}
   rm -f -- "$err"
   if [ -n "$complaint" ]; then
     printf 'listening_holders: find exited %s reading /proc: %s\n' "$status" "$complaint" >&2
@@ -285,24 +289,7 @@ start_process() {
   set +m
 }
 
-# signalable PID is whether PID can name one process the run started: a number without a leading
-# zero other than 1, this shell, and this shell's process group leader (proc_group,
-# lib/process-tree.sh, which reads this shell's own /proc entry alone). 0, however many digits spell
-# it, and a negative number name a whole process group, so `kill -STOP 0` would stop the caller with
-# everything else in its group and a later `kill -KILL 0` end them all; no pid is written with a
-# leading zero. A refusal is printed, since a caller that hands one over has a bug.
-signalable() {
-  local pid=$1
-  case "$pid" in
-    '' | *[!0-9]* | 0* | 1) ;;
-    *)
-      [ "$pid" != "$$" ] && [ "$pid" != "$BASHPID" ] &&
-        [ "$pid" != "$(proc_group "$$")" ] && return 0
-      ;;
-  esac
-  echo "refused to signal pid '$pid': it is not one process this run started" >&2
-  return 1
-}
+# signalable (lib/process-tree.sh) refuses a pid that names no one process the run started.
 
 # stop_pid is intentionally best effort: a failed cleanup must never obscure the check that failed.
 stop_pid() {
@@ -337,67 +324,26 @@ stop_tree() {
   kill -KILL "$pid" 2>/dev/null || true
 }
 
-# run_processes prints every pid of this run still alive: any whose working directory is under
-# $work, and any whose command line names $work. A process whose working directory this user cannot
-# read is another user's, so it is none of the run's and gets no further look, as a kill of it would
-# fail anyway. It is the run's search for its leftovers, so it reads every process of the machine:
-# a process that left every tree the run recorded, a double-forked daemon that the kernel gave to
-# pid 1, is one of them, and no rig runs under a subreaper, a cgroup or a PID namespace whose member
-# list would name it.
-# One `find` reads every /proc/<pid>/cwd link, and the command lines are read by the shell itself: a
-# `readlink` and a `grep` for each of a devbox's thousands of /proc entries cost seconds of every
-# teardown, the sweeps of a checkpoint among them. The shell's own glob lists the entries and its
-# printf builtin hands them to find on stdin (`-files0-from -`, GNU findutils 4.9), so no program is
-# handed them as its arguments: `find /proc/[0-9]*/cwd`, as this was, could not start once argv and
-# the environment passed ARG_MAX (2 MiB at an 8 MiB stack, about 80,000 processes at about 25 bytes
-# an entry), and its `2>/dev/null || :` turned the E2BIG into an empty answer: a run with nothing left.
-# find exits 1 for a cwd link it cannot read, another user's process's, and for an entry whose
-# process ended during the walk, and neither is an error here. Any other complaint of the walk's
-# (proc_walk_complaint), and a walk that read no process at all, is: run_processes prints it and
-# exits 2, so no caller reads an unread /proc as a clean one. `%l` is empty for a link find could
-# not read.
+# run_processes prints the pid of every process of this run still alive: each that carries the run's
+# mark (marked_processes and run_marks, lib/process-tree.sh), which the run exports as LEGION_E2E_RUN
+# once its transcript runs. A process that works under $work or names it on its command line and
+# carries no mark, a person's shell or `tail -f` watching the run among them, is none of the run's.
+# It prints why and fails with 2 when the run's processes could not be read, so no caller reads an
+# unread machine as one with nothing left. stop_marked_processes "$work" ends what it names.
 run_processes() {
-  local p cwd arg err status=0 walked='' complaint
-  local -a args
-  err=$(mktemp "${TMPDIR:-/tmp}/run-processes.XXXXXX") || {
-    echo "run_processes: no file to keep find's complaints in, so /proc was not read" >&2
-    return 2
-  }
-  # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
-  while IFS= read -r -d '' p && IFS= read -r -d '' cwd; do
-    walked=1
-    [ -n "$cwd" ] || continue
-    case "$cwd/" in
-      "$work"/*) printf '%s\n' "${p##*/}"; continue ;;
-    esac
-    args=()
-    { mapfile -d '' -t args <"$p/cmdline"; } 2>/dev/null || continue
-    for arg in ${args[@]+"${args[@]}"}; do
-      case $arg in
-        *"$work"*) printf '%s\n' "${p##*/}"; break ;;
-      esac
-    done
-  # `|| exit`: as in listening_holders, find's status passes to the wait below, and a caller's ERR
-  # trap does not fire inside the substitution.
-  done < <(printf '%s\0' /proc/[0-9]*/cwd | LC_ALL=C find -files0-from - -maxdepth 0 -printf '%h\0%l\0' 2>"$err" || exit)
-  wait "$!" || status=$?
-  complaint=
-  [ "$status" = 0 ] || complaint=$(proc_walk_complaint "$err") || complaint=
-  rm -f -- "$err"
-  if [ -n "$complaint" ]; then
-    printf 'run_processes: find exited %s reading /proc: %s\n' "$status" "$complaint" >&2
-    return 2
-  fi
-  if [ -z "$walked" ]; then
-    echo "run_processes: find read no /proc/<pid>/cwd at all (exit $status), so the run's processes were not read" >&2
-    return 2
-  fi
+  local pairs pid
+  pairs=$(marked_processes "$work") || return 2
+  while read -r pid _; do
+    [ -z "$pid" ] || printf '%s\n' "$pid"
+  done <<<"$pairs"
 }
 
 # lib/process-tree.sh holds how a proof knows a process it started by the pid it started, never by
-# a walk of the machine's /proc: proc_parent, proc_group, proc_children and proc_describe, which
-# read one process's own /proc entry (signalable and stop_tree above use them), record_pid_sh,
-# recorded_pid, launched, child_of and omp_program. It needs nothing of this rig's, and
-# stage2-tmux-supervision.sh sources it without it.
+# a walk of the machine's /proc for its name or working directory: proc_parent, proc_group,
+# proc_start, proc_children and proc_describe, which read one process's own /proc entry (signalable,
+# stop_pid and stop_tree above use them), record_pid_sh, recorded_pid, incarnation_pid, launched,
+# child_of, omp_program, env_of and env_has, and the run's mark and its sweep (marked_processes,
+# stop_marked_processes). It needs nothing of this rig's, and stage2-tmux-supervision.sh sources it
+# without it.
 # shellcheck source-path=SCRIPTDIR source-path=SCRIPTDIR/lib source=process-tree.sh
 . "$root/scripts/e2e/lib/process-tree.sh"

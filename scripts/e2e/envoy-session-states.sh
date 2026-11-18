@@ -208,6 +208,10 @@ mkdir -p "$evidence/logs" "$evidence/answers"
 transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/envoy-session-states.$$.XXXXXXXX")
+# Every process the run starts from here on carries its mark (run_marks, lib/process-tree.sh); a start
+# that clears its environment (`env -i`) names the mark itself. The transcript's tee, started above,
+# carries none.
+export LEGION_E2E_RUN=$work
 
 note() { echo "   $*"; }
 fail() {
@@ -321,14 +325,15 @@ agent_pid() {
   printf -v "$2" '%s' "$(cat "$1")"
 }
 
-# stop_agent PID ends one agent process the run started, and only while its command line or its
-# environment still names this run's work directory, so a pid the kernel gave to another process
-# since is never signalled. It is continued first: a check stops an agent with SIGSTOP, and a
-# stopped process keeps a TERM pending. The agent leads a session of its own (own_session), so
-# what it started goes with it.
+# stop_agent PID ends one agent process the run started, and only while it still carries the run's
+# mark (names_dir and run_marks, lib/process-tree.sh), so a pid the kernel gave to another process
+# since is never signalled: a shell that works under this run's work directory names it in its PWD
+# and on its command line, and carries no mark. It is continued first: a check stops an agent with
+# SIGSTOP, and a stopped process keeps a TERM pending. The agent leads a session of its own
+# (own_session), so what it started goes with it.
 stop_agent() {
   [ -n "${1:-}" ] || return 0
-  grep -qsF "$work" "/proc/$1/cmdline" || grep -qsF "$work" "/proc/$1/environ" || return 0
+  names_dir "$work" "${run_marks[@]}" "$1" || return 0
   signalable "$1" || return 0
   kill -CONT "$1" 2>/dev/null || true
   kill -TERM -- -"$1" 2>/dev/null || true
@@ -905,7 +910,7 @@ omp_launch() {
   mkfifo "$in"
   : >"$out"
   own_session "$pidfile" \
-    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" PI_CODING_AGENT_DIR="$work/agent" \
+    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" PI_CODING_AGENT_DIR="$work/agent" LEGION_E2E_RUN="$work" \
     DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
     ENVOY_URL="http://127.0.0.1:$port_a" ENVOY_TOKEN_FILE="$work/envoy-token" \
     ENVOY_NATS_URL="$nats_url" ENVOY_HEARTBEAT_MS="$heartbeat_ms" \
@@ -1010,7 +1015,7 @@ claude_start() { # claude_start SESSION [--resume]
   mkfifo "$work/claude.in"
   touch "$work/claude.out"
   own_session "$work/claude.pid" \
-    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" CLAUDE_CONFIG_DIR="$work/claude-config" \
+    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" CLAUDE_CONFIG_DIR="$work/claude-config" LEGION_E2E_RUN="$work" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ANTHROPIC_BASE_URL="$model_base_url" \
     ANTHROPIC_MODEL="$claude_model" ANTHROPIC_API_KEY="$(cat "$work/model-key")" \
     DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN_FILE="$work/dispatch-token" \

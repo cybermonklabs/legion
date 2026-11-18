@@ -171,6 +171,10 @@ mkdir -p "$evidence/logs" "$evidence/transcripts" "$evidence/pods" "$evidence/co
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+# Every process the run starts from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh). The transcript's tee, started
+# above, carries none, so it outlives the sweep and writes the run's last line.
+export LEGION_E2E_RUN=$work
 # fd 7 keeps the transcript for cleanup: a signal runs the EXIT trap under the redirections of the
 # command it interrupted, whose output may be /dev/null or an evidence file.
 exec 7>&1
@@ -535,7 +539,7 @@ pool_two_pods_per_instance() {
 # Prints nothing when there is none, when the cluster cannot be read, or when its jq itself fails
 # (guarded, never the ERR trap: set -E inherits it into a command substitution, so an unguarded
 # failure here would print a FAIL line from inside a check this hook is trying to end BLOCKED;
-# lib/rig.sh:137-139 guards pgrep the same way).
+# stop_tree's read of a process's children in lib/rig.sh is guarded the same way).
 limit_pending() {
   kubectl --context "$operator" -n "$namespace" --request-timeout=20s get pods -l "legion.dev/project=$run_label,$1" -o json >"$work/limit-pods.json" || return 0
   kubectl --context "$operator" -n "$namespace" --request-timeout=20s get events --field-selector involvedObject.kind=Pod -o json >"$work/limit-events.json" || return 0
@@ -587,8 +591,8 @@ limit_pending() {
 # outlive the pod by the cluster's event TTL, so this still finds it once the pod itself is gone.
 # Prints nothing when there is none, when a read fails, or when its jq itself fails (guarded,
 # never the ERR trap: set -E inherits it into a command substitution, so an unguarded failure here
-# would print a FAIL line from inside a check this hook is trying to end BLOCKED; lib/rig.sh:137-139
-# guards pgrep the same way). Reads the live pod watch the way it already reads the daemon log,
+# would print a FAIL line from inside a check this hook is trying to end BLOCKED; stop_tree's read
+# of a process's children in lib/rig.sh is guarded the same way). Reads the live pod watch the way it already reads the daemon log,
 # one JSON value a line with a failed parse skipped, not slurped as one JSON document: watch_raw
 # appends each event with one printf, a pod object larger than the stdio buffer can go out in more
 # than one write, and a read that falls between those writes would otherwise see a torn last
@@ -2935,7 +2939,7 @@ cleanup() {
       echo "CHECK production-audit: FAIL: $(audit_failure)"
     fi
   fi
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
+  stop_marked_processes "$work" || true
   remove_run_container "$pg_container"
   remove_run_container "$session_db_container"
   rm -rf "$work"
@@ -3203,7 +3207,7 @@ audit_failure() { echo "the run wrote outside $project or subscribed outside it:
 # ==== checkpoints ===================================================================================
 
 begin prerequisites
-for tool in go docker jq curl ss kubectl aws gh bun jj mise shellcheck secrets agent-secrets setpriv pgrep npm; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+for tool in go docker jq curl ss kubectl aws gh bun jj mise shellcheck secrets agent-secrets setpriv npm; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 require_app_inputs implement review
 # The host's jq compiles every lib/*.jq module this script includes, read from the script itself: a
 # jq that cannot parse one would otherwise fail the run at the first checkpoint to include it, hours
@@ -5700,8 +5704,8 @@ pin=$(<"$root/.omp-pin")
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
 # The program the controller's Oh My Pi runs: what controller.yaml's omp_invocation, `mise x $pin --
 # omp`, execs. controller_launched_with_steps knows the controller's process by it, as the kernel
-# records it (launched, lib/rig.sh).
-omp_exe=$(realpath -e -- "$(mise where "$pin")/bin/omp") || fail "the pinned Oh My Pi $pin has no bin/omp"
+# records it (launched, lib/process-tree.sh), so it is the binary itself (native_program).
+omp_exe=$(native_program "$(mise where "$pin")/bin/omp") || fail "the pinned Oh My Pi $pin: $omp_exe"
 cat >"$work/controller.yaml" <<EOF
 project: $project
 daemon_url: http://$host:$port_daemon
@@ -5721,7 +5725,7 @@ EOF
 # `legion controller start` hands Oh My Pi its caller's environment, so an operator session's
 # PI_CONFIG_FILES would lay that session's own settings overlays over the run's profile.
 # The window's command records the pid of the `legion controller start` it runs in
-# $evidence/logs/controller.pid (record_pid_sh, lib/rig.sh), which execs in that process, so the run
+# $evidence/logs/controller.pid (record_pid_sh, lib/process-tree.sh), which execs in that process, so the run
 # knows the command by the pid it started.
 tmux -L "legion-e2e4b-$$" new-session -d -s controller -x 200 -y 50 \
   "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/logs/controller.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' LEGION_GH_PATH='$real_gh' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/logs/controller.stderr'; sleep 3600"
@@ -6005,7 +6009,7 @@ until_true 600 "$tree3's pods to be gone" sh -c \
 # `gates.design` is `off`, the empty list): the Oh My Pi the run's `legion controller start`
 # launched carries the line in its system prompt, the file its --append-system-prompt names. That
 # Oh My Pi is the process below the pid the controller's window recorded that runs the pinned Oh
-# My Pi (recorded_pid and launched, lib/rig.sh), and its command line is read with no pipe: nothing
+# My Pi (recorded_pid and launched, lib/process-tree.sh), and its command line is read with no pipe: nothing
 # searches the machine's /proc, where every other Oh My Pi and every tool the controller runs is.
 steps_line='Design gate steps: none.'
 controller_launched_with_steps() {
@@ -6179,7 +6183,7 @@ role_unheld() { [ "$(role_answer)" = 404 ]; }
 role_held_by() { [ "$(role_answer)" = 200 ] && jq -e --arg s "$1" '.holder == $s' "$work/controller-role.json" >/dev/null; }
 # The operator's controller quits as a person quits it (controller-start-tmux.sh): Ctrl-C ends a
 # turn and asks again, and Ctrl-D on the empty editor quits. It runs while the pid its window
-# recorded runs the run's legion (recorded_pid, lib/rig.sh), never by a search of the machine's
+# recorded runs the run's legion (recorded_pid, lib/process-tree.sh), never by a search of the machine's
 # processes for its command line.
 operator_controller_runs() { recorded_pid "$evidence/logs/controller.pid" "$work/legion" >/dev/null; }
 operator_controller_quit() { ! operator_controller_runs; }

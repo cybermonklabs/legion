@@ -82,19 +82,22 @@ fail() { echo "FAIL $check: $*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
+# Every process the run starts from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh); a start that clears its
+# environment (`env -i`) names the mark itself.
+export LEGION_E2E_RUN=$work
 
 tm() { tmux -S "$work/tmux.sock" "$@"; }
 
 # Unconditional: every run removes what it made, whatever it ended on.
 cleanup() {
-  local p
   set +e
   tm capture-pane -p -t user >"$evidence/checks/session.pane" 2>/dev/null
   [ -z "$session_file" ] || cp "$session_file" "$evidence/session.jsonl" 2>/dev/null
   tm kill-server >/dev/null 2>&1
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
+  stop_marked_processes "$work"
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
   rm -rf "$work"
   [ -n "$ok" ] || echo "dispatch user turns e2e: FAIL (check $check)"
@@ -209,8 +212,9 @@ refuse_leftovers legion-e2e-user-turns
 make_omp_home "$omp_home"
 mise where "$omp_tool" >/dev/null 2>&1 || mise install "$omp_tool" >&2
 # The program the session's Oh My Pi runs: what `mise x $omp_tool -- omp` execs. session_gone knows
-# the session by it.
-omp_exe=$(realpath -e -- "$(mise where "$omp_tool")/bin/omp") || fail "the Oh My Pi $omp_tool has no bin/omp"
+# the session by it, so it is the binary itself (native_program, lib/process-tree.sh): a script's
+# or a mise shim's process runs another file, and the wait for the session to end would pass at once.
+omp_exe=$(native_program "$(mise where "$omp_tool")/bin/omp") || fail "the Oh My Pi $omp_tool: $omp_exe"
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 (cd "$root/packages/envoy" && go build -o "$work/envoy-listener" ./cmd/listener && go build -o "$work/dispatch" ./cmd/dispatch)
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"
@@ -237,12 +241,12 @@ nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | 
 # start_held); `env -i` clears the descriptor's variable the helper sets, so each names its own: the
 # helper hands the socket over as descriptor 3.
 start_held listener envoy_port ENVOY_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT='{port}' \
+  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT='{port}' \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-user-turns-$$" NATS_URLS="$nats_url" \
   "$work/envoy-listener"
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
 start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
   DATABASE_URL="postgres://dispatch:dispatch@127.0.0.1:$pg_port/dispatch?sslmode=disable" \
   DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" DISPATCH_LISTEN_FD=3 \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT='{port}' \
@@ -356,6 +360,10 @@ issue=$(human -X POST "http://127.0.0.1:$dispatch_port/api/v1/issues" -d '{"proj
 begin session-registers
 launch_session
 until_true 90 "the session to register with the listener" registered
+# The session's own process, by the pid its pane recorded: the later wait for it to end
+# (session_gone) holds only once this has held, so it can fail.
+recorded_pid "$work/session.pid" "$omp_exe" >/dev/null ||
+  fail "the pane's recorded process ($(cat "$work/session.pid" 2>&1)) does not run $omp_exe"
 row=$(listener "http://127.0.0.1:$envoy_port/v1/sessions" | jq -c --arg d "$session_cwd" 'first(.[] | select(.dir == $d))')
 session_id=$(jq -r .session_id <<<"$row")
 jq -e '.capabilities | index("aside") and index("btw") and index("steer")' <<<"$row" >/dev/null ||

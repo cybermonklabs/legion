@@ -75,6 +75,9 @@ mkdir -p "$evidence/logs" "$evidence/checks"
 transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-session-settings.$$.XXXXXXXX")
+# Every process the run starts from here on carries its mark (run_marks, lib/process-tree.sh): the
+# driver hands it to each Oh My Pi it starts. The transcript's tee, started above, carries none.
+export LEGION_E2E_RUN=$work
 driver=$root/scripts/e2e/lib/dispatch-session-settings.ts
 check=setup
 timeout_hook=
@@ -93,11 +96,13 @@ fail() { echo "FAIL $check: $*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 
-# stop_omp PID ends one Oh My Pi the driver started, and only while its command line still names
-# this run's work directory, so a pid the kernel gave to another process since is never signalled.
-# It is continued first: a check stops one with SIGSTOP, and a stopped process keeps a TERM pending.
+# stop_omp PID ends one Oh My Pi the driver started, and only while it still carries the run's mark
+# (names_dir and run_marks, lib/process-tree.sh), so a pid the kernel gave to another process since
+# is never signalled: a shell that works under this run's work directory names it on its command
+# line and carries no mark. It is continued first: a check stops one with SIGSTOP, and a stopped
+# process keeps a TERM pending.
 stop_omp() {
-  grep -qsF "$work" "/proc/$1/cmdline" || return 0
+  names_dir "$work" "${run_marks[@]}" "$1" || return 0
   signalable "$1" || return 0
   kill -CONT "$1" 2>/dev/null || true
   stop_pid "$1"

@@ -65,6 +65,10 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+# Every process the run starts from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh). The transcript's tee, started
+# above, carries none, so it outlives the sweep and writes the run's last line.
+export LEGION_E2E_RUN=$work
 ok=
 check=setup
 TZ=UTC printf -v check_started '%(%FT%TZ)T' -1 # when the current check began (lib/model-gateway-unserved.sh)
@@ -167,7 +171,7 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$daemon_keeper_pid"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  stop_marked_processes "$work" || true
   docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
   collect_transcripts
   remove_run_branch
@@ -316,14 +320,8 @@ workspace_jj() {
 }
 
 # ---- the production guards -------------------------------------------------------------------
-# process_args PID NAME reads PID's arguments into the array NAME from the NUL-delimited
-# /proc/PID/cmdline, in this shell: no pipe stands between the read and the check, so nothing can
-# end early on a pane's command line, which holds its whole system prompt (past 64 KB, with
-# newlines). It fails when the entry cannot be read or holds no argument (the process has gone).
-process_args() {
-  local -n _args=$2
-  { mapfile -d '' -t _args <"/proc/$1/cmdline"; } 2>/dev/null && [ "${#_args[@]}" -gt 0 ]
-}
+# process_args (lib/process-tree.sh) reads a pane's command line whole, with no pipe, since it holds
+# the pane's whole system prompt (past 64 KB, with newlines).
 # read_environ PID NAME reads PID's environment once into the associative array NAME from the
 # NUL-delimited /proc/PID/environ, the first value of a repeated name winning, as getenv's does. A
 # read that fails, or an empty environment (the process has exited), prints why and fails: the
@@ -365,9 +363,15 @@ agent_descendant() {
     launched "$shim" "$omp_exe"
   fi
 }
+# claim_pane_pid ISSUE ROLE prints the process the role's pane was launched as, out of the claim's
+# locator: the incarnation `<pid>:<start ticks>`, and only while that pid is still the process that
+# started then (incarnation_pid, lib/process-tree.sh), never a pid the kernel has since given to
+# another.
 claim_pane_pid() {
-  daemon_state | jq -er --arg issue "$1" --arg role "$2" \
-    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation | split(":")[0]'
+  local inc
+  inc=$(daemon_state | jq -er --arg issue "$1" --arg role "$2" \
+    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation') || return 1
+  incarnation_pid "$inc"
 }
 # endpoint_mismatch AGENT_PID checks the agent's environment, read once (read_environ), and
 # prints what it found: the first rig endpoint the agent does not carry, or a model credential
@@ -417,14 +421,15 @@ assert_claim_endpoints() {
 # its next poll, so an incarnation never read stays out of pane-endpoints-checked.txt and
 # every-launch-endpoint-checked fails naming it.
 pane_watcher() {
-  local claims inc issue role agent found status
+  local claims inc issue role pane agent found status
   trap - EXIT ERR
   set +e
   while kill -0 "$$" 2>/dev/null; do
     if claims=$("$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" 2>/dev/null); then
       while IFS=$'\t' read -r inc issue role; do
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
-        agent=$(agent_descendant "${inc%%:*}") || continue
+        pane=$(incarnation_pid "$inc") || continue
+        agent=$(agent_descendant "$pane") || continue
         found=$(endpoint_mismatch "$agent")
         status=$?
         case $status in
@@ -603,7 +608,7 @@ if [ "$model_route" = key-file ]; then
     fail "LEGION_E2E_ANTHROPIC_KEY_FILE names $agent_key_file, which is not a readable file"
 fi
 refuse_leftovers legion-e2ecc
-for tool in go docker jq curl python3 tmux bun mise gh jj pgrep claude; do command -v "$tool" >/dev/null || fail "$tool is required"; done
+for tool in go docker jq curl python3 tmux bun mise gh jj claude; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 command -v agent-secrets >/dev/null || fail "agent-secrets, the secrets broker's client the implement App's token_command runs, is required"
 [ "$model_route" != gateway ] || command -v hawk-token >/dev/null || fail "hawk-token is required under LEGION_E2E_MODEL_ROUTE=gateway"
 (umask 077 && tr -d '[:space:]' <"$key_file" >"$work/claude-model-key")
@@ -712,7 +717,7 @@ mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
 # The program every Oh My Pi pane runs: the daemon starts from this environment, so LEGION_OMP_PATH
 # outranks the invocation when it is set (omp_program, lib/process-tree.sh). agent_descendant knows
 # a pane's Oh My Pi by it.
-omp_exe=$(omp_program "$pin") || fail "the Oh My Pi the daemon would run for $pin is not on disk"
+omp_exe=$(omp_program "$pin") || fail "the Oh My Pi the daemon would run for $pin is not one the kernel runs: $omp_exe"
 cat >"$work/instructions.md" <<'EOF'
 # Claude Code backend proof instructions
 
