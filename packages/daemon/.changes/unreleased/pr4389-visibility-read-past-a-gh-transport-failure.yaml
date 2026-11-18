@@ -1,0 +1,21 @@
+kind: Fixed
+body: |-
+    A push is no longer refused as a leak-check setup error when gh cannot reach GitHub but curl
+    and git can. In a busy one-CPU pod, every gh call failed with `net/http: TLS handshake timeout`
+    for over two hours, while curl finished its handshake with the same host in under a second, and
+    the leak guard, which reads a push target's visibility through gh, refused every push. Now, when
+    the guard's gh REST read fails on its connection and GitHub sent no answer (gh's one line for
+    the request ends in a TLS handshake timeout, an I/O timeout, a connection reset or refused, or
+    the HTTP client's own timeout), the guard makes the same REST read with curl, whose TLS is
+    OpenSSL's. curl sends the token gh would have sent: the caller's `GH_TOKEN` or `GITHUB_TOKEN`,
+    else the password `gh auth git-credential get` answers, which `legion gh` reads from the
+    bundle's `hosts.yml` without a request to GitHub. The token reaches curl on its standard input,
+    never in its arguments or its environment. curl's public, private or internal is the answer,
+    and a public one is kept as gh's is. A rate limit that curl meets goes on to the rate-limit
+    reads. Where curl is not on PATH or cannot connect either, the guard runs the unauthenticated
+    `git ls-remote`, which answers public only. The GraphQL read is skipped on this path, because it
+    goes through gh too. Any other gh failure refuses the push as before. The `legion gh` call log
+    records an answer read through curl as `visibility="rest-curl"`.
+time: 2026-11-18T06:33:23Z
+custom:
+    Issue: pr4389
