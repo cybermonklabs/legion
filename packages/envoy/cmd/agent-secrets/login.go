@@ -231,7 +231,9 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 	}
 	token, err := client.Token(ctx)
 	if err != nil {
-		return record, brokerclient.WithHint(err, brokerclient.TradeFailure(err))
+		// The broker's own words name the cure where one exists, and an ended sign-in carries
+		// its own hint, so a failed trade adds none (brokerclient.Hint).
+		return record, err
 	}
 	if token.CredentialID == "" {
 		return record, fmt.Errorf("the broker took %s's sign-in but named no launcher credential, so no session can be registered under it", record.Person)

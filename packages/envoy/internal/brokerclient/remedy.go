@@ -1,11 +1,6 @@
 package brokerclient
 
-import (
-	"errors"
-	"fmt"
-
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-)
+import "fmt"
 
 // Failure is the class of a failure, or of a state, that a person on this machine may be told the
 // cure or the course of. A caller names the class; Hint and Lapse alone turn it into words, so no
@@ -24,18 +19,6 @@ const (
 	// FailureNoSignIn is a machine with no usable sign-in of the person: nobody signed in, the
 	// person named is not signed in here, or the record cannot be read. A sign-in cures it.
 	FailureNoSignIn
-	// FailureHeld is a person whom Dispatch holds (oauthwire.MembershipHeld, MEMBERSHIP_HELD). Their
-	// next Dispatch sign-in, or the next refresh that confirms them, ends it, and the broker's own
-	// words say so; a login on this machine would make a second box key and change nothing.
-	FailureHeld
-	// FailureBrokerRefused is every other refusal the broker answered (RefusedError). The broker's
-	// own words name the cure where one exists, `agent-secrets login` among them for a sign-in it
-	// revoked; this client knows no more than they say (a machine the deployment does not list is
-	// cured by no login), so it adds nothing.
-	FailureBrokerRefused
-	// FailureBrokerUnavailable is a broker that did not answer, or answered 5xx. Nothing on this
-	// machine cures it; the next trade may.
-	FailureBrokerUnavailable
 	// FailureIdentityLapsed is a helper in identity mode (AGENT_SECRETS_MACHINE_IDENTITY) that
 	// holds no launcher credential while its trade loop runs: the loop trades this machine's
 	// identity for one on its own, so nobody is told to log in.
@@ -55,9 +38,9 @@ const MachineLoginCommand = "agent-secrets machine login"
 
 // Hint is the one place in this module's clients that says which login cures a failure of class
 // f: "run: <command>" for a class a login cures, a sentence for one that cures itself, and "" for
-// the rest. FailureUnclassified, FailureHeld, FailureBrokerRefused and FailureBrokerUnavailable
-// get "": a broker refusal carries the broker's own words, and an outage needs nothing of the
-// person.
+// the rest. FailureUnclassified gets "": a broker refusal carries the broker's own words (a
+// sign-in it revoked names `agent-secrets login` there), and a person Dispatch holds, a machine no
+// entry lists, or a broker that did not answer needs no login, so a failed trade adds nothing.
 func Hint(f Failure) string {
 	switch f {
 	case FailureSignInRefused, FailureNoSignIn:
@@ -97,24 +80,5 @@ func Lapse(f Failure, at, left string) string {
 		return fmt.Sprintf("nothing renews the launcher credential, which lapses at %s (in %s), and no session enrols under this machine's credential after that; %s", at, left, Hint(f))
 	default:
 		return fmt.Sprintf("the machine login renews itself; without a refresh it lapses at %s (in %s)", at, left)
-	}
-}
-
-// TradeFailure is the class of a failed trade of a person's sign-in: FailureHeld for a person
-// Dispatch holds, FailureBrokerRefused for every other refusal the broker answered, and
-// FailureBrokerUnavailable for no answer at all. None of them adds a hint. An ended sign-in
-// (ErrSignInEnded) already carries its own, so it is FailureUnclassified here and is not told
-// twice.
-func TradeFailure(err error) Failure {
-	var refused *RefusedError
-	switch {
-	case errors.Is(err, ErrSignInEnded):
-		return FailureUnclassified
-	case !errors.As(err, &refused):
-		return FailureBrokerUnavailable
-	case refused.Code == oauthwire.MembershipHeld:
-		return FailureHeld
-	default:
-		return FailureBrokerRefused
 	}
 }
