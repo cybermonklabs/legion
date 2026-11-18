@@ -5,7 +5,8 @@ body: |-
   lowest contract of its pod. A refusal for an answer the reader cannot read now names the
   contract this build speaks, the contract the daemon states or that it stated none, and which
   side is behind, whether the answer was a success or a failure that is not the daemon's
-  refusal; such a body is named by its length in bytes and no part of it is quoted.
+  refusal; the body of such a failure is named by its length in bytes, and no part of either
+  body is quoted.
   `read_record`, `handoff_complete` and the phase reminder read the daemon's new per-issue record
   route instead of the whole project's state, so a changed field on another issue no longer stops
   a role ending its own phase.

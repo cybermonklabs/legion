@@ -1177,11 +1177,11 @@ func recordsByKey(records []contractShape) map[shapeKey]contractShape {
 // meets a red check cannot clear it by writing the records again: `-update` leaves a record of an
 // earlier contract where it is, because that record is what a reader at that contract needs and
 // not a reading of today's code. A hand edit of such a record passes only where the daemon serves
-// that contract exactly what the edited record describes, so a record of an earlier contract
-// changes only together with the serving-down that produces it, which is what a reviewer reads
-// the diff for. A pair the fixture has no record of at all is no pair `-update` adds either: it
-// fails TestTheRecordSetIsOneRecordPerAnswerPerContract by name, so an answer nobody recorded is
-// seen.
+// that contract exactly what the edited record describes, so the record changes only together
+// with a change to what the daemon serves, and a reviewer reads the diff to tell a serving-down
+// from a change that has none. A pair the fixture has no record of at all is no pair `-update`
+// adds either: it fails TestTheRecordSetIsOneRecordPerAnswerPerContract by name, so an answer
+// nobody recorded is seen.
 func updatedRecords(onFile, fresh []contractShape) []contractShape {
 	records := make([]contractShape, 0, len(onFile)+len(fresh))
 	for _, record := range onFile {
@@ -1319,7 +1319,7 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 				advice = "Write a band that leaves the key out below the contract that adds it. " + unshapedServingDown("band", key.answer)
 			}
 			problems = append(problems, fmt.Sprintf(
-				"contract %d, the %s answer: the body carries `%s` and the contract does not describe it. %s Recording the key here applies only to the daemon's own contract, while the base does not carry that contract yet.",
+				"contract %d, the %s answer: the body carries `%s` and the contract does not describe it. %s Recording the key here applies only to the daemon's own contract, and a shape change at a contract the base already carries owes a new number first (version.go's Bump rule).",
 				key.contract, key.answer, path, advice))
 		}
 	}
@@ -1332,7 +1332,7 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 					key.contract, unshapedServingDown("stand-in", key.answer))
 			}
 			problems = append(problems, fmt.Sprintf(
-				"contract %d, the %s answer: the body lacks `%s` and the contract describes it. %s For a key removed at the daemon's own contract while the base does not carry that contract yet, run `go test ./internal/api/ -update`, which rewrites that contract's record and no other.",
+				"contract %d, the %s answer: the body lacks `%s` and the contract describes it. %s For a key removed at the daemon's own contract, run `go test ./internal/api/ -update`, which rewrites that contract's record and no other; a shape change at a contract the base already carries owes a new number first (version.go's Bump rule).",
 				key.contract, key.answer, path, advice))
 		}
 	}
@@ -1342,7 +1342,7 @@ func shapeProblems(key shapeKey, served answerShape, record contractShape) []str
 				continue
 			}
 			problems = append(problems, fmt.Sprintf(
-				"contract %d, the %s answer: the body carries `%s` at `%s` and the contract admits no such value. A reader at %d parses the field with a strict enumeration and refuses the whole body for a value it does not name, as it refuses a key it does not know, so serve the value down to this contract (shaping.go's shapeIssue). Recording its arrival in answers.go's EnumeratedFields applies only to the daemon's own contract, while the base does not carry that contract yet.",
+				"contract %d, the %s answer: the body carries `%s` at `%s` and the contract admits no such value. A reader at %d parses the field with a strict enumeration and refuses the whole body for a value it does not name, as it refuses a key it does not know, so serve the value down to this contract (shaping.go's shapeIssue). Recording its arrival in answers.go's EnumeratedFields applies only to the daemon's own contract, and a shape change at a contract the base already carries owes a new number first (version.go's Bump rule).",
 				key.contract, key.answer, value, path, key.contract))
 		}
 	}
@@ -1725,8 +1725,8 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 		// on, and runs no `-update`. The record of this contract then lacks a key its reader
 		// refuses the body without, and the gate names it there and nowhere else: no reader
 		// below types the key, so no record below holds it. `-update` writes it into this
-		// contract's record, which is the whole of the remedy while the base does not carry this
-		// contract.
+		// contract's record, which is the whole of the remedy; a shape change at a contract the
+		// base already carries owes a new number first (version.go's Bump rule).
 		const typedKey = "admission_cap"
 		if settingsTyped(typedSettings, DaemonAPIVersion, typedKey) {
 			t.Fatalf("answers.go's typedSettings already types `%s`; declaring it proves nothing", typedKey)

@@ -51,9 +51,7 @@
 # and the manifests packages/pi-legion/package.json and packages/claude-envoy/package.json at
 # legion.daemonApiVersion. A file this check cannot read there is refused as a read that failed.
 # The two record files beside those fixtures, contract-shapes.json and request-shapes.json, hold
-# the number too, in each record of the daemon's own contract, and the refusals name them; this
-# check does not read them, since no one field of either holds the number, and packages/daemon's
-# `go test ./internal/api/` refuses a record set with no record at the declared contract.
+# the number too, and the refusals name them; RECORDS says why this check does not read them.
 # This rule runs before the pass for a number above the base's, because a bump is where a file
 # is left behind: INFRA-3621's bump forgot state.json, and that pass would have let it through.
 # It reads only this checkout, so its refusal reads no open pull request and names no free

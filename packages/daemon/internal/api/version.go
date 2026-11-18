@@ -2445,11 +2445,16 @@ package api
 //     names, `HANDOFF_STALE_ASSIGNMENT`, it names in its tool description and not in a branch.
 //   - A change to the type of a field. The records hold key paths, value domains and request
 //     field paths, and no types, so a string that becomes a number passes both gates.
-//   - A change that keeps the daemon's own contract number. A key or a request field it adds or
-//     removes at that number stands in the records of the daemon's own contract only, and
+//   - A change that keeps the daemon's own contract number. A key or a request field that
+//     arrived at that number stands in the records of the daemon's own contract only, and
 //     `-update` writes those again, so the change passes both gates for such keys and fields.
 //     The reviewer reads the records' diff, and this file's Bump rule says when a new number is
 //     owed.
+//   - A key removed with no stand-in, together with a hand edit of the earlier contracts' records
+//     that removes it there too. The shape gate compares only what the daemon serves each
+//     contract with that contract's record, so the pair passes both gates. The spec allows such
+//     an edit (dispatch://INFRA-2694/spec R2), and the reviewer, who reads the records' diff, is
+//     the guard.
 //
 // The request gate catches only a request field that a later type no longer reads. A newly
 // required field, a narrowed value and a changed type all pass it. (This

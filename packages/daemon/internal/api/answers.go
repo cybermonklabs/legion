@@ -13,11 +13,12 @@ import (
 
 // ServingFloor is the lowest plugin contract this daemon shapes an answer for. A caller below it,
 // whether it states its contract or its pod records it, has the keys removed since the floor
-// written back as at the floor (restoreContract) and every key added at or above its own number
-// left off (stripContract keeps that number), so it is served less than a caller at the floor;
-// the daemon logs a line for it. A caller that states no contract is placed by the claims of its
-// pod on the state and record routes. On every other answer, and on every answer when it asks
-// from no pod, it is served this daemon's own shape (contractsFor, writeAnswer).
+// written back as at the floor (restoreContract) and keeps every strip the daemon applies below
+// the floor today (stripContract keeps its own number), so no key a strip takes from it today
+// comes back, and it is served less than a caller at the floor; the daemon logs a line for it. A
+// caller that states no contract is placed by the claims of its pod on the state and record
+// routes. On every other answer, and on every answer when it asks from no pod, it is served this
+// daemon's own shape (contractsFor, writeAnswer).
 //
 // 46 is the reading this change records: no claim holding a process recorded a contract below 46.
 // The 50 claims at contracts 36 to 43 are all suspended, so they call nothing.
@@ -27,9 +28,8 @@ import (
 // part serves down. dispatch://INFRA-1048 landed the reader that drops an unknown key instead,
 // and the first release carrying that reader declares 49, so once `lowestPluginContract` on the
 // state reports 49 or more, no live reader refuses a key it does not know. The added-key part
-// may be dropped, with the record entries that serve it, once `lowestPluginContract` reports 49
-// or more, because every build declaring 49 or more ignores a key it does not know; until then
-// each later contract that adds a key writes a band for the contracts below it, because their
+// may then be dropped, with the record entries that serve it; until then each later contract
+// that adds a key outside `settings` writes a band for the contracts below it, because their
 // records do not hold that key. The removed-key part stays for good: a reader still needs the
 // key its own contract requires, whatever this daemon stopped writing.
 // The third part is the value hold-back: the values a later contract added to an enumerated

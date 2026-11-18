@@ -485,7 +485,7 @@ RULES = {
         Read(path, "internal/api/reachstates_test.go:50 lists ../supervise and :60 parses each .go file of it but the test files (:57)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1215 (path from goldenPath at :1204, declared :31)")),
+    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1222 (path from goldenPath at :1211, declared :31)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
@@ -2550,9 +2550,9 @@ GATES = [
         (CONTRACTS_SRC, "pi-shared and envoy-client import @legion/contracts (contracts exports.bun -> src)"),
         (TEST_FIXTURES_SRC, "packages/pi-shared's src and test suites import @legion/test-fixtures"),
         (f"{FIX}/daemon-api/**", "packages/pi-shared/src/daemon-client.test.ts:22, legion-claim-core.test.ts:15, legion-phase-ops.test.ts:25"),
-        ("packages/pi-legion/src/**", "packages/pi-shared/src/daemon-client.test.ts:1214-1219,1365-1376 walks every .ts of it that is no test, holding LEGION_ANSWER_READS to the fields this plugin takes the value of"),
-        ("packages/pi-legion/extensions/**", "packages/pi-shared/src/daemon-client.test.ts:1214-1219,1365-1376 walks every .ts of it that is no test, as above"),
-        ("packages/claude-envoy/src/**", "packages/pi-shared/src/daemon-client.test.ts:1214-1219,1365-1376 walks every .ts of it that is no test, as above"),
+        ("packages/pi-legion/src/**", "packages/pi-shared/src/daemon-client.test.ts:1361-1366,1512-1523 walks every .ts of it that is no test, holding LEGION_ANSWER_READS to the fields this plugin takes the value of"),
+        ("packages/pi-legion/extensions/**", "packages/pi-shared/src/daemon-client.test.ts:1361-1366,1512-1523 walks every .ts of it that is no test, as above"),
+        ("packages/claude-envoy/src/**", "packages/pi-shared/src/daemon-client.test.ts:1361-1366,1512-1523 walks every .ts of it that is no test, as above"),
         ("skills/**", "packages/pi-shared/test/skills-partition.test.ts:22,33-36,53-54 reads every skills/ directory and stages both partitions"),
         ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:17,34 runs scripts/pi-plugin-prepack.sh --stage-skills"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-shared/test/skills-partition.test.ts:70-76 reads every .md under packages/daemon/internal/prompts"),
