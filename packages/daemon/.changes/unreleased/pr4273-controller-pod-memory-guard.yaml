@@ -5,10 +5,10 @@ body: |-
     of the processes that are not the launcher, the shim, Oh My Pi or one of its helpers (the
     JavaScript `eval` kernel excepted) or the secrets renewer, the process that grew the most over
     its last few reads, else the largest one it has read at most once in its last two readings
-    near the limit, else the one that grew the most since the rise's first kill, else the largest, a
-    fork that still runs its parent's program counted by what it holds over its parent, so a
-    runaway command or `eval` cell ends alone and the controller's pod and turn go on. The daemon
-    tells the controller of each kill as a
+    near the limit, else the one that grew the most since the guard's first kill while the reading
+    stays near the limit, else the largest, a fork that still runs its parent's program counted by
+    what it holds over its parent, so a runaway command or `eval` cell ends alone and the
+    controller's pod and turn go on. The daemon tells the controller of each kill as a
     `memory-guard-kill on <PROJECT>` notice, which names the program, its pid, its size, the pod's
     reading and the limit, and none of the program's arguments. The new block
     `runtime.kubernetes.memory_guard.controller_pod` sets it, with the members and ranges of

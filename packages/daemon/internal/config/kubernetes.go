@@ -209,15 +209,16 @@ type MemoryGuardConfig struct {
 // its hello). The guard reads the pod's anonymous memory every IntervalMilliseconds; at
 // ActPercent of the container's memory limit it ends, of the processes it may end, the process
 // that grew the most over its last few reads, else the largest one it has read at most once in its
-// last two readings near the limit, else the one that grew the most since the rise's first kill,
-// else the largest, a fork that still runs its parent's program counted by what it holds over its
-// parent, where those processes hold at least FloorPercent of the limit between them; after a kill
-// it ends no other until the killed process has exited or WaitSeconds has passed, and it gives the
-// rise up once WaitSeconds has passed with the reading not fallen and nothing it may end grown
-// since the kill. With Enabled false the daemon hands the launchers no settings: each guard runs at
-// its defaults from its launcher's start, as it does while no daemon has answered, and turns off at
-// its launcher's first acknowledgement, after which it ends nothing and the pod's memory is bounded
-// by the kernel's kill of the whole container alone.
+// last two readings near the limit, else the one that grew the most since the guard's first kill
+// while the reading stays near the limit, else the largest, a fork that still runs its parent's
+// program counted by what it holds over its parent, where those processes hold at least
+// FloorPercent of the limit between them; after a kill it ends no other until the killed process
+// has exited or WaitSeconds has passed, and it gives the rise up once WaitSeconds has passed with
+// the reading not fallen and nothing it may end grown since the kill. With Enabled false the daemon
+// hands the launchers no settings: each guard runs at its defaults from its launcher's start, as it
+// does while no daemon has answered, and turns off at its launcher's first acknowledgement, after
+// which it ends nothing and the pod's memory is bounded by the kernel's kill of the whole container
+// alone.
 type MemoryGuardPodConfig struct {
 	Enabled              bool
 	ActPercent           int

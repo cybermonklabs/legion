@@ -427,12 +427,13 @@ print("probe: done", flush=True)
 // since the band's last reading (R1 of spec version 32), so latepool's new growers go before its
 // sleeping forks and its parent, which read larger. Otherwise the first kill of a rise may end a
 // sleeping fork or the parent: the guard orders by growth over its window, then by being new to the
-// stay, then by growth since the previous kill of the rise, then by size, and a rise's first kill
-// has no previous kill, so where no grower grew over the window and none is new, as after a fall in
-// sharedpool, the largest goes first. Each prints every kill by what the probe says the process is
-// and, beside the verdict, the kills by kind, with each that ended no grower while a grower lived
-// marked first-of-rise or after-a-kill (`live: kinds …`, printKinds), the first kill (`live: first
-// kill …`) and the run's highest readings (`live: highest …`, printHighest).
+// stay, then by growth since the first kill of its stay in the band, which a dip below the mark that
+// stays in the band does not end (R1 of spec version 37), then by size, and a stay's first kill has
+// no kill before it, so where no grower grew over the window and none is new, the largest goes
+// first. Each prints every kill by what the probe says the process is and, beside the verdict, the
+// kills by kind, with each that ended no grower while a grower lived marked first-of-rise or
+// after-a-kill (`live: kinds …`, printKinds), the first kill (`live: first kill …`) and the run's
+// highest readings (`live: highest …`, printHighest).
 //
 // `band` is a python3 that allocates until the pod's AnonPages is 5% of the limit below the mark,
 // in the middle of the band where the guard reads the sizes of what it may end at each reading,
