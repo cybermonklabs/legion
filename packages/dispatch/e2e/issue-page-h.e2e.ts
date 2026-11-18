@@ -377,6 +377,37 @@ test("every property with a value is visible in Details at every width @phone", 
         ),
         `Development's rows are out of order at ${width} px`
       ).toHaveText(ONE_DEVELOPMENT_ROWS);
+      // Each row's glyph is drawn inside its own column, before the row's name (`Row`'s
+      // `w-3.5`): the page's typeface drew Blocked by's ⊘ 19 px wide in that 14 px column, to
+      // 2 px from the name. The glyph's text is what is measured, since its span is the column
+      // itself, once the page's typeface has loaded, since that is what draws ⊘. Soft, so that a
+      // width it fails at does not stop the widths after it.
+      await page.evaluate(() => document.fonts.ready.then(() => undefined));
+      const glyphs = await marginSlot(page)
+        .locator('[data-margin-section] > div > div > div:first-child > span[aria-hidden="true"]')
+        .evaluateAll((spans) =>
+          spans.map((span) => {
+            const text = document.createRange();
+            text.selectNodeContents(span);
+            return {
+              column: span.getBoundingClientRect().width,
+              drawn: text.getBoundingClientRect().width,
+              row: span.nextElementSibling?.textContent ?? "",
+            };
+          })
+        );
+      expect(
+        glyphs.map(({ row }) => row),
+        `Details measures no Blocked by glyph at ${width} px`
+      ).toContain(PROPERTY_LABELS.blocked_by);
+      expect
+        .soft(
+          glyphs
+            .filter(({ column, drawn }) => drawn > column)
+            .map(({ column, drawn, row }) => `${row}: ${drawn} px in a column of ${column} px`),
+          `a row's glyph is drawn wider than its column at ${width} px`
+        )
+        .toEqual([]);
       const labels = detailsRow(page, PROPERTY_LABELS.labels).locator("[data-author-text]");
       await expect
         .poll(async () =>

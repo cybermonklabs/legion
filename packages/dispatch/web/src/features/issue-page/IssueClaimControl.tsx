@@ -1,5 +1,6 @@
 import { type ReactNode, useRef } from "react";
 
+import { apiErrorMessage } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { pageHeaderControl, pageQuietText } from "../../theme/classes";
@@ -9,10 +10,13 @@ import { pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 
+/** What the row says of a release that failed, before the reason Dispatch gave. */
+const RELEASE_FAILED = "Could not release this claim.";
+
 /**
  * Who holds the issue, since when, and the control that hands the claim back, in the claim's
  * row of Details, which carries the label "Claimed by"; `None` while nobody holds it. A release
- * that fails says so beside it, with a retry.
+ * that fails says so beside it, with Dispatch's reason where Dispatch gave one, and a retry.
  *
  * No control here is disabled while its release is out, since Chromium moves the focus of a
  * control that turns disabled to the page's body, which would lose a reader who pressed it by
@@ -67,7 +71,9 @@ export function IssueClaimControl({
       {failure === null ? null : (
         <DetailsErrorLine
           failure={failure.count}
-          message="Could not release this claim."
+          // Dispatch's reason beside the row's words, as the Parent row says a refused parent
+          // (`apiErrorMessage`); a release that got no answer, a dropped connection, has none.
+          message={releaseFailedLine(apiErrorMessage(failure.error, ""))}
           onRetry={release}
           refused={releaseClaim.isPending}
           retryRef={retryLeft}
@@ -75,4 +81,9 @@ export function IssueClaimControl({
       )}
     </div>
   );
+}
+
+/** The line of a failed release: the row's words, and `reason` after them where there is one. */
+function releaseFailedLine(reason: string): string {
+  return reason === "" ? RELEASE_FAILED : `${RELEASE_FAILED} ${reason}`;
 }

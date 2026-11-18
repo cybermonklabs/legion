@@ -42,6 +42,7 @@ import {
   BlockedByControl,
   blockedByControlName,
   IssueLine,
+  leaveOnEscape,
 } from "./BlockedByControl";
 import { DetailsErrorLine, useFocusHandOff, useSaidFailure } from "./details-error";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
@@ -418,13 +419,15 @@ export function IssueMarginPanel({
               {issue.parent}
             </Link>
           )}
-          <IssueFieldForms
-            field={editingField === "parent" ? "parent" : null}
-            isClosed={isClosed}
-            issue={issue}
-            onClose={closeEditor}
-            writes={writes}
-          />
+          {editingField === "parent" ? (
+            <FieldEditor
+              field="parent"
+              isClosed={isClosed}
+              issue={issue}
+              onClose={closeEditor}
+              writes={writes}
+            />
+          ) : null}
           {writes.parentSaveFailed ? (
             <p className={`w-full text-sm ${pageFailedText}`} id="issue-parent-error" role="alert">
               {writes.parentError}
@@ -514,13 +517,15 @@ export function IssueMarginPanel({
             onEdit={() => onEditingField("route")}
             writes={writes}
           />
-          <IssueFieldForms
-            field={editingField === "route" ? "route" : null}
-            isClosed={isClosed}
-            issue={issue}
-            onClose={closeEditor}
-            writes={writes}
-          />
+          {editingField === "route" ? (
+            <FieldEditor
+              field="route"
+              isClosed={isClosed}
+              issue={issue}
+              onClose={closeEditor}
+              writes={writes}
+            />
+          ) : null}
           {/* A route Dispatch refused, said in the row it was saved from with Dispatch's reason
               and Retry, as the Parent row says a refused parent, for as long as the draft still
               holds a route the issue does not: a reader who leaves the editor puts the saved
@@ -855,6 +860,50 @@ function PropertySection({
   );
 }
 
+/** The editor of `field` in its row of Details (`IssueFieldForms`). Escape anywhere in it leaves
+ *  it as its Cancel does, putting the saved value back in the draft (`leaveOnEscape`), whether or
+ *  not a save is out, as Escape in its box does: the box takes its own Escape, and its Save and
+ *  Cancel take none, so a press on either went on to the page's own Escape, which closes Details. */
+function FieldEditor({
+  field,
+  isClosed,
+  issue,
+  onClose,
+  writes,
+}: {
+  field: IssueField;
+  isClosed: boolean;
+  issue: IssueDetails;
+  onClose: () => void;
+  writes: IssueHeaderWrites;
+}): ReactNode {
+  const cancel = () => {
+    if (field === "parent") writes.drafts.discardParent();
+    else writes.drafts.discardRoute();
+    onClose();
+  };
+  return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler takes an Escape that bubbles out of the editor's own controls, and the wrapper draws no box of its own (`contents`), so it needs no role.
+    <div className="contents" onKeyDown={leaveOnEscape(cancel)}>
+      <IssueFieldForms
+        field={field}
+        isClosed={isClosed}
+        issue={issue}
+        onClose={onClose}
+        writes={writes}
+      />
+    </div>
+  );
+}
+
+/** The glyphs of Details' rows drawn smaller than the row's text, each with its size. The page's
+ *  typeface (`Dispatch Inter`, `styles.css`) draws ⊘ larger than its size, 19 px wide at the
+ *  row's 14 px, which ran past its 14 px column (`Row`'s `w-3.5`) to 2 px from the row's name;
+ *  at 9 px it is 13 px wide, inside the column and about the size of ● and ◐ above it. The size
+ *  is ⊘'s alone: every other glyph fits at the row's size, and a size they all shared would
+ *  shrink them with it. */
+const GLYPH_SIZES: Readonly<Partial<Record<string, string>>> = { "⊘": "text-[9px]" };
+
 /**
  * One row of Details (the prototype's `.frow`): a column of 112 px with the property's shape
  * and its name, and the value beside it; a `wide` row is one column, for a property whose own
@@ -878,6 +927,7 @@ function Row({
   valueRef?: Ref<HTMLDivElement>;
   wide?: boolean;
 }): ReactNode {
+  const glyphSize = glyph === undefined ? undefined : GLYPH_SIZES[glyph];
   return (
     <div
       className={`grid min-w-0 gap-2.5 border-b py-2 text-sm leading-5 ${
@@ -888,7 +938,7 @@ function Row({
     >
       {label === undefined ? null : (
         <div className={`flex min-w-0 items-start gap-[7px] ${pageQuietText}`}>
-          <span aria-hidden="true" className="w-3.5 shrink-0 text-center">
+          <span aria-hidden="true" className={`w-3.5 shrink-0 text-center ${glyphSize ?? ""}`}>
             {glyph}
           </span>
           <span className="min-w-0" {...pageChrome}>

@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { MAX_ISSUE_ADVANCES, MAX_ISSUE_BLOCKERS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -312,12 +312,14 @@ test("a blocked-by that is set can be changed and cleared from the panel", async
 // The refusal is drawn in the editor and nowhere else, so a reader who closed the editor while
 // the save was out was shown no refusal at all. Cancel and Escape wait for the answer, and
 // Cancel says so: it is drawn and announced as held for as long as the save is out, rather than
-// as a control whose press does nothing.
+// as a control whose press does nothing. An Escape held so is still the editor's, in the box or
+// on Cancel, and goes no further.
 test("the blocked-by editor refuses Cancel and Escape while the save is out", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const saving = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => saving.promise);
+  const escapes = watchEscapes();
   const { unmount } = renderDetails();
 
   try {
@@ -346,6 +348,16 @@ test("the blocked-by editor refuses Cancel and Escape while the save is out", as
       screen.getByLabelText("Issues CORE-1 waits on"),
       "Escape closed the editor over a save whose refusal it would have drawn"
     ).toBeInTheDocument();
+    act(() => cancel.focus());
+    await user.keyboard("{Escape}");
+    expect(
+      screen.getByLabelText("Issues CORE-1 waits on"),
+      "Escape on Cancel closed the editor over a save whose refusal it would have drawn"
+    ).toBeInTheDocument();
+    expect(
+      escapes.taken,
+      "an Escape the editor held while its save is out went on to the page's keys"
+    ).toEqual([true, true]);
 
     // The answer closes it, which is the one thing that may.
     saving.resolve(narrowIssue({ ...issue, blocked_by: ["CORE-9"] }));
@@ -353,6 +365,7 @@ test("the blocked-by editor refuses Cancel and Escape while the save is out", as
       expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument()
     );
   } finally {
+    escapes.stop();
     unmount();
     restore();
   }
@@ -480,6 +493,96 @@ test("Escape in the blocked-by box closes its editor and goes no further", async
     ).toEqual([true]);
   } finally {
     escapes.stop();
+    unmount();
+    restore();
+  }
+});
+
+/** Opens an editor of a row by the row's control named `control`, then presses Escape on the
+ *  editor's Save (named `save`) and, the editor opened again, on its Cancel. Each press is the
+ *  editor's, as Escape in its box is: the editor (its box named `box`) is closed, the row's
+ *  control holds the focus again, and the press was marked taken, so the page's own Escape,
+ *  which closes Details and the phone's Details sheet (`shell/keymap.ts`, `useDialog.ts`),
+ *  passes over it. */
+async function expectEscapeLeavesEditor(
+  user: UserEvent,
+  { box, control, save }: { box: string; control: string; save: string }
+): Promise<void> {
+  const escapes = watchEscapes();
+  try {
+    for (const button of [save, CONTROL_LABELS.cancel]) {
+      await user.click(await screen.findByRole("button", { name: control }));
+      await waitFor(() => expect(screen.getByLabelText(box)).toHaveFocus());
+      const pressed = screen.getByRole("button", { name: button });
+      act(() => pressed.focus());
+      await user.keyboard("{Escape}");
+      expect(
+        screen.queryByLabelText(box),
+        `Escape on the editor's ${button} left the editor open`
+      ).not.toBeInTheDocument();
+      expect(
+        document.activeElement,
+        `Escape on the editor's ${button} did not give the focus back to the row's control`
+      ).toBe(screen.getByRole("button", { name: control }));
+      expect(
+        escapes.taken.at(-1),
+        `Escape on the editor's ${button} went on to the page's keys, which close Details`
+      ).toBe(true);
+    }
+  } finally {
+    escapes.stop();
+  }
+}
+
+// Escape in an editor's box closed that editor alone, but no control took an Escape on its Save
+// or its Cancel, so the page's own Escape closed the whole of Details - the phone's Details sheet
+// with it - and the focus fell to the page's body. Escape anywhere in an editor is the editor's.
+test("Escape on the parent's Save or Cancel closes its editor alone, with the focus back on Set parent issue", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const { unmount } = renderDetails();
+
+  try {
+    await expectEscapeLeavesEditor(user, {
+      box: PROPERTY_LABELS.parent,
+      control: CONTROL_LABELS.set_parent,
+      save: CONTROL_LABELS.save_parent,
+    });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+test("Escape on the route's Save or Cancel closes its editor alone, with the focus back on the route's control", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const { unmount } = renderDetails();
+
+  try {
+    await expectEscapeLeavesEditor(user, {
+      box: PROPERTY_LABELS.route,
+      control: "Messages default to no route",
+      save: CONTROL_LABELS.save_route,
+    });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+test("Escape on the blocked-by Save or Cancel closes its editor alone, with the focus back on its Add", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const { unmount } = renderDetails();
+
+  try {
+    await expectEscapeLeavesEditor(user, {
+      box: "Issues CORE-1 waits on",
+      control: blockedByControlName("CORE-1", 0),
+      save: CONTROL_LABELS.save_blocked_by,
+    });
+  } finally {
     unmount();
     restore();
   }

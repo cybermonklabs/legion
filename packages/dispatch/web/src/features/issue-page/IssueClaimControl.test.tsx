@@ -216,7 +216,8 @@ test("a release that fails says so and offers a retry", async () => {
       await screen.findByRole("button", { name: "Release the claim on CORE-1" })
     );
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Could not release this claim.");
+    // A release that got no answer from Dispatch has no reason to say: the line is its words.
+    expect(alert.textContent).toBe("Could not release this claim.");
     await view.user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
   } finally {
@@ -252,6 +253,35 @@ test("a failed release is said in the page's colours, with Retry", async () => {
     expect(retry, "Retry is not drawn as the page's control").toHaveClass(pageHeaderControl);
     await view.user.click(retry);
     await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
+  } finally {
+    view.unmount();
+    release.mockRestore();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// A release Dispatch refused said only that it failed, so a reader was not told why. The line
+// says Dispatch's reason beside its words, as the Parent row says a refused parent.
+test("a release Dispatch refuses says Dispatch's reason beside its words", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    running("session-one", "Implementer"),
+  ]);
+  const reason = "bob claimed this issue at 2026-09-24T06:00:00Z; ask bob to release it";
+  const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(
+    new ApiError(409, { code: "ISSUE_CLAIMED", error: reason })
+  );
+  const view = claimRow({ ...base, claim });
+  try {
+    await view.user.click(
+      await screen.findByRole("button", { name: "Release the claim on CORE-1" })
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert, "the refusal does not say the release failed").toHaveTextContent(
+      "Could not release this claim."
+    );
+    expect(alert, "the refusal does not say Dispatch's reason").toHaveTextContent(reason);
   } finally {
     view.unmount();
     release.mockRestore();
