@@ -89,23 +89,25 @@ func run(port string) error {
 // It uses raw system calls rather than package net, which would start the Go runtime's network
 // poller: inheritAsListenFD then replaces whatever descriptor 3 is, and that must never be the
 // poller's.
+//
+// The receive is bounded by SO_RCVTIMEO, and a recvmsg with a receive timeout fails with EINTR
+// when a signal handler interrupts it, SA_RESTART or not (signal(7)). The Go runtime interrupts
+// its threads with SIGURG to preempt goroutines, so the call is tried again on EINTR for the time
+// that remains of the bound. The connect needs no such loop: it is bounded by no timeout, so the
+// kernel restarts it after a handler with SA_RESTART, which every handler of the runtime has.
 func receive(socket string) (int, error) {
 	conn, err := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return -1, fmt.Errorf("open a unix socket: %w", err)
 	}
 	defer syscall.Close(conn)
-	timeout := syscall.NsecToTimeval(receiveTimeout.Nanoseconds())
-	if err := syscall.SetsockoptTimeval(conn, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &timeout); err != nil {
-		return -1, fmt.Errorf("bound the receive: %w", err)
-	}
 	// syscall reads a leading @ as the abstract namespace.
 	if err := syscall.Connect(conn, &syscall.SockaddrUnix{Name: socket}); err != nil {
 		return -1, fmt.Errorf("connect: %w (the test that holds the port serves this socket)", err)
 	}
 	data := make([]byte, 1)
 	oob := make([]byte, syscall.CmsgSpace(4))
-	_, oobn, flags, _, err := syscall.Recvmsg(conn, data, oob, syscall.MSG_CMSG_CLOEXEC)
+	oobn, flags, err := receiveBefore(conn, data, oob, time.Now().Add(receiveTimeout))
 	if err != nil {
 		return -1, fmt.Errorf("receive the listening socket within %s: %w", receiveTimeout, err)
 	}
@@ -129,6 +131,28 @@ func receive(socket string) (int, error) {
 		return -1, errors.New("the server sent more than the one descriptor it should")
 	}
 	return -1, fmt.Errorf("the server sent %d descriptors, want exactly one", len(fds))
+}
+
+// receiveBefore receives one message with its control data on conn by recvmsg before deadline,
+// trying again on EINTR. Each try bounds the wait by SO_RCVTIMEO to the time left, so the tries
+// together wait no longer than one receive would. A deadline that passes is EAGAIN, as the bound
+// of a single try is.
+func receiveBefore(conn int, data, oob []byte, deadline time.Time) (oobn, flags int, err error) {
+	for {
+		left := time.Until(deadline)
+		if left <= 0 {
+			return 0, 0, syscall.EAGAIN
+		}
+		// SO_RCVTIMEO 0 means no bound at all, so a bound below its microsecond is one microsecond.
+		timeout := syscall.NsecToTimeval(max(left, time.Microsecond).Nanoseconds())
+		if err := syscall.SetsockoptTimeval(conn, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &timeout); err != nil {
+			return 0, 0, fmt.Errorf("bound the receive: %w", err)
+		}
+		_, oobn, flags, _, err = syscall.Recvmsg(conn, data, oob, syscall.MSG_CMSG_CLOEXEC)
+		if !errors.Is(err, syscall.EINTR) {
+			return oobn, flags, err
+		}
+	}
 }
 
 // inheritAsListenFD makes fd descriptor 3 without close-on-exec, so the listener the wrapper
