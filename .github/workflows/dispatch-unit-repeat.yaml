@@ -41,11 +41,12 @@ name: Dispatch unit suite repeated
 # waiting for it. `--parallel` runs each test file in a fresh global object, so a file loads each
 # such module once: in the web lane that row fails only when the seed puts it first among the rows
 # of its file that need the module. The web-cold lane's preload,
-# packages/dispatch/web/src/__tests__/hold-lazy-loads.ts, holds back each load of every module
-# the web app loads by `import()` or `lazy()` once a test file's rows have begun, for 1 s of real
-# time, so every row that runs while a module is held, not the first alone, finds it unloaded. A
-# rerun of a file keeps the modules its first run loaded, so reruns are warm and buy nothing here:
-# each leg runs the lane once, and each round's own seed is what varies which rows run first.
+# packages/dispatch/web/src/__tests__/hold-lazy-loads.ts, holds back each load of every script
+# module the web app's sources load with `import("<literal>")`, its `lazy()` pages among them,
+# once a test file's rows have begun, for 1 s of real time, so every row that runs while a module
+# is held, not the first alone, finds it unloaded. A rerun of a file keeps the modules its first
+# run loaded, so reruns are warm and buy nothing here: each leg runs the lane once, and each
+# round's own seed is what varies which rows run first.
 #
 # The measured legs. The first four runs of this workflow, on its pull request (runs 44023917835,
 # 44029914443, 44039247928 and 44050167605, at heads 1df8e22c, 8fcb4e6e, 60572142 and e7afe05d,
