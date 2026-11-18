@@ -52,18 +52,20 @@ type gcloudChild struct {
 // ends is killed (cleanUp), and t fails where /proc cannot say whether it still runs.
 func useGcloudWhoseChildHoldsItsOutput(t *testing.T) (gcloudCommand, gcloudChild) {
 	t.Helper()
-	return gcloudStubIn(t, t.TempDir())
+	return gcloudStubIn(t, t.TempDir(), "wait")
 }
 
 // gcloudStubIn writes useGcloudWhoseChildHoldsItsOutput's stub gcloud into dir, the file its
-// child names itself in beside it.
-func gcloudStubIn(t *testing.T, dir string) (gcloudCommand, gcloudChild) {
+// child names itself in beside it. The stub ends with last once it has started the child: "wait"
+// waits on the child, never answering; "exit 0" exits at once, leaving the child holding the
+// output, as a wrapper that does not wait for what it started does.
+func gcloudStubIn(t *testing.T, dir, last string) (gcloudCommand, gcloudChild) {
 	t.Helper()
 	child := gcloudChild{pidFile: filepath.Join(dir, "child.pid")}
 	t.Setenv(gcloudChildFile, child.pidFile)
 	script := "#!/bin/sh\n" +
 		`/bin/sh -c 'echo $$ >"$` + gcloudChildFile + `"; exec sleep 3600' &` + "\n" +
-		"wait\n"
+		last + "\n"
 	gcloud := gcloudCommand{path: filepath.Join(dir, "gcloud")}
 	if err := os.WriteFile(gcloud.path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -284,7 +286,7 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useNoADC(t)
-	gcloud, _ := gcloudStubIn(t, filepath.Dir(pidFile))
+	gcloud, _ := gcloudStubIn(t, filepath.Dir(pidFile), "wait")
 	t.Setenv("PATH", filepath.Dir(gcloud.path)+":/usr/bin:/bin")
 	t.Setenv("CLOUDSDK_CORE_ACCOUNT", "")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
@@ -350,4 +352,63 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 		t.Fatalf("agent-secrets ended %v, saying %q; want it ended by its interrupt (SIGINT, a shell's 130)", helper.ProcessState, out.String())
 	}
 	child.requireGone(t)
+}
+
+// TestGcloudThatExitsLeavingAChildTakesTheChildWithIt: a gcloud that exits by itself and leaves
+// a child holding its output, which gcloudWaitDelay stops the wait for but does not kill, has
+// that child killed once runGcloud has waited for gcloud, whatever the call's outcome.
+func TestGcloudThatExitsLeavingAChildTakesTheChildWithIt(t *testing.T) {
+	gcloud, child := gcloudStubIn(t, t.TempDir(), "exit 0")
+	_ = child.callEnds(t, "a gcloud that exited leaving its child", func() error {
+		_, err := runGcloud(context.Background(), gcloud, "auth", "list", "--format=json")
+		return err
+	})
+	child.requireGone(t)
+}
+
+// TestGcloudSettingsReadAtItsDeadlineKillsGcloudsChild: `gcloud config list`
+// (readGcloudSettings) runs under gcloudSettingsDeadline, 5s, so a gcloud that never answers
+// ends at that deadline as a failed read, and the child that held gcloud's output is gone with
+// it, not left running.
+func TestGcloudSettingsReadAtItsDeadlineKillsGcloudsChild(t *testing.T) {
+	gcloud, child := useGcloudWhoseChildHoldsItsOutput(t)
+	err := child.callEnds(t, "`gcloud config list`", func() error {
+		_, err := readGcloudSettings(context.Background(), gcloud)
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "`gcloud config list` failed") {
+		t.Fatalf("readGcloudSettings() = %v; want the read failed", err)
+	}
+	child.requireGone(t)
+}
+
+// TestGcloudCancelOfAGroupGoneAlreadyAnswersProcessDone: the kill at the end of a gcloud's
+// context (killGroupOnCancel) answers os.ErrProcessDone where the kernel says the group is gone
+// already (ESRCH), as exec.Cmd's own kill does for a process that is done, so a gcloud that ended
+// by itself keeps its own exit status; any other answer is returned as it came. signalGroup is
+// replaced, so no signal reaches any process: a real kill of a reaped gcloud's pid could reach
+// another process given that pid since. The live tests above drive the real kill.
+func TestGcloudCancelOfAGroupGoneAlreadyAnswersProcessDone(t *testing.T) {
+	restore := signalGroup
+	t.Cleanup(func() { signalGroup = restore })
+	for _, row := range []struct{ answer, want error }{
+		{syscall.ESRCH, os.ErrProcessDone},
+		{syscall.EPERM, syscall.EPERM},
+		{nil, nil},
+	} {
+		var sent []string
+		signalGroup = func(pgid int, sig syscall.Signal) error {
+			sent = append(sent, fmt.Sprintf("%d %v", pgid, sig))
+			return row.answer
+		}
+		cmd := exec.CommandContext(context.Background(), "gcloud")
+		killGroupOnCancel(cmd)
+		cmd.Process = &os.Process{Pid: 4242}
+		if err := cmd.Cancel(); !errors.Is(err, row.want) || (row.want == nil && err != nil) {
+			t.Errorf("Cancel() with the kernel answering %v = %v; want %v", row.answer, err, row.want)
+		}
+		if want := []string{"4242 " + syscall.SIGKILL.String()}; !slices.Equal(sent, want) {
+			t.Errorf("Cancel() sent %q; want %q, the group's SIGKILL alone", sent, want)
+		}
+	}
 }

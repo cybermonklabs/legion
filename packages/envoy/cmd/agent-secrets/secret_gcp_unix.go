@@ -25,7 +25,7 @@ import (
 func killGroupOnCancel(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		err := signalGroup(cmd.Process.Pid, syscall.SIGKILL)
 		if errors.Is(err, syscall.ESRCH) {
 			return os.ErrProcessDone
 		}
@@ -33,7 +33,20 @@ func killGroupOnCancel(cmd *exec.Cmd) {
 	}
 }
 
-// killGcloudGroup kills the process group gcloud, pid, leads (killGroupOnCancel).
+// killGcloudGroup kills the process group gcloud, pid, leads (killGroupOnCancel); a group that is
+// gone already is no error.
 func killGcloudGroup(pid int) {
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	_ = signalGroup(pid, syscall.SIGKILL)
+}
+
+// killGroupLeft kills what is left of gcloud's group once gcloud, pid, has been waited for
+// (runRecorded).
+func killGroupLeft(pid int) {
+	killGcloudGroup(pid)
+}
+
+// signalGroup sends sig to the process group pgid. A test replaces it to see an answer the kernel
+// gives only in a race (ESRCH, the group gone already) without sending any signal.
+var signalGroup = func(pgid int, sig syscall.Signal) error {
+	return syscall.Kill(-pgid, sig)
 }

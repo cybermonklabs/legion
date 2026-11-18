@@ -438,7 +438,10 @@ var formWatchesSignals atomic.Int32
 // runRecorded runs cmd as cmd.Run does, its pid recorded in runningGcloud from its start until it
 // has been waited for, so that an end by a signal (exitBySignal) kills it with its group. Where no
 // form watches createSignals, it watches them itself for as long as cmd runs
-// (watchSignalsWhileGcloudRuns).
+// (watchSignalsWhileGcloudRuns). Once cmd has been waited for, on every outcome, it kills what is
+// left of cmd's group (killGroupLeft): a gcloud that exits by itself can leave a child holding
+// its output, which gcloudWaitDelay stops the wait for and does not kill. The group is gcloud's
+// own, so nothing else is in it, and while a process is left in it its id names no other group.
 func runRecorded(cmd *exec.Cmd) error {
 	runningGcloud.Lock()
 	if err := cmd.Start(); err != nil {
@@ -451,6 +454,7 @@ func runRecorded(cmd *exec.Cmd) error {
 	stop := watchSignalsWhileGcloudRuns()
 	err := cmd.Wait()
 	stop()
+	killGroupLeft(pid)
 	runningGcloud.Lock()
 	delete(runningGcloud.pids, pid)
 	runningGcloud.Unlock()
