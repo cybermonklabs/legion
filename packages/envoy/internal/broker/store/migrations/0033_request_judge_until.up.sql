@@ -1,4 +1,4 @@
--- packages/envoy/internal/broker/store/migrations/0034_request_judge_until.up.sql
+-- packages/envoy/internal/broker/store/migrations/0033_request_judge_until.up.sql
 -- Who decides a pending request is a setting of its keys, read when the request is written: the
 -- model judge, for a request whose every key needing a decision has a judge entry in the airlock
 -- rules and no administrator's tag, on a broker that runs a judge; a person for every other one.
