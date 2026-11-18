@@ -6337,7 +6337,7 @@ A `pause_stop` row that read its pause open before the resume, and whose stop th
 A stop that the claim decided before the flag was cleared, and that ends after the resume commits, still ends: the role stops, and since the role was live when the resume ended the pause, it is owed a launch whatever it held, and its `start` row runs at once, through the pacing.
 Each held row runs, and the first row to run for a role launches it with a token from the wake pacing (`worker_wakes_per_minute`, 8 by default, and `worker_wake_burst`, 1 by default).
 The role's other held rows find it launching or live and are delivered to it.
-A held role message launches nothing itself: its row only publishes the message, and the Envoy listener's report of it is the role's wake (`wakeReleased`, `internal/workflow/wake.go`), whose `start` row launches the role through the same pacing.
+A held role message launches nothing: the daemon's own role message to a role whose claim is released finishes undelivered and wakes nothing (`outbox.roleMessage`, above), and a role that the pause stopped is released, so a role message that the pause held reaches its role only where held work of the role launched it first.
 An operator's spawn, a claim of an issue the daemon keeps no record of, has no `start` row to carry the launch it is owed, because the `start` row needs the issue's record.
 The resume launches such a claim itself, with the daemon's resume by rule, which takes a token from the same pacing, and a stop of one that ends after the resume launches it the same way.
 So a resume launches each session that the pause held something for once, and never all of them at once.
@@ -6360,16 +6360,12 @@ The launch that a stop owes a role is a wake of the pause that made the stop, wh
 So a wake taken while the project is paused is the open pause's, the wake of a row that a lane took before the pause and ran while it stood among them.
 The resume marks each row that its pause holds with the pause, whatever the row's due time (`outbox.held_by_pause`, `MarkPauseHeldRows`, `internal/record/store.go`), and the wake that a notice, a phase's end, a hook's prompt or a merge-queue removal takes for such a row after the resume reads that mark (`Store.TakePodWake`, `internal/store/wake.go`, read by `wakeForDelivery`, `internal/daemon/wake.go`).
 A listener's wake, a CI settlement's wake and a backstop's wake are taken for no row, so they read the open pause and the pause that stopped the role alone (`wakeReleased`, `internal/workflow/wake.go`).
-A role message takes no wake for its row: after the resume, the outbox publishes a role message that the pause held, and the listener's report of it wakes the role.
-After the resume, the wake of a role that the pause stopped is that pause's whichever path takes it, a delivery written after the resume and the listener's report of a role message that the pause held included, until the role's agent is ready again or a release of its pod is recorded.
+After the resume, the wake of a role that the pause stopped is that pause's whichever path takes it, a delivery written after the resume and the listener's report of a message that another session sends included, until the role's agent is ready again or a release of its pod is recorded.
 The task of such a wake that a listener's report, a CI settlement or a backstop takes says that the pause stopped the session (`WakeTask`, `internal/workflow/wake.go`); a delivery's wake resumes the role with no task, as on main, and the delivery itself is what the role reads.
 A ready after the pause's stop is the agent of a launch since, so a wake that follows a later stop of the role, such as an idle release's, which suspends the role before its teardown records the release, is not the pause's.
 `read_release_records` counts a held wake as `heldByPause` and leaves it out of its wake-to-first-turn seconds, because its wait measures the pause.
 A held wake names no release.
 Where its issue's pod was released before the wake, that report still ends the release at the wake, as any other wake of the pod would, in its pod-hours and in its share of releases woken within ten minutes.
-One limit follows from the rule of a wake's pause: a role message that the pause held for a role that an idle release had released before the pause wakes that role as the wake of that release, with the kind `role_message`, paired with that release and naming no pause, and its task says that a release took the pod.
-The pause asked no stop of a role that was already released, so no stop of it names the pause, and a listener's wake reads no row's mark.
-So `read_release_records` counts that wake's wait under the release, although the pause held the message.
 
 **What the state and the log show.**
 While the project is paused, `GET /legion/v1/state` carries `paused`: the pause's `id`, `since`, `by` and `reason`, then `waitsOn`, each claim whose stop the pause still waits on, and `held`, each row that the pause holds, with its kind, its issue, its claim where the row names one, and the seconds it has waited.

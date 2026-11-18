@@ -375,14 +375,14 @@ func (r *outbox) parkedWait(turn time.Time, text string) error {
 // dispatch://INFRA-3759) is that pause's owed launch, whose start row waits in the outbox; the
 // wake an earlier delivery row of the role that the pause held took after the resume; or the
 // workflow's wake of a role the pause stopped, which store.PodRecords.PauseOfWake gives the pause
-// (the listener's report of a role message the pause held, a CI settlement or a backstop). The
-// resume wakes every lane at once (projectPause.Resumed), so a held notice, phase-ended message,
-// hook prompt or merge-queue removal of the same role can run before that start, or after that
-// other wake, and find the role released under the held wake. Nothing is wrong there, and
-// the line says so at Info. Any other open resume over a released claim is one whose process
-// never came — a resume the store refused after its take committed, or a daemon that stopped
-// between the two — and the line says so at Warn, as it does when the read fails, with its error:
-// the resume goes ahead either way.
+// (the listener's report of a message another session sent the role, a CI settlement or a
+// backstop). The resume wakes every lane at once (projectPause.Resumed), so a held notice,
+// phase-ended message, hook prompt or merge-queue removal of the same role can run before that
+// start, or after that other wake, and find the role released under the held wake. Nothing is
+// wrong there, and the line says so at Info. Any other open resume over a released claim is one
+// whose process never came — a resume the store refused after its take committed, or a daemon
+// that stopped between the two — and the line says so at Warn, as it does when the read fails,
+// with its error: the resume goes ahead either way.
 func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role claim.Role, detail string) {
 	_, pause, open, err := r.trees.OpenPodResume(ctx, r.project, issue, role)
 	if err == nil && open && pause != 0 {
