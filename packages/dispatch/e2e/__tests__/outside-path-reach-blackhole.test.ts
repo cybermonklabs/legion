@@ -75,8 +75,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools || blackholeSkip !== null)(
     "reads a blackholed address as unreachable and passes, curl's own timeouts bounding each probe of it",
     async () => {
-      const origin = await fakeDispatch();
       const asked = join(scratch, `asked-${randomUUID()}`);
+      const origin = await fakeDispatch();
       try {
         const run = await drive(
           {
@@ -113,8 +113,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools || blackholeSkip !== null)(
     "fails the blackholed run once the holding target is added beside it",
     async () => {
-      const origin = await fakeDispatch();
       const holding = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         const run = await drive({
           OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,

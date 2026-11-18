@@ -62,8 +62,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "fails naming a target that listens, which is the check's negative control",
     async () => {
-      const origin = await fakeDispatch();
       const listening = closingTarget();
+      const origin = await fakeDispatch();
       try {
         const run = await drive({
           OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
@@ -88,10 +88,10 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads targets that accept and hold the connection as reached, each round probing them at once",
     async () => {
-      const origin = await fakeDispatch();
       const first = holdingTarget();
       const second = holdingTarget();
       const closed = [await closedPort(), await closedPort()];
+      const origin = await fakeDispatch();
       try {
         const hosts = {
           origin: `127.0.0.1:${origin.port}`,
@@ -141,10 +141,10 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads the same holding target as unreachable once it is closed, and passes",
     async () => {
-      const origin = await fakeDispatch();
       const holding = holdingTarget(await closedPort());
       const { port } = holding;
       holding.stop(true);
+      const origin = await fakeDispatch();
       try {
         const run = await drive({
           OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
@@ -163,13 +163,13 @@ describe.concurrent("outside-path-reach.sh", () => {
     "is unknown, never a pass, when Dispatch answers but the probe cannot connect to the origin itself",
     async () => {
       const origin = await fakeDispatch();
-      // A curl that answers HTTP as the host's does but whose probe of the origin's own port is
-      // refused, as behind a proxy that carries the HTTP requests while the device's own connects
-      // go nowhere: every round of every target then proves nothing, and reads `uncounted`.
-      const path = pathWithCurl(
-        `case "$*" in *telnet://127.0.0.1:${origin.port}*) printf '0.000010 0.000000'; exit 7 ;; esac`
-      );
       try {
+        // A curl that answers HTTP as the host's does but whose probe of the origin's own port is
+        // refused, as behind a proxy that carries the HTTP requests while the device's own connects
+        // go nowhere: every round of every target then proves nothing, and reads `uncounted`.
+        const path = pathWithCurl(
+          `case "$*" in *telnet://127.0.0.1:${origin.port}*) printf '0.000010 0.000000'; exit 7 ;; esac`
+        );
         const run = await drive(
           { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`, OUTSIDE_PATH_TARGETS: await list() },
           { path }
@@ -266,8 +266,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "probes each target in five rounds and reads it reached when one round of the five connects",
     async () => {
-      const origin = await fakeDispatch();
       const holding = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         // The first two of the five rounds are lost on the way, as on a network dropping packets.
         const run = await drive(
@@ -297,8 +297,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads a target unreachable only when all five rounds are, and unknown when one of them is",
     async () => {
-      const origin = await fakeDispatch();
       const port = await closedPort();
+      const origin = await fakeDispatch();
       try {
         const run = await drive(
           {
@@ -333,9 +333,9 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "counts a target's round only when the probe connected to the origin in that same round",
     async () => {
-      const origin = await fakeDispatch();
       const hub = holdingTarget();
       const refused = "{ printf '0.000010 0.000000'; exit 7; }";
+      const origin = await fakeDispatch();
       try {
         const env = { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}` };
         const downPath = pathRounds(
@@ -417,8 +417,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "sleeps a whole 6 s between each two of its five rounds, so a target down only in the first round reads reached",
     async () => {
-      const origin = await fakeDispatch();
       const hub = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         const { path, log } = pathRounds(
           { hub: `127.0.0.1:${hub.port}` },
@@ -453,9 +453,9 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "is unknown when sleep fails, since the rounds were then not spread apart",
     async () => {
-      const origin = await fakeDispatch();
       const path = pathOf("bash", "curl");
       writeFileSync(join(path, "sleep"), `#!${bash}\nexit 1\n`, { mode: 0o755 });
+      const origin = await fakeDispatch();
       try {
         const run = await drive(
           { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`, OUTSIDE_PATH_TARGETS: await list() },
@@ -532,8 +532,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads a list written with a UTF-8 byte-order mark as it reads one without",
     async () => {
-      const origin = await fakeDispatch();
       const listening = closingTarget();
+      const origin = await fakeDispatch();
       try {
         const run = await drive({
           OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
@@ -552,8 +552,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads a target list given on a pipe, which it can read only once",
     async () => {
-      const origin = await fakeDispatch();
       const listening = closingTarget();
+      const origin = await fakeDispatch();
       try {
         const closed = await closedPort();
         const run = await drive(
@@ -575,9 +575,9 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "fails naming every reached target, whatever else the run could not see",
     async () => {
-      const origin = await fakeDispatch();
       const hub = closingTarget();
       const nats = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         const env = { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}` };
         const [beside, blind] = await Promise.all([
@@ -619,8 +619,8 @@ describe.concurrent("outside-path-reach.sh", () => {
     "needs only bash, curl and sleep: with no timeout on PATH it still passes, and still fails",
     async () => {
       const path = pathOf("bash", "curl", "sleep");
-      const origin = await fakeDispatch();
       const listening = closingTarget();
+      const origin = await fakeDispatch();
       try {
         const env = { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}` };
         const [passing, failing] = await Promise.all([
@@ -646,8 +646,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads what the device itself reaches, whatever its curl configuration or proxy says",
     async () => {
-      const origin = await fakeDispatch();
       const holding = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         const env = { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}` };
         const nats = `nats localhost ${holding.port}`;
@@ -730,8 +730,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "takes CRLF line endings, tabs between fields and comments, and reads every target",
     async () => {
-      const origin = await fakeDispatch();
       const holding = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         const closed = await closedPort();
         const where = written(

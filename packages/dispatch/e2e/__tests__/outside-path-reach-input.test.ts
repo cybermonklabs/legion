@@ -247,8 +247,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   // bash 3.2 cuts a line at a NUL byte, so `42<NUL>22` would be probed as port 42; bash 5 drops
   // the byte and probes 4222. Neither is the line as written, so a list holding one is refused.
   row(withoutTools)("refuses a target list holding a NUL byte", async () => {
-    const origin = await fakeDispatch();
     const holding = holdingTarget();
+    const origin = await fakeDispatch();
     try {
       const port = String(holding.port);
       const where = await list(`nats 127.0.0.1 ${port.slice(0, 2)}\0${port.slice(2)}`);
@@ -274,10 +274,10 @@ describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
     "refuses a target list whose read stopped before the end of the list",
     async () => {
-      const origin = await fakeDispatch();
       const major = Number(
         Bun.spawnSync([bash, "-c", `printf %s "\${BASH_VERSINFO[0]}"`]).stdout.toString()
       );
+      const origin = await fakeDispatch();
       try {
         const run = await drive(
           {
@@ -331,10 +331,10 @@ describe.concurrent("outside-path-reach.sh", () => {
   });
 
   row(withoutTools)("is unknown when curl is older than 7.40", async () => {
-    const origin = await fakeDispatch();
     const path = pathWithCurl(
       `case "$*" in *--version*) echo 'curl 7.39.0 (x86_64-redhat-linux-gnu) libcurl/7.39.0'; exit 0 ;; esac`
     );
+    const origin = await fakeDispatch();
     try {
       const run = await drive(
         { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`, OUTSIDE_PATH_TARGETS: await list() },
@@ -376,12 +376,12 @@ describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
     "refuses a target list it cannot read whole or a line it cannot take, before going on the network",
     async () => {
-      const origin = await fakeDispatch();
       // A list with a byte outside printable ASCII, tab and LF at `offset`, counted from 0.
       const bad = (text: string, offset: number) => {
         const where = written(text);
         return [where, byteRefusal(where, offset)] as const;
       };
+      const origin = await fakeDispatch();
       try {
         for (const [where, reason] of [
           [await list("hub 127.0.0.1"), "is not 'name host port': hub 127.0.0.1"],
@@ -494,8 +494,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
     "refuses a line holding a control character or a Unicode line break, which would hide the target after it",
     async () => {
-      const origin = await fakeDispatch();
       const holding = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         const closed = await closedPort();
         const runs = await Promise.all(
@@ -534,8 +534,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
     "refuses the raw byte 0x85 after a comment, which would hide the target after it",
     async () => {
-      const origin = await fakeDispatch();
       const holding = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         const prefix = `closed 127.0.0.1 ${await closedPort()} # closed port`;
         const runs = await Promise.all(
@@ -634,8 +634,8 @@ describe.concurrent("outside-path-reach.sh", () => {
   row(withoutTools)(
     "refuses every spelling of an IPv4-mapped address, which a v6-only device would read unreachable",
     async () => {
-      const origin = await fakeDispatch();
       const holding = holdingTarget();
+      const origin = await fakeDispatch();
       try {
         const path = v6Only();
         const runs = await Promise.all(

@@ -61,8 +61,8 @@ describe.concurrent("outside-path-reach.sh under an inherited TMOUT", () => {
         `was seen reading it, with ${tmout === undefined ? "no TMOUT" : `TMOUT=${tmout}`}, ` +
         `the ${path} PATH and a ${kind} hub`,
       async () => {
-        const origin = await fakeDispatch();
         const hub = kind === "holding" ? holdingTarget() : closingTarget();
+        const origin = await fakeDispatch();
         try {
           const run = await drive(
             {

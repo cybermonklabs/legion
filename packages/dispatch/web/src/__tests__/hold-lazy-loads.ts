@@ -93,14 +93,13 @@ function lazilyLoaded(): Set<string> {
 const seconds = holdSeconds(process.env.DISPATCH_COLD_HOLD_MS);
 const held = lazilyLoaded();
 const paths = [...held].map((path) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+const filter = new RegExp(`^(?:${paths.join("|")})$`);
 
-// The test file's rows begin here. A plugin sees only the loads after it is registered, so every
-// load it sees is held.
 beforeAll(() => {
   plugin({
     name: "hold lazy loads",
     setup(build) {
-      build.onLoad({ filter: new RegExp(`^(?:${paths.join("|")})$`) }, async ({ path }) => {
+      build.onLoad({ filter }, async ({ path }) => {
         const status = await Bun.spawn(["sleep", seconds], { stdout: "ignore" }).exited;
         if (status !== 0) {
           throw new Error(`sleep ${seconds} exited ${status}, so ${path} was not held`);
