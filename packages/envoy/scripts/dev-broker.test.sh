@@ -514,7 +514,7 @@ assert_instance_isolated() {
   printf 'PASS: %s registers %s under both halves, tells a reader how to take the secret it owns, and exports that pod uid and service name\n' "$label" "$service"
   # The stand-in GitHub and the three github-app secrets it mints: the stands are started for the
   # three installations the case pair needs, the broker is pointed at that stand's own address,
-  # and the fake store holds all three with the kind, the tier, the owner and the github-owners
+  # and the fake store holds all three with the type, the tier, the owner and the github-owners
   # tag each one's release rests on - the two the registered service owns, which a pod session of
   # it gets without asking, and the approver's own human-tier one, whose release a person
   # decides. The App key is the file the stands reported, so a report that named another file
@@ -530,8 +530,8 @@ assert_instance_isolated() {
   fi
   local tags want_tags
   tags="$(jq -r '
-    [.secrets[] | select(.tags.kind == "github-app")
-     | "\(.name) \(.tags.kind) \(.tags.tier) \(.tags.owner) \(.tags["github-owners"]) \(.value | fromjson | .app_id)"] | sort | join("; ")
+    [.secrets[] | select(.tags.type == "github-app")
+     | "\(.name) \(.tags.type) \(.tags.tier) \(.tags.owner) \(.tags["github-owners"]) \(.value | fromjson | .app_id)"] | sort | join("; ")
     ' "${workdir}/fake-secrets.json" 2>/dev/null || true)"
   want_tags="example/agent-secrets/demo-github-app github-app agent legion-daemon acme-org 123456"
   want_tags="${want_tags}; example/agent-secrets/demo-github-app-case-pair github-app agent legion-daemon ada 123456"

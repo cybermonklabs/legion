@@ -24,7 +24,7 @@ const githubAPIBase = "https://api.github.com"
 // GitHubApp mints installation tokens from the App id and private key in a github-app secret.
 // Base, HTTP and Now let tests replace GitHub, its transport and the clock. Retry is the policy
 // each of a mint's calls is retried under, and the process-wide budget it draws from; nil makes
-// one attempt of each. It is a pointer, so every copy of the minter (kindMinters takes it by
+// one attempt of each. It is a pointer, so every copy of the minter (typeMinters takes it by
 // value) draws from the one budget.
 type GitHubApp struct {
 	Base  string
@@ -411,7 +411,7 @@ func (m GitHubApp) GiveBack(ctx context.Context, name, value string) {
 	if json.Unmarshal([]byte(value), &minted) != nil {
 		return
 	}
-	m.revokeUnreleased(ctx, m.Retry.start(kindGitHubApp), minted, "name", name)
+	m.revokeUnreleased(ctx, m.Retry.start(typeGitHubApp), minted, "name", name)
 }
 
 // Mint returns a token and expiry for every installation of the App in req.Value that is not
@@ -463,7 +463,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 		// which is right: the broker's own code is at fault and the caller's narrowing is not.
 		return Minted{}, fmt.Errorf("%w: a github app mint check needs the narrowing it checks", ErrMintRefused)
 	}
-	parsed, err := ParseValue(kindGitHubApp, req.Value)
+	parsed, err := ParseValue(typeGitHubApp, req.Value)
 	if err != nil {
 		return Minted{}, err
 	}
@@ -490,7 +490,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: sign GitHub App JWT: %w", ErrMintStoredValue, err)
 	}
-	mint := m.Retry.start(req.Kind)
+	mint := m.Retry.start(req.Type)
 	installations, err := m.installations(ctx, mint, jwt)
 	if err != nil {
 		return Minted{}, err

@@ -46,7 +46,7 @@ func newGiveBackFixture(t *testing.T, rules airlock.Rules) *giveBackFixture {
 	t.Helper()
 	st := storetest.Open(t)
 	local := secrets.NewLocal(
-		policytest.KindSecret("APP_KEY", checkOperator, policy.TierAgent, policy.KindGitHubApp, standInAppValue(t)),
+		policytest.TypeSecret("APP_KEY", checkOperator, policy.TierAgent, policy.TypeGitHubApp, standInAppValue(t)),
 		policytest.Secret("ZED_KEY", checkOperator, policy.TierAgent, "zed-v1"),
 	)
 	enrollmentID, key := newEnrollment(t, st)
@@ -87,8 +87,8 @@ func newGiveBackFixture(t *testing.T, rules airlock.Rules) *giveBackFixture {
 		Audience:   checkAudience,
 		Skew:       time.Minute,
 		Replay:     replayer(st),
-		Minters:    map[string]requests.Minter{policy.KindGitHubApp: app.Mint},
-		GiveBacks:  map[string]requests.GiveBack{policy.KindGitHubApp: app.GiveBack},
+		Minters:    map[string]requests.Minter{policy.TypeGitHubApp: app.Mint},
+		GiveBacks:  map[string]requests.GiveBack{policy.TypeGitHubApp: app.GiveBack},
 		Airlock:    rules,
 	}
 	f.Chain = requests.NewChainVerifier(st, checkAudience, time.Minute, f.Airlock)
@@ -167,8 +167,8 @@ func TestAReleaseThatFailsGivesBackTheTokensItMinted(t *testing.T) {
 		// moments before, goes to nobody.
 		{name: "a minted value the airlock cannot split", rules: appBehind, want: requests.ErrAirlockValueShape,
 			breakIt: func(t *testing.T, f *giveBackFixture) {
-				mint := f.Minters[policy.KindGitHubApp]
-				f.Minters[policy.KindGitHubApp] = func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+				mint := f.Minters[policy.TypeGitHubApp]
+				f.Minters[policy.TypeGitHubApp] = func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 					minted, err := mint(ctx, req)
 					var value struct {
 						Installations map[string]json.RawMessage `json:"installations"`
@@ -185,8 +185,8 @@ func TestAReleaseThatFailsGivesBackTheTokensItMinted(t *testing.T) {
 			}},
 		{name: "a later name the policy stops serving during the reads", want: requests.ErrGrantNotLive,
 			breakIt: func(t *testing.T, f *giveBackFixture) {
-				mint := f.Minters[policy.KindGitHubApp]
-				f.Minters[policy.KindGitHubApp] = func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+				mint := f.Minters[policy.TypeGitHubApp]
+				f.Minters[policy.TypeGitHubApp] = func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 					minted, err := mint(ctx, req)
 					// ZED_KEY's tags no longer make it an agent secret, so the policy reloaded
 					// here drops it, while its stored value the release reads next is still there.
@@ -250,7 +250,7 @@ func TestAReleaseDoesNotWaitOnItsGiveBack(t *testing.T) {
 			f := newGiveBackFixture(t, appBehind)
 			held := make(chan struct{})
 			var gaveBack []string
-			f.GiveBacks = map[string]requests.GiveBack{policy.KindGitHubApp: func(ctx context.Context, name, value string) {
+			f.GiveBacks = map[string]requests.GiveBack{policy.TypeGitHubApp: func(ctx context.Context, name, value string) {
 				<-held
 				gaveBack = append(gaveBack, name)
 			}}

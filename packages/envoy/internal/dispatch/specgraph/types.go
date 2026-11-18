@@ -105,11 +105,38 @@ type Tree struct {
 }
 
 // Problem is one fault of the files: where it is, the id of its node ("-" for a block with no id
-// or a line in no block), its rule, and a Detail that begins with the rule.
+// or a line in no block), its rule, a Detail that begins with the rule, and, for a problem of
+// Parse, its Effect on the tree that Parse gives.
 type Problem struct {
 	Pos                Position
 	Node, Rule, Detail string
+	Effect             Effect
 }
+
+// Effect is what a problem of Parse does to the tree that Parse gives with it: LosesNode or
+// KeepsEachNode. Parse sets on each of its problems the Effect of its kind (problemKinds). The zero
+// value is no Effect, as on a problem of Validate or of Compare, and a caller that compares the
+// tree reads it as LosesNode, so no problem reads as one that keeps each node by default.
+type Effect uint8
+
+const (
+	// LosesNode is the Effect of a problem after which the tree can miss a node that the files hold,
+	// or hold a node in another text than the files write: a block whose opening line the grammar
+	// refuses or whose name is no block's, a block that a block before it swallows, a line outside a
+	// block, a line that a node leaves out, or the value of an attribute that a node drops. A
+	// comparison of that tree with an approved spec would not see that text, so a caller that
+	// compares refuses the files.
+	LosesNode Effect = iota + 1
+	// KeepsEachNode is the Effect of a problem of form after which the tree holds each node in the
+	// text that the files write: a heading that names code, a claim of more than one line or
+	// sentence, or a byte that Dispatch cannot store. A node keeps such a byte in its text, except a
+	// raw 0xA0 or 0x85 byte where its opening line's attributes take white space (after {, between
+	// two attributes or before }): the reader of the opening line takes it as white space, so the
+	// node drops it and is byte for byte the node of the same line without it. Right after a #id
+	// shortcut the id takes the byte instead, and the line opens no block, a problem that loses a
+	// node. The comparison of the files' own text decides.
+	KeepsEachNode
+)
 
 // StatementByID is the first statement the tree holds with id, and whether it holds one.
 func (t Tree) StatementByID(id string) (Statement, bool) {

@@ -58,7 +58,7 @@ func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testi
 			values ('legion-LEGION-208-implementer', 'legion', 'LEGION-208', 'LEGION-208', 'implementer', 3, 'ses_i', '',
 				'working', 0, 0, 0, 0, 3, 4, 4)`,
 		// A child of that tree whose own sub-architect claim an operator started: outside the
-		// rule, because no daemon start creates one.
+		// rule, because a child's architect is owed no entry, its starts carrying none.
 		`insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq, parent)
 			values ('LEGION-209', 'LEGION-208', 'LEGION', 'child', 'admitted', 3, 'in_progress', 'B', 1, 'LEGION-208')`,
 		`insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
@@ -168,7 +168,7 @@ func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testi
 		issue, why string
 		generation uint64
 	}{
-		{issue: "LEGION-209", generation: 3, why: "a child's own sub-architect claim is outside the rule, since no daemon start creates one"},
+		{issue: "LEGION-209", generation: 3, why: "a child's own sub-architect claim is outside the rule, since a child's architect is owed no entry"},
 		{issue: "LEGION-210", generation: 1, why: "the daemon holds no architect claim of that root, so it started nothing there"},
 	} {
 		var rows int64

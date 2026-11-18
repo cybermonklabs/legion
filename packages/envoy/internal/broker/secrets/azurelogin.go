@@ -43,7 +43,7 @@ func (m AzureLogin) Mint(_ context.Context, req MintRequest) (Minted, error) {
 	if m.SecretName == "" || req.Name != m.SecretName || !req.HumanTier {
 		return Minted{}, fmt.Errorf("%w: Azure login requires the configured human-tier secret", ErrMintRefused)
 	}
-	parsed, err := ParseValue(kindAzureLogin, req.Value)
+	parsed, err := ParseValue(typeAzureLogin, req.Value)
 	if err != nil {
 		return Minted{}, err
 	}

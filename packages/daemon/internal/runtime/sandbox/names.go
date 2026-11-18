@@ -90,6 +90,13 @@ const (
 	// write postgresql.auto.conf would have the launcher load it, outside every role namespace,
 	// at the server's next start.
 	TestPGDir = RolesDir + "/" + launcher.TestPGDirName
+	// WorkloadIdentityDir is where a microVM issue pod whose deployment names the metadata
+	// endpoint (runtime.kubernetes.sandbox.microvm.metadata) mounts, read-only, the projected
+	// ServiceAccount token its launcher exchanges for a Google one (workloadIdentityTokenVolume),
+	// at launcher.WorkloadIdentityTokenFile in it, the file the launcher reads under its roles
+	// directory. It is under RolesDir, which every role's namespace covers, so no role's process
+	// reads the token: a role that could would hold the pod's Google identity without the endpoint.
+	WorkloadIdentityDir = RolesDir + "/" + launcher.WorkloadIdentityDirName
 	// HomeMountsDir is where an issue pod's roles container mounts every volume that belongs at
 	// or under the image's home (homeMountsView), and where `legion launcher role-init` finds
 	// each to bind it back at its own path under the role's home overlay.
@@ -323,6 +330,13 @@ const (
 	labelIssue   = "legion.dev/issue"
 	labelRole    = "legion.dev/role"
 )
+
+// labelSandbox marks a microVM issue pod, with the value SandboxMicroVM; a gVisor pod carries
+// none. It is the label a NetworkPolicy selects a microVM pod by. It is on the pod template alone
+// (podTemplate), and so on the pod, never on the Sandbox or its Secrets: a Sandbox is kept across
+// the pods it runs, which may run in either sandbox, while the template is rebuilt for every pod
+// from the sandbox the launch that builds it decided.
+const labelSandbox = "legion.dev/sandbox"
 
 // issueVolume is the name a pod's disk is mounted under, an issue's and the controller's alike,
 // and the name of the one volume claim template the controller's Sandbox owns — an issue's owns

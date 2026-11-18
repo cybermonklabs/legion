@@ -1,0 +1,5 @@
+kind: Changed
+body: The advice an agent gets after it supersedes an approved document now says to tell the issue's architect rather than the tree's architect, because a child of a Legion tree now has an architect of its own.
+time: 2026-11-16T12:00:00.000000000Z
+custom:
+    Issue: pr4203
