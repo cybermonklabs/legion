@@ -158,15 +158,11 @@ func CheckRoleNamespaces(dir string, shim ...string) error {
 			return fmt.Errorf("role namespaces: make the probe's layout: %w", err)
 		}
 	}
-	// The test database's log, holding a line, and its mount point under the fixed root, an
-	// empty file as the image's is: the check runs whether or not the deployment serves a test
-	// database, so the bind every role of a pod that serves one makes is proven before that key
-	// is turned on.
-	for path, body := range map[string]string{
-		testPGLog(cfg.RolesDir):                     "the role-namespace check's own line\n",
-		filepath.Join(cfg.FixedRoot, RoleTestPGLog): "",
-	} {
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	// The test database's log and its mount point under the fixed root, an empty file as the
+	// image's is: the check runs whether or not the deployment serves a test database, so the
+	// bind every role of a pod that serves one makes is proven before that key is turned on.
+	for _, path := range []string{testPGLog(cfg.RolesDir), filepath.Join(cfg.FixedRoot, RoleTestPGLog)} {
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
 			return fmt.Errorf("role namespaces: make the probe's layout: %w", err)
 		}
 	}

@@ -95,7 +95,7 @@ func testPGLog(rolesDir string) string { return filepath.Join(testPGDir(rolesDir
 // where to read why.
 func testPGEnv(env []string, serves bool) []string {
 	if !serves {
-		return withoutEnv(withoutEnv(env, TestPGVariable), TestPGLogVariable)
+		return withoutEnv(env, TestPGVariable, TestPGLogVariable)
 	}
 	return mergeEnv(env, []string{
 		TestPGVariable + "=" + TestPGDSN,

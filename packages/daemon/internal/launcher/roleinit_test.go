@@ -362,7 +362,7 @@ func runStage(plan stagePlan) error {
 	// role starts, holding the server's first line, and its mount point under the fixed root,
 	// the empty file the worker image makes.
 	serverLog := testPGLog(rolesDir)
-	if err := os.MkdirAll(filepath.Dir(serverLog), 0o755); err != nil {
+	if err := os.MkdirAll(testPGDir(rolesDir), 0o755); err != nil {
 		return err
 	}
 	if err := os.WriteFile(serverLog, []byte("testpg-line-1\n"), 0o600); err != nil {
@@ -907,12 +907,14 @@ func content(path string) string {
 }
 
 // appended is what the role gets when it tries to add a line to the file at path: `refused` where
-// the open is denied, because the file is on a read-only mount (EROFS) or is not the role's to
-// write, `written` when the line went in, and the error's own text for anything else.
+// the open is denied because the file is on a read-only mount (EROFS), `written` when the line
+// went in, and the error's own text for anything else. EROFS alone is the bind's refusal: the
+// role's agent maps to the file's owner and the file is 0600, so a permission denial would come
+// from something other than the bind, and its text is reported rather than read as the bind's.
 func appended(path string) string {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
 	switch {
-	case errors.Is(err, syscall.EROFS), errors.Is(err, fs.ErrPermission):
+	case errors.Is(err, syscall.EROFS):
 		return "refused"
 	case err != nil:
 		return err.Error()

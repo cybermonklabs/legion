@@ -32,20 +32,14 @@ func stubTestPG(t *testing.T) (calls string) {
 	return calls
 }
 
-// toldDSN starts generation with env as its start command's own Env, answers what TestPGVariable
-// held in the child's environment, and stops the generation. A child that held no such variable
-// answers "unset": the shell's `${name-unset}` answers the value for a name set to anything,
-// including the empty string, and "unset" only for a name its environment does not hold.
-func (g *rig) toldDSN(generation uint64, env []string) string {
+// toldTestPG starts generation with env as its start command's own Env, answers what
+// TestPGVariable and TestPGLogVariable held in the child's environment, in that order and joined
+// by "|", and stops the generation. A variable the child did not hold answers "unset": the shell's
+// `${name-unset}` answers the value for a name set to anything, including the empty string, and
+// "unset" only for a name its environment does not hold.
+func (g *rig) toldTestPG(generation uint64, env []string) string {
 	g.t.Helper()
-	return g.told(generation, "${"+TestPGVariable+"-unset}", env, "")
-}
-
-// toldLog is toldDSN for TestPGLogVariable: the path the generation was told it reads the test
-// database's log at, or "unset".
-func (g *rig) toldLog(generation uint64, env []string) string {
-	g.t.Helper()
-	return g.told(generation, "${"+TestPGLogVariable+"-unset}", env, "")
+	return g.told(generation, "${"+TestPGVariable+"-unset}|${"+TestPGLogVariable+"-unset}", env, "")
 }
 
 // The launcher that serves the pod's test database names it to every generation it starts, over
@@ -60,37 +54,27 @@ func (g *rig) toldLog(generation uint64, env []string) string {
 // the log at, under the fixed root, over whatever its environment carried, and a launcher that
 // serves none tells its generation of no log.
 func TestEveryGenerationIsToldTheDSNItsOwnLauncherServes(t *testing.T) {
-	// What a daemon of another build sends: the database every image's server serves.
+	// What a daemon of another build sends: the database every image's server serves. No daemon
+	// sends the log's path; a value a start command carried all the same is replaced by this
+	// launcher's own, or dropped, as the DSN is.
 	const fromTheDaemon = "postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable"
+	const fromElsewhere = "/somewhere/else.log"
+	carried := []string{TestPGVariable + "=" + fromTheDaemon, TestPGLogVariable + "=" + fromElsewhere}
+	// The DSN this launcher serves and the path role-init binds the server's log at.
+	want := TestPGDSN + "|" + filepath.Join(roleFixedRoot, RoleTestPGLog)
 	serving := newSessionRig(t, Config{TestPostgres: true})
-	if got := serving.toldDSN(1, []string{TestPGVariable + "=" + fromTheDaemon}); got != TestPGDSN {
-		t.Errorf("a generation whose start command carried %s=%q ran with %q, want this launcher's own %q",
-			TestPGVariable, fromTheDaemon, got, TestPGDSN)
+	if got := serving.toldTestPG(1, carried); got != want {
+		t.Errorf("a generation whose start command carried %s=%q and %s=%q ran with %s|%s=%q, want this launcher's own %q",
+			TestPGVariable, fromTheDaemon, TestPGLogVariable, fromElsewhere, TestPGVariable, TestPGLogVariable, got, want)
 	}
-	if got := serving.toldDSN(2, nil); got != TestPGDSN {
-		t.Errorf("a generation whose start command named no DSN ran with %s=%q, want this launcher's own %q",
-			TestPGVariable, got, TestPGDSN)
+	if got := serving.toldTestPG(2, nil); got != want {
+		t.Errorf("a generation whose start command named neither ran with %s|%s=%q, want this launcher's own %q",
+			TestPGVariable, TestPGLogVariable, got, want)
 	}
 	none := newSessionRig(t, Config{})
-	if got := none.toldDSN(1, []string{TestPGVariable + "=" + fromTheDaemon}); got != "unset" {
-		t.Errorf("a generation of a launcher that serves no test database ran with %s=%q, want no such variable",
-			TestPGVariable, got)
-	}
-	// No daemon sends the log's path. A value a start command carried all the same is replaced
-	// by this launcher's own, or dropped, as the DSN is.
-	const fromElsewhere = "/somewhere/else.log"
-	wantLog := filepath.Join(roleFixedRoot, RoleTestPGLog)
-	if got := serving.toldLog(3, nil); got != wantLog {
-		t.Errorf("a generation of a launcher that serves the test database ran with %s=%q, want %q, where role-init binds the server's log",
-			TestPGLogVariable, got, wantLog)
-	}
-	if got := serving.toldLog(4, []string{TestPGLogVariable + "=" + fromElsewhere}); got != wantLog {
-		t.Errorf("a generation whose start command carried %s=%q ran with %q, want this launcher's own %q",
-			TestPGLogVariable, fromElsewhere, got, wantLog)
-	}
-	if got := none.toldLog(2, []string{TestPGLogVariable + "=" + fromElsewhere}); got != "unset" {
-		t.Errorf("a generation of a launcher that serves no test database ran with %s=%q, want no such variable",
-			TestPGLogVariable, got)
+	if got := none.toldTestPG(1, carried); got != "unset|unset" {
+		t.Errorf("a generation of a launcher that serves no test database ran with %s|%s=%q, want neither variable",
+			TestPGVariable, TestPGLogVariable, got)
 	}
 }
 

@@ -335,11 +335,13 @@ Then:
   A bound file can at worst be written to, and nothing that reads the cluster's configuration reads the log; it cannot be replaced or removed, since it is a mount point.
   The script and the server only ever append to the file or truncate it in place, so every role's bind keeps pointing at the file the server writes.
   The daemon's image probe (`legion probe-image --role-namespaces`) makes the same read-only bind of a file, so a runtime that refuses it fails the boot probe rather than every role's start.
-  The server logs every connection with `log_connections=all`: a `connection received` line with the client's port the moment the postmaster accepts it, then the authentication, the authorization, and the setup time with the fork's share of it.
+  The server logs every connection with `log_connections=all`: the backend the postmaster forks for a connect writes a `connection received` line with the client's port, then the authentication, the authorization, and the setup time with the fork's share of it.
   With `log_disconnections` it logs each session's end.
-  That costs about 350 bytes a connection (measured over 4,241 connections), for the pod's life:
+  That costs about 350 bytes a connection (measured over 4,241 connections, about half of them refused at `max_connections`), for the pod's life, and the launcher's own `ensure` every 15 seconds is one more connection each time, whose five lines measured 653 bytes, about 3.7 MB a day:
   the pod's ephemeral-storage limit bounds the log, as it bounds the data directory.
-  So a connect that failed with lines of its own failed in the server, and the log names why, while a connect with no `connection received` line never reached the postmaster.
+  So a connect that failed with lines of its own failed in the server, and the log names why;
+  a fork the postmaster could not make logs `could not fork new process for connection` instead, with no `connection received` line;
+  and a connect with neither line never reached the postmaster.
   The listen queue Postgres asks for is twice `max_connections`, 942, below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
   Measured on 2026-11-17 against a server whose queue was 40, a burst of 2,500 connects ended some in EOF, which libpq reports as `server closed the connection unexpectedly`, and left the rest waiting until the client's own timeout, while the postmaster stayed up and served the next connect at once;
   under that burst a fork took 20 ms at the median and 109 ms at the 95th percentile.
@@ -359,8 +361,10 @@ Then:
   A plain `drop database` makes the server end that autovacuum worker itself and needs no such right:
   the clause is there to end a connection a test left open, which is why the helpers write it.
   Without the grant `packages/daemon/internal/workflow`'s tests fail in the pod alone, at a different three each run, with `permission denied to terminate process` (SQLSTATE 42501), and pass in CI, whose login is a superuser.
-  It is granted `pg_monitor` too — `pg_read_all_settings`, `pg_read_all_stats` and `pg_stat_scan_tables` — so a role looking for why a connect failed reads every backend's row of `pg_stat_activity`, its siblings' included, and the server's settings;
-  it reads no file, since it does not hold `pg_read_server_files`, and runs no program.
+  It is granted `pg_monitor` too — `pg_read_all_settings`, `pg_read_all_stats` and `pg_stat_scan_tables`.
+  Every role connects as the same login, so each already sees its siblings' backends in full in `pg_stat_activity`;
+  what the grant adds is the detail of backends under other roles of the cluster, the superuser's connections from `ensure`'s steps and the login roles a suite creates and connects as, of background processes such as autovacuum, and the settings only a superuser reads.
+  It reads no file, since it does not hold `pg_read_server_files`, and runs no program.
 
 - `ensure` is idempotent and cheap when the server is up:
   it returns after one connection through the DSN itself (`psql … select 1`, with a connect timeout), and otherwise initialises and starts under `flock -o`.
@@ -537,7 +541,7 @@ each agent's model resolves, with a working key, as the task tool resolves a sub
 Before those probes the probe Sandbox's command adds `--role-namespaces /var/run/legion/role-probe`, a disk `emptyDir` (`role-probe`) the probe pod mounts there as an issue pod mounts `role-homes`:
 the probe first runs one role generation through `legion launcher role-init` as an issue pod's launcher runs every role, over a layout of its own in that directory and with its own `legion version` as the shim, and exits 1 with `legion probe-image: role namespaces: <why>` when the runtime or node refuses what that generation makes (`launcher.CheckRoleNamespaces`):
 user, mount, PID and IPC namespaces of its own;
-its gh, private and state directories bound at the fixed paths;
+its gh, private and state directories bound at the fixed paths, and a test database's log file bound read-only at its own fixed path, as every role of a pod that serves the pod's test database gets it;
 an overlay whose lower layer is an empty home directory on the probe's own `emptyDir`;
 its own `/tmp` and `/var/tmp`, memory filesystems at `/run/lock` and `/dev/shm`, a devpts at `/dev/pts` and an mqueue at `/dev/mqueue`;
 the covers and its own `/proc`; and `legion version` started as uid 1000 in a nested user namespace, which must exit 0.
@@ -4203,6 +4207,7 @@ The issue's `-boot` Secret holds the provisioning token, projected into `workspa
 The launcher starts each role generation through the hidden `legion launcher role-init`, in its own Linux user, mount, PID and IPC namespaces.
 Inside them `/var/run/legion/roles` is covered by an empty memory filesystem, and the role's own gh, private, state and agent-secrets directories are bound back at the fixed paths `/var/run/legion/gh`, `/var/run/legion/private`, `/var/run/legion/state` and `/var/run/legion/agent-secrets`;
 its launcher token is bound nowhere, so no role's process reads it, and no role sees a sibling's directories.
+The one file from under the covered directory a role reads is the pod's test server log, which role-init binds read-only at `/var/run/legion/testpg.log` where the pod serves a test database ([A test database in the pod](#a-test-database-in-the-pod) says why the file and not its directory).
 `/home/legion` is an overlay whose lower is the image's and whose upper and work directories are the role's on `role-homes` (a work directory of each generation's own), with every mount the container holds under `/var/run/legion/home` bound back on top at its own path under `/home/legion`, and `/var/run/legion/home` itself then covered.
 The mount carries `userxattr`, so gVisor writes a renamed directory's opaque mark in the `user.overlay.` attribute namespace, which the role's own upper layer keeps and the role may write (`homeOverlayOptions`, `roleinit_linux.go`);
 without it the mark goes to `trusted.overlay.opaque`, which a task in the role's nested user namespace may not write, and gVisor panics when that write is refused, which ends the pod's whole sandbox.

@@ -299,8 +299,9 @@ func legionVolumeNames(exchange bool) []string {
 // role's own volumes, which each role's namespace covers whole, HomeMountsDir is where an issue
 // pod's roles container mounts what belongs under the home (homeMountsView), which each role's
 // namespace covers too once it has bound each back, RoleProbeDir is the image probe's volume
-// for its role-namespace check, and TestPGLogFile is where each role's namespace binds the pod's
-// test server log, whether or not the deployment serves a test database.
+// for its role-namespace check, and TestPGLogFile is reserved whether or not the deployment
+// serves a test database: it is where each role's namespace binds the pod's test server log when
+// the pod serves one.
 func legionMountPaths(exchange bool) []string {
 	paths := []string{
 		TreeRoot, FeedDir, LauncherDir, LauncherPrivateDir, StateDir, xdgConfigHome, ProvidersDir,
