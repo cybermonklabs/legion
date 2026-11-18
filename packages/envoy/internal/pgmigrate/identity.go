@@ -13,7 +13,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Identity is what a runner records, beside a version, of the file it applied under that
@@ -68,27 +67,27 @@ func readReplaces(name string, version int, sql string) ([]Identity, error) {
 	}
 	var replaces []Identity
 	var problems []error
-	// Where each replaces-shaped comment the scanner hands out starts.
-	comments := map[int]bool{}
+	replacesCommentStarts := map[int]bool{}
 	_ = scanSQL(sql, func(token sqlToken) error {
 		text := sql[token.start:token.end]
 		if token.kind != sqlComment || !isReplacesComment(text) {
 			return nil
 		}
-		comments[token.start] = true
-		line := 1 + strings.Count(sql[:token.start], "\n")
+		replacesCommentStarts[token.start] = true
+		// The line is counted only for a refusal, which is the only place it is printed.
+		line := func() int { return 1 + strings.Count(sql[:token.start], "\n") }
 		match := replacesForm.FindStringSubmatch(text)
 		if match == nil || token.start > 0 && sql[token.start-1] != '\n' {
 			problems = append(problems, fmt.Errorf(
 				"migration %s line %d: %q is not a replaces line: write it alone on its line, as -- replaces: <version>_<name>.up.sql sha256:<64 lower-case hex digits>, naming the file and checksum the database records",
-				name, line, text))
+				name, line(), text))
 			return nil
 		}
 		replaced, err := parseVersion(strings.TrimSuffix(match[1], ".up.sql"))
 		if err != nil || replaced != version {
 			problems = append(problems, fmt.Errorf(
 				"migration %s line %d replaces %s, which is not a file of version %d: a runner judges what a database records under version %d against this file alone, so the line could never match; name the file the database records under that version",
-				name, line, match[1], version, version))
+				name, line(), match[1], version, version))
 			return nil
 		}
 		replaces = append(replaces, Identity{Name: match[1], Checksum: match[2]})
@@ -100,7 +99,7 @@ func readReplaces(name string, version int, sql string) ([]Identity, error) {
 			end = start + newline
 		}
 		text := strings.TrimLeft(sql[start:end], " \t\f\v")
-		if at := end - len(text); isReplacesComment(text) && !comments[at] {
+		if at := end - len(text); isReplacesComment(text) && !replacesCommentStarts[at] {
 			problems = append(problems, fmt.Errorf(
 				"migration %s line %d reads as a replaces line, but Postgres reads it as part of a string literal, a dollar-quoted body or a continued string, where it declares nothing: put it on a line of its own outside every literal",
 				name, line))
@@ -268,7 +267,7 @@ func refusal(row Recorded, migration *Migration) error {
 // or the connection of a non-transactional migration.
 type versionTable interface {
 	Querier
-	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	execer
 }
 
 // ReadRecorded reads every row of the version table table on q, in version order, resolving the
@@ -314,10 +313,11 @@ func ReadRecorded(ctx context.Context, q Querier, table string) ([]Recorded, err
 
 // ReconcileRecorded is a runner's judgment of its version table table before it applies anything,
 // on q, which holds the runner's advisory lock: it reads every row (ReadRecorded), judges them
-// against migrations (Reconcile) and, where it refuses none, writes each fix. It answers the
-// versions the table records, for a runner that applies its whole set in the same transaction,
-// and the fixes it wrote, for LogFixes once that transaction commits. A refusal writes nothing.
-func ReconcileRecorded(ctx context.Context, q versionTable, table string, migrations []Migration) (map[int]bool, []Fix, error) {
+// against migrations (Reconcile) and, where it refuses none, writes each fix. It answers the rows
+// the table recorded before the fixes, for a runner that applies its whole set in the same
+// transaction, and the fixes it wrote, for LogFixes once that transaction commits. A refusal
+// writes nothing.
+func ReconcileRecorded(ctx context.Context, q versionTable, table string, migrations []Migration) ([]Recorded, []Fix, error) {
 	recorded, err := ReadRecorded(ctx, q, table)
 	if err != nil {
 		return nil, nil, err
@@ -329,11 +329,7 @@ func ReconcileRecorded(ctx context.Context, q versionTable, table string, migrat
 	if err := writeFixes(ctx, q, table, fixes); err != nil {
 		return nil, nil, err
 	}
-	versions := make(map[int]bool, len(recorded))
-	for _, row := range recorded {
-		versions[row.Version] = true
-	}
-	return versions, fixes, nil
+	return recorded, fixes, nil
 }
 
 // RecheckRecorded is a runner's judgment, on q, of its version table before it applies migration,
@@ -365,9 +361,12 @@ func RecheckRecorded(ctx context.Context, q versionTable, table string, migratio
 
 // writeFixes records each fix's identity in its row of table.
 func writeFixes(ctx context.Context, q versionTable, table string, fixes []Fix) error {
+	if len(fixes) == 0 {
+		return nil
+	}
+	update := "update " + pgx.Identifier{table}.Sanitize() + " set name = $2, checksum = $3 where version = $1::bigint"
 	for _, fix := range fixes {
-		if _, err := q.Exec(ctx, "update "+pgx.Identifier{table}.Sanitize()+" set name = $2, checksum = $3 where version = $1::bigint",
-			fix.Version, fix.To.Name, fix.To.Checksum); err != nil {
+		if _, err := q.Exec(ctx, update, fix.Version, fix.To.Name, fix.To.Checksum); err != nil {
 			return fmt.Errorf("record the identity of version %d in %s: %w", fix.Version, table, err)
 		}
 	}

@@ -1616,8 +1616,9 @@ What you do depends on how the database came to hold another file:
   a line that begins `-- replaces:` and is written any other way, or that sits inside a quoted
   string or a function body, stops every start, naming the file and the line.
 
-The check that a start makes reads what the database records without changing it, so you can take
-it before a deploy from a checkout of the release you mean to ship, in `packages/envoy`:
+A start fills and moves rows as it judges them. The command below makes the same judgment without
+changing the database, so you can take it before a deploy from a checkout of the release you mean
+to ship, in `packages/envoy`:
 
 ```sh
 DATABASE_URL='<the broker database URL>' go run ./internal/pgmigrate/cmd/versions broker

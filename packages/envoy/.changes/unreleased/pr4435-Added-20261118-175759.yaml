@@ -1,9 +1,11 @@
 kind: Added
 body: |-
-    Dispatch and the secrets broker refuse to start, and apply no migration, when their database
-    records a migration's version under another file's name or another text than the release's
-    own file of that version: a database that ran another branch's or an earlier commit's
-    migration was booted before without that migration applied, and said nothing. The refusal
+    Dispatch and the secrets broker refuse to start, before they apply any migration, when their
+    database records a migration's version under another file's name or another text than the
+    release's own file of that version: a database that ran another branch's or an earlier
+    commit's migration was booted before without that migration applied, and said nothing.
+    Dispatch judges again before each migration it applies, and stops there, keeping the ones it
+    applied, when another server recorded such a version meanwhile. The refusal
     names the version, what the database records and what the release's file is, and both ways
     out: reset a database that ran another branch's or commit's migration (drop it, create it
     empty and let the server migrate it), or, for an edit or rename made on purpose, add the

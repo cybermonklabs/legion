@@ -485,9 +485,12 @@ every start, before it applies anything, it compares each recorded migration wit
 same version in the release it runs. A migration recorded before this check, with no name, takes
 the file's name and checksum and is never refused, so the first start of the release that brings
 the check refuses nothing. When the database records another file, or another text, under a
-version, the start fails and applies nothing, and the log names the version, what the database
-records and what the release's file is. A database that ran another branch's or an earlier
-commit's migration, such as a test or preview database, is reset: drop it, create it empty, and
+version, the start fails before it applies any migration, and the log names the version, what the
+database records and what the release's file is. Dispatch judges every recorded migration again
+before each one it applies, so a start that finds such a row only then, because another server
+recorded it meanwhile, stops before that migration and keeps the ones it applied. A database that
+ran another branch's or an earlier commit's migration, such as a test or preview database, is
+reset: drop it, create it empty, and
 start Dispatch, which migrates it from the first file. A migration edited or renamed on purpose
 takes the `-- replaces: <name> sha256:<hex>` line the refusal gives, and the next start records
 the new file. To see what a start would do, without changing the database, run

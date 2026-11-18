@@ -342,7 +342,6 @@ func closeBounded(ctx context.Context, conn *pgx.Conn) {
 // schema_migrations and information_schema.columns resolve as the version check and the census
 // resolve them, and lock_timeout at LockTimeout.
 func (s *Store) prepareVersionTable(ctx context.Context, migrations []pgmigrate.Migration) error {
-	// Only a set holding a version past an integer widens the column.
 	widen := slices.ContainsFunc(migrations, func(m pgmigrate.Migration) bool { return m.Version > math.MaxInt32 })
 	var fixes []pgmigrate.Fix
 	err := s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {

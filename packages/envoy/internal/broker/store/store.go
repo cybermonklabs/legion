@@ -255,11 +255,15 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 		}
 		// The advisory lock is held to the commit, so what the table records now is what it
 		// records for every migration below.
-		applied, reconciled, err := pgmigrate.ReconcileRecorded(ctx, tx, versionTable, migrations)
+		recorded, reconciled, err := pgmigrate.ReconcileRecorded(ctx, tx, versionTable, migrations)
 		if err != nil {
 			return fmt.Errorf("migrations refused, none applied: %w", err)
 		}
 		fixes = reconciled
+		applied := make(map[int]bool, len(recorded))
+		for _, row := range recorded {
+			applied[row.Version] = true
+		}
 		for _, migration := range migrations {
 			if applied[migration.Version] {
 				continue

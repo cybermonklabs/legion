@@ -1587,7 +1587,7 @@ What the operator does:
   The line names a `<version>_<name>.up.sql` of the file's own version and 64 lower-case hex digits, and the loader refuses the whole set, naming the file and line, for a line that begins `-- replaces:` and is written any other way, and for one that Postgres reads as part of a string literal, a dollar-quoted body or a continued string, where it would declare nothing.
   A file may carry several, one for each identity a database may record.
 
-Every row production holds was written before the runners recorded identities, so its first boot of this runner fills each from the file the release ships and refuses none.
+Every row a runner before this one wrote has a null name, so a database's first boot of this runner fills each from the file the release ships and refuses none.
 A migration edited in place that reaches a database before this runner does is filled with its edited identity there; one edited after this runner's first boot needs its replaces line.
 `DATABASE_URL=<url> go run ./internal/pgmigrate/cmd/versions dispatch`, from `packages/envoy`, reads in a read-only transaction what the next boot would do with each row, and exits 1 when a recorded version has no file, a row would be refused, or the table records nothing on the connection's `search_path`, which it reports as `NOTHING CHECKED` rather than as a clean check (`pgmigrate.CheckVersions`); a `search_path` that names no schema is an error, exit 2.
 
