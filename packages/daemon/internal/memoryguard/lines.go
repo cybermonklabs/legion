@@ -39,13 +39,15 @@ import (
 // other kill the reading it is sent at. The line's reading is always the one the kill is sent at.
 // Its rule and sizes, which come before the executable so that the name stays last, say why that
 // process was first (INFRA-3531 R3 of spec version 31): rule is the tier of the order of ends that
-// put it first, and sizes where the sizes the guard chose it by came from. Its less_parent, after
-// sizes, is how much of its size its rank did not count (INFRA-3531 R1 of spec version 33): for a
-// fork that runs its parent's executable with its parent's arguments, its parent being one the
-// guard has read in this stay, its parent's size at the guard's latest read of the parent, or its
-// own size where that is less, so that size less less_parent is the size it ranked by where a tier
-// ranks by size (candidate.lessParent); 0 for every other process and for a process the guest
-// kernel killed. The line's size is always the process's own.
+// put it first, or the urgent rule for a process ended beside the first at a reading at or above
+// the urgent share (ruleUrgent, spec version 39), and sizes where the sizes the guard chose it by
+// came from. Its less_parent, after sizes, is how much of its size its rank did not count
+// (INFRA-3531 R1 of spec version 33): for a fork that runs its parent's executable with its
+// parent's arguments, its parent being one the guard has read in this stay, its parent's size at
+// the guard's latest read of the parent, or its own size where that is less, so that size less
+// less_parent is the size it ranked by where a tier ranks by size (candidate.lessParent); 0 for
+// every other process and for a process the guest kernel killed. The line's size is always the
+// process's own.
 //
 // Its new_read, after less_parent, says what the reads at the reading at the mark read of the
 // processes new to the stay, those the band read once at its last reading and those started since

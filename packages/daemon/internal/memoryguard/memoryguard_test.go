@@ -1382,8 +1382,8 @@ func TestMemoryGuardEndsAtTheFirstReadingAtTheMarkOnTheBandsReadsBeforeItReadsAn
 		key          procKey
 		atKill, read uint64
 	}{{procKey{pid: 300, start: 3000}, 400 * mib, 460 * mib}, {procKey{pid: 301, start: 3010}, 600 * mib, 600 * mib}} {
-		if got, ok := h.g.atKill[want.key]; !ok || got.size != want.atKill || !got.seen.Equal(now) {
-			t.Fatalf("the size as of the kill of pid %d is %+v (kept %t), want %d, the band's read the decision ended on", want.key.pid, got, ok, want.atKill)
+		if got, ok := h.g.atKill[want.key]; !ok || got != want.atKill {
+			t.Fatalf("the size as of the kill of pid %d is %d (kept %t), want %d, the band's read the decision ended on", want.key.pid, got, ok, want.atKill)
 		}
 		if reads := h.g.sizes[want.key].window; len(reads) == 0 || reads[len(reads)-1] != (sizeRead{at: now, size: want.read}) {
 			t.Fatalf("the reads of pid %d are %+v, want the newest %d at the reading at the mark", want.key.pid, reads, want.read)
@@ -2158,11 +2158,9 @@ func TestMemoryGuardKeepsBandStaysAllocatingNothingForAProcessReadBefore(t *test
 		cs[i] = candidate{Process: &Process{PID: 1000 + i, StartTime: uint64(i)}, size: uint64(i) * mib}
 		table.byPID[cs[i].PID] = cs[i].Process
 	}
-	now := testStart
-	h.g.keepStays(now, cs, table)
+	h.g.keepStays(cs, table)
 	allocs := testing.AllocsPerRun(100, func() {
-		now = now.Add(Defaults().Interval)
-		h.g.keepStays(now, cs, table)
+		h.g.keepStays(cs, table)
 	})
 	if allocs != 0 {
 		t.Fatalf("a reading's band stays allocate %v times, want none", allocs)
@@ -2171,8 +2169,8 @@ func TestMemoryGuardKeepsBandStaysAllocatingNothingForAProcessReadBefore(t *test
 		t.Fatalf("the guard keeps the stays of %d processes, want %d", len(h.g.stays), len(cs))
 	}
 	for key, stay := range h.g.stays {
-		if stay.least != uint64(key.start)*mib || stay.grew || !stay.seen.Equal(now) {
-			t.Fatalf("the stay of pid %d is %+v, want its one size, no growth and this reading", key.pid, stay)
+		if stay.least != uint64(key.start)*mib || stay.grew {
+			t.Fatalf("the stay of pid %d is %+v, want its one size and no growth", key.pid, stay)
 		}
 	}
 }
@@ -2735,6 +2733,41 @@ func TestMemoryGuardGoesOnWithTheOtherKillsOfAnUrgentReadingWhereOneFails(t *tes
 				t.Fatalf("the kill-failed lines are %q, want one starting %q", failed, want)
 			}
 		})
+	}
+}
+
+// Every kill of an urgent reading is sent before the guard reads the counter, which costs about
+// 18 ms under gVisor, and before any of their ended lines and reports, so a grower's kill waits
+// behind nothing it needs. The counter here moves by 1 MiB at each kill, and the reports, which
+// carry the counter read once for the kills of a reading, carry its value after the last of the
+// three; the lines and reports come in the order of the kills, with their sequences.
+func TestMemoryGuardSendsEveryKillOfAnUrgentReadingBeforeItReadsTheCounter(t *testing.T) {
+	const counter = 3 * gib
+	sent := 0
+	pod, h, grow, _ := urgentBand(t, func(pod *fakePod) func(int) bool {
+		exit := exitFreeing(pod, 0)
+		return func(pid int) bool {
+			sent++
+			pod.setCounter(counter + uint64(sent)*mib)
+			return exit(pid)
+		}
+	})
+	grow()
+	pod.setAnon(3800 * mib)
+	h.tick()
+	h.requireKilled(302, 301, 300)
+	kills := h.killed()
+	for i, k := range kills {
+		if k.CounterBytes != counter+3*mib {
+			t.Fatalf("the report of pid %d carries the counter %d, want %d, read once every kill of the reading was sent", k.PID, k.CounterBytes, counter+3*mib)
+		}
+		if k.Sequence != uint64(i+1) {
+			t.Fatalf("the report of pid %d has the sequence %d, want %d, in the order of the kills", k.PID, k.Sequence, i+1)
+		}
+	}
+	want := []endedChoice{{302, "grew", "reread", 0}, {301, "urgent", "reread", 0}, {300, "urgent", "reread", 0}}
+	if got := endedChoices(h); !slices.Equal(got, want) {
+		t.Fatalf("the guard's ended lines are %+v, want %+v in the order of the kills", got, want)
 	}
 }
 
@@ -4752,8 +4785,8 @@ func TestMemoryGuardKeepsTheSizeAsOfTheStaysFirstKillOfAHeldProcessItCannotReadA
 	h.tickAfter(apart)
 	h.requireKilled(300, 302)
 	key := procKey{pid: 301, start: 3010}
-	if got, kept := h.g.atFirstKill[key]; !kept || got.size != 300*mib {
-		t.Fatalf("pid 301's size as of the stay's first kill is %+v (kept %t), want %d", got, kept, 300*mib)
+	if got, kept := h.g.atFirstKill[key]; !kept || got != 300*mib {
+		t.Fatalf("pid 301's size as of the stay's first kill is %d (kept %t), want %d", got, kept, 300*mib)
 	}
 }
 
@@ -5081,11 +5114,9 @@ func TestMemoryGuardMeasuresGrowthSinceAKillAllocatingNothingForAProcessReadBefo
 		cs[i] = candidate{Process: &Process{PID: 1000 + i, StartTime: uint64(i)}, size: uint64(i) * mib}
 		table.byPID[cs[i].PID] = cs[i].Process
 	}
-	now := testStart
-	h.g.keepKillSizes(now, cs, nil)
+	h.g.keepKillSizes(cs, nil)
 	allocs := testing.AllocsPerRun(100, func() {
-		now = now.Add(Defaults().Interval)
-		if h.g.grownSinceKill(now, cs, table) {
+		if h.g.grownSinceKill(cs, table) {
 			t.Fatal("a process whose size has not changed since the kill counts as grown")
 		}
 	})

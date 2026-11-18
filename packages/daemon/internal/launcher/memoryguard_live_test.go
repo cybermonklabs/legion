@@ -87,8 +87,9 @@ const (
 	controllerLiveMappedBound = 30 * time.Minute
 	// controllerLivePoolBound bounds the wait for the exit of every grower of the pool and of each
 	// of the tester's other probes of six growers, and of the probe itself (awaitGrowers): their
-	// growers reach the mark in a few seconds, and the guard ends one at a reading, or after its
-	// wait of 1 second, until none is left.
+	// growers reach the mark in a few seconds, and the guard ends one at a reading, or every one
+	// that grew over its window at a reading at or above the urgent share, or after its wait of 1
+	// second, until none is left.
 	controllerLivePoolBound = 5 * time.Minute
 	// controllerLivePoolGrowers is how many growers the pool starts at once: six of `grow`'s rise
 	// about 1.5 GiB a second together, the fastest rise INFRA-3531's tester measured.
@@ -780,9 +781,10 @@ func (r *controllerLiveRun) noteLine(line string) {
 }
 
 // controllerLiveEnded is what the guard's ended line says of why it ended a process: rule, the
-// tier of its order of ends that put the process first (grew, new, grew-since-kill or largest),
-// and sizes, where the sizes it chose the process by came from (band, reread, search or reading),
-// as memoryguard's lines.go names them.
+// tier of its order of ends that put the process first (grew, new, grew-since-kill or largest), or
+// urgent for a process ended beside the first at a reading at or above the urgent share, and
+// sizes, where the sizes it chose the process by came from (band, reread, search or reading), as
+// memoryguard's lines.go names them.
 type controllerLiveEnded struct{ rule, sizes string }
 
 // controllerLiveEndedOf is the pid, the rule and the sizes the guard's ended line names, and false
