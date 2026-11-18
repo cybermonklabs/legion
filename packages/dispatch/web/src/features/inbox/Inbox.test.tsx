@@ -1302,7 +1302,8 @@ test("after the reader's own answer fails, an answer from elsewhere still holds 
 
     const kept = await screen.findByTestId("ask-ask-b");
     expect(kept.closest("[data-inbox-row]")).toBe(row);
-    expect(within(kept).getByText("YAML.")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(kept).findByText("YAML.")).toBeTruthy();
   } finally {
     view.unmount();
     answerAsk.mockRestore();

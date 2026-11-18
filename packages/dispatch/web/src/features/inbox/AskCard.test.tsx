@@ -356,11 +356,13 @@ function askReply(id: string, createdAt: string): Comment {
 /** An answered ask with two replies, unread for alice on CORE-1, rendered with time and the
  *  screen in the test's hands: the replies follow the first answer, or precede `answer` when one
  *  is given. */
-function renderUnreadAsk(props: {
+async function renderUnreadAsk(props: {
   markRead: boolean;
   thread: "inline" | "collapsed";
   answer?: AskAnswer;
 }) {
+  // A reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads in real time.
+  await warmMarkdownRenderer();
   jest.useFakeTimers();
   const screen = installIntersectionObserver();
   const mark = answerThreadReads().mockResolvedValue(undefined);
@@ -403,7 +405,7 @@ function renderUnreadAsk(props: {
 
 for (const shape of ["inline", "collapsed"] as const) {
   test(`with markRead, the ${shape} thread is marked read once its newest reply is on screen`, async () => {
-    const card = renderUnreadAsk({ markRead: true, thread: shape });
+    const card = await renderUnreadAsk({ markRead: true, thread: shape });
     try {
       const newest = (await card.view.findByText("Reply reply-2")).closest("li");
       if (newest === null) throw new Error("expected the newest reply's item");
@@ -418,7 +420,7 @@ for (const shape of ["inline", "collapsed"] as const) {
   });
 
   test(`without markRead, the ${shape} thread watches nothing`, async () => {
-    const card = renderUnreadAsk({ markRead: false, thread: shape });
+    const card = await renderUnreadAsk({ markRead: false, thread: shape });
     try {
       await card.view.findByText("Reply reply-2");
       expect(card.screen.observed()).toEqual([]);
@@ -438,7 +440,7 @@ test("an answer given after every reply is what the mark watches and reads throu
     text: "Wait for the fix.",
     user: "bob@example.com",
   };
-  const card = renderUnreadAsk({ answer, markRead: true, thread: "collapsed" });
+  const card = await renderUnreadAsk({ answer, markRead: true, thread: "collapsed" });
   try {
     const record = await card.view.findByTestId("ask-ask-1");
     await card.view.findByText("Reply reply-2");

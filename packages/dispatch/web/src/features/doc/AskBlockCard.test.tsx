@@ -90,6 +90,13 @@ const ask: Ask = {
   urgency: "high",
 };
 
+/** `ask` with `overrides`, asked three minutes before this moment. A row that reads the card's
+ *  `3 minutes ago` builds its ask here as it runs: the card reads the clock as it draws, and
+ *  `ask` is dated as the file loaded, which random order can put a minute before the row. */
+function askedThreeMinutesAgo(overrides: Partial<Ask> = {}): Ask {
+  return { ...ask, created_at: new Date(Date.now() - 3 * 60_000).toISOString(), ...overrides };
+}
+
 const answeredAsk: Ask = {
   ...ask,
   answer: {
@@ -240,7 +247,7 @@ test.each([
   ["med", "Medium"],
   ["low", "Low"],
 ] as const)("an open %s decision names its urgency in the block header and hosts the shared ask card, which names who asked", async (urgency, label) => {
-  const card = renderCard({ ask: { ...ask, urgency }, node: askNode({ urgency }) });
+  const card = renderCard({ ask: askedThreeMinutesAgo({ urgency }), node: askNode({ urgency }) });
   try {
     const pill = card.section.querySelector("[data-dispatch-ask-pill]");
     expect(pill?.textContent).toBe(label);
@@ -720,7 +727,7 @@ test("an answered decision hosts the shared record: who answered and when, the c
 
 test("a hosted block whose ask has no recorded author says when it was asked, without a dangling separator", async () => {
   const card = renderCard({
-    ask: { ...ask, author: { id: "", kind: "user" } },
+    ask: askedThreeMinutesAgo({ author: { id: "", kind: "user" } }),
     node: askNode({ urgency: "high" }),
   });
   try {
@@ -778,7 +785,11 @@ test("a resolved decision hosts the shared resolution record and no composer", (
 // card, so nothing to answer or ask back, and the header carries what the card would have said.
 
 test("a read-only surface shows an open decision's options with nothing to answer or ask back, and names who asked", () => {
-  const card = renderCard({ node: askNode({ urgency: "med" }), readOnly: true });
+  const card = renderCard({
+    ask: askedThreeMinutesAgo(),
+    node: askNode({ urgency: "med" }),
+    readOnly: true,
+  });
   try {
     expect(card.section.querySelector("form")).toBeNull();
     expect(card.footer.queryByRole("button", { name: "Ask back" })).not.toBeInTheDocument();
@@ -795,7 +806,7 @@ test("a read-only surface shows an open decision's options with nothing to answe
 
 test("a read-only block whose ask has no recorded author still says when it was asked", () => {
   const card = renderCard({
-    ask: { ...ask, author: { id: "", kind: "user" } },
+    ask: askedThreeMinutesAgo({ author: { id: "", kind: "user" } }),
     node: askNode({ urgency: "med" }),
     readOnly: true,
   });
