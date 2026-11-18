@@ -37,9 +37,13 @@ import type {
 import { AuthGate } from "../../app";
 import type { BroadcastRequest } from "./broadcast-plan";
 import { messageDeliveryFields } from "./delivery-fixture";
-// The live view is a lazy route of the app. Its module's first compile is not what a wait is
-// for, so the module is loaded here, with the test file, and no wait measures that load.
+// The live view and the broadcast page are lazy routes of the app, and the margin a lazy part of
+// its shell (`MarginColumn.tsx`). No row here reads the margin or a broadcast page, and a load
+// that a row starts and ends before lands in a later row, where React's report of it is outside
+// `act`. So each module is loaded here, with the test file, and no row starts or waits for it.
 import "../agent-view/AgentConversationPage";
+import "../margin/Margin";
+import "./BroadcastPage";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
 import type { AgentPart } from "../refs/AgentName";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -2080,7 +2084,8 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
       name: "Conversation with Planner",
     });
     const replies = await within(conversation).findByRole("list", { name: "Replies" });
-    const answer = within(replies).getByText("Yes, it can.").closest("li");
+    // The reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    const answer = (await within(replies).findByText("Yes, it can.")).closest("li");
     if (answer === null) throw new Error("answer turn missing");
     expect(within(planner).getByRole("button", { name: "Choose issue" })).toBeTruthy();
 
