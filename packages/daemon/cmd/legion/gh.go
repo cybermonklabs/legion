@@ -78,9 +78,14 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // (refuseLegionGhAsRealGh). One that leads back only when it runs, such as a machine's own gh
 // shim that hands every call to the next gh on PATH, which is the wrapper, is caught when it
 // does: every real gh this command runs, for a help read or for the call itself, is given
-// ghRealGhEnv, and a `legion gh` started under it refuses, exit 2, so the help read that reached
-// it fails and nothing runs again. Before this, each such run read the real gh's help by
-// running it, which ran this command, which read the help again, without end.
+// leakguard.RunByRealGhVar, and a `legion gh` started under it refuses, exit 2, so the help read
+// that reached it fails and nothing runs again. Before this, each such run read the real gh's
+// help by running it, which ran this command, which read the help again, without end. The leak
+// guard blanks the variable for every child it runs (leakguard's Guard.env says why): a push
+// a real gh makes reaches the guard with it set, through git's pre-push hook, and the guard's
+// visibility reads, which come back through this command, are the guard's and not that gh's.
+// Each such read runs its own real gh under the variable again, so a real gh that leads back is
+// still refused one start later, with or without a caller's GH_TOKEN.
 func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status int) {
 	env := processEnvironment()
 	repo, commandPath, visibilitySource := "", "", ""
@@ -111,8 +116,11 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		return answerVisibilityRead(ctx, read, stdout, stderr)
 	}
 	// Past the two answers above, gh's own git credential helper and the shared check's read,
-	// nothing a real gh runs is a `legion gh`: one started under ghRealGhEnv is a loop.
-	if real := env[ghRealGhEnv]; real != "" {
+	// nothing a real gh runs is a `legion gh`: one started under the variable is a loop. The
+	// leak guard's own visibility reads, which a real gh's push reaches through git's pre-push
+	// hook, do not stop here: the guard blanks the variable for every child it runs, and the
+	// real gh each read runs below is given it again.
+	if real := env[leakguard.RunByRealGhVar]; real != "" {
 		fmt.Fprintf(stderr, "legion gh: the real gh %s ran `legion gh` again, so it is no real gh but a wrapper or shim that leads back to this one; set LEGION_GH_PATH to the real gh's install path\n", real)
 		return 2
 	}
@@ -243,7 +251,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if target.dir != "" {
 		dir = target.dir
 	}
-	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, "GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1", ghRealGhEnv: gh}
+	set := map[string]string{"GH_CONFIG_DIR": dir, "GH_PATH": wrapper, "GH_NO_UPDATE_NOTIFIER": "1", "GH_PROMPT_DISABLED": "1", leakguard.RunByRealGhVar: gh}
 	// A call no private-name pass read runs no program the environment names: such a program
 	// runs with this call's token directory and could write what that pass never read. Its pager
 	// is cat, which gh reads as no pager (GH_PAGER outranks gh's config `pager` and PAGER; gh
@@ -1023,12 +1031,6 @@ func (p *ghArgs) set(name string, flag ghFlag, value, arg string, api bool) erro
 	return nil
 }
 
-// ghRealGhEnv is the variable every real gh `legion gh` runs is given, naming that gh: a `legion
-// gh` started under it is one the real gh led back to, and refuses (runGh). gh's own git
-// credential helper, `legion gh auth git-credential`, and the shared check's read are answered
-// before that refusal, since a real gh's git runs the one and the guard the other.
-const ghRealGhEnv = "LEGION_GH_RUN_BY_REAL_GH"
-
 // refuseLegionGhAsRealGh refuses a LEGION_GH_PATH that is `legion gh` itself: the wrapper first
 // on PATH, or another script of the wrapper's form (isGhWrapper). Run as the real gh, either would
 // run this command again for every help read and every call. A LEGION_GH_PATH it cannot read is
@@ -1059,13 +1061,13 @@ var ghHelpTimeout = 30 * time.Second
 // gh's own), refused when gh answers it with an error. gh runs in a process group of its own,
 // which a read that outlives ghHelpTimeout stops whole (procgroup.Configure): a timeout that
 // killed gh alone would leave whatever gh started running, reparented and unwaited for. It runs
-// under ghRealGhEnv, so a gh that leads back to `legion gh` is refused there.
+// under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is refused there.
 func readGhHelp(gh string, path []string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ghHelpTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gh, append(slices.Clone(path), "--help")...)
 	killed := procgroup.Configure(cmd)
-	cmd.Env = append(os.Environ(), ghRealGhEnv+"="+gh)
+	cmd.Env = append(os.Environ(), leakguard.RunByRealGhVar+"="+gh)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {

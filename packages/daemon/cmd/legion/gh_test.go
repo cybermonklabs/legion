@@ -1016,11 +1016,19 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 // leads back to `legion gh` only when it runs — a machine's own gh shim that hands every call to
 // the next gh on PATH, which is the wrapper, as the operator's knives shim did — reaches `legion
 // gh` once more, under the variable every real gh this command runs is given
-// (LEGION_GH_RUN_BY_REAL_GH), and that run refuses, exit 2, so the help read fails and nothing
+// (leakguard.RunByRealGhVar), and that run refuses, exit 2, so the help read fails and nothing
 // runs again. gh's own git credential helper still answers under that variable, and the real gh
 // a call runs is given it. The `legion` the wrappers here run counts its starts and stops a chain
 // at five, so code that loops fails this test rather than running away; before the refusals, each
 // case below started `legion gh` five times.
+//
+// The bound holds under a caller's GH_TOKEN, with which the guard's own visibility reads skip the
+// help reads (ghVisibilityRead): the read's real gh, the shim, leads back once and that run
+// refuses. It holds through the leak guard too, which blanks the variable for its children: a push
+// a real gh makes runs `legion leak-check pre-push` under the variable, the guard's read through
+// the wrapper starts `legion gh` once, and the shim that read runs, for its help read or for the
+// read itself under the token, leads back once more and is refused there. A refusal that let the
+// guard's reads through under the variable loops under the token until the cap stops it.
 func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 	root, defaultDir := gitCredentialBundle(t)
 	starts := filepath.Join(t.TempDir(), "starts")
@@ -1076,11 +1084,51 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 		})
 	}
 
+	pushDir, pushLine := aPushFixture(t, "a commit of nothing in particular")
+	const slug = "acme/widgets"
+	for _, tc := range []struct {
+		name  string
+		token bool
+		// args is the `legion gh` call the case makes, and nil for the pre-push hook of a push
+		// to slug that the shim, as the real gh, makes.
+		args   []string
+		starts int
+	}{
+		{"the guard's REST read under GH_TOKEN", true, leakguard.VisibilityReadWithHeadersArgs(slug), 1},
+		{"the guard's GraphQL read under GH_TOKEN", true, leakguard.VisibilityGraphQLArgs(slug), 1},
+		{"the pre-push hook of a push the real gh makes", false, nil, 2},
+		{"the pre-push hook of a push the real gh makes under GH_TOKEN", true, nil, 2},
+	} {
+		t.Run("a shim that runs the wrapper: "+tc.name, func(t *testing.T) {
+			if err := os.Remove(starts); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			env := envFor(shim)
+			if tc.token {
+				env["GH_TOKEN"] = "ghs_caller"
+			}
+			var code int
+			var stdout, stderr string
+			if tc.args != nil {
+				env[leakguard.VisibilityReadVar] = slug
+				code, stdout, stderr = legionGh(t, env, tc.args...)
+			} else {
+				env[leakguard.RunByRealGhVar] = shim
+				code, stderr = legionLeakCheckPrePush(t, pushDir, env, pushLine, "https://github.com/"+slug+".git")
+			}
+			want := "the real gh " + shim + " ran `legion gh` again"
+			if got := startsOf(t); code != 2 || stdout != "" || !strings.Contains(stderr, want) || got != tc.starts {
+				t.Errorf("%s with LEGION_GH_PATH %s = exit %d, stdout %q, stderr %q, and `legion gh` started %d more times; want exit 2 containing %q and %d more starts",
+					tc.name, shim, code, stdout, stderr, got, want, tc.starts)
+			}
+		})
+	}
+
 	// gh's own git asks the wrapper under the variable, and the wrapper still answers.
 	marked := envFor(shim)
-	marked["LEGION_GH_RUN_BY_REAL_GH"] = shim
+	marked[leakguard.RunByRealGhVar] = shim
 	if code, stdout, stderr := legionGhIn(t, t.TempDir(), marked, "protocol=https\nhost=github.com\npath=acme/widgets.git\n\n", "auth", "git-credential", "get"); code != 0 || stdout != "username=x-access-token\npassword=ghs_acme_write\n" {
-		t.Errorf("legion gh auth git-credential get under LEGION_GH_RUN_BY_REAL_GH = exit %d, stdout %q, stderr %q; want acme's token", code, stdout, stderr)
+		t.Errorf("legion gh auth git-credential get under %s = exit %d, stdout %q, stderr %q; want acme's token", leakguard.RunByRealGhVar, code, stdout, stderr)
 	}
 
 	// The real gh a call runs is given the variable, naming itself.
@@ -1089,7 +1137,7 @@ func TestLegionGhRefusesARealGhThatRunsLegionGhAgain(t *testing.T) {
 		t.Fatal(err)
 	}
 	stub := filepath.Join(t.TempDir(), "gh")
-	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf 'run by %s\\n' \"$LEGION_GH_RUN_BY_REAL_GH\"\n"), 0o700); err != nil {
+	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"printf 'run by %s\\n' \"$"+leakguard.RunByRealGhVar+"\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if code, stdout, stderr := legionGh(t, envFor(stub), "pr", "list"); code != 0 || stdout != "run by "+stub+"\n" {
@@ -1408,6 +1456,52 @@ func TestLegionGhChecksTheCallWithTheLeakGuard(t *testing.T) {
 			t.Errorf("gh recorded %q, want %q", ghRan, want)
 		}
 	})
+
+	// A push a real gh makes reaches the guard under the variable every real gh this command runs
+	// is given (leakguard.RunByRealGhVar), through git's pre-push hook, and so does a shared check
+	// that hook runs itself. The shared check's own read is answered under it, through the guard's
+	// REST read, which reaches gh because the guard blanks the variable for its children, under a
+	// caller's token as without one. The guard's own reads made under the variable are refused,
+	// exit 2, and gh never runs: the guard runs none of them under it, so only a real gh that leads
+	// back to this command makes one so.
+	for _, token := range []string{"", "GH_TOKEN"} {
+		under := "under " + leakguard.RunByRealGhVar
+		marked := map[string]string{leakguard.RunByRealGhVar: stub, leakguard.VisibilityReadVar: "sjawhar/legion"}
+		if token != "" {
+			under += " and " + token
+			marked[token] = "ghs_caller"
+		}
+		t.Run("unchecked "+under+": the shared check's own visibility read", func(t *testing.T) {
+			args := leakguard.VisibilityReadArgs("sjawhar/legion")
+			code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", marked, args...)
+			if code != 0 || stdout != "public\n" {
+				t.Errorf("legion gh %q %s = exit %d, stdout %q, stderr %q; want exit 0 and the visibility", args, under, code, stdout, stderr)
+			}
+			if checked != "" {
+				t.Errorf("the shared check ran for its own visibility read: %q", checked)
+			}
+			if want := "visibility " + strings.Join(leakguard.VisibilityReadWithHeadersArgs("sjawhar/legion"), " ") + "\n"; ghRan != want {
+				t.Errorf("gh recorded %q, want the guard's REST read, %q", ghRan, want)
+			}
+		})
+		for _, read := range []struct {
+			name string
+			args []string
+		}{
+			{"REST", leakguard.VisibilityReadWithHeadersArgs("sjawhar/legion")},
+			{"GraphQL", leakguard.VisibilityGraphQLArgs("sjawhar/legion")},
+		} {
+			t.Run("refused "+under+": the guard's own "+read.name+" visibility read", func(t *testing.T) {
+				code, stdout, stderr, ghRan, checked := call(t, ghCheckRefuses, "", marked, read.args...)
+				if want := "the real gh " + stub + " ran `legion gh` again"; code != 2 || stdout != "" || !strings.Contains(stderr, want) {
+					t.Errorf("legion gh %q %s = exit %d, stdout %q, stderr %q; want exit 2 containing %q", read.args, under, code, stdout, stderr, want)
+				}
+				if ghRan != "" || checked != "" {
+					t.Errorf("gh recorded %q and the check %q, want neither run", ghRan, checked)
+				}
+			})
+		}
+	}
 
 	for _, token := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
 		for _, slug := range []string{"sjawhar/legion", "octo/elsewhere"} {

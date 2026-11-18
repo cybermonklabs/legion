@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
@@ -146,6 +150,62 @@ func TestLeakCheckPrePushRunsTheGuardOverGitsUpdateLines(t *testing.T) {
 			}
 			says(t, printed, tc.says)
 		})
+	}
+}
+
+// legionLeakCheckPrePush runs this test binary as `legion leak-check pre-push origin <url>` in a
+// process of its own, as git's pre-push hook runs it under the gh that pushes: in the repository
+// dir, with line on standard input and the environment legionGhCommand builds from env, whose PATH
+// leads to a pane's `gh` wrapper. It answers the status and what reached standard error.
+func legionLeakCheckPrePush(t *testing.T, dir string, env map[string]string, line, url string) (int, string) {
+	t.Helper()
+	cmd := legionGhCommand(t, dir, env)
+	cmd.Args = []string{os.Args[0], "leak-check", "pre-push", "origin", url}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = strings.NewReader(line), &stdout, &stderr
+	code := 0
+	if err := cmd.Run(); err != nil {
+		exit, ok := err.(*exec.ExitError)
+		if !ok {
+			t.Fatalf("legion leak-check pre-push origin %s: %v", url, err)
+		}
+		code = exit.ExitCode()
+	}
+	if stdout.Len() > 0 {
+		t.Errorf("printed %q on standard output, want nothing", stdout.String())
+	}
+	return code, stderr.String()
+}
+
+// A push a real gh makes — `gh repo create --source=. --push` — runs git's pre-push hook, `legion
+// leak-check pre-push`, under the variable `legion gh` gives every real gh it runs
+// (leakguard.RunByRealGhVar), since gh's git inherits it. The guard reads the destination's
+// visibility with `gh`, which in a pane or pod is `legion gh`, and it blanks the variable for that
+// read, so the read reaches the real gh and the push is cleared. Under the variable the read would
+// be refused as a real gh leading back to `legion gh`, and the push with it, leaving the
+// repository gh created empty.
+func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T) {
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := filepath.Join(t.TempDir(), "gh")
+	if err := os.WriteFile(stub, []byte(ghStandInPrefix(help)+"exit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	record := filepath.Join(t.TempDir(), "gh")
+	dir, line := aPushFixture(t, "a commit of nothing in particular")
+	code, printed := legionLeakCheckPrePush(t, dir, map[string]string{
+		"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
+		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+		"GH_STANDIN_RECORD": record, leakguard.RunByRealGhVar: stub,
+	}, line, "https://github.com/acme/widgets.git")
+	if code != leakguard.StatusClean || printed != "" {
+		t.Errorf("legion leak-check pre-push under %s = exit %d, stderr %q; want exit 0 and nothing printed", leakguard.RunByRealGhVar, code, printed)
+	}
+	if want := "visibility " + strings.Join(leakguard.VisibilityReadWithHeadersArgs("acme/widgets"), " ") + "\n"; readRecord(t, record) != want {
+		t.Errorf("gh recorded %q, want the guard's REST read, %q", readRecord(t, record), want)
 	}
 }
 
