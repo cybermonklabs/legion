@@ -806,7 +806,7 @@ On each corpus it then measures six states in turn:
 so no page is all-visible while the statistics still record about half of them all-visible;
 `embedder`, the configured embedder changed to another identity, whose identity step (`dropForeignVectors`, over every covered kind) drops every vector the corpus holds, with no analyze after it, so the statistics are the `stale` state's;
 and `embedder-analyzed`, the same table analyzed.
-The test fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`coverageIndexOnlyShare`), the share from which 2f9a6fc1, an earlier head of this statement, read the windows by a plan that fetched every window row from the heap one at a time in such a state,
+The test fails the `stale` state unless its statistics record at least 0.3 of the pages all-visible (`laggingVisibleShare`), the share from which an earlier version of this statement read the windows by index-only scans, which fetched every window row from the heap one at a time in such a state (dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log),
 and the `embedder` state unless the identity step dropped a vector; it logs how many it dropped.
 In each state it checks that the base and the head answer the same rows in one snapshot, for the state's configured identity (the new one from `embedder` on),
 and times both on one connection, one warm-up and then five alternating runs each under `EXPLAIN (ANALYZE, BUFFERS)`:

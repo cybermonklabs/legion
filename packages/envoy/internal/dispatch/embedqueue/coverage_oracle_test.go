@@ -152,11 +152,10 @@ func headRowsOf(t *testing.T, tx pgx.Tx, identity string) ([]string, map[string]
 		t.Fatalf("open a savepoint for the coverage statement: %v", err)
 	}
 	defer func() { _ = savepoint.Rollback(ctx) }()
-	plan, err := planCoverage(ctx, savepoint)
-	if err != nil {
+	if err := planCoverage(ctx, savepoint); err != nil {
 		t.Fatalf("plan the coverage statement as Coverage does: %v", err)
 	}
-	return coverageRowsOf(t, savepoint, plan.query, identity)
+	return coverageRowsOf(t, savepoint, coverageQuery, identity)
 }
 
 // updateRow sets set (whose arguments are $3 on) on the embeddings row of kind and id ($1 and
@@ -414,12 +413,13 @@ var coverageCostProfiles = []struct{ name, settings string }{
 // runs on every row read.
 //
 // The plan is read on a seeded table of a few dozen rows (seedEveryCoverageState), as seeded and
-// again once embeddings is analyzed, under each of coverageCostProfiles. On such a table
-// 0ec6b4ad's statement read the arm through embeddings_window_owner, with the regex in the filter,
-// since there three bitmap index scans cost more than a filter over so few rows: so a plan the
-// planner picks by its estimates fails here. This fails the day the kinds, the regexes or either
-// half's predicate stop matching the migrations' indexes, or another path to the window rows
-// opens (TestNoOtherIndexCanReadTheWindowKinds names it): either leaves the answer right and the
+// again once embeddings is analyzed, under each of coverageCostProfiles. On such a table an
+// earlier version of this statement, which left the window path to the planner's estimates, read
+// the arm through embeddings_window_owner, with the regex in the filter, since there three bitmap
+// index scans cost more than a filter over so few rows: so a plan the planner picks by its
+// estimates fails here. This fails the day the kinds, the regexes or either half's predicate stop
+// matching the migrations' indexes, or another path to the window rows opens
+// (TestNoOtherIndexCanReadTheWindowKinds names it): either leaves the answer right and the
 // statement testing every window's text again.
 func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 	database := storetest.Open(t)
@@ -437,23 +437,18 @@ func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 			if explaintest.SeqScansRelation(t, plan, "embeddings") {
 				t.Errorf("%s: the coverage statement's plan reads embeddings by a Seq Scan:\n%s", stage, plan)
 			}
-			var root bitmapPlanNode
-			if err := json.Unmarshal(plan, &root); err != nil {
-				t.Fatalf("%s: decode the coverage statement's plan: %v", stage, err)
-			}
 			var windows int
-			var textFilters []string
-			root.walk(func(node bitmapPlanNode) {
-				if node.RelationName != "embeddings" {
-					return
-				}
-				if strings.Contains(node.Filter, "text_snapshot") || strings.Contains(node.Filter, "~") {
-					textFilters = append(textFilters, node.NodeType+" (Filter: "+node.Filter+")")
-				}
-				if node.NodeType == "Bitmap Heap Scan" && node.readsBothWindowIndexes() {
+			for _, scan := range explaintest.BitmapHeapScans(t, plan, "embeddings") {
+				if scan.OrOf("embeddings_window_embedded", "embeddings_window_unembedded") {
 					windows++
 				}
-			})
+			}
+			var textFilters []string
+			for _, node := range explaintest.Nodes(t, plan) {
+				if node.Relation == "embeddings" && (strings.Contains(node.Filter, "text_snapshot") || strings.Contains(node.Filter, "~")) {
+					textFilters = append(textFilters, node.Type+" (Filter: "+node.Filter+")")
+				}
+			}
 			if windows != 1 {
 				t.Errorf("%s: the coverage statement's plan holds %d Bitmap Heap Scans of embeddings over a BitmapOr of embeddings_window_embedded and embeddings_window_unembedded, want one:\n%s",
 					stage, windows, plan)
@@ -497,41 +492,38 @@ func TestNoOtherIndexCanReadTheWindowKinds(t *testing.T) {
 			}
 			return explainPlannedIn(t, tx, profile.settings)
 		}()
-		var root bitmapPlanNode
-		if err := json.Unmarshal(plan, &root); err != nil {
-			t.Fatalf("%s: decode the coverage statement's plan: %v", profile.name, err)
-		}
 		const issueLookup = "kind = 'issue'::text"
 		var windowsSeqScanned bool
 		var otherReads []string
-		root.walk(func(node bitmapPlanNode) {
-			if node.RelationName != "embeddings" {
-				return
+		for _, node := range explaintest.Nodes(t, plan) {
+			if node.Relation != "embeddings" {
+				continue
 			}
-			switch node.NodeType {
+			switch node.Type {
 			case "Seq Scan":
 				if strings.Contains(node.Filter, "text_snapshot") {
 					windowsSeqScanned = true
 				}
 			case "Index Scan", "Index Only Scan":
 				if !strings.Contains(node.IndexCond, issueLookup) {
-					otherReads = append(otherReads, node.NodeType+" using "+node.IndexName+" (Index Cond: "+node.IndexCond+")")
+					otherReads = append(otherReads, node.Type+" using "+node.Index+" (Index Cond: "+node.IndexCond+")")
 				}
 			case "Bitmap Heap Scan":
-				if !strings.Contains(node.RecheckCond, issueLookup) {
-					otherReads = append(otherReads, node.NodeType+" (Recheck Cond: "+node.RecheckCond+")")
-				}
-				for _, child := range node.Plans {
-					child.walk(func(scan bitmapPlanNode) {
-						if scan.NodeType == "Bitmap Index Scan" && !strings.Contains(scan.IndexCond, issueLookup) {
-							otherReads = append(otherReads, scan.NodeType+" on "+scan.IndexName+" (Index Cond: "+scan.IndexCond+")")
-						}
-					})
-				}
+				// Read below, with the Bitmap Index Scans its bitmap is built from.
 			default:
-				otherReads = append(otherReads, node.NodeType)
+				otherReads = append(otherReads, node.Type)
 			}
-		})
+		}
+		for _, scan := range explaintest.BitmapHeapScans(t, plan, "embeddings") {
+			if !strings.Contains(scan.Scan.RecheckCond, issueLookup) {
+				otherReads = append(otherReads, scan.Scan.Type+" (Recheck Cond: "+scan.Scan.RecheckCond+")")
+			}
+			for _, index := range scan.BitmapIndexScans {
+				if !strings.Contains(index.IndexCond, issueLookup) {
+					otherReads = append(otherReads, index.Type+" on "+index.Index+" (Index Cond: "+index.IndexCond+")")
+				}
+			}
+		}
 		if !windowsSeqScanned {
 			t.Errorf("%s: with both window indexes dropped, the coverage statement reads the window rows by no Seq Scan of embeddings:\n%s", profile.name, plan)
 		}
@@ -542,50 +534,8 @@ func TestNoOtherIndexCanReadTheWindowKinds(t *testing.T) {
 	}
 }
 
-// bitmapPlanNode is what the coverage statement's plan tests read of one node of an
-// `EXPLAIN (FORMAT JSON)` plan: its type, the relation and the index it names, the filter it
-// applies to every row it reads (empty when none), the condition an index scan reads its index
-// by and the one a bitmap heap scan rechecks its rows by, and its children.
-type bitmapPlanNode struct {
-	NodeType     string           `json:"Node Type"`
-	RelationName string           `json:"Relation Name"`
-	IndexName    string           `json:"Index Name"`
-	Filter       string           `json:"Filter"`
-	IndexCond    string           `json:"Index Cond"`
-	RecheckCond  string           `json:"Recheck Cond"`
-	Plans        []bitmapPlanNode `json:"Plans"`
-}
-
-// walk calls visit on node and on every node under it, each before its children.
-func (node bitmapPlanNode) walk(visit func(bitmapPlanNode)) {
-	visit(node)
-	for _, child := range node.Plans {
-		child.walk(visit)
-	}
-}
-
-// readsBothWindowIndexes reports whether node, a Bitmap Heap Scan, reads its rows through a
-// BitmapOr that holds a Bitmap Index Scan of each window index.
-func (node bitmapPlanNode) readsBothWindowIndexes() bool {
-	for _, child := range node.Plans {
-		if child.NodeType != "BitmapOr" {
-			continue
-		}
-		var indexes []string
-		child.walk(func(scan bitmapPlanNode) {
-			if scan.NodeType == "Bitmap Index Scan" {
-				indexes = append(indexes, scan.IndexName)
-			}
-		})
-		if slices.Contains(indexes, "embeddings_window_embedded") && slices.Contains(indexes, "embeddings_window_unembedded") {
-			return true
-		}
-	}
-	return false
-}
-
 // explainPlanned explains the coverage statement for the configured identity in a read-only
-// transaction that planCoverage has planned, as Coverage runs it, and answers the plan's one
+// transaction under planCoverage's settings, as Coverage runs it, and answers the plan's one
 // "Plan" node.
 func explainPlanned(t *testing.T, database *store.Store) json.RawMessage {
 	t.Helper()
@@ -606,21 +556,20 @@ func explainPlannedUnder(t *testing.T, database *store.Store, profile string) js
 }
 
 // explainPlannedIn explains the coverage statement for the configured identity in tx once
-// planCoverage has planned it there, as Coverage runs it, and then profile has run (empty for
-// none), and answers the plan's one "Plan" node. The settings stay set in tx.
+// planCoverage has set its settings there, as Coverage runs it, and then profile has run (empty
+// for none), and answers the plan's one "Plan" node. The settings stay set in tx.
 func explainPlannedIn(t *testing.T, tx pgx.Tx, profile string) json.RawMessage {
 	t.Helper()
 	ctx := context.Background()
-	plan, err := planCoverage(ctx, tx)
-	if err != nil {
+	if err := planCoverage(ctx, tx); err != nil {
 		t.Fatalf("plan the coverage statement as Coverage does: %v", err)
 	}
 	if profile != "" {
 		mustExec(t, tx, profile)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, `explain (format json) `+plan.query, configuredIdentity).Scan(&raw); err != nil {
-		t.Fatalf("explain the %s plan: %v", plan.name, err)
+	if err := tx.QueryRow(ctx, `explain (format json) `+coverageQuery, configuredIdentity).Scan(&raw); err != nil {
+		t.Fatalf("explain the coverage statement: %v", err)
 	}
 	return explaintest.OnePlan(t, raw)
 }

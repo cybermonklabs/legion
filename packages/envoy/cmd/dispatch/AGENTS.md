@@ -168,13 +168,12 @@ record and whatever share of the windows is embedded, and no estimate of the pla
 `work_mem` keeps the bitmap exact, and index scans stay on for the issue's lookups.
 `TestNoOtherIndexCanReadTheWindowKinds` drops both window indexes and finds the window rows read
 by a sequential scan alone, so a new index of `embeddings` that could read them fails it first
-(`planCoverage` gives the measurements of the plans earlier heads let the planner choose). It
-reads an issue's
-hash from its row wherever the issue's recorded inputs are still its own and builds and hashes
-the issue's text only where they changed, so a migration that changes `issue_embedding_text` or
-`issue_embedding_spec`
-must empty `embedding_issue_sources` in the same migration: a recorded source names the inputs, not
-the function that built the text from them. The report runs in a read-only transaction under
+(`planCoverage` gives what each earlier version of the statement, which left the planner a
+choice of paths, measured). The report reads an issue's hash from its row wherever the issue's
+recorded inputs are still its own and builds and hashes the issue's text only where they
+changed, so a migration that changes `issue_embedding_text` or `issue_embedding_spec` must empty
+`embedding_issue_sources` in the same migration: a recorded source names the inputs, not the
+function that built the text from them. The report runs in a read-only transaction under
 `set local statement_timeout = '10s'` (`coverageStatementTimeout`); a statement Postgres ends
 there counts nothing, and `Coverage` answers `ErrCoverageTimedOut`, which the route answers
 `503 SEARCH_COVERAGE_TIMEOUT`. The bound is the server's own so that it ends the statement while

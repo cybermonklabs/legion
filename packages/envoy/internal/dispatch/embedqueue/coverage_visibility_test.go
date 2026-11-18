@@ -2,8 +2,6 @@ package embedqueue
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,17 +16,25 @@ import (
 // changed, at Postgres's default) records that share in pg_class.relallvisible, which is what the
 // planner prices an index-only scan's heap fetches by.
 //
-// The planner cannot estimate either half of the window rows: each predicate compares two columns
-// (embedded_hash with content_hash), which it prices at its default selectivity, so it takes the
-// embedded half, about 99% of the rows, for half a percent of them, and the unembedded half, about
-// 1%, for nearly all of them (at production's size: 4,868 rows estimated against 974,072 read, and
-// 977,422 against 9,840). While every page is all-visible that misestimate costs nothing, and
-// TestCoverageReadsTheWindowKindsFromTheirIndexes, which turns sequential scans off before it
-// explains the statement, cannot see it. Once statistics record about a third of the pages as not
-// all-visible, the planner reads the unembedded half by a sequential scan of embeddings, which
-// runs the blank test's regex over every window's text again: the cost the indexes exist to save.
-// INFRA-4241's tester measured Coverage on the scale test's corpus in a builds Job (8 CPUs, 16 GiB)
-// at b3756b91, the statistics analyzed after one row of a share of the pages was updated:
+// The test builds that table from the scale test's corpus at 0.005 x production's size
+// (loadSmallCoverageCorpus), with autovacuum off on embeddings and every issue's source recorded:
+// one row of each page of embeddings updated, so no page is all-visible, then the table analyzed,
+// so the statistics record fewer than a quarter of its pages all-visible, and the test fails
+// unless they do. Coverage, run there, must read embeddings by no sequential scan, which would
+// run the blank test's regex over every window's text again, the cost the window indexes exist to
+// save, and must read both window indexes.
+//
+// That property is the one a planner left to its estimates breaks. It cannot estimate either half
+// of the window rows: each predicate compares two columns (embedded_hash with content_hash), which
+// it prices at its default selectivity, so it takes the embedded half, about 99% of the rows, for
+// half a percent of them, and the unembedded half, about 1%, for nearly all of them (at
+// production's size: 4,868 rows estimated against 974,072 read, and 977,422 against 9,840). While
+// every page is all-visible that misestimate costs nothing; once statistics record about a third
+// of the pages as not all-visible, a planner left free reads the unembedded half by a sequential
+// scan of embeddings. INFRA-4241's tester measured Coverage on the scale test's corpus in a builds
+// Job (8 CPUs, 16 GiB) with an earlier version of this statement, which left the planner free, the
+// statistics analyzed after one row of a share of the pages was updated
+// (dispatch://INFRA-4241/artifact/tester-scale-job-b3756b91-log):
 //
 //	pages not all-visible       none     23%     34%      55%      all
 //	production's size (1 x)   269 ms   580 ms   3129 ms  3497 ms  4290 ms
@@ -45,17 +51,12 @@ import (
 func TestCoverageReadsNoWindowsTextWhileFewPagesOfEmbeddingsAreAllVisible(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	script, err := os.ReadFile(filepath.Join("testdata", "coverage_corpus.sql"))
-	if err != nil {
-		t.Fatalf("read the corpus script: %v", err)
-	}
 	// No autovacuum sets the visibility map while the test reads it.
 	mustExec(t, database.Pool, `alter table embeddings set (autovacuum_enabled = false)`)
-	url := database.Pool.Config().ConnString()
-	loadCoverageCorpus(t, url, coverageScale{value: 0.005, text: "0.005"}, repositoryProse(t), string(script))
-	mustExec(t, database.Pool, `analyze issues, artifacts, artifact_versions, embeddings, embedding_issue_sources`)
+	loadSmallCoverageCorpus(t, database)
 	recordOnce(t, database)
 
+	url := database.Pool.Config().ConnString()
 	config, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		t.Fatalf("parse the database's URL: %v", err)

@@ -210,34 +210,34 @@ func TestSearchCoverageAuthentication(t *testing.T) {
 // the statement, whose uncovered count of components reads that table, waits however fast it
 // would run, and the bound is what ends it.
 //
-// While the request waits, pg_stat_activity must show the statement running: that is the control
-// that a later count of 0 means the statement ended, not that the read cannot see it. The read
-// finds it by its opening, `with judged as (`, which the statement begins with, because
-// pg_stat_activity keeps only the first track_activity_query_size bytes of a statement (1 kB by
-// default), and the one table only the coverage statement and its record step name,
-// embedding_issue_sources, first appears past the first kilobyte of the statement, so a read by
-// that name never sees it. The count reads this test's database alone, since another
-// test's database on the same server may run a coverage statement of its own, and a backend's
-// state can lag the answer by a moment, so it is read again for a while before it fails.
+// While the request waits, pg_stat_activity must show its statement blocked by that lock: that is
+// the control that a later count of 0 means the statement ended, not that the read cannot see it.
+// The read counts the backends of this test's database that another backend blocks
+// (pg_blocking_pids), but for its own: the lock's holder, idle in its transaction, blocks and is
+// not blocked, and nothing but the coverage statement waits on components, so the count is 1
+// while the request waits and 0 once the bound has ended the statement. It reads this test's
+// database alone, since another test's database on the same server may hold locks of its own, and
+// a backend's state can lag the answer by a moment, so it is read again for a while before it
+// fails.
 func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: &fakeEmbedder{}})
 	ctx := context.Background()
 	const bound = time.Second
 	t.Cleanup(embedqueue.ShortenCoverageBoundForTest(bound.String()))
 	holdLock(t, database, "lock table components in access exclusive mode")
-	running := func() int {
+	blocked := func() int {
 		t.Helper()
 		var count int
 		if err := database.Pool.QueryRow(ctx, `
 			select count(*) from pg_stat_activity
-			where pid <> pg_backend_pid() and state = 'active' and query like '%with judged as (%'
+			where pid <> pg_backend_pid() and cardinality(pg_blocking_pids(pid)) > 0
 			  and datname = current_database()`).Scan(&count); err != nil {
 			t.Fatalf("read pg_stat_activity: %v", err)
 		}
 		return count
 	}
-	if count := running(); count != 0 {
-		t.Fatalf("%d coverage statements run before the request, want none", count)
+	if count := blocked(); count != 0 {
+		t.Fatalf("%d backends of the test's database wait on a lock before the request, want none", count)
 	}
 	acquired := database.Pool.Stat().AcquiredConns()
 
@@ -257,14 +257,14 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	showed := testwait.Holds(5*time.Second, testwait.Poll, func() bool {
 		select {
 		case early := <-answered:
-			t.Fatalf("the route answered (status=%d body=%s after %s) before pg_stat_activity showed its statement running",
+			t.Fatalf("the route answered (status=%d body=%s after %s) before pg_stat_activity showed its statement blocked",
 				early.response.Code, early.response.Body.String(), early.took)
 		default:
 		}
-		return running() == 1
+		return blocked() == 1
 	})
 	if !showed {
-		t.Fatal("pg_stat_activity never showed the coverage statement running while the request waited")
+		t.Fatal("pg_stat_activity never showed the coverage statement blocked by the lock on components while the request waited")
 	}
 	var got answer
 	select {
@@ -285,13 +285,13 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	var conns int32
 	var statements int
 	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
-		conns, statements = database.Pool.Stat().AcquiredConns(), running()
+		conns, statements = database.Pool.Stat().AcquiredConns(), blocked()
 		return conns == acquired && statements == 0
 	})
 	if conns != acquired {
 		t.Errorf("the pool holds %d acquired connections after the answer, want the %d it held before the request", conns, acquired)
 	}
 	if statements != 0 {
-		t.Errorf("pg_stat_activity shows %d coverage statements running after the answer, want none: the bound frees the backend", statements)
+		t.Errorf("pg_stat_activity shows %d backends blocked after the answer, want none: the bound frees the coverage statement's backend", statements)
 	}
 }

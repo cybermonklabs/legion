@@ -836,36 +836,21 @@ func coverageFailed(ctx context.Context, err error) error {
 	return fmt.Errorf("search coverage: %w", err)
 }
 
-// coveragePlan is how planCoverage sets Coverage's transaction to run the coverage statement: the
-// settings it runs there, the text the transaction then runs (coverageQuery), and a name for a
-// test's or a measurement's log. There is one, coverageBitmap, which keeps the settings beside the
-// text they are for, so that a test or a measurement runs the two together as Coverage does. The
-// settings are set local, in one Exec: they carry no argument, so pgx sends them over the simple
-// protocol, which takes a statement list, as beginMeaningScan's settings go (api/search.go).
-type coveragePlan struct {
-	// name names the plan, for a test's or a measurement's log.
-	name     string
-	settings string
-	query    string
-}
+// coverageSettings are the settings planCoverage runs in Coverage's transaction before the
+// coverage statement (coverageQuery): sequential scans, sorts, parallel workers and JIT off, and
+// work_mem raised so that the bitmap stays exact (planCoverage says why). They are set local, in
+// one Exec: they carry no argument, so pgx sends them over the simple protocol, which takes a
+// statement list, as beginMeaningScan's settings go (api/search.go).
+const coverageSettings = `set local enable_seqscan = off; set local enable_sort = off; set local max_parallel_workers_per_gather = 0; set local jit = off; set local work_mem = '128MB'`
 
-// coverageBitmap reads the window rows by one bitmap heap scan over a BitmapOr of both window
-// indexes, with sequential scans, sorts, parallel workers and JIT off and work_mem raised so that
-// the bitmap stays exact (planCoverage says why).
-var coverageBitmap = coveragePlan{
-	name:     "bitmap",
-	settings: `set local enable_seqscan = off; set local enable_sort = off; set local max_parallel_workers_per_gather = 0; set local jit = off; set local work_mem = '128MB'`,
-	query:    coverageQuery,
-}
-
-// planCoverage runs coverageBitmap's settings in Coverage's transaction tx and answers the plan,
-// whose query is the text tx is then to run. Every setting is set local, so none outlives tx and
-// the connection goes back to the pool with none of them. Coverage calls it once it has bounded
-// the statement, so the settings run under coverageStatementTimeout too. It is a function of its
-// own so that a test or a measurement of the statement plans it as Coverage does. It reads
-// nothing first: no estimate of the planner's decides how the window rows are read, so there is
-// no statistic to read, and R2 of dispatch://INFRA-4241 asks the route to hold its bound whatever
-// the statistics read and whatever share of the windows is embedded.
+// planCoverage runs coverageSettings in Coverage's transaction tx, which then runs the coverage
+// statement (coverageQuery). Every setting is set local, so none outlives tx and the connection
+// goes back to the pool with none of them. Coverage calls it once it has bounded the statement,
+// so the settings run under coverageStatementTimeout too. It is a function of its own so that a
+// test or a measurement of the statement sets tx as Coverage does. It reads nothing first: no
+// estimate of the planner's decides how the window rows are read, so there is no statistic to
+// read, and R2 of dispatch://INFRA-4241 asks the route to hold its bound whatever the statistics
+// read and whatever share of the windows is embedded.
 //
 // Under these settings the window arm of coverageQuery has exactly one access path. The planner
 // reads a table's rows by a sequential scan, or through an index that reads one of the
@@ -908,33 +893,35 @@ var coverageBitmap = coveragePlan{
 // off its lookups were bitmap heap scans and an issue's latest spec version was found by reading
 // every version of its document (issueSourceFrom), about 410 ms.
 //
-// Each earlier head of this statement left the planner a choice of paths, and INFRA-4241's tester
-// found each choice wrong in a state a production table spends time in. The planner cannot
+// Each earlier version of this statement left the planner a choice of paths, and INFRA-4241's
+// tester found each choice wrong in a state a production table spends time in. The planner cannot
 // estimate either half of the window rows: both predicates compare embedded_hash with
 // content_hash, two columns of one row, which it prices at its default equality selectivity, half
 // a percent (at production's size, 4,868 rows estimated against 974,072 read for the embedded
-// half, and 977,422 against 9,840 for the other). b3756b91 left it free, and with a third or more
-// of embeddings' pages not all-visible after an ANALYZE it read the windows by a sequential scan
-// that ran the blank test over every window's text, reaching 10 s at 3.2 times production's size;
-// and the statement after it, left free, read the windows that way even freshly vacuumed (4.0 to
-// 5.9 s at 0.3 x production's size on a pod's test Postgres, against 1.6 to 2.1 s by the
-// bitmap). 2f9a6fc1 read each half by an index-only scan of its own index while the statistics
-// recorded at least 0.3 of embeddings' pages all-visible (pg_class.relallvisible over relpages);
-// but only a VACUUM or an ANALYZE changes that record, and autoanalyze waits for a tenth of the
-// rows to change, so the statistics can record 0.453 of the pages all-visible while none is, and
-// that plan then fetched every window row from the heap one at a time: 3,536 ms at production's
-// size and 7,668 ms at twice it, 10 s at 2.54 times. 0ec6b4ad had the bitmap from the planner's
-// underestimate of the embedded half; after an embedder change drops every window's vector
-// (dropForeignVectors) that half is empty, and the planner read the arm through
-// embeddings_kind_project by kind, with the regex as the heap scan's filter over every window's
-// text: 4,590 ms at production's size and 8,455 ms at twice it, 10 s at 2.33 times. R2 asks for
-// at least 4 times. The times at production's size and twice it are the tester's, from a builds
-// Job (8 CPUs, 16 GiB).
-func planCoverage(ctx context.Context, tx pgx.Tx) (coveragePlan, error) {
-	if _, err := tx.Exec(ctx, coverageBitmap.settings); err != nil {
-		return coveragePlan{}, coverageFailed(ctx, fmt.Errorf("plan the statement: %w", err))
+// half, and 977,422 against 9,840 for the other). A version that left the planner free read the
+// windows, with a third or more of embeddings' pages not all-visible after an ANALYZE, by a
+// sequential scan that ran the blank test over every window's text, reaching 10 s at 3.2 times
+// production's size (dispatch://INFRA-4241/artifact/tester-scale-job-b3756b91-log); and the
+// version after it, left free, read the windows that way even freshly vacuumed (4.0 to 5.9 s at
+// 0.3 x production's size on a pod's test Postgres, against 1.6 to 2.1 s by the bitmap). A later
+// version read each half by an index-only scan of its own index while the statistics recorded at
+// least 0.3 of embeddings' pages all-visible (pg_class.relallvisible over relpages); but only a
+// VACUUM or an ANALYZE changes that record, and autoanalyze waits for a tenth of the rows to
+// change, so the statistics can record 0.453 of the pages all-visible while none is, and that plan
+// then fetched every window row from the heap one at a time: 3,536 ms at production's size and
+// 7,668 ms at twice it, 10 s at 2.54 times
+// (dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log). A version after that had the
+// bitmap from the planner's underestimate of the embedded half; after an embedder change drops
+// every window's vector (dropForeignVectors) that half is empty, and the planner read the arm
+// through embeddings_kind_project by kind, with the regex as the heap scan's filter over every
+// window's text: 4,590 ms at production's size and 8,455 ms at twice it, 10 s at 2.33 times
+// (dispatch://INFRA-4241/artifact/tester-r3-job-0ec6b4ad-log). R2 asks for at least 4 times. The
+// times at production's size and twice it are the tester's, from a builds Job (8 CPUs, 16 GiB).
+func planCoverage(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, coverageSettings); err != nil {
+		return coverageFailed(ctx, fmt.Errorf("plan the statement: %w", err))
 	}
-	return coverageBitmap, nil
+	return nil
 }
 
 // Coverage reports how much of what meaning search covers (coverageKinds) has a current vector
@@ -954,7 +941,7 @@ func planCoverage(ctx context.Context, tx pgx.Tx) (coveragePlan, error) {
 // a connection of its own, which a saturated server may refuse (the reason api/search.go's
 // searchMeaningScan bounds search's statements). The boot pass reads the report through here too
 // (coverPass), so it is bounded the same way. planCoverage then sets, under the bound, the
-// settings the statement runs under and answers its text. The rollback runs on a context the
+// settings the statement runs under, and the statement runs. The rollback runs on a context the
 // caller's cancellation does not end, so a caller that leaves once the rows are read still hands
 // its connection back to the pool rather than pgx destroying it over a rollback it refused to send.
 func Coverage(ctx context.Context, database *store.Store, identity string) (model.SearchCoverage, error) {
@@ -986,11 +973,10 @@ func Coverage(ctx context.Context, database *store.Store, identity string) (mode
 	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+coverageStatementTimeout+"'"); err != nil {
 		return model.SearchCoverage{}, fmt.Errorf("search coverage: bound the statement: %w", err)
 	}
-	plan, err := planCoverage(ctx, tx)
-	if err != nil {
+	if err := planCoverage(ctx, tx); err != nil {
 		return model.SearchCoverage{}, err
 	}
-	rows, err := tx.Query(ctx, plan.query, identity)
+	rows, err := tx.Query(ctx, coverageQuery, identity)
 	if err != nil {
 		return model.SearchCoverage{}, coverageFailed(ctx, err)
 	}

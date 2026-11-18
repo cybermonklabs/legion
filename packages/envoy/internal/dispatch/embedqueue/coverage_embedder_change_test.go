@@ -2,10 +2,6 @@ package embedqueue
 
 import (
 	"context"
-	"encoding/json"
-	"os"
-	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -20,24 +16,28 @@ import (
 // until the queue has embedded it again, which takes hours at production's size. That is the time
 // the coverage route and its probe are there to watch.
 //
-// At 0ec6b4ad the planner then reads the window arm by one Bitmap Index Scan of
+// The test builds that table from the scale test's corpus at 0.005 x production's size
+// (loadSmallCoverageCorpus): the identity step of another identity run over every window kind,
+// which must drop a vector, then embeddings analyzed. The coverage statement's plan there, under
+// planCoverage's settings as Coverage runs it, must read embeddings by no Seq Scan, test no
+// window's text in a filter of embeddings, and read the windows by a Bitmap Heap Scan over a
+// BitmapOr of embeddings_window_embedded and embeddings_window_unembedded.
+//
+// An earlier version of this statement, which had the bitmap from the planner's underestimate of
+// the embedded half, read the window arm of this table by one Bitmap Index Scan of
 // embeddings_kind_project, by kind, with the blank test's regex and both halves' predicates as the
 // heap scan's filter, over every window's text. INFRA-4241's tester measured it in a builds Job
-// (8 CPUs, 16 GiB) on the scale test's corpus: at production's size that heap scan took 3,496 ms of
-// the statement's 3,888 ms, and Coverage took 1,027 ms before the vectors were dropped, then
-// 4,590 ms with the statistics stale and 3,728 ms analyzed; at twice that size 2,153 ms before,
-// then 8,243 ms and 8,455 ms, so it reaches the route's 10 s bound at 2.3 times production's size,
-// below the 4 times R2 of INFRA-4241 asks for. Five Coverage calls at once at twice the size each
-// took 9.9 s.
+// (8 CPUs, 16 GiB) on the scale test's corpus
+// (dispatch://INFRA-4241/artifact/tester-r3-job-0ec6b4ad-log): at production's size that heap scan
+// took 3,496 ms of the statement's 3,888 ms, and Coverage took 1,027 ms before the vectors were
+// dropped, then 4,590 ms with the statistics stale and 3,728 ms analyzed; at twice that size
+// 2,153 ms before, then 8,243 ms and 8,455 ms, so it reaches the route's 10 s bound at 2.3 times
+// production's size, below the 4 times R2 of INFRA-4241 asks for. Five Coverage calls at once at
+// twice the size each took 9.9 s.
 func TestCoverageReadsNoWindowsTextAfterAnEmbedderChangeDropsEveryVector(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	script, err := os.ReadFile(filepath.Join("testdata", "coverage_corpus.sql"))
-	if err != nil {
-		t.Fatalf("read the corpus script: %v", err)
-	}
-	loadCoverageCorpus(t, database.Pool.Config().ConnString(), coverageScale{value: 0.005, text: "0.005"}, repositoryProse(t), string(script))
-	mustExec(t, database.Pool, `analyze `+coverageScaleTables)
+	loadSmallCoverageCorpus(t, database)
 
 	// The embedder changes: the identity step drops every vector the old identity made.
 	const newIdentity = "azure:example.services.ai.azure.com/embed-v-5-0"
@@ -57,34 +57,18 @@ func TestCoverageReadsNoWindowsTextAfterAnEmbedderChangeDropsEveryVector(t *test
 	if explaintest.SeqScansRelation(t, plan, "embeddings") {
 		t.Errorf("after the identity step dropped %d vectors, the coverage statement reads embeddings by a Seq Scan:\n%s", dropped, plan)
 	}
-	var root bitmapPlanNode
-	if err := json.Unmarshal(plan, &root); err != nil {
-		t.Fatalf("decode the plan: %v", err)
+	var textFilters []string
+	for _, node := range explaintest.Nodes(t, plan) {
+		if node.Relation == "embeddings" && strings.Contains(node.Filter, "text_snapshot") {
+			textFilters = append(textFilters, node.Type+" (Filter: "+node.Filter+")")
+		}
 	}
 	var bothIndexes bool
-	var textFilters []string
-	root.walk(func(node bitmapPlanNode) {
-		if node.RelationName != "embeddings" {
-			return
+	for _, scan := range explaintest.BitmapHeapScans(t, plan, "embeddings") {
+		if scan.OrOf("embeddings_window_embedded", "embeddings_window_unembedded") {
+			bothIndexes = true
 		}
-		if strings.Contains(node.Filter, "text_snapshot") {
-			textFilters = append(textFilters, node.NodeType+" (Filter: "+node.Filter+")")
-		}
-		if node.NodeType != "Bitmap Heap Scan" {
-			return
-		}
-		for _, child := range node.Plans {
-			var indexes []string
-			child.walk(func(scan bitmapPlanNode) {
-				if scan.NodeType == "Bitmap Index Scan" {
-					indexes = append(indexes, scan.IndexName)
-				}
-			})
-			if child.NodeType == "BitmapOr" && slices.Contains(indexes, "embeddings_window_embedded") && slices.Contains(indexes, "embeddings_window_unembedded") {
-				bothIndexes = true
-			}
-		}
-	})
+	}
 	if len(textFilters) > 0 {
 		t.Errorf("after the identity step dropped %d vectors, the coverage statement tests windows' text in a filter: %s\n%s", dropped, strings.Join(textFilters, "; "), plan)
 	}

@@ -94,7 +94,7 @@ const coverageScaleTables = "issues, artifacts, artifact_versions, embeddings, e
 // prepare, the statements that then put the table in the state from the one measured before, each
 // run on its own, since VACUUM runs in no transaction block; and lagging, whether the state's
 // statistics record more of the table as all-visible than is, so that the state is not made
-// unless they record at least coverageIndexOnlyShare.
+// unless they record at least laggingVisibleShare.
 type scaleState struct {
 	name           string
 	identity       string
@@ -116,8 +116,9 @@ const changedEmbedderIdentity = "azure:example.services.ai.azure.com/embed-v-5-0
 //   - third: one row of every third heap page of embeddings updated, then the table analyzed, so
 //     about a third of its pages are not all-visible and its statistics say so, as an ANALYZE
 //     records them between two vacuums of a table the queue keeps writing. INFRA-4241's tester
-//     found b3756b91's statement, which left the planner free, reading the unembedded half of the
-//     windows by a Seq Scan of embeddings once a third or more of the pages were not all-visible.
+//     found an earlier version of this statement, which left the planner free, reading the
+//     unembedded half of the windows by a Seq Scan of embeddings once a third or more of the pages
+//     were not all-visible (dispatch://INFRA-4241/artifact/tester-scale-job-b3756b91-log).
 //   - all: one row of every page updated the same way, then the table analyzed, so no page is
 //     all-visible and its statistics say so.
 //   - stale: embeddings vacuumed, so every page is all-visible again; one row of every even page
@@ -126,14 +127,19 @@ const changedEmbedderIdentity = "azure:example.services.ai.azure.com/embed-v-5-0
 //     all-visible while the statistics still record about half. Autoanalyze waits for a tenth of
 //     the rows to change, and one row of each of half the pages is fewer (97,369 rows against
 //     99,566 at production's size), so a production table can stand so until its next ANALYZE.
-//     It is the state 2f9a6fc1's planCoverage misjudged (coverageIndexOnlyShare).
+//     Its statistics must record at least laggingVisibleShare of the pages all-visible; an
+//     earlier version of this statement, which read the windows by index-only scans at that
+//     share, fetched every window row from the heap one at a time in this state
+//     (dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log).
 //   - embedder: the configured embedder changes to changedEmbedderIdentity, and its pass's
 //     identity step drops every vector another identity made, over every covered kind
 //     (dropForeignVectors over coverageKinds, as runIdentitySteps runs it), so every window row
 //     leaves the embedded half for the other until the queue embeds it again, which takes hours at
 //     production's size; with no ANALYZE after it, so the statistics are the stale state's.
-//     INFRA-4241's tester found 0ec6b4ad's statement reading the windows in this state through
-//     embeddings_kind_project, with the blank test's regex as the heap scan's filter.
+//     INFRA-4241's tester found an earlier version of this statement, which had the bitmap from
+//     the planner's underestimate of the embedded half, reading the windows in this state through
+//     embeddings_kind_project, with the blank test's regex as the heap scan's filter
+//     (dispatch://INFRA-4241/artifact/tester-r3-job-0ec6b4ad-log).
 //   - embedder-analyzed: the same table, then analyzed.
 //
 // From the embedder state on, the statements are compared and timed for the new identity; which
@@ -170,14 +176,17 @@ func updateOneRowOfPages(where string) string {
 const coverageVisibleShare = `select case when relpages > 0 then relallvisible::float8 / relpages else 1 end
 	from pg_class where oid = 'embeddings'::regclass`
 
-// coverageIndexOnlyShare is the share of embeddings' pages recorded as all-visible
-// (coverageVisibleShare) at and above which 2f9a6fc1's planCoverage chose to read each window
-// half by an index-only scan of its own index, a rule this change dropped (planCoverage says
-// why). TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap builds
-// statistics that record at least this share while no page is all-visible, and the scale test's
-// stale state is not made unless its statistics record at least this share, so the state each
-// makes is the one that rule misjudged.
-const coverageIndexOnlyShare = 0.3
+// laggingVisibleShare is the least share of embeddings' pages (coverageVisibleShare) that the
+// statistics of a lagging table must record as all-visible while no page is: the scale test's
+// stale state and the table of
+// TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap are not made unless
+// their statistics record at least this share. The planner prices an index-only scan's heap
+// fetches by that record, so on such a table it takes that share of a window index's rows to be
+// read from the index alone, where every one is fetched from the heap. An earlier version of this
+// statement read each window half by an index-only scan of its own index from this share up, and
+// on such a table fetched every window row from the heap one at a time (planCoverage gives its
+// times, dispatch://INFRA-4241/artifact/tester-r2-job-2f9a6fc1-log).
+const laggingVisibleShare = 0.3
 
 // coverageWindowIndexes are the two window indexes the coverage statement reads, each with the
 // migration that builds it, whose file rebuildWindowIndexes builds it again from.
@@ -465,9 +474,9 @@ func measureCoverageAtScale(t *testing.T, admin *pgx.Conn, server string, scale 
 		}
 		t.Logf("%s: the statistics record %d of embeddings' %d pages all-visible, a share of %.3f; database %s (%d bytes)",
 			stage, measured.visible, measured.pages, measured.share, sizeText, size)
-		if state.lagging && measured.share < coverageIndexOnlyShare {
-			t.Fatalf("%s: the statistics record %.3f of embeddings as all-visible with no page all-visible; the state needs at least %g, the share 2f9a6fc1's planCoverage read the index-only plan from",
-				stage, measured.share, coverageIndexOnlyShare)
+		if state.lagging && measured.share < laggingVisibleShare {
+			t.Fatalf("%s: the statistics record %.3f of embeddings as all-visible with no page all-visible; the state needs at least %g (laggingVisibleShare)",
+				stage, measured.share, laggingVisibleShare)
 		}
 
 		_, heads := requireMainsAnswerFor(t, database, stage, state.identity)
@@ -580,6 +589,20 @@ func loadCoverageCorpus(t *testing.T, databaseURL string, scale coverageScale, p
 	}
 }
 
+// loadSmallCoverageCorpus loads the corpus at 0.005 x production's size into database
+// (loadCoverageCorpus), about 4,900 window rows and 56 issues, and analyzes the tables it fills
+// (coverageScaleTables): the table each test of the coverage statement in a state of embeddings
+// builds that state from, on a test server, once it has set what else the state needs.
+func loadSmallCoverageCorpus(t *testing.T, database *store.Store) {
+	t.Helper()
+	script, err := os.ReadFile(filepath.Join("testdata", "coverage_corpus.sql"))
+	if err != nil {
+		t.Fatalf("read the corpus script: %v", err)
+	}
+	loadCoverageCorpus(t, database.Pool.Config().ConnString(), coverageScale{value: 0.005, text: "0.005"}, repositoryProse(t), string(script))
+	mustExec(t, database.Pool, `analyze `+coverageScaleTables)
+}
+
 // checkCoverageCorpus fails t unless the database holds the corpus the scale makes: production's
 // counts times the scale, rounded as the script rounds them, of issues, document versions and
 // each window kind's rows; every issue's source recorded; and every issue's latest spec its
@@ -665,14 +688,14 @@ type scaleQuerier interface {
 }
 
 // timeCoverageStatements times the base (mainCoverageQuery, on conn itself under no setting) and
-// the head (coverageQuery as planCoverage plans it, as runHead runs it) for identity, the state's
-// configured one, on conn: one warm-up run of each, then coverageScaleRuns runs of each,
+// the head (coverageQuery under planCoverage's settings, as runHead runs it) for identity, the
+// state's configured one, on conn: one warm-up run of each, then coverageScaleRuns runs of each,
 // alternately, under EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON), each run's time its planning plus
 // execution. It logs one plan of each in text form, from an EXPLAIN (ANALYZE, BUFFERS) of its own
 // after the timed runs.
 func timeCoverageStatements(t *testing.T, conn *pgx.Conn, stage, identity string) (head, base []time.Duration) {
 	t.Helper()
-	const baseName, headName = "base (mainCoverageQuery)", "head (coverageQuery, planned by planCoverage)"
+	const baseName, headName = "base (mainCoverageQuery)", "head (coverageQuery, under planCoverage's settings)"
 	warm := func(q scaleQuerier, statement string) { mustExec(t, q, statement, identity) }
 	warm(conn, mainCoverageQuery)
 	runHead(t, conn, warm)
@@ -691,9 +714,8 @@ func timeCoverageStatements(t *testing.T, conn *pgx.Conn, stage, identity string
 
 // runHead runs the head on conn as Coverage runs it: in a read-only transaction,
 // statement_timeout set local to 0 where Coverage sets its bound (coverageStatementTimeout), so
-// no run is cut off by it, then planCoverage, which runs its settings in the transaction and
-// answers the plan. do then runs the plan's query in the transaction, which is rolled back,
-// undoing the settings.
+// no run is cut off by it, then planCoverage, which runs its settings in the transaction. do then
+// runs coverageQuery in the transaction, which is rolled back, undoing the settings.
 func runHead(t *testing.T, conn *pgx.Conn, do func(q scaleQuerier, statement string)) {
 	t.Helper()
 	ctx := context.Background()
@@ -703,11 +725,10 @@ func runHead(t *testing.T, conn *pgx.Conn, do func(q scaleQuerier, statement str
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	mustExec(t, tx, `set local statement_timeout = 0`)
-	plan, err := planCoverage(ctx, tx)
-	if err != nil {
+	if err := planCoverage(ctx, tx); err != nil {
 		t.Fatalf("plan the head as Coverage does: %v", err)
 	}
-	do(tx, plan.query)
+	do(tx, coverageQuery)
 }
 
 // logTextPlan logs statement's plan for identity on q in text form, from an EXPLAIN (ANALYZE,

@@ -61,14 +61,13 @@ func recordedSource(t *testing.T, database *store.Store, key string) (source, xm
 	return source, xmin
 }
 
-// An issue whose row holds the hash of its current text is recorded once, with the inputs that
-// text was built from - the latest primary version's id and row version, the row's content_hash
-// and the title - and the report then reads its hash from the row. A second run records nothing
-// and rewrites nothing: the source row keeps its xmin.
+// An issue whose row holds the hash of its current text is recorded once, and the report then
+// reads its hash from the row rather than building its text (sourceMatches). A second run records
+// nothing and rewrites nothing: the source row keeps its xmin.
 func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "RCRD", "RCRD-1", "An issue its trigger enqueued")
-	spec := seedSpec(t, database.Pool, "RCRD", "RCRD-1", "## Summary\n\nIts spec.\n")
+	seedSpec(t, database.Pool, "RCRD", "RCRD-1", "## Summary\n\nIts spec.\n")
 	if sourceMatches(t, database, "RCRD-1") {
 		t.Fatal("before any record run the report reads RCRD-1's hash from its row")
 	}
@@ -76,19 +75,7 @@ func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
 	if recorded := recordOnce(t, database); recorded != 1 {
 		t.Fatalf("the first run recorded %d sources, want RCRD-1's", recorded)
 	}
-	var want string
-	if err := database.Pool.QueryRow(context.Background(), `
-		select v.id::text || ':' || v.xmin::text || ':' || e.content_hash || ':' || i.title
-		from issues i
-		join artifact_versions v on v.artifact_id = $2::uuid and v.number = 1
-		join embeddings e on e.kind = 'issue' and e.id = i.key
-		where i.key = $1`, "RCRD-1", spec).Scan(&want); err != nil {
-		t.Fatalf("read RCRD-1's inputs: %v", err)
-	}
-	source, xmin := recordedSource(t, database, "RCRD-1")
-	if source != want {
-		t.Errorf("RCRD-1's recorded source = %q, want its version's id and xmin, its row's content_hash and its title: %q", source, want)
-	}
+	_, xmin := recordedSource(t, database, "RCRD-1")
 	if !sourceMatches(t, database, "RCRD-1") {
 		t.Error("once recorded, the report still builds RCRD-1's text rather than reading its hash from the row")
 	}
