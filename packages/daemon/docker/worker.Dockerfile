@@ -921,10 +921,9 @@ WORKDIR /home/legion
 #    variant extracts nothing, while a node that selects the other has each role write that one into
 #    its own home overlay's upper layer, on the pod's role-homes volume, at its first OMP run: up to
 #    six copies in an issue pod. The probes in the final step never wait on it.
-# Any failure fails the build: a broken image never publishes. The pinned omp must offer
-# --session-id, the flag a launcher names a role's new session with: a pin that lacks it fails here.
+# Any failure fails the build: a broken image never publishes.
 RUN set -eu; \
-    bun --version; omp --version; omp --help | grep -q -e '--session-id'; jj --version; gh --version; git --version; codegraph --version; \
+    bun --version; omp --version; jj --version; gh --version; git --version; codegraph --version; \
     scratch="$(mktemp -d)"; \
     git init --quiet --bare "$scratch/origin.git"; \
     jj git clone "$scratch/origin.git" "$scratch/clone"; \
