@@ -1326,9 +1326,9 @@ connections from other addresses whose peer named no server (closed at once, sil
 auth timeout, a partial CONNECT) are exit 2, and so is a route peer with the password that names
 itself with an empty name, though a hub server held its route; a client's line naming a refusal
 of a held route with the password leaves exit 1; and a route peer whose name ends as a route
-connection's line passes. The
-staged servers' log lines are stamped with the time the test first saw each, as a container
-runtime stamps them.
+connection's line passes. The staged hub, the stamping of its servers' log lines with the time the
+test first saw each, as a container runtime stamps them, and the route peers and clients the
+scenarios speak as are in `gcp/clusteredhub_routecheck_fixture_live_test.go`.
 
 ### The tailnet hosts
 
