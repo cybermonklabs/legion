@@ -1,7 +1,7 @@
 import { messageFor } from "@legion/envoy-client/errors"
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings"
+import { createEnvoyClient } from "@legion/envoy-client/transport"
 import { configuredSessionId } from "../src/claude-session"
-import { sendEnvoyMessage } from "../src/envoy-client"
 import { parseSendArguments } from "../src/send-arguments"
 
 try {
@@ -20,10 +20,13 @@ try {
     ...(session === undefined ? {} : { session }),
   })
   if (!envoy.enabled) throw new Error(`Envoy is off: ${envoy.error ?? envoy.notice}`)
-  await sendEnvoyMessage({
-    baseUrl: envoy.url,
-    credential: envoy.credential,
-    targetSession,
+  // The transport every other client sends through. It names this session as the message's
+  // source, so the listener counts the message against this session's sending limit; a shell that
+  // names no session sends a blank one, which the transport leaves off the wire. A refusal is an
+  // `EnvoyApiError` whose message is the listener's own sentence, which the catch below prints.
+  await createEnvoyClient({ baseUrl: envoy.url, credential: envoy.credential, fetch }).send({
+    sourceSessionID: session ?? "",
+    targetSessionID: targetSession,
     message,
   })
   process.stdout.write(`Sent Envoy message to ${targetSession}.\n`)

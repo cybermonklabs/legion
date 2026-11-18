@@ -124,7 +124,8 @@ test("the Agents heading folds rows that are exactly the person's pinned agents 
     // A row with nothing unread wears no badge at all, rather than a zero.
     await expect(railAgentRow(page, BETA).getByTitle(/^New repl/)).toHaveCount(0);
 
-    // Below 1280 pixels the rail is the sheet the Menu control opened, and these are its rows.
+    // Below 1280 pixels the rail is a sheet, which `railIsSheet` answers for open or closed; the
+    // Menu control opened it above, so these are its rows.
     if (await railIsSheet(page)) {
       await expect(
         page.getByRole("dialog", { name: "Navigation" }).locator(`#${RAIL_AGENTS_ID} > li`)

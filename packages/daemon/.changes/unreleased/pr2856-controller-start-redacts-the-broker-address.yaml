@@ -1,0 +1,4 @@
+kind: Fixed
+body: |-
+  `legion controller start` prints no user name, password, query or fragment of the broker address
+  `AGENT_SECRETS_URL` carries, on stderr or in its error.

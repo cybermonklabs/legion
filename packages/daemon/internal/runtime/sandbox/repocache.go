@@ -795,13 +795,15 @@ func (r *Runtime) refreshCacheTokens(ctx context.Context) {
 }
 
 // sweepCaches is ReconcileOrphans' pass over the repository caches (the claim path, sweep, never
-// sees one), against the repositories the mapping names now (Options.Mapped). For each stored cache
-// Sandbox: a repository that does not parse, or a shape this runtime does not build, is logged and
-// kept, as sweep keeps a Sandbox it cannot judge (the next boot's census refuses it by name); a
-// mapped repository's cache has any annotationCacheUnmappedAt removed; an unmapped one's is marked
+// sees one), against the repositories the project works now (Options.Mapped: the repositories
+// Dispatch's mapping names and the repositories of the project's live issue records). For each
+// stored cache Sandbox: a repository that does not parse, or a shape this runtime does not build,
+// is logged and kept, as sweep keeps a Sandbox it cannot judge (the next boot's census refuses it
+// by name); a repository the set holds has its cache's annotationCacheUnmappedAt removed; one the
+// set does not — no live record and no mapping names it — is marked
 // with now once, kept while now minus the mark is under the retention, and deleted after it
 // (deleteFenced, in the foreground, so its volume and Secret go with it), logged with the repository
-// and how long it was kept. Then every mapped repository's cache is ensured (EnsureRepositoryCache):
+// and how long it was kept. Then every member's cache is ensured (EnsureRepositoryCache):
 // one missing is made — at boot, whose reconciliation runs this, and after an ensure a mapping
 // change asked for failed — and a drifted or dead cache pod is replaced, all on the sweep's
 // schedule. Each runs under the cache's launch turn, fenced to the Sandbox as the store held it.

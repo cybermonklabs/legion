@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import type { CaseKind, CaseRow } from "./build-corpus";
+import type { CaseKind, CaseRow, CaseVerdict } from "./build-corpus";
 import {
   artifactsOf,
   CannotRunError,
@@ -50,8 +50,10 @@ import {
   clopperPearsonUpper,
   DEFAULT_CONFIDENCE,
   decidedAt,
+  effectiveSizeInterval,
   type Interval,
   type Judgement,
+  kishEffectiveSize,
   MINIMUM_DECIDED,
   mcnemarExact,
   type PairedCase,
@@ -186,6 +188,15 @@ const ARMS_CHOSEN_AMONG = 12;
 /** The confidence the winner's adjusted bound is read at: 1 - 0.10 / 12, by Bonferroni. */
 const ADJUSTED_CONFIDENCE = 1 - (1 - DEFAULT_CONFIDENCE) / ARMS_CHOSEN_AMONG;
 
+/** The confidence of each interval the send-back figures carry, as the catalog asks: 95 percent. */
+const FIGURE_CONFIDENCE = 0.95;
+
+/**
+ * The confidence of each of the two exact intervals balanced accuracy's interval is made of:
+ * 1 - 0.05 / 2, by Bonferroni, so that both hold together at 95 percent at least.
+ */
+const BALANCED_PART_CONFIDENCE = 1 - (1 - FIGURE_CONFIDENCE) / 2;
+
 /** Coverage at or above this is useful; under it the report records the curve and no verdict rule. */
 const USEFUL_COVERAGE = 0.3;
 
@@ -315,8 +326,92 @@ export interface ClaimMeasure {
   withinRate: boolean | null;
   /** The words that say the arm is missing too many of its judgements, and null where it is not. */
   missing: string | null;
+  /** The send-back figures the catalog has the registration hold beside item 8. */
+  sendBack: SendBackFigures;
   /** Every eligible tree, in the order of its group key. */
   rows: ClaimTree[];
+}
+
+/**
+ * A share of requests with two two-sided 95 percent intervals, all null where nothing is counted.
+ * `interval` is the exact Clopper-Pearson interval over the requests, as the registration names
+ * it, which holds only where the requests are independent. `treeInterval` is the same share read
+ * at `effectiveTotal`, Kish's effective size of the requests grouped by tree, in Korn and
+ * Graubard's beta form: what the share is worth where every request of a tree goes one way.
+ */
+export interface ExactShare {
+  count: number;
+  total: number;
+  share: number | null;
+  interval: Interval | null;
+  effectiveTotal: number | null;
+  treeInterval: Interval | null;
+}
+
+/** Balanced accuracy, and its interval over the requests and over the trees. */
+export interface BalancedAccuracy {
+  value: number | null;
+  interval: Interval | null;
+  treeInterval: Interval | null;
+}
+
+/** One answered approval request as the send-back figures read it. */
+export interface SendBackCase {
+  /** The eligible tree the request is in. */
+  tree: string;
+  /** The person's verdict, read from the option they chose. */
+  person: CaseVerdict;
+  /** The arm's verdict where it decided the request at the claim's threshold, and null where not. */
+  arm: CaseVerdict | null;
+}
+
+/**
+ * The send-back figures that INFRA-3189's catalog (version 14) has the claim's registration hold
+ * beside item 8, over every answered approval request of the eligible trees, at the claim's
+ * threshold. A send-back is the person's chosen option, request changes; any other option he
+ * chose, approve or another, is no send-back. The arm sends a request back where it decided
+ * request changes, and does not where it decided any other option. A request it did not decide
+ * (under the threshold, with no row, held, or in no slice) is a wrong verdict, as the registration
+ * counts a never-decide in every figure: a missed send-back where the person sent it back, and a
+ * false one where he did not, so it is in precision's denominator too. Recall, precision,
+ * specificity and agreement carry the two intervals `ExactShare` names. Balanced accuracy is the
+ * mean of recall and specificity, and each of its intervals the mean of theirs, each taken at
+ * 97.5 percent, so the two hold together at 95 percent at least, whatever their dependence.
+ */
+export interface SendBackFigures {
+  /** Where the send-back label comes from. */
+  label: "chosen option";
+  /** Every answered approval request of the eligible trees. */
+  requests: number;
+  /** Of those, the answers of an option that is neither approve nor request changes. */
+  otherAnswers: number;
+  /** The person sent the request back, and the arm decided request changes. */
+  caught: number;
+  /** The person sent the request back, and the arm decided another option or did not decide. */
+  missed: number;
+  /** The person did not send the request back, and the arm decided another option. */
+  cleared: number;
+  /** The person did not send it back, and the arm decided request changes or did not decide. */
+  falseSendBacks: number;
+  /** Of `missed` and of `falseSendBacks`, the requests the arm did not decide. */
+  notDecided: { missed: number; falseSendBacks: number };
+  recall: ExactShare;
+  precision: ExactShare;
+  specificity: ExactShare;
+  balancedAccuracy: BalancedAccuracy;
+  /** The caught and cleared requests over every request. */
+  agreement: ExactShare;
+  /**
+   * An arm that approves every request, on the same requests: it sends none back, so its recall
+   * is 0, its specificity 1, its balanced accuracy 0.5, and it has no precision; its agreement is
+   * the share the person did not send back. Each is null where its class holds no request.
+   */
+  alwaysApprove: {
+    recall: number | null;
+    specificity: number | null;
+    balancedAccuracy: number | null;
+    agreement: ExactShare;
+  };
 }
 
 /** A share with its count, and either its bound or the words that say why it carries none. */
@@ -1497,10 +1592,14 @@ function kindAnalysisOf(
  * report case the arm gave a verdict at a counted confidence at or above `threshold`; a held
  * case, a case in no slice, a case the arm wrote no row for, and a case whose judgements gave no
  * verdict are decided by no one. With no threshold, as for an arm the fit slice fitted none,
- * nothing is decided.
+ * nothing is decided. The send-back figures (`SendBackFigures`) are read over the same requests,
+ * with the same decisions.
  *
  * It throws `CorpusError` over a tree naming a case the corpus does not hold: the measure is read
  * over the corpus the draw was made over, and a tree read over another counts the wrong requests.
+ * It throws `CorpusError` too over an approval case of a tree that carries no verdict: the
+ * send-back figures read every answered approval request's chosen option, and the measure and
+ * the figures are read over the same requests.
  */
 export function claimMeasureOf(
   trees: readonly FinalTestTree[],
@@ -1514,6 +1613,7 @@ export function claimMeasureOf(
   for (const one of cases) {
     if (one.slice === "report" && one.kind === "approval") inReport.set(one.caseId, one);
   }
+  const sendBackCases: SendBackCase[] = [];
   const rows = trees.map((tree): ClaimTree => {
     let approvals = 0;
     let decided = 0;
@@ -1529,13 +1629,29 @@ export function claimMeasureOf(
       }
       if (row.kind !== "approval") continue;
       approvals += 1;
-      if (tree.slice !== "report" || threshold === null) continue;
-      const reading = inReport.get(caseId);
-      if (reading === undefined || reading.verdict === null || reading.confidence < threshold) {
-        continue;
+      const reading =
+        tree.slice === "report" && threshold !== null ? inReport.get(caseId) : undefined;
+      const decision =
+        reading === undefined ||
+        reading.verdict === null ||
+        threshold === null ||
+        reading.confidence < threshold
+          ? null
+          : reading;
+      if (row.verdict === null) {
+        throw new CorpusError(
+          `the approval case ${caseId} in the eligible tree ${tree.group} carries no verdict: ` +
+            "the send-back figures read every answered approval request's chosen option"
+        );
       }
+      sendBackCases.push({
+        tree: tree.group,
+        person: row.verdict,
+        arm: decision === null ? null : verdictOf(decision.verdict ?? [], row.options),
+      });
+      if (decision === null) continue;
       decided += 1;
-      if (!reading.agreed) disagreements += 1;
+      if (!decision.agreed) disagreements += 1;
     }
     return { group: tree.group, slice: tree.slice, approvals, decided, disagreements };
   });
@@ -1567,7 +1683,147 @@ export function claimMeasureOf(
     bound,
     withinRate: missing === null ? bound <= RATE : null,
     missing,
+    sendBack: sendBackFiguresOf(sendBackCases),
     rows,
+  };
+}
+
+/** How many requests of one tree, or of every tree, fall in each cell of the send-back table. */
+interface SendBackCells {
+  caught: number;
+  missed: number;
+  cleared: number;
+  falseSendBacks: number;
+}
+
+/** One cell of the send-back table. */
+type SendBackCell = keyof SendBackCells;
+
+/** Every cell, which is what agreement and the baseline's agreement are read over. */
+const ALL_CELLS: readonly SendBackCell[] = ["caught", "missed", "cleared", "falseSendBacks"];
+
+/** The requests of `cells` that fall in the named cells. */
+function inCells(cells: SendBackCells, names: readonly SendBackCell[]): number {
+  let sum = 0;
+  for (const name of names) sum += cells[name];
+  return sum;
+}
+
+/**
+ * The share of the requests in the `over` cells that fall in the `hits` cells, which are among
+ * them, with its exact interval over the requests and its interval at Kish's effective size of
+ * those requests by tree (`ExactShare`), each at `confidence`; nulls where `over` holds nothing.
+ */
+function exactShare(
+  trees: readonly SendBackCells[],
+  hits: readonly SendBackCell[],
+  over: readonly SendBackCell[],
+  confidence: number = FIGURE_CONFIDENCE
+): ExactShare {
+  const sizes = trees.map((tree) => inCells(tree, over)).filter((size) => size > 0);
+  let count = 0;
+  for (const tree of trees) count += inCells(tree, hits);
+  let total = 0;
+  for (const size of sizes) total += size;
+  if (total === 0) {
+    return { count, total, share: null, interval: null, effectiveTotal: null, treeInterval: null };
+  }
+  const effectiveTotal = kishEffectiveSize(sizes);
+  return {
+    count,
+    total,
+    share: count / total,
+    interval: clopperPearsonInterval(count, total, confidence),
+    effectiveTotal,
+    treeInterval: effectiveSizeInterval(count, total, effectiveTotal, confidence),
+  };
+}
+
+/** The interval whose ends are the means of the ends of two intervals. */
+function meanInterval(one: Interval | null, two: Interval | null): Interval | null {
+  if (one === null || two === null) return null;
+  return { lower: (one.lower + two.lower) / 2, upper: (one.upper + two.upper) / 2 };
+}
+
+/**
+ * Balanced accuracy, the mean of recall and specificity, with the mean of their intervals each
+ * taken at 97.5 percent, over the requests and over the trees; all null where either class holds
+ * no request.
+ */
+function balancedAccuracyOf(trees: readonly SendBackCells[]): BalancedAccuracy {
+  const recall = exactShare(trees, ["caught"], ["caught", "missed"], BALANCED_PART_CONFIDENCE);
+  const specificity = exactShare(
+    trees,
+    ["cleared"],
+    ["cleared", "falseSendBacks"],
+    BALANCED_PART_CONFIDENCE
+  );
+  if (recall.share === null || specificity.share === null) {
+    return { value: null, interval: null, treeInterval: null };
+  }
+  return {
+    value: (recall.share + specificity.share) / 2,
+    interval: meanInterval(recall.interval, specificity.interval),
+    treeInterval: meanInterval(recall.treeInterval, specificity.treeInterval),
+  };
+}
+
+/**
+ * The send-back figures over answered approval requests (`SendBackFigures`): each request's
+ * chosen option against the arm's decided verdict, a request the arm did not decide taking the
+ * wrong class, each figure's requests grouped by their tree for the interval over trees.
+ */
+export function sendBackFiguresOf(cases: readonly SendBackCase[]): SendBackFigures {
+  const byTree = new Map<string, SendBackCells>();
+  let missedNotDecided = 0;
+  let falseNotDecided = 0;
+  let otherAnswers = 0;
+  for (const one of cases) {
+    if (one.person === "other") otherAnswers += 1;
+    const sentBack = one.person === "request_changes";
+    // A request the arm did not decide takes the wrong class, as the registration counts it.
+    const armSendsBack = one.arm === null ? !sentBack : one.arm === "request_changes";
+    if (one.arm === null && sentBack) missedNotDecided += 1;
+    if (one.arm === null && !sentBack) falseNotDecided += 1;
+    const cell: SendBackCell = sentBack
+      ? armSendsBack
+        ? "caught"
+        : "missed"
+      : armSendsBack
+        ? "falseSendBacks"
+        : "cleared";
+    const cells = byTree.get(one.tree) ?? { caught: 0, missed: 0, cleared: 0, falseSendBacks: 0 };
+    cells[cell] += 1;
+    byTree.set(one.tree, cells);
+  }
+  const trees = [...byTree.values()];
+  const sum = (names: readonly SendBackCell[]): number => {
+    let total = 0;
+    for (const tree of trees) total += inCells(tree, names);
+    return total;
+  };
+  const sendBacks = sum(["caught", "missed"]);
+  const notSentBack = sum(["cleared", "falseSendBacks"]);
+  return {
+    label: "chosen option",
+    requests: cases.length,
+    otherAnswers,
+    caught: sum(["caught"]),
+    missed: sum(["missed"]),
+    cleared: sum(["cleared"]),
+    falseSendBacks: sum(["falseSendBacks"]),
+    notDecided: { missed: missedNotDecided, falseSendBacks: falseNotDecided },
+    recall: exactShare(trees, ["caught"], ["caught", "missed"]),
+    precision: exactShare(trees, ["caught"], ["caught", "falseSendBacks"]),
+    specificity: exactShare(trees, ["cleared"], ["cleared", "falseSendBacks"]),
+    balancedAccuracy: balancedAccuracyOf(trees),
+    agreement: exactShare(trees, ["caught", "cleared"], ALL_CELLS),
+    alwaysApprove: {
+      recall: sendBacks === 0 ? null : 0,
+      specificity: notSentBack === 0 ? null : 1,
+      balancedAccuracy: sendBacks === 0 || notSentBack === 0 ? null : 0.5,
+      agreement: exactShare(trees, ["cleared", "falseSendBacks"], ALL_CELLS),
+    },
   };
 }
 
@@ -2786,9 +3042,141 @@ function claimLines(analysis: Analysis): string[] {
       "",
       `${arm}: ${words}. Its bound above is printed, as the registration asks, and not read ` +
         `against ${num(RATE, 2)}: a lost judgement can turn a disagreeing tree into a ` +
-        "never-decide one."
+        "never-decide one, and can leave a request undecided, which the send-back figures " +
+        "below count as a wrong verdict."
     );
   }
+  lines.push(...sendBackLines(measured));
+  return lines;
+}
+
+/** An interval as the report prints it. */
+function intervalText(interval: Interval): string {
+  return `[${num(interval.lower)}, ${num(interval.upper)}]`;
+}
+
+/** A share with its exact interval and its counts, or the words that say nothing was counted. */
+function exactShareText(value: ExactShare): string {
+  if (value.share === null || value.interval === null) return "none (0 counted)";
+  return (
+    `${num(value.share)} ${intervalText(value.interval)} ` +
+    `(${count(value.count)}/${count(value.total)})`
+  );
+}
+
+/** A share's interval over trees, with the effective size it is read at. */
+function treeIntervalText(value: ExactShare): string {
+  if (value.treeInterval === null || value.effectiveTotal === null) return "none (0 counted)";
+  return `${intervalText(value.treeInterval)} at ${num(value.effectiveTotal, 1)}`;
+}
+
+/** The send-back figures of each arm's claim, and the always-approve baseline beside them. */
+function sendBackLines(measured: readonly { arm: string; claim: ClaimMeasure }[]): string[] {
+  const lines = ["", "### The send-back figures beside item 8", ""];
+  lines.push(
+    "For INFRA-3189's catalog (version 14), over every answered approval request of the " +
+      "eligible trees, at the threshold above. A send-back is the person's chosen option, " +
+      "request changes; any other option he chose is no send-back, and the answers of an " +
+      "option that is neither approve nor request changes are counted in a column of their " +
+      "own. The arm sends a request back where it decided request changes, and does not where " +
+      "it decided another option. A " +
+      "request it did not decide at that threshold (under it, with no row, held, or in no slice) " +
+      "is a wrong verdict, as the registration counts a never-decide in every figure: a missed " +
+      "send-back where the person sent it back, and a false one where he did not, so it is in " +
+      "precision's denominator too; the not-decided counts in brackets say how many. Each " +
+      "interval is two-sided at 95 percent and exact over the requests; balanced accuracy's is " +
+      "the mean of recall's and specificity's intervals at 97.5 percent each, so both hold " +
+      "together at 95 percent at least."
+  );
+  lines.push("");
+  lines.push(
+    ...table(
+      [
+        "arm",
+        "requests",
+        "other answers",
+        "caught",
+        "missed (not decided)",
+        "cleared",
+        "false send-backs (not decided)",
+        "recall",
+        "precision",
+        "specificity",
+        "balanced accuracy",
+        "agreement",
+      ],
+      measured.map(({ arm, claim }) => {
+        const figures = claim.sendBack;
+        const balanced = figures.balancedAccuracy;
+        return [
+          arm,
+          count(figures.requests),
+          count(figures.otherAnswers),
+          count(figures.caught),
+          `${count(figures.missed)} (${count(figures.notDecided.missed)})`,
+          count(figures.cleared),
+          `${count(figures.falseSendBacks)} (${count(figures.notDecided.falseSendBacks)})`,
+          exactShareText(figures.recall),
+          exactShareText(figures.precision),
+          exactShareText(figures.specificity),
+          balanced.value === null || balanced.interval === null
+            ? "none (a class holds no request)"
+            : `${num(balanced.value)} ${intervalText(balanced.interval)}`,
+          exactShareText(figures.agreement),
+        ];
+      })
+    )
+  );
+  lines.push(
+    "",
+    "The exact intervals hold only where the requests are independent, and the requests of one " +
+      "tree may not be. The same figures read over trees: each share at Kish's effective size " +
+      "of its requests grouped by tree (the number after each interval), in Korn and " +
+      "Graubard's beta form, which is what the share is worth where every request of a tree " +
+      "goes one way."
+  );
+  lines.push("");
+  lines.push(
+    ...table(
+      ["arm", "recall", "precision", "specificity", "balanced accuracy", "agreement"],
+      measured.map(({ arm, claim }) => {
+        const figures = claim.sendBack;
+        const balanced = figures.balancedAccuracy.treeInterval;
+        return [
+          arm,
+          treeIntervalText(figures.recall),
+          treeIntervalText(figures.precision),
+          treeIntervalText(figures.specificity),
+          balanced === null ? "none (a class holds no request)" : intervalText(balanced),
+          treeIntervalText(figures.agreement),
+        ];
+      })
+    )
+  );
+  lines.push(
+    "",
+    "An arm that approves every request, on the same requests, sends none back: its recall is " +
+      "0, its specificity 1 and its balanced accuracy 0.5, and it has no precision. An arm's " +
+      "figures are read against these."
+  );
+  lines.push("");
+  lines.push(
+    ...table(
+      ["arm", "always approve: recall", "specificity", "balanced accuracy", "agreement"],
+      measured.map(({ arm, claim }) => {
+        const baseline = claim.sendBack.alwaysApprove;
+        return [
+          arm,
+          baseline.recall === null ? "none (no send-back)" : num(baseline.recall),
+          baseline.specificity === null ? "none (none not sent back)" : num(baseline.specificity),
+          baseline.balancedAccuracy === null
+            ? "none (a class holds no request)"
+            : num(baseline.balancedAccuracy),
+          exactShareText(baseline.agreement),
+        ];
+      })
+    )
+  );
   return lines;
 }
 

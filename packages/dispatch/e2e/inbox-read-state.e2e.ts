@@ -1,6 +1,6 @@
 import { setLiveSessions } from "./agents";
 import { createIssue, createProject, listMyReplies } from "./api";
-import { selectedRow, selectRow } from "./inbox-pane";
+import { hasReadingPane, selectedRow, selectRow } from "./inbox-pane";
 import { replyRowId, seedCommentThread, THREAD_SESSION, unreadThreadRows } from "./inbox-threads";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -55,10 +55,7 @@ test("a reply taller than the reading pane is marked read by reading it, and its
     await page.goto("/");
     const row = page.locator(`[data-inbox-row="${replyRowId(thread)}"]`);
     await expect(row).toBeVisible();
-    test.skip(
-      (await page.locator("[data-inbox-thread-body]").count()) === 0,
-      "the reading pane is this row's subject"
-    );
+    test.skip(!hasReadingPane(page), "the reading pane is this row's subject");
     await row.locator("time").first().click();
     await expect(row).toHaveAttribute("data-inbox-selected", "true");
     const reply = page.locator("[data-inbox-thread-turn]").last();

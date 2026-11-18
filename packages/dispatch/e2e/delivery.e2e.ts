@@ -229,6 +229,8 @@ test("dragging along the time axis sets a brush window, which the header clears"
   await openTimeline(page);
 
   const chart = page.getByTestId("delivery-chart");
+  // `openTimeline` scrolled the chart into view, which waits for it to show, and polled it until
+  // painted, so the chart's box is there.
   const box = await chart.boundingBox();
   if (box === null) throw new Error("no chart");
   const x = box.x + box.width * 0.6;
@@ -257,6 +259,8 @@ test("dragging the zoom slider zooms without setting a brush window", async ({ b
   // The vertical slider is the chart's rightmost 16 px (Timeline.tsx: `right: 4, width: 12`),
   // outside the plot grid, on the same canvas the brush listens to.
   const chart = page.getByTestId("delivery-chart");
+  // `openTimeline` scrolled the chart into view, which waits for it to show, and polled it until
+  // painted, so the chart's box is there.
   const box = await chart.boundingBox();
   if (box === null) throw new Error("no chart");
   const x = box.x + box.width - 10;
@@ -302,7 +306,8 @@ test("on a phone a finger dragged along the chart sets a brush window and moves 
 
   // A real touch through Chromium's Input.dispatchTouchEvent (touch.ts), not page.mouse, which
   // the other rows use on this project too. The finger lands on #1's merge dot, so its first
-  // contact shows that dot's tooltip, and drags from there along the time axis.
+  // contact shows that dot's tooltip, and drags from there along the time axis. `openTimeline`
+  // scrolled the chart into view, which waits for it to show, so the chart's box is there.
   const box = await page.getByTestId("delivery-chart").boundingBox();
   if (box === null) throw new Error("no chart");
   const dot = await shapePosition(page, { series: "PR merges" });

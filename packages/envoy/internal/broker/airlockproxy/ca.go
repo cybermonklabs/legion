@@ -17,7 +17,6 @@ import (
 	"crypto/x509/pkix"
 	"fmt"
 	"math/big"
-	"net"
 	"sync"
 	"time"
 )
@@ -145,14 +144,7 @@ func (a *Authority) leaf(host string) (*tls.Certificate, error) {
 		NotAfter:     now.Add(leafLifetime),
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	// The host as the certificate's one name: its one DNS name, or its one IP address for a rule
-	// that binds an address rather than a name, since a verifier reads an address out of the IP
-	// SAN and never out of the DNS SAN.
-	if ip := net.ParseIP(host); ip != nil {
-		template.IPAddresses = []net.IP{ip}
-	} else {
-		template.DNSNames = []string{host}
+		DNSNames:     []string{host},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, a.cert, &key.PublicKey, a.key)
 	if err != nil {

@@ -99,9 +99,10 @@ func (in *Intake) Run(ctx context.Context) {
 // route dispatches one envelope payload by its kind field: a pull request to
 // handlePullRequestEnvelope, a workflow run to routeWorkflowEnvelope, any other kind nowhere. It is
 // the whole filter: the durable is handed every GitHub notification on the bus
-// (githubIntakeSubject), CI settlements, comments and the events Envoy builds no payload for among
-// them. The payload is decoded once, into its fields. An empty payload, or one of a kind route does
-// not handle, is discarded before any GitHub call or write, whatever its other fields hold (a CI
+// (githubIntakeSubject), CI settlements and comments among them, and an envelope with no payload
+// that a caller of the listener's publish route can still put there. The payload is decoded once,
+// into its fields. An empty payload, or one of a kind route does not handle, is discarded before
+// any GitHub call or write, whatever its other fields hold (a CI
 // settlement's hold arrays, cistore.Summary); only a pull request's or a workflow run's string
 // fields are read, as the flat string map its handler takes (flatPayload), and every other member
 // is skipped. handled reports whether the kind is one route hands to a handler, whatever that

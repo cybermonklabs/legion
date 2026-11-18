@@ -52,14 +52,17 @@ const (
 	siteBoundDecision    = "bound.go serveBound: a request the decision refuses"
 	siteAWSSignature     = "bound.go serveBound: an AWS call the airlock will not sign"
 	siteBoundCut         = "bound.go serveBound: a call whose grant ended before its service answered"
+	siteFederatedSwap    = "bound.go serveBound: the federated token outside an exchange"
 	siteAzureAssertion   = "azure.go exchangeToken: a token request that is not this grant's"
+	siteAzureBound       = "azure.go exchangeToken: a token request as an application the document does not name"
 )
 
 // refusalSites is every site above, in the order the table names them.
 var refusalSites = []string{
 	siteNotAProxyRequest, siteCredential, siteGrantRefused, siteConnectTarget, siteConnectAddress,
 	sitePlainBound, sitePlainAddress, siteBoundConnection, siteProtocolSwitch, siteBoundValues,
-	siteBoundDecision, siteAWSSignature, siteBoundCut, siteAzureAssertion,
+	siteBoundDecision, siteAWSSignature, siteBoundCut, siteFederatedSwap, siteAzureAssertion,
+	siteAzureBound,
 }
 
 // answerIDPattern is an answer id: 16 random bytes, in hex (answer.NewID).
@@ -334,6 +337,19 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			caller: boundCaller, secrets: []string{workerName}, host: boundHost, path: "/v1/poll",
 		},
 		{
+			site: siteFederatedSwap, name: "a GET carrying the federated token's placeholder",
+			rig: func(t *testing.T) *rig {
+				r, _ := newAzureRig(t, Options{Answers: answers})
+				return r
+			},
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				return answeredBy(r.get(r.client(azureFederatedPlaceholder), "https://"+boundHost+"/v1/subscriptions", "Authorization", "Bearer "+azureFederatedPlaceholder))
+			},
+			status: http.StatusForbidden, code: codeFederatedSwap,
+			reason: "refusing to swap " + azureName + "'s federated token into a request that is no token request: that token leaves the broker only in an exchange at the token authority",
+			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: "/v1/subscriptions",
+		},
+		{
 			site: siteAzureAssertion, name: "a token request carrying an assertion of its own",
 			rig: func(t *testing.T) *rig {
 				r, _ := newAzureRig(t, Options{Answers: answers})
@@ -344,6 +360,21 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			},
 			status: http.StatusForbidden, code: codeTokenAssertion,
 			reason: "refusing a token request whose client_assertion is not this grant's placeholder",
+			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: azureTokenPath,
+		},
+		{
+			site: siteAzureBound, name: "a token request naming another client_id",
+			rig: func(t *testing.T) *rig {
+				r, _ := newAzureRig(t, Options{Answers: answers})
+				return r
+			},
+			drive: func(t *testing.T, r *rig) proxyAnswer {
+				form := tokenForm(azureFederatedPlaceholder)
+				form.Set("client_id", azureOtherClientID)
+				return answeredBy(tokenRequestAt(t, r, r.client(azureFederatedPlaceholder), azureTokenPath, form))
+			},
+			status: http.StatusForbidden, code: codeTokenApplication,
+			reason: "refusing an exchange of " + azureName + "'s federated token whose client_id is not the application " + azureName + "'s secret names",
 			caller: boundCaller, secrets: []string{azureName}, host: boundHost, path: azureTokenPath,
 		},
 	} {

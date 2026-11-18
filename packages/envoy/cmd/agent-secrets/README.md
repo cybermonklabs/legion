@@ -27,11 +27,25 @@ none names the broker's host but two: a broker that could not be reached, named 
 stale address reads as one, and a pending secret request, whose line names the page on the broker
 where its approver decides it, the `approve_url` the broker's own answer carries. The secret
 forms below, which call the store itself, name the account or project they read and write. No
-output of `agent-secrets`,
-`agent-secrets-helper` or `agent-secrets-devrelay` prints a credential the broker's URL carries:
-the URL prints only when it is provably a plain http(s) URL (no user info, query, fragment,
+printed form of the broker's URL, and no refusal or error that `agent-secrets`,
+`agent-secrets-helper` or `agent-secrets-devrelay` prints or logs, holds a credential that URL
+carries: the URL prints only when it is provably a plain http(s) URL (no user info, query, fragment,
 escape or control byte), and as `(not printed: the value carries a credential or is not a plain
-http(s) URL)` otherwise. People and launchers use its other forms to log a machine in
+http(s) URL)` otherwise. Beside a URL that does not print, a refusal the broker answers prints its
+status and `(not printed: the broker's address is not clean)` (an OAuth refusal - a trade, a
+machine login's device authorization, or its refresh - prints `the broker answered HTTP <n>`,
+with no marker), and none of its words, its answer id or its
+code, which whoever answers at that URL could fill with the credential it carries. A
+code prints there only where it is one the program matched against its own list: `renew`'s exit
+on a terminal refusal, and the helper's log of a refusal it acts on; the helper's log of a
+sign-in the broker refused names its code as that marker. What these programs print or log of an
+answer they accept is as it came, whatever the URL; among those outputs, `--json` writes a 2xx
+body verbatim, `machine login` prints the `user_code` and `verification_uri` the broker answered,
+`machine login-status` prints that `user_code`, a pending secret request's line names the
+`approve_url` above, and the helper's log lines name the `credential_id` of the machine login the
+broker issued. People and
+launchers use its other forms to log a
+machine in
 (`agent-secrets machine
 login`), register an agent session (`agent-secrets register --exec -- <agent>`), and inspect a
 session's grants (`agent-secrets self`). People and agents manage the agent secrets themselves with

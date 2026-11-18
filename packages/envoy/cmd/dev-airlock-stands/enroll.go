@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/redirects"
 )
 
 // enrollTimeout bounds each of the two calls: a local broker answers in milliseconds, and a
@@ -192,7 +193,8 @@ func call(ctx context.Context, method, url string, headers map[string]string, bo
 	for name, value := range headers {
 		request.Header.Set(name, value)
 	}
-	answer, err := http.DefaultClient.Do(request)
+	// The request carries a Proof header, so a redirect answered for the broker is refused.
+	answer, err := redirects.Refused(http.DefaultClient).Do(request)
 	if err != nil {
 		return err
 	}

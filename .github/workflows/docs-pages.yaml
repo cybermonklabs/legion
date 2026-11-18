@@ -123,6 +123,7 @@ on:
       - 'packages/daemon/internal/wakepace/*'
       - 'packages/daemon/internal/workflow/*'
       - 'packages/daemon/internal/workspace/*'
+      - 'packages/envoy/brokeraddr/*'
       - 'packages/envoy/brokerclient/*'
       - 'packages/envoy/dispatchbody/*'
       - 'packages/envoy/internal/brokerclient/*'

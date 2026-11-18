@@ -187,6 +187,10 @@ func (s *src) port() uint16 {
 }
 
 var (
+	// Every seed of the committed corpus decodes its hosts through this list by its length,
+	// so adding an entry here changes what every seed means: a seed that isolated one
+	// refusal can start drawing a host that masks it. The hosts validate refuses for their
+	// shape are compared against the model in TestModelAgreesOnHostShapes instead.
 	hostPool   = []string{"api.github.com", "*.github.com", "github.com", "*.com", "*.", "API.GitHub.com", "*.GitHub.COM", "uploads.github.com", "a.b.github.com", ".github.com", "githu\u212a.com", "githuk.com", "\u0130.github.com", ""}
 	namePool   = []string{"gh", "aws", "GH", ""}
 	hdrPool    = []string{"authorization", "Authorization", "AUTHORIZATION", "x-api-key", "X-Api-Key", "x-api-\u212aey", "proxy-authorization", "cookie"}
@@ -382,4 +386,48 @@ func FuzzAirlock(f *testing.F) {
 			t.Fatalf("Go and the Lean model disagree\ncase: %s\nlean: %s\ngo:   %s", line, wj, gj)
 		}
 	})
+}
+
+// TestModelAgreesOnHostShapes compares Go's Validate with the Lean model's validate over the
+// host shapes the rules file may hold, the ones no request can ever match among them. They are
+// read here rather than added to hostPool, because every seed of the committed corpus decodes
+// its hosts through that list by its length.
+func TestModelAgreesOnHostShapes(t *testing.T) {
+	if modelPath() == "" {
+		t.Skip("AIRLOCK_MODEL names no built airlock-model; lake build in lean/ writes one to " + modelBuildPath)
+	}
+	hosts := []string{
+		"slack.com", "*.googleapis.com", "API.GitHub.com", "a-b.example.com", "localhost",
+		"1e100.net", "*.0.example.com", "xn--p1ai", "93.184.216.34", "*.216.34", "*.34", "8080",
+		"https://slack.com", "*", "slack.com/", "slack.com:443",
+		".slack.com", "slack..com", "slack.com.", "*.", "", "-slack.com", "slack-.com",
+		"slack_com", "*.*.com", "sl\u212aack.com",
+	}
+	for _, host := range hosts {
+		t.Run(host, func(t *testing.T) {
+			c := wireCase{
+				Rules:   Rules{Secrets: []SecretRule{{Name: "gh", Hosts: []string{host}, Headers: []string{"authorization"}}}},
+				Grant:   Grant{Secret: "gh", Placeholder: "agent-secrets-placeholder-gh"},
+				Value:   "the-value",
+				Request: &Request{ConnectHost: "slack.com", ConnectPort: 443, Method: "GET", Path: "/", SNI: "slack.com", HostHeader: "slack.com", Headers: [][2]string{}},
+			}
+			if !allValidUTF8(c) {
+				t.Skip("the case does not go over the wire as valid UTF-8")
+			}
+			line, err := json.Marshal(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := leanModel(t).ask(t, line)
+			got := goAnswer(c)
+			if !reflect.DeepEqual(want, got) {
+				wj, _ := json.Marshal(want)
+				gj, _ := json.Marshal(got)
+				t.Fatalf("Go and the Lean model disagree on host %q\nlean: %s\ngo:   %s", host, wj, gj)
+			}
+			if want.Valid != HostShapeOK(host) {
+				t.Errorf("the model calls the file valid=%v for host %q, and HostShapeOK says %v", want.Valid, host, HostShapeOK(host))
+			}
+		})
+	}
 }

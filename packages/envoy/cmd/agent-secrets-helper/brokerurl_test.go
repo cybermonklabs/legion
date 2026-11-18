@@ -42,9 +42,9 @@ func TestTheHelperDropsEveryTrailingSlashOfTheBrokerURL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("loadConfig with %s=%q: %v", brokerclient.BrokerURLVar, given, err)
 		}
-		if cfg.URL != want {
+		if cfg.URL.Raw() != want {
 			t.Errorf("loadConfig with %s=%q gave URL %q, want %q: a proof signed for that path is refused LAUNCHER_INVALID and the helper clears the credential",
-				brokerclient.BrokerURLVar, given, cfg.URL, want)
+				brokerclient.BrokerURLVar, given, cfg.URL.Raw(), want)
 		}
 	}
 }

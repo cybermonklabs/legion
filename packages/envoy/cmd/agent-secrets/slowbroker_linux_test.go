@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
@@ -45,7 +46,7 @@ func serveRealHelperWith(t *testing.T, brokerURL, operator string, client *http.
 	}
 	srv := &helper.Server{
 		Registry: helper.NewRegistry(filepath.Join(dir, "sessions.json")),
-		Broker:   &helper.Broker{URL: brokerURL, OperatorFile: operatorFile, MachineFile: filepath.Join(dir, "machine.json"), HTTP: client},
+		Broker:   &helper.Broker{URL: brokeraddr.New(brokerURL), OperatorFile: operatorFile, MachineFile: filepath.Join(dir, "machine.json"), HTTP: client},
 		Hostname: "testhost",
 		PeerOf:   helper.PeerOf,
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),

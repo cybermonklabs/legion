@@ -78,8 +78,13 @@ test("project table filters narrow issues; documents stay scoped to the project"
     const issueTable = page.getByRole("table", { name: "Project issues table" });
     await expect(issueTable).toBeVisible();
     expect((await page.getByTestId("issues-table-scroll").boundingBox())?.y).toBeLessThan(420);
+    const main = page.getByTestId("main-content");
+    await expect(blockedOnYou).toBeVisible();
+    await expect(main).toBeVisible();
+    // The waits above drew the pill and the main column, and a drawn element has a box.
     const blockerBox = await blockedOnYou.boundingBox();
-    const mainBox = await page.getByTestId("main-content").boundingBox();
+    // The main column was waited for above too, so its box is there as the pill's is.
+    const mainBox = await main.boundingBox();
     if (blockerBox === null || mainBox === null) {
       throw new Error("project header is not visible");
     }

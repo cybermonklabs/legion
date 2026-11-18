@@ -176,9 +176,9 @@ theorem T3 {rules : Rules} (hv : validate rules = true) :
   simp only [validate, Bool.and_eq_true, List.all_eq_true] at hv
   have hs := hv.2 sr hm
   simp only [Bool.not_eq_true', List.isEmpty_eq_false_iff] at hs
-  refine ⟨hs.1.1, ?_⟩
+  refine ⟨hs.1.1.1, ?_⟩
   intro l hj
-  have hjo := hs.1.2
+  have hjo := hs.1.1.2
   rw [hj] at hjo
   simpa [judgeOK] using hjo
 
