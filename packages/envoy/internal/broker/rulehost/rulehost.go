@@ -243,20 +243,10 @@ func resolverReads(name string) bool {
 // one: decimal, or 0x and hex digits, where 0x alone is the number 0. The last label of no host
 // name is one; the WHATWG parser reads a host ending in one as an IPv4 address or refuses it.
 func numericLabel(label string) bool {
-	digits, hex := label, false
-	if rest, ok := strings.CutPrefix(label, "0x"); ok {
-		digits, hex = rest, true
+	if hex, ok := strings.CutPrefix(label, "0x"); ok {
+		return strings.Trim(hex, "0123456789abcdef") == ""
 	}
-	if digits == "" {
-		return hex
-	}
-	for i := range len(digits) {
-		c := digits[i]
-		if !('0' <= c && c <= '9' || hex && 'a' <= c && c <= 'f') {
-			return false
-		}
-	}
-	return true
+	return label != "" && strings.Trim(label, "0123456789") == ""
 }
 
 // isASCII reports whether s holds only ASCII bytes.

@@ -34,7 +34,7 @@ func brokerLogLines(t *testing.T, written string) []map[string]any {
 	var lines []map[string]any
 	for _, text := range strings.Split(strings.TrimSpace(written), "\n") {
 		var line map[string]any
-		if err := json.Unmarshal([]byte(text), &line); err != nil {
+		if err := json.Unmarshal([]byte(text), &line); err != nil || line == nil {
 			t.Fatalf("a line of the broker's log is no JSON object: %q: %v", text, err)
 		}
 		lines = append(lines, line)
@@ -52,10 +52,16 @@ func lineWhere(lines []map[string]any, holds func(map[string]any) bool) (map[str
 	return nil, false
 }
 
-// isolateAWS points the AWS SDK at no file and no instance of AWS's own for the rest of t, so the
-// configuration it loads reads nothing of the machine's.
+// isolateAWS points the AWS SDK at no file and no instance of AWS's own for the rest of t, and
+// empties every other AWS_ variable of the environment, each of which the SDK reads as unset when
+// it is empty, so the configuration it loads reads nothing of the machine's.
 func isolateAWS(t *testing.T) {
 	t.Helper()
+	for _, variable := range os.Environ() {
+		if name, _, _ := strings.Cut(variable, "="); strings.HasPrefix(name, "AWS_") {
+			t.Setenv(name, "")
+		}
+	}
 	none := filepath.Join(t.TempDir(), "none")
 	t.Setenv("AWS_CONFIG_FILE", none)
 	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", none)

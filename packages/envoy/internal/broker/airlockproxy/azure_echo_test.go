@@ -1,8 +1,8 @@
 // packages/envoy/internal/broker/airlockproxy/azure_echo_test.go
-// A token endpoint that sends the real federated token back. The broker sends the endpoint that
-// token in every exchange it makes, so a malformed answer quoting it is the one way it could
-// come back, and the transport's error quotes such an answer: the refusal of the exchange, its
-// line and the answer the command is given, must hold none of it.
+// A token endpoint that sends the real federated token back as an answer no client reads, which
+// the transport's error quotes. The broker sends the endpoint that token in every exchange it
+// makes: the refusal of the exchange, its line and the answer the command is given, must hold
+// none of it.
 package airlockproxy
 
 import (
