@@ -265,7 +265,7 @@ func stateCarryingTheRestOfTheShape(t *testing.T) State {
 			FirstBootAt:   time.Date(2026, 9, 18, 14, 3, 27, 0, time.UTC),
 			StartedAt:     time.Date(2026, 9, 22, 9, 15, 2, 0, time.UTC),
 		},
-		// The mark the shaping writes on every state it serves (shapeState, ContractView). The
+		// The mark the shaping writes on every state it serves (stateFor, ContractView). The
 		// source of a state answers none, so it is written here, where the walk reads the two
 		// numbers of the key and every record describes them.
 		Contract:  &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion},

@@ -1071,7 +1071,7 @@ func newest(times ...time.Time) time.Time {
 }
 
 // The state golden is the body the route serves a caller at this daemon's own contract: the
-// source answers no mark and the route writes one (shaping's shapeState), so the fixture carries
+// source answers no mark and the route writes one (shaping's stateFor), so the fixture carries
 // the two numbers of `contract` and the plugin's schema is held to them. A caller below the
 // contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
 func TestStateGolden(t *testing.T) {

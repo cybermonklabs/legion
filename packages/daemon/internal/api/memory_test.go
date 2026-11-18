@@ -113,7 +113,7 @@ var (
 // whose claims record a contract below memoryContract is served issues with only the keys the last
 // strict reader before it knows, and the rest of the body as it is. The downgrades this case walks
 // compose, band by band, as the rows of the table below say, the line-kind value strip
-// (withoutUnadmittedLineKind) finding nothing to take here: each pod of this case records one
+// (withoutWaitingOnIssue) finding nothing to take here: each pod of this case records one
 // contract, so a word of 85 is admitted or has left with its band, and the fixture stands no
 // member of the kind 132 added (waiting_on_issue_test.go reads that word). A pod below 46 is served
 // none of the keys a row of stateNarrowings strips, a pod in a band is served the keys of every row

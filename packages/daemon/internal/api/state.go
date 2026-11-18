@@ -39,7 +39,7 @@ type State struct {
 	Daemon DaemonInfo `json:"daemon"`
 	// Contract is the contract this body was built at and the contract the shaping served the
 	// caller (ContractView): the two numbers the serving-down's own log line names (shaping.go's
-	// shapeState). Absent from a body served to a caller below the contract that added it;
+	// stateFor). Absent from a body served to a caller below the contract that added it;
 	// written on every other body, the operator's `legion state --json` among them, which is
 	// served whole and says by this which contract it was built at.
 	Contract            *ContractView        `json:"contract,omitempty"`
@@ -751,7 +751,7 @@ type Issue struct {
 	// together for an issue whose tree is not live — one whose tree has left the workflow, and
 	// one the workflow does not record — since there is no tree of the deployment's to measure,
 	// and both are absent from the body the route serves a caller below quietTimeContract
-	// (shaping.go's shapeState, withoutQuietTime). A tree the record shows no movement for at
+	// (shaping.go's stateFor, withoutQuietTime). A tree the record shows no movement for at
 	// all is measured from the zero time, as the measure defines it, and a Go duration saturates
 	// there, so such a tree reads as quiet for 2562047.788 hours — the largest span a duration
 	// holds, 292 years. That is the pair saying the tree has never moved, not a fault: the
@@ -1761,7 +1761,7 @@ func ClaimWakes(wakes []WakeWaiting) map[claim.Token]WakeView {
 // owns. It does not commit it: the route can refuse one failed projection without publishing a
 // partial snapshot. It answers the project's claims beside the state, the ones it read through
 // that transaction to build the claim views, so the route decides what the caller's plugin reads
-// (shaping.go's shapeState) from the claims of the snapshot it serves, rather than reading the
+// (shaping.go's stateFor) from the claims of the snapshot it serves, rather than reading the
 // table a second time at another moment.
 type StateSource interface {
 	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)

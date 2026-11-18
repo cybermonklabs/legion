@@ -114,7 +114,7 @@ func narrowingsExpected(state State, contract int) []string {
 		}
 	}
 	var took tookOff
-	shapeState(state, restore, strip, &took)
+	stateFor(state, restore, strip, &took)
 	for place, row := range valueStrips {
 		if took.value(place) {
 			dropped = append(dropped, row.dropped)
@@ -434,7 +434,7 @@ func TestAnEmptyStateLogsNoDropOfAKeyItNeverCarried(t *testing.T) {
 	_, narrowings := stateNarrowed(t, state, statePodAddr+":41000", claims)
 
 	// The body the bands start from: the state as the route answers it, with the fleet's lowest
-	// contract it writes (projectState) and the mark shapeState writes before any band runs.
+	// contract it writes (projectState) and the mark stateFor writes before any band runs.
 	served := state
 	served.LowestPluginContract = lowestPluginContract(claims)
 	served.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: stripContract(below)}

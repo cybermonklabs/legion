@@ -652,7 +652,7 @@ const legionPendingStatusWrite = z.object({
  * retired while its tree runs: only a start of the phase it owns relaunches it, and no rule the
  * daemon runs queues that start, so nothing will wake it either. That state arrived with contract
  * 56, and a pod whose claims record a contract below it is served this report without its retired
- * entries (`api`'s `shapeState`, `withoutUnadmittedStrandedStates`) rather than being made to
+ * entries (`api`'s `stateFor`, `withoutUnadmittedStrandedStates`) rather than being made to
  * refuse the whole state over a third value its enum does not name.
  *
  * Who suspended a suspended one is not here and must never be added: a session parses this body
@@ -727,7 +727,7 @@ const legionIssue = z.object({
    * says which tree an issue belongs to; a reader tells a child from a root here, and finds the
    * members of a tree that lingers. Absent on an issue the workflow does not record (phase
    * `unrecorded`, an operator's claim), which stands in no tree, and absent from every issue of
-   * the body the route serves a caller before 51 (`api.shapeState`, `withoutTrees`). */
+   * the body the route serves a caller before 51 (`api.stateFor`, `withoutTrees`). */
   tree: issueKey.optional(),
   /** The repository (`owner/name`) the issue targets and that repository's default branch, taken
    * when the daemon first recorded the issue and never changed after; absent on an issue the
@@ -990,7 +990,7 @@ const legionHeldIssue = z.object({
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
  * key outright, so the route strips `trees` and the issues' `tree` for a caller in a pod whose
- * claims record a contract below 51 (`api.shapeState`, `withoutTrees`). A reader that finds it
+ * claims record a contract below 51 (`api.stateFor`, `withoutTrees`). A reader that finds it
  * absent has been served that stripped body and learns nothing about which trees run; it is
  * never a daemon older than this plugin, whom the boot gate and `legion probe-image` refuse.
  * `blocked` is every issue Legion waits on a Dispatch issue nobody has finished for, by issue
@@ -1006,7 +1006,7 @@ const legionHeldIssue = z.object({
  * `blockedBy` may. A daemon at this contract writes `held` on every state, empty rather than
  * null, and it is optional here for the one reason `trees` is and no other: a reader before the
  * contract that added it refuses the key outright, so the route strips it for a caller in a pod
- * whose claims record a contract below that one (`api.shapeState`, `withoutHeld`). A reader that
+ * whose claims record a contract below that one (`api.stateFor`, `withoutHeld`). A reader that
  * finds it absent has been served that stripped body and learns nothing about what is held. */
 const legionAdmission = z.object({
   cap: z.number().int().nonnegative().optional(),
@@ -1186,7 +1186,7 @@ const legionConsumerLag = z.object({
  * null, empty at every moment outside a restart or a refresh wave (contract 53). It is optional
  * here only because a daemon at this contract leaves it off one body: a reader before 53 refuses
  * the key outright, empty as surely as naming a wake, so the route strips it for a caller in a pod
- * whose claims record a contract below 53, and for that caller alone (`api.shapeState`,
+ * whose claims record a contract below 53, and for that caller alone (`api.stateFor`,
  * `withoutWakesWaiting`). A reader that finds it absent has been served that stripped body and
  * learns nothing about which wakes wait; it is never a daemon older than this plugin, whom the
  * boot gate and `legion probe-image` refuse. `claimsToRefresh` is how many claims the stale-plugin
@@ -1195,13 +1195,13 @@ const legionConsumerLag = z.object({
  * minute of the pacing at a time, so its waiting wakes are what it has admitted and this is what it
  * has left. It is optional for the same reason `wakesWaiting` is and no other: the route strips it
  * for a caller in a pod below 73, and for that caller alone, since a reader before 73 refuses the
- * key when it is 0 as surely as when it names a number (`api.shapeState`, `withoutClaimsToRefresh`).
+ * key when it is 0 as surely as when it names a number (`api.stateFor`, `withoutClaimsToRefresh`).
  * A caller in a pod whose claims record no contract at all is served the count, as is a caller the
  * daemon can place in no pod. The two strips compose on one body: a caller below 53 is below 73 too
  * and is served neither key. `contract` is the mark of the narrowing, the two contract numbers
  * the daemon's own log line names (contract 75), optional for the same reason the other two are:
  * the route strips it for a caller in a pod below 75, and for that caller alone, since a reader
- * before 75 refuses the key (`api.shapeState`, `withoutRecordFields`). A caller in a pod whose
+ * before 75 refuses the key (`api.stateFor`, `withoutRecordFields`). A caller in a pod whose
  * claims record no contract and a caller the daemon can place in no pod are served the mark, and
  * the shapes `internal/projection` answers before the route marks them carry none either. */
 export const LegionStateResponse = z.object({

@@ -204,12 +204,12 @@ func recordedContractAtOrBelow(n int) int {
 // mistake and ends the same way, in a panic: a route writing a State under AnswerIssueRecord
 // would otherwise have that body served unshaped and without a sound.
 //
-// The state's row is shapeState, and it carries the reasoning of every serving-down this daemon
+// The state's row is stateFor, and it carries the reasoning of every serving-down this daemon
 // makes. A plugin older than dispatch://INFRA-1048 — which is who this is kept for — reads the
 // state with a strict schema and refuses the whole body for one key it does not know, where
 // today's plugin strips one; and an update round serves a claim of the contract before it until
 // its pod is replaced (version.go's 46). Which keys leave the body, and below which contract
-// each of them leaves it, is one row per band of stateNarrowings: shapeState takes off the
+// each of them leaves it, is one row per band of stateNarrowings: stateFor takes off the
 // body's own keys, shapeIssue each issue's, and recordShaping writes what left. That table is
 // the list, so no prose here counts the bands. The bands compose: a caller below all of them is
 // served a body carrying no key of any row, each key absent rather than empty, since a strict
@@ -249,7 +249,7 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		if !isState {
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
-		return shapeState(state, restore, strip, &took), took
+		return stateFor(state, restore, strip, &took), took
 	case AnswerIssueRecord:
 		issue, isIssue := body.(Issue)
 		if !isIssue {
@@ -276,7 +276,7 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 }
 
 // tookOff is what one shaping of the state took off that body: the rows of stateNarrowings and
-// of valueStrips that moved it, each by its place in its own table. shapeState fills it, with
+// of valueStrips that moved it, each by its place in its own table. stateFor fills it, with
 // shapeIssue for each issue of the state, on the one application it makes, and recordShaping
 // writes a line for each row that is set, so the log names what the body served lost and
 // nothing it did not carry.
@@ -330,7 +330,7 @@ func movedAt(moved []bool, rows, place int) []bool {
 	return moved
 }
 
-// shapeState is the state's row of shapeAnswer: the keys restore's reader requires written back,
+// stateFor is the state's row of shapeAnswer: the keys restore's reader requires written back,
 // and the keys strip's reader refuses left out, with what left recorded in took.
 //
 // The body's own keys are shaped here and every key of an issue in shapeIssue, which the record
@@ -349,7 +349,7 @@ func movedAt(moved []bool, rows, place int) []bool {
 // A state whose claims the source could not read is no state at all — its claim views are built
 // from them — so the route refuses it before this runs, and no readable state is left whose
 // caller's contract is unknown.
-func shapeState(state State, restore, strip int, took *tookOff) State {
+func stateFor(state State, restore, strip int, took *tookOff) State {
 	// The mark says which shape this body took: the contract this binary declares and serves,
 	// and the contract the shaping served the caller. The second is written for every caller,
 	// one at this daemon's own contract too. strip is never above DaemonAPIVersion
@@ -392,7 +392,7 @@ func shapeState(state State, restore, strip int, took *tookOff) State {
 }
 
 // shapeIssue is one issue of the state as the caller reads it, with what left recorded in took:
-// the per-issue half of shapeState, and the record's row of shapeAnswer, since the record route
+// the per-issue half of stateFor, and the record's row of shapeAnswer, since the record route
 // answers the very value the whole-project body holds for that issue (issueRecordRoute). The two
 // readings of one issue are shaped here and nowhere else, so a caller served the state and a
 // caller served the record read the same issue field for field at every contract. took is nil
@@ -418,7 +418,7 @@ func shapeIssue(issue Issue, restore, strip int, took *tookOff) Issue {
 	// caller's reader admits, and a caller at this daemon's own contract admits every value the
 	// table declares. Each strip reports whether it took something. They run after the bands, so
 	// a caller whose strip is below whyAndLineFieldsContract has lost `kind` with the rest of the
-	// line's fields already, and withoutUnadmittedLineKind finds no word to take from it.
+	// line's fields already, and withoutWaitingOnIssue finds no word to take from it.
 	for place, row := range valueStrips {
 		if row.issue != nil {
 			issue = applyValueStrip(took, place, row.issue, issue, restore)
@@ -457,7 +457,7 @@ type stateNarrowing struct {
 }
 
 // stateNarrowings is every band of the state's shape, lowest contract first, which is the order
-// shapeState and shapeIssue apply them in and the order recordShaping writes them in: a caller
+// stateFor and shapeIssue apply them in and the order recordShaping writes them in: a caller
 // below all of them is served a body with every one of these keys gone. The two functions and
 // the record read these rows and hold no band of their own, so one row serves a band, records it
 // and describes it. TestANarrowedBodySaysSo reads the log of the very request it reads the body
@@ -530,7 +530,7 @@ type valueStrip struct {
 }
 
 // valueStrips is every strip of a value from the state, in the order recordShaping writes their
-// lines, after every band's. shapeState applies the rows' state halves after its bands and
+// lines, after every band's. stateFor applies the rows' state halves after its bands and
 // shapeIssue their issue halves after its own, and neither holds a strip of its own, so one row
 // serves a strip, records it and describes it, as a row of stateNarrowings does a band. Every row
 // follows restore (fieldArrivals.heldBack says why).
@@ -539,7 +539,7 @@ type valueStrip struct {
 var valueStrips = []valueStrip{
 	{state: withoutUnadmittedStrandedStates, dropped: droppedStrandedState},
 	{issue: withoutUnadmittedWaitAnswer, dropped: droppedWaitAnswer},
-	{issue: withoutUnadmittedLineKind, dropped: droppedLineKind},
+	{issue: withoutWaitingOnIssue, dropped: droppedLineKind},
 }
 
 // recordShaping writes the daemon's own record of what it left out of the state it answered: one
@@ -818,7 +818,7 @@ const shapedAnswersContract = 154
 // another issue (record.LineWaitingOnIssue). A plugin from 85 up to it reads `kind` with a
 // `z.enum` of the four words before it, which refuses a word it does not name and with it the
 // whole state body. So a caller whose restore is below it is served such a member without its
-// `kind` (withoutUnadmittedLineKind), which that schema takes as optional. The number is written
+// `kind` (withoutWaitingOnIssue), which that schema takes as optional. The number is written
 // once, in the declared table (answers.go's lineKinds), and the strip reads it from there.
 //
 // It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
@@ -1276,14 +1276,15 @@ func withoutUnadmittedWaitAnswer(issue Issue, restore int) (Issue, bool) {
 	return issue, true
 }
 
-// withoutUnadmittedLineKind is the issue whose waiting line member carries no `kind` where that
+// withoutWaitingOnIssue is the issue whose waiting line member carries no `kind` where that
 // word is one restore's reader does not admit. It follows the declared table (answers.go's
 // lineKinds) and takes any word the table holds back from restore (fieldArrivals.heldBack says
 // which words and why): today the `waiting_on_issue` of waitingOnIssueContract, and tomorrow any
-// word the table gives a later arrival. Every other field of the member stays, since each is a
-// field of whyAndLineFieldsContract, and so does every member whose word restore's reader
-// admits. `kind` is `omitempty`, so the emptied field writes no key, and every reader from 85 up
-// takes `kind` as optional.
+// word the table gives a later arrival. It is named for the one word it takes today, the name
+// packages/pi-legion/AGENTS.md gives contract 132's strip. Every other field of the member
+// stays, since each is a field of whyAndLineFieldsContract, and so does every member whose word
+// restore's reader admits. `kind` is `omitempty`, so the emptied field writes no key, and every
+// reader from 85 up takes `kind` as optional.
 //
 // The four words of whyAndLineFieldsContract arrived with the field, so they are no strip's:
 // they ride the band of that contract, which takes `kind` with the rest of the line's fields
@@ -1298,7 +1299,7 @@ func withoutUnadmittedWaitAnswer(issue Issue, restore int) (Issue, bool) {
 // The member is a pointer of the issue's own, and it is copied before it is written, so the
 // state the source answered is left as it was. It reports whether it took the word, which is
 // what the log line of this strip is written from (tookOff).
-func withoutUnadmittedLineKind(issue Issue, restore int) (Issue, bool) {
+func withoutWaitingOnIssue(issue Issue, restore int) (Issue, bool) {
 	line := issue.WaitingLine
 	if line == nil || line.Kind == "" {
 		return issue, false
@@ -1344,7 +1345,7 @@ type fieldArrivals struct {
 // for the contract that added it takes the key, and the value with it, from a caller whose strip
 // is below that contract, and a pod whose newest process reads the key is served the value with
 // it. Taking such a value at restore as well would cost that process a fact and make no reader
-// safer. withoutUnadmittedLineKind works both halves through on one pod.
+// safer. withoutWaitingOnIssue works both halves through on one pod.
 //
 // A value no row of the list names reads as arriving at this daemon's own contract: no older
 // reader is known to admit it, so a strip holds it back from every caller below this daemon's

@@ -367,7 +367,7 @@ var stateEnumeratedFields = []EnumeratedField{
 	// member is rebuilt with its `place` and its `length` alone (shaping.go's
 	// withoutWhyAndLineFields). `kind`'s list grew: `waiting_on_issue` arrived at 132, and a
 	// member of that kind is served without its `kind` below that contract (shaping.go's
-	// withoutUnadmittedLineKind).
+	// withoutWaitingOnIssue).
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.part", Values: lineParts},
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.kind", Values: lineKinds},
 	// `state` of the one rendered answer an issue that is not working now carries, which of the

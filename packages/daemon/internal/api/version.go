@@ -510,7 +510,7 @@ package api
 // (`api.OperatorClaim`), which `packages/contracts/src/legion-api.ts` mirrors; a strict reader
 // before 46 refuses a state carrying either, so `GET /legion/v1/state`, which authenticates
 // nobody, serves a caller from a pod whose claims record a contract below 46 the claim views
-// without them (api's shapeState): the round serves that worker until its pod is replaced, and
+// without them (api's stateFor): the round serves that worker until its pod is replaced, and
 // every reader from 46 on takes both as optional. `legion.yaml` gains `pod_update_retask_hours` and
 // `pod_update_notice_hours`, which the settings carry as the two numbers they are. A plugin
 // before 46 has no op to signal with, so its worker answers by ending the turn the task started
@@ -556,7 +556,7 @@ package api
 // (That schema strips such a key rather than refusing it since sjawhar/legion#2788, which
 // landed after this entry; 58 below is the first entry written under the strip.)
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 49 is served the state without them (api's shapeState, withoutMemory), as a
+// contract below 49 is served the state without them (api's stateFor, withoutMemory), as a
 // caller below 46 is served it without the claim views' update rounds; a caller below both is
 // served it without either. The settings carry the project's `memory` block (mode, config
 // files, instructions), which every plugin reads loosely and which changes no strictly parsed
@@ -577,7 +577,7 @@ package api
 // members of a tree that lingers. A plugin before 51 reads the state with a strict schema that
 // knows neither key and refuses the whole body for either, so the route serves `admission.trees`
 // and the issues' `tree` only to a caller whose pod records this contract, and serves a pod below
-// it the body its plugin reads (api's shapeState, withoutTrees), as it serves the memory group
+// it the body its plugin reads (api's stateFor, withoutTrees), as it serves the memory group
 // only from 49 on; a caller the daemon cannot place in a pod — the operator's `legion state` — is
 // served both. One change no gating can carry is the meaning `active` and `waiting` lost: they
 // keep their names and name issues where they named trees, so a plugin below 51 reading a 51
@@ -634,13 +634,13 @@ package api
 // naming a wake, so the bump is why the two never meet; for the one window the pairing leaves
 // open — a pod of the contract before this one still being replaced — the route serves a caller
 // whose pod records a contract below 53 a body with no `wakesWaiting` key at all (api's
-// shapeState, withoutWakesWaiting), as it serves the live trees only from 51 on and the memory
+// stateFor, withoutWakesWaiting), as it serves the live trees only from 51 on and the memory
 // group only from 49 on. The key is left off that body rather than emptied, which is why
 // `packages/contracts/src/legion-api.ts` declares `wakesWaiting` optional, as it declares
 // `admission.trees`. That caller is the only one the key is left off for: a caller the daemon
 // cannot place in a pod — the operator's `legion state` — is served it, and so is a caller in a
 // pod whose claims record no contract at all, which the route can place in no band and serves
-// the state untouched (shapeState, podContracts). With `daemon.startedAt` and each claim's
+// the state untouched (stateFor, podContracts). With `daemon.startedAt` and each claim's
 // `updateRound` it is what says whether a wave is still running. `legion state` prints a
 // `wakes waiting:` line only when something waits.
 // This change adds no store migration. (This branch took 49, then 50, then 52, while main's
@@ -692,7 +692,7 @@ package api
 // wire carries no empty list. `designGate` is unchanged beside it, the spec step's row as it has
 // always been, so a reader that asks one question of one gate reads what it read before.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 55 is served the issues without the field (api's shapeState, withoutGatedSteps),
+// contract below 55 is served the issues without the field (api's stateFor, withoutGatedSteps),
 // as a caller below 53 is served a body with no wakes waiting, one below 51 the issues without
 // the admission's trees and each issue's tree, one below 49 without the memory draw and one
 // below 46 without the claim views' update rounds; the five compose, and every reader from 55 on
@@ -716,7 +716,7 @@ package api
 // before 56 parses `strandedClaims[].state` with a strict enum of two values and refuses the whole
 // state body for a third, and every worker's `read_record` goes through that parse. The route
 // authenticates nobody, so a caller from a pod whose claims record a contract below 56 is served
-// the report without its retired entries (api's shapeState, withoutUnadmittedStrandedStates), as a
+// the report without its retired entries (api's stateFor, withoutUnadmittedStrandedStates), as a
 // caller below 49 is served it without the memory group. Dropping those entries, rather than
 // serving them, is the only choice that keeps such a pod able to read the state at all: the value
 // is the claim's own state and there is no older value to put in its place, and one retired entry
@@ -749,12 +749,12 @@ package api
 // begun a turn nor made a call the daemon saw, and a call carrying `startedAt` and no `endedAt` is
 // the shape a turn that stopped moving leaves behind. A strict reader before 57 knows no such key
 // and refuses the whole state body for it, so the route serves a caller whose pod's claims record
-// a contract below 57 the state with no `step` at all (api's shapeState, withoutStallRecord), as
+// a contract below 57 the state with no `step` at all (api's stateFor, withoutStallRecord), as
 // it serves a caller below 56 one whose claims nothing will wake name no retired claim, a caller
 // below 55 one with no gated steps, a caller below 53 one with no `wakesWaiting` and a caller
 // below 49 one with no memory group. That caller is the only one the key is left off for: a
 // caller in a pod whose claims record no contract at all is placed in no band and is served the
-// state untouched (shapeState, podContracts), and a state whose claims could not be read refuses
+// state untouched (stateFor, podContracts), and a state whose claims could not be read refuses
 // the whole request before the route cuts a body at all. 57 also brings the three numbers a
 // deployment moves a session's watch on its own tool calls with — LEGION_STALL_CALL_BOUND_MS,
 // LEGION_STALL_CALL_GRACE_MS and LEGION_STALL_STEP_MS — in the environment of every pane and of
@@ -778,7 +778,7 @@ package api
 // holds it: `admission.blocked` names what holds it, and a member a Dispatch link blocks stands
 // in the line and has its place like every other member.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 58 is served the issues without the field (api's shapeState, withoutWaitingLine),
+// contract below 58 is served the issues without the field (api's stateFor, withoutWaitingLine),
 // as a caller below 57 is served the claim views with no `step`, one below 56 the stranded
 // report without its retired entries, one below 55 the issues without the gated steps, one below
 // 53 a body with no wakes waiting, one below 51 the issues without the admission's trees and
@@ -887,7 +887,7 @@ package api
 // (`20261110225246_backward_moves_and_cap_told`) and are never filled in from the past, so an
 // issue already in flight reads counts that add up to less than its `rounds`.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 62 is served the workers without the field (api's shapeState,
+// contract below 62 is served the workers without the field (api's stateFor,
 // withoutBackwardMoves), as a caller below 58 is served the issues with no place in the
 // admission line, one below 57 the claim views with no `step`, one below 56 the stranded report
 // without its retired entries, one below 55 the issues without the gated steps, one below 53 a
@@ -1002,7 +1002,7 @@ package api
 // and nothing in the body reconciled them. A strict reader before 73 refuses a state carrying
 // the key, 0 as surely as a number, so for the one window the pairing leaves open — a pod of the
 // contract before this one still being replaced — the route serves a caller whose pod records a
-// contract below 73 a body with no `claimsToRefresh` key at all (api's shapeState,
+// contract below 73 a body with no `claimsToRefresh` key at all (api's stateFor,
 // withoutClaimsToRefresh), as it serves a caller below 62 the workers without their counted
 // moves back, one below 58 the issues without their place in the line, one below 57 the claim
 // views with no `step`, one below 56 the stranded report without its retired entries, one below
@@ -1014,7 +1014,7 @@ package api
 // `wakesWaiting`. That caller is the only one the key is left off for. A caller the daemon
 // cannot place in a pod — the operator's `legion state`, a tmux pane — is served the count, and
 // so is a caller in a pod whose claims record no contract at all, which the route can place in
-// no band and serves the state untouched (shapeState, podContracts). A pod whose claims could not
+// no band and serves the state untouched (stateFor, podContracts). A pod whose claims could not
 // be read is no case here: the claims are the state's own snapshot, so a read that fails refuses
 // the whole request before the route cuts the body.
 // The same change moves the wire's wake kinds. `plugin-task`, the update task the stale-plugin
@@ -1298,7 +1298,7 @@ package api
 // `20261112180548_claim_leak_check_cause.up.sql` with it, which adds `claims.leak_check_cause`
 // with the empty default and backfills nothing. `GET /legion/v1/state` authenticates nobody, so a
 // caller from a pod whose claims record a contract below 87 is served every claim view without
-// the key (shaping.go's shapeState, withoutLeakCheckCause), composed with the twelve narrowings 85
+// the key (shaping.go's stateFor, withoutLeakCheckCause), composed with the twelve narrowings 85
 // describes; a plugin from 85 on refuses none of it, since every answer-side schema of
 // `packages/contracts` strips a key it does not name, and the strip is what keeps it from a
 // caller that did not ask for it. The operator routes are not narrowed: their reader is the
@@ -1323,7 +1323,7 @@ package api
 // issue and not of `api.PhaseView` because a `phases` row exists for a role whose claim row does
 // not, where `PhaseView.Claim` is a required value no reader parses empty.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 94 is served the issues without both keys (shaping.go's shapeState,
+// contract below 94 is served the issues without both keys (shaping.go's stateFor,
 // withoutPhaseEntries), as a caller below 87 is served every claim view without
 // `leakCheckCause` (withoutLeakCheckCause), one below 85 every issue without the one rendered
 // answer `why` and every member of the admission line with its `place` and its `length` alone
@@ -1387,7 +1387,7 @@ package api
 // refuses a value it does not name rather than stripping it like an unknown key, so a word added
 // to the ladder later bumps this number again. The key itself is written on every body, empty
 // rather than null, and a caller from a pod whose claims record a contract below 98 is served the
-// admission block without it (shaping.go's shapeState, withoutHeld), as a caller below 94 is served every
+// admission block without it (shaping.go's stateFor, withoutHeld), as a caller below 94 is served every
 // issue without `phaseEntry` and `givenEntry`, one below 87 every claim view without
 // `leakCheckCause`, one below 85 every issue without its rendered answer and every member of the
 // waiting line without that contract's own fields, one below 75 the body without the nine keys
@@ -1486,7 +1486,7 @@ package api
 // deployment, so the two values are in `--json` and in the one issue a pane prints, which is
 // where the memory keys and the waiting line each landed.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 111 is served the issues without the two keys (shaping.go's shapeState,
+// contract below 111 is served the issues without the two keys (shaping.go's stateFor,
 // withoutQuietTime), as a caller below 98 is served the admission block without `held`, the
 // entry two above (withoutHeld) — 104, the entry right above, moves no shape and narrows
 // nothing — one below 94 the issues without `phaseEntry` and
@@ -1640,13 +1640,13 @@ package api
 // with a `z.enum` of the
 // four words before it, which refuses a word it does not name and with it the whole state body,
 // so a caller from a pod whose claims record a contract below 132 is served every member of that
-// kind without its `kind` (shaping.go's shapeIssue, withoutUnadmittedLineKind), which that schema
+// kind without its `kind` (shaping.go's shapeIssue, withoutWaitingOnIssue), which that schema
 // takes as optional; every other field of the member is 85's, `leakCheckCause` on the claim views
 // is 87's and narrowed as 87 says, the issues' `phaseEntry` and `givenEntry` are 94's and narrowed
 // as 94 says, `admission.held` is 98's and narrowed as 98 says, the issues' `treeMovedAt` and
 // `quietHours` are 111's and narrowed as 111 says, and a caller below 85 has lost `kind` with the
 // rest of them already (withoutWhyAndLineFields). This daemon serves 132 down by a value strip in
-// shapeIssue, withoutUnadmittedLineKind, beside the wait strip, withoutUnadmittedWaitAnswer, and by
+// shapeIssue, withoutWaitingOnIssue, beside the wait strip, withoutUnadmittedWaitAnswer, and by
 // no row of stateNarrowings. The change carries one store migration beside it, `20261111214351`,
 // which adds the column `ReleasedForWaitAt` is read from; a migration moves the daemon's own record
 // and is no part of this number. Nothing else of this change is on the wire.
@@ -1819,7 +1819,7 @@ package api
 // downgrade below is still what serves such a reader: a caller that did not ask for the field is
 // not given it.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 141 is served the state without the field (api's shapeState,
+// contract below 141 is served the state without the field (api's stateFor,
 // withoutAssignments), as a caller below 49 is served it without the memory fields; a caller
 // from 49 to below this contract is served the three memory fields and no assignments, whatever
 // else its own band gives it — each band is served what the narrowing at its lower edge and
@@ -1995,7 +1995,7 @@ package api
 // no arm holds for and for every issue that is not a tree's root.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
 // contract below 146 is served the issues without both times and without `architectStalls`
-// (api's shapeState, withoutEntryTimes) — as a caller below 141 is served the issues without
+// (api's stateFor, withoutEntryTimes) — as a caller below 141 is served the issues without
 // `assignments` (144, the entry right above, moves no strictly parsed shape of the state and
 // narrows nothing: `settings.runtime.kubernetes.memory_guard`, which came with it, is a key of the
 // settings block the plugin parses loosely and no part of that number), one below 133 the issues
@@ -2290,7 +2290,7 @@ package api
 // `treeMovedAt` and `quietHours` (`withoutQuietTime`, the band of `quietTimeContract`).
 // Contract 132 is one of them as well, served down by value: a caller from a pod whose lowest
 // contract is below 132 is served every waiting line member of the kind `waiting_on_issue` without
-// its `kind` (`withoutUnadmittedLineKind`), and no key moves.
+// its `kind` (`withoutWaitingOnIssue`), and no key moves.
 // Contract 133 is one of them too: a caller below 133 is served every issue without
 // `mergeWait` (`withoutMergeWait`, the band of `mergeWaitContract`).
 // Contract 141 is one of them as well: a caller below 141 is served every issue without
@@ -2401,7 +2401,7 @@ package api
 // A value is served down as well as a key. At this contract the rows of shaping.go's valueStrips
 // serve these fields' values down: `strandedClaims[].state` (`withoutUnadmittedStrandedStates`), an
 // issue's `waitingOn.answeredBy` (`withoutUnadmittedWaitAnswer`) and an issue's `waitingLine.kind`
-// (`withoutUnadmittedLineKind`). A strip takes only a value that arrived after its field, by the
+// (`withoutWaitingOnIssue`). A strip takes only a value that arrived after its field, by the
 // arrivals the declared table records (answers.go's `EnumeratedFields`), and serves the body
 // without it where the value arrived above the contract the caller states, else the lowest its
 // pod records: the stranded entry goes, the wait's answered pair goes, and the member's `kind`
