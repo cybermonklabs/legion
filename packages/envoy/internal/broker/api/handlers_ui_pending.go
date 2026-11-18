@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/wire"
 )
 
@@ -21,7 +22,7 @@ func (s *server) listPending(w http.ResponseWriter, r *http.Request, _ string) {
 	if !requireApprover(w, approver) {
 		return
 	}
-	rows, err := s.deps.Machine.PendingForApprover(r.Context(), approver)
+	rows, err := s.deps.Machine.PendingForApprover(r.Context(), approver, requests.PendingStates{})
 	if err != nil {
 		writeInternal(w, "list pending requests", err)
 		return

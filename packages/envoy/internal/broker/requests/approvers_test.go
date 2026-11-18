@@ -197,7 +197,7 @@ func TestADenialAfterAnOwnerChangeReleasesNothingAndClosesTheRecord(t *testing.T
 		}
 	}
 	for _, person := range people {
-		listed, err := m.PendingForApprover(ctx, person)
+		listed, err := m.PendingForApprover(ctx, person, PendingStates{})
 		if err != nil {
 			t.Fatalf("PendingForApprover(%s): %v", person, err)
 		}

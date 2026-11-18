@@ -195,7 +195,7 @@ func TestTheMovedSessionFindsItsPendingRequestAndTheBoxItLeftDoesNot(t *testing.
 	if err != nil || again.ID != req.ID || !again.Coalesced {
 		t.Fatalf("Create on the box the session moved to = %+v, %v; want it coalesced onto the pending request %s that moved with it", again, err, req.ID)
 	}
-	if listed, err := m.PendingForApprover(ctx, approver); err != nil || len(listed) != 1 || listed[0].RecordID != *req.RecordID {
+	if listed, err := m.PendingForApprover(ctx, approver, PendingStates{}); err != nil || len(listed) != 1 || listed[0].RecordID != *req.RecordID {
 		t.Fatalf("PendingForApprover(%s) = %+v, %v; want the moved request's one record %s", approver, listed, err, *req.RecordID)
 	}
 

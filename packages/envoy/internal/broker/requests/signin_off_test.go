@@ -222,12 +222,12 @@ func TestTheSweepOfASignInOffBrokerDeniesWhatAnEarlierRunLeftPending(t *testing.
 		t.Fatalf("the request signed for another broker on this database = %+v, %v; want it left pending for that broker", got, err)
 	}
 	m.Audience = anotherBroker
-	listed, err := m.PendingForApprover(ctx, approver)
+	listed, err := m.PendingForApprover(ctx, approver, PendingStates{})
 	m.Audience = testAudience
 	if err != nil || len(listed) != 1 || listed[0].RecordID != *foreign.RecordID {
 		t.Fatalf("the other broker's list for %s = %+v, %v; want its own record %s still there to decide", approver, listed, err, *foreign.RecordID)
 	}
-	if pending, err := m.PendingForApprover(ctx, approver); err != nil || len(pending) != 0 {
+	if pending, err := m.PendingForApprover(ctx, approver, PendingStates{}); err != nil || len(pending) != 0 {
 		t.Fatalf("PendingForApprover(%s) = %+v, %v; want nothing left to decide", approver, pending, err)
 	}
 	if released, err := m.Values(ctx, decided.GrantID, other, nil, ReleaseCall{}); err != nil || released.Values["DEEL_API_KEY"] != "deel-v1" {

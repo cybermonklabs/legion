@@ -100,11 +100,14 @@ func TestEachSlotOfAPodSignsItsOwnRecordAndListsItsOwnGrant(t *testing.T) {
 	}
 }
 
-// TestPendingForApproverTerminalEventsLiteralMatchesTheList pins pendingForApproverQuery's
-// literal terminal-event predicate against record.TerminalEventNames(), so a later addition or
-// rename of a terminal event changes both together: the literal is what lets Postgres recognize
-// credential_request_events' partial index (pendingForApproverQuery's own doc comment says why a
-// bound parameter cannot).
+// TestPendingForApproverTerminalEventsLiteralMatchesTheList pins the literal terminal-event
+// predicates of pendingForApproverQuery and pendingOrExpiredForApproverQuery — the no-states
+// statement's NOT EXISTS, and recordStateSQL's subquery, which both statements read — against
+// record.TerminalEventNames(), so a later addition or rename of a terminal event changes them all
+// together: the literal is what lets Postgres recognize credential_request_events' partial index
+// (pendingForApproverQuery's own doc comment says why a bound parameter cannot). Every
+// terminal-event predicate of each statement must be that literal, so one copy that drifted fails
+// the test even beside one that did not.
 func TestPendingForApproverTerminalEventsLiteralMatchesTheList(t *testing.T) {
 	names := record.TerminalEventNames()
 	quoted := make([]string, len(names))
@@ -112,62 +115,83 @@ func TestPendingForApproverTerminalEventsLiteralMatchesTheList(t *testing.T) {
 		quoted[i] = fmt.Sprintf("'%s'", name)
 	}
 	want := "event in (" + strings.Join(quoted, ",") + ")"
-	if !strings.Contains(pendingForApproverQuery, want) {
-		t.Fatalf("pendingForApproverQuery does not spell record.TerminalEventNames() as %q; the query and the list have drifted:\n%s", want, pendingForApproverQuery)
+	for name, query := range map[string]string{
+		"pendingForApproverQuery":          pendingForApproverQuery,
+		"pendingOrExpiredForApproverQuery": pendingOrExpiredForApproverQuery,
+	} {
+		if spelled, all := strings.Count(query, want), strings.Count(query, "event in ("); spelled == 0 || spelled != all {
+			t.Errorf("%s spells record.TerminalEventNames() as %q in %d of its %d terminal-event predicates; the query and the list have drifted:\n%s", name, want, spelled, all, query)
+		}
 	}
 }
 
-// TestPendingForApproverAvoidsSequentialScans pins PendingForApprover's query plan the way
-// Dispatch's api.TestListIssueAsksOpenQueryUsesAsksOpenIndex pins queryOwnerAsks's: Postgres
-// automatically switches a prepared statement from a per-execution custom plan (built for that
-// call's actual bound values) to a cached generic plan starting on its 6th execution, which an
-// empty test table cannot trigger organically, so force_generic_plan pins every execution
-// (including the first) to that shape instead of relying on the cost-based switch.
-// enable_seqscan = off then makes a sequential scan of either table the query touches the
-// planner's last resort rather than an ordinary choice it might make anyway for a near-empty
-// table: with both set, this test fails the moment either index path the query depends on stops
-// applying — credential_requests_approver (migration 0011) for the approver filter, or
-// credential_request_decision (migration 0005) for the launcher_credential branch's NOT EXISTS.
+// TestPendingForApproverAvoidsSequentialScans pins the query plans of both of PendingForApprover's
+// statements — pendingForApproverQuery for a list with no states, and
+// pendingOrExpiredForApproverQuery for one with both — the way Dispatch's
+// api.TestListIssueAsksOpenQueryUsesAsksOpenIndex pins queryOwnerAsks's: Postgres automatically
+// switches a prepared statement from a per-execution custom plan (built for that call's actual
+// bound values) to a cached generic plan starting on its 6th execution, which an empty test table
+// cannot trigger organically, so force_generic_plan pins every execution (including the first) to
+// that shape instead of relying on the cost-based switch. enable_seqscan = off then makes a
+// sequential scan of any table the statement touches the planner's last resort rather than an
+// ordinary choice it might make anyway for a near-empty table: with both set, this test fails the
+// moment an index path a statement depends on stops applying — credential_requests_approver
+// (migration 0011) for the approver filter, credential_request_decision (migration 0005) for the
+// terminal-event reads, or credential_request_dismissals' primary key (migration 0033) for the
+// expired rows' NOT EXISTS.
 func TestPendingForApproverAvoidsSequentialScans(t *testing.T) {
 	st := storetest.Open(t)
 	ctx := context.Background()
-	tx, err := st.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin explain transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
-		t.Fatalf("disable sequential scans: %v", err)
-	}
-	if _, err := tx.Exec(ctx, "set local plan_cache_mode = force_generic_plan"); err != nil {
-		t.Fatalf("force generic plan mode: %v", err)
-	}
-	if _, err := tx.Exec(ctx, "prepare pending_query (text, text) as "+pendingForApproverQuery); err != nil {
-		t.Fatalf("prepare pending query: %v", err)
-	}
-	execute := fmt.Sprintf("execute pending_query('nobody@example.com', '%s')", record.AnyoneApprover)
-	for i := range 6 {
-		if _, err := tx.Exec(ctx, execute); err != nil {
-			t.Fatalf("execute pending query %d: %v", i, err)
-		}
-	}
-	var planJSON []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+execute).Scan(&planJSON); err != nil {
-		t.Fatalf("explain execute pending query: %v", err)
-	}
-	var plans []struct {
-		Plan json.RawMessage `json:"Plan"`
-	}
-	if err := json.Unmarshal(planJSON, &plans); err != nil {
-		t.Fatalf("decode explain output: %v", err)
-	}
-	if len(plans) != 1 {
-		t.Fatalf("explain plans = %#v, want one plan", plans)
-	}
-	for _, relation := range []string{"credential_requests", "credential_request_events"} {
-		if explaintest.SeqScansRelation(t, plans[0].Plan, relation) {
-			t.Fatalf("pending query generic plan sequentially scans %s; want an index scan:\n%s", relation, planJSON)
-		}
+	for _, statement := range []struct {
+		name, types, query, args string
+	}{
+		{"pendingForApproverQuery", "text, text", pendingForApproverQuery,
+			fmt.Sprintf("'nobody@example.com', '%s'", record.AnyoneApprover)},
+		{"pendingOrExpiredForApproverQuery", "text, text, boolean, boolean", pendingOrExpiredForApproverQuery,
+			fmt.Sprintf("'nobody@example.com', '%s', true, true", record.AnyoneApprover)},
+	} {
+		t.Run(statement.name, func(t *testing.T) {
+			tx, err := st.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin explain transaction: %v", err)
+			}
+			defer tx.Rollback(ctx)
+			if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
+				t.Fatalf("disable sequential scans: %v", err)
+			}
+			if _, err := tx.Exec(ctx, "set local plan_cache_mode = force_generic_plan"); err != nil {
+				t.Fatalf("force generic plan mode: %v", err)
+			}
+			// A prepared statement outlives the transaction on its pooled connection, so each
+			// statement is prepared under a name of its own.
+			if _, err := tx.Exec(ctx, "prepare "+statement.name+" ("+statement.types+") as "+statement.query); err != nil {
+				t.Fatalf("prepare pending query: %v", err)
+			}
+			execute := "execute " + statement.name + "(" + statement.args + ")"
+			for i := range 6 {
+				if _, err := tx.Exec(ctx, execute); err != nil {
+					t.Fatalf("execute pending query %d: %v", i, err)
+				}
+			}
+			var planJSON []byte
+			if err := tx.QueryRow(ctx, "explain (format json) "+execute).Scan(&planJSON); err != nil {
+				t.Fatalf("explain execute pending query: %v", err)
+			}
+			var plans []struct {
+				Plan json.RawMessage `json:"Plan"`
+			}
+			if err := json.Unmarshal(planJSON, &plans); err != nil {
+				t.Fatalf("decode explain output: %v", err)
+			}
+			if len(plans) != 1 {
+				t.Fatalf("explain plans = %#v, want one plan", plans)
+			}
+			for _, relation := range []string{"credential_requests", "credential_request_events", "credential_request_dismissals"} {
+				if explaintest.SeqScansRelation(t, plans[0].Plan, relation) {
+					t.Fatalf("%s's generic plan sequentially scans %s; want an index scan:\n%s", statement.name, relation, planJSON)
+				}
+			}
+		})
 	}
 }
 
@@ -192,7 +216,7 @@ func TestReadRecordAndPendingNameBothSessionIDsWhenTheyDiffer(t *testing.T) {
 		t.Fatalf("ReadRecord.Session = %+v, %v, want %+v", detail.Session, err, want)
 	}
 
-	rows, err := m.PendingForApprover(ctx, approver)
+	rows, err := m.PendingForApprover(ctx, approver, PendingStates{})
 	if err != nil || len(rows) != 1 || rows[0].Session != want {
 		t.Fatalf("PendingForApprover = %+v, %v, want one row naming %+v", rows, err, want)
 	}
@@ -229,7 +253,7 @@ func TestPendingForApproverLeavesOutARecordThatDoesNotVerify(t *testing.T) {
 
 	// Twice, as the approval page's poll asks: the second list logs nothing new.
 	for range 2 {
-		rows, err := m.PendingForApprover(ctx, approver)
+		rows, err := m.PendingForApprover(ctx, approver, PendingStates{})
 		if err != nil {
 			t.Fatalf("PendingForApprover = %v; want the records that verify, without the one that does not", err)
 		}
@@ -299,7 +323,7 @@ func TestPendingForApproverWarnsOnceAboutALeftOutRecordPastItsExpiry(t *testing.
 	}
 
 	for range 2 {
-		rows, err := m.PendingForApprover(ctx, approver)
+		rows, err := m.PendingForApprover(ctx, approver, PendingStates{})
 		if err != nil || len(rows) != 1 || rows[0].RecordID != *valid.RecordID {
 			t.Fatalf("PendingForApprover = %+v, %v; want only %s, never the stale record %s", rows, err, *valid.RecordID, stale)
 		}
