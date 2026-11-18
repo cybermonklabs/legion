@@ -225,9 +225,16 @@ func (k *reachKeeper) recordOf(c supervise.Claim) supervise.Reach {
 // one that ended before its own write of rec. The launches are counted from the generation the
 // relaunch's launch left the claim at (LastRelaunchGeneration), so a later launch of the claim,
 // made before rec takes the relaunch in, is told as the exit it is; a relaunch whose launch is not
-// recorded counts from the claim's generation as c holds it.
+// recorded counts from the claim's generation as c holds it. That launch can land at a later
+// generation than that first read: its own loop retries a refused start, a store that did not
+// answer has it tried again at the probe interval, or a daemon that ended mid-start spawns the
+// claim once more. So the generation the launch records later is taken in too, while the episode
+// has told no exit, and no launch of the relaunch's own is told as one.
 func relaunchTakenIn(c supervise.Claim, rec supervise.Reach) supervise.Reach {
 	if !c.LastRelaunch.After(rec.RelaunchedAt) {
+		if c.LastRelaunch.Equal(rec.RelaunchedAt) && rec.Relaunched && !rec.ExitTold && c.LastRelaunchGeneration > rec.Generation {
+			rec.Generation = c.LastRelaunchGeneration
+		}
 		return rec
 	}
 	rec.RelaunchedAt = c.LastRelaunch

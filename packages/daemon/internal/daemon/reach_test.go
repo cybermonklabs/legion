@@ -731,6 +731,71 @@ func TestEachPerClaimNoticeOfAnUnreachableClaimIsSentOnce(t *testing.T) {
 	})
 }
 
+// The keeper reads a relaunch before its launch is recorded (LastRelaunchGeneration 0), and the
+// launch then lands at a later generation than that first read. Three paths make it so: the
+// launch's own loop retries a refused start; the launch is tried again at the probe interval after
+// a store that did not answer; and a daemon that ends mid-start comes back with the claim
+// launch_uncertain and spawns it once more. Each is the relaunch's own launch, so none is an exit
+// of the claim's.
+func TestARelaunchsLaunchAtALaterGenerationIsNoExit(t *testing.T) {
+	type read struct {
+		generation, recorded uint64
+		state                supervise.ClaimState
+	}
+	for _, tc := range []struct {
+		name  string
+		reads []read
+	}{
+		{name: "the launch retries a refused start", reads: []read{
+			{generation: 4, state: supervise.StateLaunching},
+			{generation: 5, recorded: 5, state: supervise.StateLaunching},
+			{generation: 5, recorded: 5, state: supervise.StateIdle},
+		}},
+		{name: "the launch is tried again at the probe interval", reads: []read{
+			{generation: 3, state: supervise.StateLaunching},
+			{generation: 3, state: supervise.StateLaunching},
+			{generation: 4, recorded: 4, state: supervise.StateIdle},
+		}},
+		{name: "a restart spawns the launch_uncertain claim again", reads: []read{
+			{generation: 4, state: supervise.StateLaunchUncertain},
+			{generation: 5, recorded: 5, state: supervise.StateLaunching},
+			{generation: 5, recorded: 5, state: supervise.StateIdle},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReachRig(t, false)
+			planner := reachClaim(t, "LEGION-208", "LEGION-210", claim.RolePlanner, "ses_planner")
+			planner.Generation = 3
+			r.at(21 * time.Minute)
+			r.listing(map[string]time.Duration{"ses_other": 21 * time.Minute})
+			r.sweep(planner)
+			if !r.reach(planner.Token).Unreachable() {
+				t.Fatal("the planner was not marked at 21 minutes")
+			}
+			planner.LastRelaunch = reachBoot.Add(25 * time.Minute)
+			for i, step := range tc.reads {
+				planner.Generation, planner.LastRelaunchGeneration, planner.State = step.generation, step.recorded, step.state
+				r.at(time.Duration(26+i) * time.Minute)
+				r.sweep(r.with(planner))
+			}
+			if exits := r.notices(record.UnreachableExitNotice); len(exits) != 0 {
+				t.Fatalf("the relaunch's own launch at a later generation was told as an exit: %+v", exits)
+			}
+			if got := r.reach(planner.Token); got.Generation != planner.Generation || !got.Relaunched {
+				t.Fatalf("the record reads %+v, want it relaunched and counting from the launch's generation %d", got, planner.Generation)
+			}
+
+			// A later launch of the claim than the relaunch's own is still the exit it is.
+			planner.Generation++
+			r.at(40 * time.Minute)
+			r.sweep(r.with(planner))
+			if exits := r.notices(record.UnreachableExitNotice); len(exits) != 1 {
+				t.Fatalf("exit notices after a launch past the relaunch's = %+v, want one", exits)
+			}
+		})
+	}
+}
+
 // Where the daemon runs the controller, it relaunches its own unreachable controller once in 6
 // hours, may replace its pod, and writes R6's line when the relaunch does not bring it back, when
 // the guard refuses it, and when it is out of reach a second time within the 6 hours. The
