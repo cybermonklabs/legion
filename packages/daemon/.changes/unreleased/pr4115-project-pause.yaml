@@ -23,10 +23,13 @@ body: |-
   pause held counts no time until the wake pacing has let out every launch that the pause held for
   a session of the pod, those wakes included. The round's own ask is queued only for a session
   that is ready, and an ask that the pause held wakes, after the resume, a session that the pause
-  stopped. A role message of the daemon's own that the pause held finishes undelivered when it runs
-  while its session is still stopped, as one to a released session does. A production check's look that
-  began before the pause ended counts its two hours from the resume, or from its session's last
-  ready after the resume where that is later, and nothing while that session is still starting.
+  stopped. A role message of the daemon's own that the pause held for a session that the pause
+  stopped reaches that session after the resume, and its publish is what wakes the session; one
+  held for a session that the pause did not stop, such as one an idle release had released before
+  the pause, finishes undelivered and wakes nothing, as a role message to a released session does.
+  A production check's look that began before the pause ended counts its two hours from the
+  resume, or from its session's last ready after the resume where that is later, and nothing while
+  that session is still starting.
   Six changes apply in every project, also when no pause is ever made. The stuck clock of a
   resume starts when the wake pacing lets the launch out, not when the wake arrived, so a launch
   that waited its turn in a long queue is not warned stuck for that wait. The architect-stalled
