@@ -8,7 +8,9 @@
 //
 // An error of a request built from that URL (Error, Cause) prints text of its own only beside a
 // clean URL and a request URL Call prints, and only where that text is a transport failure's, text
-// the allow-list passes, or the broker's own OAuth words. Those words are trusted, not checked, so
+// the allow-list passes, or the broker's own OAuth words; beside any other URL it prints the
+// failure's class alone, except words an earlier Error, Cause or Named already gave, which print
+// as given (below). The broker's OAuth words are trusted, not checked, so
 // whatever the broker puts in them prints: an OAuth error answer (*oauth2.RetrieveError) of the
 // broker's own with a nonempty error code and an empty error_uri prints its error code and
 // error_description whole, as the broker wrote them, since they are the reason for a refusal a

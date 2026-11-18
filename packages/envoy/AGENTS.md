@@ -6194,7 +6194,7 @@ Only the secret forms, which call the store itself, name the store's account or 
 <id> in <region>`, `GCP Secret Manager project <number>`): `secret show` as `store:`, `secret list` one line on stderr, with `store` on each row under `--json`.
 No line names a secret's version: a grant's release carries names and values alone, and a session holds no sign-in of its own to the store.
 No printed form of the broker's URL, and no refusal or error that `agent-secrets`, `agent-secrets-helper` (`internal/broker/helper`'s broker calls included), `agent-secrets-devrelay`, the token client (`internal/brokerclient`) or `legion controller start` prints or logs, holds a credential that URL carries (what they print or log of an answer they accept is as it came: `--json` and `machine login`, below), and an error of theirs that passes through `redact.Error` or `redact.Cause` (below) prints, of a broker's OAuth error answer, only its error code and `error_description`, whole as the broker wrote them, and only where that URL is clean and the answer has an error code and no `error_uri`;
-every other answer — one with an `error_uri`, one with no error code, and any answer beside a URL that is not clean — prints as the failure's class alone, `the broker answered HTTP <n>`.
+every other answer — one with an `error_uri`, one with no error code, and any answer beside a URL that is not clean — prints as the failure's class alone, `the broker answered HTTP <n>`, except words an earlier `Error`, `Cause` or `Named` already gave, which print as given.
 A message names that URL through `internal/redact`'s `URL`, an allow-list that prints the value as written only when it is provably a plain http(s) URL (printable ASCII with no `@`, `%`, `?`, `#`, backslash or whitespace;
 net/url reads it back byte for byte as an http or https scheme, a DNS name, IPv4 or bracketed zone-less IPv6 host with an optional port of one to five digits, and a path of `[A-Za-z0-9._~/-]`), and as `redact.NotPrinted` otherwise, printing no part of it.
 A URL with user info prints as `NotPrinted` too, not as `xxxxx@host`: a host-less value whose password holds an `@` would print the password's tail as the host.
@@ -6862,7 +6862,7 @@ The error keeps its own text, and a failed dial, marshal or write does not match
 On `ErrNoReply`, `agent-secrets enroll --helper` exits 1 with `the helper gave no answer (<error>). So it is not known if the broker made the enrollment.`, and tells the caller to run the same command again.
 `agent-secrets unenroll --helper` says the same of the revoke, and that the same command is safe to run again.
 `enroll --helper` makes `AGENT_SECRETS_KEY_DIR` before it asks the helper, so only the write of `enrollment` can fail after the broker made the enrollment.
-That failure exits 1, and its error names the enrollment and the failed write: `the broker made enrollment <id>, but this command could not write its id to <path>: <error>`.
+That failure exits 1, and its error names the enrollment, the file and the directory's setting, never the path, and the system's reason alone (`redact.File`): `agent-secrets enroll: the broker made enrollment <id>, but this command could not write its id to enrollment in the directory AGENT_SECRETS_KEY_DIR names: <operation>: <reason>`, with the id on one line (`redact.OneLine`).
 
 `Server.Serve` returns only after every broker-call op that it accepted has written its answer.
 So a helper that stops on a signal never closes a client's connection with no answer while a broker call runs.
