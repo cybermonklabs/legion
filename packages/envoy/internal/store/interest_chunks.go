@@ -139,6 +139,13 @@ func (r *Registry) putInterestAt(ctx context.Context, sessionID string, row Inte
 // is bus.ErrTooLarge.
 func ChunkedRecordView(room int, topics []string, encode func(topics []string) ([]byte, error)) ([]byte, error) {
 	covering := CoveringTopics(topics)
+	view, err := encode(covering)
+	if err != nil {
+		return nil, err
+	}
+	if len(view) <= room {
+		return view, nil
+	}
 	var kept, carried []string
 	for _, topic := range covering {
 		if !strings.HasPrefix(topic, contracts.RoleTopicPrefix) && consumerCarries(topic) {
@@ -147,20 +154,16 @@ func ChunkedRecordView(room int, topics []string, encode func(topics []string) (
 			kept = append(kept, topic)
 		}
 	}
-	reduced := slices.Sorted(slices.Values(append(kept, bus.ReduceFilterSubjects(carried)...)))
-	sizes := make([]int, 0, 2)
-	for _, view := range [][]string{covering, reduced} {
-		encoded, err := encode(view)
-		if err != nil {
-			return nil, err
-		}
-		if len(encoded) <= room {
-			return encoded, nil
-		}
-		sizes = append(sizes, len(encoded))
+	coveringBytes := len(view)
+	view, err = encode(slices.Sorted(slices.Values(append(kept, bus.ReduceFilterSubjects(carried)...))))
+	if err != nil {
+		return nil, err
+	}
+	if len(view) <= room {
+		return view, nil
 	}
 	return nil, fmt.Errorf("%w: the view of a record of %d topics an earlier build reads takes %d bytes, or %d reduced, past the %d a manifest leaves it",
-		bus.ErrTooLarge, len(topics), sizes[0], sizes[1], room)
+		bus.ErrTooLarge, len(topics), coveringBytes, len(view), room)
 }
 
 // consumerCarries reports whether a session consumer's filter carries topic: the stream stores it

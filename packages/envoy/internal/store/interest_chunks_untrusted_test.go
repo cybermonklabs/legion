@@ -147,6 +147,11 @@ var forgedManifests = map[string]string{
 func TestAForgedManifestIsARecordThisBuildCannotDecodeAndTheNextWriteReplacesIt(t *testing.T) {
 	for what, manifest := range forgedManifests {
 		t.Run(what, func(t *testing.T) {
+			// Each forgery is a well-formed manifest whose one fault is its layout, so the store meets
+			// that layout rather than a decode error.
+			if !json.Valid([]byte(manifest)) {
+				t.Fatalf("the forged manifest with %s is not valid JSON, so the case would not reach its layout", what)
+			}
 			conn := kvchunktest.SmallPayloadNATS(t)
 			reg := openRegistry(t, conn)
 			kv := rawInterests(t, conn)

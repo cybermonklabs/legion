@@ -636,7 +636,12 @@ func TestAChunkedKnownSessionRecordWithAMissingChunkIsNoRecordNotAPartialOne(t *
 // session's next write replaces it.
 func TestAForgedKnownSessionManifestIsNoRecordAndTheNextWriteReplacesIt(t *testing.T) {
 	conn := kvchunktest.SmallPayloadNATS(t)
-	forged := `{"chunked":{"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":4611686018427387904,"bytes":10,"sha256":"` + strings.Repeat("0", 64) + `"}`
+	forged := `{"chunked":{"generation":"AAAAAAAAAAAAAAAAAAAAAAAAAA","chunks":4611686018427387904,"bytes":10,"sha256":"` + strings.Repeat("0", 64) + `"}}`
+	// The forgery is a well-formed manifest whose one fault is its chunk count, so the store meets
+	// that count rather than a decode error.
+	if !json.Valid([]byte(forged)) {
+		t.Fatalf("the forged manifest %s is not valid JSON, so the case would not reach its chunk count", forged)
+	}
 	known := openKnownOn(t, conn, time.Now)
 	if _, err := rawKnown(t, conn).Put("ses_known_forged", []byte(forged)); err != nil {
 		t.Fatalf("store the forged manifest: %v", err)
