@@ -2,9 +2,9 @@
  * The cold-load lane: every module the web app loads lazily is held back each time it loads once
  * a test file's rows have begun.
  *
- * `bun run test:web:cold` is `test:web` with this file first in its `--preload` list, so its
- * plugin is registered before any module loads. It imports nothing that reads the DOM, so
- * `register-dom.ts`, the preload after it, still runs before every module that does.
+ * `bun run test:web:cold` is `test:web` with this file added last to its `--preload` list. It
+ * registers its plugin in its `beforeAll`, not as it loads, so it needs no place of its own in
+ * that list.
  *
  * The app loads some modules on first use only: each `lazy(() => import(...))` page and each other
  * `import(...)`, such as the Markdown engine's `@legion/proof-editor/headless` in
@@ -18,17 +18,21 @@
  * keeps a chain of holds, one lazy module loading the next (the Markdown engine's module loads
  * `yjs`, which is held too), well inside the 10 s a `findBy*` waits.
  *
- * The rows begin at this file's `beforeAll`, which is registered before the test file's own and so
- * runs first: a lazy load that a file's own `beforeAll` starts is held too. A module a test file
- * imports itself, directly or through the modules it imports, is loaded before its rows begin, so
- * it is not held: no row can find it unloaded, and a hold there would only slow the file.
+ * The rows begin at this file's `beforeAll`, which registers the plugin. A plugin sees only the
+ * loads after it is registered, so it holds every load it sees. That `beforeAll` is registered
+ * before the test file's own and so runs first: a lazy load that a file's own `beforeAll` starts
+ * is held too. A module a test file imports itself, directly or through the modules it imports,
+ * is loaded before its rows begin, so it is not held: no row can find it unloaded, and a hold
+ * there would only slow the file. Under `--rerun-each`, Bun runs that `beforeAll` again for each
+ * run of the file and so registers the plugin again, and a module first loaded in a later run is
+ * still held once, not once for each registration (both measured on Bun 1.4.4).
  *
- * The list is read each time this file runs, once per test file: every `import("<literal>")` of
- * the sources under `web/src` that are not tests, resolved from the file that writes it. Only the
- * file the specifier resolves to is held, not the rest of its package, and a specifier that
- * resolves to no JavaScript or TypeScript file, such as a style sheet, is not held. The wait is a
- * child `sleep`: a fake clock a row installs holds `setTimeout` and `Bun.sleep` (Bun 1.4.4), and
- * would hold the load with them.
+ * The list is read as this file loads, once per test file and not again for a rerun of it: every
+ * `import("<literal>")` of the sources under `web/src` that are not tests, resolved from the file
+ * that writes it. Only the file the specifier resolves to is held, not the rest of its package,
+ * and a specifier that resolves to no JavaScript or TypeScript file, such as a style sheet, is
+ * not held. The wait is a child `sleep`: a fake clock a row installs holds `setTimeout` and
+ * `Bun.sleep` (Bun 1.4.4), and would hold the load with them.
  *
  * Reading a failure. A row that fails here and passes under `test:web` with the same seed reads
  * text or a part a lazily loaded module renders before it waits for it: it waits with a `findBy*`
@@ -90,26 +94,22 @@ const seconds = holdSeconds(process.env.DISPATCH_COLD_HOLD_MS);
 const held = lazilyLoaded();
 const paths = [...held].map((path) => path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 
-/** Whether the test file's rows have begun: each load of a held module from then on is held. */
-let rowsStarted = false;
+// The test file's rows begin here. A plugin sees only the loads after it is registered, so every
+// load it sees is held.
 beforeAll(() => {
-  rowsStarted = true;
-});
-
-plugin({
-  name: "hold lazy loads",
-  setup(build) {
-    build.onLoad({ filter: new RegExp(`^(?:${paths.join("|")})$`) }, async ({ path }) => {
-      if (rowsStarted) {
+  plugin({
+    name: "hold lazy loads",
+    setup(build) {
+      build.onLoad({ filter: new RegExp(`^(?:${paths.join("|")})$`) }, async ({ path }) => {
         const status = await Bun.spawn(["sleep", seconds], { stdout: "ignore" }).exited;
         if (status !== 0) {
           throw new Error(`sleep ${seconds} exited ${status}, so ${path} was not held`);
         }
-      }
-      // No `loader`, so Bun picks it from the extension as it does under `test:web` (`jsx` for a
-      // `.js` file). The contents are returned even unheld: Bun refuses an `undefined` result
-      // ("Expected module mock to return an object").
-      return { contents: readFileSync(path, "utf8") };
-    });
-  },
+        // No `loader`, so Bun picks it from the extension as it does under `test:web` (`jsx` for
+        // a `.js` file). The contents are read here, since an `onLoad` cannot hand the load back
+        // to Bun: it refuses an `undefined` result ("Expected module mock to return an object").
+        return { contents: readFileSync(path, "utf8") };
+      });
+    },
+  });
 });

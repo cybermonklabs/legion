@@ -1730,9 +1730,10 @@ from its console: Bun prints no `(pass)` lines where `CLAUDECODE` or `AGENT` is 
 one lane with every test run k times (`--rerun-each`), 20 when `--reruns` is left out, and writes
 a report of the rows that failed.
 `.github/workflows/dispatch-unit-repeat.yaml` runs it weekly, each lane under three seeds.
-`bun run test:web:cold` is `test:web` with `web/src/__tests__/hold-lazy-loads.ts` preloaded
-first, before `register-dom.ts`, so its plugin is registered before any module loads; it imports
-nothing that reads the DOM, so `register-dom.ts` still comes before every module that does.
+`bun run test:web:cold` is `bun run test:web` with `web/src/__tests__/hold-lazy-loads.ts` added
+last to its preloads.
+That file registers its plugin in its `beforeAll`, where the test file's rows begin, and a plugin
+sees only the loads made after it is registered.
 It holds back each load, once the test file's rows have begun, of every script module that the
 sources of `web/src`, tests aside, load with `import("<literal>")`, `lazy()` pages and the Markdown
 engine among them, for `DISPATCH_COLD_HOLD_MS` milliseconds of real time, 1000 when unset: every
