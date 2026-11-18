@@ -8,8 +8,10 @@ body: |-
     or cannot be reached, an uncoded 502, 503 or 504, and an attempt that has no answer after 5
     minutes. A 5xx the daemon itself answered to the registration still fails the boot at once and
     leaves the pane to the daemon's registration deadline. The `legion` tool's `handoff_complete`
-    waits up to an hour where it waited 10 minutes, and an attempt it gives up on stops its handoff
-    read's `jj` and ends its Dispatch request.
+    waits up to an hour where it waited 10 minutes. Its read of the handoff report (`jj` and a
+    Dispatch request) runs outside the 5-minute limit of an attempt and outside that hour, so a
+    slow read is not taken for a daemon that does not answer. Only Claude Code's cancel of the tool
+    call stops that read.
     The `envoy_publish` tool's description says to start no replacement for a session whose
     `last_seen` is 20 minutes old or less, and that a Legion claim whose session Envoy has not heard
     from for more than 20 minutes is the case for the `legion` tool's `relaunch`, which starts that
