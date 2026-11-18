@@ -102,18 +102,18 @@ How it reads a step:
     it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
-  * a step whose one line runs a script under a module's `scripts/` directory, with no argument
-    (`packages/envoy/scripts/database-skips.sh`), is read through that script, in one narrow form
-    and no other: its comment-free lines that start with `go test` are the step's, in the module
-    the script moves into with its one `cd`, which must be `cd "$(dirname "$0")/.."`. Each
-    `${NAME:-default}` is replaced by its default text. A redirection with its target is dropped
-    (a file descriptor written against it, `2>`, with it), and the command ends at a `|`, `||`,
-    `&&` or `;`, after which only another command than `go test` may follow, since that tail
-    runs after the tests or on their failure and selects none of them. Anything else is refused:
-    a second `cd`, a `pushd`, a `go test` that does not start its line, an argument after a
-    redirection, a `go test` after the end. A script that holds no `go test` runs none. A quoted
-    argument that is exactly an operator (`'>'`) reads as the operator, which no script here
-    writes;
+  * a step whose one line runs a script AUDITED_SCRIPTS names
+    (`packages/envoy/scripts/database-skips.sh`) is read as the `go test` command that entry
+    gives, in the module it names; a step that passes such a script an argument is refused,
+    since each entry reads its script as called with none. This script reads no shell script itself: what a script runs
+    depends on its control flow, which a line-by-line reading cannot see (a `go test` under
+    `if false`, a `cd` in a branch, a test run inside `$(…)`), so each entry is a person's reading
+    of the script, pinned by the script's SHA-256. An edit to the script makes the entry stale,
+    and this script refuses the step, naming the file, until someone reads the script again and
+    updates the entry. A step that runs any other script is read as before, from its own run:
+    alone, so a `go test` inside that script is not seen: envoy-go's "Count the store-form rows
+    on each backend" runs `packages/envoy/scripts/backend-count.sh`, whose `go test` takes its
+    packages and test names from the step's arguments, and no entry reads it yet;
   * a `Benchmark…` name a listing prints is left out of both verdicts: no step passes `-bench`,
     so `go test` builds those functions and runs none of them, and reading every one of them as
     compiled and unrun would say that over and over and name no hole anyone can close.
@@ -127,6 +127,7 @@ pair is run twice undeclared and none is unrun, 1 when one is, 2 when it cannot 
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shlex
 import subprocess
@@ -284,15 +285,31 @@ FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
-# A step line that runs one of a module's scripts, and the line by which that script moves into
-# its module (scripts/ sits one level under it).
-SCRIPT_RUN = re.compile(r"^(?:\./)?(?P<path>[A-Za-z0-9_./-]+/scripts/[A-Za-z0-9_.-]+\.sh)$")
-SCRIPT_CD = 'cd "$(dirname "$0")/.."'
-DEFAULTED = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:-([^}]*)\}")
-# Shell operators as shlex's punctuation splitting yields them: a redirection takes the next word
-# as its target, and an end closes the command.
-REDIRECTS = (">", ">>", "<", ">&", "&>", ">|", "<&")
-ENDS = ("|", "||", "&&", ";")
+
+
+@dataclass(frozen=True)
+class AuditedScript:
+    """A script a step runs, read by a person: the module it moves into before its tests and the
+    one `go test` it runs there, and the SHA-256 of the text that reading was of."""
+
+    module: str
+    command: str
+    sha256: str
+
+
+# Each script a step of ci.yaml's router runs as its whole run: line, read by a person, with the
+# one `go test` it runs.
+AUDITED_SCRIPTS = {
+    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and, called with no argument, runs
+    # `go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-15m}" ./internal/broker/...` once, with
+    # no -tags, -race, -run or -skip, then counts the skips in its report. With `--report FILE` it
+    # reads a report and runs no test; a step that passes an argument is not read through here.
+    "packages/envoy/scripts/database-skips.sh": AuditedScript(
+        module="packages/envoy",
+        command="go test -json -count=1 -timeout 15m ./internal/broker/...",
+        sha256="e8e058377d522a938e4016fdd88dc6c9f1459b89cf80e12c15b1545b13dd76b0",
+    ),
+}
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
@@ -424,10 +441,9 @@ def steps_of(found: dict) -> list[Step]:
                     continue
                 workdir = step_workdir(document, body, step)
                 name = step.get("name") or f"step {index + 1}"
-                through = script_step(path, job, name, workdir, script)
-                if through is not None:
-                    if through.script:
-                        steps.append(through)
+                audited = audited_step(path, job, name, workdir, script)
+                if audited is not None:
+                    steps.append(audited)
                     continue
                 if workdir not in MODULE_DIRS:
                     continue
@@ -437,83 +453,33 @@ def steps_of(found: dict) -> list[Step]:
     return steps
 
 
-def script_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
-    """The step a one-line run of a module's script makes, read through that script's own
-    `go test` lines (the module docstring says how), or None where the run is not such a line.
-    A script of a module that holds no `go test` makes a step with an empty script, which runs
-    nothing."""
-    run = script_lines(script)
-    if len(run) != 1:
+def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
+    """The step a run: whose one line runs an AUDITED_SCRIPTS script with no argument makes, read
+    as that entry's command in its module, or None where the run is no such line. A script whose
+    text no longer has the entry's SHA-256 is refused rather than read."""
+    lines = script_lines(script)
+    if len(lines) != 1:
         return None
-    found = SCRIPT_RUN.match(run[0].strip())
-    if not found:
-        return None
-    file = (ROOT / workdir / found.group("path")).resolve()
-    module = file.parent.parent.relative_to(ROOT).as_posix() if file.is_relative_to(ROOT) else ""
-    if module not in MODULE_DIRS or not file.is_file():
-        return None
-    label = f"{workflow}'s {job} / {name}"
-    lines = [line.strip() for line in file.read_text().splitlines()]
-    lines = [line for line in lines if line and not line.startswith("#")]
-    tests = []
-    for line in lines:
-        if re.match(r"go\s+test\b", line):
-            tests.append(script_go_test(label, line))
-        elif runs_go_test(line):
-            raise Refused(f"{label}: {found.group('path')} runs `go test` inside `{line}`, which "
-                          "this script does not read")
-    if tests:
-        moves = [line for line in lines if re.match(r"(cd|pushd|popd)\b", line)]
-        if moves != [SCRIPT_CD] or lines.index(SCRIPT_CD) > lines.index(next(
-                line for line in lines if re.match(r"go\s+test\b", line))):
-            raise Refused(f"{label}: {found.group('path')} runs `go test` and does not move into "
-                          f"its module with one `{SCRIPT_CD}` before it, so this script cannot say "
-                          "where it runs")
-    return Step(workflow=workflow, job=job, name=name, workdir=module, script="\n".join(tests))
-
-
-def runs_go_test(line: str) -> bool:
-    """Whether a script line runs `go test` anywhere but at its start: the words `go` and `test`
-    side by side, outside quotes, since a quoted string (an `echo`'s message) stays one word."""
-    if not re.search(r"\bgo\s+test\b", line):
-        return False
     try:
-        lexer = shlex.shlex(line, posix=True, punctuation_chars=True)
-        lexer.whitespace_split = True
-        words = list(lexer)
+        words = shlex.split(lines[0])
     except ValueError:
-        return True
-    return any(a == "go" and b == "test" for a, b in zip(words, words[1:]))
-
-
-def script_go_test(label: str, raw: str) -> str:
-    """One `go test` line of a step's script as the command it runs, in the narrow form the
-    module docstring gives, or Refused."""
-    text = DEFAULTED.sub(r"\1", raw)
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
-    lexer.whitespace_split = True
-    words = list(lexer)
-    at = 0
-    while at < len(words) and words[at] not in REDIRECTS + ENDS:
-        at += 1
-    command = words[:at]
-    # A file descriptor written against the first redirection (`2>`) is the redirection's.
-    if (at < len(words) and words[at] in REDIRECTS and command and command[-1].isdigit()
-            and re.search(rf"(?<!\S){command[-1]}{re.escape(words[at])}", text)):
-        command.pop()
-    while at < len(words) and words[at] in REDIRECTS:
-        at += 2
-        if (at + 1 < len(words) and words[at].isdigit() and words[at + 1] in REDIRECTS
-                and re.search(rf"(?<!\S){words[at]}{re.escape(words[at + 1])}", text)):
-            at += 1
-    if at < len(words):
-        if words[at] not in ENDS:
-            raise Refused(f"{label}: `{raw}` holds `{words[at]}` after a redirection, which this "
-                          "script does not read")
-        if re.search(r"\bgo\s+test\b", " ".join(words[at:])):
-            raise Refused(f"{label}: `{raw}` runs another `go test` after `{words[at]}`, which "
-                          "this script does not read")
-    return shlex.join(command)
+        return None
+    if not words:
+        return None
+    path = (Path(workdir) / words[0]).as_posix().removeprefix("./")
+    label = f"{workflow}'s {job} / {name}"
+    entry = AUDITED_SCRIPTS.get(path)
+    if entry is None:
+        return None
+    if len(words) > 1:
+        raise Refused(f"{label}: runs {path} with arguments, and its AUDITED_SCRIPTS entry reads "
+                      "the script as called with none")
+    digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
+    if digest != entry.sha256:
+        raise Refused(f"{label}: {path} has SHA-256 {digest}, and its "
+                      f"AUDITED_SCRIPTS entry was read from {entry.sha256}; read the script "
+                      "again and update the entry's command and digest")
+    return Step(workflow=workflow, job=job, name=name, workdir=entry.module, script=entry.command)
 
 
 def commands_of(step: Step) -> list[GoTest]:
