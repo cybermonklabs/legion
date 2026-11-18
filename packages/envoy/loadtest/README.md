@@ -1275,13 +1275,32 @@ document websocket, as the dashboard's editor does
 - Editor i edits spec i mod D of the first D seeded specs in key order (`--editor-docs`), as the
   person `person-<i>`: the request carries `X-Dispatch-User: person-<i>`, the stack's header
   identity, which the document websocket takes as a person (`docs.Service.requestActor`).
-- It connects to `/ws/doc/{artifact_id}?schema_version=<pmdoc.SchemaVersion()>`, on Hocuspocus
-  framing (each frame starts with the document's name). As `@hocuspocus/provider` does, it sends
-  the token frame (the dashboard's token is its schema version), then sync step 1. It answers the
-  room's sync step 1 and applies every update the room relays. It is synced once the room's sync
-  step 2 has arrived.
+- It connects to `/ws/doc/{artifact_id}?schema_version=<pmdoc.SchemaVersion()>&client_id=<id>`,
+  on Hocuspocus framing (each frame starts with the document's name), and writes under the client
+  id Dispatch gives it, as the dashboard's page does (`connection.ts` `takeClientId`). `client_id`
+  (`contracts.DocumentClientIdParameter`) is empty on an editor's first connection, and on every
+  later one the id its last connection wrote under. The socket's first frame is a Hocuspocus
+  stateless message, `dispatch.client_id:` and the id in decimal
+  (`contracts.DocumentClientIdMessagePrefix`), naming the id Dispatch gives it
+  (`docstest.ReadGivenClient`, the one reader of it that both load-test clients use).
+- A Dispatch build from before client ids gives no id: the socket's first frame is the room's
+  sync step 1. That is no failure. The editor writes under the id its own copy drew, and presents
+  that id on its next connection, as the dashboard does; a build that gives ids then claims it for
+  that person. The frame goes to the editor's reader like any other, whose answer carries what the
+  copy holds and the room lacks. `run.log` has one line for each such connection: `editors:
+  person-<i> on <key>: the room gave no client id; the editor writes under its copy's own <id>`.
+- Then, as `@hocuspocus/provider` does, it sends the token frame (the dashboard's token is its
+  schema version), then sync step 1. It answers the room's sync step 1 and applies every update
+  the room relays. It is synced once the room's sync step 2 has arrived.
 - The editors connect when the step starts, at the start of the warm-up. An editor whose
-  connection ends or fails connects again 1 s later, with a new copy of the document.
+  connection ends or fails connects again 1 s later, with the copy of the document it held and
+  the client id it wrote under, as a tab keeps its document across reconnects. An update its last
+  connection did not deliver is still in that copy, and the new connection's sync carries it to
+  the room, so a marker in it is found then. Where the room gives another id than the one the
+  editor presented, the editor goes on in a new copy under the id it is given, and `run.log` names
+  it. A new copy under the held id would not do: the room's state holds the editor's own edits
+  under that id, and applying it would move the copy's own clock, which makes ygo draw the copy a
+  fresh id that no admission gave out.
 - Each editor sends updates at `--editor-rate` per second, open-loop Poisson from the RNG seed
   (stream 3 + i, which also picks each update's word), from the step's start to the window's end.
   Where an update lands in the document comes from another stream, so a skipped update does not
@@ -3192,6 +3211,19 @@ run` starts, so the peers connect during its 30 s warm-up, the runner starts:
   -artifacts-file /work/typing/<step>.docs -peers <P> -rate <R> \
   -duration <s> -seed 1 -protect 'Revision token'
 ```
+
+Each peer writes under the client id Dispatch gives it, as the dashboard's page does: it connects
+to `/ws/doc/<id>?client_id=&schema_version=<n>`, with an empty `client_id`
+(`contracts.DocumentClientIdParameter`), takes the id the socket's first frame names, a
+Hocuspocus stateless message `dispatch.client_id:<id>` (`contracts.DocumentClientIdMessagePrefix`,
+read by `docstest.ReadGivenClient`), and makes its copy of the document under it before it sends
+anything. A copy whose Dispatch is from before client ids gives no id, and its first frame is the
+room's sync step 1. That is no failure: the peer hands that frame to its reader like any other,
+types under the id its own document drew, and writes one line on stderr for that connection,
+`browsertype: artifact=<id> peer=<i>: the room gave no client id; the peer writes under its
+document's own <id>`, which `browsertype.txt` holds beside the peer lines and the sums below
+leave out. A peer never reconnects (a connection that ends is its error, `the connection ended
+before the run did`), so it never presents an id back.
 
 `-duration` is `loadgen run`'s bound (its warm-up, window, grace and drain), the stored-order
 check's 7,200 s and 600 s more, so it outlasts the window and both of the check's calls.
