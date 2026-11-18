@@ -502,7 +502,8 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			second := false
 			for _, line := range lines {
 				_, after, found := strings.Cut(line, "held_for=")
-				waited, err := time.ParseDuration(strings.Fields(after + " ")[0])
+				value, _, _ := strings.Cut(after, " ")
+				waited, err := time.ParseDuration(value)
 				if !strings.Contains(line, "event_id=42 ") || !found || err != nil || waited > ran {
 					t.Fatalf("a WARN of a send that waited behind event 42 for at most %v names another wait: %s", ran, line)
 				}
