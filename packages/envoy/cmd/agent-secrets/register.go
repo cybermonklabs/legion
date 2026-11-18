@@ -134,7 +134,7 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 	// starts with no secrets access (helper unreachable), with broker calls that fail NOT_ENROLLED
 	// until the helper's enroll loop succeeds, or, while the helper holds no launcher credential,
 	// with no broker identity at all: its agent-secrets calls fail NO_CREDENTIAL, and identity
-	// exits 1, until the machine is logged in.
+	// exits 1, until the helper holds a credential again, as the helper's own answer says.
 	switch {
 	case err != nil:
 		fmt.Fprintf(stderr, "agent-secrets: helper at %s unreachable (%v); this session has no secrets access until it is relaunched with the helper running\n", sock, err)

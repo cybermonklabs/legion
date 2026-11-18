@@ -241,6 +241,9 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 			code    string        // the refusal Revoke answers with; "" is success
 		}{
 			{"the machine made the enrolment", nil, ""},
+			// The broker's answer to this machine's identity credential for a person's enrolment:
+			// the credential has no operator and the enrolment has one (enroll.authorized).
+			{"the enrolment is the person's, so another operator's", &revokeAnswer{http.StatusForbidden, "OPERATOR_MISMATCH"}, "MEMBERSHIP_HELD"},
 			{"the enrolment is not the machine's either", &revokeAnswer{http.StatusForbidden, "NOT_ENROLLING_CREDENTIAL"}, "MEMBERSHIP_HELD"},
 			{"the machine's revoke fails another way", &revokeAnswer{http.StatusForbidden, "LAUNCHER_REVOKED"}, "LAUNCHER_REVOKED"},
 		} {

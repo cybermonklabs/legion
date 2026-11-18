@@ -194,8 +194,9 @@ func helperInstalled() bool {
 // failure is the broker call's. It reads neither a person's sign-in nor the machine cache, and
 // asks no metadata server: those are the chain's later sources, which --source reports. A
 // registered session on a helper holding no launcher credential (NO_CREDENTIAL: never logged in,
-// or its login lapsed or was refused, until the operator logs the machine in) has none, since that
-// helper enrolls no one; it is exit 1 with the not-logged-in notice. A helper that cannot be asked
+// its login lapsed or was refused, or, in identity mode, its trade loop has not traded or has
+// stopped) has none, since that helper enrolls no one; it is exit 1, quoting the helper's own
+// answer, which names the cure of its mode (brokerclient.Hint). A helper that cannot be asked
 // — its socket refuses connections, is absent although AGENT_SECRETS_HELPER_SOCK names it or the
 // helper is installed, or gives no answer within identityDeadline — is exit 1 with a notice on
 // stderr, so a caller that then uses its other backend does not do so silently. With no key dir,
