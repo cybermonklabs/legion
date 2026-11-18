@@ -36,28 +36,25 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
-// The broker's own words for the end, written out rather than read from the requests package's
-// constants (requests.RequestEndedBrokerMovedMessage, requests.BrokerMovedDetail). This test reads
-// the binary's log and its rows as an operator does, by their text, so a change of that text is a
-// change this test sees. It also lets the file run unchanged against a broker built before those
-// constants existed, which is how its negative control runs.
 const (
 	// brokerMovedSession is the session name this test moves from broker A to broker B. Its
 	// principal is the pinned fleet's Google account, the same on both brokers, since the
 	// database they share is what holds the name and the enrollments that carry it.
 	brokerMovedSession = "broker-moved-pending"
 	// brokerMovedMessage is the INFO line a broker writes for each pending request it ends because
-	// the request's record is signed for another broker address.
+	// the request's record is signed for another broker address. It is the broker's own words,
+	// written out rather than read from requests.RequestEndedBrokerMovedMessage: this test reads
+	// the binary's log as an operator does, by its text, so a change of that text is a change this
+	// test sees, and the file runs unchanged against a broker built before that constant existed,
+	// which is how its negative control runs.
 	brokerMovedMessage = "broker: a pending request's record is signed for another broker address; it is ended, and its session's new request replaces it"
-	// answerRefusedMessage is the WARN line a broker writes for each refusal it answers, naming
-	// the answer id the refusal's body carries (answer.RefusalMessage).
-	answerRefusedMessage = "broker: answer refused"
 	// movedRecordSkew is how far a record's request object may be issued from the moment its
 	// record was written, when this test verifies the object against the record's own creation
 	// time. The object is signed just before it is sent, so seconds would do; minutes leave room
@@ -241,13 +238,13 @@ type movedAsk struct {
 func requirePendingAsk(rig carryRig, p pod, secret, proves string) movedAsk {
 	rig.t.Helper()
 	pods := rig.pods()
-	status, answer := pods.askRaw(p, secret)
+	status, body := pods.askRaw(p, secret)
 	if status != http.StatusOK {
 		rig.t.Fatalf("the session (runtime %s, enrollment %s) asking %s for %s = %d %s, want 200 with a pending request: %s",
-			p.runtimeID, p.enrollmentID, rig.base, secret, status, strings.TrimSpace(string(answer)), proves)
+			p.runtimeID, p.enrollmentID, rig.base, secret, status, strings.TrimSpace(string(body)), proves)
 	}
 	var asked movedAsk
-	pods.decode(answer, &asked)
+	pods.decode(body, &asked)
 	if asked.State != "pending" || asked.RequestID == "" || asked.RecordID == nil || asked.GrantID != nil {
 		rig.t.Fatalf("the session (runtime %s, enrollment %s) asking %s for %s = %+v, want a pending request on a record and no grant: %s",
 			p.runtimeID, p.enrollmentID, rig.base, secret, asked, proves)
@@ -308,13 +305,13 @@ func requireSignedFor(rig carryRig, recordID, audience, proves string) {
 func awaitLogCaughtUp(rig carryRig, broker *brokerProcess) {
 	rig.t.Helper()
 	pods := rig.pods()
-	status, answer := pods.post("/v1/requests", nil, map[string]any{})
+	status, body := pods.post("/v1/requests", nil, map[string]any{})
 	var refused struct {
 		AnswerID string `json:"answer_id"`
 	}
-	pods.decode(answer, &refused)
+	pods.decode(body, &refused)
 	if status != http.StatusUnauthorized || refused.AnswerID == "" {
-		rig.t.Fatalf("a request with no proof to %s = %d %s, want 401 naming its answer_id", rig.base, status, strings.TrimSpace(string(answer)))
+		rig.t.Fatalf("a request with no proof to %s = %d %s, want 401 naming its answer_id", rig.base, status, strings.TrimSpace(string(body)))
 	}
-	broker.AwaitRecord(rig.t, answerRefusedMessage, map[string]any{"answer_id": refused.AnswerID})
+	broker.AwaitRecord(rig.t, answer.RefusalMessage, map[string]any{"answer_id": refused.AnswerID})
 }

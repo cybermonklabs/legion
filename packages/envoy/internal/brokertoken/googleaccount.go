@@ -2,6 +2,7 @@ package brokertoken
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -93,8 +94,8 @@ type GoogleAccount struct {
 	// (https://iamcredentials.googleapis.com) when empty. A test names its stand-in here.
 	IAMCredentialsURL string
 	// HTTP is the client the mint is called on, http.DefaultClient when nil. Either is used as a
-	// copy that refuses redirects (redirects.Refused): the call carries this pod's own access
-	// token, which a 3xx would otherwise hand to whatever host its Location names.
+	// copy that refuses redirects (redirects.Refused says why): the call carries this pod's own
+	// access token, which no 3xx may take anywhere.
 	HTTP *http.Client
 	// MintTimeout is the one bound over a mint, GoogleAccountMintTimeout for every reader
 	// NewGoogleAccount builds. Zero reads as that constant, never as no bound. A test that
@@ -220,12 +221,8 @@ func (g *GoogleAccount) generateIDToken() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read this pod's own access token from the metadata server: %w", err)
 	}
-	origin := g.IAMCredentialsURL
-	if origin == "" {
-		origin = googleIAMCredentialsURL
-	}
-	endpoint := strings.TrimSuffix(origin, "/") + "/v1/projects/-/serviceAccounts/" +
-		url.PathEscape(g.ServiceAccount) + ":generateIdToken"
+	endpoint := strings.TrimSuffix(cmp.Or(g.IAMCredentialsURL, googleIAMCredentialsURL), "/") +
+		"/v1/projects/-/serviceAccounts/" + url.PathEscape(g.ServiceAccount) + ":generateIdToken"
 	body, err := json.Marshal(map[string]any{"audience": g.Audience, "includeEmail": true})
 	if err != nil {
 		return "", fmt.Errorf("build the generateIdToken request: %w", err)
@@ -236,11 +233,7 @@ func (g *GoogleAccount) generateIDToken() (string, error) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+access)
-	client := g.HTTP
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := redirects.Refused(client).Do(req)
+	resp, err := redirects.Refused(cmp.Or(g.HTTP, http.DefaultClient)).Do(req)
 	if err != nil {
 		return "", fmt.Errorf("call generateIdToken: %w", err)
 	}

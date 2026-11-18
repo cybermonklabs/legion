@@ -1110,10 +1110,12 @@ const SignInOffActor = "broker:signin-off"
 // restarted pod with sign-in off takes a later one.
 // A request signed for another BROKER_PUBLIC_URL is left alone: it belongs to another broker
 // sharing this database, whose page may still be served, and this broker lists it for nobody
-// anyway. Its session's next ask on this broker for one of its names ends it instead (Create,
-// BrokerMovedDetail). It returns the requests it denied, so the sweep wakes each one's session
-// once the transaction has committed, and nothing on a broker with sign-in on. A grant made
-// before stays as it was: off decides nothing new, it takes nothing back.
+// anyway. Create ends such a request when its session asks again for one of its names in a
+// request that would wait for a person (BrokerMovedDetail), and on a broker with sign-in off no
+// request waits, so here it stays pending until it expires. It returns the requests it denied, so
+// the sweep wakes each one's session once the transaction has committed, and nothing on a broker
+// with sign-in on. A grant made before stays as it was: off decides nothing new, it takes nothing
+// back.
 func (m *Machine) denyUndecidable(ctx context.Context, now time.Time) ([]store.EndedRequest, error) {
 	if !m.SignInOff {
 		return nil, nil

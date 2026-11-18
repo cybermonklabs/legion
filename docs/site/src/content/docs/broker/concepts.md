@@ -703,9 +703,12 @@ The broker evaluates every name
   is a pending request whose record is signed for another broker address, another
   `BROKER_PUBLIC_URL`, such as a broker the session's box asked before it moved to this one: no
   person and no judge here can decide it, so when its session asks this broker again for one of
-  its names, the broker ends it, cancelled by the broker with a detail that says the broker moved,
-  and the rule then applies to what is left. The broker's answer
-  names the approver the record names and the request's page on the broker (`approve_url`), and
+  its names, in a request that would wait for a person, the broker ends it, cancelled by the
+  broker with a detail that says the broker moved, and the rule then applies to what is left. An
+  older overlapping request of this broker is met first and keeps the rule as it is, and a request
+  signed for another broker address that no such ask reaches waits for its expiry. The broker's
+  answer names the approver the record names and the request's page on the broker
+  (`approve_url`), and
   `agent-secrets` prints both, so the agent can tell that person where to approve it. The record
   fixes its approver when the request is made, and the request stays in that
   person's Inbox after the secret's tags change, though they may then be unable to approve it

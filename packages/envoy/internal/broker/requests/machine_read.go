@@ -53,9 +53,10 @@ const NarrowingRefusedMessage = "broker: narrowing refused"
 // most often "aud does not match", from a request signed for another BROKER_PUBLIC_URL, after
 // the public URL changed while it waited or when a second broker shares this database. It names
 // the record id and the reason. Every other record of the list is listed and can be decided.
-// A request whose record is signed for another broker address stays off every list here only
-// until its session asks this broker again for one of its names: Create then ends it
-// (RequestEndedBrokerMovedMessage).
+// A request whose record is signed for another broker address stays off every list here, and
+// Create ends it when its session asks this broker again for one of its names in a request that
+// would wait for a person and no older overlapping request of this broker is pending
+// (RequestEndedBrokerMovedMessage). Until then it waits for its expiry.
 const PendingLeftOutMessage = "broker: a pending request's record does not verify for this broker; it is left out of the pending list"
 
 // RequestEndedBrokerMovedMessage is logged, at INFO, once for each pending request Create ends
@@ -84,7 +85,7 @@ const RequestEndedBrokerMovedMessage = "broker: a pending request's record is si
 // here now, its enrollment having adopted the grant (enroll.go, adopt). So these lines count each
 // release such a session was refused and each such grant its next ask passed over. It carries
 // grant=<the grant's id>, record_id=<the credential-request record its chain rests on>,
-// enrollment=<the enrollment that holds the grant: the caller's>, at= and reason=<the error's
+// enrollment=<the enrollment that holds the grant: the grant's own>, at= and reason=<the error's
 // text, which names the link of the chain that failed>, and nothing else: no secret value, no
 // token and no request object. A database failure inside the chain check (verifyChain: reading
 // the grant, its record or its decisions) writes no such line, since it is no failed chain, and
@@ -889,11 +890,10 @@ type pendingRequestRow struct {
 	// Legacy is a request written before migration 0013 (writtenBeforeMigration13), which asked
 	// for no lifetime and recorded the release's fixed one.
 	Legacy bool
-	// RecordID, RecordBody and RecordCreatedAt are the request's credential-request record: its
-	// id, its canonical body and when it was written, which is what signedForAnotherBroker
-	// verifies it against. They are pointers because the left join reads NULL in all three for a
-	// request with no record, which pgx scans into no string and no time.Time.
-	RecordID        *string
+	// RecordBody and RecordCreatedAt are the request's credential-request record: its canonical
+	// body and when it was written, which is what signedForAnotherBroker verifies it against.
+	// They are pointers because the left join reads NULL in both for a request with no record,
+	// which pgx scans into no string and no time.Time.
 	RecordBody      *string
 	RecordCreatedAt *time.Time
 }
@@ -910,12 +910,12 @@ type pendingRequestRow struct {
 // next oldest. The record is a left join, so a request with no record is still found, as before.
 func pendingRequest(ctx context.Context, q querier, enrollmentID string, sorted []string) (pendingRequestRow, error) {
 	rows, err := q.Query(ctx, `select r.id, r.lifetime_seconds, array_agg(s.name order by s.name), `+writtenBeforeMigration13("r")+`,
-			cr.id, cr.body, cr.created_at
+			cr.body, cr.created_at
 		from requests r join request_secrets s on s.request_id=r.id
 		left join credential_requests cr on cr.id = r.record_id
 		where r.enrollment_id=$1 and r.state='pending' and exists (
 			select 1 from request_secrets matching where matching.request_id=r.id and matching.name = any($2)
-		) group by r.id, r.lifetime_seconds, r.created_at, cr.id, cr.body, cr.created_at order by min(r.created_at)`, enrollmentID, sorted)
+		) group by r.id, r.lifetime_seconds, r.created_at, cr.id, cr.body, cr.created_at order by min(r.created_at) limit 1`, enrollmentID, sorted)
 	if err != nil {
 		return pendingRequestRow{}, err
 	}
@@ -925,7 +925,7 @@ func pendingRequest(ctx context.Context, q querier, enrollmentID string, sorted 
 	}
 	var pending pendingRequestRow
 	if err := rows.Scan(&pending.ID, &pending.Lifetime, &pending.Names, &pending.Legacy,
-		&pending.RecordID, &pending.RecordBody, &pending.RecordCreatedAt); err != nil {
+		&pending.RecordBody, &pending.RecordCreatedAt); err != nil {
 		return pendingRequestRow{}, err
 	}
 	return pending, rows.Err()
@@ -1038,9 +1038,9 @@ func writtenBeforeMigration13(alias string) string {
 // at=reuse). A session's next enrollment adopts its earlier enrollment's live grants (enroll.go,
 // adopt), so a session that moved here from a broker of another BROKER_PUBLIC_URL sharing this
 // database can hold that broker's grant, whose chain fails here ("aud does not match"), and,
-// after its first grant here, a newer one of this broker for the same names. Taking the first
-// row the query happened to answer, as the lookup did with no order, could take the old grant on
-// any call and ask a person or the judge again on each until the old grant expired. Newest first,
+// after its first grant here, a newer one of this broker for the same names. Without the order,
+// Postgres may answer the old grant first on any call, which would ask a person or the judge
+// again on each until the old grant expired. Newest first,
 // the grant the session was given last is the one handed back, and an older one is checked, and
 // its failed chain logged, only when every newer one was passed over. Every other outcome stops
 // at that candidate, as with one: a policy end (below) answers no reusable grant, a grant no

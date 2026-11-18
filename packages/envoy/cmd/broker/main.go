@@ -11,6 +11,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"crypto/x509"
 	"encoding/pem"
@@ -1299,10 +1300,7 @@ func wireJudge(ctx context.Context, cfg config.Config, rules airlock.Rules, m *r
 	// machine's own type, so this is the method and nothing else. Consider returns at once, so
 	// nothing of a run is on the requester's path.
 	m.Judge = runner.Consider
-	identity := "metadata"
-	if account.ServiceAccount != "" {
-		identity = account.ServiceAccount
-	}
+	identity := cmp.Or(account.ServiceAccount, "metadata")
 	slog.Info("model judge", "state", "on", "model", cfg.JudgeModel, "protocol", cfg.JudgeModelProtocol,
 		"dispatch", cfg.JudgeDispatchURL, "identity", identity, "skip_checks", cfg.JudgeTestSkipChecks)
 }
