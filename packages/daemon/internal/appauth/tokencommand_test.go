@@ -616,8 +616,12 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 		t.Fatal(err)
 	}
 	env, _ := os.ReadFile(seen)
-	if strings.Contains(string(env), "seed-value") || !strings.Contains(string(env), "\nLEGION_GITHUB_OWNER=acme\n") ||
-		!strings.Contains(string(env), "\nLEGION_GITHUB_READ_ONLY=\n") || strings.Contains(string(env), "inherited") {
+	// env prints one variable to a line, in the order of the command's environment, so a variable
+	// is looked for as a whole line: the daemon's own two can be its first line, with no newline
+	// before them.
+	lines := strings.Split(string(env), "\n")
+	if strings.Contains(string(env), "seed-value") || !slices.Contains(lines, "LEGION_GITHUB_OWNER=acme") ||
+		!slices.Contains(lines, "LEGION_GITHUB_READ_ONLY=") || strings.Contains(string(env), "inherited") {
 		t.Fatalf("the command's environment:\n%s", env)
 	}
 
