@@ -42,7 +42,6 @@ import {
   BlockedByControl,
   blockedByControlName,
   IssueLine,
-  leaveOnEscape,
 } from "./BlockedByControl";
 import { DetailsErrorLine, useFocusHandOff, useSaidFailure } from "./details-error";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
@@ -420,7 +419,7 @@ export function IssueMarginPanel({
             </Link>
           )}
           {editingField === "parent" ? (
-            <FieldEditor
+            <IssueFieldForms
               field="parent"
               isClosed={isClosed}
               issue={issue}
@@ -518,7 +517,7 @@ export function IssueMarginPanel({
             writes={writes}
           />
           {editingField === "route" ? (
-            <FieldEditor
+            <IssueFieldForms
               field="route"
               isClosed={isClosed}
               issue={issue}
@@ -860,49 +859,18 @@ function PropertySection({
   );
 }
 
-/** The editor of `field` in its row of Details (`IssueFieldForms`). Escape anywhere in it leaves
- *  it as its Cancel does, putting the saved value back in the draft (`leaveOnEscape`), whether or
- *  not a save is out, as Escape in its box does: the box takes its own Escape, and its Save and
- *  Cancel take none, so a press on either went on to the page's own Escape, which closes Details. */
-function FieldEditor({
-  field,
-  isClosed,
-  issue,
-  onClose,
-  writes,
-}: {
-  field: IssueField;
-  isClosed: boolean;
-  issue: IssueDetails;
-  onClose: () => void;
-  writes: IssueHeaderWrites;
-}): ReactNode {
-  const cancel = () => {
-    if (field === "parent") writes.drafts.discardParent();
-    else writes.drafts.discardRoute();
-    onClose();
-  };
-  return (
-    // biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler takes an Escape that bubbles out of the editor's own controls, and the wrapper draws no box of its own (`contents`), so it needs no role.
-    <div className="contents" onKeyDown={leaveOnEscape(cancel)}>
-      <IssueFieldForms
-        field={field}
-        isClosed={isClosed}
-        issue={issue}
-        onClose={onClose}
-        writes={writes}
-      />
-    </div>
-  );
-}
-
-/** The glyphs of Details' rows drawn smaller than the row's text, each with its size. The page's
- *  typeface (`Dispatch Inter`, `styles.css`) draws ⊘ larger than its size, 19 px wide at the
- *  row's 14 px, which ran past its 14 px column (`Row`'s `w-3.5`) to 2 px from the row's name;
- *  at 9 px it is 13 px wide, inside the column and about the size of ● and ◐ above it. The size
- *  is ⊘'s alone: every other glyph fits at the row's size, and a size they all shared would
- *  shrink them with it. */
-const GLYPH_SIZES: Readonly<Partial<Record<string, string>>> = { "⊘": "text-[9px]" };
+/** The glyphs of Details' rows drawn smaller than the row's text, each with its size, so that each
+ *  fits its 14 px column (`Row`'s `w-3.5`) in the face that draws it. The page's typeface
+ *  (`Dispatch Inter`, `styles.css`) draws ⊘ 19 px wide at the row's 14 px, to 2 px from the row's
+ *  name; at 9 px it is 13 px wide. ☺ is outside that typeface's characters, so the reader's
+ *  machine draws it in `Inter fallback`: Arial, or Liberation Sans, which has Arial's widths, both
+ *  1 em wide for ☺ and scaled by 107%, so 15.3 px at 14 px; at 12 px it is 13.1 px. Where neither
+ *  face is there, DejaVu Sans draws it narrower. Each size is its glyph's alone: every other glyph
+ *  fits at the row's size, and a size they all shared would shrink them with it. */
+const GLYPH_SIZES: Readonly<Partial<Record<string, string>>> = {
+  "⊘": "text-[9px]",
+  "☺": "text-[12px]",
+};
 
 /**
  * One row of Details (the prototype's `.frow`): a column of 112 px with the property's shape

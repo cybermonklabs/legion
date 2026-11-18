@@ -501,9 +501,9 @@ test("Escape in the blocked-by box closes its editor and goes no further", async
 /** Opens an editor of a row by the row's control named `control`, then presses Escape on the
  *  editor's Save (named `save`) and, the editor opened again, on its Cancel. Each press is the
  *  editor's, as Escape in its box is: the editor (its box named `box`) is closed, the row's
- *  control holds the focus again, and the press was marked taken, so the page's own Escape,
- *  which closes Details and the phone's Details sheet (`shell/keymap.ts`, `useDialog.ts`),
- *  passes over it. */
+ *  control holds the focus again, and the press reached the window, where the page's own Escape
+ *  that closes Details and the phone's Details sheet listens (`shell/keymap.ts`, `useDialog.ts`),
+ *  only marked taken, which that Escape passes over, or not at all, where the editor stopped it. */
 async function expectEscapeLeavesEditor(
   user: UserEvent,
   { box, control, save }: { box: string; control: string; save: string }
@@ -515,6 +515,7 @@ async function expectEscapeLeavesEditor(
       await waitFor(() => expect(screen.getByLabelText(box)).toHaveFocus());
       const pressed = screen.getByRole("button", { name: button });
       act(() => pressed.focus());
+      const before = escapes.taken.length;
       await user.keyboard("{Escape}");
       expect(
         screen.queryByLabelText(box),
@@ -525,7 +526,7 @@ async function expectEscapeLeavesEditor(
         `Escape on the editor's ${button} did not give the focus back to the row's control`
       ).toBe(screen.getByRole("button", { name: control }));
       expect(
-        escapes.taken.at(-1),
+        escapes.taken.slice(before).every(Boolean),
         `Escape on the editor's ${button} went on to the page's keys, which close Details`
       ).toBe(true);
     }

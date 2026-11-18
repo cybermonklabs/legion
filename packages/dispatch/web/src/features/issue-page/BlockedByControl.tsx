@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useRef } from "react";
+import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import type { IssueDetails } from "../../api/types";
@@ -42,22 +42,6 @@ export const BLOCKED_BY_INPUT_ID = "issue-blocked-by";
 export function blockedByControlName(issueKey: string, blockerCount: number): string {
   const verb = blockerCount === 0 ? CONTROL_LABELS.add : CONTROL_LABELS.edit;
   return `${verb} issues ${issueKey} waits on`;
-}
-
-/**
- * The keys of the element that holds the whole of an editor in a row of Details: Escape anywhere
- * in the editor - its box, its Save, its Cancel - leaves it by `leave`, what its Cancel does, and
- * is marked taken, as the press is the editor's alone: the page's own Escape, which closes
- * Details and the phone's Details sheet with it, passes over a press a control has taken
- * (`shell/keymap.ts`, `useDialog.ts`). The focus goes back to the row's control as the editor
- * goes, as it does on Cancel. A press the box has taken already is the box's, and left to it.
- */
-export function leaveOnEscape(leave: () => void): (event: KeyboardEvent) => void {
-  return (event) => {
-    if (event.key !== "Escape" || event.defaultPrevented) return;
-    event.preventDefault();
-    leave();
-  };
 }
 
 /**
@@ -169,10 +153,17 @@ export function BlockedByControl({
         )}
       </div>
       {editing ? (
-        // Escape anywhere in the editor is Cancel's, held as Cancel is while the save is out.
         <form
           className="flex min-w-0 flex-wrap items-center gap-2"
-          onKeyDown={leaveOnEscape(close)}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            // Escape anywhere in the editor, its box, its Save or its Cancel, is Cancel's, and is
+            // held as Cancel is while the save is out. It is marked taken: the page's own Escape,
+            // which closes Details and the phone's Details sheet with it, passes over a press a
+            // control has taken (`shell/keymap.ts`, `useDialog.ts`).
+            event.preventDefault();
+            close();
+          }}
           onSubmit={save}
         >
           <input
