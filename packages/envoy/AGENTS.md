@@ -3536,9 +3536,15 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a moved head whose subtree sha equals `last_tree_sha` records the commit without re-fetching or re-projecting
   — so a caller looping a sync route is bounded to the head lookups.
 
-- Triggers: a five-minute ticker in `cmd/dispatch/main.go` (`duty.RunJittered`:
-  each wait the interval plus up to a tenth again, drawn afresh every period;
-  idle without App credentials) that syncs every enabled source by project and then id, going on past a failure;
+- Triggers: a push of a source's branch (`Importer.Pushed`, which the delivery intake calls for each `push` event of a branch that its `delivery-events` durable takes;
+  it starts nothing without App credentials or once `Close` has begun) imports every enabled source of every project on that repository, matched whatever its case, and on that branch, matched exactly, and returns without waiting for the import:
+  each source's one push worker joins or starts an import whose head lookup was issued after the push, and looks again until no push it holds is newer than its last import's head lookup,
+  so the pushes that arrive while an import runs, after its head lookup, start one more import between them, and a push that arrives before an import's head lookup starts none
+  (one INFO line `dispatch architecture: imported after a push` per import, with `project`, `repo`, `branch`, `commit` and `pushes`, how many pushes that import covered, and a WARN line for a failed one;
+  `Close` waits for the workers as for the flights);
+  a five-minute ticker in `cmd/dispatch/main.go` (`duty.RunJittered`:
+  each wait the interval less up to a tenth of it, drawn afresh every time, so no wait is longer than five minutes, under a lease whose period is 0.9 of the interval, `duty.LeasePeriod`;
+  idle without App credentials) that syncs every enabled source by project and then id, going on past a failure, and is the repair where a push event never arrives;
   `POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync` (one source;
   authAny; 200 with `last_error` on a recorded failure, 409 `SOURCE_ACCESS` for credential/branch problems, 404 `SOURCE_NOT_FOUND` when the repository is not a source of the project);
   `POST /api/v1/projects/{key}/architecture-sources/sync` (every source of the project in id order, each attempted whatever another's import did;
