@@ -43,14 +43,14 @@ func TestThePrintedRenewalCommandRunsFromAnOutDirectory(t *testing.T) {
 	// The environment every command here runs in: this process's, with every AGENT_SECRETS_*
 	// and XDG_* variable dropped before the ones below are set. Dropping rather than overriding
 	// the few that are named is the point. `agent-secrets` picks its identity from a key dir, a
-	// persisted sign-in, this machine's own identity or a helper socket, in that order
+	// persisted sign-in, a helper session or this machine's own identity, in that order
 	// (selectSigner), and each reads an environment variable of its own —
 	// AGENT_SECRETS_SIGNIN_DIR, or $XDG_STATE_HOME/agent-secrets/signins where it is unset
 	// (brokerclient.SignIns), and AGENT_SECRETS_MACHINE_IDENTITY with the token file, audience
 	// and pool settings beside it. A devbox that has run `agent-secrets login` carries those,
 	// so a command here that inherited them would find a person's identity, renew that person's
 	// unrelated enrollment against this stub broker and retry its 404 forever: the control would
-	// hang rather than exit 2, and the test would prove nothing about the key directory.
+	// hang rather than exit 1, and the test would prove nothing about the key directory.
 	//
 	// The three commands share one HOME, one runtime dir, one state dir and one sign-in dir
 	// because they are one pod: the enrolment writes its key into --out, so all four stay empty,
@@ -117,8 +117,8 @@ func TestThePrintedRenewalCommandRunsFromAnOutDirectory(t *testing.T) {
 	if err == nil {
 		t.Fatalf("the command without the key directory succeeded, output %q; want it refused", output)
 	}
-	if code := bare.ProcessState.ExitCode(); code != exitUsageError || !strings.Contains(string(output), "no session identity") {
-		t.Fatalf("the command without the key directory = exit %d, output %q; want %d naming no session identity", code, output, exitUsageError)
+	if code := bare.ProcessState.ExitCode(); code != 1 || !strings.Contains(string(output), "no broker identity for this process") {
+		t.Fatalf("the command without the key directory = exit %d, output %q; want 1 naming no broker identity", code, output)
 	}
 
 	// The printed command itself. `renew` runs until it is interrupted, so it is started in a
@@ -155,7 +155,7 @@ func TestThePrintedRenewalCommandRunsFromAnOutDirectory(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if got := renewErr.String(); strings.Contains(got, "no session identity") {
+	if got := renewErr.String(); strings.Contains(got, "no broker identity for this process") {
 		t.Fatalf("the printed command found no session identity: %q", got)
 	}
 }

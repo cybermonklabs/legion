@@ -66,7 +66,10 @@ interface ResolvedAgent {
   readonly attribution: string;
 }
 
-/** The one naming rule: every name this module draws or spells comes from here. */
+/** The name and attribution `main` gives an agent: every name this module spells as text
+ *  (`AgentText`'s `label`, `part`, `sessionText` and `initials`, on every surface) and every name
+ *  it draws outside `NoTooltips` comes from here. Inside `NoTooltips` a drawn session name follows
+ *  `drawnSessionName`, and `AgentText.author` names an author, instead. */
 function resolveAgent(
   ref: SessionRef,
   registry: AgentRegistry
@@ -296,24 +299,14 @@ function SessionAgentName({
   const tooltips = useTooltips();
   const page = usePageWords();
   const registry = useAgentRegistry(true);
-  const resolved = resolveAgent(subject, registry);
-  const { attribution, sessionId } = resolved;
-  // Inside `NoTooltips` every form names a session as the page names an author, whether the
-  // host gave the session's actor or its bare id: by a title, else the page's word, and never by
-  // its short id, an address that names nobody. `data-agent-name` keeps the full id.
-  const paged =
-    page === null
-      ? undefined
-      : sessionAuthor(
-          sessionId,
-          "actor" in subject ? subject.actor.origin?.session_title : subject.storedTitle,
-          registry,
-          page
-        );
-  const name = paged?.name ?? resolved.name;
+  const { attribution, sessionId } = resolveAgent(subject, registry);
+  // Every form names a session by the one rule for a drawn session name, whether the host gave
+  // the session's actor or its bare id: inside `NoTooltips` by a title, else the page's word, and
+  // never by its short id, an address that names nobody. `data-agent-name` keeps the full id.
+  const { name, unnamed } = drawnSessionName(subject, registry, page);
   // The page's word for an agent nothing names is the page's own, so inside `NoTooltips` it
   // carries that mark and stands outside the mark of a name somebody was given.
-  const fallbackMark = paged?.unnamed === true ? page?.pageChrome : undefined;
+  const fallbackMark = unnamed ? page?.pageChrome : undefined;
   const shownName = fallbackMark === undefined ? name : <span {...fallbackMark}>{name}</span>;
   const state = registry.state(sessionId);
   const linkClass = tooltips ? LINK_CLASS : PAGE_LINK_CLASS;
@@ -393,51 +386,64 @@ function agentInitials(name: string): string {
 
 export interface AgentText {
   /** Who wrote a thing, as the new issue page names an author.
-   *  Inside `NoTooltips`: a session by its registry title, else the title stamped on its write,
-   *  else the page's word for an agent nothing names, and never by its short id; a person by
-   *  their login, with an act made through a session named by what it is; and the page's words
-   *  for no actor. Everywhere else: an actor as `label` names it, and no actor as "". */
+   *  Inside `NoTooltips`: a session as `sessionShown` names it there (by its registry title, else
+   *  the title stamped on its write, else the page's word for an agent nothing names, and never by
+   *  its short id); a person by their login, with an act made through a session named by what it
+   *  is; and the page's words for no actor. Everywhere else: an actor as `label` names it, and no
+   *  actor as "". */
   author(actor: Actor | undefined): string;
-  /** The full label: name plus ` (for <owner>)` / ` (as ns/name)`. Inside `NoTooltips` a session
-   *  nothing names is named by the page's word for an agent, as `AgentName` names it there, and
-   *  never by its short id. */
+  /** The full label: name plus ` (for <owner>)` / ` (as ns/name)`. The name is `main`'s on every
+   *  surface (`resolveAgent`): inside `NoTooltips` too, a session nothing names is its short id,
+   *  not the page's word that `AgentName` draws there. */
   label(actor: Actor): string;
-  /** An `AgentPart` as text: a text part as is, an agent part by the rule `AgentParts` draws it
-   *  by. */
+  /** An `AgentPart` as text: a text part as is, an agent part as `label` spells it, which is the
+   *  rule `AgentParts` draws it by everywhere but inside `NoTooltips`. */
   part(part: AgentPart): string;
-  /** A bare session id's name: its registry title, else `storedTitle`, else its short id; inside
-   *  `NoTooltips`, else the page's word for an agent nothing names. */
+  /** A bare session id's name: its registry title, else `storedTitle`, else its short id, on every
+   *  surface. The mention composer stores it as a mention's `@` text, where the short id still
+   *  names the session and the page's word for an agent nothing names would name nobody. */
   sessionText(sessionId: string, storedTitle: string | undefined): string;
+  /** A bare session id's name as `AgentName` draws it on this surface (`drawnSessionName`), for a
+   *  sentence a reader takes beside the drawn name, such as a dialog's question or a screen
+   *  reader's words: everywhere but inside `NoTooltips` it is `sessionText`; inside, its registry
+   *  title, else `storedTitle`, else the page's word for an agent nothing names, and never its
+   *  short id. Never for text that is stored or sent: that is `sessionText`. */
+  sessionShown(sessionId: string, storedTitle: string | undefined): string;
   /** The Conversation avatar's initials (`agentInitials`). */
   initials(actor: Actor): string;
 }
 
-/** A session as the new issue page names an author, and as every form of `AgentName` names a
- *  session there: its registry title, else the title stamped on its write, else the page's word
- *  for an agent nothing names (`unnamed`: a word of the page, not a name somebody gave). Unlike
- *  `resolveAgent` it has no `session:<8>…` fallback: a reader looks to a name for who it is, and
- *  a short id names nobody. */
-function sessionAuthor(
-  sessionId: string,
-  storedTitle: string | undefined,
+/** A session's name as every form of `AgentName` draws it on the surface it is on, the one rule
+ *  for a drawn session name. Everywhere but inside `NoTooltips` (`words` null) it is
+ *  `resolveAgent`'s name. Inside, it is the name the new issue page gives an author: the
+ *  registry title, else the title stamped on the write, else the page's word for an agent nothing
+ *  names (`unnamed`: a word of the page, not a name somebody gave). There it has no
+ *  `session:<8>…` fallback: a reader looks to a name for who it is, and a short id names
+ *  nobody. */
+function drawnSessionName(
+  ref: SessionRef,
   registry: AgentRegistry,
-  words: PageWords
+  words: PageWords | null
 ): { readonly name: string; readonly unnamed: boolean } {
+  if (words === null) return { name: resolveAgent(ref, registry).name, unnamed: false };
+  const sessionId = "actor" in ref ? ref.actor.id : ref.sessionId;
+  const storedTitle = "actor" in ref ? ref.actor.origin?.session_title : ref.storedTitle;
   const title = registry.title(sessionId) ?? storedTitle?.trim();
   return title === undefined || title === ""
     ? { name: words.CONTROL_LABELS.unnamed_author, unnamed: true }
     : { name: title, unnamed: false };
 }
 
-/** `AgentText.author` inside `NoTooltips`: a session as `sessionAuthor` names it, a person as
- *  `personAuthor` does, and no actor by the page's words for an author nobody recorded. */
+/** `AgentText.author` inside `NoTooltips`: a session as `drawnSessionName` names it there, a
+ *  person as `personAuthor` does, and no actor by the page's words for an author nobody
+ *  recorded. */
 function authorName(actor: Actor | undefined, registry: AgentRegistry, words: PageWords): string {
   if (actor === undefined) return words.CONTROL_LABELS.unknown_author;
   if (!isSessionActor(actor)) {
     const { login, through } = personAuthor(actor, words);
     return `${login}${through}`;
   }
-  return sessionAuthor(actor.id, actor.origin?.session_title, registry, words).name;
+  return drawnSessionName({ actor }, registry, words).name;
 }
 
 /** A person, or Dispatch itself, as an author: by login, with the agent an act was made through
@@ -484,35 +490,26 @@ function markedPersonName(
 }
 
 /**
- * An agent's name as plain text, by the same rule `AgentName` renders, for the places that can
- * hold only a string: an `aria-label` or `title`, `document.title`, a confirmation dialog's
- * sentence, the composer's `@Title` mention text and its notices, a clipboard value, the Inbox
- * empty state. Never a visible name in a byline, chip, heading or sentence: that is
- * `AgentName`. Reads the registry titles the cache already holds and fetches nothing itself.
+ * An agent's name as plain text, for the places that can hold only a string: an `aria-label` or
+ * `title`, `document.title`, a confirmation dialog's sentence, the composer's `@Title` mention
+ * text and its notices, a clipboard value, the Inbox empty state. Never a visible name in a
+ * byline, chip, heading or sentence: that is `AgentName`. `label`, `part` and `sessionText` spell
+ * a name by the rule `AgentName` draws by outside `NoTooltips`, on every surface, so text that is
+ * stored or sent names the same session wherever it was written; `sessionShown` and `author` say
+ * what `AgentName` draws on the surface they are read on. Reads the registry titles the cache
+ * already holds and fetches nothing itself.
  */
 export function useAgentText(): AgentText {
   const registry = useAgentRegistry(false);
   const page = usePageWords();
   return useMemo(() => {
     const label = (ref: AgentRef) => {
-      const resolved = resolveAgent(ref, registry);
-      // Inside `NoTooltips` a session is named as every form of `AgentName` names it there
-      // (`sessionAuthor`), so a dialog's sentence or a screen reader's text never names it by its
-      // short id; a person, and everything outside it, keep `resolveAgent`'s name.
-      const name =
-        page === null || resolved.sessionId === undefined
-          ? resolved.name
-          : sessionAuthor(
-              resolved.sessionId,
-              "actor" in ref ? ref.actor.origin?.session_title : ref.storedTitle,
-              registry,
-              page
-            ).name;
+      const { attribution, name } = resolveAgent(ref, registry);
       // The same name `AgentName` draws, the agent an act was made through included, so a title
       // or an aria-label never says a person wrote what their agent wrote for them.
       const acted =
         "actor" in ref && ref.actor.kind === "user" ? actorActText(name, ref.actor.act) : name;
-      return `${acted}${resolved.attribution}`;
+      return `${acted}${attribution}`;
     };
     return {
       author: (actor: Actor | undefined) =>
@@ -524,9 +521,10 @@ export function useAgentText(): AgentText {
       initials: (actor: Actor) => agentInitials(resolveAgent({ actor }, registry).name),
       label: (actor: Actor) => label({ actor }),
       part: (part: AgentPart) => (typeof part === "string" ? part : label(part)),
-      // A bare session id carries no attribution, so its label is its name alone.
+      sessionShown: (sessionId: string, storedTitle: string | undefined) =>
+        drawnSessionName({ sessionId, storedTitle }, registry, page).name,
       sessionText: (sessionId: string, storedTitle: string | undefined) =>
-        label({ sessionId, storedTitle }),
+        resolveAgent({ sessionId, storedTitle }, registry).name,
     };
   }, [page, registry]);
 }

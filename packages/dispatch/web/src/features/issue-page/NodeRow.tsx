@@ -30,7 +30,7 @@ import {
 import { useAgentText } from "../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
-import { type Clamp, watchClamp } from "./clamp-measurer";
+import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
@@ -38,6 +38,7 @@ import { bringOnScreen } from "./identity-block";
 import {
   drawnLine,
   firstLineOf,
+  isStatement,
   lineWords,
   type NodeChip,
   type ParentLine,
@@ -54,6 +55,7 @@ import { authorText, pageChrome } from "./page-structure";
 import {
   ANSWER_LINES,
   type AuthorKind,
+  BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
   GAP_LINES,
   GAP_WORDS,
@@ -198,7 +200,7 @@ export function NodeRow({
   // The reader's own words: a turn a person wrote who is the reader (R34). An ask, a block or a
   // decision is not a turn, so its words are never the reader's here, whoever asked it.
   const own = author.reader && (node.type === "comment" || node.type === "message");
-  const tone = context ? "context" : toneOf(node.type, author.kind);
+  const tone = context ? "context" : toneOf(node, author.kind);
   // A folded branch draws one line and its count (R1); its focus draws its words whole.
   const collapsed = expanded === false;
   const oneLine = collapsed && !body;
@@ -551,8 +553,8 @@ export const UNTYPED: Readonly<Partial<Record<NodeType, true>>> = { comment: tru
  *  turn, by who wrote it: a person's words are the ink, an agent's the quiet grey. */
 export type Tone = keyof typeof pageKindBullet;
 
-function toneOf(type: NodeType, author: AuthorKind): Tone {
-  switch (type) {
+function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind): Tone {
+  switch (node.type) {
     case "ask":
       return "question";
     case "check":
@@ -568,7 +570,9 @@ function toneOf(type: NodeType, author: AuthorKind): Tone {
     case "plan_task":
       return "step";
     case "requirement":
-      return "statement";
+      // Only the spec's own requirement is a statement (`isStatement`); one of any other
+      // document is a block and nothing more, in a block's colour (decision 246).
+      return isStatement(node) ? "statement" : "issue";
     case "callout":
     case "document":
     case "handoff":
@@ -694,8 +698,17 @@ export function RowMargin({
             className={`inline-flex items-center gap-1 font-semibold whitespace-nowrap ${pageKindTag[tone]}`}
             data-node-tag=""
           >
-            <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
-            <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+            {/* A `requirement` block of a document other than the spec is no statement: it says
+                its type's own word and draws no statement's shape (decision 246), as a `check`
+                block outside the Verification document draws no state word (decision 152). */}
+            {node.type === "requirement" && !isStatement(node) ? (
+              <span {...pageChrome}>{BLOCK_TYPE_NAMES.requirement}</span>
+            ) : (
+              <>
+                <NodeGlyph className="size-3 shrink-0" token={GLYPH_TOKENS.types[node.type]} />
+                <span {...pageChrome}>{NODE_TYPE_NAMES[node.type]}</span>
+              </>
+            )}
           </span>
         )}
         {!authored && time === "" ? null : (
@@ -1318,10 +1331,13 @@ export function MoreWords({
 /**
  * Where a row cuts its words, read from the words as the browser laid them out, which is the
  * prototype's own reading (`measureClamps`), by the page's one measurer (`clamp-measurer.ts`):
- * for a row that may be cut - an agent's words and an answered question - while it stands within
- * one screen of the viewport, and again when its width or its words change; never for any other
- * row. Undefined where the words are drawn whole, or not measured yet; a row the reader scrolled
- * away from keeps the cut it last had.
+ * for a row that may be cut - an agent's words and an answered question - as it mounts in view,
+ * before the page is painted, and while it stands within one screen of the viewport but wholly
+ * outside the view, and again when its width or its words change or the page's typeface
+ * arrives; never for any other row. A row in view keeps its length until a scroll leaves it
+ * wholly outside the view. Undefined where the words are drawn whole, or not measured yet; a row
+ * the reader scrolled away from keeps the cut it last had, save one measured on the fallback
+ * face, which is measured again once the typeface arrives.
  */
 export function useClamp(
   words: RefObject<HTMLElement | null>,
@@ -1334,15 +1350,7 @@ export function useClamp(
       setClamp(undefined);
       return;
     }
-    return watchClamp(element, (next) =>
-      setClamp((held) =>
-        held?.height === next?.height &&
-        held?.hidden === next?.hidden &&
-        held?.pictures === next?.pictures
-          ? held
-          : next
-      )
-    );
+    return watchClamp(element, (next) => setClamp((held) => (sameClamp(held, next) ? held : next)));
   }, [cuttable, words]);
   return cuttable ? clamp : undefined;
 }

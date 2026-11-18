@@ -9,6 +9,11 @@ import { focusOnDocument } from "../shell/roving";
 /** The row of a view's tree that holds its one tab stop (the WAI-ARIA tree pattern). */
 export const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
 
+/** The outline's row whose key is `rowKey` (`tree-keys.ts`'s `rowKeyOf`), as a selector. */
+export function rowSelectorOf(rowKey: string): string {
+  return `[data-node-row][data-row-key="${CSS.escape(rowKey)}"]`;
+}
+
 /** Whether nothing holds the focus that the tree is to keep from it: it is on nothing, on the
  *  page itself, or on an element that holds `tree` - the app's main element, which the app
  *  focuses at each page change but the first (`app.tsx`), so a page opened by a link starts with

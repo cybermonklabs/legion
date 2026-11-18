@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  `agent-secrets` reads `~/.config/agent-secrets/config`, `KEY=value` lines for nine named keys:
+  the broker's address, the sign-in client's settings and the machine identity's. A process started
+  with no environment of its own, such as a systemd unit, finds the broker there. A variable that is
+  set still wins. An unknown key, a path that is not a regular file, a file another user than this
+  one or root owns, and a file its group or others can write are usage errors naming the file.

@@ -9,6 +9,7 @@ import { displayTree } from "../../__tests__/display-trees";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { api } from "../../api/client";
 import type { DisplayTree, IssueChild } from "../../api/types";
+import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
@@ -23,6 +24,7 @@ import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./o
 import {
   type AuthorKind,
   authorKind,
+  BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
   type GapKind,
   NODE_TYPE_NAMES,
@@ -213,8 +215,10 @@ test("a typed node draws its kind as one tag at the right, and a turn draws none
   // Noon of a day of the year the test runs in, so its day is the 5th from UTC-11 to UTC+11 and
   // the page's short form draws no year.
   const at = `${new Date().getFullYear()}-11-05T12:00:00Z`;
-  const drawn = (type: NodeType) => {
-    const view = renderRow(node({ at, id: `${type}-1`, text: "Words of the node.", type }));
+  const drawn = (type: NodeType, more: Partial<TreeNode> = {}) => {
+    const view = renderRow(
+      node({ at, id: `${type}-1`, text: "Words of the node.", type, ...more })
+    );
     try {
       const tag = view.container.querySelector("[data-node-tag]");
       return {
@@ -227,7 +231,7 @@ test("a typed node draws its kind as one tag at the right, and a turn draws none
       view.unmount();
     }
   };
-  expect(drawn("requirement")).toEqual({
+  expect(drawn("requirement", { statement: true })).toEqual({
     afterWords: true,
     tag: NODE_TYPE_NAMES.requirement,
     time: "5 Nov",
@@ -236,6 +240,45 @@ test("a typed node draws its kind as one tag at the right, and a turn draws none
   expect(drawn("check")).toMatchObject({ tag: NODE_TYPE_NAMES.check, token: "check" });
   expect(drawn("comment")).toMatchObject({ tag: null, time: "5 Nov" });
   expect(drawn("message")).toMatchObject({ tag: null });
+});
+
+// Decision 246: a `requirement` block is a statement only in the issue's spec (`isStatement`).
+// The same block of the plan, or of any other document, is a block and nothing more, so its row
+// draws its type's own word and none of a statement's marks - not its word, its shape or its
+// colour - as a `check` block outside the Verification document draws no state word.
+test("a plan's requirement row reads requirement with no statement mark, and a spec's reads as a statement", () => {
+  const drawn = (id: string, more: Partial<TreeNode>) => {
+    const view = renderRow(
+      node({ id, text: "The page draws no raw source.", type: "requirement", ...more })
+    );
+    try {
+      const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
+      const dot = view.container.querySelector("[data-node-bullet] i");
+      return {
+        bullet: dot?.classList.contains(pageKindBullet.statement) ?? null,
+        colour: tag?.classList.contains(pageKindTag.statement) ?? null,
+        tag: tag?.textContent ?? null,
+        token: tag?.querySelector("svg")?.getAttribute("data-glyph") ?? null,
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  expect(drawn("plan-md#b-r1", {}), "a plan's requirement row drew a statement's mark").toEqual({
+    bullet: false,
+    colour: false,
+    tag: BLOCK_TYPE_NAMES.requirement,
+    token: null,
+  });
+  expect(
+    drawn("spec-md#b-r1", { statement: true }),
+    "a spec's requirement row did not draw a statement"
+  ).toEqual({
+    bullet: true,
+    colour: true,
+    tag: NODE_TYPE_NAMES.requirement,
+    token: "requirement",
+  });
 });
 
 // R1, ruling 1: a folded branch is the one place a row draws one line of its node: the first

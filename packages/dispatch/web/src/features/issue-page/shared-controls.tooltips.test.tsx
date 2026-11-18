@@ -73,6 +73,7 @@ import {
   doc,
   draw,
   GONE_SESSION,
+  holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
   listed,
@@ -1658,7 +1659,7 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [labelsEmptyAndSaving, []],
   [
     mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
-    ["Inherited or the project's default"],
+    ["Clear it, and the issue inherits a repository again"],
   ],
   [repoNothingResolved, []],
   [componentsWithPicker, []],
@@ -2062,18 +2063,6 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
   }),
 ]);
 
-/** What holds an element at its width or on one line: `shrink-0` and `flex-none` keep its width
- *  in a flex row, `whitespace-nowrap`, `text-nowrap` and `whitespace-pre` keep its words on one
- *  line, and `truncate` cuts what does not fit. */
-const HOLDS_ITS_LINE = [
-  "flex-none",
-  "shrink-0",
-  "text-nowrap",
-  "truncate",
-  "whitespace-nowrap",
-  "whitespace-pre",
-];
-
 /** What lets a value break inside a word: `[overflow-wrap:anywhere]`, the one spelling the shared
  *  controls use for it inside `NoTooltips`. Unlike `break-words` (`overflow-wrap: break-word`),
  *  it also lets the value's min-content width shrink below its longest word. */
@@ -2105,17 +2094,29 @@ function ownText(element: Element): string {
     .join("");
 }
 
+/** Whether `element` is a text box whose value or placeholder holds `value`: a box draws its
+ *  words from those attributes, not from any text of its own. */
+function boxHolds(element: Element, value: string): boolean {
+  return (
+    element instanceof HTMLInputElement &&
+    (element.value.includes(value) || element.placeholder.includes(value))
+  );
+}
+
 /**
  * Each value `mount` draws among `drawn`: every element with the author-text mark, and each
- * element holding one of `mount.values` in its own text. A value inside `sr-only` is read aloud
- * and drawn in no row, and a native `<option>` is drawn by the browser's own list, which no class
- * wraps, so neither is read. `missing` takes each value of `mount.values` that nothing draws.
+ * element holding one of `mount.values` in its own text, or a text box holding it as its value or
+ * its placeholder. A value inside `sr-only` is read aloud and drawn in no row, and a native
+ * `<option>` is drawn by the browser's own list, which no class wraps, so neither is read.
+ * `missing` takes each value of `mount.values` that nothing draws.
  */
 function drawnValues(mount: Mount, drawn: readonly Element[], missing: string[]): Element[] {
   const shown = drawn.filter((element) => element.closest(".sr-only, select") === null);
   const values = new Set(shown.filter((element) => element.hasAttribute(AUTHOR_TEXT_ATTRIBUTE)));
   for (const value of mount.values ?? []) {
-    const holders = shown.filter((element) => ownText(element).includes(value));
+    const holders = shown.filter(
+      (element) => ownText(element).includes(value) || boxHolds(element, value)
+    );
     if (holders.length === 0) missing.push(`${mount.name}: draws no ${value}`);
     for (const holder of holders) values.add(holder);
   }
@@ -2127,22 +2128,16 @@ function described(element: Element): string {
   return `<${element.tagName.toLowerCase()} class="${element.getAttribute("class") ?? ""}">${(element.textContent ?? "").slice(0, 32)}`;
 }
 
-/** What of `HOLDS_ITS_LINE` an element carries, its inline `flex-shrink: 0` among them. */
-function holdsItsLine(element: Element): string[] {
-  const held = classOf(element).filter((token) => HOLDS_ITS_LINE.includes(token));
-  return element instanceof HTMLElement && element.style.flexShrink === "0"
-    ? [...held, "flex-shrink: 0"]
-    : held;
-}
-
 /** Why `value` cannot wrap inside its row: it does not break anywhere (`BREAKS_ANYWHERE`), it
  *  has no bound on its width (`STAYS_IN_ITS_LINE`), or it, an element of its text inside it, or
- *  an element around it up to `root` holds its line or its width (`HOLDS_ITS_LINE`). */
+ *  an element around it up to `root` holds its line or its width (`HOLDS_ITS_LINE`). A text box
+ *  is exempt from the first alone: it draws its value on one line, which it scrolls inside its
+ *  own width and no class breaks, so it narrows to its line instead, which the rest is read for. */
 function wrapOffences(mountName: string, value: Element, root: Element): string[] {
   const named = `${mountName}: ${described(value)}`;
   const offences: string[] = [];
   const own = classOf(value);
-  if (!own.includes(BREAKS_ANYWHERE)) {
+  if (!(value instanceof HTMLInputElement) && !own.includes(BREAKS_ANYWHERE)) {
     offences.push(`${named} does not break anywhere (${BREAKS_ANYWHERE})`);
   }
   if (!own.some((token) => STAYS_IN_ITS_LINE.includes(token))) {
@@ -2190,6 +2185,7 @@ const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
+  "features/issue/RepoControl.tsx",
 ] as const;
 
 /** The page's two grounds, the paper and the pane, on which an element of these files is drawn
@@ -2771,6 +2767,61 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
   });
 });
 
+// Inside `NoTooltips` the repository's clear control carries no `title`: its name stays `main`'s,
+// and its description, in the page's mark, says what the `title` said, that the issue then
+// inherits a repository. A value that is not owner/name, written with Enter, draws `main`'s
+// refusal in the page's failed red, with the page's mark. Outside, the control keeps `main`'s
+// `title` and no description, and the refusal `main`'s red and no mark.
+test("inside NoTooltips the repository's clear control is described by what its title said, and a refusal is the page's failed red", async () => {
+  const user = userEvent.setup();
+  const clearExplains = "Clear it, and the issue inherits a repository again";
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(
+      <>
+        <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
+        <RepoControl issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />
+      </>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
+      const description = document.getElementById(clear.getAttribute("aria-describedby") ?? "");
+      if (surface === "inside") {
+        expect(clear.getAttribute("title")).toBeNull();
+        expect(
+          scope.getByRole("button", {
+            description: clearExplains,
+            name: "Clear the repository of CORE-1",
+          })
+        ).toBe(clear);
+        expect(description?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+      } else {
+        expect(clear.getAttribute("title")).toBe(clearExplains);
+        expect(description).toBeNull();
+      }
+
+      // The focus starts the mappings' read, which lands before the refusal is read.
+      await user.type(scope.getByRole("combobox", { name: "Repository of CORE-2" }), "nope{Enter}");
+      await settleReads();
+      const refusal = scope.getByRole("alert");
+      expect(refusal.textContent).toBe("Write the repository as owner/name.");
+      if (surface === "inside") {
+        expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(theme.pageFailedText)));
+        expect(
+          classOf(refusal).filter((token) => tokens(theme.dangerText).includes(token))
+        ).toEqual([]);
+        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+      } else {
+        expect(refusal.getAttribute("class")).toBe(theme.dangerText);
+        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(false);
+      }
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
 // Inside `NoTooltips` each word a shared control reads from the new issue page's word list is
 // that list's word, found here by the list's own entry, and each element carries the mark the
 // source gives it: the page's words `data-page-chrome`, a person's or an agent's
@@ -3071,7 +3122,7 @@ test("inside NoTooltips the words come from the page's word list and carry their
         ["acme/web", "author-text"],
         [CONTROL_LABELS.repository_inherited, "page-chrome"],
         [`, ${CONTROL_LABELS.repository_inherited}`, "page-chrome"],
-        [CONTROL_LABELS.none, "page-chrome"],
+        [CONTROL_LABELS.no_repository, "page-chrome"],
       ]);
     }
   );

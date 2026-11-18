@@ -114,10 +114,24 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
     // reader moves that fast, so after that frame a focus moved off the Retry onto the tree is
     // the reader's.
     let placed: Element | null = null;
+    // The frames that end `placed`, which go with the stage: one left to run after the view is
+    // gone would focus what the take placed the focus on, off the page.
+    const ending = new Set<number>();
+    // Puts the focus on `to`, and brings it on screen too once `bring`.
+    const place = (to: HTMLElement): void => {
+      if (bring) focusOn(to);
+      else to.focus({ preventScroll: true });
+    };
     // True once the focus is placed, or once something other than the view's tree holds it.
-    // Nothing holds it on the page itself, or on an element that holds the stage: the app
-    // focuses its main element at each page change but the first (`app.tsx`), so a view's
-    // address opened from another page starts with the focus there (`focusIsLoose`).
+    // Nothing holds it on the page itself, or on an element that holds the stage
+    // (`focusIsLoose`): the app focuses its main element at each page change but the first
+    // (`app.tsx`). A view that draws its row or Retry in a later commit than the page change
+    // finds the focus there. One that draws them in the commit the page mounts in - its reads
+    // cached, as on Back to its address - places the focus first, and the app then moves it to
+    // its main element, since React runs a child's effects before its parent's. So the frame
+    // that ends `placed` takes the focus again where nothing holds it then (which the element
+    // placed no longer does), as the outline's opening waits a frame for its first row; a focus
+    // the reader or a script put elsewhere in that frame stays.
     const take = (): boolean => {
       const active = document.activeElement;
       const onTree = active?.matches(VIEW_TREE) === true && stage.contains(active);
@@ -126,12 +140,14 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
         stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
         stage.querySelector<HTMLElement>(FAILED_READ_RETRY);
       if (to === null) return false;
-      if (bring) focusOn(to);
-      else to.focus({ preventScroll: true });
+      place(to);
       placed = to;
-      requestAnimationFrame(() => {
+      const frame = requestAnimationFrame(() => {
+        ending.delete(frame);
         placed = null;
+        if (focusIsLoose(stage)) place(to);
       });
+      ending.add(frame);
       return true;
     };
     // A view draws its tree once its reads have answered, a frame or several after it mounts.
@@ -160,6 +176,7 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
     return () => {
       drawn.disconnect();
       stage.removeEventListener("focusin", treeFocused);
+      for (const frame of ending) cancelAnimationFrame(frame);
     };
   }, [view]);
   return (

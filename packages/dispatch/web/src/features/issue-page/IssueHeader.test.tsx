@@ -1,7 +1,7 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeEach, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
@@ -23,9 +23,10 @@ import type {
   Project,
   UserIssueState,
 } from "../../api/types";
-import { parseIssuePath } from "../refs/routes";
+import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
+import { CONTROL_LABELS } from "./page-words";
 import { HeaderSlot } from "./slots/header";
 
 /**
@@ -207,9 +208,9 @@ function IssueScope(): null {
   return null;
 }
 
-function renderHeader(path = "/issues/CORE-1", queryClient = headerClient()) {
-  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  return render(
+/** The header's slot at `path`, under the router, the client and the keys the page gives it. */
+function headerTree(path: string, queryClient: QueryClient): ReactNode {
+  return (
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
@@ -221,6 +222,11 @@ function renderHeader(path = "/issues/CORE-1", queryClient = headerClient()) {
       </QueryClientProvider>
     </MemoryRouter>
   );
+}
+
+function renderHeader(path = "/issues/CORE-1", queryClient = headerClient()) {
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  return render(headerTree(path, queryClient));
 }
 
 /** Opens the header's one actions control, which is where the pin, close, reopen and the control
@@ -248,18 +254,20 @@ test("the header updates whose turn when a human clarification is latest", async
     // The marker's words are the page's and the count beside them is the issue's, each marked
     // as what it is, so the marker is read whole.
     expect((await screen.findByTestId("issue-whose-turn")).textContent).toBe("Waiting on you (1)");
-    queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
-      ...waitingIssue,
-      open_asks: [
-        {
-          ...openIssueAsk,
-          last_reply: {
-            author: { id: "alice", kind: "user" },
-            created_at: "2026-09-11T01:00:00Z",
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...waitingIssue,
+        open_asks: [
+          {
+            ...openIssueAsk,
+            last_reply: {
+              author: { id: "alice", kind: "user" },
+              created_at: "2026-09-11T01:00:00Z",
+            },
+            waiting_on: "agent",
           },
-          waiting_on: "agent",
-        },
-      ],
+        ],
+      });
     });
     await waitFor(() =>
       expect(screen.getByTestId("issue-whose-turn").textContent).toBe("Waiting on agents (1)")
@@ -282,6 +290,79 @@ test("the header hides whose turn when the server sent open asks without waiting
     expect(screen.queryByText(/^Waiting on (you|agents)/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+// The count reads the reader's login, the decisions, the coverage, the comments and the decisions
+// document's blocks, under the keys the outline reads them by, and a root issue's header reads the
+// projects for its gated steps, under the key the shell's sidebar reads them by. The header mounts
+// again each time the reader comes back to the issue's page, and under the app's `staleTime` a
+// read is stale 30 s after it answered (`main.tsx`), each observer judging it by its own options:
+// read with the app's defaults, the header mounted again past that would send all five and the
+// projects read again, although the feed's events keep them fresh (decision 180).
+test("the header mounted again past 30 s sends none of its count's reads, nor the projects read, again", async () => {
+  const decisionsDocument = {
+    ...issue.artifacts[0],
+    id: "artifact-decisions",
+    name: "decisions.md",
+    primary: false,
+    ref_key: `CORE-1/${DECISIONS_DOCUMENT_SLUG}`,
+    slug: DECISIONS_DOCUMENT_SLUG,
+  };
+  const restore = stubHeader({ ...issue, artifacts: [...issue.artifacts, decisionsDocument] });
+  // The issue's own read keeps the app's 30 s, so the header mounted again reads it again: that is
+  // what says the mount came past the age the five and the projects read would go stale at.
+  const getIssue = spyOn(api, "getIssue");
+  // The login, the decisions and the blocks answered here, and the coverage and the comments by
+  // what the file already answers them with; the decisions name the issue's decisions document,
+  // so its blocks are read too.
+  const reads = [
+    spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
+    spyOn(api, "getIssueDecisions").mockResolvedValue({
+      decisions: [],
+      document: buildDispatchReference({ key: "CORE-1", kind: "decisions" }),
+      open_questions: [],
+    }),
+    spyOn(api, "getIssueCoverage"),
+    spyOn(api, "listComments"),
+    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+  ];
+  // The issue has no parent, so its header reads the projects, answered by `stubHeader`'s list.
+  const listProjects = spyOn(api, "listProjects");
+  const sent = () => reads.map((read) => read.mock.calls.length);
+  // The app's client's defaults (`main.tsx`), which a read that sets none of its own takes.
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { refetchOnWindowFocus: true, retry: false, staleTime: 30_000 } },
+  });
+  let view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    // The login is the one the shell already holds, and each other read is sent once.
+    await waitFor(() => expect(sent()).toEqual([0, 1, 1, 1, 1]));
+    await waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    const issueReads = getIssue.mock.calls.length;
+    view.unmount();
+
+    // The reader comes back to the issue more than 30 s after the reads answered.
+    setSystemTime(Date.now() + 31_000);
+    view = render(headerTree("/issues/CORE-1", queryClient));
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    await waitFor(() => expect(getIssue.mock.calls.length).toBeGreaterThan(issueReads));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(sent(), "the header mounted again sent a read of its count's again").toEqual([
+      0, 1, 1, 1, 1,
+    ]);
+    expect(listProjects.mock.calls.length, "the header mounted again read the projects again").toBe(
+      1
+    );
+  } finally {
+    view.unmount();
+    setSystemTime();
+    for (const read of reads) read.mockRestore();
+    listProjects.mockRestore();
+    getIssue.mockRestore();
     restore();
   }
 });
@@ -483,6 +564,11 @@ test("the header keeps an unrequested draft approval passive", async () => {
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
+    // The shared chip draws nothing for a draft, so these words are the header's own: its
+    // approval control says nobody has asked for one.
+    expect(
+      within(screen.getByTestId("issue-state-actions")).getByText(CONTROL_LABELS.not_requested)
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Draft" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Approve$/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Request changes" })).not.toBeInTheDocument();
@@ -594,8 +680,8 @@ test("the header lets a human move a Todo issue to In progress", async () => {
 
 // `a` and Shift+R are the approval's only with the focus on the chip of a document whose request
 // waits on the reader, or on one of its two actions, and only while the action each presses takes
-// a press. A stale approval's Approve says its version; while the review is written Approve is
-// disabled and Request changes refuses a press, so neither key applies then.
+// a press. A stale approval's Approve says its version; while the review is written Approve and
+// Request changes are `aria-disabled` and refuse a press, so neither key applies then.
 test("the approval chip's keys press its own actions, and only while those take a press", async () => {
   const user = userEvent.setup();
   const restore = stubHeader({
@@ -652,7 +738,7 @@ test("the approval chip's keys press its own actions, and only while those take 
       { state: "approved" },
       keyedAttempt
     );
-    await waitFor(() => expect(approve).toBeDisabled());
+    await waitFor(() => expect(approve).toHaveAttribute("aria-disabled", "true"));
     expect(requestChanges).toHaveAttribute("aria-disabled", "true");
     expect(bothApply()).toEqual([false, false]);
     await user.keyboard("a");
@@ -663,6 +749,211 @@ test("the approval chip's keys press its own actions, and only while those take 
     answered.reject(new Error("the connection dropped"));
     view.unmount();
     createArtifactReview.mockRestore();
+    restore();
+  }
+});
+
+// The header's focus keeper gives a control of the Request changes dialog, lost as the dialog
+// shuts, to the document's chip, as it gives one of the chip's two actions (`chipOfLostAction`).
+// The dialog gives the focus back to the header's Request changes as it shuts; once the request is
+// answered the header draws neither action, so the focus falls from the dialog's own control: its
+// submit, which reads "Submitting…" while the change request is written, its text box, which
+// holds the reader's reason, or its Cancel. No action draws the words of any of them, so only
+// their place inside the dialog sends the focus to the chip rather than to "Issue actions". Where
+// the reader sent a change request, the chip also hands the focus to itself once the read after
+// it removes Request changes (`ApprovalChip`), so the first two rows below hold where the focus
+// ends, whichever of the two moves it; the rows after them, where nothing was sent, are the
+// keeper's alone.
+
+/** The reason each case types into the dialog: no action of the chip draws these words. */
+const CHANGE_REASON = "Name the rollback path.";
+
+/** The issue with its document's approval request waiting on the reader: the header draws Approve
+ *  and Request changes beside the document's chip. */
+function awaitingApprovalIssue(): IssueDetails {
+  return {
+    ...issue,
+    artifacts: [{ ...issue.artifacts[0], approval: { latest_version: 1, state: "awaiting" } }],
+    open_asks: [approvalAsk()],
+  };
+}
+
+/** The same issue once its document's request is answered with `state`: no request is open, so
+ *  the header draws the document's chip and neither action. */
+function answeredApprovalIssue(state: "approved" | "changes_requested"): IssueDetails {
+  return {
+    ...issue,
+    artifacts: [{ ...issue.artifacts[0], approval: { latest_version: 1, state, version: 1 } }],
+    open_asks: [],
+  };
+}
+
+/** The reader's change request on the document, as the server records it. */
+const changeRequest: ArtifactReview = {
+  actor: { id: "alice", kind: "user" },
+  artifact_id: "artifact-1",
+  ask_id: "ask-approval",
+  content_sha256: null,
+  content_sha256_source: null,
+  created_at: "2026-09-11T00:00:00Z",
+  id: "review-1",
+  kind: "person",
+  reason: CHANGE_REASON,
+  state: "changes_requested",
+  version: 1,
+};
+
+/** Opens the Request changes dialog by Enter on the header's Request changes, as a keyboard reader
+ *  does, and types `CHANGE_REASON` into its text box, which the dialog focuses as it opens. Returns
+ *  the dialog and the header's line of state controls, which the document's chip stands on. */
+async function openRequestChanges(
+  user: UserEvent
+): Promise<{ readonly dialog: HTMLElement; readonly stateActions: HTMLElement }> {
+  const stateActions = await screen.findByTestId("issue-state-actions");
+  const requestChanges = await within(stateActions).findByRole("button", {
+    name: "Request changes",
+  });
+  act(() => requestChanges.focus());
+  await user.keyboard("{Enter}");
+  const dialog = await screen.findByRole("dialog", { name: "Request changes" });
+  const reason = within(dialog).getByRole("textbox", { name: "Reason" });
+  await waitFor(() => expect(reason).toHaveFocus());
+  await user.keyboard(CHANGE_REASON);
+  return { dialog, stateActions };
+}
+
+/** The chip's two actions the header draws. The dialog stands inside the same line, so its own
+ *  Request changes is left out. */
+function headerReviewActions(stateActions: HTMLElement): HTMLElement[] {
+  return within(stateActions)
+    .queryAllByRole("button", { name: /^(Approve|Request changes)$/ })
+    .filter((button) => button.closest('[role="dialog"]') === null);
+}
+
+/** The document's approval chip on the header's line of state controls. */
+function documentChip(stateActions: HTMLElement): HTMLElement {
+  const chip = stateActions.querySelector<HTMLElement>('[data-approval-artifact="artifact-1"]');
+  if (chip === null) throw new Error("the header draws no approval chip for the document");
+  return chip;
+}
+
+/** Answers the issue's reads with the waiting request until the reader's change request lands,
+ *  and with the answered request from then on, as the server does. Returns the spy of the review's
+ *  write and what puts both back. */
+function answerChangeRequest(): {
+  readonly createArtifactReview: Mock<typeof api.createArtifactReview>;
+  readonly restore: () => void;
+} {
+  let read = awaitingApprovalIssue();
+  const restoreHeader = stubHeader(read);
+  const getIssue = spyOn(api, "getIssue").mockImplementation(async () => read);
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(async () => {
+    read = answeredApprovalIssue("changes_requested");
+    stubbedIssue = read;
+    return changeRequest;
+  });
+  return {
+    createArtifactReview,
+    restore: () => {
+      createArtifactReview.mockRestore();
+      getIssue.mockRestore();
+      restoreHeader();
+    },
+  };
+}
+
+test("a change request sent by Enter on the dialog's submit leaves the focus on the document's chip", async () => {
+  const user = userEvent.setup();
+  const { createArtifactReview, restore } = answerChangeRequest();
+  const view = renderHeader();
+
+  try {
+    const { dialog, stateActions } = await openRequestChanges(user);
+    expect(headerReviewActions(stateActions).length).toBe(2);
+    const submit = within(dialog).getByRole("button", { name: "Request changes" });
+    act(() => submit.focus());
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    expect(createArtifactReview).toHaveBeenCalledWith(
+      "artifact-1",
+      { reason: CHANGE_REASON, state: "changes_requested" },
+      keyedAttempt
+    );
+    expect(headerReviewActions(stateActions)).toEqual([]);
+    await waitFor(() => expect(documentChip(stateActions)).toHaveFocus());
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("a change request sent by Ctrl+Enter in the dialog's text box leaves the focus on the document's chip", async () => {
+  const user = userEvent.setup();
+  const { createArtifactReview, restore } = answerChangeRequest();
+  const view = renderHeader();
+
+  try {
+    const { dialog, stateActions } = await openRequestChanges(user);
+    expect(headerReviewActions(stateActions).length).toBe(2);
+    const reason = within(dialog).getByRole("textbox", { name: "Reason" });
+    expect(reason).toHaveFocus();
+    await user.keyboard("{Control>}{Enter}{/Control}");
+
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    expect(createArtifactReview).toHaveBeenCalledWith(
+      "artifact-1",
+      { reason: CHANGE_REASON, state: "changes_requested" },
+      keyedAttempt
+    );
+    expect(headerReviewActions(stateActions)).toEqual([]);
+    await waitFor(() => expect(documentChip(stateActions)).toHaveFocus());
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// Another reviewer answers the request while the reader's dialog is open, so the issue's read
+// draws no request: the header's two actions go and the dialog stays. The reader then shuts it, by
+// its Cancel, pressed by Enter, or by Escape in its text box. Nothing was sent, so the chip has no
+// hand-over of its own to make, and the header's keeper alone puts the focus anywhere.
+test.each([
+  "Cancel",
+  "Escape",
+])("the Request changes dialog shut by %s after its request was answered elsewhere leaves the focus on the document's chip", async (shutBy) => {
+  const user = userEvent.setup();
+  const restore = stubHeader(awaitingApprovalIssue());
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { dialog, stateActions } = await openRequestChanges(user);
+    expect(headerReviewActions(stateActions).length).toBe(2);
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(
+        ["issue", "CORE-1"],
+        answeredApprovalIssue("approved")
+      );
+    });
+    await waitFor(() => expect(headerReviewActions(stateActions)).toEqual([]));
+    expect(dialog).toBeInTheDocument();
+
+    if (shutBy === "Cancel") {
+      const cancel = within(dialog).getByRole("button", { name: "Cancel" });
+      act(() => cancel.focus());
+      await user.keyboard("{Enter}");
+    } else {
+      expect(within(dialog).getByRole("textbox", { name: "Reason" })).toHaveFocus();
+      await user.keyboard("{Escape}");
+    }
+
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    await waitFor(() => expect(documentChip(stateActions)).toHaveFocus());
+  } finally {
+    view.unmount();
     restore();
   }
 });

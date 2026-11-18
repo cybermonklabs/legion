@@ -64,7 +64,10 @@ export function IssueFieldForms({
 /** The buttons every editor of an issue's fields ends on: save, then cancel. The editors a later
  *  part adds share these, so every editor draws one pair of buttons and none can drift apart.
  *  `saveLabel` is the editor's own word for its save, drawn on Save whether or not a save is
- *  out: a save that is out only makes Save a button that cannot be pressed (`saving`). */
+ *  out: a save that is out only makes Save a button that refuses a press (`saving`). Each button
+ *  that refuses is `aria-disabled` with its press ignored, never `disabled`: a `disabled` button
+ *  drops the focus to the body in a browser, so a reader who pressed Save, or Enter in the box,
+ *  would lose their place. */
 export function FormActions({
   cancel,
   saveLabel,
@@ -73,27 +76,37 @@ export function FormActions({
 }: {
   cancel: () => void;
   saveLabel: string;
-  /** Whether Save cannot be pressed: a save is out, or the value cannot be saved. */
+  /** Whether Save refuses a press: a save is out, or the value cannot be saved. Save stays
+   *  focusable then, drawn and announced as refused, and a press of it, or Enter in the box,
+   *  submits nothing. */
   saving: boolean;
   /** Whether the editor waits for the answer to a save that is out, and nothing closes it until
-   *  that lands: an editor that draws its refusal in itself. Cancel is held with Save then, drawn
-   *  and announced as a control that cannot be pressed rather than one whose press does nothing. */
+   *  that lands: an editor that draws its refusal in itself. Cancel refuses a press with Save
+   *  then, announced as a control that cannot be pressed rather than left to look pressable: it
+   *  stays focusable, and a press of it cancels nothing. */
   waiting?: boolean;
 }): ReactNode {
   return (
     <>
       <button
-        className={`min-h-11 rounded px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
-        disabled={saving}
+        aria-disabled={saving || undefined}
+        className={`min-h-11 rounded px-2 py-1 text-sm font-medium refused:cursor-not-allowed md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonDisabledText}`}
+        onClick={(event) => {
+          // A submit button: Enter in a field of the form clicks it too, and a click whose
+          // default is prevented submits nothing.
+          if (saving) event.preventDefault();
+        }}
         type="submit"
         {...pageChrome}
       >
         {saveLabel}
       </button>
       <button
-        className={`min-h-11 rounded border px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary} ${secondaryButtonDisabledText}`}
-        disabled={waiting}
-        onClick={cancel}
+        aria-disabled={waiting || undefined}
+        className={`min-h-11 rounded border px-2 py-1 text-sm font-medium refused:cursor-not-allowed md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary} ${secondaryButtonDisabledText}`}
+        onClick={() => {
+          if (!waiting) cancel();
+        }}
         type="button"
         {...pageChrome}
       >

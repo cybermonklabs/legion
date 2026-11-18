@@ -194,3 +194,29 @@ test("a text is read once however often a row draws it, and again for another te
     reads.mockRestore();
   }
 });
+
+// A text keeps a reading for four lists of keys. A list it is asked again is its newest, so the
+// slot a fifth list evicts is the one asked longest ago, and not the one read first. Each list is
+// one array throughout, so its id is the same whatever other sets of keys are forgotten.
+test("a text's fifth list of keys evicts the slot asked longest ago, and keeps one just asked again", () => {
+  const reads = spyOn(textReferences, "readTextReferences");
+  try {
+    const text = "Slots kept: see CORE-301, CORE-302, CORE-303, CORE-304 and CORE-305.";
+    const first = ["CORE-301"];
+    const second = ["CORE-302"];
+    for (const issues of [first, second, ["CORE-303"], ["CORE-304"]]) {
+      rowReferences(text, issues);
+    }
+    expect(reads, "four lists of keys were not each read once").toHaveBeenCalledTimes(4);
+    rowReferences(text, first);
+    expect(reads, "a kept list was read again").toHaveBeenCalledTimes(4);
+    rowReferences(text, ["CORE-305"]);
+    expect(reads, "the fifth list of keys was not read").toHaveBeenCalledTimes(5);
+    rowReferences(text, first);
+    expect(reads, "the list just asked again was evicted by the fifth").toHaveBeenCalledTimes(5);
+    rowReferences(text, second);
+    expect(reads, "the list asked longest ago was kept past the fifth").toHaveBeenCalledTimes(6);
+  } finally {
+    reads.mockRestore();
+  }
+});

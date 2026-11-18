@@ -46,8 +46,9 @@ export function SubscribedAgents({
   const text = useAgentText();
   const tooltips = useTooltips();
   const page = usePageWords();
+  // The question names the session as its chip above draws it on this surface.
   const confirmingLabel =
-    confirming === undefined ? "" : text.sessionText(confirming.session_id, confirming.title);
+    confirming === undefined ? "" : text.sessionShown(confirming.session_id, confirming.title);
 
   if (subscribers.length === 0) {
     return null;
