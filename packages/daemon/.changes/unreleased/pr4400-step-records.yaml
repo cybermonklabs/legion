@@ -6,5 +6,8 @@ body: |-
   (kind `step_record`). A session or a model an agent's frame names outside the form Dispatch
   holds them to (printable ASCII with no space, at most 128 characters) is left out of the record,
   with a warning in the log. A GitHub merge now closes an issue that is held from merging, as it
-  closes one in merging. Three store migrations add the kind and the table `step_starts`; the way
-  back is "Rolling back the release that records each step" in `docs/kubernetes.md`.
+  closes one in merging. Three store migrations add the kind (`20261117000528`), the tables
+  `step_starts` and `step_starts_rollback` with the function `step_run_witness`
+  (`20261117004117`), and the roll forward of a rollback (`20261117064152`); the way back, which
+  every daemon of one database takes together, is "Rolling back the release that records each
+  step" in `docs/kubernetes.md`.
