@@ -118,7 +118,9 @@ export function repoControlName(issueKey: string): string {
  * ink under the pointer; a refusal is the failed red; and the line is the ink in a row of Details
  * and the muted grey elsewhere. Nothing there keeps its width: the line wraps, the box, at most
  * `main`'s 200 px, narrows to its line and is the full width of a row of Details, and the text a
- * row draws in its place breaks anywhere.
+ * row draws in its place breaks anywhere. Escape in the box is the box's alone there: marked
+ * `defaultPrevented`, it passes by the dialog binding of a sheet around the box, as Details is on
+ * a phone, which a second Escape, pressed outside the box, closes.
  *
  * There a row of Details draws its value as text rather than in the box, as the other rows of
  * Details do: a text box holds its value on one line and cuts a long one at its width, while the
@@ -132,9 +134,13 @@ export function repoControlName(issueKey: string): string {
  * row's full width, with the focus in it. The box gives the row back to the text when it is left,
  * on Escape, and once a write made from it is no longer out, the text then saying what the issue
  * resolves to after the write; while it holds a draft, refused or not, or a write that is out, it
- * stays. Whichever of the text and the box takes the other's place takes the focus the other
- * held, where that focus fell to the document with it. Outside a row of Details the box is drawn
- * whether or not a repository resolves, and its description says `No repository` when none does.
+ * stays. Its clear control is part of the box there: a focus moved between the two, by Tab or by
+ * Shift+Tab, leaves neither, so a keyboard reaches the control, and the row is given back to the
+ * text once the focus leaves both. A press of the control, from the keyboard as from the pointer,
+ * leaves the focus in the box while its write is out. Whichever of the text and the box takes the
+ * other's place takes the focus the other held, the clear control's included, where that focus
+ * fell to the document with it. Outside a row of Details the box is drawn whether or not a
+ * repository resolves, and its description says `No repository` when none does.
  */
 export function RepoControl({
   disabled = false,
@@ -163,8 +169,8 @@ export function RepoControl({
   /** Whether the draft was refused here, for not being `owner/name`. */
   const [refused, setRefused] = useState(false);
   /** Inside `NoTooltips`, in a row of Details, whether the reader has opened the box from the
-   *  row's text - "None" or the repository - and has not since left it, pressed Escape in it or
-   *  made a write from it. */
+   *  row's text - "None" or the repository - and has not since left it and its clear control,
+   *  pressed Escape in it or made a write from it. */
   const [opened, setOpened] = useState(false);
   const mappings = useQuery({
     enabled: wanted || resolvedRepo === null,
@@ -236,12 +242,15 @@ export function RepoControl({
   const noneControl = useRef<HTMLButtonElement>(null);
   const textControl = useRef<HTMLButtonElement>(null);
   const box = useRef<HTMLInputElement>(null);
-  // Whether the focus is on the row's text or in the box. Whichever of them takes the other's
-  // place takes the focus the other held, which the one leaving the page drops to the document: a
-  // press of the text leaves it in the box; Escape, or a write that lands, on the text, which then
-  // says what the issue resolves to; and "None" and the repository's text, each drawn in the
-  // other's place when the issue's repository changes under them, hand it on alike. Only a focus
-  // still on the document is taken (`focusOnDocument`): anywhere else, the reader put it there.
+  /** The place the row's text or the box is drawn in, the box's clear control with it. */
+  const place = useRef<HTMLSpanElement>(null);
+  // Whether the focus is on the row's text or in the box, its clear control included. Whichever
+  // of them takes the other's place takes the focus the other held, which the one leaving the
+  // page drops to the document: a press of the text leaves it in the box; Escape, or a write that
+  // lands, on the text, which then says what the issue resolves to; and "None" and the
+  // repository's text, each drawn in the other's place when the issue's repository changes under
+  // them, hand it on alike. Only a focus still on the document is taken (`focusOnDocument`):
+  // anywhere else, the reader put it there.
   const focusHeld = useRef(false);
   useEffect(() => {
     if (!focusHeld.current || !focusOnDocument()) return;
@@ -297,7 +306,7 @@ export function RepoControl({
         // `relative` is load-bearing: the description is `sr-only`, which is absolutely
         // positioned, and with no positioned ancestor it is laid out against the page and makes
         // it as wide as its own text at a phone width.
-        <span className={`relative inline-flex ${placeWidth} items-center`}>
+        <span className={`relative inline-flex ${placeWidth} items-center`} ref={place}>
           {showsText && resolvedRepo !== null ? (
             // The repository in the box's font, so that the box opened in its place shows it as
             // the text did, breaking anywhere so that a name with no space in it wraps too.
@@ -323,9 +332,16 @@ export function RepoControl({
                 className={`min-h-11 ${page === null ? "w-[200px]" : "w-full min-w-0"} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
                 disabled={disabled}
                 list={suggestionsId}
-                onBlur={() => {
-                  focusHeld.current = false;
-                  setOpened(false);
+                onBlur={(event) => {
+                  // Inside `NoTooltips` a focus moved from the box to its clear control, as Tab
+                  // moves it, stays in the box's place: the box stays drawn, and with it the
+                  // control the focus is now on, which gives the row back to the text once the
+                  // focus leaves the place from there (its `onBlur`). What was typed is written
+                  // all the same, as whenever the box is left.
+                  if (page === null || place.current?.contains(event.relatedTarget) !== true) {
+                    focusHeld.current = false;
+                    setOpened(false);
+                  }
                   commit();
                 }}
                 onChange={(event) => {
@@ -341,6 +357,16 @@ export function RepoControl({
                     event.preventDefault();
                     commit();
                   } else if (event.key === "Escape") {
+                    // Inside `NoTooltips` the press is the box's: it puts back what the issue
+                    // holds, closes the box in a row of Details, and closes nothing around it. On
+                    // a phone the box sits in Details, a sheet that closes on Escape through the
+                    // key registry's dialog binding (`useDialog`), which takes a press inside a
+                    // field and passes over one already `defaultPrevented` (`keymap.ts`);
+                    // unmarked, one Escape would close the box and the whole sheet with it.
+                    // `main`'s page leaves the press unmarked.
+                    if (page !== null) {
+                      event.preventDefault();
+                    }
                     restore();
                     setOpened(false);
                   }
@@ -364,11 +390,38 @@ export function RepoControl({
                   aria-label={`Clear the repository of ${issueKey}`}
                   className={`absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 ${page === null ? textSecondaryHoverToPrimary : ON_PAGE.clear} ${focusVisibleRing}`}
                   disabled={disabled}
+                  // Inside `NoTooltips` the control holds the focus as the box does: a focus
+                  // moved back into the box leaves both drawn, and one that leaves the box's
+                  // place from here gives the row back to the text, as leaving the box does.
+                  onBlur={
+                    page === null
+                      ? undefined
+                      : (event) => {
+                          if (place.current?.contains(event.relatedTarget) !== true) {
+                            focusHeld.current = false;
+                            setOpened(false);
+                          }
+                        }
+                  }
                   onClick={() => {
+                    // Inside `NoTooltips` the focus goes into the box first, where a pointer
+                    // press leaves it (`onMouseDown`), so a press from the keyboard does not
+                    // leave it on the body when the write's optimistic value takes this control
+                    // off the page; once the write lands the box hands it to the row's text.
+                    if (page !== null) {
+                      box.current?.focus();
+                    }
                     restore();
                     write.submit(null);
                     setOpened(false);
                   }}
+                  onFocus={
+                    page === null
+                      ? undefined
+                      : () => {
+                          focusHeld.current = true;
+                        }
+                  }
                   // A press here must not take focus from the box. The box writes what was typed
                   // when it is left, so the press would write a repository the reader is throwing
                   // away and the click after it would write the clear: two writes for one action.

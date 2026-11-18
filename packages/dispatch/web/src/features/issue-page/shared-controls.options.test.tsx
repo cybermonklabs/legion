@@ -3736,6 +3736,160 @@ const ROW_TEXTS = [
   ["acme/api, Repository of CORE-1", "acme/api"],
 ] as const;
 
+// Inside `NoTooltips` Escape in a repository row's box is the box's, as in the route box: opened
+// from the row's text by Enter, the repository's or "None", the box is given up by Escape, which
+// draws the text again with the focus on it, and the press, marked `defaultPrevented`, passes by
+// the dialog binding of Details, a sheet on a phone that closes on Escape too. A second Escape,
+// pressed on the text, closes the sheet, so the binding the first press passed is one that would
+// have closed it. Outside, the row is `main`'s box: Escape puts back what the issue holds, and
+// the press, unmarked, closes the sheet as on `main`.
+test("inside NoTooltips Escape in the repository box closes the box and not the sheet around it", async () => {
+  const user = userEvent.setup();
+  for (const surface of ["inside", "outside"] as const) {
+    for (const [name, repo] of ROW_TEXTS) {
+      // What each Escape closed, in order.
+      const closed: string[] = [];
+      const escapes = recordEscapes();
+      const view = draw(
+        <KeymapProvider>
+          <EscapeSheet onClose={() => closed.push("sheet")}>
+            <RepoControl inRow issueKey="CORE-1" project="CORE" repo={repo} resolvedRepo={repo} />
+          </EscapeSheet>
+        </KeymapProvider>,
+        surface
+      );
+      try {
+        const scope = within(view.container);
+        const box = () =>
+          scope.getByRole("combobox", { name: "Repository of CORE-1" }) as HTMLInputElement;
+        if (surface === "outside") {
+          // The sheet's first focus lands in `main`'s box, which is drawn from the start.
+          await waitFor(() => expect(document.activeElement).toBe(box()));
+          await settleReads();
+          await user.keyboard("x");
+          expect(box().value).not.toBe(repo ?? "");
+
+          await user.keyboard("{Escape}");
+          expect(box().value).toBe(repo ?? "");
+          expect(document.activeElement).toBe(box());
+          expect(closed).toEqual(["sheet"]);
+          continue;
+        }
+        const text = () => scope.getByRole("button", { name });
+        // The sheet's first focus lands on the row's text before the case presses anything.
+        await waitFor(() => expect(document.activeElement).toBe(text()));
+        await settleReads();
+        await user.keyboard("{Enter}");
+        expect(document.activeElement).toBe(box());
+        // The focus in the box starts the mappings' read, which lands before what follows.
+        await settleReads();
+
+        await user.keyboard("{Escape}");
+        expect(scope.queryByRole("combobox")).toBeNull();
+        expect(document.activeElement).toBe(text());
+        expect(closed).toEqual([]);
+        expect(escapes.presses.map((event) => event.defaultPrevented)).toEqual([true]);
+
+        await user.keyboard("{Escape}");
+        expect(closed).toEqual(["sheet"]);
+      } finally {
+        escapes.stop();
+        undraw(view);
+      }
+    }
+  }
+});
+
+// Inside `NoTooltips` the box's clear control is part of the box in a row of Details. Opened from
+// the text of an issue with a repository of its own, the box gives the focus to the control by
+// Tab, both still drawn and nothing written, since nothing was typed; Shift+Tab takes it back to
+// the box, both drawn all along. Tab from the control on to a control after the row gives the row
+// back to the text, the focus staying where Tab put it. Enter on the control writes the clear
+// once; while the write is out the control has left the page and the focus is in the box, as a
+// pointer press leaves it, and once it lands the row reads what the issue then resolves to, which
+// takes the focus.
+test("inside NoTooltips the repository box's clear control is reached by Tab in a row of Details", async () => {
+  const user = userEvent.setup();
+  const unemulate = emulateChromiumFocusFixup();
+  const stored: Pick<Issue, "repo" | "resolved_repo"> = {
+    repo: "acme/api",
+    resolved_repo: "acme/api",
+  };
+  const read = mock(async () => ({ key: "CORE-1", ...stored }));
+  const written = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => written.promise);
+  const view = draw(
+    <>
+      <ReadRepositoryRow read={read} />
+      <button type="button">After the row</button>
+    </>,
+    "inside"
+  );
+  try {
+    const scope = within(view.container);
+    const textName = "acme/api, Repository of CORE-1";
+    const text = () => scope.getByRole("button", { name: textName });
+    const box = () => scope.getByRole("combobox", { name: "Repository of CORE-1" });
+    const clear = () => scope.getByRole("button", { name: "Clear the repository of CORE-1" });
+    const after = scope.getByRole("button", { name: "After the row" });
+    await scope.findByRole("button", { name: textName });
+    await settleReads();
+
+    // Tab from the box opened from the text puts the focus on the clear control, and both stay.
+    await user.click(text());
+    expect(document.activeElement).toBe(box());
+    // The focus in the box starts the mappings' read, which lands before what follows.
+    await settleReads();
+    await user.tab();
+    expect(document.activeElement).toBe(clear());
+    expect(box()).toBeInTheDocument();
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    // Shift+Tab takes the focus back to the box, and both stay.
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(box());
+    expect(clear()).toBeInTheDocument();
+
+    // Tab from the control on past the row draws the text again, the focus where Tab put it.
+    await user.tab();
+    expect(document.activeElement).toBe(clear());
+    await user.tab();
+    expect(document.activeElement).toBe(after);
+    expect(scope.queryByRole("combobox")).toBeNull();
+    expect(text()).toBeInTheDocument();
+    expect(patchIssue).not.toHaveBeenCalled();
+
+    // Enter on the control writes the clear once. While the write is out the control has left
+    // the page and the focus is in the box. Once it lands the row reads the repository the issue
+    // then inherits, and its text takes the focus the box held.
+    await user.click(text());
+    expect(document.activeElement).toBe(box());
+    await user.tab();
+    expect(document.activeElement).toBe(clear());
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
+    );
+    expect(scope.queryByRole("button", { name: "Clear the repository of CORE-1" })).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(box());
+    stored.repo = null;
+    stored.resolved_repo = "acme/web";
+    written.resolve({} as Issue);
+    await settleReads();
+    expect(scope.queryByRole("combobox")).toBeNull();
+    const landed = scope.getByRole("button", { name: "acme/web, Repository of CORE-1" });
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(landed);
+    expect(patchIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    written.resolve({} as Issue);
+    patchIssue.mockRestore();
+    unemulate();
+    undraw(view);
+  }
+});
+
 // The row's text and the box that takes its place hand the focus on only where it fell to the
 // document with the one that left: a press of "None" or of the repository's text by a click that
 // focuses no button, as a click does in some browsers, with the focus then moved to another
