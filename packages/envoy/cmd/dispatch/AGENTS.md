@@ -62,8 +62,8 @@ generated from it. A variable a release stopped reading leaves the table for
 `removedSettings`, beside it, with what replaced it: the table reads it too, and
 `resolveBootConfig` refuses to start while it is set (`refuseRemovedSettings`).
 
-`dispatchHandler` mounts the one `GET /healthz` the process serves on its own
-mux, above the dashboard router. It is a readiness probe and never a liveness
+`routes.Process` mounts the one `GET /healthz` the process serves (`healthzHandler`)
+on its own mux, above the dashboard router. It is a readiness probe and never a liveness
 check: its status is `200` while this process can serve requests and `503`
 while the database does not answer, so a liveness probe on it would restart
 every server process during a database failover. The probe reads the database through
@@ -223,6 +223,23 @@ that is not a full member's, or wrong arguments. `envoy-dispatch backfill-sessio
 pair no row holds, since `session_projects` has no unique key, and then the one
 `session_projects_filled` row (README "Giving a project to another owner", "Filling the sessions'
 projects").
+`envoy-dispatch clear-broker-revocation <email>` (`broker_revocation_clear.go`)
+lists the broker revocations owed for one address, each named
+`<subject>:<generation>`, and given those names settles exactly those without
+the broker (`store.BrokerRevocations.Clear`, guarded by generation, so one
+recorded or owed again since the list stays owed), revoking nothing there; it
+exits 1 when nothing is owed or a name is not owed at its generation, and 2 for
+anything but one address and well-formed names. `/metrics` carries
+`envoy_dispatch_broker_revocations_owed` and
+`envoy_dispatch_broker_revocation_oldest_owed_seconds`, each read from the
+table when a scrape asks for it, two reads a scrape
+(`api.RegisterBrokerRevocationMetrics`), so one the broker never confirms
+shows (README "Clearing a broker revocation"). An account written into
+`people.sub` by itself, rather than signing in, records no revocation of the
+account it replaces, whose broker credentials then stay live; the store
+README and the runbook give the recovery: settle any revocation still owed for
+the account `people` records now, then record that revocation with it as the
+holder, which the loop then pays.
 Dispatch loads config at every start, `DISPATCH_NATS_DISABLED` set or not, in this precedence
 order: the user `envoy.json` (`${XDG_CONFIG_HOME:-~/.config}/legion/envoy.json`), the `dispatch`
 section of the checkout's `.envoy/envoy.json` in the directory it starts in, then environment
@@ -456,14 +473,30 @@ write identity errors with `identity.WriteError`.
   configure one: `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`,
   `DISPATCH_SIGNIN_CLIENT_SECRET` and exactly one of `DISPATCH_SIGNIN_GROUP`
   (through the pool) or `DISPATCH_SIGNIN_DOMAIN` (with Google directly, under
-  the issuer `https://accounts.google.com`). With none of the five set the
+  the issuer `https://accounts.google.com`, whose client's consent screen is
+  Internal, or External with `DISPATCH_SIGNIN_OUTSIDE=1`). With the domain,
+  `DISPATCH_SIGNIN_OUTSIDE=1` also admits a verified Google account outside it,
+  as a restricted member, while a project names it directly
+  (`identity.OutsideRule` over `access.Listed`, built once in `main` by
+  `signInRule`), unless its address is on a domain the Workspace owns: the
+  domain, one `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists
+  (`OutsideRule.WorkspaceDomains`, read by this rule alone, each entry held
+  as its A-labels), or a subdomain of one, the address's domain compared as
+  written and, when written in Unicode, as IDNA lookup maps it, refused
+  before any list is read (`identity.ErrWorkspaceAddress`);
+  `DISPATCH_OUTSIDE_ORIGIN` is the second origin such a person
+  reaches Dispatch at. With none of the sign-in settings set the
   server boots and runs no browser sign-in: nobody signs in, `/auth/start`
   answers `503 SIGNIN_UNCONFIGURED`, and the agent-token API is served, which
   is what a sandbox deployment runs. `checkSignInSettings`, reached only when
   at least one sign-in setting is set, is what refuses a partial one. It
   refuses, in this order,
+  outside sign-in or `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` without the domain,
   both set, some without the others (naming the missing ones), a domain under
-  another issuer, a domain that is not a lowercase DNS name, and a group under
+  another issuer (unless `DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1` under the test
+  hooks), a domain that is not a lowercase DNS name, an entry of
+  `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` that is empty or not a lowercase domain
+  name IDNA lookup takes (naming its position), and a group under
   Google's issuer; a deployment with the four Cognito settings reaches none of
   them. The authorization and token endpoints come from the issuer's discovery
   document, which `oidc.NewCodeFlow` does not read: `oidc.CodeFlow.Run`, started
@@ -478,11 +511,14 @@ write identity errors with `identity.WriteError`.
   from the current signing key), so any process completes a sign-in another
   started, and no process holds pending state. Those boot checks, the
   code flow and the request identity main builds live in
-  `cmd/dispatch/signin.go`, and `identity.SignInRule` — an interface with two
-  implementations, `identity.GroupRule` and `identity.DomainRule`, which
-  `signInRule` chooses between once from boot's settings — carries the choice
-  to the router and `identity.Membership`; each implementation's `Person`
-  method reads only its own issuer's claims. Under a group it names the
+  `cmd/dispatch/signin.go`, and `identity.SignInRule` — an interface with three
+  implementations, `identity.GroupRule`, `identity.DomainRule` and
+  `identity.OutsideRule` (a `DomainRule` that also admits, as a restricted
+  member, a verified account outside the domain that a project names directly,
+  under `DISPATCH_SIGNIN_OUTSIDE=1`), which `signInRule` chooses between once
+  from boot's settings — carries the choice to the router and
+  `identity.Membership`; each implementation's `Person` method reads only its
+  own issuer's claims. Under a group it names the
   person by the email in the pool username (`<provider>_<email>`, the
   provider one the ID token's `identities` names), never by the `email`
   claim, which a person can write, and admits only a member of
@@ -492,20 +528,80 @@ write identity errors with `identity.WriteError`.
   `prompt=consent` and `hd`, and reads `email`, `email_verified` and `hd`
   from the verified ID token itself (`readWorkspaceClaims`; `Verify`, shared
   with pods' tokens and the listener, reads none of them); `DomainRule`'s
-  `Person` admits the lowercased `email` of a token whose
+  `Person` admits the `email`, its ASCII letters lowered, of a token whose
   `hd` is the domain and whose email is verified, and refuses anyone else with
   a reason on the 403 page (`ErrNotInDomain`, `ErrEmailNotVerified`,
   `ErrNoEmail`). The callback records the person in `people` with the issuer's
   refresh token, and under a domain the Google account's `sub` (`people.sub`,
-  migration 0112): `PgPeopleStore.SignInSubject` ends every session of the address in
-  the transaction that records a `sub` other than the stored one, so a failed
-  revoke records nothing. `identity.Membership` renews that sign-in at least
+  migration 0112): `PgPeopleStore.SignInSubject`, the one write of `people.sub`,
+  ends every session of the address in the transaction that records a `sub`
+  other than the stored one, or than none, and when it replaces a stored `sub`
+  also revokes every personal token the address owns (`revokeAddressTokensSQL`,
+  owner compared as `canonical_login(owner)`, `model.CanonicalLogin` in SQL),
+  whatever member kind the row held, so
+  a failed revoke records nothing and no cookie or token of a replaced account
+  acts as the new one: the member's first sign-in to an address an account
+  outside the Workspace took first revokes that account's tokens, while a row
+  that recorded no account revokes only the tokens another account minted
+  there and holds the rest to their creation time. Whatever member kind the row
+  held (a restricted row can name an account that made broker credentials
+  while it was full, under the same `sub`), the same
+  transaction records that Dispatch owes the secrets broker a revocation of
+  that account (`broker_revocations`, `recordBrokerRevocationSQL`: the address,
+  the sign-in issuer as `oidc.CanonicalIssuer` spells it, the replaced `sub`
+  and the `sub` that took the address; one row per replaced account, its
+  `generation` re-owing an account replaced again; and `session_generation`,
+  the address's `user_sessions.generation` as the recording's own statement
+  reads it, after the sign-in's people write moved it, which migration
+  `20261118152422`'s guard requires at the insert and at the upsert that
+  records it again and refuses changing otherwise), which the server's broker
+  revocation loop (`api.RunBrokerRevocations`, woken by
+  `store.BrokerRevocationsChannel`, no lease) pays after the commit with one
+  call (`agentsecrets.Client.RevokePersonSubject`, `POST
+  /v1/person-subjects/revoke`, carrying `session_generation`): the broker
+  ends every sign-in on a machine and
+  every machine login of the address's own machines that the replaced account
+  made, or that records no account, whenever issued, refuses it anything new,
+  and leaves the new holder's and every service's login. The loop settles the
+  row by generation once the broker answers `200`, leaves it owed on any error,
+  a `404` included, and tries it again 30 s after its claim; it pays an
+  address's rows one at a time in commit order, never within 30 s of the last
+  claim of one of them, since each also lifts the broker's refusal of the
+  account that took the address. Just before it records the row, the same
+  transaction settles every row of the address still owed for the account
+  that signs in (`settleReclaimedBrokerRevocationsSQL`): an account that takes
+  the address back is owed nothing, so no pass ends what it made since or has
+  the broker refuse it. A claimed row is settled too; its call in flight
+  cannot be recalled, and the row the sign-in records, paid after that call,
+  lifts the broker's refusal again. A store records it only with
+  `store.WithBrokerRevocations(issuer)`, which `peopleOptions` gives it only
+  with `DISPATCH_AGENT_SECRETS_URL` and `DISPATCH_SIGNIN_ISSUER` set, so every
+  process of a deployment with a broker sets the URL: a replacement a process
+  without it serves records nothing. A restricted member's
+  sign-in to
+  the address of a full member under another `sub`, or none (an address on a
+  domain the Workspace owns that `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` does not
+  list), writes nothing and is `auth.ErrAddressHeldByMember`, which
+  the callback answers with the 403 page and no cookie, so an account outside
+  the Workspace never takes a member's address. `identity.Membership` renews
+  that sign-in at least
   hourly, the age measured by the database (`now() - confirmed_at`): a refresh
   the issuer refuses (`oidc.ErrGrantRefused`, a `400` or `401` `invalid_grant`),
   or one whose ID token no longer passes
   the rule, names another email, or (under a domain) another `sub`, advances
   their session generation and forgets the token, ending every session they
-  hold. Any other failed refresh (`oidc.ErrIssuerUnavailable`) ends nothing:
+  hold; under either issuer only while the row still records the `sub` (none
+  for a pool's row) and the refresh token the refresh read
+  (`PgPeopleStore.EndSubject`), and a confirmation writes under the same
+  condition (`PgPeopleStore.ConfirmSubject`), so the answer to a refresh that
+  began before the person signed in again neither ends nor overwrites it. A
+  confirmation or sign-in that changes `people.member_kind` announces it on
+  `store.AccessChangedChannel` in its transaction, so the room sync closes
+  the person's document sockets on a project they no longer read and the
+  delivery hub reads their views again; the live socket's heartbeat
+  (`api.whileCallerResolves`) closes it `1008` once the member kind differs
+  from the one it opened with (one `people` read by key a heartbeat). Any
+  other failed refresh (`oidc.ErrIssuerUnavailable`) ends nothing:
   `Login` returns it wrapped in `identity.ErrSignInUnavailable`, every caller
   answers that `503 SIGNIN_UNAVAILABLE` (`identity.WriteError`; a service
   token's own issuer outage stays `OIDC_ISSUER_UNAVAILABLE`), and the next
@@ -602,7 +698,77 @@ write identity errors with `identity.WriteError`.
   `X-Forwarded-For` address and User-Agent every 10 minutes
   (`cmd/dispatch/README.md` names the line's fields). Bearer callers cannot act
   as users. The document websocket (`/ws/doc/{room}`) takes no bearer at all: it
-  is a person's cookie connection only (INFRA-264).
+  is a person's cookie connection only, and its heartbeat
+  re-resolves that cookie alone (`docs.Service.CallerResolves`). A restricted
+  member's `dsp_` token, and a broker-issued token naming them, act only while
+  the sign-in rule would admit them now: `appContextOptions` hands the router
+  boot's rule, which the router hands the API (`api.Deps.RestrictedAdmission`),
+  and both credentials call `api.restrictedOwnerAdmitted` for a restricted owner
+  alone, which asks the rule's `AdmitsRestricted` (`identity.OutsideRule`: the
+  decision its `Person` makes for an account outside the Workspace, so the
+  setting, an address on no domain the Workspace owns, and `access.Listed`; any
+  other rule, or none, admits nobody) at every use and at every live-socket
+  heartbeat, answering `401 TOKEN_OWNER_NOT_ADMITTED` (the words say which
+  failed) or, when the lists cannot be read, `503 IDENTITY_UNAVAILABLE`.
+  `api.personalTokenActor` reads the owner's member kind in the token's own
+  lookup (a left join on `people` by `canonical_login(owner)`), so a full member's
+  `dsp_` token reads nothing more, and in that same read holds the token to the
+  Google account it recorded at its mint (`api.tokenAccountReplaced`): it is
+  `401 TOKEN_REVOKED` once `people.sub` records another account, or, for a token
+  recording none, once `people.sub_recorded_at` (stamped on every change of
+  `sub`, the first included, by migration `20261118041916`'s
+  `people_binding_columns`, which refuses any other change of it and setting
+  `sub` to null; migration `20261117175133` refuses deleting a row that records
+  one and truncating `people`) is later than its `created_at`.
+  `api.brokerPersonAdmitted`
+  reads the member kind by the `people` key with the `sub` people records and
+  when, one statement more for a token naming a person, and holds each broker
+  token of the address by the Google account its credential records (the
+  introspection's `account_issuer` and `account_subject` under Dispatch's
+  sign-in issuer, `api.brokerTokenSubject`), at every request and every
+  live-socket heartbeat: the holder's own acts; another account a revocation
+  names (as replaced or as an earlier holder) is `401 BROKER_TOKEN_NOT_ACTIVE`;
+  another account none names is `401 BROKER_ACCOUNT_NOT_SIGNED_IN`; a token
+  recording an account of another issuer (`api.brokerForeignAccount`) is
+  `401 BROKER_TOKEN_RECORDS_NO_ACCOUNT` once `people.sub` records one, whenever
+  made; a token recording no account is held to when its credential was made at
+  the broker (the introspection's `credential_created_at`): before the
+  recording, within five minutes after it (`api.brokerCredentialMargin`, since
+  the broker's clock and Dispatch's are two), or at a time the broker did not
+  record, it is `401 BROKER_TOKEN_RECORDS_NO_ACCOUNT`, for good; and a token an
+  operator's exchange entry mapped (`project_scope` `named`) is held to no
+  account and no time. All of it is
+  gated on a sign-in that records accounts (`api.Deps.SignInIssuer`), and a
+  `sub_recorded_at` left null by the migration refuses nothing. It answers the
+  token's own account (`BrokerAdmittedSubject`) and its credential's creation
+  time (`BrokerCredentialCreatedAt`), which its mints and approves are held to
+  again. A machine login's approve or deny (`api.approveCredentialRecord`,
+  `api.denyCredentialRecord`, keyed or not) reads the caller's standing again
+  once its body has arrived (`api.approverStanding`: the cookie's session
+  generation, the `dsp_` token's `revoked_at` and account, and for a broker
+  token the same comparison, however long the body was held), in a transaction
+  that first takes the address's advisory lock shared, which a sign-in takes
+  first (`store.AddressLockSharedSQL`), so a sign-in in flight makes it wait and
+  read what that sign-in recorded, refusing a caller that lost the address as
+  its next request would be
+  (`api.brokerReplacedRefusal`) with no broker call; the broker decides a
+  denial whatever account asks, so a deny needs the re-read as much. A deny
+  names no account. An approve sends
+  `approver_issuer` (`api.Deps.SignInIssuer`, which `appContextOptions` hands
+  the router from `DISPATCH_SIGNIN_ISSUER` only where `DISPATCH_SIGNIN_DOMAIN`
+  is set, `accountIssuer`: a Cognito pool's sign-in records no account, so a
+  `sub` left by a Google sign-in before the switch names nothing) and
+  `approver_subject`, the account bound to that credential
+  (`api.credentialSubjectSQL`: the cookie's `people.sub` under its standing
+  generation, the token's `agent_tokens.subject` recorded at its mint, the
+  broker token's own account), both or neither. Every approve also sends
+  `approver_session_generation`, the address's `user_sessions.generation` (0
+  when it holds no row) read in that same statement, so the generation the
+  check saw: the broker refuses an approve carrying a generation below one a
+  revocation of the address recorded, whatever account it names. A deny sends
+  none. The
+  settings test of `DISPATCH_SIGNIN_OUTSIDE` uses a `dsp_` token, so
+  dropping the rule's hand-off fails it.
 - `DISPATCH_OIDC_ISSUER` + `DISPATCH_OIDC_AUDIENCE` (both or neither; half the
   pair refuses to boot naming the missing one) make a Kubernetes pod's projected
   service-account token a third bearer credential. `resolveBootConfig` only
@@ -727,12 +893,19 @@ recorded by any process in `github_rate_limits` (then GitHub is not asked), is
 
 ## Routes
 
-The `/api/v1` routes are one table, `api/routes_table.go` (`routes()`): `Register` mounts it and
-`GET /api/v1` (public) serves it as `{routes: [{method, path, auth, scopes, description}], docs}`
+The routes of the API are one table, `api/routes_table.go` (`routes()`): the `/api/v1` routes and
+`GET /metrics`. `Register` mounts it and `GET /api/v1` serves it to any authenticated caller as
+`{routes: [{method, path, auth, scopes, description}], docs}`
 sorted by path then method, `scopes` left out of a route that needs none. Add a route by adding a
-row — never a `mux.HandleFunc` line — and bump the pinned
-count in `api/routes_table_test.go`. `auth` is `public`, `any` (user or bearer) or
-`bearer`; it describes the check the handler makes, the handler still enforces it. The OAuth
+row — never a `mux.HandleFunc` line — and write `api/testdata/routes.txt` again (`go test ./internal/dispatch/api
+-run TestRouteIndexListsEveryRouteSortedByPathThenMethod -args -update`). `auth` is
+`any` (user or bearer) or
+`bearer`; it describes the check the handler makes, the handler still enforces it. Every route
+needs a credential but sign-in, `/healthz`, `/livez` and the dashboard's files, at either origin
+and as `HEAD` or `OPTIONS` too, and none trusts the caller's network address or takes its origin
+from `X-Forwarded-Host` (`routes`' `TestEveryRouteNeedsACredentialButTheNamedOnes` and
+`TestNoRouteGrantsAccessByNetworkAddress`, over the process `routes.Process` builds, with no
+outside origin and with one, at each origin). The OAuth
 scopes a route needs stand beside the table in `routeScopes`, keyed by `"<method> <pattern>"`,
 which `routes()` stamps onto `apiRoute.OAuthScopes`: a positional row literal would make every
 one of the 151 rows carry a sixth value, and most rows need no scope. A name in that map which is
@@ -745,10 +918,11 @@ a read-only broker token may call, today `GET /api/v1/projects/{key}/architectur
 refuses to mount (`readRoutesNotMountedAsGET`), and neither `GET /api/v1` nor the OpenAPI document
 carries it. `register` wraps every row in `refuseReadOnlyToken`, outside `gateRouteScopes`, so a
 route added later stays closed to such a token until it is listed. An unknown path
-under a server root (`/api`, `/v1`, `/auth`, `/ws`, `/healthz`), and a known path asked with a
+under a server root (`/api`, `/v1`, `/auth`, `/ws`, `/healthz`, `/livez`, `/metrics`, in any case), and a known path asked with a
 method its route does not serve, is answered by `routes/router.go` with
-`404 {"code":"NOT_FOUND","error":"no route for <METHOD> <path>","hint":"GET /api/v1 lists every
-route"}` before any dashboard lookup; only paths outside those roots fall back to the SPA shell.
+`404 {"code":"NOT_FOUND","error":"no route for <METHOD> <path>","hint":"GET /api/v1, with a
+credential, lists every route"}` before any dashboard lookup; only paths outside those roots
+fall back to the SPA shell.
 While a release rolls out, a process of the build before a route answers that route this way, so
 the page and the `dispatch` command send such a request again after 1, 2 and 4 seconds before
 they fail it (README, "Two builds at once"): a route is added freely, and removed only in the
@@ -840,11 +1014,11 @@ keyed layer's for a keyed write and the handler's for any other (`refuseChangedL
 
 | Path | Method | Access | Purpose |
 | --- | --- | --- | --- |
-| `/api/v1` | GET | public | List every `/api/v1` route with method, auth, and purpose. |
-| `/auth/start` | GET | public | Start Google sign-in at the sign-in issuer (the Cognito pool, or Google for `DISPATCH_SIGNIN_DOMAIN`, with offline access, `prompt=consent` and `hd`), the sign-in's state in the signed `dispatch_oauth_state` cookie; `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`, `503 SIGNIN_UNAVAILABLE` and no cookie while the issuer is not discovered. |
-| `/auth/callback` | GET | sign-in state | Verify the `dispatch_oauth_state` cookie under the key set (any process completes a sign-in another started; `400` "invalid or expired state" for one missing, tampered, lapsed or naming another state), exchange the issuer's code and sign in the person `SignInRule.Person` admits (`GroupRule` or `DomainRule`): a member of `DISPATCH_SIGNIN_GROUP` named by the email in their pool username (a 403 page naming anyone else), or a verified Google account of `DISPATCH_SIGNIN_DOMAIN` named by its `email` (a 403 page with the reason for anyone else); record them in `people` with the refresh token sealed (and, under a domain, its `sub`, ending the address's sessions when another account held it), and issue the session cookie. `503 SIGNIN_UNAVAILABLE` while this process has not discovered the issuer; `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie (`issueSession`). |
+| `/api/v1` | GET | user or bearer | List every route of the API's table with method, auth, and purpose. |
+| `/auth/start` | GET | public | Start Google sign-in at the sign-in issuer (the Cognito pool, or Google for `DISPATCH_SIGNIN_DOMAIN`, with offline access, `prompt=consent` and, as `SignInRule.DomainHint` says, `hd` unless `DISPATCH_SIGNIN_OUTSIDE=1`; with `?prompt=select_account`, the link a refused outside sign-in offers, `prompt=select_account consent`, Google's account chooser), back to the callback of the origin the request came to (`publicOrigin`: `DISPATCH_OUTSIDE_ORIGIN` for its host, else `DISPATCH_SERVER_URL`), the sign-in's state in the signed `dispatch_oauth_state` cookie; `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`, `503 SIGNIN_UNAVAILABLE` and no cookie while the issuer is not discovered. |
+| `/auth/callback` | GET | sign-in state | Verify the `dispatch_oauth_state` cookie under the key set (any process completes a sign-in another started; `400` "invalid or expired state" for one missing, tampered, lapsed or naming another state), exchange the issuer's code and sign in the person `SignInRule.Person` admits (`GroupRule`, `DomainRule` or `OutsideRule`): a member of `DISPATCH_SIGNIN_GROUP` named by the email in their pool username (a 403 page naming anyone else), a verified Google account of `DISPATCH_SIGNIN_DOMAIN` named by its `email` (a 403 page with the reason for anyone else), or, with `DISPATCH_SIGNIN_OUTSIDE=1`, a verified Google account outside the domain that a project names directly (`access.Listed`), as a restricted member (a 403 page saying no access list names anyone else outside the domain, and one saying the address signs in only as a Workspace account for an address on a domain the Workspace owns, `identity.ErrWorkspaceAddress`); record them in `people` with their member kind and the refresh token sealed (and, under a domain, its `sub`, ending the address's sessions when another account, or none, held it, and revoking its personal tokens when another account did), and issue the session cookie. An account outside the domain at the address of a full member under another `sub`, or none, is recorded nowhere: a 403 page saying the address is a Workspace member's and no cookie (`auth.ErrAddressHeldByMember`). `500 IDENTITY_ERROR` and no cookie when the access lists cannot be read (`identity.ErrMembershipUnreadable`); `503 SIGNIN_UNAVAILABLE` while this process has not discovered the issuer; `409 SIGNIN_SUPERSEDED` and no cookie when, under a domain, another account signed in to the address between this sign-in's record and its cookie (`issueSession`). |
 | `/auth/logout` | POST | identity | Advance the person's session generation, forget their refresh token, and clear the cookie. Local only: the issuer's own session is left alone. |
-| `/auth/whoami` | GET | identity | Return the resolved person, `{kind: "user", login, event_head}` with `login` their lowercase email and `event_head` an event id at or below which every event is final, read when the sign-in check answered (`api.Background`'s `EventHead`). The page uses that head as its first events subscription's resume point, so reads begun after sign-in cannot miss an event. The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read. A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet (`api.ErrEventHeadUnproven`), which the page asks again for as long as it lasts, and `503 EVENT_HEAD_READ_FAILED` for any other failure to read the head, which the page retries on its bounded rule. |
+| `/auth/whoami` | GET | identity | Return the resolved person, `{kind: "user", login, event_head}` with `login` their lowercase email and `event_head` an event id at or below which every event is final, read when the sign-in check answered (`api.Background`'s `EventHead`). It adds `member_kind: "restricted"` for a restricted member and `origins` (the canonical origin, then `DISPATCH_OUTSIDE_ORIGIN`) only where that is set, so a full member's answer from a server at one origin is the three keys alone. The page uses that head as its first events subscription's resume point, so reads begun after sign-in cannot miss an event. The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read. A person from outside the domain whose sign-in the hourly confirmation ended gets that 401, here and on every route, with `reason` (`WORKSPACE_ADDRESS`: a restricted member whose address is now on a domain the Workspace owns, whatever the lists say; `NOT_LISTED`: no access list names them any more; `OUTSIDE_SIGNIN_OFF`: a restricted member once `DISPATCH_SIGNIN_OUTSIDE` is off) and `login`, their address, read afresh at each request (`identity.SignInRule.SignedOutReason`), so it holds whichever request ran the confirmation; every other 401, a sign-out's and an expired cookie's included, carries neither. A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet (`api.ErrEventHeadUnproven`), which the page asks again for as long as it lasts, and `503 EVENT_HEAD_READ_FAILED` for any other failure to read the head, which the page retries on its bounded rule. |
 | `/auth/_dev/signin` | GET | public, `DISPATCH_DEV_SIGNIN=1` only; loopback peer, no forwarding header | Record the lowercased person `login` names and issue their session cookie with no issuer exchange, then redirect to the sanitized `next`; `400 DEV_SIGNIN_INPUT`, `403 DEV_SIGNIN_FORBIDDEN`. Not mounted otherwise. |
 | `/api/github/rest/...` | GET | identity | Read a pull request, an issue, a commit's check runs or a commit's workflow runs from GitHub as the GitHub App (above). |
 | `/healthz` | GET | public | Readiness, not liveness: `200` while Postgres answers within two seconds on the health pool, `503` while it does not (`ok` and `db` say the same). Also reports, never deciding the status, `nats` (the publisher connected to NATS, `null` with NATS disabled), `files` (the bucket answers a two-second `HeadBucket`, `null` with none configured), `signin` and `service_tokens` (each issuer discovered, `null` when not configured), `github` (each GitHub read under a lease with its newest attempt's `state`, one of `succeeded`, `failed`, `no_attempt`, `unknown` and `off`, and its `at` and `cause`, each `null` unless the state carries it, from this process's copy of the record; `null` with no GitHub App; the delivery intakes report through `delivery_reconcile`, and a cause can name a repository, as above), plus `commit` (this process's build's legion commit, or `null`), `fleet_commit` (the commit of the latest announcement that every live server process serves one build, or `null`), `schema_version` (the highest applied migration, or `null` when the database did not answer) and `outbox_publisher` (whether this process publishes the events outbox now). |
@@ -869,9 +1043,9 @@ keyed layer's for a keyed write and the handler's for any other (`refuseChangedL
 | `/api/v1/projects/{key}/access` | GET, PATCH | user or bearer, `person` scope | Who may see a project and who changes that (`api/project_access.go`, `internal/dispatch/access`): `{project, owner, visibility, people, groups, slack_channels, not_signed_in}`, the owner's email, `public` or `private`, the emails and group names its access list names, the Slack channel ids its credentials may post to, and the people of that list nobody has signed in as yet, each list sorted and never null. `PATCH` takes `{owner?, visibility?, slack_channels?}` and is the project's owner's alone (`403 PROJECT_OWNER_REQUIRED`): `owner` gives the project to another full member at any time, whoever owned it before (`400 OWNER_NOT_ALLOWED` for anyone else), `visibility` is `409 PRIVATE_PROJECTS_OFF` for `private` while this release cannot make one private, and `slack_channels` replaces the whole list, at most 16, each `^[CG][A-Z0-9]{8,20}$` (`400 INVALID_SLACK_CHANNEL`, `400 CAP_EXCEEDED`), stored sorted with each id once. Each write appends `project.access_changed`. |
 | `/api/v1/projects/{key}/access/people/{email}`, `/api/v1/projects/{key}/access/groups/{name}` | PUT, DELETE | user or bearer, `person` scope | Name a person (by email, stored trimmed and lowercase) or a group on the project's access list, or take it off; one the list already names, or does not name, leaves it as it was. The project's owner alone (`403 PROJECT_OWNER_REQUIRED`); a value that is no email or group name is `400 PROJECT_ACCESS_INPUT`. A `PUT` of a group no row holds is `404 GROUP_NOT_FOUND`, and a `PUT` onto a list of 500 principals `409 ACCESS_LIST_FULL`; a `DELETE` checks neither. Each write appends `project.access_changed` and answers the project's access. |
 | `/api/v1/access-groups`, `/api/v1/access-groups/{name}` | GET, PUT, DELETE | user or bearer, `person` scope | The groups an access list can name (`api/access_groups.go`): each `{name, owner, members, not_signed_in}`. Only a group's full members are admitted through it: a member nobody has signed in as yet is listed in `not_signed_in` and admitted once they sign in as a full member. The first `PUT` of a name makes the group and its writer owns it; after that only that owner writes it (`403 GROUP_OWNER_REQUIRED`) and `owner` gives it to another full member. A restricted member makes none (`403 RESTRICTED_MEMBER`) and is refused as a member (`400 GROUP_MEMBER_RESTRICTED`); a bad name or email is `400 PROJECT_ACCESS_INPUT`. `DELETE` answers 204 and takes the group off every access list that named it, appending `project.access_changed` for each and `access_group.changed`. |
-| `/api/v1/access/projects/{key}`, `/api/v1/access/person` | GET | a service account `DISPATCH_ACCESS_ACCOUNTS` names | The membership answer the secrets broker reads with its own projected token (`api/access_answer.go`): one project's `{project, visibility, owner, person, member_kind, visible, repositories, slack_channels}` for `?person=`, and one person's `{person, member_kind}` (`full`, `restricted`, or `none` for a login nobody has signed in with). A project the person cannot see still answers 200; an unknown key is `404 PROJECT_NOT_FOUND`, and `/access/person` with no person `400 INVALID_QUERY`. Every other caller, a person included, is `403 ACCESS_ACCOUNT_REQUIRED` before anything is read. |
+| `/api/v1/access/projects/{key}`, `/api/v1/access/person` | GET | a service account `DISPATCH_ACCESS_ACCOUNTS` names | The membership answer the secrets broker reads with its own projected token (`api/access_answer.go`): one project's `{project, visibility, owner, person, member_kind, visible, repositories, slack_channels}` for `?person=`, and one person's `{person, member_kind}` (`full`, `restricted`, or `none` for a login nobody has signed in with). A question naming a person may also describe the credential being checked, the account it records (`&account_issuer=&account_subject=`, the broker's introspection's two) or `&account=none`, each with `&credential_created_at=`, when it was made (Unix seconds), and the answer then carries `holder` (`accountHolder`): `false` when `people.sub` records another account for the person (an account of another issuer than `DISPATCH_SIGNIN_ISSUER` included, whenever made), or the credential records none and was made before `people.sub_recorded_at`, within five minutes after it (`brokerCredentialMargin`), or at a time the question did not give; `true` otherwise, `people` recording no account or no recording time included. The project answer's `visible` is then `false` too. A question that describes no credential, as every earlier broker asks and as a broker asks for an operator entry's token, answers as before: no `holder`, `visible` as the project's rule reads it. So a credential of an account another account's Dispatch sign-in has replaced sees nothing from that sign-in on, with nothing revoked, once the broker describes it. A project the person cannot see still answers 200; an unknown key is `404 PROJECT_NOT_FOUND`, and `/access/person` with no person, or either route with half an account, `account` other than `none` or beside an account, a creation time that is no whole Unix second, a creation time with neither an account nor `account=none`, or an account or a time and no person, `400 INVALID_QUERY`. Every other caller, a person included, is `403 ACCESS_ACCOUNT_REQUIRED` before anything is read. |
 | `/api/v1/me/agent-tokens` | GET | user or bearer, `person` scope | List the caller's personal token metadata, each row carrying the `scopes` its token holds. |
-| `/api/v1/me/agent-tokens` | POST | user or bearer, `person` and `approve` scopes | Mint a personal agent token `{name, scopes?}`: `scopes` is the set the new token is to hold, defaulting to the set the caller's own credential holds. A scope this deployment does not know, or `approve` without `person`, is `400 TOKEN_SCOPES_INPUT`; a scope the caller does not hold itself is `403 OAUTH_SCOPE_REQUIRED`. The answer is the one time the token's plaintext is shown. |
+| `/api/v1/me/agent-tokens` | POST | user or bearer, `person` and `approve` scopes | Mint a personal agent token `{name, scopes?}`: `scopes` is the set the new token is to hold, defaulting to the set the caller's own credential holds. A scope this deployment does not know, or `approve` without `person`, is `400 TOKEN_SCOPES_INPUT`; a scope the caller does not hold itself is `403 OAUTH_SCOPE_REQUIRED`. The answer is the one time the token's plaintext is shown. The mint takes the address's advisory lock shared (`store.AddressLockSharedSQL`), which a sign-in under another Google account takes first (`store.PgPeopleStore.SignInSubject`), so it waits for such a sign-in in flight, on an address no row holds too, and inserts only while its caller still holds the address (`mintAgentTokenSQL`: a cookie's session generation is still its login's, a personal token is not revoked and its account still holds the address, `tokenAccountReplaced`, and a broker-issued token's account still holds it, `brokerAccountReplaced`: no other account in `people.sub`, no account of another issuer once one is recorded, and, for a credential recording none, made after `people.sub_recorded_at`), so a mint racing that sign-in writes nothing and is refused as the caller's next request is: `401 NO_IDENTITY` for a cookie, `401 TOKEN_REVOKED` for a personal token, and for a broker-issued token the code its admission names (`brokerReplacedRefusal`: `401 BROKER_TOKEN_NOT_ACTIVE`, `401 BROKER_ACCOUNT_NOT_SIGNED_IN` or `401 BROKER_TOKEN_RECORDS_NO_ACCOUNT`). That lock is the one statement it costs beyond the insert. The token records, in the same insert, the Google account its minting credential is bound to (`agent_tokens.subject`, `api.credentialSubjectSQL`), which its approves name: for a broker-issued token, the account its own credential records at the broker; for a credential recording none made after the address's account was recorded, that account, so the no-account state stops there; none for one with no recording to compare with. |
 | `/api/v1/me/agent-tokens/{id}` | PATCH | user or bearer, `person` and `approve` scopes | Set the scopes of one of the caller's personal tokens `{scopes}`: the whole set it is to hold, refused as the mint's are, answering the updated token. Another person's token, or none, is `404 NOT_FOUND`. |
 | `/api/v1/me/agent-tokens/{id}` | DELETE | user or bearer, `person` and `approve` scopes | Revoke a personal agent token. |
 | `/api/v1/users` | GET | user or bearer, `person` scope | Everyone who has signed in (`people`), as `{users: [{login}]}` sorted by email: the assignee picker's options. |
@@ -974,7 +1148,7 @@ keyed layer's for a keyed write and the handler's for any other (`refuseChangedL
 | `/api/v1/agents/{session_id}/stream/_test/publish` | POST | user or bearer, `person` scope, `DISPATCH_TEST_HOOKS=1` only | Feed every process's in-memory agent relay: one frame, `?as=replay` what a new agent view is answered with, `?as=responder` whether anyone answers on the control subject, `?as=drop` ends every open agent view as `dropped`, so the page subscribes again and rebuilds from that replay; not mounted otherwise. |
 | `/api/v1/writes/_test/slow` | POST | user or bearer, `DISPATCH_TEST_HOOKS=1` only | `{method, path, delay_ms}`: every keyed run of that method and exact path waits `delay_ms` on its handler's context once its key is claimed (`503 SLOW_WRITE_CUT_OFF` when that context ends first); `delay_ms: 0` removes it; it arms the process the call reached, not every process; not mounted otherwise. |
 | `/api/v1/messages/_test/queued` | GET | user or bearer, `DISPATCH_TEST_HOOKS=1` only | List the targeted messages this process queued itself for a session that neither the listener's registry nor its known-session store held, oldest first, each as the envelope that session's subject would hold: `{queued: [{subject, dedupe_key, event_id, source, payload_summary, payload, urgency}]}`. A process with `DISPATCH_NATS_DISABLED=1` keeps them in its own memory. A process with NATS publishes them to the stream and answers `404 QUEUED_ON_BUS`. Not mounted otherwise. |
-| `/ws/doc/{room}` | GET | user | Join the Hocuspocus document room. The room takes a signed-in person's cookie and no bearer at all (INFRA-264): the editor is the browser's, and nothing else connects. Every answer the document service's handler sends (`docs.Service.ServeHTTP`), the `101` upgrade and its `401`, `404` and `503` refusals included, carries `X-Dispatch-Process: <host name>` (the pod's name in production), so a check through a load balancer can record which process served each socket. A host name the process cannot read, or one that holds bytes a header cannot carry, sends none. The `400` refusals that run before that handler carry none: a room id or a query parameter that holds U+0000 or bytes that are not UTF-8 (`refuseUnstorableParameters`). A room whose stored tree is outside the Proof schema admits no connection, a provider's reconnect included: the upgrade completes and closes with code `4409` (reason `DOC_SCHEMA`; `DOCUMENT_SCHEMA_CLOSE_CODE` and `DOCUMENT_SCHEMA_CLOSE_REASON` in `packages/contracts`) before any sync, and the dashboard reads that close as the repair state. A room whose stored tree holds an element this build cannot read closes the same way with code `4425` (reason `DOC_NEWER_CONTENT`; `DOCUMENT_NEWER_CONTENT_CLOSE_CODE` and `DOCUMENT_NEWER_CONTENT_CLOSE_REASON`), which the Hocuspocus provider reconnects on with its backoff. The check reads a copy of a resident room taken under its lock, as `/text` reads it, so a healthy room under writes is never refused. An open writable socket the live server processes no longer admit is closed by the 15 s re-check with code `4412` (reason `DOC_ADMISSION_REVOKED`; `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE` and `DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON`), once the message in flight on that socket is out; what that close waits for and what a page too slow to take it reads instead are in `README.md`, "Two builds at once". An open socket re-checks the sign-in cookie it was admitted with on every 15 s heartbeat and closes once that cookie no longer resolves (a sign-out, a membership the sign-in issuer no longer confirms), so its person's editor stops receiving and sending the document's edits; a bearer or broker token sent beside the cookie, a read-only one included, is never read and keeps nothing open (`api.signInStillResolves`). ygo echoes a read-write peer's awareness renewal to its sender and gives a read-only peer a bounded empty awareness response, so an idle provider remains connected without Dispatch writing a keep-alive frame. |
+| `/ws/doc/{room}` | GET | user | Join the Hocuspocus document room. The room takes a signed-in person's cookie and no bearer at all: the editor is the browser's, and nothing else connects. Every answer the document service's handler sends (`docs.Service.ServeHTTP`), the `101` upgrade and its `401`, `404` and `503` refusals included, carries `X-Dispatch-Process: <host name>` (the pod's name in production), so a check through a load balancer can record which process served each socket. A host name the process cannot read, or one that holds bytes a header cannot carry, sends none. The `400` refusals that run before that handler carry none: a room id or a query parameter that holds U+0000 or bytes that are not UTF-8 (`refuseUnstorableParameters`). A room whose stored tree is outside the Proof schema admits no connection, a provider's reconnect included: the upgrade completes and closes with code `4409` (reason `DOC_SCHEMA`; `DOCUMENT_SCHEMA_CLOSE_CODE` and `DOCUMENT_SCHEMA_CLOSE_REASON` in `packages/contracts`) before any sync, and the dashboard reads that close as the repair state. A room whose stored tree holds an element this build cannot read closes the same way with code `4425` (reason `DOC_NEWER_CONTENT`; `DOCUMENT_NEWER_CONTENT_CLOSE_CODE` and `DOCUMENT_NEWER_CONTENT_CLOSE_REASON`), which the Hocuspocus provider reconnects on with its backoff. The check reads a copy of a resident room taken under its lock, as `/text` reads it, so a healthy room under writes is never refused. An open writable socket the live server processes no longer admit is closed by the 15 s re-check with code `4412` (reason `DOC_ADMISSION_REVOKED`; `DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE` and `DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON`), once the message in flight on that socket is out; what that close waits for and what a page too slow to take it reads instead are in `README.md`, "Two builds at once". An open socket re-checks the sign-in cookie it was admitted with on every 15 s heartbeat, by the cookie alone, as its open does (`docs.Service.CallerResolves`), and closes once that cookie no longer resolves (a sign-out, a membership the sign-in issuer no longer confirms), so its person's editor stops receiving and sending the document's edits; a bearer, DPoP or broker token sent beside the cookie, a read-only one included, is never read and keeps nothing open (`api.signInStillResolves`). ygo echoes a read-write peer's awareness renewal to its sender and gives a read-only peer a bounded empty awareness response, so an idle provider remains connected without Dispatch writing a keep-alive frame. |
 | `/ws/live` | GET | user or bearer | One live socket per browser tab. Each `subscribe` names a delivery, `events`, or `agent` view, the last of which needs the `person` scope the socket read at the upgrade (`OAUTH_SCOPE_REQUIRED` on that subscription id, with no challenge header beside it, since a frame carries no HTTP header); the socket replies on that subscription id with delivery snapshots/deltas/freshness, `events_start` and events, or agent responder/replay/frame data. An `events` resume is its decimal event id, and its `events_start` says `replay_complete: true` when that id is at or below the log's head and the gap fits the replay's bounds (at most 256 events whose frames total at most 1 MiB), so every event after it is replayed before the subscription goes live, and `false` with no resume, past either bound, or above the head; a delivery resume is its change and revisions; an agent view never resumes. An events subscription that falls 64 events behind the relay catches up from the log within the same bounds and goes on; past them, or once the event log is reset, it ends as `behind` and the page subscribes again. An agent view holds at most 8 MiB of queued frames and ends as `behind` past that. A page that stops reading meets the socket's own bounds first (#2449): the writer's 10 s write deadline (`liveSocketWriteWait`) ends the socket, which holds at most 16 of the hub's frames (`liveSocketQueue`) and 64 stream frames (`liveSocketStream`); the agent view's 8 MiB bounds only what it buffers while the socket writes slower than the session produces. Every quiet socket receives a `heartbeat` every `StreamHeartbeat` (15 s). It closes with 4001 (`max age`) at a random age in [30, 60) minutes, 1012 on restart, 1008 when the caller stops resolving, and 1013 when its hub queue fills. |
 
 ## Dispatch topics

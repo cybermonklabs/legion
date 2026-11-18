@@ -2201,14 +2201,15 @@ in its own scope, and in the module an import leads to, so a `for`-of `const`,
 a parameter or an import is never read as a same-named function declared
 elsewhere in the file. Any other callback — a `let`, `helpers.body`, a name
 the program cannot resolve — leaves its row refused with no fixtures, since
-fixtures the check did not read are not fixtures it saw. It reads four
+fixtures the check did not read are not fixtures it saw. It reads five
 Playwright listings first, to prove it scanned the files the suite runs: the
 default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
-`DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the three wall-clock
-projects, whose rows a listing naming no project holds none of. The four
+`DISPATCH_E2E_SIGNIN=oidc` with it, the selection under
+`DISPATCH_E2E_SIGNIN=google`, and one that names the three wall-clock
+projects, whose rows a listing naming no project holds none of. The five
 collect at once, and each is a bounded child, so the row states its limit as
-`rowLimit` over the four (`e2e/__tests__/no-browser-rows.test.ts`) and the file
-holds no number of its own. The four listings start when the file's module loads,
+`rowLimit` over the five (`e2e/__tests__/no-browser-rows.test.ts`) and the file
+holds no number of its own. The five listings start when the file's module loads,
 and the process that runs the file prints each one's cost line on its own stderr
 as that listing ends. A row may stand all the same as a named
 exemption with its reason, written in `e2e/no-browser-rows.ts`, whose list
@@ -2572,7 +2573,7 @@ refused 403. `DISPATCH_TEST_EMBEDDER_OFF=0` builds the embedder again, for a
 run that means to prove that path. Its default is the one default of the four
 that is not fixed: `0` where this harness builds an embedder for the run - the
 dev embedder (`DISPATCH_DEV_EMBEDDER`, which the server reads beside dev
-sign-in alone, so `DISPATCH_E2E_EMBEDDER=1` under `DISPATCH_E2E_SIGNIN=oidc`
+sign-in alone, so `DISPATCH_E2E_EMBEDDER=1` under `DISPATCH_E2E_SIGNIN=oidc` or `google`
 builds none), or the fake embedder (`DISPATCH_E2E_EMBEDDER=fake`, the listener
 `e2e/fake-embedder.ts`, which the server calls as it calls Bedrock and which
 counts the calls it was asked for) - and `1` everywhere else, so the runs that
@@ -2859,7 +2860,7 @@ are refused together, naming both: each port passes a per-port check on its own,
 consumer would otherwise fail in its own words — the second Bun listener dying on `EADDRINUSE`.
 Because the check lives with the resolution, those listeners refuse it too, not only the
 Playwright config. A's and B's ports take part in it only in two-process mode, the one mode that
-listens on them, and the issuer's only under `DISPATCH_E2E_SIGNIN=oidc`.
+listens on them, and the issuer's only under `DISPATCH_E2E_SIGNIN=oidc` or `google`.
 It resolves the stack too: `stackIndex` reads the `TEST_PARALLEL_INDEX` of this
 process, and `stackValue` reads a variable out of that stack's record in
 `DISPATCH_E2E_STACKS`, falling back to the plain name, which is how
@@ -3033,7 +3034,7 @@ Two-process mode starts its own servers, so the Playwright config refuses it wit
 `PLAYWRIGHT_BASE_URL`, and `bun run dispatch:local` refuses it.
 
 `DISPATCH_E2E_SIGNIN` picks how the harness's servers sign a person in (`e2e/harness-signin.ts`):
-unset or empty is dev sign-in, above, and `oidc` is the production sign-in, through
+unset or empty is dev sign-in, above, and `oidc` and `google` are the production sign-in, through
 `packages/envoy/cmd/dev-oidc-issuer`; any other value is refused by every importer and by
 `run-server.sh`, naming the allowed ones, and every importer refuses `oidc` without
 `DISPATCH_E2E_PROCESSES=2`. Under `oidc` the listener table starts `e2e/run-signin-issuer.sh`
@@ -3061,6 +3062,34 @@ table's wiring.
 Run it as `DISPATCH_E2E_SIGNIN=oidc bun run e2e:multiprocess`; the `multiprocess` job of
 `.github/workflows/dispatch-browser.yaml` runs it after the dev sign-in specs, on the dashboard
 the step before built.
+
+Under `google` the same issuer stands in for Google, for outside sign-in, with one server process
+or two. The listener table starts it as under `oidc`, but hands it no person and no group: it signs
+in nobody of its own, and a spec queues each person, with the claims Google gives that account (a
+subject, a verified email, and `hd` for a Workspace account alone), at its loopback-only
+`POST /_dev/sign-in-as`; `run-signin-issuer.sh` requires the person and the group under `oidc`
+alone. Each `run-server.sh` takes the issuer's port, the client, `DISPATCH_E2E_SIGNIN_DOMAIN`
+(`example.com`), `DISPATCH_E2E_SIGNIN_OUTSIDE_HOST` (`localhost`) and `DISPATCH_E2E_SIGNING_KEY`,
+requires them all, and hands the server `DISPATCH_SIGNIN_DOMAIN`, `DISPATCH_SIGNIN_OUTSIDE=1`,
+`DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1` (the domain under an issuer other than Google's, beside the
+`DISPATCH_TEST_HOOKS=1` every harness server runs with) and `DISPATCH_OUTSIDE_ORIGIN`, the
+dashboard origin's scheme and port under that host: `http://localhost:<port>` beside the canonical
+`http://127.0.0.1:<port>`, on the round-robin proxy's port in two-process mode and on the held
+port's otherwise. The Playwright config declares one `chromium` project then, which runs
+`e2e/outside-sign-in.e2e.ts` alone, every project of every other mode ignores that spec, the
+harness starts no real broker and no stub server, a deployed run is refused, and
+`bun run dispatch:local` refuses the mode. The spec's one row walks the six steps of outside
+sign-in in order, since `e2e/test.ts` empties the database before every row: alice
+(`alice@example.com`, hd `example.com`) signs in at the canonical origin, makes PRIV and PUB and
+puts `outsider@other.example` on PRIV's access list; the outsider, with no hd, signs in at the
+outside origin as a restricted member (`/auth/whoami`'s `member_kind` and `origins`) and opens
+PRIV's issue; a canonical-origin link alice wrote leads to the outside origin on the outsider's
+page; `stranger@other.example`, on no list, gets the 403 refusal page and no session; the agent
+token reads PUB's issue at the outside origin; and once alice takes the outsider off PRIV and the
+confirmation is two hours old, the outsider's next page is the sign-in page and `/auth/whoami`
+answers 401 `NO_IDENTITY`. Run it as `DISPATCH_E2E_SIGNIN=google bun run e2e`; the
+`multiprocess` job runs it after the `oidc` step, on the dashboard the steps before built, with
+one server process.
 
 `bun run dispatch:local` (`e2e/local-instance.ts`) is that harness, left running and seeded: it
 starts the harness through `e2e/harness-start.ts`, then imports the e2e modules that read a port
