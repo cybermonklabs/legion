@@ -11,19 +11,21 @@ setting gives to a role or takes away. Every handoff is a record on the Dispatch
 commit, so the head that merges carries none. Retro commits nothing (*Retro*, below), so the
 approved head is the head that merges, and no Legion check holds the head that merges to the head
 the review approved in any case: a repository that wants its newest push reviewed says so in its
-own rulesets. A conflict-forced merge goes back to the reviewer for a confirmation or a new round,
-as the fingerprint decides (*The reviewer*, below, and
-`skill://legion-worker/references/conflicts-and-rewrites.md`).
+own rulesets. A conflict-forced merge goes back to the reviewer, who reviews what the merge
+changed (*The reviewer*, below).
 
 ## The reviewer
 
 - The reviewer reads CI on GitHub and verifies the `Threads` facts and the issue's results there
-  and with `dispatch results --issue <issue>` — never from a handoff — then, when the diff
-  touches runtime code, runs
+  and with `dispatch results --issue <issue>` — never from a handoff — then runs
   `task(agent="thermonuclear-deep-review")` and
   `task(agent="thermonuclear-code-quality")` once at that head — the head the round reviews —
   waits for each one's result with `wait`, since each runs as a job of its own, and records the
-  verdict from what those results say. A result that carries no report, or that names another
+  verdict from what those results say. Each task names the diff the pair audits. On your first
+  review of the pull request, that is the branch's whole diff. On a later head, it is only the
+  change since your earlier head, which the rule for a new head below names
+  (`git diff <that head> <new head>`; for a merge of the base, `git show --remerge-diff <merge>`).
+  Run no pair when that diff touches no runtime code. A result that carries no report, or that names another
   place for it, is a failed run, not a verdict: run that agent again, or read its transcript, and
   record nothing from it until you have the findings text in front of you. Reading the agent's
   diff yourself and recording that in its place is the same as answering the rubric from a bare
@@ -142,50 +144,12 @@ as the fingerprint decides (*The reviewer*, below, and
   A review whose footer names another head, or no head, decides no round:
   it is set aside, the round stays open and the
   architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
-  A `COMMENT` decides nothing. After a
-  forward merge, compute the fingerprint (*The unchanged-diff check* in
-  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the head your last submitted
-  review read and at the new head.
-  That head is the `head` of that review's Legion footer, never the review's `commit_id`, because GitHub can move a review's `commit_id` onto a later head, such as a forward merge whose first parent is the head the review read, and a fingerprint taken at `commit_id` then compares the new head with itself.
-  This read lists the reviews your session submitted, each with the head its last Legion footer names, and its pages concatenate oldest first, so its last line is your last submitted review.
-  Put in it the session id your own footers carry: another reviewer session, a side review among them, writes `"phase":"review"` footers on the same pull request too.
-  Where it prints no line, your session submitted no review on this pull request, which leaves no head to take the fingerprint at: a new round.
-
-  ```bash
-  gh api --paginate repos/<o>/<r>/pulls/<n>/reviews --jq '.[] | {id, state, submitted_at, footer: ([.body // "" | scan("<!-- legion: (\\{.*?\\}) -->")] | last | .[0]? // "" | try fromjson catch {})} | select(.footer.phase == "review" and .footer.session == "<your session id>") | [.id, .state, .submitted_at, (.footer.head // "no head")] | @tsv'
-  ```
-
-  A footer that names no head leaves the head named by that review's own `review` handoff, which the reviewer records before it submits each review, a confirmation's included.
-  That handoff is the newest version your session wrote at or before that review's `submitted_at`, and not the issue's newest, which a later confirmation can have written for another head.
-  `dispatch handoff-read` prints, on its first line, the version, the session that wrote it and when; this reads down from the newest until it finds that handoff, and prints the head it names, `head`, or `headReviewed` in a record an earlier reviewer prompt wrote:
-
-  ```bash
-  issue=<issue> sid=<your session id> at=<that review's submitted_at>; v=
-  while out=$(dispatch handoff-read --issue "$issue" --phase review ${v:+--version "$v"}) || { printf '%s\n' "$out"; false; }; do
-    line=$(printf '%s\n' "$out" | head -n 1); v=${line#*, version }; v=${v%% *}; written=${line##* at }
-    case $line in *" session $sid at "*)
-      if [ "$(jq -rn --arg w "$written" --arg a "$at" '$w[0:19] <= $a[0:19]')" = true ]; then
-        printf '%s\n' "$out" | tail -n +2 | jq -r '.head // .headReviewed // "no head"'; break; fi;;
-    esac
-    [ "$v" -gt 1 ] || { echo "no review handoff of this session at or before $at"; break; }; v=$((v - 1))
-  done
-  ```
-
-  Its last line says which case holds.
-  A full SHA is the head.
-  `no head` (a handoff that names none), `no review handoff of this session at or before …` or `HANDOFF_NOT_FOUND: …` says no handoff names the head for that review, as for a review made outside Legion's workflow: the head is then the one full SHA its body names as the head it reviewed or approved, and a confirmation's is the new head it approves.
-  Any other line, `Dispatch at … is unreachable` or another refusal (in a script `dispatch` prints its refusal on standard output, which the loop prints as it leaves), is Dispatch not answering, never "no handoff": run it again, and while it does not answer there is no head to take the fingerprint at, which is a new round.
-  A body that names more than one such SHA and does not say which it read, or names none, leaves no head to take the fingerprint at, which is a new round.
-  Equal and that review was
-  `APPROVE`: submit one more `APPROVE` naming the new head by SHA, its body naming both SHAs
-  and the fingerprint — a confirmation, not a round; no thermo pass, no thread pass. Equal and
-  that review was `COMMENT` or `REQUEST_CHANGES`: continue that round against the new head;
-  nothing restarts. Different, or either run printed no fingerprint: a new round — thermo again,
-  one review.
-  After a forward merge whose fingerprint is unchanged, the implementer records again at the
-  merge head only the checks whose files the merge changed.
-  After a forward merge whose fingerprint is unchanged, a check whose files the merge did not
-  change needs no new implementer pass at the merge head.
+  A `COMMENT` decides nothing.
+  On a new head, read what changed since the head you last approved, or, where you have approved none, the head you last reviewed (`git diff <that head> <new head>`; for a merge of the base, `git show --remerge-diff <merge>`).
+  That head is the `head` that review's Legion footer names, never that review's `commit_id`, which GitHub can move onto a later head.
+  On your first review of the pull request, the change is the branch's whole diff.
+  Size your review to that change: review again only what it can affect, and confirm the rest by naming the earlier head.
+  A re-review after a request for changes also checks each of its findings against the new head.
   Where `git -C "$LEGION_WORKSPACE" merge-tree --write-tree <sha>^1 <sha>^2` exits 0 for the
   merge commit `<sha>` (its parents merge with no conflict), and its forward-merge comment names
   no reason *Reintegrating the base* allows
@@ -257,10 +221,9 @@ it there until that answer comes clean.
   merges. Nothing in Legion compares that head with the one the approval named either: a
   repository that wants a push made after the approval reviewed says so in its own rulesets (a
   stale review dismissed, a review required again), and GitHub holds the merge to them. A
-  conflict merge pushed above the approved head still goes back to the reviewer for a
-  confirmation or a new round, as the fingerprint decides
-  (`skill://legion-worker/references/conflicts-and-rewrites.md`), because the branch's own
-  procedure says so and not because any Legion check refuses the head. Retro removes nothing.
+  conflict merge pushed above the approved head still goes back to the reviewer, who reviews what
+  the merge changed (*The reviewer*, above), because the branch's own procedure says so and not
+  because any Legion check refuses the head. Retro removes nothing.
 - **Retro brings the PR body's path-derived content up to date before it completes.** Whatever the
   repository's instructions derive from the pull request's changed paths (a checklist named for
   each class of path, read by a required check), retro recomputes for the whole diff at its head

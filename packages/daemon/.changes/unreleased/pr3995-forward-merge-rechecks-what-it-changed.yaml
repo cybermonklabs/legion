@@ -2,9 +2,15 @@ kind: Changed
 custom:
   Issue: pr3995
 body: |-
-  After a forward merge whose fingerprint is unchanged, the implementer's role prompt records
-  again only the checks whose files the merge changed, and the implementer's and the tester's
-  prompts run the class search only over those files. The tester's and the reviewer's prompts
-  need no new implementer pass for a check whose files the merge did not change. Before, the
-  implementer ran every check again and both roles searched the whole head. A changed fingerprint
-  keeps that rule.
+  On a new head, the implementer's, the tester's and the reviewer's role prompts read what changed
+  since the head they last recorded, tested or approved (`git diff`, or `git show --remerge-diff`
+  for a merge of the base), and size their work to that change. A check the change cannot affect
+  is recorded again at the new head as carried from the earlier head, and is not run again. The
+  worker prompt's carry commit, which changes no file, carries every check the same way. The
+  unchanged-diff fingerprint is gone from the prompts. Before, a changed fingerprint meant a full
+  test round and a new review round, and every push meant running every check again. The
+  reviewer's earlier head is the head it last approved, or, where it approved none, the head it
+  last reviewed, and a re-review after a request for changes also checks each of its findings
+  against the new head. The reviewer's prompt names in each thermonuclear task the diff the pair
+  audits: the branch's whole diff on its first review of the pull request, then only the change
+  since its earlier head. No pair runs when that diff touches no runtime code.

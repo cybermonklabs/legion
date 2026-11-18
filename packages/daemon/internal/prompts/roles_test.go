@@ -547,19 +547,8 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/tester.md", "A documented procedure is passed only by running it."},
 		{"core/tester.md", "Every check you record must be able to fail"},
 		// R3: after a fix or a forward merge, search the new head for each earlier finding's class.
-		// After a forward merge whose fingerprint is unchanged, the implementer records again only
-		// the checks whose files the merge changed, the class search covers only those files, and
-		// the tester and the reviewer need no new implementer pass for any other check
-		// (dispatch://INFRA-175). A changed fingerprint keeps the full rule.
 		{"core/implementer.md", "search the head you are about to push for the class of every finding of every earlier review round"},
-		{"core/implementer.md", "After a forward merge whose fingerprint is unchanged, the implementer records again at the merge head only the checks whose files the merge changed."},
-		{"core/implementer.md", "because a clean merge can change a function's signature under the branch's own callers"},
-		{"core/implementer.md", "After a forward merge whose fingerprint is unchanged, the implementer and the tester run the class search only over the files the merge changed."},
-		{"core/implementer.md", "A changed fingerprint keeps the full rule: every check with no `ci_check` is recorded again at the merge head, and the class search runs over the whole head."},
-		{"core/tester.md", "An equal fingerprint still gets the class search"},
-		{"core/tester.md", "After a forward merge whose fingerprint is unchanged, the implementer and the tester run the class search only over the files the merge changed."},
-		{"tester.md", "After a forward merge whose fingerprint is unchanged, a check whose files the merge did not change needs no new implementer pass at the merge head."},
-		{"core/reviewer.md", "After a forward merge whose fingerprint is unchanged, a check whose files the merge did not change needs no new implementer pass at the merge head."},
+		{"core/tester.md", "A forward merge still gets the class search"},
 		{"implementer.md", "`classSearch`, one entry per finding of every earlier review round"},
 		{"tester.md", "`classSearch`, one entry per finding of every earlier review round"},
 		// R4: the planner completes no phase with an open decision.

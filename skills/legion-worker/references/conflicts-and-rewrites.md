@@ -1,9 +1,8 @@
-# Conflicts, retargets, fingerprints, and a wrong pushed commit
+# Conflicts, retargets, and a wrong pushed commit
 
 Part of `skill://legion-worker`. Read it when GitHub reports the pull request `CONFLICTING`, a
 message asks you to merge the base or resolve a conflict, the change needs something only the base
-has, the pull request is retargeted to a new base, you compare two heads after such a merge, or a
-commit you already pushed is wrong.
+has, the pull request is retargeted to a new base, or a commit you already pushed is wrong.
 Every path it cites is in cybermonklabs/legion.
 
 ## Reintegrating the base
@@ -22,34 +21,20 @@ Every path it cites is in cybermonklabs/legion.
   read `gh pr view <n> -R <owner>/<repo> --json mergeable,mergeStateStatus` and quote it in the
   forward-merge comment below. `UNKNOWN` is no conflict. That comment also names the condition
   above that the merge meets. A single failed CI job is re-run on its
-  own (*Never waiting on CI* in `skill://legion-worker/references/pr-body.md`). After any forward
-  merge, build the branch. Before you race another tree's pull request on
-  shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and
-  merge once, after it. A forward merge that leaves the branch's diff unchanged is a
-  confirmation, not a new round (see *The unchanged-diff check* below). The check compares the
-  pull request's own lines file by file: a changed file sends the head through the tester again,
-  and your comment names it. Before merging, record the fingerprint at the current tip. Before
-  you push the merge, record it at the merge head. After the push, post one PR comment (Legion
-  footer):
-  `forward merge <old-tip-sha> → <new-tip-sha>; fingerprint <before> → <after>; unchanged|changed`.
-  The fingerprint answers one question only: whether the branch's own diff changed. It cannot
-  show an instance the merge brought in from the base, so before you push the merge search its
-  head for the class of every finding of every earlier review round (the class search) and
-  record each search beside the fingerprints.
-  After a forward merge whose fingerprint is unchanged, the implementer records again at the
-  merge head only the checks whose files the merge changed.
-  The files the merge changed are the files whose content at the merge head differs from the tip
-  before it (`git diff --name-only <old tip> <merge head>`): what the base brought in, and the
-  resolution.
-  A check whose files the merge changed is a check whose `run` builds, tests or drives code in one
-  of those files.
-  Those checks run again even with no text conflict, because a clean merge can change a
-  function's signature under the branch's own callers.
-  After a forward merge whose fingerprint is unchanged, the implementer and the tester run the
-  class search only over the files the merge changed.
+  own (*Never waiting on CI* in `skill://legion-worker/references/pr-body.md`). Before you race
+  another tree's pull request on shared files, `envoy_publish` to its implementer's role topic,
+  ask when its next push lands, and merge once, after it.
+  After any forward merge, build the branch: a clean merge can change a function's signature
+  under the branch's own callers.
+  Before you push the merge, search its head for the class of every finding of every earlier
+  review round, and record each search in the forward-merge comment.
+  After the push, post that comment (Legion footer):
+  `forward merge <old-tip-sha> → <new-tip-sha>; <the condition it meets>; <the mergeable read>`.
+  Then read what the merge changed (`git show --remerge-diff <merge>`), and run again each check
+  that change can affect.
+  Record each other check again at the merge head as a carried pass (*A result proves the head it
+  was recorded at* in `skill://legion-worker/references/pr-body.md`), and do not run it again.
   A `ci_check` check is read again from its CI run at the merge head.
-  A changed fingerprint keeps the full rule: every check with no `ci_check` is recorded again at
-  the merge head, and the class search runs over the whole head.
   In a parent's last round, end the forward-merge comment with `parent's last round: full test round`, the line
   the tester reads for a full round (`skill://legion-architect/references/acceptance.md`,
   "The last round").
@@ -97,54 +82,6 @@ Every path it cites is in cybermonklabs/legion.
   (`base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && jj -R "$LEGION_WORKSPACE" new legion/<KEY> "${base}@origin" -m "<message>"`, its `<message>` in the repository's own commit convention, as above) and push it the
   ordinary way, a genuine fast-forward, so the new head runs Tests
   against the new merge result, and cite that run in the PR body.
-
-## The unchanged-diff check
-
-The fingerprint every role compares after a forward merge (every flag and the fileset
-verified on jj 0.45.1):
-
-```bash
-base=$(gh pr view <n> -R <owner>/<repo> --json baseRefName -q '.baseRefName | @json') && \
-cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" git fetch && \
-fingerprint=$(set -o pipefail; jj -R "$LEGION_WORKSPACE" diff --from "fork_point(${base}@origin | <head-sha>)" --to <head-sha> \
-    --git --context 0 '~(.legion | docs/solutions)' \
-  | sed -e '/^@@/d' -e '/^index /d' | sha256sum) && echo "$fingerprint"
-```
-
-- `<head-sha>` is a full commit SHA; a jj commit id is the git SHA GitHub shows.
-- `fork_point(${base}@origin | <head-sha>)` is the base the branch was cut from *at that head*:
-  the old base for the head before the merge, the new base for the merge head, so one command serves
-  both sides. `base` is the pull request's base branch as a jj string literal, as in the merge
-  above.
-- A head the merge replaced is still addressable by its SHA in the shared workspace. The check
-  prints a fingerprint only when every step of it succeeded: the base read, the fetch and the
-  diff (`pipefail` keeps the diff's failure through `sed` and `sha256sum`, which would otherwise
-  hash empty input to `e3b0c442…`). A nonzero exit or no printed fingerprint (a failed read of the
-  base, or a SHA the workspace cannot resolve) counts as a changed diff — never as unchanged.
-- `--context 0` drops context lines; the `sed` drops `@@` hunk headers (line positions move
-  on a merge) and `index` lines (blob ids move when the base's copy of a file changed). What
-  is left is exactly the added and removed lines per file.
-- The single fileset `'~(.legion | docs/solutions)'` leaves out `.legion/`, where handoffs lived
-  before they moved to Dispatch and which nothing writes or reads now, so nobody reviews a path
-  there, and retro's learnings:
-  paths the merge gate lets through above an approval
-  (`skill://legion-worker/references/merge-gate.md`), which change
-  between one role's verified head and the next without changing the product. This is what lets
-  each role compare against *its own* last verified head instead of trusting another role's
-  numbers. It must be one expression: jj unions positional filesets, so two separate
-  `'~.legion' '~docs/solutions'` arguments select every file and exclude nothing. Where
-  `.legion/` is gone, jj warns `No matching entries for paths: .legion` on stderr; the hash is
-  unaffected.
-
-Where each role gets its two heads: the implementer — the tip before and after its own forward merge;
-the tester — the commit its latest results name and the new head; the reviewer — the head its last
-submitted review read, which that review's Legion footer names, never that review's `commit_id`, which GitHub can move onto a later head (*The reviewer* in `skill://legion-worker/references/merge-gate.md` gives the read, what stands for a footer that names no head, and the measurement)
-and the new head; the merger never computes a fingerprint — it merges the head it read, and no
-Legion check compares that head with the approved one.
-
-The fingerprint is not the whole check: a file the merge adds only moves the hash, exactly as an ordinary round of work does.
-So beside it, compare the *set* of files the pull request changes against its base, before and after the merge (`gh pr diff <n> --name-only`, or `jj diff --stat` at each of the two heads), and explain every path that appears or disappears.
-Remove a path that belongs to an already-merged pull request.
 
 ## A wrong pushed commit
 

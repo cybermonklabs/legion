@@ -98,8 +98,8 @@ until this round, where its head must meet it.
 Then, in one turn:
 
 1. `envoy_publish` to the tester's role topic: "The next round of <KEY> is its last round: a full
-   test round of every check of the issue with no `ci_check`, not the forward-merge re-check." A
-   move to `implementing` gives its reason to the implementer alone.
+   test round of every check of the issue with no `ci_check`." A move to `implementing` gives its
+   reason to the implementer alone.
 2. Read whether the approved head, `<head>`, carries each child's merge. For each child in this
    repository whose merge those checks need, read the merge commit of its pull request `<n>`
    (`gh pr view <n> -R <owner>/<repo> --json mergeCommit --jq .mergeCommit.oid`). Run
@@ -189,12 +189,9 @@ move and you tell it which; from `accepting` you send an issue back only to `pla
 
 ## A conflicting head
 
-What returns the tree to review is a changed diff: a conflict-resolution merge whose
-fingerprint (the unchanged-diff check,
-`skill://legion-worker/references/conflicts-and-rewrites.md`) differs from the approved head's.
-A conflict merge whose fingerprint is unchanged does not, and no Legion check compares the head
-that merges with the approved one: a repository that wants a later push reviewed says so in its
-own rulesets.
+A conflict-resolution merge goes back through the tester and the reviewer, and each reads what the
+merge changed (`git show --remerge-diff <merge>`). No Legion check compares the head that merges
+with the approved one: a repository that wants a later push reviewed says so in its own rulesets.
 
 Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
 (`gh pr view <n> --json mergeable,mergeStateStatus`). From `testing`, `reviewing`, `accepting`,
@@ -206,17 +203,10 @@ nothing for it.
 
 The daemon then runs the phases from `implementing`: the implementer merges the bookmark forward
 with the destination and pushes it (the procedure in
-`skill://legion-worker/references/conflicts-and-rewrites.md`), posting the before and after
-fingerprints; the tester re-runs the bare gates only and the class search of every earlier
-round's findings at the new head; the reviewer approves the new head by SHA, or continues its
-round if it had not approved; the daemon carries the issue through your acceptance and retro to
-the merger's merge.
-After a forward merge whose fingerprint is unchanged, the implementer records again at the merge
-head only the checks whose files the merge changed.
-After a forward merge whose fingerprint is unchanged, the implementer and the tester run the
-class search only over the files the merge changed.
-A changed fingerprint keeps the full rule: every check with no `ci_check` is recorded again at
-the merge head, and the class search runs over the whole head.
+`skill://legion-worker/references/conflicts-and-rewrites.md`); the tester and the reviewer read
+what the merge changed and size their work to it; the reviewer approves the new head by SHA, or
+continues its round if it had not approved; the daemon carries the issue through your acceptance
+and retro to the merger's merge.
 
 ## A review thread GitHub will not resolve
 

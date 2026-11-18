@@ -34,11 +34,16 @@ body: |-
   with no merge. An approval request's `--summary` ends with the measurements and test results
   the design rests on, in place of what the reviews do not show.
 
-  After a forward merge whose fingerprint is unchanged, the implementer in `legion-worker` records
-  again only the checks whose files the merge changed, and reads each `ci_check` check again from
-  its CI run. The implementer and the tester run the class search only over the files the merge
-  changed. Before, the implementer recorded every check again and searched the whole head, and a
-  changed fingerprint still does both. The implementer takes the fingerprint at the merge head
-  before it pushes the merge. The tester, the reviewer and `legion-retro` need no new implementer
-  pass for a check whose files the merge did not change, and `legion-architect` says the same
-  rule in "A conflicting head".
+  On a new head, `legion-worker` has the implementer, the tester and the reviewer read what
+  changed since the head they last recorded, tested or approved (`git diff`, or
+  `git show --remerge-diff` for a merge of the base), and size their work to that change. A check
+  the change cannot affect is recorded again at the new head as carried from the earlier head,
+  and is not run again; `pr-body.md` gives the command. The unchanged-diff fingerprint and its
+  section in `conflicts-and-rewrites.md` are gone, with the comparison of file sets before and
+  after a merge, and `legion-architect` and `legion-retro` no longer name them. Before, a changed
+  fingerprint meant a full test round and a new review round, and every push meant running every
+  check again. The reviewer's earlier head is the head it last approved, or, where it approved
+  none, the head it last reviewed, and a re-review after a request for changes also checks each
+  of its findings against the new head. The reviewer names in each thermonuclear task the diff
+  the pair audits: the branch's whole diff on its first review of the pull request, then only the
+  change since its earlier head. No pair runs when that diff touches no runtime code.

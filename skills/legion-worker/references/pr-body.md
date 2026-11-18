@@ -141,7 +141,12 @@ a commit the branch its own issue's pull request merged into carries, or the rep
 branch does — that default branch alone where Dispatch knows of no merge of that issue — and a
 `default_branch` result only a commit the repository's default branch carries.
 A push moves the head, with no Dispatch write of anyone's, so each check with no `ci_check` is
-recorded again at the new head. `dispatch results --issue <issue>` prints each check with the
+recorded again at the new head.
+Run the check again only when the change since its pass can affect what the check drives.
+Otherwise do not run it: record its earlier pass at the new head with
+`dispatch result --issue <issue> --check <block id> --role <your role> --verdict pass --commit <new head> --observed 'carried from <old sha>: <why the change cannot affect it>'`.
+That carried record is a pass standing at the new head.
+`dispatch results --issue <issue>` prints each check with the
 results recorded against it and the commit each one was recorded at;
 `dispatch read --issue <issue>` names each requirement of the spec no check serves.
 Where a result's commit stands is read, not stored. A `before_merge` result is compared only with
@@ -204,9 +209,7 @@ and decides there, the only gate on such an issue.
   with `implementerProof.verdict: "rejected"`, complete the phase with
   `verdict: "fail"`, and the daemon returns the issue to the implementer — the agent that developed the change owns
   proving it (a rejected verdict, or `failed > 0`, always comes with the failure recorded in
-  `failures`). After a forward merge whose fingerprint is unchanged, a check whose files the merge
-  did not change needs no new implementer pass at the merge head. A check whose `run` is a whole
-  test suite is an exception too: its words are wrong, so
+  `failures`). A check whose `run` is a whole test suite is the exception: its words are wrong, so
   while the architect rewrites it, it fails no round, and the tester names it in
   `implementerProof.how` and sends it to the architect. Otherwise record your own result for each
   `before_merge` check before you complete,
@@ -219,20 +222,13 @@ and decides there, the only gate on such an issue.
   tester names that missing surface as the blocker instead of passing the phase. Environment or
   secret-scrub evidence (e.g. "`LEGION_*`/`DISPATCH_*`/`ENVOY_*` unset") is recorded once, in
   its `test` handoff, and only when a check calls for it — never
-  re-pasted into the PR body each round. After a forward merge, compute the
-  fingerprint (*The unchanged-diff check* in
-  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the commit your results name
-  and at the new head. Equal: re-run only the
-  bare gates — the repository's CI green at the new head and its smoke check — and record each
-  check with no `ci_check` again at the new head, its `--observed` ending
-  `forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean`.
-  After a forward merge whose fingerprint is unchanged, the implementer and the tester run the
-  class search only over the files the merge changed (*Reintegrating the base* in
-  `skill://legion-worker/references/conflicts-and-rewrites.md` says which files those are).
-  A search that finds an instance is a failure, not a re-check: record it under `failures` and run a full test round. The
-  real-surface verification is not repeated, except in a parent's last round, which the architect
-  or the implementer's forward-merge comment names to you: then run a full test round. Different:
-  a full test round. Where `git -C "$LEGION_WORKSPACE" merge-tree --write-tree <sha>^1 <sha>^2`
+  re-pasted into the PR body each round. On a new head, read what changed since the head you
+  last tested (`git diff <that head> <new head>`; for a merge of the base,
+  `git show --remerge-diff <merge>`). Size your round to that change: test again only what it can
+  affect, and confirm the rest by naming the earlier head. Each check the change cannot affect
+  gets a carried record (*A result proves the head it was recorded at*, above). In a parent's
+  last round, which the architect or the implementer's forward-merge comment names to you, run a
+  full test round. Where `git -C "$LEGION_WORKSPACE" merge-tree --write-tree <sha>^1 <sha>^2`
   exits 0 for the merge commit `<sha>` (its parents merge with no conflict), and its forward-merge
   comment names no reason *Reintegrating the base* allows
   (`skill://legion-worker/references/conflicts-and-rewrites.md`), send the architect the finding
@@ -251,7 +247,10 @@ and decides there, the only gate on such an issue.
   defect it reports is fixed outside the pass with the results recorded again, never dropped as
   out of scope; the `Thermo` line's `defects reported` half names how many and the commit that
   fixed them, so a head that moved for a reported defect is not recorded as `0 applied` alone.
-  The reviewer's pair runs at the head each round reviews, when the diff touches runtime code.
+  The reviewer's pair runs at the head each round reviews: over the branch's whole diff on the
+  reviewer's first review of the pull request, over the change since the reviewer's earlier head
+  after that, and only when that diff touches runtime code (*The reviewer* in
+  `skill://legion-worker/references/merge-gate.md` names the earlier head).
   Record both in the `Thermo` line.
 - **No deferrals** is the body's rule (*PR body, review, and the merge gate* in
   `skill://legion-worker`): a wording nit, and any clear fix in a file this pull request touches,

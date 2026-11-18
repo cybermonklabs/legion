@@ -423,82 +423,13 @@ test("a check that cannot fail is not a result, and a documented procedure count
   );
 });
 
-// R3: the unchanged-diff fingerprint covers the branch's own diff alone, so a forward merge can
-// bring a new instance of a class the branch already answered (dispatch://INFRA-83). The `E2E`
-// re-check wording carries the class search in both files that hold it.
-test("the forward-merge re-check searches the new head for each earlier finding's class", () => {
+// R3: a forward merge can bring a new instance of a class the branch already answered, so the
+// implementer searches the merge head for each earlier finding's class (dispatch://INFRA-83).
+test("a forward merge's head is searched for each earlier finding's class", () => {
   expect(
     collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
   ).toContain(
-    "The fingerprint answers one question only: whether the branch's own diff changed. It cannot show an instance the merge brought in from the base"
-  );
-  expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
-    "the tester re-runs the bare gates only and the class search of every earlier round's findings at the new head;"
-  );
-  countedOncePerFile(
-    "forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean",
-    [
-      "skills/legion-worker/references/pr-body.md",
-      "packages/daemon/internal/prompts/roles/tester.md",
-    ]
-  );
-  // After a forward merge whose fingerprint is unchanged, the implementer records again only the
-  // checks whose files the merge changed and the class search covers only those files; a changed
-  // fingerprint keeps the full rule (dispatch://INFRA-175). Each sentence is one wording, held
-  // once in every file that states it.
-  countedOncePerFile(
-    "After a forward merge whose fingerprint is unchanged, the implementer records again at the merge head only the checks whose files the merge changed.",
-    [
-      "skills/legion-worker/references/conflicts-and-rewrites.md",
-      "skills/legion-worker/references/merge-gate.md",
-      "skills/legion-architect/references/acceptance.md",
-      "packages/daemon/internal/prompts/roles/core/implementer.md",
-    ]
-  );
-  countedOncePerFile(
-    "After a forward merge whose fingerprint is unchanged, the implementer and the tester run the class search only over the files the merge changed",
-    [
-      "skills/legion-worker/references/conflicts-and-rewrites.md",
-      "skills/legion-worker/references/pr-body.md",
-      "skills/legion-architect/references/acceptance.md",
-      "packages/daemon/internal/prompts/roles/core/implementer.md",
-      "packages/daemon/internal/prompts/roles/core/tester.md",
-    ]
-  );
-  countedOncePerFile(
-    "A changed fingerprint keeps the full rule: every check with no `ci_check` is recorded again at the merge head, and the class search runs over the whole head.",
-    [
-      "skills/legion-worker/references/conflicts-and-rewrites.md",
-      "skills/legion-architect/references/acceptance.md",
-      "packages/daemon/internal/prompts/roles/core/implementer.md",
-    ]
-  );
-  countedOncePerFile(
-    "The files the merge changed are the files whose content at the merge head differs from the tip before it (`git diff --name-only <old tip> <merge head>`): what the base brought in, and the resolution.",
-    [
-      "skills/legion-worker/references/conflicts-and-rewrites.md",
-      "packages/daemon/internal/prompts/roles/core/implementer.md",
-      "packages/daemon/internal/prompts/roles/core/tester.md",
-    ]
-  );
-  countedOncePerFile(
-    "Those checks run again even with no text conflict, because a clean merge can change a function's signature under the branch's own callers.",
-    [
-      "skills/legion-worker/references/conflicts-and-rewrites.md",
-      "packages/daemon/internal/prompts/roles/core/implementer.md",
-    ]
-  );
-  // The tester, the reviewer and retro read the passes at the merge head, so each excepts the
-  // checks the implementer did not record again.
-  countedOncePerFile(
-    "After a forward merge whose fingerprint is unchanged, a check whose files the merge did not change needs no new implementer pass at the merge head.",
-    [
-      "skills/legion-worker/references/pr-body.md",
-      "skills/legion-worker/references/merge-gate.md",
-      "skills/legion-retro/SKILL.md",
-      "packages/daemon/internal/prompts/roles/tester.md",
-      "packages/daemon/internal/prompts/roles/core/reviewer.md",
-    ]
+    "Before you push the merge, search its head for the class of every finding of every earlier review round"
   );
 });
 
@@ -582,7 +513,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     "about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
     "This read is of the pull request's own head and of no check, so the wait it makes is not a wait on CI",
     "an empty one when your work is complete",
-    "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
+    "The empty commit changes no file, so record each `before_merge` check again at the new head as carried from the commit before it (`skill://legion-worker/references/pr-body.md#what-a-result-is`), and run none of them again. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update message is the exception: that message has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",

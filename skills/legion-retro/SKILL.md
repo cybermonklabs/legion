@@ -59,9 +59,7 @@ Dispatch message (step 5) is for a finished retro only.
    at the version your task's `Handoff:` line names, `--phase review --version <n>`, the command
    that line quotes). A pass stands for every `before_merge` check of the issue at the approved
    head, from the implementer and from the tester alike, and the pull request
-   body's `Checks` block carries each of those lines. After a forward merge whose fingerprint is
-   unchanged, a check whose files the merge did not change needs no new implementer pass at the
-   merge head. A check carrying `ci_check` is CI's: the
+   body's `Checks` block carries each of those lines. A check carrying `ci_check` is CI's: the
    result that `dispatch results` derives is the pass it needs, and its CI job is its evidence
    (`skill://legion-worker/references/ci-checks.md`). In
    cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
