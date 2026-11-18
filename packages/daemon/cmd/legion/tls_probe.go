@@ -289,7 +289,7 @@ func chromiumNavigationFailure(stderr string) string {
 // what to keep because a list of what to remove cannot be complete: the list of credential
 // variables the probe used to unset missed SYSTEM_WGETRC, GIT_CONFIG_SYSTEM,
 // CLOUDSDK_AUTH_AUTHORIZATION_TOKEN_FILE and MISE_NETRC_FILE, each measured making its client send
-// a credential to the server it reached (TestImageTLSClientsReadNoSystemConfigurationOfThePods).
+// a credential to the server it reached (TestImageTLSClientsCarryNoCredentialOfThePods).
 // Any client may read a variable nobody has found yet; a list of what to keep names all a client gets.
 //
 // Every client keeps one list of two parts. The first is the variables the worker image declares,
