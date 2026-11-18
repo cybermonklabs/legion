@@ -34,7 +34,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "passes when the origin answers as Dispatch and every target is unreachable, its control read through time_connect",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       try {
         const run = await drive({
           OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
@@ -49,12 +49,12 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(lineFor(run, "closed-b")).toContain(" unreachable; curl exit 7,");
         expect(verdict(run)).toStartWith("PASS");
         expect(run.code).toBe(0);
-        expect(origin.seen).toEqual([
+        expect(await origin.seen()).toEqual([
           { method: "GET", path: "/healthz", credential: null },
           { method: "GET", path: "/api/v1/projects", credential: null },
         ]);
       } finally {
-        origin.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -62,7 +62,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "fails naming a target that listens, which is the check's negative control",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const listening = closingTarget();
       try {
         const run = await drive({
@@ -73,7 +73,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);
       } finally {
-        origin.stop(true);
+        await origin.stop();
         listening.stop(true);
       }
     }
@@ -88,7 +88,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads targets that accept and hold the connection as reached, each round probing them at once",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const first = holdingTarget();
       const second = holdingTarget();
       const closed = [await closedPort(), await closedPort()];
@@ -131,7 +131,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached nats-a nats-b");
         expect(run.code).toBe(1);
       } finally {
-        origin.stop(true);
+        await origin.stop();
         first.stop(true);
         second.stop(true);
       }
@@ -141,7 +141,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads the same holding target as unreachable once it is closed, and passes",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const holding = holdingTarget(await closedPort());
       const { port } = holding;
       holding.stop(true);
@@ -154,7 +154,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toStartWith("PASS");
         expect(run.code).toBe(0);
       } finally {
-        origin.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -162,7 +162,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "is unknown, never a pass, when Dispatch answers but the probe cannot connect to the origin itself",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       // A curl that answers HTTP as the host's does but whose probe of the origin's own port is
       // refused, as behind a proxy that carries the HTTP requests while the device's own connects
       // go nowhere: every round of every target then proves nothing, and reads `uncounted`.
@@ -180,13 +180,13 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("UNKNOWN: the probe could not connect to the origin itself");
         expect(run.code).toBe(2);
       } finally {
-        origin.stop(true);
+        await origin.stop();
       }
     }
   );
 
   probingRow(withoutTools)("is unknown, never a pass, when a target does not resolve", async () => {
-    const origin = fakeDispatch();
+    const origin = await fakeDispatch();
     try {
       const run = await drive({
         OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
@@ -196,7 +196,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       expect(verdict(run)).toBe("UNKNOWN: ghost unresolved or unknown");
       expect(run.code).toBe(2);
     } finally {
-      origin.stop(true);
+      await origin.stop();
     }
   });
 
@@ -214,7 +214,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "is unknown, never a pass, when a probe's answer fits no rule or its lookup timed out or ran long",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       try {
         const run = await drive(
           {
@@ -243,7 +243,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("UNKNOWN: odd blank slowdns slow unresolved or unknown");
         expect(run.code).toBe(2);
       } finally {
-        origin.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -266,7 +266,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "probes each target in five rounds and reads it reached when one round of the five connects",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const holding = holdingTarget();
       try {
         // The first two of the five rounds are lost on the way, as on a network dropping packets.
@@ -288,7 +288,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached lossy");
         expect(run.code).toBe(1);
       } finally {
-        origin.stop(true);
+        await origin.stop();
         holding.stop(true);
       }
     }
@@ -297,7 +297,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads a target unreachable only when all five rounds are, and unknown when one of them is",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const port = await closedPort();
       try {
         const run = await drive(
@@ -321,7 +321,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("UNKNOWN: flaky unresolved or unknown");
         expect(run.code).toBe(2);
       } finally {
-        origin.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -333,7 +333,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "counts a target's round only when the probe connected to the origin in that same round",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const hub = holdingTarget();
       const refused = "{ printf '0.000010 0.000000'; exit 7; }";
       try {
@@ -400,7 +400,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         );
         expect(once.code).toBe(2);
       } finally {
-        origin.stop(true);
+        await origin.stop();
         hub.stop(true);
       }
     }
@@ -417,7 +417,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "sleeps a whole 6 s between each two of its five rounds, so a target down only in the first round reads reached",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const hub = holdingTarget();
       try {
         const { path, log } = pathRounds(
@@ -444,7 +444,7 @@ describe.concurrent("outside-path-reach.sh", () => {
           [1, 2, 3, 4, 5].map((round) => `probe hub ${round}\n`).join("slept 6\n")
         );
       } finally {
-        origin.stop(true);
+        await origin.stop();
         hub.stop(true);
       }
     }
@@ -453,7 +453,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "is unknown when sleep fails, since the rounds were then not spread apart",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const path = pathOf("bash", "curl");
       writeFileSync(join(path, "sleep"), `#!${bash}\nexit 1\n`, { mode: 0o755 });
       try {
@@ -466,7 +466,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         );
         expect(run.code).toBe(2);
       } finally {
-        origin.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -478,7 +478,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "warns when the list holds only names, since a name proves only where it resolves here",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       try {
         const env = { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}` };
         const [names, addresses] = await Promise.all([
@@ -499,7 +499,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(addresses.stdout).not.toContain("warning");
         expect(verdict(addresses)).toStartWith("PASS");
       } finally {
-        origin.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -507,7 +507,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   // Whether `localhost.` resolves is the test host's resolver's business (a stock ubuntu image's
   // does not), so a curl of the row's own answers for it: the row is about the list taking it.
   probingRow(withoutTools)("takes a name written with its trailing dot", async () => {
-    const origin = fakeDispatch();
+    const origin = await fakeDispatch();
     try {
       const port = await closedPort();
       const run = await drive(
@@ -525,14 +525,14 @@ describe.concurrent("outside-path-reach.sh", () => {
       expect(verdict(run)).toStartWith("PASS");
       expect(run.code).toBe(0);
     } finally {
-      origin.stop(true);
+      await origin.stop();
     }
   });
 
   probingRow(withoutTools)(
     "reads a list written with a UTF-8 byte-order mark as it reads one without",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const listening = closingTarget();
       try {
         const run = await drive({
@@ -543,7 +543,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);
       } finally {
-        origin.stop(true);
+        await origin.stop();
         listening.stop(true);
       }
     }
@@ -552,7 +552,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads a target list given on a pipe, which it can read only once",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const listening = closingTarget();
       try {
         const closed = await closedPort();
@@ -566,7 +566,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached hub");
         expect(run.code).toBe(1);
       } finally {
-        origin.stop(true);
+        await origin.stop();
         listening.stop(true);
       }
     }
@@ -575,7 +575,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "fails naming every reached target, whatever else the run could not see",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const hub = closingTarget();
       const nats = holdingTarget();
       try {
@@ -608,7 +608,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(blind)).toBe("FAIL: reached hub");
         expect(blind.code).toBe(1);
       } finally {
-        origin.stop(true);
+        await origin.stop();
         hub.stop(true);
         nats.stop(true);
       }
@@ -619,7 +619,7 @@ describe.concurrent("outside-path-reach.sh", () => {
     "needs only bash, curl and sleep: with no timeout on PATH it still passes, and still fails",
     async () => {
       const path = pathOf("bash", "curl", "sleep");
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const listening = closingTarget();
       try {
         const env = { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}` };
@@ -637,7 +637,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(failing)).toBe("FAIL: reached hub");
         expect(failing.code).toBe(1);
       } finally {
-        origin.stop(true);
+        await origin.stop();
         listening.stop(true);
       }
     }
@@ -646,7 +646,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads what the device itself reaches, whatever its curl configuration or proxy says",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const holding = holdingTarget();
       try {
         const env = { OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}` };
@@ -677,13 +677,13 @@ describe.concurrent("outside-path-reach.sh", () => {
         ]);
         expect(verdict(credentials)).toStartWith("PASS");
         expect(credentials.code).toBe(0);
-        expect(origin.seen.filter((request) => request.credential !== null)).toEqual([]);
+        expect((await origin.seen()).filter((request) => request.credential !== null)).toEqual([]);
         expect(lineFor(resolve, "nats")).toContain(" REACHED; ");
         expect(verdict(resolve)).toBe("FAIL: reached nats");
         expect(lineFor(proxy, "nats")).toContain(" REACHED; ");
         expect(verdict(proxy)).toBe("FAIL: reached nats");
       } finally {
-        origin.stop(true);
+        await origin.stop();
         holding.stop(true);
       }
     }
@@ -730,7 +730,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "takes CRLF line endings, tabs between fields and comments, and reads every target",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const holding = holdingTarget();
       try {
         const closed = await closedPort();
@@ -758,7 +758,7 @@ describe.concurrent("outside-path-reach.sh", () => {
           }).toEqual({ locale, closed: true, hub: true, said: "FAIL: reached hub", code: 1 });
         }
       } finally {
-        origin.stop(true);
+        await origin.stop();
         holding.stop(true);
       }
     }
@@ -767,7 +767,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "takes an IPv6 address that is not IPv4-mapped, ffff in a later group and ::7f00:1 included",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       try {
         const taken = [
           "::1",
@@ -792,7 +792,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toStartWith("PASS");
         expect(run.code).toBe(0);
       } finally {
-        origin.stop(true);
+        await origin.stop();
       }
     }
   );

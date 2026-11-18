@@ -75,7 +75,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools || blackholeSkip !== null)(
     "reads a blackholed address as unreachable and passes, curl's own timeouts bounding each probe of it",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const asked = join(scratch, `asked-${randomUUID()}`);
       try {
         const run = await drive(
@@ -105,7 +105,7 @@ describe.concurrent("outside-path-reach.sh", () => {
             ])
         ).toEqual(Array(5).fill([true, true]));
       } finally {
-        origin.stop(true);
+        await origin.stop();
       }
     }
   );
@@ -113,7 +113,7 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools || blackholeSkip !== null)(
     "fails the blackholed run once the holding target is added beside it",
     async () => {
-      const origin = fakeDispatch();
+      const origin = await fakeDispatch();
       const holding = holdingTarget();
       try {
         const run = await drive({
@@ -128,7 +128,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(verdict(run)).toBe("FAIL: reached nats");
         expect(run.code).toBe(1);
       } finally {
-        origin.stop(true);
+        await origin.stop();
         holding.stop(true);
       }
     }
