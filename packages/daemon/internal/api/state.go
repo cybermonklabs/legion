@@ -1449,16 +1449,18 @@ func StrandedMoves() []StrandedMove {
 //     suspended before 0038, the operator's resume when an operator suspended it and it kept its
 //     task or its phase start waits, otherwise the operator's delivery of its phase's resume task.
 //   - StrandedRetry, a failed architect: the operator's retry (`legion claims retry`), which
-//     relaunches its session with fresh budgets, and a catch-up follows.
+//     relaunches its session with fresh budgets, or a new one once supervise's
+//     Machine.forgetSession has dropped it, and a catch-up follows.
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.
-//   - StrandedWorkflowStart, a retired claim, whatever its role: only a workflow start relaunches
-//     one, since the operator's retry refuses a claim that has not failed and a retired claim
-//     ignores resume and deliver. A start of its phase sends it the retry the daemon's own start
-//     executor makes of a retired claim, so the move is the act that queues such a start: the
-//     architect's retry_or_escalate of a held phase, a transition into the phase, or the tree's
-//     close and re-admission for an architect, whose tree's admission is the only start of it.
+//   - StrandedWorkflowStart, a retired claim, whatever its role: a retired claim ignores resume
+//     and deliver, and the operator's retry (`legion claims retry`) reaches it as it reaches a
+//     failed one (supervise's operatorRetry), but the move named is a workflow start. A start of
+//     its phase sends it the retry the daemon's own start executor makes of a retired claim, so
+//     the move is the act that queues such a start: the architect's retry_or_escalate of a held
+//     phase, a transition into the phase, or the tree's close and re-admission for an architect,
+//     whose tree's admission is the only workflow start of it.
 //
 // The retired case is read before every other, because a claim released and then retired keeps
 // `suspendedBy: released` on its row and SuspendersOfOperatorClaims copies that value whatever the

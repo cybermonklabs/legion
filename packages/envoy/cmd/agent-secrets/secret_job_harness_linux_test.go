@@ -540,7 +540,7 @@ func TestPromptJobHelper(t *testing.T) {
 			time.AfterFunc(time.Until(deadline), func() { fmt.Println("DEADLINE_REACHED") })
 		}
 	}
-	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", "", deadline, label)
+	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", deadline, label)
 	if midEntry && reads == 0 && errors.Is(err, errValueTimedOut) {
 		// The prompt reached its first check of the deadline only after the deadline had passed,
 		// before it read at all: the machine stalled between the helper setting the deadline and

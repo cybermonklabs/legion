@@ -689,17 +689,19 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const submitted: AnswerAskInput[] = [];
+  const answerHeld = Promise.withResolvers<void>();
   const { promise: landed, resolve: land } = Promise.withResolvers<void>();
   const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
     await landed;
     return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
   });
   const input = ask();
-  const { view } = renderCard(
+  const { queryClient, view } = renderCard(
     <AskCard
       ask={input}
       answerAsk={async (_id, submission) => {
         submitted.push(submission);
+        await answerHeld.promise;
         return answered(input, submission.selected, submission.text ?? null);
       }}
       getAskThread={emptyThread(input)}
@@ -707,6 +709,9 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
   );
 
   try {
+    // The who-am-I read (a 401, as `network.ts` answers it) settles here, before the first press,
+    // rather than during a press, where its answer would update the card outside `act`.
+    await waitFor(() => expect(queryClient.getQueryState(["whoami"])?.status).toBe("error"));
     const answer = view.getByLabelText("Your answer") as HTMLTextAreaElement;
     await user.click(answer);
     await user.paste("This one");
@@ -726,6 +731,9 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
       expect(answer.value).toBe("This one ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
     );
     await user.click(view.getByRole("button", { name: "Answer" }));
+    await act(async () => {
+      answerHeld.resolve();
+    });
     await waitFor(() =>
       expect(submitted).toEqual([
         {
