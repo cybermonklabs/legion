@@ -49,7 +49,9 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 			t.Errorf("write the newer claim: %v", err)
 		}
 		sender.mu.Lock()
-		sender.claims[queued[0].key] = newer
+		state := sender.held[queued[0].key]
+		state.claimed = newer
+		sender.held[queued[0].key] = state
 		sender.mu.Unlock()
 		return refreshed, err
 	}
@@ -59,9 +61,9 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 	row := attemptClaimedAt(t, database, queued, "session:s1")
 	sender.mu.Lock()
 	var held time.Time
-	for key, claimed := range sender.claims {
+	for key, state := range sender.held {
 		if key.comment == queued {
-			held = claimed
+			held = state.claimed
 		}
 	}
 	sender.mu.Unlock()
@@ -155,8 +157,9 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 
 			key := mentionKey{comment: comment, target: "session:s1", attempt: 1}
 			sender.mu.Lock()
-			recorded, holds := sender.claims[key]
+			state, holds := sender.held[key]
 			sender.mu.Unlock()
+			recorded := state.claimed
 			row := attemptClaimedAt(t, database, comment, "session:s1")
 			t.Logf("parked again: the sender records claim %v (held %t), the row carries %v", recorded, holds, row)
 			if !holds || !recorded.Equal(row) {

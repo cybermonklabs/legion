@@ -65,7 +65,7 @@ func TestARefreshWhoseAnswerIsLostAfterItCommitsLeavesTheClaimUnknownUntilRead(t
 			recorded := func() time.Time {
 				sender.mu.Lock()
 				defer sender.mu.Unlock()
-				return sender.claims[key]
+				return sender.held[key].claimed
 			}
 			parked := attemptClaimedAt(t, database, comment, "session:s1")
 			if !recorded().Equal(parked) {

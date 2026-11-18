@@ -142,6 +142,26 @@ func (m mentionSend) claim() mentionClaim {
 	return mentionClaim{key: m.key(), claimedAt: m.claimed}
 }
 
+// mentionClaimState is what the mention sender records of one attempt it holds
+// (mentionSender.held).
+type mentionClaimState struct {
+	// claimed is the claim this sender holds on the attempt, as it last wrote it, so one statement
+	// writes the claims of every attempt it holds again: every send that has not started, and a
+	// send in flight until it ends (next). A try that claims the attempt for itself takes that
+	// claim out of the statements' reach, as each matches only the claim recorded here, and park
+	// records the try's; a try that reads the rule alone (sendCommentMention) writes no claim, so
+	// its send's row still carries the one recorded here, and a refresh that writes it meanwhile
+	// records what it wrote (refreshHeldClaims).
+	claimed time.Time
+	// unsure is that a refresh named claimed and got no answer, so the row may carry a claim this
+	// sender wrote and never learned; the next refresh or try re-reads it (refreshHeldClaims,
+	// claimKnown), and a claim recorded from an answer ends it.
+	unsure bool
+	// trying is that a try of the attempt is in flight (mentionSender.trying), which the re-read of
+	// the unsure claims leaves alone while it runs (rereadUnsure).
+	trying bool
+}
+
 // laneKey names a lane of the mention sender. A recipient's own lane names the recipient alone
 // (mentionSend.lane); a held lane (heldLane) names the recipient and the owner whose sends to it
 // wait there behind an earlier event of that owner, held set, so a comment that names no owner
@@ -263,24 +283,12 @@ type mentionSender struct {
 	ready []laneKey
 	// serving is how many goroutines serve lanes.
 	serving int
-	// claims is the claim this sender holds on each attempt it holds, as it last wrote it, so one
-	// statement writes them all again: every send that has not started, and a send in flight until
-	// it ends (next). A try that claims the attempt for itself takes that claim out of the
-	// statements' reach, as each matches only the claim recorded here, and park records the
-	// try's; a try that reads the rule alone (sendCommentMention) writes no claim, so its send's
-	// row still carries the one recorded here, and a refresh that writes it meanwhile records what
-	// it wrote (refreshHeldClaims).
-	claims map[mentionKey]time.Time
 	// held is every attempt this sender queued whose send has not finished - queued, parked or in
-	// flight, true while a try of it is in flight - so that one attempt is never queued twice: a
-	// keyed repeat of a comment answers while its first send is still queued. Its size is what
-	// capacity bounds, so a send in flight keeps its place, a send that must wait always has room
-	// to park (park), and the owner's later sends never pass it.
-	held map[mentionKey]bool
-	// unsure is every attempt whose recorded claim a refresh named and got no answer for, so its
-	// row may carry a claim this sender wrote and never learned; the next refresh or try re-reads
-	// it (refreshHeldClaims, claimKnown), and a claim recorded from an answer ends it.
-	unsure map[mentionKey]struct{}
+	// flight - and what it records of each (mentionClaimState), so that one attempt is never queued
+	// twice: a keyed repeat of a comment answers while its first send is still queued. Its size is
+	// what capacity bounds, so a send in flight keeps its place, a send that must wait always has
+	// room to park (park), and the owner's later sends never pass it.
+	held map[mentionKey]mentionClaimState
 	// closed is set by wait; nothing starts after it, and stopped is closed with it.
 	closed  bool
 	stopped chan struct{}
@@ -310,8 +318,7 @@ func newMentionSender(
 		capacity: maxQueuedMentionSends, claimRefresh: claimRefresh, heldWarnAfter: model.MentionCopyHeldWarnAfter,
 		after: func(delay time.Duration, f func()) { time.AfterFunc(delay, f) },
 		lanes: map[laneKey][]mentionSend{}, waits: map[laneKey]heldWait{},
-		claims: map[mentionKey]time.Time{}, held: map[mentionKey]bool{}, unsure: map[mentionKey]struct{}{},
-		stopped: make(chan struct{}),
+		held: map[mentionKey]mentionClaimState{}, stopped: make(chan struct{}),
 	}
 	m.done.Add(1)
 	go m.keepClaims()
@@ -355,22 +362,19 @@ func (m *mentionSender) queueLocked(item mentionSend) (queued, full bool) {
 		return false, false
 	}
 	key := item.key()
-	if _, mine := m.held[key]; mine {
+	if state, mine := m.held[key]; mine {
 		// A keyed repeat claimed the attempt anew before it asked (claimQueuedMention), so the
 		// claim its send waits under is the one that repeat just wrote, and the refreshes and the
 		// drain's release move that one. A send in flight is among them too, and parks under that
 		// claim unless its try claims the attempt for itself (park).
-		if _, waiting := m.claims[key]; waiting {
-			m.claims[key] = item.claimed
-			delete(m.unsure, key)
-		}
+		state.claimed, state.unsure = item.claimed, false
+		m.held[key] = state
 		return true, false
 	}
 	if len(m.held) >= m.capacity {
 		return false, true
 	}
-	m.held[key] = false
-	m.claims[key] = item.claimed
+	m.held[key] = mentionClaimState{claimed: item.claimed}
 	lane := item.lane()
 	if held := heldLane(lane, item.owner()); held != lane {
 		if _, waits := m.lanes[held]; waits {
@@ -457,14 +461,12 @@ func (m *mentionSender) serve(lane laneKey) {
 // then takes a lane that waits. The send it takes carries the claim this sender records for it,
 // which stays among the claims the refresh writes again until the send ends: a try that reads
 // the rule alone writes no claim, so the claim its row carries is still that one, and a refresh
-// that writes the row while the try is in flight records the claim it wrote (claims). ok is false
+// that writes the row while the try is in flight records the claim it wrote (held). ok is false
 // when the goroutine is done: the sender stopped, or no lane has a send left for it.
 func (m *mentionSender) next(lane laneKey, finished mentionKey) (mentionSend, laneKey, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.held, finished)
-	delete(m.claims, finished)
-	delete(m.unsure, finished)
 	if m.stoppedLocked() {
 		m.serving--
 		return mentionSend{}, laneKey{}, false
@@ -485,7 +487,7 @@ func (m *mentionSender) next(lane laneKey, finished mentionKey) (mentionSend, la
 	item := m.lanes[lane][0]
 	m.lanes[lane][0] = mentionSend{}
 	m.lanes[lane] = m.lanes[lane][1:]
-	item.claimed = m.claims[item.key()]
+	item.claimed = m.held[item.key()].claimed
 	return item, lane, true
 }
 
@@ -495,8 +497,9 @@ func (m *mentionSender) next(lane laneKey, finished mentionKey) (mentionSend, la
 func (m *mentionSender) trying(key mentionKey, inFlight bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, mine := m.held[key]; mine {
-		m.held[key] = inFlight
+	if state, mine := m.held[key]; mine {
+		state.trying = inFlight
+		m.held[key] = state
 	}
 }
 
@@ -547,8 +550,9 @@ func (m *mentionSender) park(lane laneKey, item mentionSend, claimed bool) (held
 	held = heldLane(lane, owner)
 	m.mu.Lock()
 	if claimed {
-		m.claims[item.key()] = item.claimed
-		delete(m.unsure, item.key())
+		state := m.held[item.key()]
+		state.claimed, state.unsure = item.claimed, false
+		m.held[item.key()] = state
 	}
 	if held == lane {
 		m.lanes[held] = append([]mentionSend{item}, m.lanes[held]...)
@@ -599,7 +603,7 @@ func (m *mentionSender) park(lane laneKey, item mentionSend, claimed bool) (held
 func (m *mentionSender) claimKnown(item mentionSend) (_ mentionSend, ok bool) {
 	key := item.key()
 	m.mu.Lock()
-	_, unsure := m.unsure[key]
+	unsure := m.held[key].unsure
 	m.mu.Unlock()
 	if !unsure {
 		return item, true
@@ -612,15 +616,17 @@ func (m *mentionSender) claimKnown(item mentionSend) (_ mentionSend, ok bool) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if recorded := m.claims[key]; !recorded.Equal(item.claimed) {
-		item.claimed = recorded
+	state := m.held[key]
+	if !state.claimed.Equal(item.claimed) {
+		item.claimed = state.claimed
 		return item, true
 	}
-	delete(m.unsure, key)
+	state.unsure = false
 	if len(read) == 1 {
 		item.claimed = read[0].claimedAt
-		m.claims[key] = item.claimed
+		state.claimed = item.claimed
 	}
+	m.held[key] = state
 	return item, true
 }
 
@@ -744,7 +750,7 @@ func (m *mentionSender) keepClaims() {
 // claim this sender last took. The statement moves only a row that still carries the claim this
 // sender recorded, so it never moves the claim a try has taken for itself out from under that
 // try's settle, and it goes on writing the row of a send in flight whose try reads the rule alone
-// and writes none (claims).
+// and writes none (held).
 //
 // The statement runs without the lock, so for its length a row carries a newer claim than the map
 // records. That gap is safe: the row's claim only moves forward, so the delivery sweep, which
@@ -754,20 +760,21 @@ func (m *mentionSender) keepClaims() {
 // written meanwhile - a keyed repeat's (queueLocked) - is never set back.
 //
 // A statement that answers an error may have committed all the same, so it leaves every claim it
-// named that the map still holds unknown (unsure), never assumed, and the refresh re-reads those
-// rows at once (rereadUnsure); a send in flight re-reads its own before it parks, and the next
-// refresh or try re-reads whatever is still unknown before it acts on it (claimKnown). A read
-// proves a row's claim this sender's own while it is less than a lease after the claim recorded
-// (model.DeliveryClaimSinceSQL), and a lost refresh wrote at most one claim past the one recorded,
-// since every refresh after it names the recorded one, which the row no longer carries.
+// named that the map still holds unknown (mentionClaimState.unsure), never assumed, and the
+// refresh re-reads those rows at once (rereadUnsure); a send in flight re-reads its own before it
+// parks, and the next refresh or try re-reads whatever is still unknown before it acts on it
+// (claimKnown). A read proves a row's claim this sender's own while it is less than a lease after
+// the claim recorded (model.DeliveryClaimSinceSQL), and a lost refresh wrote at most one claim
+// past the one recorded, since every refresh after it names the recorded one, which the row no
+// longer carries.
 func (m *mentionSender) refreshHeldClaims(ctx context.Context) {
 	m.rereadUnsure(ctx)
 	m.mu.Lock()
-	queued := make([]mentionClaim, 0, len(m.claims))
-	snapshot := make(map[mentionKey]time.Time, len(m.claims))
-	for key, claimed := range m.claims {
-		queued = append(queued, mentionClaim{key: key, claimedAt: claimed})
-		snapshot[key] = claimed
+	queued := make([]mentionClaim, 0, len(m.held))
+	snapshot := make(map[mentionKey]time.Time, len(m.held))
+	for key, state := range m.held {
+		queued = append(queued, mentionClaim{key: key, claimedAt: state.claimed})
+		snapshot[key] = state.claimed
 	}
 	m.mu.Unlock()
 	if len(queued) == 0 {
@@ -781,8 +788,9 @@ func (m *mentionSender) refreshHeldClaims(ctx context.Context) {
 	m.mu.Lock()
 	if err != nil {
 		for key, claimed := range snapshot {
-			if held, waiting := m.claims[key]; waiting && held.Equal(claimed) {
-				m.unsure[key] = struct{}{}
+			if state, mine := m.held[key]; mine && state.claimed.Equal(claimed) {
+				state.unsure = true
+				m.held[key] = state
 			}
 		}
 		m.mu.Unlock()
@@ -791,9 +799,9 @@ func (m *mentionSender) refreshHeldClaims(ctx context.Context) {
 	}
 	defer m.mu.Unlock()
 	for _, claim := range refreshed {
-		if held, waiting := m.claims[claim.key]; waiting && held.Equal(snapshot[claim.key]) {
-			m.claims[claim.key] = claim.claimedAt
-			delete(m.unsure, claim.key)
+		if state, mine := m.held[claim.key]; mine && state.claimed.Equal(snapshot[claim.key]) {
+			state.claimed, state.unsure = claim.claimedAt, false
+			m.held[claim.key] = state
 		}
 	}
 }
@@ -809,9 +817,9 @@ func (m *mentionSender) refreshHeldClaims(ctx context.Context) {
 func (m *mentionSender) rereadUnsure(ctx context.Context) {
 	m.mu.Lock()
 	var unsure []mentionClaim
-	for key := range m.unsure {
-		if !m.held[key] {
-			unsure = append(unsure, mentionClaim{key: key, claimedAt: m.claims[key]})
+	for key, state := range m.held {
+		if state.unsure && !state.trying {
+			unsure = append(unsure, mentionClaim{key: key, claimedAt: state.claimed})
 		}
 	}
 	m.mu.Unlock()
@@ -831,13 +839,15 @@ func (m *mentionSender) rereadUnsure(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, claim := range unsure {
-		if _, still := m.unsure[claim.key]; !still || m.held[claim.key] || !m.claims[claim.key].Equal(claim.claimedAt) {
+		state, mine := m.held[claim.key]
+		if !mine || !state.unsure || state.trying || !state.claimed.Equal(claim.claimedAt) {
 			continue
 		}
-		delete(m.unsure, claim.key)
+		state.unsure = false
 		if row, ok := rows[claim.key]; ok {
-			m.claims[claim.key] = row
+			state.claimed = row
 		}
+		m.held[claim.key] = state
 	}
 }
 
@@ -859,12 +869,11 @@ func (m *mentionSender) wait() {
 	m.done.Wait()
 	// No goroutine serves a lane now and nothing more is queued, so what is left is final.
 	m.mu.Lock()
-	unstarted := make([]mentionClaim, 0, len(m.claims))
-	for key, claimed := range m.claims {
-		unstarted = append(unstarted, mentionClaim{key: key, claimedAt: claimed})
+	unstarted := make([]mentionClaim, 0, len(m.held))
+	for key, state := range m.held {
+		unstarted = append(unstarted, mentionClaim{key: key, claimedAt: state.claimed})
 	}
-	clear(m.claims)
-	clear(m.unsure)
+	clear(m.held)
 	m.mu.Unlock()
 	if len(unstarted) > 0 {
 		release, cancelRelease := context.WithTimeout(
@@ -961,7 +970,8 @@ func refreshMentionClaimsOn(ctx context.Context, pool *store.Pool, queued []ment
 // at or past the claim the sender recorded and less than a lease after it
 // (model.DeliveryClaimSinceSQL), since another sender takes a claim only once the one on the row
 // has lapsed, and so writes one more than a lease past it. The sender asks it for attempts whose
-// recorded claim a refresh named and got no answer for (unsure), and records what it answers.
+// recorded claim a refresh named and got no answer for (mentionClaimState.unsure), and records
+// what it answers.
 func (s *server) rereadMentionClaims(ctx context.Context, unsure []mentionClaim) ([]mentionClaim, error) {
 	return rereadMentionClaimsOn(ctx, s.deps.Store.Pool, unsure)
 }
@@ -995,8 +1005,8 @@ func collectMentionClaims(rows pgx.Rows) ([]mentionClaim, error) {
 // sender gives a claim back only where no try of it is in flight - a send it refused, and the
 // drain's after every send in flight ended - so each is scoped to a claim of this sender's own, at
 // or past the claim it recorded and less than a lease after it (model.DeliveryClaimSinceSQL): the
-// row may carry a refresh's claim the sender never learned (unsure), and an attempt another
-// sender has taken since keeps that sender's claim.
+// row may carry a refresh's claim the sender never learned (mentionClaimState.unsure), and an
+// attempt another sender has taken since keeps that sender's claim.
 func (s *server) releaseMentionClaims(ctx context.Context, held []mentionClaim) error {
 	comments, targets, attempts, claimed := mentionClaimArrays(held)
 	_, err := s.deps.Store.Pool.Exec(ctx, `

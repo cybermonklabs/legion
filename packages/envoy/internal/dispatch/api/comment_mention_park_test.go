@@ -100,7 +100,7 @@ func (r *parkRig) enqueue(id, target string) mentionSend {
 
 // state is what the sender holds now: how many goroutines serve lanes, whether session:parked's
 // held lane is parked - its timer started and not run - how many sends wait on it, and how many
-// claims it writes again, one for each send it holds (mentionSender.claims). The rig's comments
+// claims it writes again, one for each send it holds (mentionSender.held). The rig's comments
 // name no owner, so they share one held lane (heldLane). The four are read as of one moment: a
 // read that a timer's run crossed is read again, since the run starts a goroutine on the lane
 // (unpark) after it counts itself fired.
@@ -109,7 +109,7 @@ func (r *parkRig) state() (serving int, parked bool, onLane, queued int) {
 	for {
 		fired, pending := r.fired.Load(), r.pending.Load()
 		r.sender.mu.Lock()
-		serving, onLane, queued = r.sender.serving, len(r.sender.lanes[held]), len(r.sender.claims)
+		serving, onLane, queued = r.sender.serving, len(r.sender.lanes[held]), len(r.sender.held)
 		r.sender.mu.Unlock()
 		if r.fired.Load() == fired && r.pending.Load() == pending {
 			return serving, pending > 0, onLane, queued

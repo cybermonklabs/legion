@@ -1059,7 +1059,9 @@ func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender,
 		`, key.comment, key.target, key.attempt, by.Seconds()).Scan(&aged); err != nil {
 			t.Fatalf("age the claim on the queued attempt of %s for %s: %v", key.comment, key.target, err)
 		}
-		sender.claims[key] = aged
+		state := sender.held[key]
+		state.claimed = aged
+		sender.held[key] = state
 	}
 }
 

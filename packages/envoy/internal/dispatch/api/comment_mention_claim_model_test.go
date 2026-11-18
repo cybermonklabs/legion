@@ -69,10 +69,10 @@ import (
 // what follows from it:
 //   - stale: every claim the sender records for an attempt and trusts is the claim the attempt's
 //     row carries, whenever no refresh has written rows it has not recorded yet and no try has
-//     claimed that row for itself. A claim a lost answer left unknown (mentionSender.unsure) is
-//     not trusted, and the sender reads its row before it acts on it. A trusted record behind its
-//     row is never written again, since the refresh writes only a row that carries the claim the
-//     sender names, so the row's claim lapses with its send still held;
+//     claimed that row for itself. A claim a lost answer left unknown (mentionClaimState.unsure)
+//     is not trusted, and the sender reads its row before it acts on it. A trusted record behind
+//     its row is never written again, since the refresh writes only a row that carries the claim
+//     the sender names, so the row's claim lapses with its send still held;
 //   - dropped: no try of a send the sender holds finds its attempt held by another sender;
 //   - order and twice: s1 takes A-1 before A-2, and each of them once. Either ends the run.
 //
@@ -797,9 +797,9 @@ func (r *cmRun) checkClaims() {
 	}
 	r.sender.mu.Lock()
 	claims := map[mentionKey]time.Time{}
-	for key, claimed := range r.sender.claims {
-		if _, unsure := r.sender.unsure[key]; !unsure {
-			claims[key] = claimed
+	for key, state := range r.sender.held {
+		if !state.unsure {
+			claims[key] = state.claimed
 		}
 	}
 	r.sender.mu.Unlock()
@@ -910,8 +910,8 @@ func (r *cmRun) key() string {
 		add(row.created)
 		add(row.claim)
 	}
-	for _, claimed := range r.sender.claims {
-		add(claimed)
+	for _, state := range r.sender.held {
+		add(state.claimed)
 	}
 	for _, sends := range r.sender.lanes {
 		for _, send := range sends {
@@ -981,20 +981,18 @@ func (r *cmRun) key() string {
 	}
 	slices.Sort(timers)
 	fmt.Fprintf(&b, "timers %v|", timers)
-	var recorded, held, unsure []string
-	for key, claimed := range r.sender.claims {
-		recorded = append(recorded, key.comment+":"+canon(claimed))
+	// Each attempt's trying is left out: the sender sets it exactly while the model's try of that
+	// comment is trying, which the key names.
+	var held []string
+	for key, state := range r.sender.held {
+		entry := key.comment + ":" + canon(state.claimed)
+		if state.unsure {
+			entry += ":unsure"
+		}
+		held = append(held, entry)
 	}
-	for key := range r.sender.held {
-		held = append(held, key.comment)
-	}
-	for key := range r.sender.unsure {
-		unsure = append(unsure, key.comment)
-	}
-	slices.Sort(recorded)
 	slices.Sort(held)
-	slices.Sort(unsure)
-	fmt.Fprintf(&b, "claims %v held %v unsure %v|", recorded, held, unsure)
+	fmt.Fprintf(&b, "held %v|", held)
 	var lanes []string
 	for lane, sends := range r.sender.lanes {
 		var names []string
