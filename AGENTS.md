@@ -82,7 +82,7 @@ The evidence of each is the `Sources` list of its statement in version 7 of disp
 
 Legion's issue lifecycle lives entirely on native Dispatch (triage → done); the daemon never creates, reads, or writes a GitHub issue.
 It derives role and gate state from Dispatch issue events plus GitHub PR/CI artifacts, records root-process session locators, and publishes only the verdict changes each role needs.
-The daemon (`packages/daemon`, Go) runs every root architect and phase worker as a headless `omp --mode rpc` process bridged through `legion worker-shim`:
+The daemon (`packages/daemon`, Go) runs every architect, a root's or a child's, and every phase worker as a headless `omp --mode rpc` process bridged through `legion worker-shim`:
 one pane of its private tmux server per process under `runtime: tmux`, or, under `runtime: kubernetes`, one Agent Sandbox pod per issue running the published worker image, with one container whose `legion launcher` runs every resident role (`docs/kubernetes.md`;
 `scripts/e2e/stage4a-sandbox-runtime.sh` is that runtime's live proof).
 A phase worker whose role `legion.yaml`'s `worker_backends` puts on `claude` runs Claude Code in Oh My Pi's place under either runtime:
@@ -93,8 +93,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - **OMP extensions** — two Oh My Pi plugins:
   `@sjawhar/pi-envoy` (`packages/pi-envoy`), which every session loads for Envoy messaging and the native Dispatch tools, and `@sjawhar/pi-legion` (`packages/pi-legion`), which a Legion pane loads beside it and which injects the Legion tool (its daemon calls carry session grants the tool mints in-process) and the daemon handshake into that session, reaching the Envoy plugin through the versioned interface in `packages/pi-shared`.
-  The daemon starts every phase worker (planner/implementer/tester/reviewer/merger) itself, from its fixed workflow table;
-  a sub-architect for a child issue runs only when the operator starts one.
+  The daemon starts every phase worker (planner/implementer/tester/reviewer/merger) itself, from its fixed workflow table,
+  and the architect of every child issue when it starts that child's first phase.
   The controller is an interactive OMP session the operator starts on their own machine with `legion controller start` (no `--mode rpc`, no shim), unless `legion.yaml` sets `controller: daemon`, where the daemon launches it in an Agent Sandbox pod of its own, whose one container runs the controller's `legion launcher`, or under `runtime: tmux` in a pane of its own `controller` window, and supervises it like a root architect (`docs/kubernetes.md`, "The controller";
   `docs/deployment.md`, "The `runtime.tmux` block").
 
@@ -245,9 +245,9 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   Type check the three script directories that are no workspace, as ci.yaml's `test` job does
 
-- `(cd packages/daemon && go vet -tags e2e ./...)`
+- `(cd packages/daemon && go vet -tags e2e ./... && flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64) && while IFS= read -r flag; do GOOS=darwin GOARCH=arm64 go vet "$flag" ./... || exit 1; done <<< "$flags")`
 
-  What ci.yaml's `typecheck` job runs: vet of the Go daemon, its e2e-tagged live proofs included
+  What ci.yaml's `typecheck` job runs: vet of the Go daemon, its e2e-tagged live proofs included, as linux and as darwin compile it, the darwin vet once per tag set that script reads off the module's build constraints
 
 - `(cd <package> && bun run test)`
 
@@ -291,8 +291,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - `legion claims retry --operator-token-file <file> (--claim <token> | --failed) [--fresh-session]`
 
-  The operator's: relaunch a failed architect on its session with fresh budgets, or retry a failed phase worker whose issue is held for its own role through that phase's retry (409 when the issue stays held, as a lingering tree's does);
-  `--claim` reaches a claim an operator stopped as well as a failed one, because `legion claims stop` retires the claim it stops, and starts a phase worker on the task of the phase its issue stands in now;
+  The operator's: relaunch a failed architect with fresh budgets, on its session, or on a new one once supervise's `forgetSession` has dropped it, or retry a failed phase worker whose issue is held for its own role through that phase's retry (409 when the issue stays held, as a lingering tree's does);
+  `--claim` reaches a retired claim as well as a failed one, whatever retired it (`legion claims stop` retires the claim it stops, among others), and how it starts a phase worker is api's `retryStart` to decide (through the issue's phase by `restartWorkedPhase` where that phase is the worker's);
   `--fresh-session` forgets the claim's recorded session first, so the retry starts a fresh agent instead of resuming that session;
   it reaches a claim whose agent is registered, ready or idle, one that is suspended, failed or retired, and one stored working that the read of its process at the request finds nothing behind, which is the dead role a project's controller has no other way back from, with no suspension held over it, a root architect included;
   it suspends a live agent and the claim no process stands behind alike, where the request arrives, and that last claim comes back with the task its dead turn held;
@@ -326,7 +326,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - `legion worker-shim --connect <unix:///path|tcp://host:port> --boot-token-file <path> [--provider-env-dir <dir>] [--pod-safety] [--stop-grace <duration>] [--warm-codegraph] [--agent-secrets-key-dir <dir> --pod-token-file <path> --agent-secrets-bin <path>] -- <omp argv…>`
 
-  Bridges a headless OMP process (a root architect, a phase worker, or the controller the daemon launches under `controller: daemon`) to the daemon:
+  Bridges a headless OMP process (a root's or a child's architect, a phase worker, or the controller the daemon launches under `controller: daemon`) to the daemon:
   the shim dials the daemon's worker stream listener (`unix://` from a tmux pane, `tcp://` from a pod) and authenticates with its boot token;
   --provider-env-dir exports each mounted secret file as NAME=contents into the OMP child's environment only (skipping a NAME the pod already consumes through a NAME_FILE pointer, e.g. DISPATCH_TOKEN;
   and refusing to start — exit 1 naming the key and its file, Oh My Pi never spawned
@@ -377,7 +377,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   either runtime — the operator starts the interactive controller on their own machine:
   reads the strict operator-side file (deploy/kubernetes/daemon/controller.yaml.example), refuses an operator token file others can read, then a stdin that is not a terminal (given the positional word below and no terminal, Oh My Pi would run headless print mode, which would run the start command after the mint revoked the running controller), finds the real gh its session's `gh` wrapper runs (`LEGION_GH_PATH`, or the first `gh` on PATH but its own wrapper;
-  refused when there is none or that first `gh` is a script, a gh wrapper that would answer in place of the review App), fetches the controller secret from POST /legion/v1/controller/secret with that token as a bearer, then the controller's GitHub credential from POST /legion/v1/controller/github-credential with that secret (the review App's read-only gh files for every owner of the project, one directory per owner under `<state_dir>/gh`, each token reaching that owner's repositories alone, `GH_CONFIG_DIR` naming the first owner's, refreshed every minute while Oh My Pi runs, logged to `<state_dir>/github-credential.log`;
+  refused when there is none or that first `gh` is a script, a gh wrapper that would answer in place of the review App), fetches the controller secret from POST /legion/v1/controller/secret with that token as a bearer, then the controller's GitHub credential from POST /legion/v1/controller/github-credential with that secret (the review App's read-only gh files for every owner that App is installed on, one directory per owner under `<state_dir>/gh`, each token reaching every repository that owner's installation holds, `GH_CONFIG_DIR` naming the first owner's, refreshed every minute while Oh My Pi runs, logged to `<state_dir>/github-credential.log`;
   against a daemon with no GitHub App it says so and empties the directory;
   any other refusal after the mint exits 1 with Oh My Pi never started), launches Oh My Pi in the foreground with the shared controller environment and the positional word `/legion-controller-start`, the pi-legion command that sends the controller's start message once Oh My Pi's startup is over, exits with its code
 
@@ -385,18 +385,21 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   the `gh` first on every tmux pane's and pod's PATH (a script in the pane's launcher directory, `/opt/legion/bin/gh` in the image) runs it, never a person:
   it runs the real gh (LEGION_GH_PATH) with GH_CONFIG_DIR at a directory of the role's gh bundle (LEGION_GH_OWNERS_DIR:
-  one directory per GitHub owner of the project and one more per owner a configured rename moved a repository away from while the project serves the name it moved to, the role App's write token for the issue's repository alone standing in two of them, the directory named for the issue's recorded owner and the one named for the owner whose installation serves that repository now, which are one directory unless a rename moved the issue's repository;
-  beside them a `<owner>/<repo>` directory for each other repository the owner serving the issue's repository serves and for each the recorded owner serves, read-only over the one repository its own name resolves to;
-  and every other owner's directory read-only over the repositories that owner serves, or, for an owner only a rename puts in the bundle, over those of the owner its repository moved to):
-  the repository's own directory where the command names one repository and the bundle holds that directory, and its owner's otherwise, read as gh reads the command, with pflag's rules, from the real gh's own help of each command down to its leaf (its selectors:
+  one directory per GitHub owner the role's App is installed on, one more per owner a configured rename moved a repository away from while the project serves the name it moved to, and one for the issue's own recorded owner;
+  each directory of a workflow role's bundle holds one token of the role's own App, minted on that owner's installation with the role's own permissions, and none a read-only one, which the controller's holds in every directory;
+  a token reaches every repository that installation holds and no fewer, the account having chosen that set when it installed the App, so a role writes in every repository its App reaches;
+  the directory of an owner a rename moved a repository away from, where the App is not installed on that owner, holds the token of the owner the repository moved to;
+  a workflow role's GH_CONFIG_DIR names the directory its issue's repository routes to, and a controller's its default owner's):
+  the directory of the owner of the repository the command names, read as gh reads the command, with pflag's rules, from the real gh's own help of each command down to its leaf (its selectors:
   -R/--repo before or after the command, a repository or owner argument, before `--` or as a clone's or fork's first after it, a github.com URL argument (for a pr command or agent-task view only a pull request's, any other naming a branch of its own repository), every one of a slot gh's usage takes several of, agent-task view's OWNER/REPO#N, `gh api`'s `repos/orgs/users/<owner>/` endpoint and a search endpoint's q, a search query's plain repo:/owner:
   qualifiers, the options naming a repository, an owner, a team or an issue by URL;
   and the command's own repository whenever gh resolves it, because no argument names it, or whatever names it for `repo set-default`:
-  GH_REPO for a command that reads it, gh api's `{owner}`/`:owner` placeholders among them, and otherwise every github.com remote and gh-resolved setting of the working directory, read with gh's own URL parser), at the issue owner's when the command names no repository at all and the working directory names none;
+  GH_REPO for a command that reads it, gh api's `{owner}`/`:owner` placeholders among them, and otherwise every github.com remote and gh-resolved setting of the working directory, read with gh's own URL parser), at GH_CONFIG_DIR's when the command names no repository at all and the working directory names none;
   the real gh runs with GH_PATH at that wrapper, so the git gh runs itself (a clone, a fork's parent, `pr checkout`) asks `legion gh auth git-credential`, which answers as `legion git-credential` does, and with gh's update check and prompts off;
   it sends nothing when only gh's help or `gh --version` alone runs;
-  it fails closed, refusing with exit 2 and naming the argument, and sending nothing, a command it cannot read for certain (an option the leaf's help does not list or names a repository with in a way it does not know, a subcommand gh does not know, a first word gh's own help does not list, anything before the command other than -R or --help, an argument the leaf's usage has no place for or names in a way it does not know, a search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot`, `gh extension exec`), one naming two owners (an option or another repository naming one owner while gh acts on another's repository among them), one naming an owner the bundle holds no directory for, every command run where PATH's first gh is not Legion's wrapper (a script that execs `legion gh` by its absolute path), and every command under a GH_HOST other than github.com or a set GH_TOKEN or GITHUB_TOKEN (docs/deployment.md "What a pane's gh, git and jj are");
-  under a set GH_TOKEN or GITHUB_TOKEN it runs only the guard's own visibility reads (REST and GraphQL, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names) with that token (`ghVisibilityRead`), the shared check's own visibility read, the exact `gh api rate_limit` and `gh auth git-credential`, and refuses every other call
+  it fails closed, refusing with exit 2 and naming the argument, and sending nothing, a command it cannot read for certain (an option the leaf's help does not list or names a repository with in a way it does not know, a subcommand gh does not know, a first word gh's own help does not list, anything before the command other than -R or --help, an argument the leaf's usage has no place for or names in a way it does not know, a search qualifier gh or GitHub could read otherwise, a gh alias or an extension, run or named as `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot`, `gh extension exec`), one whose repositories route to two directories of the bundle (two owners' repositories, an option or another repository naming one owner while gh acts on another's repository among them, or a repository a configured rename moved beside another of the owner it moved from; each repository is routed on its own, so a moved repository named by both of its names is one directory), one naming an owner the bundle holds no directory for, every command run where PATH's first gh is not Legion's wrapper (a script that execs `legion gh` by its absolute path), and every command under a GH_HOST other than github.com or a set GH_TOKEN or GITHUB_TOKEN (docs/deployment.md "What a pane's gh, git and jj are");
+
+  - under a set GH_TOKEN or GITHUB_TOKEN it runs only the guard's own visibility reads (REST and GraphQL, each exactly for the repository `PUBLIC_LEAK_CHECK_VISIBILITY_READ` names) with that token (`ghVisibilityRead`), the shared check's own visibility read, the exact `gh api rate_limit` and `gh auth git-credential`, and refuses every other call
 
 - `legion gh`'s visibility guard, rate-limit wait and call log
 
@@ -429,7 +432,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - `legion git-credential get|store|erase`
 
   every shared clone's git credential helper (`!legion git-credential`, with credential.useHttpPath on), and, as `legion gh auth git-credential`, the helper of the git gh runs itself;
-  git runs it, never a person: `get` answers https://github.com with the token of the repository the requested path names, from that repository's own directory of LEGION_GH_OWNERS_DIR where the bundle holds one and from the owner's otherwise, and from nothing else, answering nothing (exit 1, naming why) for any other host, a request with no path, or an owner the bundle holds no directory for; `store` and `erase` write nothing
+  git runs it, never a person: `get` answers https://github.com with the token of the owner the requested path names, from that owner's directory of LEGION_GH_OWNERS_DIR and from nothing else, answering nothing (exit 1, naming why) for any other host, a request with no path, or an owner the bundle holds no directory for; `store` and `erase` write nothing
 
 - `legion sessions import --dsn-file <url file> --claims <claims.json|-> [--tree <KEY>] [--tree-volume <dir>]`
 
@@ -516,7 +519,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   - `workspace-init cache --repo <owner>/<repo> --root <dir> [--listen :8418] [--refresh 10m]` is a repository cache pod's one process, a bare clone on the cache's own volume fetched from GitHub every `--refresh` and served to its repository's issue pods as `GET /tar` (its refs, its packs and each pack's index), with `GET /readyz` its readiness and `GET /healthz` its health, `/tar` answering only the bearer token LEGION_REPOSITORY_CACHE_TOKEN_FILE holds and `/healthz`, which holds nothing secret, any request (docs/kubernetes.md "The repository cache")
 
-  - `legion controller start` resolves `omp_invocation` as the daemon does, with no pinned default, reads the project's repository mapping from the daemon's unauthenticated `GET /legion/v1/state` first, since the controller's addressing names it (an empty or all-refused mapping still launches and the addressing says so;
+  - `legion controller start` resolves `omp_invocation` as the daemon does, with no pinned default, reads the project's repository mapping from the daemon's unauthenticated `GET /legion/v1/state` first, as a check that the daemon answers as a conforming one does before the mint revokes the running controller (an empty or all-refused mapping still launches, since the mapping decides nothing of the controller's addressing, which names the owners the credential route answers the review App installed on, `installed`, that the controller's gh bundle holds a directory for;
     a daemon that does not answer, or a body without a usable mapping, refuses, with nothing minted or written), and refuses before its one capability-minting daemon call, by launching the operator's Oh My Pi as the controller will run, a pi-legion it does not load, or loads speaking another daemon API contract, or loads without pi-envoy or with a pi-envoy at another plugin interface version, or beside the pre-split package;
     that call names the contract, and the daemon refuses another with 409, naming both, before it mints a capability, so a `legion` and a daemon of different releases never revoke the running controller;
     and its controller registers on `/legion/v1/claims/register`, which refuses another contract naming both
@@ -567,7 +570,7 @@ LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic 
 - `LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_RUNTIME_IDENTITY_KIND=aws-iam-role LEGION_E2E_PLATFORM=eks LEGION_E2E_POD_REACHABILITY=aws-private-ip LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_IMAGE=<worker image@sha256> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> LEGION_E2E_STORAGE_CLASS=<StorageClass> LEGION_E2E_POD_SERVICE_ACCOUNT=<ServiceAccount the pods run as> LEGION_E2E_SESSION_DB_PORT=<port> LEGION_E2E_REPO_SECOND_OWNER=<owner>/<name> LEGION_E2E_PREVIOUS_IMAGE=<worker image of main at contract 37 or 38, before one container@sha256> bash scripts/e2e/stage4a-sandbox-runtime.sh`
 
   Stage 4a's live proof, devbox only: the Go Agent Sandbox runtime on the production cluster (namespace legion) through the Legion daemon's restricted identity, on the operator fixture's pod and a providers Secret of its own, every check of the run under `session_store: postgres` against a scratch Postgres the script starts on the devbox's private address at `LEGION_E2E_SESSION_DB_PORT` (a port the Legion nodes can reach), where each claim's session is recorded as `legion sessions import` copies one
-  — install check, the image probe with the daemon's own command (and its refusal once the operator's overlay drops a role an agent names), gVisor, every container's reservation with no affinity, the operator's ServiceAccount and token, the pod baseline, the provider key reaching the agent alone, suspend/resume, same-agent refusal (a session the table lacks), kill, relaunch before registration, independent provisioning (two issues of one tree, each Sandbox owning no claim template and each pod on a disk of its own, named for the pod and owned by it), an issue on a second owner's repository reading sjawhar/legion-smoke read-only through its gh and git and refused a push there, the repository cache (the first issue pod's launch makes it and fills its feed from it alone, its Service is the one the controller made, a second pod streams its feed from it and asks GitHub for the delta alone, the cache's tar refuses a request without its token, and an issue whose pod and disk are deleted is provisioned again through it onto a commit of its pushed branch that neither the default branch nor the cache holds), re-adoption with a resume into the replacement pod on a disk of a new uid, the orphan sweep taking the swept issue's pod and the disk that pod owned, a release that ends one role and leaves the pod and its disk, a tree cleanup that takes both, an issue closed with `SuspendIssue` whose Sandbox, pod and disk all go and whose resume brings every one of them back afresh with `LEGION_WORKSPACE_RECREATED=true`, and a namespace left as it was;
+  — install check, the image probe with the daemon's own command (and its refusal once the operator's overlay drops a role an agent names), gVisor, every container's reservation with no affinity, the operator's ServiceAccount and token, the pod baseline, the provider key reaching the agent alone, suspend/resume, same-agent refusal (a session the table lacks), kill, relaunch before registration, independent provisioning (two issues of one tree, each Sandbox owning no claim template and each pod on a disk of its own, named for the pod and owned by it), an issue on a second owner's repository reading sjawhar/legion-smoke through its gh and git and served the receive-pack advertisement (200) for it with no push made, its gh bundle holding one directory per owner account its App is installed on, the repository cache (the first issue pod's launch makes it and fills its feed from it alone, its Service is the one the controller made, a second pod streams its feed from it and asks GitHub for the delta alone, the cache's tar refuses a request without its token, and an issue whose pod and disk are deleted is provisioned again through it onto a commit of its pushed branch that neither the default branch nor the cache holds), re-adoption with a resume into the replacement pod on a disk of a new uid, the orphan sweep taking the swept issue's pod and the disk that pod owned, a release that ends one role and leaves the pod and its disk, a tree cleanup that takes both, an issue closed with `SuspendIssue` whose Sandbox, pod and disk all go and whose resume brings every one of them back afresh with `LEGION_WORKSPACE_RECREATED=true`, and a namespace left as it was;
   this is the aws-private-ip/gateway shape
   — LEGION_E2E_PLATFORM=gke-autopilot LEGION_E2E_RUNTIME_IDENTITY_KIND=kubernetes-service-account LEGION_E2E_POD_REACHABILITY=bridge LEGION_E2E_MODEL_ROUTE=key-file (no LEGION_E2E_MODEL_GATEWAY_URL/AUDIENCE) proves the same runtime against a cluster whose pods cannot reach the devbox at all (scripts/e2e/README.md)
 
@@ -585,14 +588,27 @@ projects:
   WIDGETS: { production_check: off }
 ```
 
-A project's repositories are Dispatch's mapping (Settings → Repositories → Projects), one of them the project's default;
+Dispatch's mapping (Settings → Repositories → Projects) names the project's default repository and the repositories the daemon prepares before an issue names one;
 `legion.yaml` names none, and refuses `projects.<KEY>.repo`.
-Its one exception names no repository of the project either:
-`projects.<KEY>.commit_issue_trailer_repos` selects, among the repositories Dispatch maps to the project, the ones whose commits carry their issue key, as a `Dispatch: <KEY>` trailer the pane's jj appends;
-a name the project does not serve selects nothing, and boot warns about it.
-The daemon reads the mapping at boot and on Dispatch's `settings.repo_project.updated`, serves each mapped repository both GitHub Apps are installed on, and leaves out, and reports in `legion state --json` (`repositories.refused`), one either App is missing from.
-A repository whose installation read GitHub does not answer (any failure but a 404) is left out for now the same way and read again, 30 s doubling to 10 min, until GitHub answers;
-a served one whose read fails stays served.
+An issue may name any `owner/name`, and the daemon records and runs it where both role Apps are installed.
+Both role Apps are public GitHub Apps, so any GitHub account can install them, and a daemon that mints with its own App key counts every installation and keeps no list of owners.
+An account that installs the implement App gets a directory with that App's write token in the gh bundle of every implementer and merger, from the next bundle the daemon builds, and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
+The account's name joins the owners that each later launch of that App's roles is told in its `Legion addressing` line.
+Under the tmux runtime a running pane holds the new directory within a minute, at the daemon's next refresh.
+Under `runtime: kubernetes` the daemon opens one update round over each live issue pod once both role Apps are installed on the account, since an issue pod projects only the directories that both Apps' bundles hold.
+The controller's pod runs the review App alone and no round covers it: after the review App's install it is replaced at its next launch.
+An uninstall opens no round and replaces no pod: the next bundle holds no directory for the account, a pane loses its directory at the next refresh, and a running pod keeps one that the daemon refreshes no more.
+The one exception is the account that holds the role's own issue repository: that directory cannot be left out, and its token is that owner's cached lease, which stays in use until its expiry is no more than `refreshWindow` (20 minutes, `internal/appauth`) away.
+Until then every bundle built for that role succeeds and the refresh keeps writing all of its directories, that one holding a token GitHub would no longer mint.
+The first build that mints that owner for real fails, naming the owner; from then every bundle built for that role fails, no refresh writes any of its directories, and the pane or pod keeps its last tokens until they expire.
+The controller's default owner is refused at once instead, because `ControllerCredential` reads the installations before it mints anything.
+A daemon that takes its tokens from the secrets broker through `token_command` is bounded by the broker, which releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing there.
+`projects.<KEY>.commit_issue_trailer_repos` is the one key of `legion.yaml` that names repositories: the ones whose commits carry their issue key, as a `Dispatch: <KEY>` trailer the pane's jj appends.
+A pane stamps the commit when its launch's repository is one of those names, and boot checks each name against the mapping alone, which catches a typo.
+The daemon reads the mapping at boot and on Dispatch's `settings.repo_project.updated`, and reads each repository's installation of both GitHub Apps.
+`legion state --json` reports each repository with each App's installation, and lists under `repositories.refused` one a role App is not installed on.
+A repository whose installation read GitHub does not answer (any failure but a 404) is refused for now the same way and read again, 30 s doubling to 10 min, until GitHub answers;
+one already read as installed stays as it was read.
 A repository whose default-branch read GitHub refuses for its rate limit (a 429, or a 403 whose headers or body name the limit) never stops the boot:
 one the daemon holds a default branch for, from its last read or a record of an issue on it, is served on that branch and read again once the limit resets (a record that names the repository by the other name of a pair in `repository_renames`, below, holds none for it);
 one it holds none for is waited out for as long as GitHub asks (the `Retry-After` it names, else until the reset when no call is left, at most an hour, else a minute), with one log line that names the repository, the limit's headers and the time it waits until, and is then read once more, and left out for now and read again as above if GitHub still does not answer.
@@ -776,7 +792,9 @@ Each item below names a task and where its code is, then notes on it.
   Those blocks name Go test files one by one, so a change that adds, deletes or renames a `_test.go` file anywhere a Go job reads runs that command too and commits what it writes, whatever else the change touches:
   a pull request that adds one and leaves the blocks alone is refused by `ci-filters`, naming the file and each filter whose block lacks it (run 42532845737 is such a refusal, of three filters over one new migration test).
   A pull request is judged on the merge of its head and the base, so another pull request's new test file reddens this check on a head that never changed, and the cure is the same command after a forward merge, in the same commit that resolves it.
-  `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split
+  `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split.
+  That page says each Go cache family is keyed on the Go version alone and never on go.sum; `go-envoy-infra` is the exception, keyed on the hash of its module files too, with `ci-caches.yaml`'s `envoy-infra-superseded` job deleting the entry each fill replaces, for the reason `ci-caches.yaml`'s `envoy-infra` job gives;
+  the page keeps its text, because no role writes under `docs/solutions/`.
 
 - Prove each Go test runs once per CI run — `.github/scripts/go-test-step-expansion.py`
 
@@ -947,7 +965,7 @@ A wait on a blocker or on its children is the exception: the issue gives its slo
 Past its review an issue holds no slot, so a wait there has none to give back.
 The admission pass that sees one of those five cases deletes the slot row.
 `admission_cap` keeps its name and counts these issues, four by default, so a cap of N issues holds fewer issues in progress than a cap of N trees did.
-An issue that holds a row starts its next phase whatever the cap says, and an issue that holds none — a child its architect has just released among them — waits in the line while the project stands at its cap.
+An issue that holds a row starts its next phase whatever the cap says, and an issue that holds none — a child an architect has just released among them — waits in the line while the project stands at its cap.
 A slot change stops no process, claim, session or pod:
 every worker of a waiting issue stays live in the issue's pod and answers questions until the issue closes.
 A transition applies at once — the phase, the Dispatch status, the role's phase entry raised by one with that entry's work written beside it, and the notices — and only the outbox row that delivers the worker's start waits for a slot;
@@ -960,7 +978,7 @@ A tree is live while its lifecycle is open and it does not linger, or while its 
 `legion state` counts the slot holders against the cap and prints the live trees;
 its JSON lists the slot holders under `admission.active`, which holds an issue at work, one `held` and one waiting on a person too, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.
 
-**Children first:** an issue's first phase does not start while Dispatch shows an open child under it, which a child the architect has filed and not released yet is, and the tree's architect is told once per issue and run of its tree with a `children-first` notice naming the parent and each open child with its Dispatch status.
+**Children first:** an issue's first phase does not start while Dispatch shows an open child under it, which a child the architect has filed and not released yet is, and the architect that owns the parent is told once per issue and run of its tree with a `children-first` notice naming the parent and each open child with its Dispatch status.
 So the architect files every child before it requests approval of the spec, and before it registers the gate under `gates.design: off`, since the gate's opening starts a parent that waits on no other issue, neither an open child nor an unfinished `blocked_by` link.
 `sign_off` and `close_root` are refused while an issue beneath is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one), and `release_children` and `rerun_child` refuse a child whose ancestor is in `retro` or `merging` (`CHILD_UNDER_ACCEPTED_PARENT`, naming the ancestor);
 a person's own move of such a child to `todo` is recorded and held at `admitted` until that ancestor closes, with a `child-status` notice that says so.
@@ -969,19 +987,21 @@ When the root that held it closes, the tree's linger hands that child to Legion 
 A parent with children puts the work into them, and its own pull request joins and proves their merged work.
 
 **Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`) once GitHub reports the approved head one it would merge or the pull request has merged at that head, and there no worker runs:
-the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with the results recorded against it (`dispatch results --issue <issue>`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
+the architect that owns the issue reads the tester's handoff, each `check` block of the issue's Verification document with the results recorded against it (`dispatch results --issue <issue>`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
 refused while an issue beneath the one being accepted is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there moves nothing, and is the architect's own read before it accepts.
-The architect's `catch-up` at each launch names, in its `reason`, every issue of the tree in `accepting`, since the reviewer's notice that moved it there is dropped while the architect's claim has failed.
+The architect's `catch-up` at each launch names, in its `reason`, every issue in `accepting` whose acceptance is that architect's, since the reviewer's notice that moved it there may never have reached it:
+while a root's architect's claim has failed, that notice ends undelivered, and while a child's own architect does not hold its role, it goes to the architect above.
 
 **Retro:** runs after the architect's acceptance and before the merger merges the head it reads; it commits nothing and records what the work taught as a `dispatch comment` on the issue.
 
 **The merge closes the issue:** the daemon reads the merged pull request and writes `done`.
-A child's close tells its architect `child-closed`; where the project's `production_check` names the role that works the check it retires five of its six claims and hands that role the production check's first look in its live session, and where the setting is `off` it retires all six and releases the pod;
+A child's close tells the architect above it `child-closed`; where the project's `production_check` names the role that works the check it retires five of its six claims and hands that role the production check's first look in its live session, and where the setting is `off` it retires all six and releases the pod;
 a root's close lingers the tree, and every slot a member of it still holds is freed.
 A root whose pull request merges while any other issue of its tree is still in the workflow records the merge and stays in `merging` — no suspension, no linger, and no slot, since `merging` stands past its review and holds none, so no blocker has a slot to take back — and its architect gets one `pr-merged` notice naming the pull request and every issue the close is waiting for
 — and closes that way once the last open member of the tree is done or parked.
+A child whose pull request merges while an issue beneath it is still in the workflow waits in `merging` the same way, and its own architect gets the `pr-merged` notice while it holds its role.
 A person's own close of a root from the Dispatch dashboard lingers the tree at once, children and all.
 The architect does nothing after the merge.
 
@@ -1030,19 +1050,19 @@ Only when no tree owns that code does it file a Legion root, with the label and 
 a clear defect is fixed, not asked about).
 A finding that needs a person's authority, taste or risk appetite is a Dispatch ask, and a person decides whether it needs an issue (`skills/legion-worker/references/findings.md`).
 A root in `todo` without the label is never admitted, and a root in `triage` without it never wakes the controller.
-A child needs none: it runs under its tree's architect once its root is admitted, and its architect's `release_children` records it in the tree even when Dispatch already showed it `todo`.
+A child needs none: it runs in its tree once its root is admitted, under its own architect once its first phase starts, and an architect's `release_children` records it in the tree even when Dispatch already showed it `todo`.
 A `todo` child of a live tree that no event of it ever recorded
 — the event never reached the daemon, because a durable consumer created fresh takes only what is published after it or because the notification stream drops a message 72 hours old whether or not anyone read it, or it reached the daemon while the child's parent had no record or its tree was not live
 — is recorded into the tree at the daemon's next boot, from the parent Dispatch's listing shows then, at any depth, as its own event would have, labelled or not.
 No later event need bring such a child in: Dispatch already shows it `todo`, so nothing writes that status again.
 A child whose tree is not live is an orphan, admitted as a root of its own, so it needs the label as any root does.
 A `todo` root that never ran as a tree of its own (no slot reached it and it carries no run of its own, `record.Issue.TakenBack` included) and never left another tree joins the live tree its recorded parent is in, a waiting root's included: a person made it a child of that tree.
-It gets no architect and runs there as a `todo` child does: it waits in the line for a slot of its own, is held like any child while it waits on an unfinished Dispatch issue, and the tree's architect gets a `child-status` notice.
+It runs there as a `todo` child does, its own architect starting with its first phase: it waits in the line for a slot of its own, is held like any child while it waits on an unfinished Dispatch issue, and the architect that owns its parent gets a `child-status` notice.
 A root that left another tree, handed over by its finished tree or admitted as an orphan, carried or not, stays its own tree (`record.Issue.HandedOverFrom`):
 admitting its old root again never takes it back, no other tree adopts it, and no live tree on its Dispatch chain holds it; it queues for a slot of its own.
 `release_children` adopts a joinable child the same way before it answers `released`, naming it under `held` when it waits on an unfinished issue, and refuses one it cannot, writing nothing:
 `CHILD_NOT_ADOPTABLE` for a root that ran as a tree of its own, carries a run of its own, or left another tree as a root of its own, `CHILD_IN_OTHER_TREE` for a child recorded in another tree.
-A labelled `todo` issue whose parent is not recorded, or is recorded as a root of its own, and whose Dispatch chain reaches a live tree (a child that tree's architect has not released, or a root parked under it) is held under that unreleased child, the ancestry hold:
+A labelled `todo` issue whose parent is not recorded, or is recorded as a root of its own, and whose Dispatch chain reaches a live tree (a child that an architect of that tree has not released, or a root parked under it) is held under that unreleased child, the ancestry hold:
 out of `admission.waiting`, and not in `admission.blocked`, which names blocked-by links and children-first waits, neither of which is what holds it.
 It waits for no slot until that release, or its parent's, brings it into the tree, and a `todo` child of it waits with it and moves with it;
 it queues as a root of its own once no live tree is left on its chain:
@@ -1078,7 +1098,7 @@ A blocked root keeps its place in the waiting line and takes no slot, so it hide
 — admission passes over it before any tree of its own is opened and admits the next unblocked root in rank order, then admits it at its own rank position once the daemon sees its last blocker closed;
 it stays the live tree of its children, which are no orphans.
 A child is the same: `release_children` accepts the whole request whatever the links say and answers which children it released, which it started and which it held, each held one with the issues it waits on.
-A held child is recorded at the `admitted` phase, the opening of the tree's design gate does not start it, and the daemon starts its first phase itself at its own slot once it sees the last blocker closed, whichever door the child came through (a release, a person's move to `todo`, an architect's `rerun_child`), and tells the tree's architect with the existing `child-status` notice, whose reason names the child, its root and the issues it waited on, now done.
+A held child is recorded at the `admitted` phase, the opening of the tree's design gate does not start it, and the daemon starts its first phase itself at its own slot once it sees the last blocker closed, whichever door the child came through (a release, a person's move to `todo`, an architect's `rerun_child`), and tells the architect above the child with the existing `child-status` notice, whose reason names the child, its root and the issues it waited on, now done.
 An issue the daemon has already started holds no admission slot while it waits on another issue before its work is past its review: the daemon takes its slot back on the pass that reads the wait, and stands it in the waiting line, among the issues whose work came back, oldest first.
 An issue past its review holds no slot whatever it waits on, so the wait takes nothing from it and it never stands in the line for one.
 Once the daemon has seen the wait end, the issue takes the next free slot by itself, ahead of every issue that has not started; under a full cap it waits for a free slot.
@@ -1257,7 +1277,7 @@ The merger's completion records its phase row and moves nothing; what closes the
 The first boot of this release queues, once, a start for each merger that the `awaiting_merge` cutover left stopped, whose pod the idle release of a build before `legion-v20.5.0` took while its issue waited in `awaiting_merge`.
 That merger starts when its tree's design gate allows it, since `merging` holds no admission slot.
 A head that starts conflicting with its base (GitHub computes no merge ref for such a head and runs no checks on it at all) sends the issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging` alike, and its architect is told with a `checks-red` notice.
-A red check sends nothing back from anywhere: the daemon names every check GitHub reported, with the conclusion GitHub gave it, in one message to the tree's architect, the worker of the issue's current phase and the implementer, and judges none of them.
+A red check sends nothing back from anywhere: the daemon names every check GitHub reported, with the conclusion GitHub gave it, in one message to the architect that owns the issue, the worker of the issue's current phase and the implementer, and judges none of them.
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.
 No lifecycle labels exist; GitHub issues are never read or written by Legion.
 

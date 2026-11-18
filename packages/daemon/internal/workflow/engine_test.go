@@ -78,9 +78,10 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 		t.Fatalf("gate = latest %d approved %v, want version 4 open", latest, approved)
 	}
 
-	// Every row the registration left, with no start passed over: in this package every start
-	// carries a task — the architect's (awaiting_reconcile.go), the wake's (wake.go) and every
-	// phase start through StartOrOwe — and the task-less starts admission brings back beside a
+	// Every row the registration left, with no start passed over. In this package a phase worker's
+	// start carries its task (every phase start through StartOrOwe), as do the architect's
+	// (awaiting_reconcile.go) and the wake's (wake.go); a child's own architect's plain start carries
+	// none (gateOpened, reviveArchitect), and the task-less starts admission brings back beside a
 	// phase worker are written in internal/admit, never here.
 	rows, err := pool.Query(ctx, `select kind, payload from outbox order by id`)
 	if err != nil {
@@ -108,9 +109,9 @@ func TestGateRegistrationWithDesignGateOffStartsPlanningAndSeedsApprovalRead(t *
 }
 
 // A child entering an open gate is recorded by its own fact and starts planning when the waiting
-// line reaches it, its planner's start queued behind the row creating the child's branch, which
-// the start waits for, and the in_progress of the phase it enters written over the todo Dispatch
-// shows.
+// line reaches it, its own architect's start and then its planner's queued behind the row
+// creating the child's branch, which each start waits for, and the in_progress of the phase it
+// enters written over the todo Dispatch shows.
 func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
@@ -133,9 +134,10 @@ func TestRegisteredOpenGateRecordsChildAndStartsPlanningAtItsSlot(t *testing.T) 
 	if tree != "LEGION-208" || gotPhase != string(phase.Planning) {
 		t.Fatalf("child tree/phase = %q/%q, want LEGION-208/planning", tree, gotPhase)
 	}
-	// The second notice is the architect's: every child the line starts tells it so
-	// (ChildStartedNotice).
-	assertOutboxKinds(t, pool, []string{"issue_branch", "dispatch_status", "supervise", "notice", "notice"})
+	// The first supervise row is the child's own architect's start, before its planner's
+	// (Engine.gateOpened). The second notice is the child-status that every child the line starts
+	// tells the architect above it (ChildStartedNotice).
+	assertOutboxKinds(t, pool, []string{"issue_branch", "supervise", "dispatch_status", "supervise", "notice", "notice"})
 	var branchIssue string
 	var generation int
 	if err := pool.QueryRow(ctx, "select issue, (payload->>'generation')::int from outbox where kind = 'issue_branch'").Scan(&branchIssue, &generation); err != nil {
@@ -521,8 +523,8 @@ func TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace(t *testin
 }
 
 // superviseRequests counts the enqueued supervise requests of one operation by issue/role. A
-// phase worker's start is one row, which carries the worker's task (StartOrOwe), and every start
-// this package writes carries one.
+// phase worker's start is one row, which carries the worker's task (StartOrOwe); a child's own
+// architect's plain start (childArchitectStart) carries none.
 func superviseRequests(t *testing.T, pool *pgxpool.Pool, op string) map[string]int {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select issue, payload->>'role' from outbox
@@ -574,7 +576,7 @@ func assertOutboxCount(t *testing.T, pool *pgxpool.Pool, kind string, want int) 
 // Every forward row short of the close applies through intake with its status, start and notice,
 // and none suspends the worker whose phase it ends: a role stays live from its first assignment
 // until its issue closes. (The merge's row is the close itself, which suspends the tree:
-// TestTheMergeLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
+// TestTheCloseLingersOnceAndExpiryStopsTreeAndRemovesEveryWorkspace.)
 func TestRemainingForwardRowsApplyThroughIntake(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -692,7 +694,8 @@ func assertStartTasksNamePhase(t *testing.T, pool *pgxpool.Pool, want phase.Phas
 // assignment ends with the move, and the start of the phase it moved to delivers the next one.
 // Every move a backward row serves applies, and counts the implementer one pass, as every move
 // back to an earlier phase does; the review rounds stand, since no review requested changes. A
-// move onto accepting starts nobody: the tree's architect, whose phase it is, is already live.
+// move onto accepting starts no worker: the architect that owns the issue, whose phase it is, is
+// already live.
 func TestEveryBackwardEdgeAppliesThroughIntake(t *testing.T) {
 	for _, from := range []phase.Phase{phase.Implementing, phase.Testing, phase.Reviewing, phase.Accepting, phase.Retro, phase.Merging} {
 		for _, to := range requiredBackwardTargets(from) {

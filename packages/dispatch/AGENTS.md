@@ -210,7 +210,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
 - Where a write's refusal shows: at the control itself (`inline`, the surface showing it and the store letting the refused write go) when the reader is in front of what they wrote - every composer, an ask's answer, clarification and reply, uploads, a new issue, project, document or document version, a document rebuild, the architecture-source save, delivery settings, repository mappings and their removal, the default-assignee pick, credential decisions and the machine-login lookup, grant and machine-login revokes (`RevocableList`), session groups, comment actions, snoozes, board moves, every issue-header field (`useIssueFieldWrite`, `useIssueComponents`), claim release and unsubscribes, and the live view's model and thinking switch; and in the shell's indicator, as a control that rolls back, for every other write, pins among them. Read marks (`useSendMarkOnce`, `useMarkThreadRead`, `features/agents/unread.ts`) are quiet writes: tried and kept like any write, never shown.
 - `web/src/features/activity/` is the Activity tab (`/issues/<key>/activity`, reference `dispatch://KEY/activity`, chord `t v`), the issue's whole event history: every event one line, newest first, in `ol[aria-label="Issue activity"]`, broken by day and by the reader's unread watermark (`New since you last read`), with `Load older` beneath it paging `GET /issues/{key}/events` 200 at a time and each line's own `Pin`. That list is wrapped in a `ViewportAnchor` over `data-event-seq`: it reads `["events", <key>]`, the query the stream prepends each published event to (`prependEventToLog`), and renders newest first, so without it every arrival would push a reader down in the history by one row. `activity-model.ts` holds `activityDescription` - the one place an event becomes words, read here and by the margin's `EventBody` fallback - and `buildActivityItems`, which reads the lines in sequence order so `issue.updated` can say what status it reopened from. `ActivityLine.tsx` renders a description's artifact name as a link to that artifact. The tab writes no read mark (the Conversation is `last_read_seq`'s one writer) and offers no composer and no filters: this is the record, not a place to write. `dispatch://KEY/log` and `/issues/<key>/conversation` still open the Conversation, which is why `buildDispatchReference` keeps the `log` spelling for it.
 - `web/src/features/issue/pin-write.ts` is the one pin write both the Conversation and the Activity tab draw their `Pin` through (`writePin`): applied to `["user-state"]` at once, then one write of the store per pin, ordered on its issue (`pin:<KEY>`), shown in the shell's indicator as `Pin on <KEY>` / `Unpin on <KEY>` and kept across a reload. Each attempt writes the issue's state as the last pin's answer left it, or read afresh, under the next sequence; Dispatch answers a write another tab got in first with `STATE_STALE` and its current row, which the pin is put on once more. Once the issue's last pin lands, the state Dispatch answered replaces what the page showed; a refused or discarded one has the page read its state again. Pin buttons are never disabled.
-- `features/issue/IssueHeader.tsx` keeps issue identity, state controls, and metadata in one dense header, top-down: the key, title, and pin; then the Status pill select, the priority editor (`PriorityEditor`, the editor body the shared `PriorityControl` also renders, driven by the write `IssuePage` owns), the `AssigneeControl` (below), the approval area — the primary document's single approval chip once approval was requested, unless a drawn design-gate step reviews that very document, and after it one line per design-gate step on a root issue whose project gates them (`ApprovalSteps.tsx`), both described under "A document's approval" below — and Close; then the details — the whose-turn indicator, creator when recorded, labels, owner, subscribers, parent, repository, and external links — on one line (`issue-metadata-rail`) that never wraps and never widens the page: it scrolls sideways inside the card (`overflow-x: auto`, `min-w-0` up the flex ancestors), wearing `scrollFadeTrailing` - a 32 px mask, not a colour - while it has somewhere left to scroll, since at a phone width the cut lands inside a control (the Labels button alone is wider than the rail) and looked like clipped text. The repository is `RepoControl`: `Repository:` and the repository the issue resolves to as a badge, muted when inherited and `No repository` when none resolves, with a native `<select>` laid over it in `AssigneeControl`'s way, labelled `Repository of <KEY>` (`Inherit` first, then the repositories mapped to the issue's project), writing the issue's own `repo` through `useIssueRepo`. The badge is hidden from assistive technology, so the select's description (`aria-describedby`, an `sr-only` span) says what it shows: the repository, `, inherited or the project's default` after it when it is not the issue's own, or `No repository`; with Inherit as the select's value, that is how a screen reader hears the target. An issue that resolves to a repository reads the mappings on first reach; one that resolves to none reads them at once and shows nothing until they answer, then shows the item only when its project maps a repository, so a project with no mapping (nothing to pick) adds nothing to the rail. A failed read is never taken for an empty one: it shows `Repository:` with the failure and a Retry (beside the picker when a repository resolves). Every `settings.repo_project.updated` event refreshes the loaded issue details (`api/event-refresh.ts`), so an open issue follows a new, removed or moved default. It sits in the rail rather than the state row because a repository name can be long and the state row keeps every control on one row at 390 px, and its control is 28 px from `md` like the rail's others. A rail scrolled to its end drops the fade, which would otherwise hide the last item; the header measures `scrollWidth - clientWidth - scrollLeft` on scroll and through a `ResizeObserver` over the rail and its children, so labels and a GitHub title arriving late re-arm it. Below `2xl` the title always has its own row (`basis-full`) and the state controls and the details line share the row beneath it (below `md` the state row is full-width and the details line follows on its own); from `2xl` the title slot is content-sized (`2xl:basis-auto`, growing into the free space) so the state controls, and after them the details line, join the title's row when they fit beside the whole title. The slot has exactly one flex-basis whether it shows the heading or the title editor: a basis that changed on edit would move every other control on the blur a mousedown causes, and the browser would then deliver the click to a different element, swallowing the first click after a title edit. Editing the owner opens its form under the rows. The title wraps across as many lines as it needs rather than clamping, so a long title reads whole instead of cut off mid-word (LEGION-559); desktop state controls are compact, and phone controls remain touch-sized. `GitHubLink.tsx` shows a GitHub issue or pull request as `#N` plus its truncated title (the repository while the title is unknown, including when this sign-in has no GitHub App credentials), never the raw address. Its `Subscribers: N` control opens `features/issue/SubscribedAgents.tsx`, whose list shows the persisted subscriptions, each session an `AgentName` (its running state from the agent registry; "How an agent is shown", below), and offers a human `Unsubscribe` action that notifies the removed session. The creator is an `AgentName` too, named by its current registry title first like every agent; historical issues with no creator render no creator entry.
+- `features/issue/IssueHeader.tsx` keeps issue identity, state controls, and metadata in one dense header, top-down: the key, title, and pin; then the Status pill select, the priority editor (`PriorityEditor`, the editor body the shared `PriorityControl` also renders, driven by the write `IssuePage` owns), the `AssigneeControl` (below), the approval area — the primary document's single approval chip once approval was requested, unless a drawn design-gate step reviews that very document, and after it one line per design-gate step on a root issue whose project gates them (`ApprovalSteps.tsx`), both described under "A document's approval" below — and Close; then the details — the whose-turn indicator, creator when recorded, labels, owner, subscribers, parent, repository, and external links — on one line (`issue-metadata-rail`) that never wraps and never widens the page: it scrolls sideways inside the card (`overflow-x: auto`, `min-w-0` up the flex ancestors), wearing `scrollFadeTrailing` - a 32 px mask, not a colour - while it has somewhere left to scroll, since at a phone width the cut lands inside a control (the Labels button alone is wider than the rail) and looked like clipped text. The repository is `RepoControl`: `Repository:` and one combobox of about 200 px, labelled `Repository of <KEY>`, holding the issue's own repository, with a `<datalist>` of the repositories Dispatch maps to this issue's project — suggestions rather than the set of values, since any `owner/name` may be typed, one this project maps, one another project maps, or one no project maps, which is what the server takes, and that is why it is a box with a list rather than a `<select>`, which cannot hold a value its options lack. The box holds the issue's own repository and nothing else, so the repository it resolves to - its nearest ancestor's, else the project's default - is its placeholder, which is what an empty box stands for; a clear control inside the box, shown only while the issue has a repository of its own, puts it back to inheriting, as emptying the box does. What is typed is written through `useIssueRepo` when the box is left or Enter is pressed, never per keystroke, and Escape restores what the issue holds. A value that is not `owner/name` (`ownerRepoPattern`, the `pattern` the Settings repository fields carry) is refused at the box, with what was typed still in it and nothing written, so a typo shows there rather than as the server's 400 a round trip later; the server's own refusal, `INVALID_ISSUE`, shows beside the box for anything that reaches it, and the optimistic write and its rollback are `useIssueFieldWrite`'s as ever. The box's description (`aria-describedby`, an `sr-only` span inside a `relative` wrapper, since an absolutely positioned span with no positioned ancestor is laid out against the page and makes it as wide as its own text at a phone width) says in words what the placeholder shows: the repository, `, inherited or the project's default` after it when it is not the issue's own, or `No repository`. The item renders whenever the issue can carry a repository, which is always, a project that maps none included: an issue that resolves to a repository reads the mappings on first reach, and one that resolves to none reads them at once, since it is the issue most likely to be given one. A failed read costs the suggestions and nothing else: it shows `Repository:` with the failure and a Retry beside the box, which takes a typed repository as ever. Every `settings.repo_project.updated` event refreshes the loaded issue details (`api/event-refresh.ts`), so an open issue follows a new, removed or moved default. It sits in the rail rather than the state row because a repository name can be long and the state row keeps every control on one row at 390 px, and its control is 28 px from `md` like the rail's others. A rail scrolled to its end drops the fade, which would otherwise hide the last item; the header measures `scrollWidth - clientWidth - scrollLeft` on scroll and through a `ResizeObserver` over the rail and its children, so labels and a GitHub title arriving late re-arm it. Below `2xl` the title always has its own row (`basis-full`) and the state controls and the details line share the row beneath it (below `md` the state row is full-width and the details line follows on its own); from `2xl` the title slot is content-sized (`2xl:basis-auto`, growing into the free space) so the state controls, and after them the details line, join the title's row when they fit beside the whole title. The slot has exactly one flex-basis whether it shows the heading or the title editor: a basis that changed on edit would move every other control on the blur a mousedown causes, and the browser would then deliver the click to a different element, swallowing the first click after a title edit. Editing the owner opens its form under the rows. The title wraps across as many lines as it needs rather than clamping, so a long title reads whole instead of cut off mid-word (LEGION-559); desktop state controls are compact, and phone controls remain touch-sized. `GitHubLink.tsx` shows a GitHub issue or pull request as `#N` plus its truncated title (the repository while the title is unknown, including when this sign-in has no GitHub App credentials), never the raw address. Its `Subscribers: N` control opens `features/issue/SubscribedAgents.tsx`, whose list shows the persisted subscriptions, each session an `AgentName` (its running state from the agent registry; "How an agent is shown", below), and offers a human `Unsubscribe` action that notifies the removed session. The creator is an `AgentName` too, named by its current registry title first like every agent; historical issues with no creator render no creator entry.
   While the subscriber read has not answered (it failed, or Envoy's agent list is refilling) that control reads `Subscribers` with no count, since a count is a claim about who is subscribed. A routed issue whose route status is `unknown` says why in the state row: `Route reach unknown: The agent list is refilling. Try again in a moment.` (`issue-route-refilling`) for `route_status_reason: "refilling"`, `Route reach unknown` (`issue-route-unknown`) for an unreachable listener; the issue list and board render nothing for an `unknown` route, never the `no_holder` marker.
 - `features/issue/IssueLabels.tsx` edits issue-header labels through the shared `components/MultiSelect.tsx` (its `onCreate` row): it combines the issue's labels with labels used anywhere in the project, stages changes locally while the popover is open, and saves the final draft when the popover closes. Both Board and List require every selected `?label=`, compared case-insensitively.
 - `features/issue-page/` is the new issue page of dispatch://INFRA-1196, which a reader gets in place of the tabbed page only after turning on "New issue page" under "Preview" on the Settings page; `useIssuePageChoice` (`choice.ts`) keeps that choice in the browser for each login, the server holds nothing of it, and a browser row turns it on with `withIssuePage` (`e2e/issue-page-option.ts`).
@@ -1699,9 +1699,10 @@ reads included.
 `XMLHttpRequest/web` interceptors, which are the ones that reach this runtime), and both
 transports are intercepted apart, because happy-dom's `XMLHttpRequest` — which an upload goes
 through — has a `Fetch` of its own rather than `globalThis.fetch`.
-A request no handler answers is errored and recorded with its method and path, and the preload's
-`afterEach` and `afterAll` fail the test with what was recorded, so a read the page swallowed in
-a `catch`, and a write still retrying after a file's last test, are reported all the same.
+A request no handler answers is errored and recorded with its method and path; the preload's
+`afterEach(reportReachedNetwork)` fails the test with what was recorded, and its one `afterAll`, at
+the end of `setup.ts` beside the act check, fails the file, so a read the page swallowed in a
+`catch`, and a write still retrying after a file's last test, are reported all the same.
 The module answers six routes with the API's empty shape: the five the application shell reads on
 every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
 `/api/v1/credential-requests`, `/api/v1/me/agents/state`), and `/api/v1/projects`.
@@ -1727,6 +1728,55 @@ none but its own), and drops what the page kept (`resetWriteStorage`): a store o
 that made it, and a write it left out would go on retrying, once that test's spies are restored,
 into the tests and files after it, which one process running every file reports as failures of
 whichever test is running then.
+
+The preload's act rule fails a row in which React printed one of its five act messages: an update
+outside `act`, an `act(async () => ...)` left unawaited, overlapping `act` calls, a component
+suspended inside an `act` left unawaited, or an update inside `act` while the act environment is
+off.
+An update outside `act` lands at a moment the row did not choose, so what the row asserts may be
+a state the person in front of the page never sees, and a warning that only prints is read by
+nobody and survives every run.
+`installActMessageRecorder` in `web/src/__tests__/act-warnings.ts` prints every `console.error`
+call it receives as it was made and records each act message among them.
+A recorded message fails a row, reported as printed "in or before this row", or, once the last
+row's check has run, the file, reported as printed "in or after this file's last row", which Bun
+lists as `(fail) (unnamed)` under the file; the hook order this rests on, and when a message is
+charged to the next row or to the file rather than to the row that printed it, are in the comment
+above the last block of `web/src/__tests__/setup.ts`.
+`__tests__/act-warnings.test.ts` proves the rule through the `test:web` command: it runs each of
+the five `__tests__/act-rule*.fixture.tsx` files in a child of its own and reads each failure by
+its row; four draw React's act messages, and `act-rule-quiet-restore.fixture.tsx` proves that the
+preload puts back a spy of `quietConsoleError()` that a row leaves in place.
+The failure names each message's kind, its component when React names one, and up to three
+frames when the stack holds them, the test's own first (a `*.test.*` file or one under
+`web/src/__tests__/`) and then the product code under `web/src/`, as
+`<kind> in <component> at <path>:<line> (<function>)`; its test frames lead to the call to wrap,
+and an update a timer makes carries none.
+A call whose update React sees at once goes inside `act(() => { ... })`, whose callback returns
+nothing, as `indicatorWrite` in `features/writes/PendingWritesIndicator.test.tsx` does; a call
+whose update lands a few microtasks later, in a promise it returns or one it starts, goes inside
+`await act(async () => { ... })`, as `refetchAgents` in `features/agents/AgentsPage.test.tsx` and
+`sync()` in `__tests__/proof-document.tsx` do; and never an unawaited `act(() => promiseCall())`,
+which React takes for an async `act` that nobody awaits.
+Under a held clock (`jest.useFakeTimers()`) the answer to a request a press sends is held on a
+`Promise.withResolvers()` and given inside `await act(async () => { ... })` once the press is out,
+as `mintLostWith` in `features/settings/AgentTokensSection.test.tsx` does: user-event runs each
+press in Testing Library's `asyncWrapper` (`@testing-library/react` 16.3.3, `dist/pure.js`), which
+ends by waiting for a zero-delay timer and, on a held clock, fires that timer at once with
+`jest.advanceTimersByTime(0)`, so an answer already given when the press lands updates the page
+after that wait, outside `act`.
+Silencing is not a fix: a row whose code logs on purpose keeps `console.error` quiet only through
+`quietConsoleError()` in `__tests__/act-warnings.ts`, which drops the row's output until the preload
+puts `console.error` back after the row, and still records each act message, so the rule still
+fails the row; after a row in which an `afterEach` before the preload's restore throws (the row's
+own, or the preload's `reportReachedNetwork`), `console.error` comes back only when the next row
+starts, and when that row is a file's last, it stays quiet through that file's `afterAll`, yet the
+act messages are still recorded, so the file still fails; any other replacement of
+`console.error`, or a spy on it with a `mockImplementation`, is not allowed, because it drops the
+message before the rule reads it.
+Setting `IS_REACT_ACT_ENVIRONMENT` or calling `setReactActEnvironment` is not a fix either, and
+neither is a `user-event` call inside `act`: React then prints "The current testing environment
+is not configured to support act(...)" and the row fails on that.
 
 An interaction is performed with `@testing-library/user-event`, never dispatched with
 `fireEvent`: a `user.click` focuses what it clicks, leaves the pointer over it and refuses a
@@ -2266,6 +2316,90 @@ No test file under `e2e/__tests__/` writes
 `e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
 controls.
 
+`e2e/zero-wait-probes.ts`, which `e2e/__tests__/zero-wait-probes.test.ts` runs
+over the suite, refuses a zero-wait probe whose answer decides a path, unless a
+reason stands directly above it.
+A probe is a `Locator` read whose answer is the page's state at one instant,
+waiting for nothing or at most for an element to attach: `isVisible`, `count`,
+`all`, `getAttribute`, `evaluate`, `evaluateAll`, `boundingBox` and the rest the
+guard's header lists by that rule, or a call of a wrapper that returns one.
+A probe is read by its name, so `page.evaluate(...)` is one too.
+A call on the plain identifier `Promise` is none: `Promise.all(...)` waits for
+the promises it is handed and reads no page.
+Its answer decides a path where it stands in a place TypeScript's grammar lets a
+value decide what runs next, and the guard's list of those places is the
+grammar's, enumerated by `SyntaxKind`, not the forms found so far: the condition
+of an `if` (one whose only branch throws among them), a `?:`, a `while`, a `do`
+or a `for`; a `switch`'s discriminant and each `case`; the iterable of a
+`for...of` or a `for...in` (`for (const row of await rows.all())` runs no turn
+on a page that has not drawn the rows yet, so the assertions inside it never
+run); the left operand of an `&&`, `||` or `??` whose right operand runs code,
+whatever its value goes on to (`(await menu.isVisible()) && (await menu.click())`);
+the target of an `&&=`, `||=` or `??=`; what a `?.` reads where the rest of the
+chain runs code; the source of a destructuring whose default runs code; and the
+first argument of `test.skip`, `test.fixme`, `test.slow` or `test.fail`.
+The guard reaches that place from the probe through every parent but a list of
+stops, enumerated by `SyntaxKind`: a function or a class written in place, a
+`return`, a `yield` or a `throw`, an element of an array literal or a property
+of an object literal, a comma's left operand, a `void`, the target of a plain
+`=` (a `+=` and its kin read their target, so it carries), an initializer that
+binds a name, and a statement or a declaration.
+So `await`, parentheses, `as`, `!`, an operator, a template literal,
+`(await rows.all()).length`, a key, and a call, the answer its receiver or an
+argument alike, carry the answer on: `(await menu.inputValue()).includes("B")`
+and `Boolean(await menu.isVisible())` decide the `if` they stand in.
+It refuses as well an answer bound to a name, by a declaration, a default, an
+assignment of any operator or a destructuring, that such a place reads anywhere
+in the name's scope: the function that binds it, or for an assignment the one
+that declares the name, and every function nested in it, above the binding or
+below it, since the guard reads no order of running.
+A place reads the name where the name's value reaches it as an answer written
+there would: `if (shown)`, `if (rows.length > 0)`, `if (text.includes("B"))`,
+`if (Boolean(shown))` and `for (const row of rows.slice(1))` each read it.
+So a call whose result decides is refused in both forms, on the answer in place
+and on a name bound to it.
+What the guard does not see is one class, a decision made where it does not
+read: inside a function the answer is passed into (the callee's own body
+branching on its argument or its `this`, `expect(await rows.count()).toBe(3)`, a
+callback that `(await rows.all()).forEach(...)` runs once per element, a
+getter); after the answer is returned, yielded or thrown from a function; and
+through an object property, an array element or another alias (a store into a
+property or an element, a name copied or computed from a bound name such as
+`const ok = shown`, a name bound to the probe rather than to its answer, a
+method destructured off a locator or written in brackets, a name another file
+imports).
+A probe that is only the last operand of a statement's `&&` decides nothing.
+The reason is a comment of at least eight words that ends on the line directly
+above the probe, measured as `e2e/fixed-waits.ts` measures one, and says why one
+instant's answer is safe there.
+Above a loop, the reason names the wait that settled the elements it walks, and
+that wait comes first (`await expect(rows).toHaveCount(3)` before the loop).
+A page that has not drawn its layout yet answers no to every probe, so a probe
+that stands in for a wait sends the row down the wrong path, and the row fails
+later, at a line that has nothing to do with the branch.
+A branch on what the page shows takes the shape of `settledState` of
+`e2e/settled.ts`: it reads the named states inside one `expect.poll` until one
+of them is visible, and answers the first that is.
+The guard skips a probe inside a function passed to `expect.poll`, the subject
+of `expect(...).toPass` and a page-side callback (`evaluate`, `waitForFunction`,
+`route` and the others its header lists), because each of those is read again,
+or at a moment the row did not pick; what a page-side callback runs is no probe,
+but the answer of `evaluate` and its kin is one.
+`e2e/__tests__/fixtures/zero-wait-probes.fixture.ts` holds its planted
+controls, `e2e/__tests__/fixtures/zero-wait-loops.fixture.ts`, which
+`e2e/__tests__/zero-wait-loops.test.ts` reads, its planted loops,
+`e2e/__tests__/fixtures/zero-wait-cases.fixture.ts`, which
+`e2e/__tests__/zero-wait-cases.test.ts` reads, its planted `case`, and
+`e2e/__tests__/fixtures/zero-wait-calls.fixture.ts`, which
+`e2e/__tests__/zero-wait-calls.test.ts` reads, its planted calls on an answer.
+A value read that is then checked by an `expect` that does not retry
+(`expect(await rows.count()).toBe(3)`) is the same defect: it reads one instant,
+and the check never reads again.
+No scan can tell such a read from one taken after a waiting assertion, so the
+guard does not refuse it.
+Assert the value web-first (`toHaveCount`, `toHaveText`), or read it only after
+a wait for the state it reads.
+
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
 read them from there rather than copying one: the Go reader's tests through
@@ -2587,10 +2721,11 @@ recipient order is not alphabetical, from five sessions of which one has no Disp
 one is twenty minutes stale — and `e2e/workspace.e2e.ts` asserts every surface the `person` scope opens that it fills
 (the Inbox's default list with its Later band and the document ask, which reaches its project's
 default assignee, `/agents` with both folds, the broadcast page, an issue's Conversation).
-`seedWorkspace()` expects an empty database and returns the ids it made and the Inbox rows it guarantees.
-It waits for the spec's decision block to be indexed, and that wait gives back the block id.
-`awaitSeededInbox` in `e2e/local-instance-support.ts` reads the Inbox again until those rows stand;
-both `bun run dispatch:local` and `e2e/workspace.e2e.ts` use it to assert those rows.
+`seedWorkspace({ boundMs, signal? })` expects an empty database and returns the ids it made and the pass line of its wait for the Inbox rows; an abort of `signal` (the smoke passes its Ctrl-C) stops the Inbox wait.
+It waits for the spec's decision block (`awaitDecisionBlock`), which gives back the block id, and then for the unfiltered Inbox to list exactly the rows it declares (`awaitSeededInbox`), both at the bound its caller passes.
+A Playwright row passes `expectTimeout` of `e2e/expect-timeout.ts`, so the seed gives up at the bound the row's own assertions use, before the row's clock ends the row and hides the wait's message.
+`bun run dispatch:local`, the visual review's host seed (`e2e/visual-seed.ts`) and the docs' media harness (`docs/site/media/harness.ts`) run outside Playwright and pass bounds of their own.
+Each wait of `e2e/local-instance-support.ts` takes its bound from its caller and, when it gives up, names what it waited for and the last value it read.
 
 Every real-stack spec takes its `test` from `e2e/test.ts`: it is
 Playwright's own `test` with an automatic fixture that empties the database before each row

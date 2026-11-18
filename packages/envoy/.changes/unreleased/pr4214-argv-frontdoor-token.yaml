@@ -1,0 +1,2 @@
+kind: Fixed
+body: 'The `gcp:Dispatch` front door''s `cert-publish` container no longer puts its ServiceAccount token, or the certificate''s and the ACME account''s private keys, in a command line every process of the pod can read: its calls to the API server read the `Authorization` header from a here document on descriptor 3, and the certificate''s merge patch goes to curl on standard input.'

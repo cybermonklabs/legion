@@ -122,16 +122,18 @@ call() { call_as bearer "$@"; }
 call_person() { call_as person "$@"; }
 
 call_as() {
-  local as=$1 method=$2 path=$3 body=${4:-} out status
+  local as=$1 method=$2 path=$3 body=${4:-} out status header=''
   local -a credential data=()
   if [ "$as" = person ]; then
     credential=(-b "$work/person-cookies" -H "Origin: $target_url")
   else
-    credential=(-H "Authorization: Bearer $agent_token")
+    # The agent's bearer reaches curl on standard input, in no command line.
+    credential=(-H @-)
+    header="Authorization: Bearer $agent_token"
   fi
   [ -z "$body" ] || data=(-H 'Content-Type: application/json' -d "$body")
   out=$(mktemp "$work/call.XXXXXX")
-  status=$(curl -sS -o "$out" -w '%{http_code}' --max-time "$call_seconds" -X "$method" \
+  status=$(printf '%s' "$header" | curl -sS -o "$out" -w '%{http_code}' --max-time "$call_seconds" -X "$method" \
     "${credential[@]}" "${data[@]}" "$target_url$path") || status=000
   case "$status" in
     2??)
