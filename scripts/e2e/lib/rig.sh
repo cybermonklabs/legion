@@ -185,8 +185,14 @@ port_answers() {
 # socket that listens on PORT: its inode from the LISTEN row (state 0A) of /proc/net/tcp and
 # /proc/net/tcp6, and each process with a descriptor naming socket:[<inode>]. It fails when no
 # socket listens on PORT, or more than one does.
+# The shell's glob hands the /proc/<pid>/fd entries to find on stdin (-files0-from -), never as its
+# arguments: as arguments, past ARG_MAX (about 80,000 processes), find could not start, and the
+# `|| true` this had turned that E2BIG into no holder at all. An fd directory this user may not read
+# (another user's process) or whose process ended during the walk is none of the answer; any other
+# complaint of the walk's (proc_walk_complaint) prints and fails with 2.
 listening_holders() {
-  local inodes
+  local inodes err status=0 complaint
+  local -a holders=()
   inodes=$(awk -v port=":$(printf '%04X' "$1")" \
     '$4 == "0A" && substr($2, length($2) - 4) == port { print $10 }' /proc/net/tcp /proc/net/tcp6 2>/dev/null)
   case "$inodes" in
@@ -195,8 +201,38 @@ listening_holders() {
       return 1
       ;;
   esac
-  # A process that exits during the walk leaves find an unreadable directory: its status is no answer.
-  { find /proc/[0-9]*/fd -maxdepth 1 -lname "socket:\\[$inodes\\]" 2>/dev/null || true; } | cut -d/ -f3 | sort -un
+  err=$(mktemp "${TMPDIR:-/tmp}/listening-holders.XXXXXX") || {
+    echo "listening_holders: no file to keep find's complaints in, so /proc was not read" >&2
+    return 2
+  }
+  # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
+  # `|| exit` keeps find's status and keeps a caller's ERR trap (`set -E`) from firing inside the
+  # substitution for the unreadable entries every walk meets.
+  mapfile -t holders < <(printf '%s\0' /proc/[0-9]*/fd | LC_ALL=C find -files0-from - -maxdepth 1 -lname "socket:\\[$inodes\\]" 2>"$err" || exit)
+  wait "$!" || status=$?
+  complaint=
+  [ "$status" = 0 ] || complaint=$(proc_walk_complaint "$err") || complaint=
+  rm -f -- "$err"
+  if [ -n "$complaint" ]; then
+    printf 'listening_holders: find exited %s reading /proc: %s\n' "$status" "$complaint" >&2
+    return 2
+  fi
+  [ "${#holders[@]}" = 0 ] || printf '%s\n' "${holders[@]}" | cut -d/ -f3 | sort -un
+}
+
+# proc_walk_complaint ERRFILE prints the first line of a /proc walk's stderr that is neither an
+# entry this user may not read, another user's process's, nor one whose process ended during the
+# walk, and fails when every line is one of those two: what a walk of every process meets on a
+# busy machine and no error of its own. A walk that could not start (E2BIG, a find that is not
+# there) leaves a line of the shell's, which is a complaint.
+proc_walk_complaint() {
+  local line
+  while IFS= read -r line; do
+    [[ $line =~ ^[^:]*find:\ \'/proc/[0-9]+(/[^\']*)?\':\ (Permission\ denied|No\ such\ file\ or\ directory)$ ]] && continue
+    printf '%s\n' "$line"
+    return 0
+  done <"$1"
+  return 1
 }
 
 # held_only_by PORT PID... succeeds when the processes holding the socket listening on PORT
@@ -316,12 +352,13 @@ stop_tree() {
 # the environment passed ARG_MAX (2 MiB at an 8 MiB stack, about 80,000 processes at about 25 bytes
 # an entry), and its `2>/dev/null || :` turned the E2BIG into an empty answer: a run with nothing left.
 # find exits 1 for a cwd link it cannot read, another user's process's, and for an entry whose
-# process ended during the walk, and neither is an error here. Any other complaint of find's, and a
-# walk that read no process at all, is: run_processes prints it and exits 2, so no caller reads an
-# unread /proc as a clean one. `%l` is empty for a link find could not read.
+# process ended during the walk, and neither is an error here. Any other complaint of the walk's
+# (proc_walk_complaint), and a walk that read no process at all, is: run_processes prints it and
+# exits 2, so no caller reads an unread /proc as a clean one. `%l` is empty for a link find could
+# not read.
 run_processes() {
-  local p cwd arg err line status=0 walked=
-  local -a args complaints=()
+  local p cwd arg err status=0 walked='' complaint
+  local -a args
   err=$(mktemp "${TMPDIR:-/tmp}/run-processes.XXXXXX") || {
     echo "run_processes: no file to keep find's complaints in, so /proc was not read" >&2
     return 2
@@ -340,17 +377,15 @@ run_processes() {
         *"$work"*) printf '%s\n' "${p##*/}"; break ;;
       esac
     done
+  # `|| exit`: as in listening_holders, find's status passes to the wait below, and a caller's ERR
+  # trap does not fire inside the substitution.
   done < <(printf '%s\0' /proc/[0-9]*/cwd | LC_ALL=C find -files0-from - -maxdepth 0 -printf '%h\0%l\0' 2>"$err" || exit)
   wait "$!" || status=$?
-  if [ "$status" != 0 ]; then
-    while IFS= read -r line; do
-      [[ $line =~ ^[^:]*find:\ \'/proc/[0-9]+(/[^\']*)?\':\ (Permission\ denied|No\ such\ file\ or\ directory)$ ]] ||
-        complaints+=("$line")
-    done <"$err"
-  fi
+  complaint=
+  [ "$status" = 0 ] || complaint=$(proc_walk_complaint "$err") || complaint=
   rm -f -- "$err"
-  if [ "${#complaints[@]}" -gt 0 ]; then
-    printf 'run_processes: find exited %s reading /proc: %s\n' "$status" "${complaints[0]}" >&2
+  if [ -n "$complaint" ]; then
+    printf 'run_processes: find exited %s reading /proc: %s\n' "$status" "$complaint" >&2
     return 2
   fi
   if [ -z "$walked" ]; then

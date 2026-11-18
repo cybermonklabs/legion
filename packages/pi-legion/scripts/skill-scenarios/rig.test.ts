@@ -538,6 +538,36 @@ describe("next_run", () => {
   });
 });
 
+// run_env_pids names each process whose environment carries a run under DIR, for the exit
+// handlers' stop_env_processes. It walks every process's environment, so a machine whose
+// /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its arguments:
+// past about 80,000 processes grep could not start, and the run had nothing to stop.
+describe("run_env_pids", () => {
+  const force = path.join(root, "scripts/e2e/lib/arg-max-force.sh");
+
+  // Catches: a walk that hands grep every /proc/<pid>/environ at once, which under the force
+  // (scripts/e2e/lib/arg-max-force.sh) cannot start and names nothing.
+  test("names a process of the run where a program handed every /proc/<pid>/environ would not start", () => {
+    const dir = freshDir("env-pids");
+    const scratch = freshDir("env-pids-scratch");
+    const run = Bun.spawn(["sleep", "60"], {
+      env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: path.join(dir, "run-1") },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    try {
+      const old = 'grep -lzsF -e "SKILL_SCENARIO_RUN=$2" /proc/[0-9]*/environ';
+      const forced = bash(
+        `set -euo pipefail\n. ${JSON.stringify(force)}\n${fn("run_env_pids")}\narg_max_force environ 6144 "$1" ${JSON.stringify(old)}\nrun_env_pids "$2"`,
+        [scratch, dir]
+      );
+      expect(forced).toEqual({ code: 0, stdout: `${run.pid}\n`, stderr: "" });
+    } finally {
+      run.kill("SIGKILL");
+    }
+  });
+});
+
 // cmd_batch and cmd_run read SKILL_SCENARIOS_SOURCE through source_dir before they start anything.
 describe("source_dir", () => {
   function work(files: string[]) {

@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
+const force = join(import.meta.dir, "arg-max-force.sh");
+
 // run_processes (lib/rig.sh) names the processes a run still has alive, and a teardown SIGKILLs
 // each one. It reads every /proc/<pid> on the devbox, thousands of them, so it does its reading in
 // one pass and runs nothing for each entry: a `readlink` and a `grep` for each cost a teardown, and
@@ -74,10 +76,11 @@ for p in $(run_processes); do echo "$p"; done`,
   }
 });
 
-// harness runs BODY in a bash with lib/rig.sh sourced for the run directory WORK, under the
-// drivers' `set -Eeuo pipefail` and an ERR trap that prints, and answers its exit code and output.
-// WORK comes in through the environment, so the harness's own command line does not name it and
-// run_processes does not name the harness.
+// harness runs BODY in a bash with lib/rig.sh sourced for the run directory WORK, and
+// lib/arg-max-force.sh for the rows that force ARG_MAX, under the drivers' `set -Eeuo pipefail` and
+// an ERR trap that prints, and answers its exit code and output. WORK comes in through the
+// environment, so the harness's own command line does not name it and run_processes does not name
+// the harness.
 function harness(work: string, body: string) {
   const ran = Bun.spawnSync(
     [
@@ -88,6 +91,7 @@ trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
 root=${JSON.stringify(join(import.meta.dir, "..", "..", ".."))}
 work=$WORK
 . ${JSON.stringify(rig)}
+. ${JSON.stringify(force)}
 ${body}`,
     ],
     { env: { PATH: process.env.PATH ?? "", WORK: work }, stdout: "pipe", stderr: "pipe" }
@@ -135,35 +139,17 @@ test("names a process of the run that left every tree the run started, double-fo
 });
 
 test("names every process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry", () => {
-  // The force: a 512 KiB stack makes ARG_MAX 128 KiB, and a variable fills the environment to 1 KiB
-  // short of the largest that still lets a program of no arguments start, measured here. An exec
-  // handed every /proc/<pid>/cwd as an argument then fails with E2BIG, as `find /proc/[0-9]*/cwd`
-  // does unforced at about 80,000 processes, while an exec of a few arguments still starts. The
-  // walk must still name the run's process, or fail naming why; an empty answer is the defect.
+  // The force (lib/arg-max-force.sh): an exec handed every /proc/<pid>/cwd as an argument fails with E2BIG,
+  // as `find /proc/[0-9]*/cwd` does unforced at about 80,000 processes, while an exec of a few
+  // arguments still starts. The walk must still name the run's process, or fail naming why; an
+  // empty answer is the defect.
   const work = join(dir, "e2big");
   mkdirSync(work);
   const inside = Bun.spawn(["sleep", "60"], { cwd: work, stdout: "ignore", stderr: "ignore" });
   try {
     const r = harness(
       work,
-      `ulimit -s 512
-[ "$(getconf ARG_MAX)" = 131072 ] || { echo "ARG_MAX is $(getconf ARG_MAX), not 131072, under a 512 KiB stack" >&2; exit 1; }
-true_bin=$(type -P true)
-lo=0 hi=131072
-while [ $((hi - lo)) -gt 64 ]; do
-  mid=$(((lo + hi) / 2))
-  if PADDING=$(printf "%\${mid}s" "") "$true_bin" 2>/dev/null; then lo=$mid; else hi=$mid; fi
-done
-[ "$lo" -gt 4096 ] || { echo "no room for the padding: a program starts with only $lo bytes of it" >&2; exit 1; }
-export PADDING
-PADDING=$(printf "%\${lo}s" "")
-PADDING=\${PADDING:1024}
-# The control the force must pass: the form this replaced cannot start, and a program of no
-# arguments still does.
-"$true_bin" || { echo "a program of no arguments does not start under the force" >&2; exit 1; }
-if find /proc/[0-9]*/cwd -maxdepth 0 -printf '%h %l\\0' >/dev/null 2>"$work/old.err"; then echo "the old form started: the force is not in force" >&2; exit 1; fi
-{ IFS= read -r line <"$work/old.err"; } || line=
-[[ $line == *"Argument list too long"* ]] || { echo "the old form failed otherwise: $line" >&2; exit 1; }
+      `arg_max_force cwd 1024 "$work" ${JSON.stringify(String.raw`find /proc/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0'`)}
 run_processes`
     );
     expect(r.err).toBe("");
@@ -171,5 +157,26 @@ run_processes`
     expect(r.out.split("\n").filter(Boolean)).toContain(String(inside.pid));
   } finally {
     inside.kill("SIGKILL");
+  }
+});
+
+test("listening_holders names the holder of a listening socket where a program handed every /proc/<pid>/fd would not start", () => {
+  // listening_holders (lib/rig.sh) walks every process for the one holding a socket, held_only_by's
+  // reading of a port. Under the same force its walk must still name this test process, which
+  // holds the listener, or fail naming why; no holder at all is the defect.
+  const work = join(dir, "holders");
+  mkdirSync(work);
+  const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  try {
+    const r = harness(
+      work,
+      `arg_max_force fd 1024 "$work" ${JSON.stringify(String.raw`find /proc/[0-9]*/fd -maxdepth 1 -lname 'socket:\[0\]'`)}
+listening_holders ${listener.port}`
+    );
+    expect(r.err).toBe("");
+    expect(r.code).toBe(0);
+    expect(r.out.split("\n").filter(Boolean)).toContain(String(process.pid));
+  } finally {
+    listener.stop(true);
   }
 });

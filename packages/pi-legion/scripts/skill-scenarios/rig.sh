@@ -633,11 +633,26 @@ EOF
 # tree, such as a `setsid -f` child. A process that merely works under DIR, such as a developer's
 # shell watching a run, has no such variable, and another user's environment cannot be read. One
 # grep narrows the environments to those holding the text anywhere; each is then read variable by
-# variable.
+# variable. The shell's glob hands the entries to grep through xargs, which splits them into calls
+# that fit ARG_MAX: as grep's own arguments, past about 80,000 processes, grep could not start, and
+# the `|| true` this had turned that E2BIG into a run with nothing to stop. xargs exits 123 when a
+# batch's grep exits 1 or 2 (no match in it, or an environment this user may not read or whose
+# process ended), which is no error here; any other status is xargs's own, a batch it could not
+# start, and run_env_pids prints it and fails with 2.
 # shellcheck disable=SC2329 # stop_env_processes, which the exit traps run, runs it
 run_env_pids() {
-  local p var
-  for p in $(grep -lzsF -e "SKILL_SCENARIO_RUN=$1" /proc/[0-9]*/environ || true); do
+  local p var status=0
+  local -a named=()
+  mapfile -t named < <(printf '%s\0' /proc/[0-9]*/environ | xargs -0 grep -lzsF -e "SKILL_SCENARIO_RUN=$1")
+  wait "$!" || status=$?
+  case $status in
+    0 | 123) ;;
+    *)
+      echo "run_env_pids: xargs exited $status reading /proc/<pid>/environ, so the processes of the run under $1 were not read" >&2
+      return 2
+      ;;
+  esac
+  for p in ${named[@]+"${named[@]}"}; do
     {
       while IFS= read -r -d '' var; do
         case $var in "SKILL_SCENARIO_RUN=$1" | "SKILL_SCENARIO_RUN=$1"/*) echo "${p//[!0-9]/}" && break ;; esac
@@ -649,11 +664,17 @@ run_env_pids() {
 # stop_env_processes DIR stops, with stop_tree, each process run_env_pids DIR finds and everything
 # under it, a child that dropped the variable included; the parent stop_tree checks is the one the
 # process has now, read a moment after the list, from that process's own /proc entry (proc_parent,
-# scripts/e2e/lib/process-tree.sh).
+# scripts/e2e/lib/process-tree.sh). When run_env_pids could not read the machine's environments it
+# says so, and this says it stopped nothing and returns, so the exit handler that runs it goes on
+# with the rest of its cleanup.
 # shellcheck disable=SC2329 # the exit traps run it
 stop_env_processes() {
-  local pid
-  for pid in $(run_env_pids "$1"); do stop_tree "$pid" "$(proc_parent "$pid")"; done
+  local pid pids
+  pids=$(run_env_pids "$1") || {
+    echo "stop_env_processes: stopped no process of the run under $1, since none could be named" >&2
+    return 0
+  }
+  for pid in $pids; do stop_tree "$pid" "$(proc_parent "$pid")"; done
 }
 
 # stop_panes SESSION stops, with stop_tree, each pane process of SESSION on the work directory's

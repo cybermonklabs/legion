@@ -5979,6 +5979,8 @@ Each item below names a function, then what it does.
 
   prints the pid of every process holding the one socket listening on PORT:
   its inode from the `LISTEN` row of `/proc/net/tcp` and `/proc/net/tcp6`, its holders from `/proc/*/fd`.
+  The shell's glob hands every `/proc/<pid>/fd` to `find` on stdin, never as its arguments, which past ARG_MAX (about 80,000 processes) could not start, and the empty answer read as no holder.
+  An fd directory this user may not read, or whose process ended during the walk, is none of the answer; any other complaint of the walk's prints and fails with 2.
   It fails when no socket, or more than one, listens on PORT
 
 - `held_only_by PORT PID…`
@@ -6027,7 +6029,16 @@ Each item below names a function, then what it does.
 `lib/run-processes.test.ts` (`bun test scripts/e2e/lib`) runs `run_processes` over the devbox's own `/proc`, under an `ERR` trap that prints, with a `readlink` and a `grep` on `PATH` that record every call and answer nothing:
 it names the process working in the run's directory and the one naming it in its command line, leaves a process of neither kind alone, calls neither command, and trips no trap.
 It names a process double-forked into the run's directory, which no tree the run started holds.
-Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it, where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process; the form it replaced names none
+Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it ([`lib/arg-max-force.sh`](#libarg-max-forcesh)), where `find /proc/[0-9]*/cwd` fails with E2BIG, it still names the run's process, and `listening_holders` still names the test process holding a listening socket; the forms they replaced name none
+
+## lib/arg-max-force.sh
+
+`arg_max_force ENTRY ROOM SCRATCH OLD_FORM` puts a test's shell under the force where a row proves that a walk of every process hands the machine's `/proc/<pid>/ENTRY` entries to no program as its arguments.
+A 512 KiB stack makes ARG_MAX 128 KiB, and an exported `PADDING` fills the environment to ROOM bytes short of the largest that still lets a program of no arguments start, measured there and then.
+An exec handed every entry as an argument then fails with E2BIG, as one does unforced at about 80,000 processes, while an exec of a few arguments still starts.
+A machine with too few processes for every entry together to outgrow twice ROOM gets more first, sleeps it starts, records by pid and ends when the shell exits.
+The control it must pass runs there too: OLD_FORM, the command line the walk replaced, fails with E2BIG, and a program of no arguments still starts; a force that is not in force exits the shell naming why.
+`lib/run-processes.test.ts` and the skill-scenario rig's `run_env_pids` row (`packages/pi-legion/scripts/skill-scenarios/rig.test.ts`) source it
 
 ## lib/process-tree.sh
 
