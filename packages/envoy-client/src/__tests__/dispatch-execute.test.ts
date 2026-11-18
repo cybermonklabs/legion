@@ -4439,6 +4439,47 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // Each count of the answer has its own value, so a line that prints the wrong field fails.
+  test("attribution prints the six lines of the server's count route", async () => {
+    const requests: string[] = [];
+    const counts = {
+      facts_left: 1_204,
+      reads_left: 1_530,
+      facts_refused: 17,
+      reading: "3c59dc048e8850243be8079a5c74d079",
+      keys_on_another_reading: 42,
+      moves_queued: 9,
+      links_in_two_cases: 2,
+    };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      requests.push(new URL(String(url)).pathname);
+      return response(counts);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_attribution",
+      args: {},
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(requests).toEqual(["/api/v1/delivery/attribution"]);
+    expect(result.details).toEqual(counts);
+    expect(result.text.split("\n")).toEqual([
+      "Pull requests that wait for their facts from GitHub: 1,204.",
+      "Pull requests that a pass still reads from GitHub: 1,530 (17 of them refused).",
+      "Pull requests whose keys wait to be read again: 42.",
+      "Changes of attribution whose events wait: 9.",
+      "The key reading: 3c59dc048e8850243be8079a5c74d079.",
+      "Links that more than one issue holds in other letter cases: 2.",
+    ]);
+  });
+
   test("dispatch_whoami returns the session and the personal token's owner", async () => {
     const requests: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {

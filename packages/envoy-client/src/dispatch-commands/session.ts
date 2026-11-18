@@ -121,6 +121,28 @@ export async function limitsCommand(context: SessionContext): Promise<DispatchTo
   };
 }
 
+/**
+ * `dispatch attribution`: what the attribution of the stored pull requests still waits for, as
+ * the server counts it at the call (`GET /api/v1/delivery/attribution`). An operator runs it after
+ * a deploy until the first three counts are 0. It names no owner, so it runs on the session's
+ * context alone.
+ */
+export async function attributionCommand(context: SessionContext): Promise<DispatchToolResult> {
+  const counts = await context.newClient().attribution();
+  const count = (value: number) => value.toLocaleString("en-US");
+  return {
+    text: [
+      `Pull requests that wait for their facts from GitHub: ${count(counts.facts_left)}.`,
+      `Pull requests that a pass still reads from GitHub: ${count(counts.reads_left)} (${count(counts.facts_refused)} of them refused).`,
+      `Pull requests whose keys wait to be read again: ${count(counts.keys_on_another_reading)}.`,
+      `Changes of attribution whose events wait: ${count(counts.moves_queued)}.`,
+      `The key reading: ${counts.reading}.`,
+      `Links that more than one issue holds in other letter cases: ${count(counts.links_in_two_cases)}.`,
+    ].join("\n"),
+    details: { ...counts },
+  };
+}
+
 /** How much of an ask's question the Inbox summary's line carries. The event summaries' head
  *  (`textHead`) is longer: a question is one line among four counted bands here, and the whole of
  *  it is one `dispatch read` away. */

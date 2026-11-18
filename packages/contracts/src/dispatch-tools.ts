@@ -2216,6 +2216,22 @@ export const dispatchToolSpecs = [
     strict: true,
   },
   {
+    name: "dispatch_attribution",
+    example: {},
+    description:
+      "What the attribution of stored pull requests to issues still waits for, counted by this Dispatch server at the call. " +
+      "The server reads no GitHub for it and needs no delivery settings. " +
+      "It prints the pull requests that wait for their facts from GitHub: the head, branch, title, body and commit messages. " +
+      "It prints the pull requests that a reconcile pass still reads from GitHub, and how many of them GitHub refused. " +
+      "It prints the pull requests whose keys come from another key reading and wait to be read again. " +
+      "It prints the changes of attribution whose events wait. " +
+      "It names the key reading that runs now. " +
+      "It counts the links that more than one issue holds in other letter cases. " +
+      "After a deploy, run it after each reconcile pass until the counts on its first three lines are 0.",
+    arguments: () => ({}),
+    strict: true,
+  },
+  {
     name: "dispatch_handoff_write",
     example: {
       issue: "DSP-1",
