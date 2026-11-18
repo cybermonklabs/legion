@@ -1,4 +1,4 @@
--- packages/envoy/internal/broker/store/migrations/0034_credential_request_dismissals.up.sql
+-- packages/envoy/internal/broker/store/migrations/0033_credential_request_dismissals.up.sql
 -- One row for each credential-request record somebody took out of the approvers' lists after it
 -- expired (dispatch://INFRA-3921). A record expires when its deadline passes before anyone decided
 -- it, and the broker then refuses every decision of it. Before this, the list of an approver

@@ -60,7 +60,7 @@ type DismissResponse struct {
 	RecordID string `json:"record_id"`
 	// Who dismissed it: the canonical login of the person whose dismissal took it off every list,
 	// or "broker" for a record that had already left the lists, expired, when the broker began
-	// keeping dismissals (store migration 0034).
+	// keeping dismissals (store migration 0033).
 	DismissedBy string `json:"dismissed_by"`
 	// When it was dismissed.
 	DismissedAt time.Time `json:"dismissed_at"`

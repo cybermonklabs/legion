@@ -137,7 +137,7 @@ func TestPendingForApproverTerminalEventsLiteralMatchesTheList(t *testing.T) {
 // ordinary choice it might make anyway for a near-empty table: with both set, this test fails the
 // moment an index path a statement depends on stops applying — credential_requests_approver
 // (migration 0011) for the approver filter, credential_request_decision (migration 0005) for the
-// terminal-event reads, or credential_request_dismissals' primary key (migration 0034) for the
+// terminal-event reads, or credential_request_dismissals' primary key (migration 0033) for the
 // expired rows' NOT EXISTS.
 func TestPendingForApproverAvoidsSequentialScans(t *testing.T) {
 	st := storetest.Open(t)

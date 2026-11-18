@@ -1184,7 +1184,7 @@ const pendingForApproverQuery = pendingListFrom + `(
 // pendingOrExpiredForApproverQuery is PendingForApprover's statement for a caller that asks for
 // states, $3 for the pending records and $4 for the expired ones: the records of the approver
 // recordStateSQL reads 'pending' while $3 holds, and those it reads 'expired' that have no row in
-// credential_request_dismissals (migration 0034) while $4 holds. The pending rows come first and
+// credential_request_dismissals (migration 0033) while $4 holds. The pending rows come first and
 // the expired ones after them, each newest first, so a caller that cuts the list into pages from
 // the front never pushes a record a person can still decide off its first page to show records
 // nobody can.

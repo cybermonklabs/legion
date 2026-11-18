@@ -985,7 +985,7 @@ func (m *Machine) Cancel(ctx context.Context, id, enrollmentID string) error {
 const DismissedMessage = "broker: an expired credential request was dismissed"
 
 // Dismissal is the one dismissal of an expired credential-request record: the record, who
-// dismissed it (a person's canonical login, or broker for a record migration 0034 found already
+// dismissed it (a person's canonical login, or broker for a record migration 0033 found already
 // out of the lists), and when.
 type Dismissal struct {
 	RecordID    string
