@@ -12,7 +12,10 @@
  *
  * Host: the Inbox reading column's thread box (`ThreadBody`), a standing box: the thread's own
  * reply, which nothing ends, drawn afresh for each row the column moves to (`ReadingPane`), and,
- * for an Agent row, moved by a newer message of the session onto that message.
+ * for an Agent row, moved by a newer message of the session onto that message. The rows are the
+ * comment thread's box (`CommentThreadBody`) unless they name the Agent row's
+ * (`AgentThreadBody`); the issue message thread's box has a file of its own
+ * (`draft-matrix.message-box.test.tsx`).
  *
  * A host move that takes the composer off the screen is checked on return alone, where the field
  * holds the draft with its refusal or stopped note; a host move that keeps the same composer on
@@ -23,6 +26,7 @@
  * | ------------------------------------------------ | ------ | ------- | ------- |
  * | Back, then back                                  | no (1) | no (1)  | no (1)  |
  * | The column moves to another row, then back (off) | cell   | cell    | cell    |
+ * | The same, an Agent row's box (off)               | cell   | cell    | cell    |
  * | Host moves it over a refusal (elsewhere) (on)    | no (2) | cell    | cell    |
  * | Thread collapsed by the host                     | no (3) | no (3)  | no (3)  |
  * | Cancel reply                                     | no (4) | no (4)  | no (4)  |
@@ -30,6 +34,12 @@
  * | Close, then Discard draft?                       | no (5) | no (5)  | no (5)  |
  * | Agents pick                                      | no (6) | no (6)  | no (6)  |
  * | Typed while elsewhere, then unmounted            | -      | cell    | -       |
+ * | The thread's read fails or waits, then recovers  | no (7) | no (7)  | no (7)  |
+ * | The thread's replies are ordered the other way   | no (8) | no (8)  | no (8)  |
+ * | Its session leaves the live list, then returns   | no (9) | no (9)  | no (9)  |
+ * | The thread is drawn in its document, or beside   | no (10)| no (10) | no (10) |
+ * | The thread's root is no longer read              | no (11)| no (11) | no (11) |
+ * | The Inbox resized, closed or left, then back     | no (12)| no (12) | no (12) |
  *
  * (off) marks a host move that takes the box off the screen: the column draws another thread's
  * box in its place. (on) marks one that keeps the same box on screen at another address; the
@@ -44,6 +54,32 @@
  * 4. A standing box's reply is its own address, so it draws no Cancel reply (asserted absent).
  * 5. The box has no anchor, so it draws no Close (asserted absent below).
  * 6. An Agent row's box answers its thread, so it draws no issue picker (asserted absent below).
+ *
+ * The moves the composer census found that the rows above do not make:
+ * 7. `CommentThreadBody` and `AgentThreadBody` draw a loading line or an error in place of the
+ *    thread while its read is out or failed, which unmounts the box as the move to another row
+ *    does, and the box drawn when the read lands again is the one that row draws.
+ * 8. Which end of the thread the box sits at (`composerFirst`, from `useThreadOrder`) is read
+ *    when the thread is drawn and again only when who is signed in changes
+ *    (`useUserPreference`), so it never moves a box that is on screen; the shell draws no thread
+ *    before it knows who is signed in, and another person is the sign-in file's row.
+ * 9. An Agent row's box is drawn only while its session is in the live list; a session that
+ *    leaves it and comes back unmounts and draws the box again at the same thread, as the move to
+ *    another row and back does.
+ * 10. A thread in a document is drawn inside the document's page where its block is found and
+ *    beside it where the document fails or the block is gone (`ThreadPane`, `DocumentPane`,
+ *    `ProofDocument`, keyed by the document); moving between the two draws the box afresh at the
+ *    same thread, as the move to another row and back does, and a version or an admission that
+ *    hides the document's page keeps the box mounted at its thread.
+ * 11. A box answers its thread's root; a read that no longer holds the root draws no box, since
+ *    there is no message left to answer, and a read that holds it again draws the box at the same
+ *    thread, as the move to another row and back does.
+ * 12. The Inbox draws a thread's box in the reading column above the column's width and in the
+ *    row's card below it (`paneShown`), in a drawer that closing takes away (`InboxDrawer`), and
+ *    on its own page (`app.tsx`'s `/` and `/credentials/*`); a resize across that width, closing
+ *    the drawer, leaving the page, a column with no row selected or an empty list, and the
+ *    Inbox's loading line or error unmount the box as the move to another row does, and the box
+ *    drawn on return is the one that row draws, at the same thread's send name.
  */
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -368,6 +404,35 @@ for (const held of HELD) {
       expect({ back: { note: note(), text: boxField("Reply").value }, other }).toEqual({
         back: { note: held === "typed" ? "none" : held, text: BODY },
         other: true,
+      });
+    } finally {
+      column.restore();
+    }
+  });
+}
+
+const stoppedAgent = (held: Held) =>
+  held === "stopped" ? { key: boxKey("message-1"), request: agentReply } : undefined;
+
+// An Agent row's box is drawn afresh for each row too, keyed by its thread, so the column moving
+// to a comment thread and back is the same host's move: the box's draft waits under its send name,
+// and the box drawn when the column comes back shows it, and no other thread's box does.
+for (const held of HELD) {
+  test(`${HOST} · the column moves to another row, then back · an Agent row's box · ${held}`, async () => {
+    const column = await openColumn(plannerAgentRow(), stoppedAgent(held));
+    try {
+      await holdInBox(column, "Comment", held);
+      column.move(firstRow);
+      const other = (
+        await within(pane()).findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" })
+      ).value;
+      column.move(plannerAgentRow());
+      const field = await within(pane()).findByRole<HTMLTextAreaElement>("textbox", {
+        name: "Comment",
+      });
+      expect({ back: { note: note(), text: field.value }, other }).toEqual({
+        back: { note: held === "typed" ? "none" : held, text: BODY },
+        other: "",
       });
     } finally {
       column.restore();

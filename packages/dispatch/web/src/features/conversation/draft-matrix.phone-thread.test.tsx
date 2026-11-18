@@ -29,6 +29,10 @@
  * | Close, then Discard draft?               | no (3) | no (3)  | no (3)  |
  * | Agents pick                              | no (4) | no (4)  | no (4)  |
  * | Typed while elsewhere, then unmounted    | -      | no (1)  | -       |
+ * | Issue left, then back (off)              | (5)    | (5)     | (5)     |
+ * | Another tab, then back (hidden)          | (5)    | (5)     | (5)     |
+ * | Another comment's thread opened (hidden) | no (6) | no (6)  | no (6)  |
+ * | The Conversation's reads fail or wait    | no (7) | no (7)  | no (7)  |
  *
  * (off) marks a host move that takes the composer off the screen: Back hides the thread view,
  * and the docked composer it uncovers answers the issue, not the comment. (on) marks one that
@@ -43,6 +47,19 @@
  *    Back, the first row, is its one way out.
  * 3. The thread composer has no anchor, so it draws no Close (asserted absent below).
  * 4. The thread composer draws no issue picker (asserted absent below).
+ *
+ * The moves the composer census found above `ConversationTab`, and in it:
+ * 5. `draft-matrix.issue-page.test.tsx` makes these cells, with the issue page drawn around the
+ *    Conversation: another issue's address draws the page afresh (`IssueDetail` keyed by
+ *    `route.key`), and another tab hides the Conversation's panel and keeps it drawn. The
+ *    composer's `owner` and send name follow `issueKey`, which only that remount changes.
+ * 6. Another comment's thread opened with Expand thread, while the composer answers Comment A,
+ *    hides the composer (`hidden={!phoneReplyTargetsThread}`) and keeps it mounted at A's address,
+ *    so nothing it holds moves; A's Reply shows it again, as the first row's return does.
+ * 7. The Conversation draws a loading line or an error in place of the list while its reads are
+ *    out or failed (`loading`, `failed`), which unmounts the thread composer as leaving the issue
+ *    does, and the composer drawn when they land again is the one the issue-left row draws on
+ *    return.
  */
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";

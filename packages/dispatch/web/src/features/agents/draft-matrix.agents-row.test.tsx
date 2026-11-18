@@ -31,17 +31,37 @@
  * | Close, then Discard draft?                     | no (3) | no (3)  | no (3)  |
  * | Agents pick                                    | cell   | cell    | cell    |
  * | Typed while elsewhere, then unmounted          | -      | cell    | -       |
+ * | The Agents page left, then back (off)          | cell   | cell    | cell    |
+ * | The row first opened                           | no (4) | no (4)  | no (4)  |
+ * | The row folded, filtered out or scrolled past  | no (5) | no (5)  | no (5)  |
+ * | The session leaves the list, or none is listed | no (6) | no (6)  | no (6)  |
+ * | A list item drawn as a group's heading         | no (7) | no (7)  | no (7)  |
  *
- * (off) marks a host move that takes the composer off the screen: the folded row hides it. (on)
- * marks one that keeps the same composer on screen at another address. A refused or stopped
- * draft stays in its field there, with Send saying where it was written, so only the typed draft
- * needs the line.
+ * (off) marks a host move that takes the composer off the screen: the folded row hides it, and
+ * leaving the page (`app.tsx`'s `/agents` route) unmounts the page and the composer, so the way
+ * back opens the row again. (on) marks one that keeps the same composer on screen at another
+ * address. A refused or stopped draft stays in its field there, with Send saying where it was
+ * written, so only the typed draft needs the line.
  *
  * The moves this host cannot make:
  * 1. The Agents page has no thread view and no Back of its own; the row's composer stays on the
  *    page.
  * 2. Elsewhere needs a held refusal; the typed version is the unmount row.
  * 3. The row's composer has no anchor, so it draws no Close (asserted absent below).
+ *
+ * The moves the composer census found that the rows above do not make:
+ * 4. A row draws its details, and the composer in them, from the first time the reader opens it
+ *    (`opened`, from `openedRows`, which only gains rows), so that conditional starts the mount
+ *    and never ends one.
+ * 5. A row the reader has opened stays mounted, hidden, when its group is folded, the filters
+ *    leave it out, or the window scrolls past it (`keptAside`, the row's `hidden`), in the same
+ *    parent under the same key, so nothing its composer holds moves.
+ * 6. A session that leaves the live list takes its row with it, and a page with no session lists
+ *    none (`isPending`, `isError`, an empty list); the row drawn when the session is back is the
+ *    one the page-left row's return draws, at the same session's send name.
+ * 7. The windowed list draws a group's heading for an item of kind `group` and a row for one of
+ *    kind `row` (`renderItem`), and each item's kind is fixed where `items` builds it under a key
+ *    of its own (`group:<name>` or the session), so no row is ever drawn as a heading in its place.
  */
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -469,6 +489,36 @@ for (const held of HELD) {
       expect({ back: { note: note(), text: field().value }, folded }).toEqual({
         back: { note: held === "typed" ? "none" : held, text: BODY },
         folded: 0,
+      });
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+/** Goes to the Inbox by the shell's Inbox link and back to the Agents page through the
+ *  navigation drawer, as a reader on a narrow window does. */
+async function leaveTheAgentsPageAndComeBack(user: UserEvent): Promise<void> {
+  await user.click(screen.getByRole("link", { name: "Inbox" }));
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Agents" })).toBe(null));
+  await user.click(screen.getByRole("button", { name: "Open navigation" }));
+  await user.click(await screen.findByRole("link", { name: /^Agents/ }));
+}
+
+// The Agents page is the route element of `/agents` (`app.tsx`), so leaving it for another page
+// unmounts the page, its rows and the composer, and the reader's way back opens the row again:
+// what the composer held waits for the composer drawn at that address next (AGENTS.md:126-127).
+for (const held of HELD) {
+  test(`${HOST} · the Agents page left, then back · ${held}`, async () => {
+    const page = await openAgents();
+    try {
+      await holdAtSession(page, held);
+      await leaveTheAgentsPageAndComeBack(page.user);
+      await openRow(page.user);
+      expect({ note: note(), quoted: quoted(), text: field().value }).toEqual({
+        note: held === "typed" ? "none" : held,
+        quoted: "none",
+        text: BODY,
       });
     } finally {
       page.restore();

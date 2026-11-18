@@ -9,27 +9,30 @@
  * If another writer changed the comment meanwhile, the field shows the newer body, the kept edit
  * is offered beside it with words saying the comment changed since the edit was written, and
  * nothing is saved over the newer body until the reader presses. Each cell writes an edit in one
- * state, typed and never saved or refused by Dispatch, takes it off the screen with the host's
- * move, leaves the comment's body as it was or has another writer change it, comes back, and
- * asserts what the editor holds and that no save went out meanwhile. A cell that fails at the code
- * it was written against is a hole in the rule, kept red on purpose until the code is fixed.
+ * state - typed and never saved, refused by Dispatch, or stopped by the reader - takes it off the
+ * screen with the host's move, leaves the comment's body as it was or has another writer change
+ * it, comes back, and asserts what the editor holds and that no save went out meanwhile. A cell
+ * that fails at the code it was written against is a hole in the rule, kept red on purpose until
+ * the code is fixed.
  *
  * Hosts: a comment's thread card draws the editor (`ThreadCard`'s Edit, `MentionComposer`'s
  * `edit`) in the Conversation's list, in the Conversation's phone thread view, in the margin's
  * list, and in the margin's phone thread view.
  *
- * | Host · move (off)                                       | typed  | typed   | refused | refused |
- * |                                                         | same   | changed | same    | changed |
- * | ------------------------------------------------------- | ------ | ------- | ------- | ------- |
- * | Conversation card · Collapse thread, then Expand thread | cell   | cell    | cell    | cell    |
- * | Conversation phone thread · Back, then back             | cell   | cell    | cell    | cell    |
- * | margin card · another thread opened, then back          | cell   | cell    | cell    | cell    |
- * | margin phone thread · Back, then back                   | cell   | cell    | cell    | cell    |
+ * | Host · move (off)                    | typed | typed | refused | refused | stopped | stopped |
+ * |                                      | same  | chg   | same    | chg     | same    | chg     |
+ * | ------------------------------------ | ----- | ----- | ------- | ------- | ------- | ------- |
+ * | Conversation card · Collapse, Expand | cell  | cell  | cell    | cell    | cell    | cell    |
+ * | Conversation phone · Back, then back | cell  | cell  | cell    | cell    | cell    | cell    |
+ * | margin card · other thread, back     | cell  | cell  | cell    | cell    | cell    | cell    |
+ * | margin phone · Back, then back       | cell  | cell  | cell    | cell    | cell    | cell    |
  *
- * "same" is a comment whose body nobody changed while the edit was away, "changed" one another
+ * "same" is a comment whose body nobody changed while the edit was away, "chg" one another
  * writer changed. (off) marks a host move that takes the editor off the screen: Collapse thread
  * and another thread's opening close the card the editor is in, and Back takes the thread view
- * off the page. Every move of this row is one, so each cell is checked on return alone.
+ * off the page. Every move of this row is one, so each cell is checked on return alone. A stopped
+ * save is held for its comment as a refused one is (`HeldSends`): the editor opens on it when its
+ * thread does, with the stopped note in place of the refusal's.
  *
  * The second half keeps the editor on screen while another writer changes the comment under it.
  * Changed to newer text, the field shows the comment as it reads now and the edit waits beside it
@@ -38,28 +41,58 @@
  * and no line says the comment changed. Each cell then takes the editor off the screen with the
  * host's move and back, and asserts the same both times, with no save in between.
  *
- * | Host · comment changed on screen, then move (off)       | typed  | typed   | refused | refused |
- * |                                                         | newer  | own     | newer   | own     |
- * | ------------------------------------------------------- | ------ | ------- | ------- | ------- |
- * | Conversation card · Collapse thread, then Expand thread | cell   | cell    | cell    | cell    |
- * | Conversation phone thread · Back, then back             | cell   | cell    | cell    | cell    |
- * | margin card · another thread opened, then back          | cell   | cell    | cell    | cell    |
- * | margin phone thread · Back, then back                   | cell   | cell    | cell    | cell    |
+ * | Host · changed on screen, then move  | typed | typed | refused | refused | stopped | stopped |
+ * |                                      | newer | own   | newer   | own     | newer   | own     |
+ * | ------------------------------------ | ----- | ----- | ------- | ------- | ------- | ------- |
+ * | Conversation card · Collapse, Expand | cell  | cell  | cell    | cell    | cell    | cell    |
+ * | Conversation phone · Back, then back | cell  | cell  | cell    | cell    | cell    | cell    |
+ * | margin card · other thread, back     | cell  | cell  | cell    | cell    | cell    | cell    |
+ * | margin phone · Back, then back       | cell  | cell  | cell    | cell    | cell    | cell    |
  *
  * "newer" is newer text another writer gave the comment, "own" the text the reader wrote.
+ *
+ * The third part moves a thread's one editor (`editingCommentId`, one per thread) to the reader's
+ * own reply in the same thread with the reply's Edit, the card's control and so the host's move,
+ * and back with the comment's own Edit. The comment's edit is kept and comes back over the body it
+ * was written over; a refused or stopped save holds its editor open throughout; and the reply's
+ * editor opens on the reply's own body, never on the comment's edit.
+ *
+ * | Host · the reply's Edit, then the comment's Edit | typed  | refused | stopped |
+ * | ------------------------------------------------ | ------ | ------- | ------- |
+ * | Conversation card                                | cell   | cell    | cell    |
+ * | Conversation phone thread                        | cell   | cell    | cell    |
+ * | margin card                                      | cell   | cell    | cell    |
+ * | margin phone thread                              | cell   | cell    | cell    |
+ *
+ * The moves the composer census found that these rows do not make:
+ * 1. The editor's address is its comment (`edit`, under the send name `["comment-edit", id]`):
+ *    another comment's editor is another address under a name of its own, so no move of the
+ *    host's gives an editor another comment.
+ * 2. A comment that leaves its thread's list, and a thread that leaves the Conversation's or the
+ *    margin's list (its resolution, the Conversation's All, Open and Closed filter, another
+ *    document's list), unmount the editor with its row or its card, as Collapse thread and another
+ *    thread's opening do in the rows above.
+ * 3. The Conversation's and the margin's loading or error lines in place of the list, leaving the
+ *    issue or the document, a page with no margin, and the margin's Pinned tab, phone thread view
+ *    and rail (`MarginSheet` draws the list only on the Comments tab, uncovered) unmount the
+ *    editor with its card as the rows above do.
+ * 4. Which end of a thread its replies are drawn from (`useThreadOrder`) is read when the card is
+ *    drawn and again only when who is signed in changes, so it never moves an editor on screen.
  *
  * The hosts that cannot make the move: the docked composer, the phone thread composer, an Agents
  * row and an Inbox thread box are never given an `edit`, so they draw no editor to move.
  */
-import { expect, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api } from "../../api/client";
 import type { Comment } from "../../api/types";
 import { Margin } from "../margin/Margin";
@@ -73,20 +106,30 @@ import {
 } from "../margin/margin-fixture";
 import { buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { SendStoppedError } from "../writes/keyed-write";
 import { ConversationTab } from "./ConversationTab";
+import { heldSends } from "./held-sends";
+import { type SentRequest, saveCommentEdit } from "./send-request";
 
 /** Dispatch refusing the save outright, as a 400 does: no attempt follows under its key. */
 const REFUSAL = new ApiError(400, { code: "INPUT_REFUSED", error: "Dispatch refused the message" });
 
-/** What the editor says of a save Dispatch refused. */
+/** What the editor says of a save Dispatch refused, and of a save the reader stopped. */
 const REFUSED_NOTE = "Couldn't send — Dispatch refused the message";
+const STOPPED_NOTE = new SendStoppedError().message;
+
+/** The send name of a comment's editor (`ThreadCard`'s `COMMENT_EDIT_SEND_KEY`). */
+const editKey = (id: string): MutationKey => ["comment-edit", id];
 
 /** What the reader writes in the editor, and the body another writer gives the comment. */
 const BODY = "Edit the reader wrote";
 const NEWER = "The comment as another writer changed it";
 
-type Held = "typed" | "refused";
-const HELD: readonly Held[] = ["typed", "refused"];
+/** The body of the reader's own reply in the edited comment's thread. */
+const REPLY_BODY = "A reply the reader wrote";
+
+type Held = "typed" | "refused" | "stopped";
+const HELD: readonly Held[] = ["typed", "refused", "stopped"];
 
 type Base = "unchanged" | "changed";
 const BASES: readonly Base[] = ["unchanged", "changed"];
@@ -134,6 +177,41 @@ function stubEditor(): { editComment: Mock<typeof api.editComment>; restore: () 
   };
 }
 
+/** Saves `BODY` over `edited`'s body through the held-send store under its editor's name, to a
+ *  server that is down, and stops the save once it is late, as the reader's Stop trying does:
+ *  the store holds it stopped for the comment, and the editor opens on it when its thread does.
+ *  Runs on the fake clock, and gives the real one back however it ends. */
+async function stopTheEditSave(
+  queryClient: QueryClient,
+  editComment: Mock<typeof api.editComment>,
+  edited: Comment
+): Promise<void> {
+  const request: SentRequest = {
+    anchor: undefined,
+    ask: { multiple: false, options: [], urgency: "med" },
+    draft: { body: BODY, mentions: [], replacement: "" },
+    edit: { base: edited.body, carried: undefined, id: edited.id, save: saveCommentEdit },
+    kind: "comment",
+    owner: { issueKey: "CORE-1", kind: "issue" },
+    plainDelivery: "steer",
+    replyTo: null,
+    sendKey: "stopped-send",
+  };
+  editComment.mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  jest.useFakeTimers();
+  try {
+    act(() => {
+      heldSends(queryClient).send(editKey(edited.id), request);
+    });
+    await stopTheLateWrite(queryClient);
+  } finally {
+    realClock();
+  }
+  editComment.mockRejectedValue(REFUSAL);
+}
+
 const conversationComment: Comment = {
   ...commentDeliveryFields(),
   anchor: null,
@@ -152,11 +230,28 @@ const conversationComment: Comment = {
   turn: null,
 };
 
-/** The Conversation of CORE-1 over the reader's Comment A, at a phone width or above it. */
-async function openConversation(phone: boolean): Promise<Page> {
+/** The reader's own reply under Comment A, whose Edit the reply-row cells press. */
+const conversationReply: Comment = {
+  ...conversationComment,
+  body: REPLY_BODY,
+  created_at: "2026-09-20T00:05:00Z",
+  id: "comment-a-reply",
+  reply_to: conversationComment.id,
+};
+
+/** The Conversation of CORE-1 over the reader's Comment A, at a phone width or above it; with
+ *  `stopped`, an edit of Comment A whose save the reader stopped is held before it is drawn, and
+ *  with `withReply`, Comment A's thread holds the reader's reply under it. */
+async function openConversation(
+  phone: boolean,
+  stopped: boolean,
+  withReply = false
+): Promise<Page> {
   const user = userEvent.setup();
   const queryClient = readerClient();
-  const listComments = spyOn(api, "listComments").mockResolvedValue([conversationComment]);
+  const listComments = spyOn(api, "listComments").mockResolvedValue(
+    withReply ? [conversationComment, conversationReply] : [conversationComment]
+  );
   const reads = [
     listComments,
     spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
@@ -166,6 +261,7 @@ async function openConversation(phone: boolean): Promise<Page> {
     spyOn(api, "getIssueEvents").mockResolvedValue([]),
   ];
   const editor = stubEditor();
+  if (stopped) await stopTheEditSave(queryClient, editor.editComment, conversationComment);
   const restoreViewport = stubMatchMedia(phone);
   const view = render(
     <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
@@ -222,6 +318,16 @@ const threadB: Comment = {
   id: "comment-2",
 };
 
+/** The reader's own reply in thread A, whose Edit the reply-row cells press. */
+const marginReply: Comment = {
+  ...comment,
+  anchor: null,
+  body: REPLY_BODY,
+  created_at: "2026-09-09T00:05:00Z",
+  id: "comment-1-reply",
+  reply_to: comment.id,
+};
+
 /** The document the margin's threads are on, registered as the document page registers it. */
 function RegisterDocument(): ReactNode {
   const { registerDocument } = useMargin();
@@ -232,11 +338,15 @@ function RegisterDocument(): ReactNode {
   return null;
 }
 
-/** The margin of CORE-1's spec over threads A and B, at a phone width or above it. */
-async function openMargin(phone: boolean): Promise<Page> {
+/** The margin of CORE-1's spec over threads A and B, at a phone width or above it; with
+ *  `stopped`, an edit of thread A's comment whose save the reader stopped is held before it is
+ *  drawn, and with `withReply`, thread A holds the reader's reply under its comment. */
+async function openMargin(phone: boolean, stopped: boolean, withReply = false): Promise<Page> {
   const user = userEvent.setup();
   const queryClient = readerClient();
-  let comments: readonly Comment[] = [threadA, threadB];
+  let comments: readonly Comment[] = withReply
+    ? [threadA, marginReply, threadB]
+    : [threadA, threadB];
   queryClient.setQueryData(["issue", issue.key], issue);
   queryClient.setQueryData(["inbox"], []);
   queryClient.setQueryData(["asks", issue.key], []);
@@ -247,6 +357,7 @@ async function openMargin(phone: boolean): Promise<Page> {
     spyOn(api, "listComments").mockImplementation(async () => [...comments]),
   ];
   const editor = stubEditor();
+  if (stopped) await stopTheEditSave(queryClient, editor.editComment, threadA);
   const restoreViewport = stubMatchMedia(phone);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
@@ -302,7 +413,9 @@ interface Host {
   readonly here: () => HTMLElement;
   readonly move: string;
   readonly name: string;
-  readonly open: () => Promise<Page>;
+  /** Opens the host's page; with `stopped`, over an edit of the comment whose save the reader
+   *  stopped, and with `withReply`, with the reader's own reply in the comment's thread. */
+  readonly open: (stopped: boolean, withReply?: boolean) => Promise<Page>;
   /** Opens the edited comment's thread and answers where it shows. */
   readonly show: (page: Page) => Promise<HTMLElement>;
 }
@@ -315,7 +428,7 @@ const HOSTS: readonly Host[] = [
     here: turn,
     move: "Collapse thread, then Expand thread",
     name: "Conversation card",
-    open: () => openConversation(false),
+    open: (stopped, withReply) => openConversation(false, stopped, withReply),
     show: async ({ user }) => {
       await user.click(within(turn()).getByRole("button", { name: "Expand thread" }));
       return turn();
@@ -326,7 +439,7 @@ const HOSTS: readonly Host[] = [
     here: () => screen.getByRole("dialog", { name: "Thread" }),
     move: "Back, then back",
     name: "Conversation phone thread",
-    open: () => openConversation(true),
+    open: (stopped, withReply) => openConversation(true, stopped, withReply),
     show: async ({ user }) => {
       await user.click(within(turn()).getByRole("button", { name: "Expand thread" }));
       return threadView();
@@ -337,7 +450,7 @@ const HOSTS: readonly Host[] = [
     here: () => card(threadA.id),
     move: "another thread opened, then back",
     name: "margin card",
-    open: () => openMargin(false),
+    open: (stopped, withReply) => openMargin(false, stopped, withReply),
     show: async ({ user }) => {
       await openThread(user, threadA.id);
       return card(threadA.id);
@@ -348,7 +461,7 @@ const HOSTS: readonly Host[] = [
     here: () => screen.getByRole("dialog", { name: "Thread" }),
     move: "Back, then back",
     name: "margin phone thread",
-    open: () => openMargin(true),
+    open: (stopped, withReply) => openMargin(true, stopped, withReply),
     show: async ({ user }) => {
       // The thread view a tap on the card opens, or the card itself where the list shows it open
       // already once the reader is back from the thread view.
@@ -363,9 +476,17 @@ const editField = (place: HTMLElement) =>
   within(place).queryByRole<HTMLTextAreaElement>("textbox", { name: "Edit comment" });
 
 /** Opens the editor on the comment `place` shows and writes `BODY` over its body, in the state
- *  `held` names. */
+ *  `held` names. A stopped edit is the one the page was opened over, whose editor is open on its
+ *  comment already. */
 async function writeEdit(page: Page, place: HTMLElement, held: Held): Promise<void> {
-  await page.user.click(within(place).getByRole("button", { name: "Edit" }));
+  if (held === "stopped") {
+    await within(place).findByText(STOPPED_NOTE);
+    return;
+  }
+  // The comment's own Edit comes first, above any reply's.
+  const [own] = within(place).getAllByRole("button", { name: "Edit" });
+  if (own === undefined) throw new Error("expected the comment's Edit");
+  await page.user.click(own);
   const field = editField(place);
   if (field === null) throw new Error("expected the editor");
   await page.user.click(field);
@@ -408,19 +529,25 @@ for (const host of HOSTS) {
   for (const held of HELD) {
     for (const base of BASES) {
       test(`${host.name} edit · ${host.move} · ${held} · base ${base}`, async () => {
-        const page = await host.open();
+        const page = await host.open(held === "stopped");
         try {
           await writeEdit(page, await host.show(page), held);
-          // Counted here, so a refused cell's own Save is not a save made while away.
+          // Counted here, so a refused cell's own Save, and a stopped one's attempts, are not
+          // saves made while away.
           const saves = page.editComment.mock.calls.length;
           await host.away(page);
           if (base === "changed") page.changeBody(NEWER);
           const place = await host.show(page);
           const shown = inEditor(page, place);
           if (base === "unchanged") {
-            const note = within(place).queryByText(REFUSED_NOTE) === null ? "none" : "refused";
+            const note =
+              within(place).queryByText(REFUSED_NOTE) !== null
+                ? "refused"
+                : within(place).queryByText(STOPPED_NOTE) === null
+                  ? "none"
+                  : "stopped";
             expect({ ...shown, note }).toEqual({
-              note: held === "typed" ? "none" : "refused",
+              note: held === "typed" ? "none" : held,
               offered: false,
               saves,
               text: BODY,
@@ -445,7 +572,7 @@ for (const host of HOSTS) {
   for (const held of HELD) {
     for (const change of CHANGES) {
       test(`${host.name} edit · comment changed on screen to ${change}, then ${host.move} · ${held}`, async () => {
-        const page = await host.open();
+        const page = await host.open(held === "stopped");
         try {
           await writeEdit(page, await host.show(page), held);
           // Counted here, so a refused cell's own Save is not a save made since.
@@ -462,5 +589,60 @@ for (const host of HOSTS) {
         }
       });
     }
+  }
+}
+
+/** The text of each editor open in `place`, in the order the thread draws them: the comment's
+ *  own above its reply's. */
+function editorsIn(place: HTMLElement): string {
+  return within(place)
+    .queryAllByRole<HTMLTextAreaElement>("textbox", { name: "Edit comment" })
+    .map((field) => field.value)
+    .join(" | ");
+}
+
+// A thread keeps one editor open (`editingCommentId`, one per thread's root), so the Edit of the
+// reader's reply in the same thread closes the comment's editor: the host's move, since Edit is
+// the card's control, not the editor's. The edit is held for the comment, and the comment's own
+// Edit brings it back over the body it was written over; a refused or stopped save holds its
+// editor open (`useHeldSendsUnder`), so it never leaves. The reply's editor opens on the reply's
+// own body, and closes again when the comment's Edit moves the thread's one editor back.
+for (const host of HOSTS) {
+  for (const held of HELD) {
+    test(`${host.name} edit · Edit on the reader's reply in the thread, then on the comment again · ${held}`, async () => {
+      const page = await host.open(held === "stopped", true);
+      try {
+        await writeEdit(page, await host.show(page), held);
+        // Counted here, so a refused cell's own Save, and a stopped one's attempts, are not
+        // saves made since.
+        const saves = page.editComment.mock.calls.length;
+        const replies = within(host.here()).getByRole("list", { name: "Replies" });
+        await page.user.click(within(replies).getByRole("button", { name: "Edit" }));
+        const away = editorsIn(host.here());
+        // The comment's own Edit comes first, above the reply's.
+        const [own] = within(host.here()).getAllByRole("button", { name: "Edit" });
+        if (own === undefined) throw new Error("expected the comment's Edit");
+        await page.user.click(own);
+        const note =
+          within(host.here()).queryByText(REFUSED_NOTE) !== null
+            ? "refused"
+            : within(host.here()).queryByText(STOPPED_NOTE) === null
+              ? "none"
+              : "stopped";
+        expect({
+          away,
+          back: editorsIn(host.here()),
+          note,
+          saves: page.editComment.mock.calls.length,
+        }).toEqual({
+          away: held === "typed" ? REPLY_BODY : `${BODY} | ${REPLY_BODY}`,
+          back: BODY,
+          note: held === "typed" ? "none" : held,
+          saves,
+        });
+      } finally {
+        page.restore();
+      }
+    });
   }
 }

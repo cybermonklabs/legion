@@ -1,0 +1,355 @@
+/**
+ * The draft matrix, Inbox message box row (INFRA-1503).
+ *
+ * Every composer host is held to one rule (packages/dispatch/AGENTS.md, "Who moved the
+ * composer's address"): the reader's own move with the composer's own control takes the draft
+ * with it, and a move of the host's carries nothing, so the text stays with the address it was
+ * written for and is there when the reader comes back to it (AGENTS.md:116-119). A refused or
+ * stopped send's note stays at its own address. Each cell writes a draft in one state, typed and
+ * never sent, refused by Dispatch, or stopped by the reader, makes one move, and asserts where
+ * the text ends. A cell that fails at the code it was written against is a hole in the rule, kept
+ * red on purpose until the code is fixed.
+ *
+ * Host: the Inbox reading column's box on an issue message thread (`MessageThreadBody` in
+ * `features/inbox/ThreadBody.tsx`), a standing box: the thread's own reply to its root message,
+ * which nothing ends, drawn afresh for each row the column moves to (`ReadingPane`) and keyed by
+ * its thread. The comment thread's box and the Agent row's box are the thread-box file's rows.
+ *
+ * A host move that takes the composer off the screen is checked on return alone, where the field
+ * holds the draft with its refusal or stopped note.
+ *
+ * | Move                                             | typed  | refused | stopped |
+ * | ------------------------------------------------ | ------ | ------- | ------- |
+ * | Back, then back                                  | no (1) | no (1)  | no (1)  |
+ * | The column moves to another row, then back (off) | cell   | cell    | cell    |
+ * | Host moves it over a refusal (elsewhere)         | no (2) | no (2)  | no (2)  |
+ * | Thread collapsed by the host                     | no (3) | no (3)  | no (3)  |
+ * | Cancel reply                                     | no (4) | no (4)  | no (4)  |
+ * | Escape in the field                              | cell   | cell    | cell    |
+ * | Close, then Discard draft?                       | no (5) | no (5)  | no (5)  |
+ * | Agents pick                                      | no (6) | no (6)  | no (6)  |
+ * | Typed while elsewhere, then unmounted            | -      | no (2)  | -       |
+ * | The thread's read fails or waits, then recovers  | no (7) | no (7)  | no (7)  |
+ * | The thread's replies are ordered the other way   | no (8) | no (8)  | no (8)  |
+ * | The Inbox resized, closed or left, then back     | no (9) | no (9)  | no (9)  |
+ * | The thread's root message is no longer read      | no (10)| no (10) | no (10) |
+ *
+ * (off) marks a host move that takes the box off the screen: the column draws another thread's
+ * box in its place.
+ *
+ * The moves this host cannot make:
+ * 1. The box draws no Back of its own; the Inbox's phone Back closes the column, which unmounts
+ *    the box as the move to another row does.
+ * 2. The box always answers its thread's root message (`replyTo` names `thread.thread_id`'s
+ *    message), so a newer message in the thread does not move it, and it is never elsewhere.
+ * 3. The column draws no collapse of the thread; leaving it is the move to another row.
+ * 4. A standing box's reply is its own address, so it draws no Cancel reply (asserted absent).
+ * 5. The box has no anchor, so it draws no Close (asserted absent below).
+ * 6. The box answers an issue message, so it draws no issue picker (asserted absent below).
+ * 7. `MessageThreadBody` draws a loading line or an error in place of the thread while the
+ *    issue's messages are read or their read fails, which unmounts the box as the move to
+ *    another row does, and the box drawn when the read lands again is the one that row draws.
+ * 8. Which end of the thread the box sits at (`composerFirst`, from `useThreadOrder`) is read
+ *    when the box's thread is drawn and again only when who is signed in changes
+ *    (`useUserPreference`), so it never moves a box that is on screen; the shell draws no
+ *    thread before it knows who is signed in, and another person is the sign-in file's row.
+ * 9. The Inbox draws a thread's box in the reading column above the column's width and in the
+ *    row's card below it (`paneShown`), in a drawer that closing takes away (`InboxDrawer`), and
+ *    on its own page (`app.tsx`'s `/` and `/credentials/*`); a resize across that width, closing
+ *    the drawer, leaving the page, a column with no row selected or an empty list, and the
+ *    Inbox's loading line or error unmount the box as the move to another row does, and the box
+ *    drawn on return is the one that row draws, at the same thread's send name.
+ * 10. The box answers its thread's root message and is drawn only while the read holds it
+ *    (`root === undefined` draws none), so a read without the root leaves no message to answer,
+ *    and a read that holds it again draws the box at the same thread, as the move to another row
+ *    and back does.
+ */
+import { expect, jest, spyOn, test } from "bun:test";
+import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
+
+import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock } from "../../__tests__/fake-clock";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { ApiError, api } from "../../api/client";
+import type {
+  IssueDetails,
+  Message,
+  MessageRead,
+  MyReplyRow,
+  MyReplyThreadRow,
+} from "../../api/types";
+import { heldSends } from "../conversation/held-sends";
+import type { SentRequest } from "../conversation/send-request";
+import { DocumentRuntime } from "../doc/runtime";
+import { MarginProvider } from "../margin/margin-context";
+import { SendStoppedError } from "../writes/keyed-write";
+import { installInboxApiMocks } from "./inbox-fixture";
+import { ReadingPane } from "./ReadingPane";
+
+installInboxApiMocks();
+
+const HOST = "Inbox message box";
+
+/** Dispatch refusing the send outright, as a 400 does: no attempt follows under its key. */
+const REFUSAL = new ApiError(400, { code: "INPUT_REFUSED", error: "Dispatch refused the message" });
+
+/** What each note says in the box: the refusal, and a stopped send at its own address. */
+const REFUSED_NOTE = "Couldn't send — Dispatch refused the message";
+const STOPPED_NOTE = new SendStoppedError().message;
+
+const BODY = "Draft the reader wrote";
+
+type Held = "typed" | "refused" | "stopped";
+const HELD: readonly Held[] = ["typed", "refused", "stopped"];
+
+const bob = { id: "bob", kind: "user" } as const;
+
+function issueMessage(id: string, issueKey: string): Message {
+  return {
+    author: bob,
+    body: "Can someone look at the build?",
+    broadcast_id: null,
+    created_at: "2026-10-12T00:00:00Z",
+    deliveries: [],
+    id,
+    in_reply_to: null,
+    issue_key: issueKey,
+    reply_block: null,
+    target: null,
+  };
+}
+
+/** Each issue's message conversation: its root message and no replies yet. */
+const conversations: Record<string, MessageRead[]> = {
+  "CORE-1": [{ message: issueMessage("message-1", "CORE-1"), replies: [] }],
+  "CORE-2": [{ message: issueMessage("message-9", "CORE-2"), replies: [] }],
+};
+
+function messageRow(overrides: Partial<MyReplyThreadRow>): MyReplyThreadRow {
+  return {
+    issue: { key: "CORE-1", title: "Fix the thing" },
+    kind: "message",
+    read_through: "2026-10-12T00:30:00Z",
+    ref: "/issues/CORE-1?message=message-1",
+    reply: {
+      author: bob,
+      created_at: "2026-10-12T01:00:00Z",
+      first_line: "Can someone look at the build?",
+      id: "message-1",
+      kind: "reply",
+    },
+    subject: "The build",
+    thread_id: "message-1",
+    unread: false,
+    unread_count: 0,
+    version: 1,
+    ...overrides,
+  };
+}
+
+/** The message thread the cells write in, and the one the column moves to. */
+const firstRow = messageRow({});
+const otherRow = messageRow({
+  issue: { key: "CORE-2", title: "Other issue" },
+  ref: "/issues/CORE-2?message=message-9",
+  thread_id: "message-9",
+});
+
+/** The send name of a thread's box (`threadSendKey` in `ThreadBody.tsx`). */
+const boxKey = (threadId: string): MutationKey => ["inbox-thread-reply", threadId];
+
+/** A reply of `BODY` from the first thread's box to its root message. */
+const messageReply: SentRequest = {
+  anchor: undefined,
+  ask: { multiple: false, options: [], urgency: "med" },
+  draft: { body: BODY, mentions: [], replacement: "" },
+  edit: undefined,
+  kind: "comment",
+  owner: { issueKey: "CORE-1", kind: "issue" },
+  plainDelivery: "steer",
+  replyTo: { actor: bob, excerpt: "", id: "message-1", parentKind: "message" },
+  sendKey: "stopped-send",
+};
+
+interface Column {
+  /** The column moved to another row, as the Inbox moves it: the same column, drawn again. */
+  readonly move: (row: MyReplyRow) => void;
+  readonly restore: () => void;
+  readonly user: UserEvent;
+}
+
+/**
+ * The Inbox reading column on `row`, over the two message threads. Every write is refused, so a
+ * send pressed here comes back refused; with `stopped`, the first thread's reply is sent through
+ * the held-send store under its box's name before the column is drawn and stopped once late, as
+ * the reader's Stop trying does, so the box mounts showing it.
+ */
+async function openColumn(row: MyReplyRow, stopped: boolean): Promise<Column> {
+  const user = userEvent.setup();
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const reads = [
+    // The box reads one field of the issue: whether it is closed.
+    spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails),
+    spyOn(api, "listIssueMessages").mockImplementation(
+      async (issueKey) => conversations[issueKey] ?? []
+    ),
+    spyOn(api, "listAgents").mockResolvedValue([]),
+  ];
+  const createComment = spyOn(api, "createComment");
+  const createMessage = spyOn(api, "createMessage");
+  if (stopped) {
+    const down = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
+    createComment.mockRejectedValue(down);
+    createMessage.mockRejectedValue(down);
+    jest.useFakeTimers();
+    try {
+      act(() => {
+        heldSends(client).send(boxKey("message-1"), messageReply);
+      });
+      await stopTheLateWrite(client);
+    } finally {
+      realClock();
+    }
+  }
+  createComment.mockRejectedValue(REFUSAL);
+  createMessage.mockRejectedValue(REFUSAL);
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const tree = (shown: MyReplyRow) => (
+    <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+      <QueryClientProvider client={client}>
+        <DocumentRuntime.Provider value={fake.runtime}>
+          <MarginProvider>
+            <ReadingPane
+              onAnswered={() => {}}
+              onSnoozeLive={() => {}}
+              row={{ kind: "thread", thread: shown }}
+              viewer="alice"
+            />
+          </MarginProvider>
+        </DocumentRuntime.Provider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(row));
+  return {
+    move: (shown) => view.rerender(tree(shown)),
+    restore: () => {
+      view.unmount();
+      createComment.mockRestore();
+      createMessage.mockRestore();
+      for (const read of reads) read.mockRestore();
+    },
+    user,
+  };
+}
+
+const pane = () => screen.getByTestId("inbox-pane");
+
+const boxField = () => within(pane()).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+
+/** Which note the column shows about a send its box holds. */
+function note(): Held | "none" {
+  const shown = within(pane());
+  if (shown.queryByText(REFUSED_NOTE) !== null) return "refused";
+  return shown.queryByText(STOPPED_NOTE) === null ? "none" : "stopped";
+}
+
+/** Puts `BODY` in the first thread's box, in the state `held` names; a stopped reply is the one
+ *  `openColumn` seeded. */
+async function holdInBox(column: Column, held: Held): Promise<void> {
+  const field = await within(
+    await screen.findByTestId("inbox-pane")
+  ).findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+  if (held === "stopped") {
+    await waitFor(() => expect(note()).toBe("stopped"));
+    return;
+  }
+  await column.user.click(field);
+  await column.user.keyboard("{Control>}a{/Control}");
+  await column.user.paste(BODY);
+  if (held === "refused") {
+    await column.user.click(within(pane()).getByRole("button", { name: "Send" }));
+    await within(pane()).findByText(REFUSED_NOTE);
+  }
+}
+
+// The column moving to another row is the host's move, and it takes the box off the screen: the
+// box's draft waits under its send name, and the box drawn when the column comes back shows it.
+for (const held of HELD) {
+  test(`${HOST} · the column moves to another row, then back · ${held}`, async () => {
+    const column = await openColumn(firstRow, held === "stopped");
+    try {
+      await holdInBox(column, held);
+      column.move(otherRow);
+      const other = await waitFor(() => {
+        const box = pane().querySelector('[data-inbox-thread="message-9"]');
+        if (box === null) throw new Error("expected the other thread");
+        return within(pane()).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value;
+      });
+      column.move(firstRow);
+      await waitFor(() =>
+        expect(pane().querySelector('[data-inbox-thread="message-1"]')).not.toBe(null)
+      );
+      expect({ back: { note: note(), text: boxField().value }, other }).toEqual({
+        back: { note: held === "typed" ? "none" : held, text: BODY },
+        other: "",
+      });
+    } finally {
+      column.restore();
+    }
+  });
+}
+
+// A standing box's Escape ends nothing: the draft, and a note with it, stay in the box.
+for (const held of HELD) {
+  test(`${HOST} · Escape in the field · ${held}`, async () => {
+    const column = await openColumn(firstRow, held === "stopped");
+    try {
+      await holdInBox(column, held);
+      await column.user.click(boxField());
+      await column.user.keyboard("{Escape}");
+      expect({ note: note(), text: boxField().value }).toEqual({
+        note: held === "typed" ? "none" : held,
+        text: BODY,
+      });
+    } finally {
+      column.restore();
+    }
+  });
+}
+
+test(`${HOST} · Cancel reply · cannot make: a standing box draws no Cancel reply`, async () => {
+  const column = await openColumn(firstRow, false);
+  try {
+    await holdInBox(column, "typed");
+    expect(within(pane()).queryAllByRole("button", { name: "Cancel reply" }).length).toBe(0);
+  } finally {
+    column.restore();
+  }
+});
+
+test(`${HOST} · Close, then Discard draft? · cannot make: the box draws no Close`, async () => {
+  const column = await openColumn(firstRow, false);
+  try {
+    await holdInBox(column, "typed");
+    expect(within(pane()).queryAllByRole("button", { name: "Close" }).length).toBe(0);
+  } finally {
+    column.restore();
+  }
+});
+
+test(`${HOST} · Agents pick · cannot make: the box draws no issue picker`, async () => {
+  const column = await openColumn(firstRow, false);
+  try {
+    await holdInBox(column, "typed");
+    expect(within(pane()).queryAllByRole("button", { name: "Choose issue" }).length).toBe(0);
+  } finally {
+    column.restore();
+  }
+});

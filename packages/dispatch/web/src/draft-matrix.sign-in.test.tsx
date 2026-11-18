@@ -21,6 +21,12 @@
  *    second.
  * 2. `app-sign-out.test.tsx`, "a composer's typed text is not shown to another person signed in
  *    from another tab", is this cell, and it is not repeated here.
+ *
+ * The composer census finds `AuthGate`'s own conditionals above every host the app draws
+ * (`app.tsx`): which person's shell is drawn (`shellFor`), the rows above; the check not yet
+ * answered (`whoAmI.isPending`), before which no shell, and so no composer, is drawn; and signed
+ * out (`signedOut`), whose page takes the shell and every composer away, which
+ * `app-sign-out.test.tsx` holds to the same rule as (2).
  */
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";

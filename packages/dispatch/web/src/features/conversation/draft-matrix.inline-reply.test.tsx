@@ -32,6 +32,10 @@
  * | Close, then Discard draft?                      | no (2) | no (2)  | no (2)  |
  * | Agents pick                                     | no (3) | no (3)  | no (3)  |
  * | Typed while elsewhere, then unmounted           | -      | no (1)  | -       |
+ * | The card leaves the list, then comes back       | no (4) | no (4)  | no (4)  |
+ * | The Conversation's reads fail or wait           | no (5) | no (5)  | no (5)  |
+ * | Issue left, or another tab, then back           | no (6) | no (6)  | no (6)  |
+ * | The thread's replies ordered the other way      | no (7) | no (7)  | no (7)  |
  *
  * (off) marks a host move that takes the card's reply off the screen: Back hides the thread
  * view, Collapse thread unmounts the reply, and the comment's Reply hides it while the docked
@@ -43,6 +47,21 @@
  *    host's changes its address, and it is never elsewhere.
  * 2. An inline reply is compact, so it draws no Close (asserted absent below).
  * 3. The card draws no issue picker (asserted absent below).
+ *
+ * The moves the composer census found that the rows above do not make:
+ * 4. A card is drawn per item of the Conversation's list, keyed by it (`CommentTurn`): the list's
+ *    All, Open and Closed filter, and a thread the list no longer holds, unmount the card and its
+ *    reply as Collapse thread does, and the card drawn when it is listed again opens on the same
+ *    thread's send name.
+ * 5. The Conversation draws a loading line or an error in place of the list while its reads are
+ *    out or failed (`loading`, `failed`), which unmounts the reply as Collapse thread does.
+ * 6. Another issue's address draws the issue page afresh (`IssueDetail` keyed by `route.key`),
+ *    unmounting the card and its reply as Collapse thread does, and another tab hides the
+ *    Conversation's panel with the reply mounted (`draft-matrix.issue-page.test.tsx` makes both
+ *    moves for the docked and phone thread composers).
+ * 7. Which end of the thread the reply sits at (`composerFirst`, from `useThreadOrder`) is read
+ *    when the card is drawn and again only when who is signed in changes (`useUserPreference`),
+ *    so it never moves a reply that is on screen.
  */
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";

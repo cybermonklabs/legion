@@ -28,6 +28,7 @@
  * | Back, then back (phone thread view) (off)    | cell   | cell    | cell    |
  * | Another thread opened, then back (off)       | cell   | cell    | cell    |
  * | Document left, then back (the compose) (off) | cell   | cell    | cell    |
+ * | Compose on another document, then back (off) | cell   | cell    | cell    |
  * | Host moves it over a refusal (elsewhere)     | no (1) | no (1)  | no (1)  |
  * | Thread collapsed by the host                 | no (2) | no (2)  | no (2)  |
  * | Cancel reply                                 | cell   | cell    | cell    |
@@ -35,11 +36,20 @@
  * | Close, then Discard draft? (the compose)     | cell   | cell    | cell    |
  * | Agents pick                                  | no (3) | no (3)  | no (3)  |
  * | Typed while elsewhere, then unmounted        | -      | no (1)  | -       |
+ * | Hidden by the host, mounted                  | no (4) | no (4)  | no (4)  |
+ * | The margin not drawn, then drawn again       | no (5) | no (5)  | no (5)  |
+ * | The thread list not drawn, then drawn again  | no (6) | no (6)  | no (6)  |
+ * | The document's threads change                | no (7) | no (7)  | no (7)  |
+ * | A thread's replies ordered the other way     | no (8) | no (8)  | no (8)  |
  *
  * (off) marks a host move that takes the composer off the screen: Back hides the thread view,
  * opening another thread collapses this one and unmounts its reply, and leaving the document
  * takes the margin to another document's composes. Every host move of this row is one, so none
- * needs a line while away.
+ * needs a line while away. Opening a compose on another document does what leaving does and more:
+ * the margin holds one open compose, so the newer one takes its place (`composeForMark`), and the
+ * first document's text must come back in its compose with its note, or a line must say where it
+ * is kept, and must never fill a compose at another quote: the next compose on the first document,
+ * at another selection, starts without it.
  *
  * The moves this host cannot make:
  * 1. A thread's reply always answers its own thread's root, so no move of the host's changes its
@@ -47,13 +57,32 @@
  * 2. The margin's card draws no collapse of its own: the desktop list closes it only by opening
  *    another thread (the second row), and the phone only by Back (the first row).
  * 3. The margin draws no issue picker (asserted absent below).
+ *
+ * The moves the composer census found that the rows above do not make:
+ * 4. The Pinned tab, a phone margin thread, and the rail the margin collapses to hide the compose
+ *    (`MarginComposerSlot`'s `hidden`, `MarginSheet`'s `covered`, `Margin`'s rail) and keep it
+ *    mounted at its address, so nothing it holds moves.
+ * 5. On a page with no margin above the phone layout `Margin` draws nothing, which unmounts the
+ *    compose and every card as leaving the document does; the compose is the provider's
+ *    (`MarginProvider`) and a reply's draft is held under its name, as the document-left and
+ *    another-thread rows' returns show.
+ * 6. The Comments tab's list is not drawn on the Pinned tab, under a phone margin thread, or while
+ *    the comments read failed (`MarginSheet`, `CommentsTab`), which unmounts a thread's reply and
+ *    its editor as opening another thread does (the second row, and the edit file's margin card).
+ * 7. A thread's card is drawn per thread of the open document, keyed by it (`ThreadList`): a
+ *    thread that leaves the list, by its resolution or another document's list, unmounts its card
+ *    as opening another thread does, and a resolved thread folded away under Show resolved is the
+ *    same; its reply is held by its thread's name.
+ * 8. Which end of a margin thread its reply sits at (`composerFirst`, from `useThreadOrder` in
+ *    `ThreadCard`) is read when the card is drawn and again only when who is signed in changes
+ *    (`useUserPreference`), so it never moves a reply that is on screen.
  */
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect } from "react";
-import { MemoryRouter, useNavigate } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -113,6 +142,22 @@ const MARK_ANCHOR = {
   quote: "jumps over the lazy dog",
 };
 
+/** Words of CORE-2's spec, where the reader opens a compose while away from CORE-1's. */
+const SECOND_DOCUMENT_ANCHOR = {
+  artifact: "artifact-2",
+  mark_id: "m-20",
+  placement: { blockId: "b-1", prefix: "The second ", readings: 1, suffix: "." },
+  quote: "spec of another issue",
+};
+
+/** Other words of CORE-1's spec, where the reader opens the next compose back there. */
+const ANOTHER_ANCHOR = {
+  artifact: specArtifact.id,
+  mark_id: "m-10",
+  placement: { blockId: "b-1", prefix: "The ", readings: 1, suffix: " fox jumps" },
+  quote: "quick brown",
+};
+
 /** A send of `BODY` from the margin: thread A's reply, or the compose on `MARK_ANCHOR`. */
 function request(kind: "reply" | "compose"): SentRequest {
   return {
@@ -141,18 +186,41 @@ function RegisterDocument(): ReactNode {
   return null;
 }
 
-/** The selection bar's Comment on `MARK_ANCHOR`, on a press. */
+/** The document the page on the route shows, registered as each document page registers its
+ *  own: CORE-1's spec, or CORE-2's while the reader is on the second issue. */
+function RegisterRouteDocument(): ReactNode {
+  const { registerDocument } = useMargin();
+  const { pathname } = useLocation();
+  const artifactId =
+    pathname === buildIssuePath({ key: secondIssue.key, kind: "issue" })
+      ? "artifact-2"
+      : specArtifact.id;
+  useEffect(() => {
+    registerDocument(stubDocumentBridge(artifactId));
+    return () => registerDocument(undefined);
+  }, [artifactId, registerDocument]);
+  return null;
+}
+
+/** The selection bar's Comment on `MARK_ANCHOR`, on a press, and on the other words the cells
+ *  compose on: CORE-2's, and others of CORE-1's. */
 function ComposeOnMark(): ReactNode {
   const { composeForMark } = useMargin();
+  const composeOn = (anchor: typeof MARK_ANCHOR) => {
+    void composeForMark({ anchor, kind: "comment" }).catch(() => {});
+  };
   return (
-    <button
-      onClick={() => {
-        void composeForMark({ anchor: MARK_ANCHOR, kind: "comment" }).catch(() => {});
-      }}
-      type="button"
-    >
-      Compose on the selection
-    </button>
+    <>
+      <button onClick={() => composeOn(MARK_ANCHOR)} type="button">
+        Compose on the selection
+      </button>
+      <button onClick={() => composeOn(SECOND_DOCUMENT_ANCHOR)} type="button">
+        Compose on the second document
+      </button>
+      <button onClick={() => composeOn(ANOTHER_ANCHOR)} type="button">
+        Compose on another selection
+      </button>
+    </>
   );
 }
 
@@ -187,11 +255,13 @@ interface Page {
  * The margin of CORE-1's spec over threads A and B, at a phone width or above it. Every comment
  * the margin writes is refused, so a send pressed here comes back refused; `stopped`, when given,
  * is sent through the held-send store under its name before the margin is drawn and stopped once
- * late, as the reader's Stop trying does, so the margin arrives showing it.
+ * late, as the reader's Stop trying does, so the margin arrives showing it. `documents` says which
+ * document stays registered: CORE-1's spec on every route, or the route's own.
  */
 async function openMargin(
   phone: boolean,
-  stopped?: { readonly key: MutationKey; readonly request: SentRequest }
+  stopped?: { readonly key: MutationKey; readonly request: SentRequest },
+  documents: "spec" | "route" = "spec"
 ): Promise<Page> {
   const user = userEvent.setup();
   const queryClient = new QueryClient({
@@ -238,7 +308,7 @@ async function openMargin(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
         <MarginProvider>
-          <RegisterDocument />
+          {documents === "spec" ? <RegisterDocument /> : <RegisterRouteDocument />}
           <ComposeOnMark />
           <Travel />
           <Margin />
@@ -484,6 +554,73 @@ for (const held of HELD) {
         note: field === null ? "none" : note(field.closest("form") ?? field),
         text: field === null ? "(no compose on screen)" : field.value,
       }).toEqual(expectedBack(held));
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+/** Each compose on screen: the words it is anchored to, its field's text, and its note. */
+function composesOnScreen(): { note: Held | "none"; quote: string; text: string }[] {
+  return screen.queryAllByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).map((field) => {
+    const form = field.closest("form") ?? field;
+    return {
+      note: note(form),
+      quote: form.querySelector("blockquote")?.textContent ?? "",
+      text: field.value,
+    };
+  });
+}
+
+/** Whether a line the reader can see says the draft is kept and names where it was written:
+ *  its words, or its issue. */
+function keptLineNamingTheFirstCompose(): boolean {
+  return screen.queryAllByRole("status").some((line) => {
+    const text = line.textContent ?? "";
+    return /\bkept\b/.test(text) && (text.includes(MARK_ANCHOR.quote) || text.includes(issue.key));
+  });
+}
+
+/** What a cell asserts the reader finds back on CORE-1's spec. */
+const FOUND = "the draft in its compose with its note, or a line saying where it is kept";
+
+// Review hole (v): a compose opened on another document is the host's move for the first one,
+// which carries nothing; the margin holds one open compose, so the newer one takes the first's
+// place (`composeForMark`). Back on CORE-1's spec, the first compose's text should be there with
+// its note, or a line should say where it is kept; and it should never fill a compose at another
+// quote, so the next compose the reader opens on CORE-1's spec, at other words, starts without it.
+for (const held of HELD) {
+  test(`${HOST} · a compose opened on another document, then back (the margin's compose) · ${held}`, async () => {
+    const page = await openMargin(false, stoppedCompose(held), "route");
+    try {
+      await holdInCompose(page, held);
+      await page.user.click(screen.getByRole("button", { name: "Open second issue" }));
+      await waitFor(() => expect(screen.queryByTestId(`margin-comment-${threadA.id}`)).toBe(null));
+      await page.user.click(screen.getByRole("button", { name: "Compose on the second document" }));
+      await screen.findByText(SECOND_DOCUMENT_ANCHOR.quote);
+      await page.user.click(screen.getByRole("button", { name: "Back to the first issue" }));
+      await screen.findByTestId(`margin-comment-${threadA.id}`);
+      // A second for the compose the margin shows on arrival; none on screen reads as absent.
+      await screen.findByRole("textbox", { name: "Comment" }, { timeout: 1_000 }).catch(() => null);
+      const back = composesOnScreen().find((compose) => compose.text === BODY);
+      const found =
+        (back !== undefined &&
+          back.quote === MARK_ANCHOR.quote &&
+          back.note === expectedBack(held).note) ||
+        keptLineNamingTheFirstCompose();
+      await page.user.click(screen.getByRole("button", { name: "Compose on another selection" }));
+      await screen.findByText(ANOTHER_ANCHOR.quote);
+      const elsewhere = composesOnScreen()
+        .filter((compose) => compose.text === BODY && compose.quote !== MARK_ANCHOR.quote)
+        .map((compose) => compose.quote)
+        .join(", ");
+      expect({
+        back: found ? FOUND : (back ?? "(no compose holds it, and no line says so)"),
+        elsewhere,
+      }).toEqual({
+        back: FOUND,
+        elsewhere: "",
+      });
     } finally {
       page.restore();
     }

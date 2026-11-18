@@ -30,6 +30,9 @@
  * | Close, then Discard draft?               | no (4) | no (4)  | no (4)  |
  * | Agents pick                              | no (5) | no (5)  | no (5)  |
  * | Typed while elsewhere, then unmounted    | -      | cell    | -       |
+ * | Issue left, then back (off)              | (6)    | (6)     | (6)     |
+ * | Another tab, then back (hidden)          | (6)    | (6)     | (6)     |
+ * | The Conversation's reads fail or wait    | no (7) | no (7)  | no (7)  |
  *
  * (on) marks a host move that keeps the same composer on screen at another address. A refused or
  * stopped draft never leaves its field there (another message's Reply is redirected onto it, and
@@ -43,6 +46,16 @@
  * 3. The docked composer sits outside every thread card, so no Collapse thread moves it.
  * 4. The docked composer has no anchor, so it draws no Close (asserted absent below).
  * 5. The docked composer draws no issue picker (asserted absent below).
+ *
+ * The moves the composer census found above `ConversationTab`, and in it:
+ * 6. `draft-matrix.issue-page.test.tsx` makes these cells, with the issue page drawn around the
+ *    Conversation: another issue's address draws the page afresh (`IssueDetail` keyed by
+ *    `route.key`), and another tab hides the Conversation's panel and keeps it drawn. The
+ *    composer's `owner` and send name follow `issueKey`, which only that remount changes.
+ * 7. The Conversation draws a loading line or an error in place of the list while its reads are
+ *    out or failed (`loading`, `failed`), which unmounts the docked composer as leaving the issue
+ *    does, and the composer drawn when they land again is the one the issue-left row draws on
+ *    return.
  */
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
