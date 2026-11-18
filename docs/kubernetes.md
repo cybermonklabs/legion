@@ -1200,9 +1200,9 @@ A session the compaction left refused is the fresh session's, and so is a claim 
 legion claims retry --claim <token> --operator-token-file <file> --fresh-session
 ```
 
-It reaches a claim whose agent is registered, ready or idle, one that is suspended, failed or retired, and one stored working that no process stands behind, with no suspension held over it — one idle between the ladder's sends, a suspended one, one an operator stopped (`legion claims stop` retires the claim it stops), a failed one, a dead architect its project's controller has no other way back from, and a root architect as much as a phase worker (`freshSession`, `packages/daemon/internal/api/freshsession.go`).
+It reaches a claim whose agent is registered, ready or idle, one that is suspended, failed or retired, and one stored working that no process stands behind, with no suspension held over it — one idle between the ladder's sends, a suspended one, one an operator stopped (`legion claims stop` retires the claim it stops), a failed one, a dead architect its project's controller has no other way back from, and an architect, a root's or a child's, as much as a phase worker (`freshSession`, `packages/daemon/internal/api/freshsession.go`).
 It suspends the claim where the request arrives — a live agent and the claim no process stands behind alike — forgets the session that claim recorded, and starts it again.
-A phase worker comes back with the task of the phase its issue stands in now, and a root architect with its tree's catch-up.
+A phase worker comes back with the task of the phase its issue stands in now, and an architect with its catch-up: a root's architect with its whole tree's, and a child's own architect with its issue's and every issue's under it.
 A claim no process stands behind comes back with the task its dead turn held, which its suspension takes back and its start sends again.
 A forget or a start the machine refuses after this request stopped the claim is answered 200, with that refusal and the state it left the claim in named in `phaseNotRestarted` and printed under the claim's own line, because the request changed the claim: a suspended claim is started by asking for a fresh session again, and a claim the refused step left in another state, such as `launching` with its launch tried again at the probe interval, is read in `legion claims list` before anything more is asked of it.
 No `forget-session` comes before it, and no recovery here needs an edit of the daemon's store.
@@ -1375,10 +1375,10 @@ Once the roles have stopped, the daemon sets that issue's Sandbox to `Suspended`
 Then it deletes the Sandbox, whatever the close was:
 a child set `done`, one set `backlog`, `icebox` or `triage`, and a root leaving the workflow with its tree are one case now, since a Sandbox kept behind would hold nothing (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed issue's
 Sandbox and the role Secrets it owned` — the six role Secrets go with it by owner reference.
-An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later admission resumes each role in the session it recorded; a session its store no longer holds starts fresh and is reported (R8).
+An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later admission resumes each role in the session it recorded, or in a new one once supervise's `forgetSession` has dropped it (a session no store holds any more is dropped and reported, R8).
 The parent's Sandbox is another issue's and is never touched.
 A daemon restart retries the stored effect.
-Re-admission during linger makes the Sandbox, the pod and its disk afresh and resumes the recorded sessions;
+Re-admission during linger makes the Sandbox, the pod and its disk afresh and resumes the recorded sessions, and a claim whose session supervise's `forgetSession` has dropped starts a new one;
 the issue pod's launch turn orders a concurrent resume after any suspension already in flight.
 
 Linger expiry reserves its tree only while the root still lingers at the close's generation, so a re-admission that committed first fences it;
@@ -1419,7 +1419,7 @@ No close of the old tree reaches that claim, so its stop is bounded where that c
 a turn that ends within the linger ends on its own, and one still running at the expiry is stopped there.
 Once the old root no longer lingers (it was reopened, say), there is no close left to wait for, and the stop falls back to the stop timeout (`worker_stop_timeout_seconds`) from then (`carriedStopDeadline`):
 a role still in a turn is stopped that long after, losing only the tool call in flight.
-Either way the claim keeps the issue's branch and its session, which the new tree's start resumes with its phase's resume task;
+Either way the claim keeps the issue's branch and its session, which the new tree's start resumes: a phase worker's with its phase's resume task, and the issue's own architect's, now its root's, with the task the start of a carried root gives it;
 the workspace is provisioned again from that branch in the new pod.
 A turn that hangs inside the linger is the operator's to stop sooner:
 `legion claims suspend` stops it at the stop timeout (`worker_stop_timeout_seconds`) from then and makes the hold the operator's, so the new tree's start of that role waits for the operator, with the claim already re-pointed to the new tree, and `legion claims resume` relaunches its session there.
@@ -5959,10 +5959,11 @@ From the wake to the woken role's first turn is 5 minutes or less for 90% of wak
 
 A release of a pod no claim owns suspends no claim, so it leaves no released claim and owes no wake.
 Its pod comes back at the next start of a claim of that issue, and that start builds the Sandbox, the pod and the workspace again.
-There are three such starts.
-An operator's `legion claims retry` of a failed claim resumes the role's recorded session from the session database.
+There are four such starts.
+An operator's `legion claims retry` of a failed claim resumes the role's recorded session from the session database, or starts a new one once supervise's `forgetSession` has dropped it.
 The same retry with `--fresh-session` forgets that session first and starts a new one.
 A start the daemon queues for a phase worker itself does as the first does: a phase start, a backward move, a retry after the architect's `retry_or_escalate`, and that same retry made by a `todo` written on a held root, which releases the hold and starts the held phase's worker.
+A start the daemon queues for a child's own architect does as the first does too: the child's first phase start queues one, and each later phase start of the child queues one for an architect that failed, the move into `accepting` among them (`childArchitectStart` and `reviveArchitect`, `internal/workflow`).
 Such a release arms no backstop, and it leaves the issue's wake marks and the open backstops of an earlier release as it found them.
 
 What the saved bundle holds is every visible commit the remote does not already hold, on any head, the working copy's own change, and each local bookmark that points at such a commit.
@@ -6166,9 +6167,9 @@ A graceful stop sends the RPC `shutdown` frame over the registered stream, waits
 Before a replacement generation is created, the previous generation's pod is deleted the same way and awaited until it is gone (force-deleted at grace 0 if it outlives the stop timeout):
 two generations never share a working copy.
 
-A phase worker or sub-architect pod that dies mid-task
+A phase worker or architect pod that dies mid-task
 — its container crashed, or the pod was deleted
-— is relaunched by the daemon itself, as the same agent one generation later (`legion-<issue>-<role>-g<n+1>`, its command carrying `--resume=<the recorded session>`), and prompted with the daemon's catch-up rather than a replay of the interrupted task (LEGION-179).
+— is relaunched by the daemon itself, as the same agent one generation later (`legion-<issue>-<role>-g<n+1>`, its command carrying `--resume=<the recorded session>`): a phase worker is sent the task its dead turn held again, behind the sentence that says what the relaunch ended, or its phase's task when it held none, and an architect, a root's or a child's, is sent its catch-up at its ready (LEGION-179).
 The death is seen twice over: at once, when the pod's worker stream closes and the daemon's one reconnect (`connect` awaiting a fresh registration for `worker_rpc_timeout_seconds`) finds none;
 and, for a death the stream never reported, on the next resync tick, which probes every located, ready-confirmed worker claim with the rules above.
 Either judgement is a probe's, never the closed stream by itself — a daemon restart closes every stream while the agents run on — and when a probe says the process is gone the daemon reads that session's registration from the Envoy listener (`GET /v1/registry/<the session the claim registered>?include=unresponsive&view=registration`) and then sends `DELETE /v1/sessions/<that session>?if_not_registered_after=<the moment that probe judged, in unix milliseconds>&client_instance_id=<the client instance that read named>`.
@@ -6187,13 +6188,12 @@ A listener that refuses the stop or cannot be reached costs nothing but that pro
 Each death counts one `launchFailures`, so a pod that keeps dying before its `/worker/ready` reaches `worker-died` at `MAX_LAUNCH_FAILURES` exactly like a boot that never confirms; a confirmed ready resets the count.
 A finished worker whose pod dies while idle
 — no longer its issue's active phase, nothing queued for it
-— is retired, not relaunched (`… after finishing: <issue>'s active phase is <role> …; retired, not relaunched`); the architect's next `spawn_worker` resumes it.
+— is relaunched too, on the session it recorded (`relaunchAfterFailure` in `internal/supervise/budgets.go`): with no task pending and no turn open, its death is not counted as a death with work outstanding (`chargeDeath`), only as the one launch failure every death counts.
 To exercise this on a kind cluster, crash the process from the node rather than deleting the pod gracefully (a graceful stop lets the shim shut OMP down cleanly):
 `node=$(kind get nodes --name <cluster>)`, `cid=$(docker exec "$node" crictl ps -q --name
 worker --label io.kubernetes.pod.name=<pod>)`, `pid=$(docker exec "$node" crictl inspect --output
 go-template --template '{{.info.pid}}' "$cid")`, `docker exec "$node" kill -9 "$pid"` — a `kill -9 1` from inside the pod's own pid namespace is dropped by the kernel.
-Expect the daemon log line `<role token>: worker process died (its stream closed and the one reconnect was refused);
-launch failure 1/3; relaunching the same agent with --resume and its catch-up`, then `respawning <issue> by resuming OMP session <path>`, within seconds.
+Expect the daemon's warning `supervise: process died`, with the dead process's `incarnation`, the `observed` kind, its `detail` and `chargedBefore` (`Machine.died`, `internal/supervise/machine.go`), then, within seconds, `supervise: launched` with the claim's `generation`, the new `incarnation` and `resumed=true`, since the relaunch resumes the session it recorded.
 
 ### Trust model: the provisioning token
 
@@ -7443,7 +7443,7 @@ No operator token reaches the pod.
 Under `controller: daemon` the claim route registers the controller only from a launch of this claim:
 a token no launch resolves is refused as an invalid boot token, the operator's capability and the token of a launch the claim has since replaced among them, so a replaced pod never registers outside its claim's generation fence.
 `/legion-claim-controller` registers the boot token only in the controller's own session (`LEGION_CONTROLLER=1`);
-in a root architect's or phase worker's session it needs the operator's capability like any other takeover, and stops before any daemon call without one.
+in an architect's or phase worker's session it needs the operator's capability like any other takeover, and stops before any daemon call without one.
 
 **The pod.**
 Sandbox `legion-<project>-controller` in `runtime.kubernetes.namespace` runs the pod an issue's Sandbox runs ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)) with a one-role list, on the Legion pool under gVisor, with the operator's pod (`runtime.kubernetes.pod`) and the providers Secret, so it reaches models by the route every worker does.

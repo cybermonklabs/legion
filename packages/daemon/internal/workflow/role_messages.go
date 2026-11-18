@@ -7,9 +7,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// roleRecipient is one role a message is addressed to: issue, whose role it is - a tree
-// architect's is its tree's root - role, and row, the issue whose outbox the message is written
-// to, which differs from issue only for the architect of another issue's tree.
+// roleRecipient is one role a message is addressed to: issue, whose role it is - an architect's is
+// the issue it is the architect of, its tree's root for the tree's own - role, and row, the issue
+// whose outbox the message is written to, which differs from issue only for an architect told of
+// an issue below its own.
 type roleRecipient struct {
 	issue string
 	role  claim.Role
@@ -25,8 +26,8 @@ type addressedRole struct {
 
 // addressRoles is the one collection the daemon's role messages are addressed by (tellChecks,
 // tellGateMoved): the claim token of each recipient, in the order given and each token once, so a
-// role named twice - the implementer that also holds the phase, a tree member whose phase is its
-// architect's - is told once. A recipient with no role is a phase no worker holds, and is nobody.
+// role named twice - the implementer that also holds the phase - is told once. A recipient with no
+// role is a phase no worker holds, and is nobody.
 //
 // unnamable is the policy for a recipient whose claim token cannot be built, which is the whole of
 // what the two senders differ in: nil ends the collection with that error, and so the fact's
