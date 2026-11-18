@@ -367,6 +367,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.identity = workflow.identity
 		plan.repository = workflow.issueRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
+		plan.owner = workflow.owningArchitect
 		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
 		// from here: the operator's spawn draws a tree's experiments with no workflow
 		// configured, and the launch that follows it must honour the draw it made.
@@ -377,6 +378,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
+		// From here on, a claim write that changes a role holder queues its issue's publication in
+		// its own transaction, and the store tells the issue once that commits, so its lane is woken
+		// at once rather than at its next sweep. Only a daemon with a workflow runs an outbox to send
+		// the row, so only this one turns the publication on (store.PublishRoleHolders). It is turned
+		// on before supervision restores a claim, so no claim write of this boot is left out.
+		st.PublishRoleHolders(func(issue string) { workflow.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 		// The memory guards' kill holder is filled here, once the workflow is open
 		// (memoryGuardKills).
@@ -698,6 +705,10 @@ type plan struct {
 	// ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 	// missing or not checked out (workflowRuntime.ensureWorkspace); nil without a workflow.
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
+	// owner is the architect that owns a claim on an issue that is not its tree's root, read from
+	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the
+	// launch's addressing names; nil without a workflow.
+	owner func(ctx context.Context, project string, c supervise.Claim) (claim.Token, error)
 	// repositories is the project's repository mapping as the workflow serves it, empty until the
 	// workflow reads it at boot: the set every role's gh bundle is built over, a directory per
 	// owner of it and one per repository the pod's own owner serves beside the one it writes to
@@ -1361,10 +1372,10 @@ func (s *supervision) waitingWakes() []supervise.WaitingWake {
 // releaseWaiting reads the same set through the same WaitingNotices and leaves behind exactly the
 // rows whose reserved moment is still ahead of now): a row whose moment has come is a wake that
 // is running or about to, or one whose attempt failed and is waiting on a backoff of its own, and
-// neither is a wake the pacing holds. Each goes to the root architect of its issue, whose token
-// it is composed for exactly as the line that wake writes composes it (the outbox's wakeRan),
-// since the row names the issue and the kind alone. A project whose outbox holds no such row
-// allocates nothing.
+// neither is a wake the pacing holds. Each goes to the architect of its own issue, a root's or a
+// child's, whose token it is composed for exactly as the line that wake writes composes it (the
+// outbox's wakeRan), since the row names the issue and the kind alone. A project whose outbox
+// holds no such row allocates nothing.
 func pacedCatchUps(ctx context.Context, tx pgx.Tx, records record.Store, project, dispatchProject string, now time.Time) ([]api.WakeWaiting, error) {
 	waiting, err := records.WaitingNotices(ctx, tx, dispatchProject, now)
 	if err != nil {
@@ -1447,7 +1458,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			identity: p.identity, repository: p.repository,
+			identity: p.identity, repository: p.repository, owner: p.owner,
 			repositories: func() api.RepositoriesView { return p.repositories.view(nil) },
 			designSteps:  cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
@@ -2282,6 +2293,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var grants *credential.Grants
 	var claimReady func(supervise.Claim)
 	var handoffCompleted func(string)
+	var roleHoldersChanged func(context.Context, supervise.Claim) error
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
 	var await func(repo, tree, child, parent string)
@@ -2292,6 +2304,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.tokens, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
 		handoffCompleted = workflow.handoffCompleted
+		roleHoldersChanged = workflow.roleHoldersChanged
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.consumers.Lag
 		architectStalls = workflow.admission.ArchitectStallArms
@@ -2371,6 +2384,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		HandoffCompleted:   handoffCompleted,
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,
+		RoleHoldersChanged: roleHoldersChanged,
 		ReleaseRecords:     st,
 		ClaimActivity:      st,
 	})

@@ -68,6 +68,21 @@ const (
 	StateRetired ClaimState = "retired"
 )
 
+// allStates is every ClaimState, in the order the constants above declare them.
+// TestStatesIsEveryDeclaredStateOnce holds it to the constants the compiler sees in this package,
+// so a state added above and left out here fails that test.
+var allStates = []ClaimState{
+	StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered, StateReady,
+	StateWorking, StateIdle, StateSuspended, StateFailed, StateRetired,
+}
+
+// States is every state a claim can be in, in the order they are declared: the one list a test
+// outside this package walks to cover each state. It is a copy, so no caller changes the
+// package's own list.
+func States() []ClaimState {
+	return slices.Clone(allStates)
+}
+
 // SuspendSource is who suspended a claim. The daemon resumes a suspended claim by rule on the
 // triggers main had — its phase's start, a workflow delivery, the controller keeper
 // (RequestRuleResume) — unless an operator suspended it: that suspension holds until the operator
@@ -644,8 +659,9 @@ func (c Claim) RuleMayResume() bool {
 // Released is whether the claim is the one suspension a wake brings back: the daemon released its
 // idle issue pod, so the claim keeps its session, its phase and its pending task, and the next
 // wake for its role resumes it (SuspendedByReleased). Every rule that acts on a released claim —
-// the wakes, the notice routing, the stranded report, a release the store cancelled — reads it
-// here rather than spelling the pair out again.
+// the wakes, the notice routing and a reader in a transaction (both through record.HoldsRole), the
+// stranded report, a release the store cancelled — reads it here rather than spelling the pair out
+// again.
 func (c Claim) Released() bool {
 	return c.State == StateSuspended && c.SuspendedBy == SuspendedByReleased
 }
@@ -2859,6 +2875,13 @@ func (m *Machine) sessionGone() {
 // nothing of. The session is recorded as abandoned, with why it was, since nothing else keeps
 // where it went and the fresh agent is told of it in its first task.
 //
+// It is the one place a claim leaves its session behind, so every start, retry or resume of a
+// claim relaunches the session the claim records, and a claim starts in a new session only after
+// this ran. It has three callers: the launch's startFresh, for a session no store holds any more;
+// retry, when freshSession says the retry needs a new session; and the operator's forget-session
+// (forgetSession, the table's), which `legion claims retry --fresh-session` and the controller's
+// fresh_session run (api's freshSession).
+//
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended (EndedWork), and this is the one place that rule is written. When it records the
 // abandoned session, it ends that record too: a record that still tells is marked told, by no
@@ -2868,7 +2891,7 @@ func (m *Machine) sessionGone() {
 // them, so the record's sentence would tell it that work it never had has stopped. A record that
 // tells beside an abandoned session that tells is therefore always one of the fresh session's own
 // processes, and each reader tells both: the prompt's composer (Delivery.message), the delivery
-// of the record alone (queueRelaunch), and the ready's sentence for a root architect's catch-up
+// of the record alone (queueRelaunch), and the ready's sentence for an architect's catch-up
 // (the daemon's applyTerminal). A delivery of the record alone that the claim still holds has
 // nothing left to say, and its next send retires it (sendPending).
 //

@@ -399,7 +399,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockNotYetSettled(t *testing.T) {
 				if ask.Author.Kind != "session" || ask.Author.ID != sessionActor()["id"] {
 					t.Fatalf("withdrawn decision's author = %#v, want the session that wrote it", ask.Author)
 				}
-				requireWithdrawn(t, handler, issue.Key, id, model.Actor{Kind: "user", ID: "alice"})
+				requireWithdrawn(t, handler, issue.Key, id, model.Actor{Kind: "user", ID: "alice", Proven: true})
 				return
 			}
 			if id != "" {
@@ -479,7 +479,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockPastedUnderARepeatedID(t *testing.
 			if closed.Code != http.StatusOK {
 				t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 			}
-			closer := model.Actor{Kind: "user", ID: "alice"}
+			closer := model.Actor{Kind: "user", ID: "alice", Proven: true}
 			requireWithdrawn(t, handler, issue.Key, original, closer)
 			live, _ := documentTexts(t, handler, issue.PrimaryArtifactID)
 			if strings.Contains(live, `state="open"`) {
@@ -625,7 +625,7 @@ func TestClosingAnIssueWithdrawsADecisionBlockWhoseRoomAnotherProcessLeftBehind(
 	if ask.Author.Kind != "session" || ask.Author.ID != sessionActor()["id"] {
 		t.Fatalf("withdrawn decision's author = %#v, want the session that wrote it", ask.Author)
 	}
-	requireWithdrawn(t, handler, issue.Key, id, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, id, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	requireLiveText(t, handler, issue.PrimaryArtifactID,
 		"Written on the other process.",
 		`#late-decision urgency="high" multiple="false" state="resolved"`,

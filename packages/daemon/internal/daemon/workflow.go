@@ -164,9 +164,10 @@ type workflowRuntime struct {
 	// under recoveringMu. silenced is, by the same repository, each issue whose apply said nothing
 	// because the repository was unread (noteUnread), which the repository's recovery takes into its
 	// scope whatever the issue resolves to by then; releaseWaits is, by repository, each child a
-	// release_children left unrecorded on it (awaitRecovery), whose tree's architect the recovery
-	// tells of each it did not record; recoveryHeldSince is when a recovery's listing was first
-	// found held with waits to tell (zero for none), so a hold past recoveryHoldBound tells them.
+	// release_children left unrecorded on it (awaitRecovery), whose architect the recovery tells
+	// of each it did not record (tellReleaseWaits); recoveryHeldSince is when a recovery's listing
+	// was first found held with waits to tell (zero for none), so a hold past recoveryHoldBound
+	// tells them.
 	// recheckAfter is refreshOnMappingChange's wait before a read of its own, time.After when nil;
 	// a test sees each wait through it.
 	repositories      *repositories
@@ -473,6 +474,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err := w.queueRecordedGatesPublish(ctx); err != nil {
 		return nil, err
 	}
+	if err := w.queueRoleHoldersPublish(ctx); err != nil {
+		return nil, err
+	}
 	return w, nil
 }
 
@@ -543,6 +547,74 @@ func (w *workflowRuntime) queueRecordedGatesPublish(ctx context.Context) error {
 		return fmt.Errorf("queue the recorded design-gates publications of %s: %w", w.dispatchProject, err)
 	}
 	committed()
+	return nil
+}
+
+// roleHoldersPublishWindow is how far back the boot looks for a claim change that a release
+// before this one made and did not publish (queueRoleHoldersPublish): a claim whose last write is
+// older and that is not live is not read. No plan gives the number a reason beyond bounding the
+// boot's read. Each issue inside it costs the boot one outbox row and its lane one PUT, so a
+// longer window costs a boot one more of each for every issue whose claims last changed inside the
+// longer span.
+const roleHoldersPublishWindow = 7 * 24 * time.Hour
+
+// queueRoleHoldersPublish queues one role-holder publication for each issue of the project that has
+// a live claim, or a claim that changed in the last roleHoldersPublishWindow (RecentClaimIssues),
+// in one transaction. Every claim write of this release that changes a holder queues its own
+// publication in its own transaction (store's putClaim), so this pass recovers no change of this
+// release. It publishes what a release that published nothing left: a daemon that upgrades from
+// such a release starts over running sessions that Dispatch has never been told of, and a roll
+// forward after a rollback to one finds the claims that release changed. A claim that release
+// ended longer than roleHoldersPublishWindow before the roll forward stays listed on Dispatch
+// until the next change of a claim on its issue. A boot that cannot write the rows fails the boot,
+// as the design-gates pass does, and queueing rather than writing means a Dispatch that is down
+// refuses no boot. The lane is woken on commit (enqueueRoleHolders), which before attach reaches
+// nothing: the outbox's first sweep runs whatever this pass left.
+func (w *workflowRuntime) queueRoleHoldersPublish(ctx context.Context) error {
+	now := time.Now().UTC()
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		issues, err := w.records.RecentClaimIssues(scoped, tx, w.dispatchProject, now.Add(-roleHoldersPublishWindow))
+		if err != nil {
+			return err
+		}
+		for _, issue := range issues {
+			if err := w.enqueueRoleHolders(scoped, tx, issue, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("queue the role-holder publications of %s: %w", w.dispatchProject, err)
+	}
+	committed()
+	return nil
+}
+
+// roleHoldersChanged queues the publication of c's issue's role sessions for the ready route
+// (api's Options.RoleHoldersChanged), before the claim takes a boot's or a role-regain's ready, in
+// a transaction of its own, which owns the commit hook its write registers, so the board lane is
+// woken once it commits. An error is the route's to answer: it refuses the ready with 503, so no
+// task goes first.
+func (w *workflowRuntime) roleHoldersChanged(ctx context.Context, c supervise.Claim) error {
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
+		return w.enqueueRoleHolders(scoped, tx, c.Issue, time.Now().UTC())
+	}); err != nil {
+		return fmt.Errorf("queue the role-holder publication of %s: %w", c.Issue, err)
+	}
+	committed()
+	return nil
+}
+
+// enqueueRoleHolders queues the publication of issue's role sessions in tx
+// (store.EnqueueRoleHolders), and wakes the issue's board lane once tx commits, through the commit
+// scope of ctx (intake.WithCommitHooks), which both callers open.
+func (w *workflowRuntime) enqueueRoleHolders(ctx context.Context, tx pgx.Tx, issue string, nextAt time.Time) error {
+	if err := store.EnqueueRoleHolders(ctx, tx, issue, nextAt); err != nil {
+		return err
+	}
+	intake.OnCommit(ctx, func() { w.wakeOutbox(issue, record.OutboxKindRoleHoldersPublish) })
 	return nil
 }
 
@@ -1311,7 +1383,7 @@ func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.C
 //
 // The ready carries the sentence the claim's untold record of what its last let-go ended is told
 // in (supervise.RelaunchSentence, intake.ClaimReady.Relaunch), read from the claim the ready
-// wrote, so a root architect's catch-up opens with it (workflow's QueueCatchUp). A record that
+// wrote, so an architect's catch-up opens with it (workflow's QueueCatchUp). A record that
 // still tells here beside an abandoned session still to tell is one of the fresh session's own
 // processes (supervise's forgetSession), and the catch-up opens with its sentence as it would for
 // any claim. The boot's replay of a ready reads the stored claim, whose record is persisted, and

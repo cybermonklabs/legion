@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  The architect skill now says that the daemon starts an architect on every child when it starts
+  that child's first phase. That architect owns its child. It files its own children under its
+  own issue, releases, parks and reruns them, signs off its own issue, and registers no design
+  gate. The architect above it hears the child's `child-status` and `child-closed`, and that
+  architect's `worker-died` and `worker-stalled`. It also hears every other notice of the child
+  while that architect does not hold its role, which the daemon's `holdsRole` decides. The
+  `legion` tool's description of `handoff_complete` now says that phase workers alone send it,
+  since the daemon refuses an architect's completion. Each parent reviews every
+  version of a child's spec and Verification document with a fresh reader and posts its verdict
+  on the child. A child's architect sends each question for a person to the architect above
+  it. The question goes up to the root architect, which asks it on the root. The worker skills
+  and the `legion` tool's description of `request_backward_move` now name the architect that owns
+  an issue where they named the tree's architect. The controller skill no longer names the tree's
+  architect where it meant a child's own architect. These places are the retry or escalation of
+  a held worker, the architect of a silent worker and the branch of a child. They also include
+  who takes off a `blocked_by` link and who ends a children-first wait. The controller skill now
+  says that a child runs under its own architect once its first phase starts. It also says that
+  a stall of a child's own architect goes to the architect above that child. It sends a Slack
+  question for an architect to the nearest running architect on the issue's chain up to its tree
+  root. Its weekly audit reads each architect's red-team verdict on that architect's own issue,
+  not only the root's.

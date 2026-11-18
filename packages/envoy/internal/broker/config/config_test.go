@@ -147,7 +147,7 @@ func TestLoadLimitsAzureLoginToOneNamedSecret(t *testing.T) {
 // The deployment's binding of each google-service-account agent secret to the one Google account
 // the broker may mint a token for it, BROKER_SERVICE_ACCOUNT_SECRETS: whitespace-separated
 // <SECRET NAME>=<account email> entries, keyed by the name a session asks for, and nil when the
-// setting is unset, which binds nothing and so mints nothing of that kind. Two secrets may name
+// setting is unset, which binds nothing and so mints nothing of that type. Two secrets may name
 // one account, since only the secret name is the key; each refusal names the setting and the
 // whole entry, so an operator reads which one to fix.
 func TestServiceAccountBindingSettingIsRead(t *testing.T) {
@@ -1930,8 +1930,8 @@ func TestLoadReadsTheSignInClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := approval.SignIn{Issuer: "https://accounts.example.com", ClientID: "broker-client", ClientSecret: signInSecret, Domain: "example.com", SessionLifetime: 86400 * time.Second}
-	if cfg.SignIn != want {
-		t.Fatalf("SignIn = %+v, want %+v", cfg.SignIn, want)
+	if cfg.SignIn != want || cfg.SignInOff {
+		t.Fatalf("SignIn = %+v, SignInOff = %v; want %+v with sign-in on", cfg.SignIn, cfg.SignInOff, want)
 	}
 	e := validEnv()
 	e["BROKER_SIGNIN_SESSION_SECONDS"] = "600"
@@ -2027,6 +2027,158 @@ func TestLoadRefusesASignInIssuerThatIsNotHTTPS(t *testing.T) {
 		e["BROKER_SIGNIN_ISSUER"] = bad
 		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SIGNIN_ISSUER") || strings.Contains(err.Error(), signInSecret) {
 			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want a refusal naming it", bad, err)
+		}
+	}
+}
+
+// signInOffEnv is validEnv with the broker's person sign-in turned off: BROKER_SIGNIN=off and
+// none of the four sign-in settings.
+func signInOffEnv() map[string]string {
+	e := validEnv()
+	for _, name := range signInSettings {
+		delete(e, name)
+	}
+	e["BROKER_SIGNIN"] = "off"
+	return e
+}
+
+// TestLoadStartsABrokerWithSignInOff: BROKER_SIGNIN=off with no sign-in setting at all loads,
+// holding no sign-in client, which is the broker a deployment runs while how its people sign in
+// is not settled.
+func TestLoadStartsABrokerWithSignInOff(t *testing.T) {
+	cfg, err := Load(env(signInOffEnv()))
+	if err != nil {
+		t.Fatalf("Load(BROKER_SIGNIN=off, no sign-in setting) = %v, want a broker that starts", err)
+	}
+	if !cfg.SignInOff || cfg.SignIn != (approval.SignIn{}) {
+		t.Fatalf("SignInOff = %v, SignIn = %+v; want sign-in off and no sign-in client", cfg.SignInOff, cfg.SignIn)
+	}
+}
+
+// TestLoadRefusesAPublicURLThatIsNotHTTP pins BROKER_PUBLIC_URL to an http or https URL whether
+// sign-in is on or off. The approval page's constructor used to be the only check of its scheme,
+// and a broker with sign-in off builds no page, so without this one it would start on an ftp://
+// URL and name endpoints in its metadata that no client of its own can call.
+func TestLoadRefusesAPublicURLThatIsNotHTTP(t *testing.T) {
+	for name, base := range map[string]func() map[string]string{"sign-in on": validEnv, "sign-in off": signInOffEnv} {
+		for _, bad := range []string{"ftp://secrets.internal.example", "ws://secrets.internal.example", "unix://secrets.internal.example"} {
+			e := base()
+			e["BROKER_PUBLIC_URL"] = bad
+			if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_PUBLIC_URL") {
+				t.Errorf("%s: Load(BROKER_PUBLIC_URL=%q) = %v, want a refusal naming it", name, bad, err)
+			}
+		}
+		for _, good := range []string{"https://secrets.internal.example", "http://127.0.0.1:13380"} {
+			e := base()
+			e["BROKER_PUBLIC_URL"] = good
+			if _, err := Load(env(e)); err != nil {
+				t.Errorf("%s: Load(BROKER_PUBLIC_URL=%q) = %v, want it read", name, good, err)
+			}
+		}
+	}
+}
+
+// TestLoadKeepsMainsPublicURLRefusal pins the refusal main gives a BROKER_PUBLIC_URL with a path,
+// or with no scheme, word for word: the http(s) rule is a check of its own, and it does not
+// reword the one a deployment already reads.
+func TestLoadKeepsMainsPublicURLRefusal(t *testing.T) {
+	for _, bad := range []string{"https://secrets.internal.example/broker", "secrets.internal.example"} {
+		e := validEnv()
+		e["BROKER_PUBLIC_URL"] = bad
+		want := "BROKER_PUBLIC_URL must be an absolute URL with no path: " + strconv.Quote(redact.URL(bad))
+		if _, err := Load(env(e)); err == nil || err.Error() != want {
+			t.Errorf("Load(BROKER_PUBLIC_URL=%q) = %v; want main's %q", bad, err, want)
+		}
+	}
+}
+
+// TestLoadRefusesTheSignInBeforeThePublicURLsScheme pins the order main refuses in: an ftp://
+// BROKER_PUBLIC_URL beside a sign-in missing BROKER_SIGNIN_DOMAIN is refused for the sign-in, as
+// main's Load did, since main refused the scheme only later, in approval.New. The scheme check is
+// Load's last, so every refusal main's Load gave comes first, as it did.
+func TestLoadRefusesTheSignInBeforeThePublicURLsScheme(t *testing.T) {
+	e := validEnv()
+	e["BROKER_PUBLIC_URL"] = "ftp://secrets.internal.example"
+	delete(e, "BROKER_SIGNIN_DOMAIN")
+	const want = "the broker's approval page needs BROKER_SIGNIN_ISSUER, BROKER_SIGNIN_CLIENT_ID, BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN; missing BROKER_SIGNIN_DOMAIN"
+	if _, err := Load(env(e)); err == nil || err.Error() != want {
+		t.Fatalf("Load(ftp:// URL, no BROKER_SIGNIN_DOMAIN) = %v; want main's sign-in refusal first, %q", err, want)
+	}
+}
+
+// TestLoadWithTheSwitchUnsetRefusesAnEmptySignIn pins that a broker which does not say
+// BROKER_SIGNIN=off still refuses to start with no sign-in, in the very words it always has: a
+// production broker that lost its sign-in settings must not come up without its approval page.
+// An empty BROKER_SIGNIN is the switch unset.
+func TestLoadWithTheSwitchUnsetRefusesAnEmptySignIn(t *testing.T) {
+	const want = "the broker's approval page needs BROKER_SIGNIN_ISSUER, BROKER_SIGNIN_CLIENT_ID, BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN; missing BROKER_SIGNIN_ISSUER, BROKER_SIGNIN_CLIENT_ID, BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN"
+	for name, value := range map[string]*string{"unset": nil, "empty": new("")} {
+		e := signInOffEnv()
+		delete(e, "BROKER_SIGNIN")
+		if value != nil {
+			e["BROKER_SIGNIN"] = *value
+		}
+		if _, err := Load(env(e)); err == nil || err.Error() != want {
+			t.Errorf("Load(BROKER_SIGNIN %s, no sign-in setting) = %v, want %q", name, err, want)
+		}
+	}
+}
+
+// TestLoadRefusesSignInOffBesideASignInSetting pins that off is one thing and a sign-in client
+// another: off beside any BROKER_SIGNIN_* setting the broker reads refuses, naming the switch and
+// every such setting that is set, rather than choosing one of the two for the operator.
+func TestLoadRefusesSignInOffBesideASignInSetting(t *testing.T) {
+	values := map[string]string{
+		"BROKER_SIGNIN_ISSUER":             "https://accounts.example.com",
+		"BROKER_SIGNIN_CLIENT_ID":          "broker-client",
+		"BROKER_SIGNIN_CLIENT_SECRET_FILE": signInSecretFile,
+		"BROKER_SIGNIN_DOMAIN":             "example.com",
+		"BROKER_SIGNIN_SESSION_SECONDS":    "600",
+		"BROKER_SIGNIN_DEVICE_AUDIENCE":    "example-device-client",
+	}
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		e := signInOffEnv()
+		e[name] = values[name]
+		want := "BROKER_SIGNIN=off turns the broker's person sign-in off, and " + name + " is set: set BROKER_SIGNIN=off or the sign-in settings, not both"
+		if _, err := Load(env(e)); err == nil || err.Error() != want {
+			t.Errorf("Load(BROKER_SIGNIN=off, %s) = %v, want %q", name, err, want)
+		}
+	}
+	e := validEnv()
+	e["BROKER_SIGNIN"] = "off"
+	want := "BROKER_SIGNIN=off turns the broker's person sign-in off, and BROKER_SIGNIN_ISSUER, BROKER_SIGNIN_CLIENT_ID, BROKER_SIGNIN_CLIENT_SECRET_FILE, BROKER_SIGNIN_DOMAIN are set: set BROKER_SIGNIN=off or the sign-in settings, not both"
+	if _, err := Load(env(e)); err == nil || err.Error() != want {
+		t.Errorf("Load(BROKER_SIGNIN=off beside the four) = %v, want %q", err, want)
+	}
+}
+
+// TestLoadRefusesSignInOffBesideTheJudge: the model judge decides a request that waits for a
+// person, and with sign-in off no request waits, so a judge beside off would never run; the
+// broker refuses the pair as it refuses any setting that configures nothing.
+func TestLoadRefusesSignInOffBesideTheJudge(t *testing.T) {
+	e := judgeEnv()
+	for _, name := range signInSettings {
+		delete(e, name)
+	}
+	e["BROKER_SIGNIN"] = "off"
+	const want = "BROKER_SIGNIN=off refuses at once every request that would wait for a person, so the broker's model judge, which decides such a request, would never run: unset the judge's settings (BROKER_JUDGE_MODEL_URL, BROKER_JUDGE_MODEL, BROKER_JUDGE_MODEL_AUDIENCE, BROKER_JUDGE_DISPATCH_URL, BROKER_JUDGE_DISPATCH_TOKEN_FILE) or BROKER_SIGNIN"
+	if _, err := Load(env(e)); err == nil || err.Error() != want {
+		t.Fatalf("Load(BROKER_SIGNIN=off beside the judge) = %v, want %q", err, want)
+	}
+}
+
+// TestLoadRefusesAnySignInSwitchButOff pins that off is the one value BROKER_SIGNIN takes: any
+// other, a word that reads as off to a person included, refuses naming the switch and the value,
+// whether the sign-in settings are there or not, so a misspelled off never starts a broker
+// whose sign-in the operator thought they had turned off, nor one they thought they had kept.
+func TestLoadRefusesAnySignInSwitchButOff(t *testing.T) {
+	for _, bad := range []string{"OFF", "Off", " off", "off ", "disabled", "false", "0", "no", "none", "on", "true"} {
+		for name, e := range map[string]map[string]string{"beside the sign-in settings": validEnv(), "with none": signInOffEnv()} {
+			e["BROKER_SIGNIN"] = bad
+			want := "BROKER_SIGNIN must be off or unset, got " + strconv.Quote(bad)
+			if _, err := Load(env(e)); err == nil || err.Error() != want {
+				t.Errorf("Load(BROKER_SIGNIN=%q %s) = %v, want %q", bad, name, err, want)
+			}
 		}
 	}
 }

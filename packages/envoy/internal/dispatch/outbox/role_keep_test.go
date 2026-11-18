@@ -549,7 +549,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 		t.Fatalf("the stream holds %v on %s, want the handover's copy of the kept event and the next event's forward, each under the id the drain's own forward of it would carry: %v",
 			stored, subject, forwards)
 	}
-	t.Logf("the holder had the kept copy when the scan that kept it returned, %s after that scan began; the issue's next event reached it in the scan that began %s later, which took %s. The copy is on the role's kept lane as well, where nothing but the listener's sweep, minutes apart, would have read it.",
+	t.Logf("the scan that kept the copy and handed it to the holder took %s; the issue's next event was handed to it in the scan that began %s later, which took %s. The copy is on the role's kept lane as well, where nothing but the listener's sweep, minutes apart, would have read it.",
 		keptScan, nextStarted.Sub(started), nextScan)
 }
 
@@ -664,7 +664,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 			t.Fatalf("%s was not published: attempt_count %d, publish_error %v", event.key, attempts, failure)
 		}
 	}
-	received := recv.received()
+	received := recv.receivedNow(t, rig.client)
 	if len(received) != 2 || received[0].EventID != firstKey || received[1].EventID != secondKey {
 		t.Fatalf("the holder received %d forwards (%v) in the scan that kept both copies, want %s and then %s: the second copy is the one the batch's own handover record frees",
 			len(received), eventIDs(received), firstKey, secondKey)
@@ -686,7 +686,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 		t.Fatalf("the stream holds %v on %s, want both handovers under the ids the drain's own forwards of them would carry: %v",
 			stored, subject, forwards)
 	}
-	t.Logf("the holder had both copies of the issue when the scan that kept them returned, %s after it began; nothing drained the lane and nothing swept it.", scanned)
+	t.Logf("the scan that kept both copies of the issue and handed both to the holder took %s; nothing drained the lane and nothing swept it.", scanned)
 }
 
 // Two events of one issue kept in one batch, with the role claimed by one session under the
@@ -740,7 +740,7 @@ func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testi
 			t.Fatalf("%s was not published: attempt_count %d, publish_error %v", event.key, attempts, failure)
 		}
 	}
-	if taken := toFirstHolder.received(); len(taken) != 1 || taken[0].EventID != firstKey {
+	if taken := toFirstHolder.receivedNow(t, rig.client); len(taken) != 1 || taken[0].EventID != firstKey {
 		t.Fatalf("the session that claimed the role under the first keep received %v, want %s alone: the handover behind that keep is the one that reached it",
 			eventIDs(taken), firstKey)
 	}

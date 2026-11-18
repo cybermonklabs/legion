@@ -1,0 +1,9 @@
+name: compare
+description: Compares the spec files of ACME with the approved spec.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        "$RUNNER_TEMP/spec-check" tree --dir .dispatch/spec
+        "$RUNNER_TEMP/spec-check" compare --dir .dispatch/spec --approved a.json

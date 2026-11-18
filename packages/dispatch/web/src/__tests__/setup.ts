@@ -1,7 +1,7 @@
 // The DOM this file's imports read is registered by `register-dom.ts`, the preload before this
 // one: Bun's preload list is the one order that holds, and an import written first inside a file
 // is not (`register-dom.ts` and package.json's `test:web` script say why).
-import { afterAll, afterEach, expect, jest } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, jest } from "bun:test";
 import { configure } from "@testing-library/react";
 // happy-dom has no IndexedDB; the store of a document's unsent edits (`pending-edits.ts`) runs on
 // this in-memory one, which keeps IndexedDB's transaction ordering.
@@ -14,6 +14,11 @@ import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
 import { resetWriteStorage } from "../features/writes/write-storage";
 import { type Writes, watchWriteStores } from "../features/writes/write-store";
+import {
+  failOnActMessages,
+  installActMessageRecorder,
+  restoreQuietConsoleError,
+} from "./act-warnings";
 import { reportableJestDomMatchers } from "./jest-dom-matchers";
 import { forgetTestAnswers, requestsThatReachedNetwork } from "./network";
 import { resetRouteAnswers } from "./send-answers";
@@ -112,15 +117,15 @@ configure({ asyncUtilTimeout: 10_000 });
 afterEach(resetRouteAnswers);
 afterEach(forgetTestAnswers);
 
-// A request answered by nothing fails its test (`network.ts`), and one a page swallowed in a
-// `catch`, or a write loop made after the file's last test - a retry no test is left to fail -
-// fails the file.
+// A request answered by nothing fails its test (`network.ts`), even one a page swallowed in a
+// `catch`, through the last `afterEach` of this file; one made after the file's last test - a
+// write loop's retry, which no test is left to fail - fails the file, through the `afterAll` beside
+// it.
 const reportReachedNetwork = () => {
   const reached = requestsThatReachedNetwork();
   if (reached.length === 0) return;
   throw new Error(`requests reached the network, answered by nothing: ${reached.join(", ")}`);
 };
-afterAll(reportReachedNetwork);
 
 class WebSocketStub {
   binaryType = "arraybuffer";
@@ -196,16 +201,61 @@ afterEach(resetReachability);
 // before its `try` - an awaited helper of its own, say - would otherwise leave every later test
 // in the process, and every later file, with timers that never fire, so one regression reads as
 // timeouts everywhere and the real failure is buried. This runs after the resets above it and
-// before the network report, which stands last for the reason given there, and `useRealTimers`
-// on a test that installed nothing does nothing.
+// before the checks at the end of this file, which stand last for the reason given there, and
+// `useRealTimers` on a test that installed nothing does nothing.
 afterEach(() => {
   jest.useRealTimers();
 });
 
-// The network report is the file's last `afterEach`: it throws for a row that reached the
-// network, and Bun 1.4.4 runs none of a row's `afterEach` hooks that would run after one that
-// throws. Placed earlier, it would leave the next row the drafts, outstanding answers, writes,
-// pin states and reachability the resets above clear, and the fake clock. A test file's own
-// `afterEach` hooks run before this preload's, so the report skips none of them, and one of them
-// that throws skips every hook here.
-afterEach(reportReachedNetwork);
+// A spy of `quietConsoleError` a row did not restore itself is put back here, as a fake clock is
+// just above: one left in place would keep `console.error` quiet for the hooks that run before
+// the next row. It runs before the network report and the act check below, either of whose throws
+// would otherwise skip it.
+afterEach(restoreQuietConsoleError);
+
+// A row in which React printed an act message fails with what React printed (`act-warnings.ts`).
+// The hook order this rests on, measured on Bun 1.4.4: after a row, its file's `afterEach` hooks
+// run and then this preload's, in the order they were registered, and an `afterEach` that throws
+// skips every later `afterEach` of that row. A file's `afterAll` runs before this preload's, and a
+// preload `afterAll` that throws is reported as `(fail) (unnamed)` under the file and skips every
+// preload `afterAll` after it.
+//
+// So the `afterEach` below, the preload's last, runs the network report and then the act check,
+// and throws what failed, as one error when both did: as two `afterEach` hooks, the first to throw
+// would skip the other. Placed earlier, a check that throws would leave the next row the drafts,
+// outstanding answers, writes, pin states and reachability the resets above clear, the fake clock
+// and the quiet spy. That hook charges an act message to the row that printed it, that row's
+// earlier `afterEach` hooks included. A message printed between two rows, or in a row whose check
+// was skipped because one of the file's own `afterEach` hooks threw first, is charged to the next
+// row, hence "in or before this row"; the failure's test frames still point at the code that
+// printed it. A message printed after the last row's check, or in a last row whose check was
+// skipped, fails the file through the `afterAll` below, hence "in or after this file's last row".
+//
+// That `afterAll` runs the same two checks the same way. It runs once per file under `--parallel`,
+// which `test:web` passes; a plain `bun test` over several files runs it once, at the end of the
+// run. Keep this block the last of the file, so its throws skip no other hook and its checks run
+// after every other: a hook added later goes above it.
+//
+// The `beforeEach` puts back a spy of `quietConsoleError` that the row before left in place
+// because one of that row's own `afterEach` hooks threw before the one beside the clock restore
+// ran.
+installActMessageRecorder();
+beforeEach(restoreQuietConsoleError);
+
+/** Runs each check, and throws what failed: one error when more than one did. */
+function runChecks(...checks: (() => void)[]): void {
+  const failures: Error[] = [];
+  for (const check of checks) {
+    try {
+      check();
+    } catch (failure) {
+      failures.push(failure as Error);
+    }
+  }
+  if (failures.length > 1) throw new Error(failures.map((failure) => failure.message).join("\n"));
+  if (failures.length === 1) throw failures[0];
+}
+afterEach(() => runChecks(reportReachedNetwork, () => failOnActMessages("in or before this row")));
+afterAll(() =>
+  runChecks(reportReachedNetwork, () => failOnActMessages("in or after this file's last row"))
+);

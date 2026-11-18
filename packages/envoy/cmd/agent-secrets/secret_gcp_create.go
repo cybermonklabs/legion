@@ -89,7 +89,7 @@ func (n *gcpNewSecret) begin(ctx context.Context) (discardOutcome, error) {
 		return outcome, fmt.Errorf("%w; %s", err, left)
 	}
 	if b.mayNotAdd(ctx, n.name) {
-		refusal := fmt.Errorf("%s may create %s but not add its value: IAM grants it no %s on the secret, so no value was asked for", b.identity(), n.name, addPermission)
+		refusal := fmt.Errorf("%s may create %s but not add its value: IAM grants it no %s on the secret, so no value was asked for; %s", b.identity(), n.name, addPermission, b.chooseAnother())
 		outcome, left := n.discard(ctx)
 		if left != nil {
 			return outcome, fmt.Errorf("%w; %w", refusal, left)
@@ -165,27 +165,29 @@ func (b *gcpBackend) gcloud(args ...string) string {
 }
 
 // gcloudPin is the shell assignments that make gcloud sign in as this command did, each
-// shell-quoted: CLOUDSDK_CORE_ACCOUNT for the gcloud login it used, and
+// shell-quoted, by the source the credential came from: CLOUDSDK_ACTIVE_CONFIG_NAME for the
+// configuration CLOUDSDK_ACTIVE_CONFIG_NAME named, the variables that chose a gcloud configuration or login as they
+// were set, CLOUDSDK_CORE_ACCOUNT for the active gcloud account's login, and
 // CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE for the key file GOOGLE_APPLICATION_CREDENTIALS named;
-// "" for a token CLOUDSDK_AUTH_ACCESS_TOKEN lent, which gcloud reads from the same environment, and
-// for credentials gcloud cannot be pointed at (the metadata server's, or the default file's), which
-// the name after the command (gcloud) says to use.
+// "" for a token CLOUDSDK_AUTH_ACCESS_TOKEN lent, which gcloud reads from the same environment,
+// and for credentials gcloud cannot be pointed at (the metadata server's, or the well-known
+// file's), which the name after the command (gcloud) says to use.
 func (b *gcpBackend) gcloudPin() string {
-	switch {
-	case os.Getenv("CLOUDSDK_AUTH_ACCESS_TOKEN") != "":
-		return ""
-	case b.login.account != "":
-		return "CLOUDSDK_CORE_ACCOUNT=" + shellWord(b.login.account) + " "
-	case os.Getenv("GOOGLE_APPLICATION_CREDENTIALS") != "":
+	switch b.source {
+	case sourceChosenGcloud:
+		return b.signInPrefix()
+	case sourceActiveGcloud:
+		return "CLOUDSDK_CORE_ACCOUNT=" + shellWord(b.gcloudAccount) + " "
+	case sourceCredentialsFile:
 		return "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + shellWord(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS")) + " "
 	}
 	return ""
 }
 
 // agentSecrets is an agent-secrets command line for printing, with the sign-in prefix that makes
-// it sign in as this command did (signInPrefix).
+// it sign in as this command did (signInPrefix, pipeCommand).
 func (b *gcpBackend) agentSecrets(words ...string) string {
-	return pipeCommand(b.signInPrefix(), "", words...)
+	return pipeCommand(b.signInPrefix(), words...)
 }
 
 // gcpNewSecret is the empty secret create made: name its whole resource name, secretID the id

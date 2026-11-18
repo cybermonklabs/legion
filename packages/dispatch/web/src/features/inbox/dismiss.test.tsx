@@ -222,7 +222,9 @@ test("`e` dismisses the thread row in hand and does nothing on an ask", async ()
     threads: ["reply:c1"],
   });
   expect(rowIds()).not.toContain("reply:c1");
-  settle.resolve({ dismissed: 1 });
+  await act(async () => {
+    settle.resolve({ dismissed: 1 });
+  });
 });
 
 test("the bulk bar offers Snooze for the asks among the selection and Dismiss for the threads", async () => {
@@ -255,7 +257,9 @@ test("the bulk bar offers Snooze for the asks among the selection and Dismiss fo
     seen_replies: { "reply:c1": SEEN },
     threads: ["reply:c1"],
   });
-  settle.resolve({ dismissed: 1 });
+  await act(async () => {
+    settle.resolve({ dismissed: 1 });
+  });
 });
 
 test("Select all over the Inbox's own read names every row of the group by id and drawn version", async () => {

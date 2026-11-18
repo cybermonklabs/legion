@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -235,6 +237,96 @@ func TestOutboxSetsTheStatusOfAWriteWhoseReasonDispatchRefusesAgainstScratchDisp
 		!strings.Contains(notice.Reason, issue) || !strings.Contains(notice.Reason, "CAP_EXCEEDED") ||
 		!strings.Contains(notice.Reason, "The status done was set on the issue all the same") {
 		t.Fatalf("the notice = %+v, want message-refused to the architect naming %s, Dispatch's refusal and the status it set", notice, issue)
+	}
+}
+
+// The daemon's board lane publishes an issue's role sessions to a real Dispatch built from this
+// tree, and the route stores them: the tester's ready claim is the one holder Dispatch lists. Once
+// the claim retires, the next publication sends the empty set and the tester's session leaves the
+// list. The first read is made before the lane runs, so the holder Dispatch lists after it is the
+// publication's own and not a set something else wrote.
+func TestRoleHoldersLandInScratchDispatch(t *testing.T) {
+	baseURL, token := startScratchDispatch(t)
+	issue := createScratchDispatchIssue(t, baseURL)
+	r := newRoleHoldersRig(t)
+	r.runner.dispatch = dispatch.New(baseURL, token)
+	logs := &syncBuffer{}
+	r.runner.log = slog.New(slog.NewTextHandler(logs, nil))
+	tester := r.seedClaim(issue, claim.RoleTester, "ses-tester", "ready", time.Minute)
+
+	holders := func() []dispatch.RoleHolder {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/issues/"+url.PathEscape(issue)+"/role-holders", nil)
+		if err != nil {
+			t.Fatalf("build the role-holder read: %v", err)
+		}
+		request.Header.Set("Authorization", "Bearer "+token)
+		response, err := pollClient.Do(request)
+		if err != nil {
+			t.Fatalf("read the role holders of %s: %v", issue, err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(response.Body)
+			t.Fatalf("read the role holders of %s = %s %s", issue, response.Status, body)
+		}
+		var read struct {
+			Issue   string                `json:"issue"`
+			Holders []dispatch.RoleHolder `json:"holders"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&read); err != nil {
+			t.Fatalf("decode the role holders of %s: %v", issue, err)
+		}
+		if read.Issue != issue {
+			t.Fatalf("the read answered issue %q, want %s", read.Issue, issue)
+		}
+		return read.Holders
+	}
+	run := func() {
+		t.Helper()
+		if err := r.runner.RunOnce(r.ctx); err != nil {
+			t.Fatalf("run the outbox: %v", err)
+		}
+		if rows := outboxRows(t, r.pool); rows != 0 {
+			t.Fatalf("the outbox holds %d rows after the run, want the publication finished", rows)
+		}
+	}
+
+	r.enqueue(issue)
+	if got := holders(); len(got) != 0 {
+		t.Fatalf("before the lane ran, Dispatch lists %+v, want no holder", got)
+	}
+	run()
+	if got, want := holders(), []dispatch.RoleHolder{{Role: "tester", Session: "ses-tester"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the publication, Dispatch lists %+v, want %+v", got, want)
+	}
+
+	r.moveClaim(tester, "retired")
+	r.enqueue(issue)
+	run()
+	if got := holders(); len(got) != 0 {
+		t.Fatalf("after the tester retired, Dispatch lists %+v, want no holder", got)
+	}
+
+	// A set the route refuses ends the row on the first answer, rather than being sent for as long
+	// as the issue lives: a claim whose session is no session id, which the route answers 400
+	// INVALID_ROLE_HOLDER. The daemon logs one ERROR line naming the issue and the code, and
+	// Dispatch keeps the set it holds.
+	r.seedClaim(issue, claim.RoleReviewer, "ses reviewer", "ready", time.Minute)
+	r.enqueue(issue)
+	run()
+	if got := holders(); len(got) != 0 {
+		t.Fatalf("after the refused publication, Dispatch lists %+v, want the set it held, no holder", got)
+	}
+	var refused []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, "role-holders publish refused by Dispatch") {
+			refused = append(refused, line)
+		}
+	}
+	if len(refused) != 1 || !strings.Contains(refused[0], "level=ERROR") || !strings.Contains(refused[0], "issue="+issue) ||
+		!strings.Contains(refused[0], "code=INVALID_ROLE_HOLDER") {
+		t.Fatalf("the refusal was logged as %q, want one ERROR line naming %s and INVALID_ROLE_HOLDER", refused, issue)
 	}
 }
 
