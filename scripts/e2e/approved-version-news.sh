@@ -54,14 +54,14 @@
 # plugins in a profile of the run's own, a real Envoy listener on natsd, both built from the
 # checkout, the real Dispatch, and the real model behind the gateway ANTHROPIC_BASE_URL names. It
 # runs three steps, three times in each arm it runs them in, the head's prompts and the base's
-# (the base below): a4-the-architect-tells-the-child-reviewer in the head arm alone, and
-# off-the-architect-tells-the-holders and
-# answers-a-stale-reviewer-moves-back-a-current-one-comments in both, which the driver's file
-# describes. It prints each run's evidence and `run <step> <arm> <n>: <outcome> …`. PASS and FAIL
-# are runs that reached the step's assertion. SETUP is a run that stopped before it, such as a
-# holder that did not end its start turn in the run's bound, or an architect that did not write
-# the version its task asks for. The a4 and off steps assert the telling of that version. HARNESS
-# is a run the harness failed, before or after the step's own outcome, or one in which a session's
+# (the base below): a4-the-architect-tells-the-child-reviewer and
+# answers-a-stale-reviewer-moves-back-a-current-one-comments in the head arm alone, and
+# off-the-architect-tells-the-holders in both, which the driver's file describes. It prints each
+# run's evidence and `run <step> <arm> <n>: <outcome> …`. PASS and FAIL are runs that reached the
+# step's assertion. SETUP is a run that stopped before it, such as a holder that did not end its
+# start turn in the run's bound, or an architect that did not write the version its task asks for.
+# The a4 and off steps assert the telling of that version. HARNESS is a run the harness failed,
+# before or after the step's own outcome, or one in which a session's
 # `legion` tool could not read the daemon: the plugin refused the daemon's answer as a body the
 # daemon API contract does not describe. The driver prints a run's line after it stops the run's
 # daemon, so a fault in that stop makes the run HARNESS too. The driver ends the proof at a
@@ -72,11 +72,14 @@
 # The base arm is the control of each step it runs: it bites when a base run failed at its
 # assertion. A base arm that passed every run that reached its assertion is printed as no control
 # for that step, which fails nothing, and a setup failure is never counted as the control biting.
-# a4's base arm is retired, by the measurement head_only_why below holds: once a4 ran through the
-# child's own architect, which main's #4203 gives every started child, the base arm passed every
-# run of it at the base. Main's own text meets R4 since #4203 (a child's own architect tells its
-# workers of a version once its parent approves it), so the arms cannot be separated there, and
-# the last line says so in a4's place: `a4 head 3/3 (head only: <head_only_why>)`. The driver
+# The base arms of a4 and answers are retired, each by the measurement its entry of head_only
+# below holds: each passed every one of its ten runs at the base, so the arms cannot be separated
+# there, for a reason of its own. a4 runs through the child's own architect, which main's #4203
+# gives every started child, and main's own text meets R4 since #4203 (a child's own architect
+# tells its workers of a version once its parent approves it). The rule answers tests is written
+# in the daemon's own news task (holderRule), which both arms run, since the daemon is the head's
+# in both. The last line says so in each one's place: `a4 head 3/3 (head only: <why>)`, and
+# answers' the same. off is the one step whose control can bite at its base. The driver
 # stops at the first head run that does not pass, since the proof then fails whatever the rest
 # show. The model key is read from APPROVED_VERSION_NEWS_MODEL_KEY_FILE (default
 # /var/run/model-gateway-key/key, where a role pod mounts the gateway's key) by the driver itself,
@@ -89,13 +92,14 @@
 # its driver unchanged: APPROVED_VERSION_NEWS_STEP names one step by the word the last line names
 # it by (a4, off or answers), APPROVED_VERSION_NEWS_ARM one arm (head or base), and
 # APPROVED_VERSION_NEWS_RUNS how many runs each arm makes of each step, a whole number of 1 or more.
-# Each left unset keeps every step, each step's own arms (the head arm alone for a4, both for the
-# others), or three runs; an arm the pick names is the one arm of every step it keeps, a4's base
-# arm among them. The arguments check refuses with exit 2 a value that names none of these, and
-# any of the three beside --part one, --control or --base-commit, which run no part two. The
-# script then counts each arm against that many runs, prints no line for a step the pick leaves
-# out, and prints a step whose base arm the pick leaves out as no control. So the measurement
-# that retired a4's base arm is repeated by one command:
+# Each left unset keeps every step, each step's own arms (the head arm alone for a4 and answers,
+# both for off), or three runs; an arm the pick names is the one arm of every step it keeps, a
+# retired base arm among them. The arguments check refuses with exit 2 a value that names none of
+# these, and any of the three beside --part one, --control or --base-commit, which run no part
+# two. The script then counts each arm against that many runs, prints no line for a step the pick
+# leaves out, and prints a step whose base arm the pick leaves out as no control. So the
+# measurement that retired a base arm is repeated by one command, a4's here and answers' with
+# APPROVED_VERSION_NEWS_STEP=answers:
 #   APPROVED_VERSION_NEWS_STEP=a4 APPROVED_VERSION_NEWS_ARM=base APPROVED_VERSION_NEWS_RUNS=10 \
 #     bash scripts/e2e/approved-version-news.sh
 # with the variables of the usage below beside them.
@@ -206,18 +210,30 @@ part_two_arm_pick=''
 part_two_runs=3
 part_two_minutes=9
 part_two_setup_minutes=20
-# The step a run with no arm picked makes in the head arm alone, as the driver's step table does
-# (sessionsSteps), and the measurement that retired its base arm, which the last line prints in its
-# place. a4 drives R4 through the child's own architect, which main's #4203 gives every started
-# child, and the base commit's own prompts tell that architect to tell its workers of a version
-# once its parent approves it: the base arm passed every one of its runs, so the arms cannot be
-# separated at that base. Measured at 26392323 against its merge base, main 578c6abb:
-# APPROVED_VERSION_NEWS_STEP=a4 APPROVED_VERSION_NEWS_ARM=base APPROVED_VERSION_NEWS_RUNS=10 passed
-# 10 of 10 base runs (dispatch://INFRA-175/artifact/a4-base10-2639232-txt), and
-# APPROVED_VERSION_NEWS_ARM=head APPROVED_VERSION_NEWS_RUNS=3 passed 3 of 3 head runs
-# (dispatch://INFRA-175/artifact/a4-head3-2639232-txt). That command repeats the measurement.
-head_only_step=a4
-head_only_why='the base arm passed 10 of 10 at 578c6abb, main meets R4 since #4203'
+# The steps a run with no arm picked makes in the head arm alone, as the driver's step table does
+# (sessionsSteps, their arms), each as `<word>:<why>`, the why naming the measurement that retired
+# its base arm, which the last line prints in the step's place (head_only_why). Each was measured
+# by APPROVED_VERSION_NEWS_STEP=<word> APPROVED_VERSION_NEWS_ARM=base APPROVED_VERSION_NEWS_RUNS=10,
+# then ARM=head RUNS=3, alone; that command repeats it, and a base arm that passed 3 or more of the
+# 10 cannot be told from the head arm at that base.
+#   - a4 drives R4 through the child's own architect, which main's #4203 gives every started
+#     child, and the base commit's own prompts tell that architect to tell its workers of a
+#     version once its parent approves it. At 26392323 against its merge base, main 578c6abb, the
+#     base arm passed 10 of 10 runs (dispatch://INFRA-175/artifact/a4-base10-2639232-txt) and the
+#     head arm 3 of 3 (dispatch://INFRA-175/artifact/a4-head3-2639232-txt).
+#   - answers tests the rule that a holder whose work a new version makes stale moves back with a
+#     reason naming the version and the change, and one whose work it leaves current writes a
+#     comment naming the version and why. The daemon's own news task states that rule
+#     (holderRule, packages/daemon/internal/workflow/design_news.go), and both arms run the head's
+#     daemon, so the base's role prompts need not carry it. At e5081eb2 against its merge base,
+#     main 578c6abb, the base arm passed 10 of 10 runs
+#     (dispatch://INFRA-175/artifact/answers-base10-e5081eb-txt) and the head arm 3 of 3
+#     (dispatch://INFRA-175/artifact/answers-head3-e5081eb-txt).
+# off is the one step left whose base arm the full run makes: its base arm passed 0 of 3 runs.
+head_only=(
+  "a4:the base arm passed 10 of 10 at 578c6abb, main meets R4 since #4203"
+  "answers:the base arm passed 10 of 10 at 578c6abb, the daemon's news task states the rule in both arms"
+)
 
 # shellcheck source-path=SCRIPTDIR source=lib/live-daemon-proof.sh
 . "$root/scripts/e2e/lib/live-daemon-proof.sh"
@@ -305,13 +321,26 @@ check_jj() {
     fail "$jj is jj ${BASH_REMATCH[1]}.${BASH_REMATCH[2]}, below 0.38, the oldest jj the daemon's boot starts with"
 }
 
+# head_only_why WORD prints the why of WORD's entry of head_only, and answers 1 for a step that
+# has none, whose base arm a run with no arm picked makes.
+head_only_why() {
+  local entry
+  for entry in "${head_only[@]}"; do
+    if [ "${entry%%:*}" = "$1" ]; then
+      echo "${entry#*:}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # step_arms WORD prints the arms part two runs the step WORD in, as the driver runs them
-# (pickSessions): the one arm the pick names for every step, or else head_only_step's head arm
-# alone and both arms of every other step.
+# (pickSessions): the one arm the pick names for every step, or else the head arm alone for a step
+# of head_only and both arms of every other step.
 step_arms() {
   if [ -n "$part_two_arm_pick" ]; then
     echo "$part_two_arm_pick"
-  elif [ "$1" = "$head_only_step" ]; then
+  elif head_only_why "$1" >/dev/null; then
     echo head
   else
     echo head base
@@ -320,8 +349,8 @@ step_arms() {
 
 # part_two_deadline prints the driver's deadline for part two, a Go duration: part_two_minutes for
 # each run it makes, part_two_runs in each arm of each step of part_two_steps (step_arms), and
-# part_two_setup_minutes more. A run with no arm picked makes no base run of head_only_step, and
-# the deadline counts none.
+# part_two_setup_minutes more. A run with no arm picked makes no base run of a step of head_only,
+# and the deadline counts none.
 part_two_deadline() {
   local entry arms armed=0
   for entry in "${part_two_steps[@]}"; do
@@ -339,11 +368,11 @@ part_two_deadline() {
 # in is not read. It sets step_said, the step's part of the last line: WORD, each arm's passed
 # runs of those that reached the assertion, the runs not counted, and the control's verdict. The
 # control bites only when a base run failed at its assertion. A step that runs in the head arm
-# alone has none: head_only_step in a run that picks no arm says why (head_only_why), and a step
-# whose base arm the pick left out says so. It also sets head_missed: each head run that did not
-# reach its assertion and pass, by its line, each after `; `.
+# alone has none: a step of head_only in a run that picks no arm says why (head_only_why), and a
+# step whose base arm the pick left out says so. It also sets head_missed: each head run that did
+# not reach its assertion and pass, by its line, each after `; `.
 part_two_step() {
-  local proof=$1 step=$2 word=$3 arms arm lines ran passed failed line count counts='' base_ran=0 base_passed=0 base_failed=0
+  local proof=$1 step=$2 word=$3 arms arm lines ran passed failed line count counts='' base_ran=0 base_passed=0 base_failed=0 why
   head_missed=''
   arms=$(step_arms "$word")
   for arm in $arms; do
@@ -374,8 +403,8 @@ part_two_step() {
   done
   step_said="$word $counts"
   if [[ " $arms " != *" base "* ]]; then
-    if [ -z "$part_two_arm_pick" ] && [ "$word" = "$head_only_step" ]; then
-      step_said="$step_said (head only: $head_only_why)"
+    if [ -z "$part_two_arm_pick" ] && why=$(head_only_why "$word"); then
+      step_said="$step_said (head only: $why)"
     else
       step_said="$step_said (no control: the pick leaves the base arm out)"
     fi

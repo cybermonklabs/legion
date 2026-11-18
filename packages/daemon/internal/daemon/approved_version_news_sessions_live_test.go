@@ -72,8 +72,8 @@
 // its pane's own command line names and ends the proof when the arm it ran is not the one it
 // meant.
 //
-// Three steps, each run three times in each arm it runs in, each run on trees of its own; a4 runs
-// in the head arm alone, and off and answers in both:
+// Three steps, each run three times in each arm it runs in, each run on trees of its own; a4 and
+// answers run in the head arm alone, and off in both:
 //   - a4-the-architect-tells-the-child-reviewer: under root-issues, a root waiting in admitted and
 //     its child in reviewing, whose reviewer and own architect are live, with the root's architect
 //     live above them; the child's architect is asked to write version 2 of its issue's
@@ -97,22 +97,32 @@
 //     reviewer's request_backward_move names version 2 and moves its issue back, and the second
 //     writes a comment of its own on its issue naming version 2 and stays.
 //
-// a4's base arm is retired. Main's #4203 gives every started child its own architect, and a4
-// drives R4 through it; the base commit's own prompts tell that architect to tell its workers of a
-// version once its parent approves it, which is R4. The base arm passed 10 of its 10 runs at
-// 26392323's merge base, main 578c6abb (dispatch://INFRA-175/artifact/a4-base10-2639232-txt), and
-// the head arm 3 of 3 (dispatch://INFRA-175/artifact/a4-head3-2639232-txt), so no control can
-// separate the arms there: a run with no arm picked makes a4 in the head arm alone
-// (sessionsStep.arms), and the script's last line names that measurement in a4's place, from the
-// constant that holds it (head_only_why in scripts/e2e/approved-version-news.sh). The command
-// that repeats it is APPROVED_VERSION_NEWS_STEP=a4 APPROVED_VERSION_NEWS_ARM=base
+// The base arms of a4 and answers are retired: each passed 10 of its 10 runs at the merge base,
+// main 578c6abb, and its head arm 3 of 3, so no control can separate the arms there. Each has a
+// reason of its own.
+//   - a4 (at 26392323; dispatch://INFRA-175/artifact/a4-base10-2639232-txt and a4-head3-2639232-txt):
+//     main's #4203 gives every started child its own architect, and a4 drives R4 through it; the
+//     base commit's own prompts tell that architect to tell its workers of a version once its
+//     parent approves it, which is R4.
+//   - answers (at e5081eb2; dispatch://INFRA-175/artifact/answers-base10-e5081eb-txt and
+//     answers-head3-e5081eb-txt): the rule it tests, that a holder whose work a new version makes
+//     stale moves back with a reason naming the version and the change and one whose work it leaves
+//     current writes a comment naming the version and why, is written in the daemon's own news task
+//     (holderRule, internal/workflow/design_news.go), and both arms run the head's daemon, so the
+//     base's role prompts need not carry it.
+//
+// A run with no arm picked makes both in the head arm alone (sessionsStep.arms), and the script's
+// last line names each one's measurement in its place, from the constant that holds it (head_only
+// in scripts/e2e/approved-version-news.sh). off is the one step whose control can bite at its base,
+// where its base arm passed 0 of 3 runs. The command that repeats a measurement is
+// APPROVED_VERSION_NEWS_STEP=<a4 or answers> APPROVED_VERSION_NEWS_ARM=base
 // APPROVED_VERSION_NEWS_RUNS=10 bash scripts/e2e/approved-version-news.sh.
 //
 // Three variables the script passes through narrow a run of part two (pickSessions):
 // APPROVED_VERSION_NEWS_STEP names one step by its word (a4, off or answers),
-// APPROVED_VERSION_NEWS_ARM the one arm (head or base) every step it keeps runs in, a4's base arm
-// among them, and APPROVED_VERSION_NEWS_RUNS the count of runs each arm makes of each step, so one
-// command measures one arm of one step as often as it asks.
+// APPROVED_VERSION_NEWS_ARM the one arm (head or base) every step it keeps runs in, a retired base
+// arm among them, and APPROVED_VERSION_NEWS_RUNS the count of runs each arm makes of each step, so
+// one command measures one arm of one step as often as it asks.
 //
 // Each run prints `== <step> <arm> <n>`, its evidence (the tool calls and the messages, from the
 // sessions' own transcripts) and `run <step> <arm> <n>: <outcome> …` with its time and the model
@@ -255,8 +265,8 @@ type sessionsLive struct {
 }
 
 // TestRealSessionsTellAndAnswerANewVersionLive runs the steps, arms and count of runs the pick
-// names (pickSessions), by default each step three times in the head arm and then, for off and
-// answers, three times in the base arm, and stops at the first head run that does not pass: one
+// names (pickSessions), by default each step three times in the head arm and then, for off, three
+// times in the base arm, and stops at the first head run that does not pass: one
 // that failed its assertion, or one that stopped before it. It stops at a run of either arm that
 // the harness failed too (run). A run that -test.run leaves out is none of these.
 func TestRealSessionsTellAndAnswerANewVersionLive(t *testing.T) {

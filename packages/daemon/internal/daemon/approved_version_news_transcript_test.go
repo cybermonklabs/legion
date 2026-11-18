@@ -68,13 +68,13 @@ type sessionsStep struct {
 	arms       []string
 }
 
-// sessionsSteps is every step of part two, in the order a run makes them. a4 runs in the head arm
-// alone, since its base arm passed every run of the measurement the driver's file comment names,
-// and the script's head_only_step names the same step.
+// sessionsSteps is every step of part two, in the order a run makes them. a4 and answers run in the
+// head arm alone, since the base arm of each passed every run of the measurement the driver's
+// file comment names, and the script's head_only names the same two steps.
 var sessionsSteps = []sessionsStep{
 	{sessionsA4, "a4", config.DesignGateRootIssues, []string{sessionsHead}},
 	{sessionsOff, "off", config.DesignGateOff, []string{sessionsHead, sessionsBase}},
-	{sessionsAnswers, "answers", config.DesignGateRootIssues, []string{sessionsHead, sessionsBase}},
+	{sessionsAnswers, "answers", config.DesignGateRootIssues, []string{sessionsHead}},
 }
 
 // sessionsPick is what one run of part two makes: the steps, the one arm every step runs in (""
@@ -128,19 +128,22 @@ func pickSessions(step, arm, runs string) (sessionsPick, error) {
 	return pick, nil
 }
 
-// A run that picks no arm makes a4 in the head arm alone, its base arm retired, and off and
-// answers in both; a pick of a4's base arm still makes it, so the measurement that retired it can
+// A run that picks no arm makes a4 and answers in the head arm alone, their base arms retired, and
+// off in both; a pick of a retired base arm still makes it, so the measurement that retired it can
 // be repeated, and an arm the pick names is every step's one arm. Each pick is read as the runs it
 // makes, `<word> <arm>` in order, with the count of runs of each.
-func TestApprovedVersionNewsAFullRunMakesA4InTheHeadArmAloneAndAPickStillMakesItsBase(t *testing.T) {
+func TestApprovedVersionNewsAFullRunMakesTheRetiredStepsInTheHeadArmAloneAndAPickStillMakesTheirBase(t *testing.T) {
 	for _, tc := range []struct {
 		name, step, arm, runs string
 		want                  []string
 		count                 int
 	}{
-		{"a full run", "", "", "", []string{"a4 head", "off head", "off base", "answers head", "answers base"}, sessionsRuns},
+		{"a full run", "", "", "", []string{"a4 head", "off head", "off base", "answers head"}, sessionsRuns},
 		{"a4 alone", "a4", "", "", []string{"a4 head"}, sessionsRuns},
+		{"answers alone", "answers", "", "", []string{"answers head"}, sessionsRuns},
+		{"off alone", "off", "", "", []string{"off head", "off base"}, sessionsRuns},
 		{"the measurement of a4's base arm", "a4", "base", "10", []string{"a4 base"}, 10},
+		{"the measurement of answers' base arm", "answers", "base", "10", []string{"answers base"}, 10},
 		{"the base arm of every step", "", "base", "", []string{"a4 base", "off base", "answers base"}, sessionsRuns},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
