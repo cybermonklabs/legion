@@ -403,7 +403,8 @@ Each item below names a task and where its code is, then notes on it.
 - **Step records of an issue**: `internal/dispatch/api/steps.go`, `internal/dispatch/workflowstore/`, `store/migrations/20261116235202_workflow_nodes.up.sql`
 
   The Legion daemon writes each run of each step of an issue twice, at its start and at its end, under one id it derives for the run, with `PUT /api/v1/issues/{key}/steps/{id}`;
-  only the session `legion-daemon:<PROJECT>` of the issue's project writes (`403 STEP_WRITER`), as the daemon's `DaemonSession` names it from the key.
+  a write names the session `legion-daemon:<PROJECT>` of the issue's project as its actor (`403 STEP_WRITER` otherwise), as the daemon's `DaemonSession` names it from the key.
+  A bearer bound to a session cannot name another one (`403 ACTOR_SESSION_MISMATCH`), and a credential that proves no session, such as the shared agent token, can name the daemon's session and write, as the role-holders publish can.
   A write sets each field the record does not hold yet and leaves every field it holds, so a start and an end land in either order, a write sent again changes nothing and no write is refused for its order;
   `returned_to` is the one field taken otherwise: the result of a run and the step it returned to are one fact, so only the write that sets the result sets it, and a record that holds a result keeps the destination its own end named, none included;
   the first write of a run names its task, step, kind, role and generation (`400 STEP_INPUT`, as every value outside its form, the message naming the field).

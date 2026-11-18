@@ -19,11 +19,14 @@ import (
 // project reads (GET /api/v1/issues/{key}/steps). Both live in internal/dispatch/workflowstore,
 // the one writer of the nodes and tuples that hold them.
 //
-// The write is the daemon's and no one else's: a person, an agent's session and the daemon of
-// another project are refused 403 STEP_WRITER, so a record says what that deployment's daemon
-// saw. Like the design gates' publish it appends no issue event and notifies nobody, since an
-// event would feed the daemon's intake with facts it caused; and it reads the issue with no open
-// check, because the merge that closes an issue ends a step of it.
+// A write names the session of the issue's project's daemon, legion-daemon:<PROJECT>, as its actor,
+// or is refused 403 STEP_WRITER. That holds the session the body names, which a bearer bound to a
+// session cannot make another's (403 ACTOR_SESSION_MISMATCH); a credential that proves no session,
+// such as the shared agent token, a personal agent token or a service account's, can name the
+// daemon's session and write, as the role-holders publish can. Like the design gates' publish it
+// appends no issue event and notifies nobody, since an event would feed the daemon's intake with
+// facts it caused; and it reads the issue with no open check, because the merge that closes an
+// issue ends a step of it.
 
 // The refusals of a step write, beside the package's own decode error and 404 ISSUE_NOT_FOUND.
 const (

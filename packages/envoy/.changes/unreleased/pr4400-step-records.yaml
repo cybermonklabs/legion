@@ -1,8 +1,9 @@
 kind: Added
 body: |-
-  Dispatch keeps each issue's step records: `PUT /api/v1/issues/{key}/steps/{id}`, which only the
-  session `legion-daemon:<PROJECT>` of the issue's project may write (`403 STEP_WRITER` for any
-  other writer), and `GET /api/v1/issues/{key}/steps`, which every reader of the project may read.
+  Dispatch keeps each issue's step records: `PUT /api/v1/issues/{key}/steps/{id}`, whose writer
+  names the session `legion-daemon:<PROJECT>` of the issue's project as its actor (`403
+  STEP_WRITER` otherwise), and `GET /api/v1/issues/{key}/steps`, which every reader of the project
+  may read.
   The issue page's new Steps tab lists each run of each step. A record's agent, session and model
   are printable ASCII with no space, at most 128 characters (`400 STEP_INPUT` otherwise). The
   migration `20261116235202_workflow_nodes` adds the two tables that hold them.
