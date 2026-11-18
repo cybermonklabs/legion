@@ -63,7 +63,7 @@ var legionCommands = [][]string{
 // to. Each sets Hidden, so neither help nor completion offers it, its group's included.
 var legionHidden = [][]string{
 	{"worker-shim"},
-	{"launcher"}, {"launcher", "role-init"},
+	{"launcher"}, {"launcher", "role-init"}, {"launcher", "volume-trim-delete"},
 	{"claude-bridge"}, {"model-token"}, {"probe-image"},
 	{"workspace-init"}, {"workspace-init", "fetch"}, {"workspace-init", "skills"},
 	{"workspace-init", "provision"}, {"workspace-init", "cache"},
