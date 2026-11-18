@@ -359,33 +359,28 @@ func formOf(v any, compute func() (string, error), shape formShape) (valueForm, 
 		return valueForm{text, shape}, true
 	}
 	if panicked == nil {
-		var texts []string
-		if texts, panicked = guarded(func() string { return fmt.Sprintf("!ERROR:%v", err) }); panicked == nil {
-			return valueForm{texts[0], asString}, true
+		var shown string
+		if shown, panicked = guarded(func() string { return fmt.Sprintf("!ERROR:%v", err) }); panicked == nil {
+			return valueForm{shown, asString}, true
 		}
 	}
 	if pointer := reflect.ValueOf(v); pointer.Kind() == reflect.Pointer && pointer.IsNil() {
 		return valueForm{"<nil>", asString}, true
 	}
-	texts, again := guarded(func() string { return fmt.Sprintf("!PANIC: %v", panicked) })
+	shown, again := guarded(func() string { return fmt.Sprintf("!PANIC: %v", panicked) })
 	if again != nil {
-		texts, _ = guarded(func() string { return fmt.Sprintf("!PANIC: %v", again) })
+		var past any
+		if shown, past = guarded(func() string { return fmt.Sprintf("!PANIC: %v", again) }); past != nil {
+			return valueForm{}, false
+		}
 	}
-	if len(texts) == 0 {
-		return valueForm{}, false
-	}
-	return valueForm{texts[0], asString}, true
+	return valueForm{shown, asString}, true
 }
 
-// guarded is text's one result, and none where computing it panicked, with the value it panicked
-// with.
-func guarded(text func() string) (texts []string, panicked any) {
-	defer func() {
-		if r := recover(); r != nil {
-			texts, panicked = nil, r
-		}
-	}()
-	return []string{text()}, nil
+// guarded is text's result, or the value computing it panicked with.
+func guarded(text func() string) (shown string, panicked any) {
+	defer func() { panicked = recover() }()
+	return text(), nil
 }
 
 // The codes the proxy port's own answers name: the refusal line and the count read them, one for

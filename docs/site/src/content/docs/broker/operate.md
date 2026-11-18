@@ -1259,8 +1259,9 @@ lowercased: a command that writes its placeholder into its request's path, its
 `X-Correlation-Id` or the host it asks for, or a service that names it in its certificate, has
 `[placeholder]` written there. The mask writes only what the handler behind it writes, masked:
 over the broker's JSON handler it reads a value in the form that handler writes it, an error's
-text or the value's JSON, and never in a form the handler does not write, such as an error's
-`MarshalText` or a struct's `String`, which could quote a real value the written form leaves out.
+text or the value's JSON as that handler encodes it, and never in a form the handler does not
+write, such as an error's `MarshalText` or a struct's `String`, which could quote a real value
+the written form leaves out.
 A value whose written form holds no placeholder is written as it is. A value the mask reads that
 is nil, or one whose methods fail or panic, is written as slog writes it — `<nil>`, `null`,
 `!ERROR:…` or `!PANIC: …`, with a placeholder in that text masked too — and the mask never ends

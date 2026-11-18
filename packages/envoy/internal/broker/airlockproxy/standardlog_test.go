@@ -238,6 +238,51 @@ func TestTheMaskReadsEachFormAHandlerWrites(t *testing.T) {
 	}
 }
 
+// htmlMarshaler answers MarshalJSON with the placeholder beside <, > and &, which json.Marshal
+// escapes in a MarshalJSON's answer and slog's JSON handler writes as they are.
+type htmlMarshaler struct{}
+
+func (htmlMarshaler) MarshalJSON() ([]byte, error) {
+	return []byte(`"` + workerPlaceholder + ` <b>&c"`), nil
+}
+
+// TestTheMaskWritesTheJSONHandlersOwnForm: the JSON handler writes a value's JSON from an encoder
+// that escapes no <, > or &, so a value whose JSON holds a placeholder beside them is written as
+// that JSON, as the handler writes it, with the placeholder masked, and not as json.Marshal's
+// escaped text. What the row wants is the handler's own JSON for the value, read from the
+// unmasked line, with the placeholder replaced.
+func TestTheMaskWritesTheJSONHandlersOwnForm(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		value any
+	}{
+		{"a map of a string", map[string]string{"q": workerPlaceholder + " <b>&c"}},
+		{"a value whose MarshalJSON writes them", htmlMarshaler{}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var plain, masked bytes.Buffer
+			slog.New(slog.NewJSONHandler(&plain, nil)).Info("a line", "value", c.value)
+			slog.New(maskedHandler{slog.NewJSONHandler(&masked, nil)}).Info("a line", "value", c.value)
+			var unmasked struct{ Value json.RawMessage }
+			if err := json.Unmarshal(plain.Bytes(), &unmasked); err != nil {
+				t.Fatalf("the unmasked line is no JSON object: %q: %v", plain.String(), err)
+			}
+			// The control: the handler's own text holds the characters json.Marshal escapes.
+			if !bytes.ContainsAny(unmasked.Value, "<>&") {
+				t.Fatalf("the JSON handler's own text escapes <, > and &: %s", unmasked.Value)
+			}
+			want := placeholderPattern.ReplaceAllString(string(unmasked.Value), placeholderMark)
+			var line struct{ Value json.RawMessage }
+			if err := json.Unmarshal(masked.Bytes(), &line); err != nil {
+				t.Fatalf("the masked line is no JSON object: %q: %v", masked.String(), err)
+			}
+			if string(line.Value) != want {
+				t.Errorf("the masked line's value = %s; want the JSON handler's own JSON, masked, %s", line.Value, want)
+			}
+		})
+	}
+}
+
 // otherHandler is a handler the mask does not know: it writes through slog's JSON handler, but
 // is not one, so the mask cannot know which form of a value it writes. Its WithAttrs and
 // WithGroup keep it what it is.
