@@ -376,6 +376,8 @@ func TestNewRefusesAProviderKeyEveryPaneCarries(t *testing.T) {
 		{"a variable the runtime sets", "LEGION_TREE", "tmux runtime: provider key LEGION_TREE is a variable every pane already carries"},
 		{"PATH", "PATH", "tmux runtime: provider key PATH is a variable every pane already carries"},
 		{"one whose pointer every pane carries", "LEGION_BOOT_TOKEN", "tmux runtime: provider key LEGION_BOOT_TOKEN would not reach OMP: every pane carries LEGION_BOOT_TOKEN_FILE"},
+		{"one a resumed Oh My Pi pane is told", "OMP_SESSION_EXCLUSIVE", "tmux runtime: provider key OMP_SESSION_EXCLUSIVE is a variable the runtime tells a Claude Code pane or a resumed Oh My Pi pane itself"},
+		{"one a Claude Code pane is told", "CLAUDE_CONFIG_DIR", "tmux runtime: provider key CLAUDE_CONFIG_DIR is a variable the runtime tells a Claude Code pane or a resumed Oh My Pi pane itself"},
 		{"a file not named for a variable", "KEY.tmp", `tmux runtime: provider-env entry "KEY.tmp" is not named for an environment variable`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

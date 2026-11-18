@@ -28,7 +28,7 @@ func TestOmpLauncherLaunchIsInnerCommand(t *testing.T) {
 	spec := testSpec()
 	const promptFile = "/state/secrets/legion-omp-legion-43-tester-system-prompt.md"
 	prefix := []string{"env", "K=v", "--"}
-	for resume, want := range map[string][]string{
+	for resume, wantPairs := range map[string][]string{
 		"":                              nil,
 		"/state/trees/x/.omp/s 1.jsonl": {"-e", "OMP_SESSION_EXCLUSIVE=1"},
 	} {
@@ -37,8 +37,8 @@ func TestOmpLauncherLaunchIsInnerCommand(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Launch(resume %q) = %v", resume, err)
 		}
-		if !slices.Equal(pairs, want) {
-			t.Errorf("Launch(resume %q) carries the pairs %q, want %q", resume, pairs, want)
+		if !slices.Equal(pairs, wantPairs) {
+			t.Errorf("Launch(resume %q) carries the pairs %q, want %q", resume, pairs, wantPairs)
 		}
 		if want := innerCommand(prefix, "/opt/oh-my-pi/18.0.3/omp", resume, promptFile); inner != want {
 			t.Errorf("Launch(resume %q) = %q, want %q", resume, inner, want)

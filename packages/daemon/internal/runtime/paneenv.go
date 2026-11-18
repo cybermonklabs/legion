@@ -31,15 +31,21 @@ const ClaudeConfigDirVariable = "CLAUDE_CONFIG_DIR"
 var ClaudeDisabledFeatures = []string{"CLAUDE_CODE_DISABLE_CRON"}
 
 // SessionExclusiveVariable is the variable that holds a resumed Oh My Pi to the session it was
-// told to resume. From the pinned Oh My Pi on, its SQL session store holds a lease per session, and
-// a resume of a session another live process still holds waits out the lease and then moves the
-// process onto a new session id, which the daemon never recorded. Set to 1 (Oh My Pi reads exactly
-// "1"), that resume exits non-zero after the wait and moves nothing, and a lease lost or a session
-// file another writer replaced ends the process rather than moving it. Every runtime sets it to 1
-// on each launch that resumes a recorded Oh My Pi session, after the operator's variables, and on
-// no other launch: the tmux runtime as a resumed pane's -e pair (tmux's ompLauncher), the Sandbox
-// runtime in the resumed generation's start command (sandbox's mainEnvironment).
+// told to resume. From the pinned Oh My Pi on, a session another live process still holds moves
+// the resuming process onto a new session id, which the daemon never recorded: under the SQL
+// store, which holds a lease per session, the resume first waits up to 35 s for the holder's lease;
+// under the file store a tmux pane keeps, it moves at its first write. Set to
+// SessionExclusiveValue, nothing moves: that resume ends the process non-zero, and so do a lease
+// lost and a session file another writer replaced. Every runtime sets it on each launch that
+// resumes a recorded Oh My Pi session, after the operator's variables, and on no other launch: the
+// tmux runtime as a resumed pane's -e pair (tmux's ompLauncher), the Sandbox runtime in the resumed
+// generation's start command (sandbox's mainEnvironment).
 const SessionExclusiveVariable = "OMP_SESSION_EXCLUSIVE"
+
+// SessionExclusiveValue is the one value of SessionExclusiveVariable Oh My Pi reads as on
+// (`process.env.OMP_SESSION_EXCLUSIVE === "1"`, session-manager.ts at the pinned tag), which every
+// runtime sets.
+const SessionExclusiveValue = "1"
 
 // launchSecrets are every secret the daemon hands a launch in its spec (daemon.launchSecrets: the
 // Envoy bearer and the pane NATS nkey seed, each when the daemon has one), which a runtime gives

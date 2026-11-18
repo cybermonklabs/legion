@@ -3,7 +3,8 @@
 // DSNFileVariable points at, libpq's own name for a unix socket, and the two URL spellings of one
 // unix-socket endpoint). The table is Oh My Pi's own (sql-session-storage.ts at
 // the release .omp-pin names): it creates and migrates omp_session_files and
-// omp_session_files_parts when it starts, keys a session by the path its file would have had (the
+// omp_session_files_parts, and from that release on the lease table omp_session_leases, when it
+// starts, keys a session by the path its file would have had (the
 // session file a claim records), and reads a session as the row's content followed by its parts in
 // offset order. Legion reads it to hold a resume to a session the table holds (Written, the role
 // launcher's check), seeds it once from the files sessions were kept in before (Import,
@@ -37,9 +38,11 @@ const (
 	SQLStorage      = "sql"
 )
 
-// createTables are Oh My Pi's own Postgres statements for its two tables at the pinned release
-// (buildQueries' createTable and createPartsTable). Each is IF NOT EXISTS, so they change nothing
-// Oh My Pi already made, which it migrates itself when it starts.
+// createTables are Oh My Pi's own Postgres statements for its two session tables at the pinned
+// release (buildQueries' createTable and createPartsTable). Each is IF NOT EXISTS, so they change
+// nothing Oh My Pi already made, which it migrates itself when it starts. The pinned release makes
+// a third table, its lease table omp_session_leases, which Legion writes nothing to and leaves to
+// Oh My Pi and the database's owner.
 var createTables = []string{
 	"CREATE TABLE IF NOT EXISTS omp_session_files (path TEXT PRIMARY KEY, content TEXT NOT NULL, mtime_ms BIGINT NOT NULL, " +
 		"title TEXT, title_source TEXT, title_updated_at TEXT, byte_len BIGINT)",
@@ -47,7 +50,7 @@ var createTables = []string{
 		"PRIMARY KEY (path, start_offset))",
 }
 
-// CreateTables makes Oh My Pi's two tables where the database has none (createTables), so a
+// CreateTables makes Oh My Pi's two session tables where the database has none (createTables), so a
 // database no Oh My Pi has opened yet takes a session. Import runs it before its write, and a
 // writer of Append and Replace once per connection before its first.
 func CreateTables(ctx context.Context, conn *pgx.Conn) error {

@@ -54,7 +54,7 @@ type ompLauncher struct {
 func (l ompLauncher) Launch(spec runtime.SpawnSpec, _ Host, promptFile string) (string, []string, error) {
 	var pairs []string
 	if spec.ResumeSessionFile != "" {
-		pairs = []string{"-e", runtime.SessionExclusiveVariable + "=1"}
+		pairs = []string{"-e", runtime.SessionExclusiveVariable + "=" + runtime.SessionExclusiveValue}
 	}
 	return innerCommand(l.prefix, l.invocation, spec.ResumeSessionFile, promptFile), pairs, nil
 }

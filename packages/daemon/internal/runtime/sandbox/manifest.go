@@ -1686,7 +1686,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// operator's pod env may set it, and it comes after both. It is plain, so it travels in the
 	// start command alone (launchEnvironment) and changes nothing of the pod.
 	if !l.runsClaude() && spec.ResumeSessionFile != "" {
-		add(runtime.SessionExclusiveVariable, "1")
+		add(runtime.SessionExclusiveVariable, runtime.SessionExclusiveValue)
 	}
 	return env
 }

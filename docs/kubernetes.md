@@ -802,7 +802,8 @@ The dialect follows the URL scheme; Legion delivers Postgres.
 
 On the first start with `sql`, Oh My Pi's own `SqlSessionStorage` runs `CREATE TABLE IF NOT EXISTS
 omp_session_files` (columns `path TEXT PRIMARY KEY`, `content TEXT NOT NULL`, `mtime_ms BIGINT NOT NULL`, `title TEXT`, `title_source TEXT`, `title_updated_at TEXT`) and warms its index from every row.
-Legion manages no schema and no migration: the table is Oh My Pi's.
+From the pinned build on, it also makes `omp_session_leases` (one row per session a live process holds: `session_id`, `holder`, `host`, `pid`, `acquired_at`, `heartbeat_at`) and its index `omp_session_leases_holder` where they are missing, as whichever login starts it; a login that owns no table needs `SELECT`, `INSERT`, `UPDATE` and `DELETE` on that table, and its owner makes it first so that no agent login owns it (`docs/session.md` of the pinned tag gives the statements).
+Legion manages no schema and no migration: the tables are Oh My Pi's.
 One row is one session; `path` is the same string the session would have had as a file, `content` is the JSONL transcript.
 
 ### Resume
@@ -811,11 +812,13 @@ One row is one session; `path` is the same string the session would have had as 
 `<sessions root>/<encoded cwd>/<timestamp>_<session id>.jsonl`.
 The second child keeps that `ompSessionFile` field and carries the row path in it unchanged — no rename, no wire or contract change.
 The key embeds the home-relative sessions root, so the resuming pod must carry the same two `OMP_SESSION_*` variables and the same `HOME` (and `OMP_PROFILE`) as the pod that wrote it, and the same `OMP_CONFIG_ROOT` or none: from the pinned build on, that variable replaces the home-relative root.
-Nothing else changes: the daemon already relaunches a dead worker with `--resume=<recorded session file>`.
+Nothing else about the resume's path changes: the daemon already relaunches a dead worker with `--resume=<recorded session file>`.
+
 From the pinned build on, the session store holds a lease per session, and a resume of a session another live process still holds waits up to 35 seconds for it and then moves the process onto a new session id, which the daemon never recorded.
 So every launch that resumes a recorded Oh My Pi session carries `OMP_SESSION_EXCLUSIVE=1`, in the generation's start command alone (a tmux pane carries it as one of its `-e` pairs), and a fresh launch or a Claude Code role carries nothing of it.
 Under it that resume exits non-zero after the wait and moves nothing, and a lease lost or a session another writer replaced ends the process rather than moving it.
-The runtime sets the variable after the operator's: neither `runtime.kubernetes.pod.env` nor `runtime.tmux.pane_env` may name it, and under Kubernetes `provider_keys` may not name it either.
+A resume after the process that held the session was killed (the memory guard, an out-of-memory kill, a stop grace that ran out) waits too, up to 30 seconds after the dead process's last heartbeat, before the agent starts: measured on 2026-11-18, a one-turn resume launched right after such a kill ended 39.8 seconds after its launch on `18.18.6-sami.20261118-101239` and 30.7 seconds on the pinned build, well inside the registration deadline (`worker_boot_timeout_seconds` × `worker_boot_registration_deadline_intervals`, 360 seconds by default).
+The runtime sets the variable after the operator's: neither `runtime.kubernetes.pod.env` nor `runtime.tmux.pane_env` may name it, and neither runtime's `provider_keys` may name it either.
 
 ### Refusals
 
@@ -957,7 +960,7 @@ With the store settled, every generation a launcher starts gets two variables in
 `OMP_SESSION_STORAGE=sql` and `OMP_SESSION_SQL_DSN_FILE=/var/run/legion/providers/OMP_SESSION_SQL_DSN`.
 The pod baseline (`internal/podsafety`) keeps them, where it would otherwise set `OMP_SESSION_STORAGE=file`, and the worker shim, seeing the pointer in its environment, never exports the URL file into Oh My Pi's environment.
 Neither variable may be the operator's (`pod.env`) or a provider key's, and neither may `OMP_SESSION_SQL_DSN`, the name the URL file is mounted under (`CheckPod`).
-Oh My Pi creates and migrates its own two tables, `omp_session_files` and `omp_session_files_parts`, in the `public` schema when it starts; Legion manages no schema.
+Oh My Pi creates and migrates its own tables, `omp_session_files` and `omp_session_files_parts`, and from the pinned build on `omp_session_leases` with its index, in the `public` schema when it starts; Legion manages no schema.
 So the deployment's login needs to create tables there:
 since Postgres 15, `CREATE` on the database is not enough, and the create is refused with `permission denied for schema public`.
 Grant `USAGE, CREATE ON SCHEMA public` to the login (measured on Postgres 16.15:
@@ -1165,7 +1168,7 @@ What the operator supplies is the three required values of `session_database`, t
 The pods' cloud identity is the identity of the ServiceAccount that `runtime.kubernetes.pod.service_account` names.
 Without `impersonate_service_account`, the connector signs in as that identity.
 With it, the connector signs in as the service account, and the operator also supplies that fourth value and the four things [Selecting the store](#selecting-the-store) lists.
-The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files` and `omp_session_files_parts` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
+The login's rights are the ones `postgres` needs too: Oh My Pi creates and migrates `omp_session_files`, `omp_session_files_parts` and, from the pinned build on, `omp_session_leases` in the `public` schema when it starts, so the login needs `USAGE, CREATE ON SCHEMA public` beside the database, or it must own the schema.
 `legion sessions import` is unchanged and keeps `--dsn-file`: it is the operator's own command, run with no launcher and no proxy, so the operator supplies a connection URL the machine it runs on can reach.
 A tree volume is a PersistentVolumeClaim, so the copy itself runs where that claim can be mounted: in a pod of the worker image, under gVisor, with the volume mounted read-only at `/legion`, as the recipe under [Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on) lower on this page says.
 

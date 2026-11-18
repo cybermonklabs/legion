@@ -80,7 +80,10 @@ func resolveLeakCheck(environ []string) (string, error) {
 // (internal/shim/config.go:59-98), so either would open panes whose OMP lacks the key. A composed
 // name (composed) is carried by every pane as surely as a runtime-owned one — panePairs sets it
 // whatever the operator wrote — so a provider key of that name is refused here as well, at boot,
-// rather than at each pane's shim.
+// rather than at each pane's shim. So is a name a launcher tells its own panes after the operator's
+// variables — a Claude Code pane's (runtime.ClaudeConfigDirVariable, runtime.ClaudeDisabledFeatures)
+// and a resumed Oh My Pi pane's (runtime.SessionExclusiveVariable) — since the shim of every such
+// pane would refuse to start over it.
 func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -104,6 +107,9 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 			return nil, fmt.Errorf("tmux runtime: provider-env entry %q is not named for an environment variable", name)
 		case carried[name] || owned(name):
 			return nil, fmt.Errorf("tmux runtime: provider key %s is a variable every pane already carries", name)
+		case name == runtime.ClaudeConfigDirVariable || slices.Contains(runtime.ClaudeDisabledFeatures, name) ||
+			name == runtime.SessionExclusiveVariable:
+			return nil, fmt.Errorf("tmux runtime: provider key %s is a variable the runtime tells a Claude Code pane or a resumed Oh My Pi pane itself", name)
 		case owned(name + "_FILE"):
 			return nil, fmt.Errorf("tmux runtime: provider key %s would not reach OMP: every pane carries %s_FILE", name, name)
 		}
