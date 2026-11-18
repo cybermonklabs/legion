@@ -295,8 +295,8 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 		// Contents permission, a branch GitHub does not have and a 4xx GitHub answers a read with
 		// are answers it leaves to its caller, so the sync notes them here. ctx carries the values
 		// of the caller that started the flight, so a sync a route or a command started notes
-		// nothing. The content of the files (notes.Parse, the projection) is no GitHub read:
-		// last_error records it, and the attempt does not.
+		// nothing. The content of the files (a note over notes.MaxFileSize, notes.Parse, the
+		// projection) is no GitHub read: last_error records it, and the attempt does not.
 		githubreads.NoteFailure(ctx, importErr)
 		return i.failed(ctx, parent, source, importErr)
 	}
@@ -323,7 +323,13 @@ func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, f
 	}
 	files, importErr := i.github.DirFiles(ctx, token, owner, name, listing)
 	if importErr != nil {
-		githubreads.NoteFailure(ctx, importErr)
+		// The client refuses a note over notes.MaxFileSize at two points, both
+		// notes.ErrFileTooLarge (notes.CheckSize): by its listed size before any blob read, and by
+		// a blob's decoded size after the read GitHub answered. Either is the source's content
+		// and no failure of GitHub's, so the attempt does not note it.
+		if !errors.Is(importErr, notes.ErrFileTooLarge) {
+			githubreads.NoteFailure(ctx, importErr)
+		}
 		return i.failed(ctx, parent, source, importErr)
 	}
 	parsed, importErr := notes.Parse(files)

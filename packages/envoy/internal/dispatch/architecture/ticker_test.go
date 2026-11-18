@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -230,8 +231,10 @@ func TestEachLeasedImportPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 // missing Contents permission, a 422 for the branch's head, the directory or a file -- so in each
 // failed row only the sync's own note can make the record say so, and its cause names what
 // failed. A directory GitHub answers 404 for is an empty model (Dir), and notes that do not parse
-// are the source's content, which last_error records: neither is a read of GitHub that failed,
-// and each records succeeded.
+// and a note over notes.MaxFileSize, which DirFiles refuses by its listed size before any blob
+// read, are the source's content, which last_error records: none is a read of GitHub that failed,
+// and each records succeeded, the pass having sent the installation, token, head and directory
+// reads.
 func TestALeasedImportPassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -274,6 +277,11 @@ func TestALeasedImportPassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
 		name:      "a source whose directory GitHub answers 404 for",
 		arrange:   func(fake *fakeSource) { fake.treeStatus = http.StatusNotFound },
 		succeeded: true,
+	}, {
+		name:      "a source whose listing names a note over the size limit",
+		arrange:   func(fake *fakeSource) { fake.files["big.md"] = strings.Repeat("a", notes.MaxFileSize+1) },
+		succeeded: true,
+		lastError: true,
 	}, {
 		name: "a source whose notes do not parse",
 		arrange: func(fake *fakeSource) {

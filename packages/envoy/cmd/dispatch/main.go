@@ -1866,9 +1866,10 @@ type gitHubReads struct {
 type gitHubReadState string
 
 const (
-	// gitHubReadSucceeded: the newest recorded attempt sent requests to GitHub and none failed.
+	// gitHubReadSucceeded: the newest recorded attempt sent requests to GitHub and noted no
+	// failure.
 	gitHubReadSucceeded gitHubReadState = "succeeded"
-	// gitHubReadFailed: a request of the newest recorded attempt failed.
+	// gitHubReadFailed: the newest recorded attempt noted a failure.
 	gitHubReadFailed gitHubReadState = "failed"
 	// gitHubReadNoAttempt: the record holds no attempt of the read yet.
 	gitHubReadNoAttempt gitHubReadState = "no_attempt"
@@ -2019,19 +2020,19 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // Where a GitHub App is configured, `github` names each GitHub read Dispatch makes under a lease
 // (githubreads), `webhook_redelivery`, `architecture_import`, `delivery_reconcile` and
 // `ci_reconcile` in that order, each with its newest attempt's `state`, `at` and `cause`; with no
-// App it is null. The state is `succeeded` when that attempt sent GitHub requests and none failed,
-// `failed` when one did, `no_attempt` while the record holds none, `unknown` before this process
-// has read the record, and `off` where this process does not run the read (no App private key, or
-// no NATS for the redelivery sweep and the CI reconcile). `at` is when a succeeded or failed
-// attempt was recorded, by the database's clock, and `cause` a failed one's first failure, cut to
-// githubreads.CauseLimit bytes; each is null where the state carries none. It never decides `ok`
-// or the status: a process serves everything but GitHub's own reads while GitHub fails, so failing
-// the probe would take every server process out of service for an outage each of them serves
-// through. It is read from this process's copy of the record (githubreads.Copy), which a write by
-// any process refreshes, so it adds no statement to the database and waits on nothing. The
-// delivery intakes read GitHub too, for each webhook event, and report through
-// `delivery_reconcile`: the delivery reconcile reads the same pull requests and runs with the same
-// App every interval, so a failure of those reads shows there within one pass.
+// App it is null. The state is `succeeded` when that attempt sent GitHub requests and noted no
+// failure, `failed` when it noted one, `no_attempt` while the record holds none, `unknown` before
+// this process has read the record, and `off` where this process does not run the read (no App
+// private key, or no NATS for the redelivery sweep and the CI reconcile). `at` is when a
+// succeeded or failed attempt was recorded, by the database's clock, and `cause` a failed one's
+// first failure, cut to githubreads.CauseLimit bytes; each is null where the state carries none.
+// It never decides `ok` or the status: a process serves everything but GitHub's own reads while
+// GitHub fails, so failing the probe would take every server process out of service for an outage
+// each of them serves through. It is read from this process's copy of the record
+// (githubreads.Copy), which a write by any process refreshes, so it adds no statement to the
+// database and waits on nothing. The delivery intakes read GitHub too, for each webhook event, and
+// report through `delivery_reconcile`: the delivery reconcile reads the same pull requests and
+// runs with the same App every interval, so a failure of those reads shows there within one pass.
 //
 // Beside those it reports what is deployed: `commit`, the legion commit this process's binary
 // was built from (null when the build did not stamp one), `fleet_commit`, the commit of the latest

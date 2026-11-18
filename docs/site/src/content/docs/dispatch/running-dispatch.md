@@ -344,7 +344,7 @@ period. `github` holds one entry for each loop, in this order:
 Each entry is `{"state": …, "at": …, "cause": …}`:
 
 - `state` is one of five words:
-  - `succeeded`: the newest attempt sent requests to GitHub, and none of them failed.
+  - `succeeded`: the newest attempt sent requests to GitHub and met no failure.
   - `failed`: the newest attempt met a failure. The lists below say which failures count.
   - `no_attempt`: no attempt is recorded yet.
   - `unknown`: this server has not read the record of attempts yet.
@@ -422,15 +422,18 @@ These answers are not failures. The loop takes each one as data and goes on, so 
 - a `304 Not Modified`;
 - a page that the delivery reconcile asks for again after a 502, a 504 or a timeout, and then
   reads;
-- a CI reconcile query that fails when the reconcile then reads the same repository over REST.
+- a CI reconcile query that fails when the reconcile then reads the same repository over REST;
+- a sync of an architecture source that fails and finds that another sync or a settings save
+  changed the source first, when the import then syncs the source again and reads it.
 
 The GitHub client counts no other 403, and no 404, 409 or 422, because the same answer is data at
 one point and a failure at another. It does not count a request that was cut off because its
 caller's time ran out or the server shut down. A failure of the database or NATS outside the
 points above is not a failure here: `db` and `nats` report those. What the files of an
-architecture source say is not a GitHub read either: the source's own error records a note that
-Dispatch cannot parse or a model it refuses. The delivery reconcile's re-listings of older runs
-never fail its pass, but a failure of the first kind that they meet still counts.
+architecture source say is not a GitHub read either: the source's own error records a note larger
+than 1 MiB, a note that Dispatch cannot parse, or a model it refuses. The delivery reconcile's
+re-listings of older runs never fail its pass, but a failure of the first kind that they meet still
+counts.
 
 ## Metrics
 

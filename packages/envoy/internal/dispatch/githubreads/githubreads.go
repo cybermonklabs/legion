@@ -127,7 +127,9 @@ func NoteSent(ctx context.Context) {
 // a ctx carrying no attempt, or once the attempt holds its first failure, and makes no text then:
 // only that first failure is ever the cause, whatever scope a later note waits in, and an error's
 // text can carry a whole response body, so a request outside the leased passes, and every note
-// after the cause, cost nothing here. A held scope makes the text only of a note it keeps.
+// after the cause, cost nothing here. A held scope makes the text of the first note it holds
+// while unsettled, before it knows whether it will keep it, and of each note that arrives after
+// Keep; it makes none for a later note while unsettled or for any note after Drop.
 func NoteFailure(ctx context.Context, err error) {
 	if err == nil {
 		return

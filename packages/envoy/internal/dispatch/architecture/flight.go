@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -127,10 +128,19 @@ func (i *Importer) flight(ctx context.Context, project, repo string) (*syncFligh
 	syncCtx, cancel := context.WithTimeout(base, syncTimeout)
 	defer cancel()
 	for {
-		source, err := i.syncOnce(syncCtx, base, project, repo, flight)
-		if !errors.Is(err, errSuperseded) {
-			flight.source = source
-			return flight, err
+		// Each try runs in a held scope (githubreads.Hold) of the attempt syncCtx carries when a
+		// leased import started the flight, since syncCtx keeps the starter's values: a try
+		// another write superseded is asked again, so its GitHub failures are dropped and only
+		// the try the flight ends with counts. syncOnce notes on try alone: base, its parent, is
+		// only where it records a failure on the source's row once try has ended.
+		try, held := githubreads.Hold(syncCtx)
+		source, err := i.syncOnce(try, base, project, repo, flight)
+		if errors.Is(err, errSuperseded) {
+			held.Drop()
+			continue
 		}
+		held.Keep()
+		flight.source = source
+		return flight, err
 	}
 }

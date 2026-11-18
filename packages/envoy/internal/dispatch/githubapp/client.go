@@ -685,8 +685,12 @@ func (c *Client) ReadConditionalWithin(ctx context.Context, token, path, etag st
 // here and not by send, which notes no limit GitHub answers: GitHub answers a spent GraphQL
 // budget with 200, which no reading of the status alone can see. The limit GraphQLRateLimit reads
 // is noted once recordGraphQLLimit has recorded it, so the cause carries the wait every process
-// now holds. A client without Limits reads the answer as request reads a REST call's, and notes
-// the limit RateLimit reads.
+// now holds. A limit read in a 200 is noted without its body, which is the query's answer: the
+// request that spends the last point is answered with its data, which can be a private
+// repository's, and GET /healthz serves the cause to whoever reaches it, with no credential. The
+// caller is given the limit whole. A client without Limits reads the answer as request reads a
+// REST call's, and notes the limit RateLimit reads, which is only ever a 403 or a 429: GitHub's
+// refusal, which carries no data.
 func (c *Client) GraphQL(ctx context.Context, token string, query string, variables map[string]any) ([]byte, int, http.Header, error) {
 	if c == nil {
 		return nil, 0, nil, ErrNoAppKey
@@ -725,7 +729,13 @@ func (c *Client) GraphQL(ctx context.Context, token string, query string, variab
 	c.recordGraphQLLimit(ctx, installation, limited, secondary)
 	// Noted once recorded, so the cause carries the wait every process now holds, which a strike
 	// can make longer than GitHub's own.
-	noteFailure(ctx, &failedAnswer{method: http.MethodPost, target: target, limited: limited})
+	noted := limited
+	if status == http.StatusOK {
+		withoutData := *limited
+		withoutData.Body = ""
+		noted = &withoutData
+	}
+	noteFailure(ctx, &failedAnswer{method: http.MethodPost, target: target, limited: noted})
 	return body, status, header, limited
 }
 
@@ -981,8 +991,9 @@ func noteFailure(ctx context.Context, err error) {
 
 // failedAnswer is an answer send, request or GraphQL notes as a failure, worded as the client's
 // own errors are: "<METHOD> <target>: status <n>: <body>", or the limit's own text after the
-// method and target. Its text is made only when an attempt takes it (githubreads.NoteFailure), so
-// a request outside the leased passes formats nothing. The target carries no token: every token
+// method and target, with an empty body for a limit GraphQL read in a 200, whose body is data.
+// Its text is made only where the note can still become a cause (githubreads.NoteFailure), so a
+// request outside the leased passes formats nothing. The target carries no token: every token
 // travels in the Authorization header.
 type failedAnswer struct {
 	method, target string

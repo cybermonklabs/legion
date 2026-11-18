@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"slices"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
 // reSaveSource runs the settings PUT's own upsert (api/architecture_source.go's
@@ -156,5 +158,50 @@ func TestAHeldGitHubRateLimitEmitsOneSyncFailedEvent(t *testing.T) {
 		t.Errorf("one held rate limit over two syncs emitted %d architecture.sync_failed events, want 1: "+
 			"the failure text carries the limit's remaining wait, so every sync records a \"changed\" error "+
 			"(last_error %q then %q)\nevents: %#v", len(failed), text(first.LastError), text(second.LastError), failed)
+	}
+}
+
+// A leased import pass whose sync meets a 503 GitHub answered, finds as it records the failure that
+// a settings save wrote the source's row since its load (errSuperseded), and then reads the source
+// on the flight's retry, records succeeded with no cause: the flight asks again, so only the try
+// it ends with counts, and the superseded try's failures are dropped with it (githubreads.Hold).
+func TestALeasedImportPassRecordsTheRetryOfASupersededTryNotItsFailure(t *testing.T) {
+	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles()})
+	branch.holdNextHeadLookupAnswering(http.StatusServiceUnavailable)
+	importer, other, database := twoProcesses(t, branch)
+	pass, reads := leasedImports(t, importer, database)
+
+	passed := make(chan struct{})
+	go func() {
+		defer close(passed)
+		pass()
+	}()
+	// The first try loaded the row before its head lookup, so a save while the lookup is held
+	// makes that try's record of the 503 stale.
+	branch.waitHeld(t)
+	reSaveSource(t, other)
+	branch.releaseHeld()
+	select {
+	case <-passed:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the leased import pass did not end within 30s")
+	}
+
+	if got := reads.take(); len(got) != 1 || got[0].read != githubreads.ArchitectureImport || !got[0].succeeded || got[0].cause != "" {
+		t.Fatalf("the pass whose superseded try met a 503 and whose retry read the source recorded %+v, want one succeeded %s attempt with no cause",
+			got, githubreads.ArchitectureImport)
+	}
+	var lastCommit, lastError string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select coalesce(last_commit, ''), coalesce(last_error, '') from architecture_sources where project_key = 'CORE'`).Scan(&lastCommit, &lastError); err != nil {
+		t.Fatalf("read the source row: %v", err)
+	}
+	if lastCommit != commitOne || lastError != "" {
+		t.Fatalf("the source row holds commit %q and error %q, want the retry's import of %s and no error", lastCommit, lastError, commitOne)
+	}
+	for _, event := range projectEvents(t, database) {
+		if strings.HasPrefix(event, "architecture.sync_failed") {
+			t.Fatalf("events hold %q, want none: the superseded try records nothing", event)
+		}
 	}
 }

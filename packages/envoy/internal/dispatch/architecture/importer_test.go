@@ -2016,20 +2016,23 @@ func TestSyncProjectLeavesOutASourceDeletedMidCall(t *testing.T) {
 // movingBranch is archRepo's main branch as a GitHub the test pushes to while a sync is in
 // flight: the head is whatever the test last moved it to, each commit answers its own files
 // (the subtree sha derived from them, the blob shas naming their commit), and one read can be
-// held — the next head lookup, answering the head as it stood when the lookup arrived, or every
-// blob read of one commit — until the test releases it, so another process's sync lands while
-// the held one is mid-fetch.
+// held — the next head lookup, answering the head as it stood when the lookup arrived or the
+// status the test named, or every blob read of one commit — until the test releases it, so
+// another process's sync lands while the held one is mid-fetch.
 type movingBranch struct {
 	t *testing.T
 	// hold is the one read held open at a time, with the channels and the cleanup that releases
 	// them (releasableHold).
 	hold releasableHold
 
-	mu          sync.Mutex
-	head        string
-	commits     map[string]map[string]string
-	holdHead    bool
-	holdBlobsOf string
+	mu       sync.Mutex
+	head     string
+	commits  map[string]map[string]string
+	holdHead bool
+	// heldHeadStatus, when not zero, is what the held head lookup answers instead of the head:
+	// that status with GitHub's error body for it (writeStatus).
+	heldHeadStatus int
+	holdBlobsOf    string
 }
 
 func newMovingBranch(t *testing.T, head string, commits map[string]map[string]string) *movingBranch {
@@ -2048,6 +2051,15 @@ func (b *movingBranch) holdNextHeadLookup() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.holdHead = true
+}
+
+// holdNextHeadLookupAnswering is holdNextHeadLookup for a lookup GitHub then answers status
+// rather than the head.
+func (b *movingBranch) holdNextHeadLookupAnswering(status int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.holdHead = true
+	b.heldHeadStatus = status
 }
 
 func (b *movingBranch) holdBlobs(commit string) {
@@ -2073,11 +2085,15 @@ func (b *movingBranch) handler() http.Handler {
 	mux.Handle("/", (&fakeSource{t: b.t, installationID: 11}).handler())
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{branch}", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
-		head, hold := b.head, b.holdHead
-		b.holdHead = false
+		head, hold, status := b.head, b.holdHead, b.heldHeadStatus
+		b.holdHead, b.heldHeadStatus = false, 0
 		b.mu.Unlock()
 		if hold {
 			b.wait(r)
+		}
+		if status != 0 {
+			writeStatus(w, status)
+			return
 		}
 		writeCommit(w, r, head)
 	})
