@@ -99,7 +99,7 @@ Create children under your own issue, each past the red-team check in
 soon as it is filed (the daemon holds it until the issues its `--blocked-by` links name close), and
 adjust open children when closures change the plan. Your issue's own first phase has already
 started when you start, so a child you file runs beside your issue's own work. Your issue's
-sign-off then waits for its last round, whose head carries their merges
+sign-off then waits for its last round
 (`skill://legion-architect`, sections 3 and 4). When a person sets your issue back to `todo` while
 it runs or is held, you stay live: your issue goes back to `admitted`, and while Dispatch shows an
 open child under it, its first phase waits and the `children-first` notice of that wait comes to

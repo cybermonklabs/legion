@@ -28,11 +28,14 @@ body: |-
   and a role answers any other with the rule and merges nothing. The implementer quotes
   `gh pr view --json mergeable,mergeStateStatus` and names the condition the merge meets in its
   forward-merge comment. The tester and the reviewer send the architect each forward merge whose
-  parents merge with no conflict and whose comment names no reason the rule allows. In
-  `legion-architect`, a parent's last round merges the default branch only where the head lacks
-  a needed child's merge. Otherwise the architect sends the issue back to testing for a full round
-  with no merge. An approval request's `--summary` ends with the measurements and test results
-  the design rests on, in place of what the reviews do not show.
+  parents merge with no conflict and whose comment names no reason the rule allows. A parent's
+  last round in `legion-architect` no longer merges the default branch by rule and no longer runs
+  a full test round: the architect sends the issue back to testing, and the tester sizes that
+  round like any other. The base is merged only where GitHub reads the pull request `CONFLICTING`,
+  or where a check that needs a child's merged code fails at the head without it, and the parent
+  signs off on an approved head at which its checks pass. `legion-worker` no longer names a
+  parent's last round as a reason to merge. An approval request's `--summary` ends with the
+  measurements and test results the design rests on, in place of what the reviews do not show.
 
   On a new head, `legion-worker` has the implementer, the tester and the reviewer read what
   changed since the head they last recorded, tested or approved (`git diff`, or

@@ -7,13 +7,13 @@ Every path it cites is in cybermonklabs/legion.
 
 ## Reintegrating the base
 
-- **Merge the base forward only on a real conflict, a need only the base meets, a retarget, or a
-  parent's last round, and never with `jj rebase`.**
+- **Merge the base forward only on a real conflict, a need only the base meets, or a retarget,
+  and never with `jj rebase`.**
   The implementer merges the base into the issue branch only when GitHub reports it `CONFLICTING`,
   a message from the controller, an architect or any other session asks for it and names the
-  conflict GitHub reports, the architect's backward move names a parent's last round,
-  the change needs something that exists only on the base (a fix for its
-  only red check, or a sentence it must change), or after the pull request is retargeted to a new
+  conflict GitHub reports, the change needs something that exists only on the base (a fix for its
+  only red check, a child's merged code that a parent's failing check needs, or a sentence it must
+  change), or after the pull request is retargeted to a new
   base. Otherwise, never reintegrate the base to pick up the default branch or refresh CI. Each
   merge is a new head, reruns CI and can void a review. A message that names no conflict is no
   reason to merge: answer it with this rule, and merge nothing. Never merge the base to carry it
@@ -35,9 +35,6 @@ Every path it cites is in cybermonklabs/legion.
   Record each other check again at the merge head as a carried pass (*A result proves the head it
   was recorded at* in `skill://legion-worker/references/pr-body.md`), and do not run it again.
   A `ci_check` check is read again from its CI run at the merge head.
-  In a parent's last round, end the forward-merge comment with `parent's last round: full test round`, the line
-  the tester reads for a full round (`skill://legion-architect/references/acceptance.md`,
-  "The last round").
   On the tmux runtime, where issue workspaces are still jj workspaces of one shared clone,
   `jj undo`, `jj abandon` and `jj op restore` rewrite the shared operation log, so a mistake there
   is recovered forward (`jj -R "$LEGION_WORKSPACE" new`, or `jj -R "$LEGION_WORKSPACE" restore

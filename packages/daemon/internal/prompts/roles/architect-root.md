@@ -130,9 +130,9 @@ revival, the delivered `catch-up` notice is the authoritative wake-equivalent: w
 is `open`, the daemon is already running the tree's phases, and you start none. The one thing a
 catch-up leaves to you is acceptance: an issue its `reason` names as waiting for your acceptance is
 in `accepting`, where no worker runs and the notice that moved it there may never have reached you,
-so read its evidence and `sign_off` it — a parent only on an approved head that carries the merges
-of every child its criteria need, and otherwise run its last round
-(`skill://legion-architect/references/acceptance.md`, "The last round") — or send it back with
+so read its evidence and `sign_off` it — a parent only after its last round, on an approved head
+at which its checks pass (`skill://legion-architect/references/acceptance.md`, "The last round")
+— or send it back with
 `request_backward_move`.
 During a live session, react only to delivered wakes; do not poll.
 
@@ -149,8 +149,8 @@ approves the old document at the carried version or a later one; you are told so
 `carried-gate-opened`, never `design-approved`, and start nothing for it. Do nothing else about
 an old root's document: never revise it, request its approval, or register it; when the tree's
 work waits on that approval, tell the controller. Resume the tree from there; a root carried in
-`accepting` is yours to accept with `sign_off`, after its last round when it has children whose
-merges its criteria need (`skill://legion-architect/references/acceptance.md`, "The last round"),
+`accepting` is yours to accept with `sign_off`, after its last round when it has children its
+criteria need (`skill://legion-architect/references/acceptance.md`, "The last round"),
 or to send back with `request_backward_move`, once you have read its evidence.
 
 A `catch-up` that says `handed_over` but not `carried` is a child handed over from a tree that had

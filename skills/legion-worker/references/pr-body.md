@@ -226,9 +226,8 @@ and decides there, the only gate on such an issue.
   last tested (`git diff <that head> <new head>`; for a merge of the base,
   `git show --remerge-diff <merge>`). Size your round to that change: test again only what it can
   affect, and confirm the rest by naming the earlier head. Each check the change cannot affect
-  gets a carried record (*A result proves the head it was recorded at*, above). In a parent's
-  last round, which the architect or the implementer's forward-merge comment names to you, run a
-  full test round. Where `git -C "$LEGION_WORKSPACE" merge-tree --write-tree <sha>^1 <sha>^2`
+  gets a carried record (*A result proves the head it was recorded at*, above). Where
+  `git -C "$LEGION_WORKSPACE" merge-tree --write-tree <sha>^1 <sha>^2`
   exits 0 for the merge commit `<sha>` (its parents merge with no conflict), and its forward-merge
   comment names no reason *Reintegrating the base* allows
   (`skill://legion-worker/references/conflicts-and-rewrites.md`), send the architect the finding

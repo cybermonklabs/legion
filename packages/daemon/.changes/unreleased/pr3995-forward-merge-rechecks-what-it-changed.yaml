@@ -14,3 +14,8 @@ body: |-
   against the new head. The reviewer's prompt names in each thermonuclear task the diff the pair
   audits: the branch's whole diff on its first review of the pull request, then only the change
   since its earlier head. No pair runs when that diff touches no runtime code.
+
+  The root and sub-architect prompts sign off a parent after its last round, on an approved head
+  at which its checks pass. Before, that head had to carry the merges of every child the parent's
+  criteria need, which a forced merge of the base gave it. The tester's prompt no longer runs a
+  full test round in a parent's last round.
