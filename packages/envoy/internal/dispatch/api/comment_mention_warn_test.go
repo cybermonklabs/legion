@@ -501,10 +501,16 @@ func TestASendParkedForAFailedClaimReadLogsNoHeldWarnAsItGoes(t *testing.T) {
 			ran := time.Since(began).Round(time.Second) + time.Second
 			second := false
 			for _, line := range lines {
-				_, after, found := strings.Cut(line, "held_for=")
-				value, _, _ := strings.Cut(after, " ")
+				// The key as its own field (a space before it), and its last one: warnHeld logs
+				// held_for after every other field, so a held_for= inside another field's quoted
+				// value cannot stand in for it.
+				at := strings.LastIndex(line, " held_for=")
+				found, value := at >= 0, ""
+				if found {
+					value, _, _ = strings.Cut(line[at+len(" held_for="):], " ")
+				}
 				waited, err := time.ParseDuration(value)
-				if !strings.Contains(line, "event_id=42 ") || !found || err != nil || waited > ran {
+				if !strings.Contains(line, "event_id=42 ") || !found || err != nil || waited < 0 || waited > ran {
 					t.Fatalf("a WARN of a send that waited behind event 42 for at most %v names another wait: %s", ran, line)
 				}
 				second = second || strings.Contains(line, "comment=a-second ")
