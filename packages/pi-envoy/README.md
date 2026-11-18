@@ -198,9 +198,13 @@ newest one as current." The line saying the list could not be read is a message 
 with no sentence. The session file records each answers message a request sends, with its exact
 text and the message it followed. Every later request of the session, in the same process or
 in one that resumed the session, carries each of them again right after that message, with the
-same bytes, so outside a compaction (below) a request changes no byte that an earlier request
-sent. A request whose read shows nothing new adds nothing and ends with its own last message,
-so the model does not take a list with nothing new in it for a new turn.
+same bytes. So a request changes no byte that an earlier request sent, with two exceptions: a
+request made while a compaction runs (below), and a message the session file did not record,
+because the host moved to another session while the read waited or the write failed. The
+session's next request does not carry such a message again, and adds the list anew after its own
+last message when its read still shows it. A request whose read shows nothing new adds nothing
+and ends with its own last message, so the model does not take a list with nothing new in it
+for a new turn.
 
 A request adds an answers message after its last message when its read gives a list or the
 failure line and the request holds no answers message. Otherwise it adds one only when the read
@@ -234,14 +238,14 @@ every item of it has aged out), or no Dispatch at all, adds nothing and keeps ev
 message sent.
 
 When a compaction summarizes the message an answers message followed, or the branch moves away
-from it, that answers message leaves the request, and the next read with a list or the failure
-line adds its text after the last message. While Oh My Pi compacts the session, a request
-carries none of the answers messages sent: its read's list or failure line goes after its last
-message and is not recorded. So a request made while a speculative compaction runs in the
-background changes bytes from the first answers message sent on, which is a known limit. On
-Anthropic, Oh My Pi puts no cache anchor on a message the extension adds, so every byte before
-the answers message that a change adds, the answers messages sent before it included, is in the
-cached prefix of the request before it.
+from it, that answers message leaves the request and is no longer compared. When none is left,
+the next read with a list or the failure line adds its text after the last message. While Oh My
+Pi compacts the session, a request carries none of the answers messages sent: its read's list or
+failure line goes after its last message and is not recorded. So a request made while a
+speculative compaction runs in the background changes bytes from the first answers message sent
+on, which is a known limit. On Anthropic, Oh My Pi puts no cache anchor on a message the
+extension adds, so every byte before the answers message that a change adds, the answers
+messages sent before it included, is in the cached prefix of the request before it.
 
 Oh My Pi also builds requests that are not turns of the conversation from it; those carry the
 skill but no answers message, and record none: a side turn (a Dispatch BTW, the stop-time
@@ -251,7 +255,10 @@ remote compaction's request, which ends where the compaction cuts the conversati
 that the extension cannot tell from a turn, Oh My Pi's LLM-request dump and Codex live steering,
 can add and record a list after their own last message, and so can a request the host never
 sends (a stop or an abort after the extension ran). The next request then carries that list
-after that message, and no byte already sent changes.
+after that message, and no byte already sent changes. The requests of one session decide in the
+order they started. So when a new request starts while a stopped one still waits on its read,
+the new request decides after the stopped one and reads the session file again first: it
+carries the stopped request's list where it went, and the two never both add the same change.
 
 ## Development install
 

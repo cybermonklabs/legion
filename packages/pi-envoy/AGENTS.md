@@ -1061,9 +1061,11 @@ the `messageKey` of the request's last message (its role and timestamp, and a to
 call id, since the tool results of one round can share a timestamp), `blocks` the exact text
 of each text block sent, and `words` the read's words when it gave them. Every later main-loop
 request of the session, in this process or in one that resumed the session, reads the branch
-once (`request.branch()`) and rebuilds each entry whose `after` it holds right after the last
-message with that key (`rebuilt`), from its recorded blocks only and never from a constant read
-again, so a later release that rewords the sentence still rebuilds the old bytes. Two entries
+twice (`request.branch()`): before its read, to find where the request ends (`branchPosition`),
+and again once the read has come back and every earlier request of the session has decided, to
+rebuild each entry whose `after` it holds right after the last message with that key
+(`rebuilt`), from its recorded blocks only and never from a constant read again, so a later
+release that rewords the sentence still rebuilds the old bytes. Two entries
 with one anchor, as a retried request records them, keep their branch order. The entries are
 read with `customEntries` (`src/custom-entries.ts`), the helper `src/missed-messages.ts` reads
 the replay ledger's records with. An entry whose data does not read as one (`isAnswersSent`)
@@ -1076,8 +1078,26 @@ stays the renderer's capped output and an older copy's check of the first block 
 marker, then `SESSION_ANSWERS_REPLACES`, "This list replaces every earlier list of people's
 answers in this conversation, and every earlier line saying the list could not be read: read
 only the newest one as current." The failure line is one block with no sentence. The rule is
-`withAnswersSent`, which `withSessionAnswers` and `placedLegacy` both call, and `addedBlocks`
-decides the one message a request appends.
+`withAnswersSent`, which `decide` calls for every request that `withSessionAnswers` or
+`placedLegacy` decides outside a compaction (inside one it calls `whileCompacting`), and
+`addedBlocks` decides the one message a request appends.
+
+The requests of one session decide one after another, in the order they started
+(`decidedInTurn`, with each session's newest decision kept on `globalThis` under
+`Symbol.for("legion.pi-envoy.session-answers-deciding.v1")`, by `sessionManager`): a request
+starts its read at once, and decides once its read has come back and the request before it has
+decided, reading the branch again then. Oh My Pi does not wait for the `context` handler of a
+run that was stopped, and the handler goes on to its read and its record, so without that order a
+stopped request and the request after it, started while the first read was still open, could
+each append the same change, one after each request's own last message, and the request after
+them would differ from the second right after the first one's last message. With it, the second
+finds the first one's entry and rebuilds it, and appends only what the first did not show,
+whichever of their reads comes back first. A read waits on Dispatch at most its 800 ms deadline,
+and the reads of the requests before it started first, so a request waits on them about as long
+as on its own read. The second read of the branch takes the session the request was built from:
+`request.branch()` gives undefined once the host is on another session, and the request then
+decides from the branch as it began, and records nothing. `placedLegacy` awaits nothing, so
+nothing comes between its branch read and its record, and it takes no place in that order.
 
 A request appends at most one answers message, after its last message, and the earlier ones stay
 where they went. A read with text, a list or the failure line, appends it when the request holds
@@ -1129,7 +1149,7 @@ misses the 800 ms deadline is a failed read. `tellFailure` tells `readFailed(rea
 on an episode's first read and not again inside it, whether the request appends a message for it
 (`shown`: the failure line, or the cached list when it shows something new) or keeps the messages
 sent. The extension logs it with `logger.warn`, ending "the request tells the model after its
-last message" when shown and "the request keeps the list placed before, which does not name this
+last message" when shown and "the request keeps the answers messages sent, which do not name this
 read's failure" when not, so a lasting failure, such as a Dispatch that misses the deadline on
 every request, is one line. The reason is this copy's read's own (`carriedAnswers` hands it on
 for `source: "cache"` and `source: "failure"`), or, for a list an older copy rendered from its
@@ -1142,15 +1162,17 @@ extension logs no newer list, no retraction and no read that answers, since thos
 
 The write is guarded as `recordNotice` is. The handler takes the session id as the request
 began, and when the host moved to another session while the read waited, it writes nothing,
-since the entry would land in that session's file, and the log says the list "was not recorded:
-the host moved to another session while the request waited on the read". A write that throws
-logs that the list "could not be recorded in the session file", with the error. Either way the
+since the entry would land in that session's file, and the log says the answers message "was not
+recorded: the host moved to another session while the request waited on the read". A write that
+throws logs that it "could not be recorded in the session file", with the error. Either way the
 request carries the message. The session's next request finds no entry for it, so it appends
-that list again after its last message when its read still shows it.
+that list or failure line again after its last message when its read still shows it. The
+handler's `compacting` and `branch` ask about the session the request began on in the same way,
+since both are read again after the read.
 
-An answers message whose anchor a compaction summarized, or that the branch moved away
-from, leaves the request and the comparison, so the next read with text goes after the last
-message. While the session compacts (`compacting`: the live `AgentSession`'s `isCompacting`,
+An answers message whose anchor a compaction summarized, or that the branch moved away from,
+leaves the request and the comparison; when none is left, the next read with text goes after the
+last message. While the session compacts (`compacting`: the live `AgentSession`'s `isCompacting`,
 or its `compactionSpeculation` reading `"running"`), and on the request right after a remote
 compaction's cut, a request carries none of the messages sent, and the read's text goes after
 the last message and is not recorded (`whileCompacting`). A remote compaction keeps only as
@@ -1210,7 +1232,9 @@ its conversion: the next main-loop request then carries that one extra list afte
 and no byte already sent changes. So can a main-loop request the host never sends after the
 handlers ran (a stop or an abort), or sends without this handler's messages because the handler
 ran past the host's 30-second handler timeout: its message is recorded, and the next request
-carries it after the same message.
+carries it after the same message, also when that next request started while the first one's
+read was still open, since the requests of one session decide in the order they started
+(above).
 
 Two copies of the extension run their handlers in turn on one request. Each copy records the
 messages array it decided, and the array it returned with the list, in a process-wide `WeakSet`
@@ -1247,8 +1271,10 @@ everything it returns, the skill included, so a read that throws rather than ans
 failure line with the error as its reason, which is appended as any failure line is and logged
 once per failure episode as any failed read is (above). `src/session-answers-context.test.ts`
 holds the rule on scripted reads (the prefix cases, five changes and the restart, each checking
-that a request starts with every byte of the one before it; the "no item" list; the failure line
-once; the episode rule; the entry recorded; a guarded write; an older copy's list), the compaction
+that a request starts with every byte of the one before it; two overlapping requests, on one read
+and on reads that come back out of order, the earlier deciding first; a host that moved during
+the read; the "no item" list; the failure line once; the episode rule, its own for each session id
+on one `sessionManager`; the entry recorded; a guarded write; an older copy's list), the compaction
 path, the requests that carry no list and the two-copy cases, two copies with an empty list making
 one HTTP read among them, `src/session-answers-read.test.ts` the rule on reads through the real
 `readSessionAnswers` and `carriedAnswers` (the cap, a retraction, the "no item" list, the
