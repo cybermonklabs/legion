@@ -178,6 +178,10 @@ const (
 // each relay runs on a goroutine of its own.
 type sessionRelays struct {
 	delivery *sessionDelivery
+	// cfg is the delivery configuration a role message whose role another session holds is
+	// copied through (takeOverFrame): the role's claim read, the copy to its kept lane and the
+	// handover after it.
+	cfg      listenerDeliveryHandlerConfig
 	registry *store.Registry
 	// sessions is the session cache this relay reads its entries from; it is the same registry
 	// the durable path's fan-out judges a followed topic against (judgeFollowedTopic).
@@ -479,6 +483,7 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 	inbox := nats.NewInbox()
 	m := &sessionRelays{
 		delivery:    delivery,
+		cfg:         cfg,
 		registry:    cfg.registry,
 		sessions:    cfg.sessions,
 		machineID:   cfg.machineID,
@@ -1037,6 +1042,12 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 			}
 			m.logger.Warn("session relay pull ended; restarting at the ack floor", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 			return relayRetry
+		}
+		// A role message whose role another session holds, or none does, is copied to the role's
+		// kept lane rather than sent (takeOverFrame); a gap the restart named stays on the next
+		// frame this run sends.
+		if m.takeOverFrame(ctx, sessionID, msg) {
+			continue
 		}
 		if err := m.publishFrame(ctx, run, msg, streamID, gap); err != nil {
 			if ctx.Err() != nil {
