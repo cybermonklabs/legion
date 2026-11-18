@@ -80,14 +80,22 @@ type grantRelease struct {
 // one rule. It re-checks the enrollment and the grant, re-verifies the grant's whole approval
 // chain (VerifyChain), and — when the policy has changed since the grant's request was decided,
 // any granted name is a service's (anyServiceOwned: the policy's version does not cover which
-// service BROKER_SERVICES' accounts prove), or any granted name carries a requesters tag
-// (anyListed: an entry naming a service matches by those same accounts) — that the current
+// service BROKER_SERVICES' accounts prove), any granted name carries a requesters tag
+// (anyListed: an entry naming a service matches by those same accounts), or the grant is a
+// person's pod's (personPodGrant: the policy's version does not cover which person
+// BROKER_POD_OPERATORS maps the pod's account to) — that the current
 // policy still allows the session, with the names its operator withheld from it, every granted
 // name under the login that decided it, or, for a grant the model judge decided, under the
 // judge the rules still give that name (stillAllowed), that no granted name's max-grant is now
 // shorter than the lifetime the grant's request signed (overMaxGrant), and that no granted
 // name's airlock entry has changed since the request recorded its fingerprint, which ends the
 // grant for good.
+//
+// For a person's pod, the session is the pod as requester reads it now. When the setting no
+// longer maps the pod's account to its person, an automatic grant the pod got as that person is
+// refused (ErrGrantNotLive) but not ended, so it releases again when the entry comes back. A
+// grant a person approved still releases. A grant whose requesters tag names the person ends for
+// good (errRequesterNotListed).
 //
 // owner, when it is not empty, is the enrollment the caller proved, which must be the grant's own
 // (ErrNotYours). AirlockValues passes none: a proxy connection proves its grant by holding one of
@@ -132,7 +140,7 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 	}
 	// One policy snapshot serves both the grant re-check and the minters' name, tier and owners.
 	set := m.Policy.Get()
-	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) {
+	if policyVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) {
 		requester, err := m.requester(ctx, m.Store.Pool, enr)
 		if err != nil {
 			return grantRelease{}, err
@@ -931,8 +939,10 @@ func writtenBeforeMigration13(alias string) string {
 // under this enrollment is returned as-is, with no new request row and no new record, as long as
 // the policy it was decided under is still current, no granted name is a service's
 // (anyServiceOwned: the policy's version does not cover which service BROKER_SERVICES' accounts
-// prove) and no granted name carries a requesters tag (anyListed: an entry naming a service
-// matches by those same accounts), or the current policy still allows it to the session
+// prove), no granted name carries a requesters tag (anyListed: an entry naming a service
+// matches by those same accounts) and the grant is no person's pod's (personPodGrant: the
+// policy's version does not cover which person BROKER_POD_OPERATORS maps the pod's account to),
+// or the current policy still allows it to the session
 // (stillAllowed, the check Values makes, which holds a judged grant to the judge the rules still
 // give its name, over the lifetime this reuse matched it on, the grant's own, and refuses one
 // whose secret the policy now tags as an administrator's), and its whole approval chain still
@@ -944,6 +954,9 @@ func writtenBeforeMigration13(alias string) string {
 // Values ends it (errRequesterNotListed, errJudgedAdminSecret), and Create goes on to ask for
 // the names afresh — the denied request that tells the session why, where the list dropped it,
 // and the card the tag's own person answers, where the tag ended it.
+// An automatic grant a person's pod got as that person is passed over, and not ended, once
+// BROKER_POD_OPERATORS no longer maps the pod's account to that person. Create then asks for the
+// names afresh. The grant is reusable again when the entry comes back.
 // No live grant holds a withheld name nobody approved: the withhold ended each one (withhold).
 // The lookup reads the requests row's own enrollment_id, which an adoption rewrites, so a session
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
@@ -968,7 +981,7 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, names [
 	if err != nil {
 		return Request{}, false, err
 	}
-	if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) {
+	if rulesVersion != set.Version || anyServiceOwned(set, granted) || anyListed(set, granted) || personPodGrant(enr) {
 		requester, err := m.requester(ctx, m.Store.Pool, enr)
 		if err != nil {
 			return Request{}, false, err
@@ -1347,7 +1360,7 @@ type ApproverGrant struct {
 //
 // It also lists every live grant that is on no other person's page at all: one a service's machine
 // login holds, with no approver because the policy gave it without asking and no operator because
-// a pod acts for no person (requests.Machine.requester). Without this a pod could take a
+// that login enrolled its pod for no person (enrollments.operator). Without this a pod could take a
 // shared agent-tier secret and nobody would see it. Every signed-in person sees these, as every
 // signed-in person already lists and revokes the service login behind them, which no person
 // approved (enroll.Service.LiveCredentials, record.MayDecide). The sentinel record.AnyoneApprover
@@ -1358,10 +1371,16 @@ type ApproverGrant struct {
 // It lists, to every signed-in person in the same way, every live grant whose approver is the
 // sentinel record.AnyoneApprover: the model judge approved it in anyone's stead, so the grant
 // records anyone as its approver and names no person at all, and such a grant of a shared secret
-// sits on a pod, whose enrollment has no operator either. Without this nobody would see what the
-// judge had approved. That is the reasoning the paragraph above already gives — every signed-in
-// person sees these — over the grants anyone may approve in the first place, so the people who
-// see one are the people who could have approved it themselves.
+// can sit on a service's pod, whose enrollment has no operator either. Without this nobody would
+// see what the judge had approved. That is the reasoning the paragraph above already gives —
+// every signed-in person sees these — over the grants anyone may approve in the first place, so
+// the people who see one are the people who could have approved it themselves.
+//
+// A pod whose account BROKER_POD_OPERATORS maps to a person is that person's own session here:
+// its enrollment's operator is the person its login was made for, so its grants are listed to
+// that person alone. This list reads the enrollment row, not the live setting that
+// requests.Machine.requester reads. So the person still sees the pod's grants, and may revoke
+// them, after the setting drops the entry or maps it to another person.
 //
 // The enrollment each grant is listed under is joined on the grants row's own enrollment_id, so a
 // grant that followed its session to another box is listed once, naming the box the session runs
