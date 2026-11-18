@@ -2853,6 +2853,18 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - A project's default assignee is moved by a person alone, through `GET /api/v1/settings/project-default-assignees` (every project, since every project names one) and `PUT /api/v1/projects/{key}/default-assignee` `{assignee}` (an email of a row of `people`; nothing clears a default, so an absent, null or blank `assignee` is `400 INVALID_PROJECT`, a login nobody has signed in with `400 ASSIGNEE_NOT_ALLOWED`, and the write appends a `settings.project_default_assignee.updated` event naming both people it moved rows between);
   `POST /api/v1/projects` takes the project's first default, `default_assignee`, else the person creating it, else the person its credential acts for, holds whichever answers to a row of `people` (`400 ASSIGNEE_NOT_ALLOWED`; a broker-issued token's owner comes from the broker, not from `people`), refuses a call that can name none with `400 INVALID_PROJECT`, and answers the project plus the `default_assignee` it took (`createdProject`); `GET /api/v1/projects` lists no default, so the person-scoped settings read above is the one source of it (`api/project_default_assignee.go`, `api/projects.go`).
 
+- Every project has one owner, the full member who changes its access list and its visibility (`projects.owner`, migration `20261116015736_project_access`).
+  The owner gives the project to another full member from its Access tab, and an operator gives any project to another full member with `envoy-dispatch project-owner <KEY> <email>`, at any time and whoever owned it before;
+  the command runs `access.SetOwner` in one transaction that appends `project.access_changed` as the actor `{kind: "system", id: "envoy-dispatch project-owner"}`, and exits 2 for a key no project holds, an email that is not a full member's, or wrong arguments.
+  A project `POST /api/v1/projects` creates for a person is that person's; an insert that names no owner takes its default assignee as owner (`projects_owner_from_default`), and no write clears an owner (`projects_owner_kept`).
+  A project the migration left with no owner, one whose default assignee had never signed in, stops the boot, which names each such project by its key, and both repairs, and no person's email (`store.EnsureProjectOwners`, right after the default project's check):
+  `DISPATCH_PROJECT_OWNER_FALLBACK`, a full member's lowercase email, whom the next boot makes their owner, or the command above (`cmd/dispatch/README.md`, "Giving a project to another owner").
+
+- `session_projects` holds which projects each session has acted in, which is how a session is one of a project's agents (`access.SessionClause`).
+  `events.Broker.AppendAll` records the (session, project) pair of each session's event in the event's own transaction, only where no row holds it, since the table has no unique key on purpose.
+  `envoy-dispatch backfill-session-projects` covers the events written before that, once, run after the deploy that carries the live insert:
+  it reads `events` 10,000 at a time in id order, records the pair the live insert would have (the event's own `project_key`, else its issue's, else its document's, for an actor of kind `session` with a non-empty id), writes no pair a row holds, and then writes the one `session_projects_filled` row (`cmd/dispatch/README.md`, "Filling the sessions' projects").
+
 - `GET /api/v1/users` (needs the `person` scope) returns everyone in `people`, sorted by email, as `{users: [{login}]}` — the picker's options;
   `GET /api/v1/whoami` (any auth) returns `{kind: "user", login, scopes}` (the person's lowercase email) for a cookie/header caller or `{kind: "agent", owner, scopes}` for a bearer (`owner` is the personal token's owner by lowercase email, null under the shared token; `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none) — what `dispatch whoami` reports.
   Issue reads (`GET /issues/{key}`, summaries, pinned) carry `assignee`, and so does the `issue` on every inbox row.
@@ -4263,6 +4275,12 @@ A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `015
 The verifier is built from settings Dispatch already has and takes none of its own (`cmd/dispatch`'s `brokerTokenVerifier`:
 `DISPATCH_AGENT_SECRETS_URL`, `DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` and `DISPATCH_SERVER_URL`, the origin a proof's `htu` is checked against).
 A deployment with no broker configured has no such kind at all, and a `DPoP` presentation there is the `401 UNAUTHORIZED` `invalid bearer token` that any non-bearer `Authorization` header has always been.
+
+A deployment names the Kubernetes service accounts it admits in `DISPATCH_OIDC_ACCOUNTS`, comma-separated subjects:
+a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, in `api.serviceTokenActor`, which every route that reads a credential resolves its caller through, and on both sockets, so the refusal comes before any handler reads or writes a row.
+Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so.
+`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}` and `GET /api/v1/access/person`), the secrets broker's account in production.
+The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>`, and an access account that a set `DISPATCH_OIDC_ACCOUNTS` leaves out (`cmd/dispatch`'s `checkAccessSettings`).
 
 Which routes a credential may reach is decided by two OAuth scopes rather than by whether it is a browser, and which routes a read-only broker token may reach is decided by the read list below.
 `person` is "this credential acts as its person" (`model.ScopePerson`), and every route the dashboard reaches needs it.
