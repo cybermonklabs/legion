@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+    The worker image carries Oh My Pi `18.18.6-sami.20261117-013345` of cybermonklabs/oh-my-pi,
+    which `.omp-pin` now names as `github:cybermonklabs/oh-my-pi@<version>`. It drops the abort
+    listeners the 18.16.0 build kept on each model call. On this build a resume under
+    `--model @default` writes a `model_change` naming the model the role resolved to, so a later
+    launch without the flag reads that model and not the one the session first saved.
+time: 2026-11-17T05:04:09Z
+custom:
+    Issue: pr4349

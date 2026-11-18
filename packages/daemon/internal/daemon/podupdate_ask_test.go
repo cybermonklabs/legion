@@ -97,7 +97,8 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 
 // A role no live session holds — its pod was released, or its session has not registered — is
 // not woken to be asked: the round ends at its bound whether or not the role answers. The row
-// finishes with one Info line and writes no published line.
+// finishes with one Info line and writes no published line. The claim here records no ask mark,
+// and an undelivered ask writes none; podupdate_undelivered_ask_test.go holds the sweep's ask again.
 func TestPodUpdateAskNobodyHoldsFinishesTheRow(t *testing.T) {
 	publisher := &outboxPublisher{err: fmt.Errorf("publish to the tester's topic: %w", notify.ErrNoHolder)}
 	runner, logs := askRunner(t, publisher, map[claim.Role]string{claim.RoleTester: askedRound})

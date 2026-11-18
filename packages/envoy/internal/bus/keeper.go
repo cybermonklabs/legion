@@ -1,6 +1,7 @@
 package bus
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -84,12 +85,26 @@ func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, buckets []strin
 // (keep).
 func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 	ctx, cancel := c.untilStopped()
+	defer cancel()
 	defaultsAnUnsetCap, err := connectedDefaultsAnUnsetCap(ctx, c.Connection())
-	cancel()
 	js := c.JS()
+	// The read each step of the pass makes of the stream after an update that drew no answer is
+	// sent again while the server leaves it unanswered (updateStream), and those reads end when the
+	// client stops or the step's hang guard passes, the one a start's step takes (startHangGuard).
+	// The step's first read and its update are one send each under the JetStream context's own
+	// wait, which the connection's close at a stop ends too (awaitKeeper); the next pass, 30 s
+	// later, makes the step again either way.
+	step := func(run func(ctx context.Context) error) error {
+		ctx, cancel := hangGuard(ctx, startHangGuard)
+		defer cancel()
+		return run(ctx)
+	}
 	var restored []string
 	if err == nil {
-		restored, err = keepStream(js, cfg, defaultsAnUnsetCap)
+		err = step(func(ctx context.Context) (err error) {
+			restored, err = keepStream(ctx, js, cfg, defaultsAnUnsetCap)
+			return err
+		})
 	}
 	switch {
 	case err != nil && c.stopped():
@@ -103,7 +118,11 @@ func (c *Client) keepPass(cfg *nats.StreamConfig, buckets []string) {
 		if c.stopped() {
 			return
 		}
-		from, err := raiseReplicas(js, bucket, cfg.Replicas)
+		var from int
+		err := step(func(ctx context.Context) (err error) {
+			from, err = raiseReplicas(ctx, js, bucket, cfg.Replicas)
+			return err
+		})
 		switch {
 		case errors.Is(err, nats.ErrStreamNotFound):
 		case err != nil && c.stopped():
@@ -158,28 +177,55 @@ func (c *Client) awaitKeeper() {
 // (ensureStreamWithConfig), so the two builds a release runs at once never put their own settings
 // back in turn. An update whose answer never came succeeds when the stream, read again, needs
 // nothing more, and one the server refused as overlapping the stream itself is sent again until
-// the stream needs nothing more or its sends run out (updateStream).
-func keepStream(js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
+// the stream needs nothing more or its sends run out (updateStream). Each update sent again is
+// kept from the read before it, and none is sent when that read finds the stream a newer build's
+// or carrying the role lanes, the two streams a first read leaves alone; the fields it returns are
+// those of the last update against the read it was made from, so a field another writer set
+// between two sends is not reported as one this pass restored.
+func keepStream(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
 	info, err := js.StreamInfo(Stream)
 	if err != nil {
 		return nil, err
 	}
-	if MetadataGeneration(info.Config.Metadata, streamGenerationKey) > streamConfigGeneration {
+	if newerBuild(info) {
 		return nil, nil
 	}
 	kept := keptStream(info, cfg, defaultsAnUnsetCap)
 	if reflect.DeepEqual(kept, info.Config) {
 		return nil, nil
 	}
-	if roleLanes := slices.DeleteFunc(slices.Clone(info.Config.Subjects), func(subject string) bool { return !subjectCapturesRoleLanes(subject) }); len(roleLanes) > 0 {
-		return nil, fmt.Errorf("the stream carries subjects that capture the role lanes, which only a start moves off it: %s", strings.Join(roleLanes, ", "))
+	if err := roleLanesLeftToAStart(info); err != nil {
+		return nil, err
 	}
-	if err := updateStream(js, &kept, func(again *nats.StreamInfo) bool {
-		return reflect.DeepEqual(keptStream(again, cfg, defaultsAnUnsetCap), again.Config)
-	}); err != nil {
-		return nil, refusedSettings(err, &info.Config, &kept)
+	keep := func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
+		if newerBuild(current) || roleLanesLeftToAStart(current) != nil {
+			return nats.StreamConfig{}, false
+		}
+		return keptStream(current, cfg, defaultsAnUnsetCap), true
 	}
-	return restoredFields(&info.Config, &kept), nil
+	update, err := updateStream(ctx, js, info, keep, func(again *nats.StreamInfo) bool {
+		kept, write := keep(again)
+		return write && reflect.DeepEqual(kept, again.Config)
+	})
+	switch {
+	case err != nil:
+		return nil, refusedSettings(err, &update.from.Config, &update.sent)
+	case update.declined && !newerBuild(update.from):
+		return nil, roleLanesLeftToAStart(update.from)
+	case update.declined:
+		return nil, nil
+	}
+	return restoredFields(&update.from.Config, &update.sent), nil
+}
+
+// roleLanesLeftToAStart is the keeper's refusal of a stream whose subjects capture the role lanes,
+// which only a start moves off it (keepStream), naming those subjects; nil when none does.
+func roleLanesLeftToAStart(info *nats.StreamInfo) error {
+	roleLanes := slices.DeleteFunc(slices.Clone(info.Config.Subjects), func(subject string) bool { return !subjectCapturesRoleLanes(subject) })
+	if len(roleLanes) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the stream carries subjects that capture the role lanes, which only a start moves off it: %s", strings.Join(roleLanes, ", "))
 }
 
 // restoredFields names each field kept differs in from deployed, with its old and new value:

@@ -254,7 +254,12 @@ key directory or a helper session, 1 otherwise, asking nothing of the network. `
 identity --source` walks the chain, registering nothing, and prints the source a command would
 use (`key-dir: <dir>`, `sign-in: <person>`, `helper: <socket>`, `machine: the cached enrollment in
 <dir>`, or `machine: ` and the identity it would trade), then `helper: <socket>` whenever the
-helper answered and is not that source; with none it prints the refusal above and exits 1.
+helper answered and is not that source; with none it prints the refusal above and exits 1. Each
+`helper: <socket>` line ends with the release of the helper process that answered, as that process
+reports it (`(agent-secrets-helper <release>)`), not the release installed on disk, which differs
+after an upgrade until the helper restarts. A helper from before that report answers
+`unknown op version`, and the line ends `(a helper from before this release; its binary is
+/proc/<pid>/exe)`, naming the process on the socket.
 
 ## Machine login
 
@@ -366,10 +371,10 @@ marked with tags or annotations:
   `secret retag NAME --type none` removes both classifier names and the rollback guard.
 - **`github-owners`** is required on a `github-app` secret, and read on no other type. It lists
   the GitHub accounts the broker mints installation tokens for, separated by spaces
-  (`acme-org ada`) and compared without regard to case, a form both stores hold. A comma, or an
-  entry no GitHub login can be (one that does not start with an ASCII letter or digit, holds
-  anything but ASCII letters, digits and hyphens, is over 39 characters, or is the word `none`), is
-  refused `github-owners-malformed`. A public App can be installed by any account, so an
+  (`acme-org ada`) and compared without regard to case, a form both stores hold.
+  A comma, or an entry no GitHub login can be (one that does not start with an ASCII letter or digit, holds anything but ASCII letters, digits, hyphens and underscores, is over 39 characters, or is the word `none`), is refused `github-owners-malformed`.
+  An entry may hold an underscore, which GitHub's sign-up form refuses, because a managed user's login ends in `_<shortcode>` (`mona-cat_octo`).
+  A public App can be installed by any account, so an
   installation on an account the list does not
   name gets no token. A `github-app` secret without the tag, or with one that names no account, is
   refused `github-owners-missing`.
@@ -832,6 +837,14 @@ path prefixes it may travel on
 the longest grant of that secret the model judge may approve, at most 900
 ([The model judge](#the-model-judge)). Those hosts carry no port, so an entry binds a name
 on port 443 alone, and another port of that name is another service the proxy tunnels unread.
+A host is a host name, never an IP address: a TLS client sends no server name for an address, so
+the proxy refuses every request to an address in its canonical form `sni mismatch`, and it
+compares no other spelling of one at all (`2001:db8:7:0::1`, `[2001:db8:7::1]`,
+`::ffff:192.0.2.10`, `192.0.2.10.`). A host name is written without a trailing dot too
+(`api.github.com`, not `api.github.com.`), because a client writes it that way. The broker
+refuses to start with a file that gives a host as an address in any spelling, that writes a
+name with a trailing dot, that gives any host a port, that has an empty host, or whose host ends
+in a number, and `airlock-check` refuses that file too.
 A secret the file names is **behind the airlock**,
 and the broker never releases its value to anyone: a read of a grant of it leaves the name out of
 `values` and answers an `airlock` object instead, which carries the proxy's URL, the certificate
@@ -870,7 +883,16 @@ could not carry, writes
 method, the path and the answer's status. A call it refused writes its refusal record,
 `broker: answer refused`, with the grant and enrollment as its caller, the secret, the host, the
 method, the path, the reason and the answer id
-([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). A path that
+([Refusals and the answer id](/legion/broker/operate/#refusals-and-the-answer-id)). A tunnel is
+read by nobody, and a plain-HTTP request is forwarded with nothing decided, so each socket the
+proxy opens for one writes a line of its own instead: `airlock proxy: a tunnel`, with the
+grant, its enrollment, the session and the runtime behind it, the host and port asked for and
+the address the broker dialled. A dial the proxy refused or could not make writes
+`airlock proxy: a dial that did not happen`, with those fields, how many addresses the host
+resolved to, the class of the failure and the reason. The host and the port are the command's
+own text, cut to 256 bytes, the host lowercased and the port read as its number, and a refusal's
+path and correlation id are too; none of that is redaction, so every line the proxy writes has
+each placeholder written whole, in any case, replaced by `[placeholder]`. A path that
 holds a `.` or `..` segment is refused outright
 (`path has a dot segment`), whatever the entry's paths allow, because a reader that resolves
 such a path first — which is what RFC 3986 says it means — reads it as a path the prefix does
@@ -903,8 +925,13 @@ What the airlock does not stop is as much of the design as what it does:
   agent in the middle of a call to ask for a new one.
 
 - A private address that reaches the proxy is refused, because the proxy runs beside the broker,
-  whose own identity reads every secret. A command that needs such a call sets its own `NO_PROXY`
-  entry for that name.
+  whose own identity reads every secret. So is an address inside the broker cluster's own
+  Service, pod and node ranges, which the deployment names in `BROKER_AIRLOCK_CLUSTER_RANGES`
+  beside `BROKER_AIRLOCK_RULES_FILE`: a Service range can be public address space, as GKE's
+  default `34.118.224.0/20` is, so no private-address rule covers its ClusterIPs. In a cluster
+  (`KUBERNETES_SERVICE_HOST` set to a non-empty value; empty or unset is outside a cluster), a
+  broker with a rules file refuses to start without that setting, or when no range in it holds
+  that address. A command that needs such a call sets its own `NO_PROXY` entry for that name.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.
@@ -913,8 +940,9 @@ What the airlock does not stop is as much of the design as what it does:
 
 A person approves a secret request on the broker's own approval page, never in Dispatch. The
 broker writes nothing in Dispatch: Dispatch's server reads the broker's pending list
-for the person signed in, and its Inbox lists each secret request as a link to that request's page
-on the broker, `<broker>/approve/<record>`, which the broker's answers name as `approve_url`. The
+for the person signed in, and its Inbox lists each pending secret request as a link to that
+request's page on the broker, `<broker>/approve/<record>`, which the broker's answers name as
+`approve_url` (an expired one is listed with no link, below). The
 page signs the person in to the broker itself, with OpenID Connect and the broker's own client (the
 deployment's Google Workspace, `BROKER_SIGNIN_*` in
 [Operate](/legion/broker/operate/#approval-sign-in)), only when they hold no live sign-in there,
@@ -978,6 +1006,16 @@ A record is decided once. A second click, a concurrent one, or one after the rec
 nothing (`RECORD_TERMINAL`), and the page says what became of the record. A pending request nobody
 decides expires after 12 hours, a fixed time rather than
 a setting (`agentSecretPendingTTL` in `packages/envoy/cmd/broker/main.go`).
+
+A request or a machine login whose deadline passes before anybody decides it stays in its
+approver's Dispatch Inbox, marked **Expired** with its deadline, with no link to a page that
+decides it, until someone dismisses it with **Dismiss**. It is no longer counted as waiting on the
+person. The broker reads it as expired from the moment its deadline passes, before the sweep ends
+it and after, which is exactly what every decision of it refuses. A dismissal is the record's
+once, for every Inbox: the first person whose Inbox holds a shared request and who dismisses it
+takes it out of everyone's, and no route brings it back. The broker stores each dismissal
+(`credential_request_dismissals`); a request the sweep had already ended before it kept them was
+recorded as dismissed by `broker` and does not come back.
 
 A machine login is still decided in Dispatch, with its typed code
 ([Machine login](#machine-login)), and a person's revoke of a grant or a machine login is still made

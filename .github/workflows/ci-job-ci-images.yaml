@@ -22,7 +22,7 @@ on:
 
 jobs:
   ci-images:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # Raised from 15 to 25 when the tool copy joined the image copy: this job now fetches and
     # pushes up to four release archives of its own beside the images.
     timeout-minutes: 25

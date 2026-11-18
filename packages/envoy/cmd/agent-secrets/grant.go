@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/helper"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // cmdGrantList implements "grant list": every live grant of a session the operator runs, given
@@ -44,7 +45,7 @@ func cmdGrantList(args []string, stdout, stderr io.Writer) int {
 	c := newClient(base)
 	grants, raw, err := c.OperatorGrants(ctx, signer)
 	if err != nil {
-		return operatorFail(stderr, form, c.source(ctx), err)
+		return operatorFail(stderr, form, c.source(ctx), signer.failure, err)
 	}
 	if *asJSON {
 		writeVerbatim(stdout, raw)
@@ -79,7 +80,9 @@ func grantExpiry(expires *time.Time) string {
 var grantColumns = []string{"GRANT_ID", "SECRETS", "GRANTED", "APPROVER", "DECIDED_BY", "SESSION", "OPERATOR", "EXPIRES"}
 
 // grantRow is one grant's cells, in grantColumns' order, each "-" where the grant carries no
-// such value.
+// such value. Each cell is the broker's, so it prints on one line (redact.OneLine): as it came, or
+// Go-quoted where a control character in it, a tab among them, would start a line of its own or
+// split the cell.
 //
 // APPROVER and DECIDED_BY sit side by side because they differ for one kind of grant: one the
 // model judge approved, which records the record's own approver — the secret's owner, or anyone
@@ -91,10 +94,14 @@ func grantRow(g OperatorGrant) []string {
 	if g.Enrollment.Slot != nil {
 		session += "/" + *g.Enrollment.Slot
 	}
-	return []string{
+	cells := []string{
 		g.GrantID, strings.Join(g.Names, ","), g.Granted, orDashPtr(g.Approver), orDashPtr(g.DecidedBy),
 		session, orDash(g.Enrollment.Operator), grantExpiry(g.ExpiresAt),
 	}
+	for i, cell := range cells {
+		cells[i] = redact.OneLine(cell)
+	}
+	return cells
 }
 
 // orDashPtr is what s points at, or "-" where it points at nothing: a cell the broker's answer
@@ -151,7 +158,7 @@ func cmdGrantRevoke(args []string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	c := newClient(base)
 	if err := c.RevokeOperatorGrant(ctx, signer, grantID); err != nil {
-		return operatorFail(stderr, form, c.source(ctx), err)
+		return operatorFail(stderr, form, c.source(ctx), signer.failure, err)
 	}
 	fmt.Fprintf(stdout, "revoked %s at %s\n", grantID, brokerSource(base))
 	return 0

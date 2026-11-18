@@ -828,6 +828,10 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
         })),
       ];
     }
+    default:
+      // The delivery-live probe drives only the timeline, measures and pipeline views; the
+      // `/ws/live` `legion` view is read by no page and no probe row.
+      throw new Error(`the delivery-live probe drives no ${view.kind} view`);
   }
 }
 

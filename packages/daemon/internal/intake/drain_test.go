@@ -60,14 +60,15 @@ const (
 func drainRoot(i int) string  { return fmt.Sprintf("LEGION-%d", 1000+i) }
 func drainChild(i int) string { return fmt.Sprintf("LEGION-%d", 2000+i) }
 
-// drainRepositories serves acme/widgets at main, as the daemon's mapping would.
+// drainRepositories records an issue on acme/widgets at main, as the daemon would once GitHub
+// answers for it; a repository nothing has read GitHub for is answered as unread.
 type drainRepositories struct{}
 
 func (drainRepositories) ResolveRepository(resolved string) (workflow.Resolution, error) {
 	if resolved == drainRepo {
 		return workflow.Resolution{Repo: drainRepo, DefaultBranch: "main", GitHubRepo: drainRepo}, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + drainProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
 // transactions counts the transactions a pool's connections begin.

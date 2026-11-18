@@ -2,9 +2,10 @@
 //go:build linux
 
 // A machine session on a helper that holds no launcher credential has no broker identity: a helper
-// never logged in, or whose login lapsed or was refused, enrolls no one until the operator logs the machine in, so
-// identity sends its callers to their other backend, and every command that meets the helper's
-// NO_CREDENTIAL answer says so in one line. Linux-only for the real helper's pidfd pinning.
+// never logged in, whose login lapsed or was refused, or, in identity mode, whose trade loop has
+// not traded or has stopped, enrolls no one until it holds a credential again, so identity sends
+// its callers to their other backend, and every command that meets the helper's NO_CREDENTIAL
+// answer quotes it in one line. Linux-only for the real helper's pidfd pinning.
 package main
 
 import (
@@ -18,10 +19,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 )
 
-const notLoggedInNotice = "agent-secrets: this machine is not logged in to the secrets broker; not an agent session (run: agent-secrets machine login)\n"
+const notLoggedInNotice = "agent-secrets: this machine's agent-secrets-helper holds no credential at the secrets broker; not an agent session (the helper: no machine credential; run: agent-secrets machine login, and have a human approve it)\n"
 
 // runInSession runs `agent-secrets register --exec -- binary args...` against the helper at sock,
 // so the command runs as a freshly registered machine session, and returns its exit code and output.
@@ -66,7 +68,7 @@ func TestRegisterWaitReturnsAtOnceWithoutALauncherCredential(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(out)) != "ran" {
 		t.Fatalf("the command must still run: %q %v (stderr %q)", out, err, stderr.String())
 	}
-	const warning = "agent-secrets register: this machine is not logged in to the secrets broker; launching anyway, and until it is (run: agent-secrets machine login) this session's agent-secrets calls fail\n"
+	const warning = "agent-secrets register: launching anyway, and this session's agent-secrets calls fail until the helper holds a credential again: this machine's agent-secrets-helper holds no credential at the secrets broker (the helper: no machine credential; run: agent-secrets machine login, and have a human approve it)\n"
 	if stderr.String() != warning {
 		t.Fatalf("stderr %q, want the no-credential warning %q", stderr.String(), warning)
 	}
@@ -150,9 +152,9 @@ func TestLoginStatusSaysWhyTheHelperDroppedItsCredential(t *testing.T) {
 		dropped string
 		want    string
 	}{
-		{"dropped at its expiry", true, "the launcher credential reached its expiry", "the launcher credential reached its expiry; run: agent-secrets machine login"},
-		{"refused, from a helper before credential_dropped", true, "", "the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login"},
-		{"a login nobody approved", false, "", "the most recent machine login expired before anyone approved it; run: agent-secrets machine login"},
+		{"dropped at its expiry", true, "the launcher credential reached its expiry", "the launcher credential reached its expiry; run: agent-secrets machine login, and have a human approve it"},
+		{"refused, from a helper before credential_dropped", true, "", "the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch); run: agent-secrets machine login, and have a human approve it"},
+		{"a login nobody approved", false, "", "the most recent machine login expired before anyone approved it; run: agent-secrets machine login, and have a human approve it"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sock := filepath.Join(shortTempDir(t), "h.sock")
@@ -164,5 +166,55 @@ func TestLoginStatusSaysWhyTheHelperDroppedItsCredential(t *testing.T) {
 				t.Fatalf("exit %d, stdout %q, stderr %q; want 1, %q, %q", exit, stdout, stderr, "expired\n", want)
 			}
 		})
+	}
+}
+
+// TestAHelperInIdentityModeIsQuotedAndNamesNoMachineLogin: a helper in identity mode answers
+// NO_CREDENTIAL with the cure of its own mode, its trade loop, and every command that meets the
+// answer passes it on whole: identity, a machine or grant command, and register --exec's launch
+// warning. None names a machine login, which is not how such a machine gets a credential. A
+// machine command whose credential the broker refuses LAUNCHER_INVALID names the same cure, read
+// from the helper's sign-launcher answer (machine_identity).
+func TestAHelperInIdentityModeIsQuotedAndNamesNoMachineLogin(t *testing.T) {
+	const helperSays = "no machine credential; the helper's trade loop is trading this machine's identity for a new credential"
+	const none = "this machine's agent-secrets-helper holds no credential at the secrets broker"
+	answer := helper.Response{Code: helper.CodeNoCredential, Error: helperSays}
+	binary := buildAgentSecrets(t)
+	sock, _ := fakeHelperByOp(t, map[string]helper.Response{
+		"sign": answer, "sign-launcher": answer,
+		"register": {OK: true, State: "enrolling", Code: helper.CodeNoCredential, Error: helperSays},
+	})
+	env := []string{"AGENT_SECRETS_HELPER_SOCK=" + sock, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir(), "XDG_RUNTIME_DIR=" + t.TempDir()}
+	for _, tc := range []struct {
+		args []string
+		exit int
+		want string
+	}{
+		{[]string{"identity"}, 1, "agent-secrets: " + none + "; not an agent session (the helper: " + helperSays + ")\n"},
+		{[]string{"machine", "list"}, 1, "agent-secrets machine list: " + none + " (the helper: " + helperSays + ")\n"},
+		{[]string{"register", "--wait", "1", "--exec", "--", "true"}, 0,
+			"agent-secrets register: launching anyway, and this session's agent-secrets calls fail until the helper holds a credential again: " + none + " (the helper: " + helperSays + ")\n"},
+	} {
+		stdout, stderr, exit := runAgentSecrets(t, binary, "http://127.0.0.1:1", t.TempDir(), env, tc.args...)
+		if exit != tc.exit || stdout != "" || stderr != tc.want || strings.Contains(stderr, "machine login") {
+			t.Errorf("%v on a helper in identity mode: exit %d, stdout %q, stderr %q; want %d, nothing, %q", tc.args, exit, stdout, stderr, tc.exit, tc.want)
+		}
+	}
+
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":"LAUNCHER_INVALID","error":"the launcher credential is not valid"}`))
+	}))
+	t.Cleanup(broker.Close)
+	signs, _ := fakeHelperByOp(t, map[string]helper.Response{
+		"sign-launcher": {OK: true, Proof: "a.launcher.proof", CredentialID: "credential-1", MachineIdentity: true},
+	})
+	stdout, stderr, exit := runAgentSecrets(t, binary, broker.URL, t.TempDir(),
+		[]string{"AGENT_SECRETS_HELPER_SOCK=" + signs, "AGENT_SECRETS_KEY_DIR=", "HOME=" + t.TempDir()}, "machine", "list")
+	want := "agent-secrets machine list: the launcher credential is not valid (LAUNCHER_INVALID); this machine's launcher credential at " + brokerSource(brokeraddr.New(broker.URL)).String() +
+		" is expired or revoked; the helper's trade loop is trading this machine's identity for a new credential\n"
+	if exit != 1 || stdout != "" || stderr != want {
+		t.Fatalf("machine list refused LAUNCHER_INVALID on a helper in identity mode: exit %d, stdout %q, stderr %q; want 1, nothing, %q", exit, stdout, stderr, want)
 	}
 }

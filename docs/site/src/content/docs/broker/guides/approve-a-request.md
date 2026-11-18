@@ -35,9 +35,9 @@ model anything.
 Pending requests you decide appear at the top of your Dispatch **Inbox**, under **Credential
 requests**, one row per request: **Secret request** with the secrets' names, or **Machine login**
 with a machine's host name ([log a machine in](/legion/broker/guides/log-a-machine-in/) covers
-those). The section is absent when nothing waits on you, and hidden entirely when the deployment
-has no broker connected. The agent's own output names the same page: `waiting for <you> to approve
-it on the secrets broker: <url>`.
+those). The section is absent when nothing is listed for you, and hidden entirely when the
+deployment has no broker connected. The agent's own output names the same page: `waiting for <you>
+to approve it on the secrets broker: <url>`.
 
 A **Secret request** row is a link to the request's page on the broker,
 `<broker>/approve/<record>`. Click it. When you signed in to the broker within the last day (a
@@ -46,6 +46,13 @@ broker sends you to sign in with your Workspace account, which asks nothing when
 signed in to it, and brings you back to the same request.
 A **Secret request** row that is not a link, with nothing to open, comes from a broker older than
 that page; ask whoever runs that broker to upgrade it.
+
+A row marked **Expired** is a request or a machine login whose deadline passed before anybody
+decided it. Nobody can approve or deny it now, so it is not a link and it is not counted in
+**Needs you**; the line under it says when its deadline passed. It stays until you click
+**Dismiss**, which takes it out of the Inbox for good, and out of everyone's Inbox for a shared
+request. The agent asks again with a new request if it still needs the secret, and that request is
+a row of its own.
 
 ## Check it
 
@@ -111,11 +118,14 @@ the request. `agent-secrets-devrelay` stands in for Dispatch only for a machine 
 (`machine-approve`, with its code): the broker refuses every route a service calls to decide a
 secret request.
 
-The list Dispatch reads names each request's page as `approve_url`:
+The list Dispatch reads names each request's page as `approve_url`, and each row's `state`,
+`pending` or `expired`, with its deadline as `expires_at`. `curl -H @-` reads the header from
+standard input, so the token is in no command line another process can read:
 
 ```sh
-curl -s -H "Authorization: Bearer $(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" \
-  "$AGENT_SECRETS_URL/v1/pending?approver=$AGENT_SECRETS_APPROVER" | jq '.pending[] | {record_id, kind, approve_url}'
+printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" |
+  curl -s -H @- "$AGENT_SECRETS_URL/v1/pending?approver=$AGENT_SECRETS_APPROVER&state=pending&state=expired" |
+  jq '.pending[] | {record_id, kind, state, expires_at, approve_url}'
 ```
 
 The [HTTP API reference](/legion/broker/reference/api/) documents the page's routes and that list.

@@ -3,6 +3,7 @@ import {
   agentGroupToggle,
   agentRow,
   type FakeSession,
+  openAgentFilter,
   pickAgentFilter,
   setLiveSessions,
   setSessionLive,
@@ -61,8 +62,10 @@ const QUIET_AFTER_MS = 10 * 60_000;
 const ROW_HEIGHT_PX = { laptop: 46, phone: 126 };
 
 /** One element's box on screen, in whole pixels: what a reader sees, rather than a fraction of
- *  a pixel the layout engine carries. */
+ *  a pixel the layout engine carries. Read once the element shows. */
 async function boxOf(locator: Locator): Promise<{ bottom: number; height: number; top: number }> {
+  await expect(locator).toBeVisible();
+  // The wait above drew the element, and a drawn element has a box, so the box is there.
   const box = await locator.boundingBox();
   if (box === null) throw new Error("the element is not laid out");
   return {
@@ -133,8 +136,7 @@ function filterOptions(page: Page): Locator {
 
 /** Opens one filter's panel and leaves it open, which is where its text box is. */
 async function openFilter(page: Page, filter: "group" | "machine" | "role"): Promise<void> {
-  const trigger = agentFilter(page, filter);
-  if ((await trigger.getAttribute("aria-expanded")) === "false") await trigger.click();
+  await openAgentFilter(page, filter);
   await expect(page.getByRole("listbox")).toHaveCount(1);
 }
 
@@ -285,7 +287,11 @@ test("an ended session that replied is under Replied, no longer connected and in
     await expect(ended).toBeVisible();
     await expect(ended.locator(`[data-agent-name="${ENDED}"]`)).toHaveCount(1);
     await expect(ended).toContainText("New reply 1");
-    const groups = await page.getByTestId("agents-group-quiet").boundingBox();
+    const quiet = page.getByTestId("agents-group-quiet");
+    await expect(quiet).toBeVisible();
+    // The wait above drew the Quiet group, and a drawn element has a box, so its box is there.
+    const groups = await quiet.boundingBox();
+    // The region was waited for above as well, so its box is there as the group's is.
     const below = await ended.boundingBox();
     if (groups === null || below === null) throw new Error("the page is not laid out");
     expect(below.y).toBeGreaterThanOrEqual(groups.y + groups.height);
@@ -451,6 +457,8 @@ test("an agent row carries its state, its name, its age, its directory and its p
     // line for six hundred rows is six hundred lines.
     const boxes = await Promise.all(
       [age, directory, pin].map(async (part) => {
+        await expect(part).toBeVisible();
+        // The wait above drew the part, and a drawn element has a box, so the box is there.
         const box = await part.boundingBox();
         if (box === null) throw new Error("the row is not laid out");
         return box;

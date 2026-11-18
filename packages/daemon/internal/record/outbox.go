@@ -78,7 +78,7 @@ const (
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
 // phase ended, given the words a hook fired on a move back, told that its pull request left the
 // merge queue, or asked to get ready for the replacement of its pod must hear it while that is
-// news, not after whatever its tree's architect is owed.
+// news, not after whatever the architect that owns its issue is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -297,7 +297,7 @@ type Notice struct {
 	Resends int `json:"resends,omitempty"`
 	// PacedAt is the moment the daemon's wake pacing reserved for a catch-up it holds to its turn,
 	// and the zero value on every other notice: the catch-up the outbox writes in place of a
-	// launch when a start row finds the tree's root architect already running (the outbox's start,
+	// launch when a start row finds an architect already running (the outbox's start,
 	// workflow.Config.Reserve). Reading that catch-up is a wake of the architect, and what the
 	// organization's per-minute cap counts is the context it reads, so the row waits its turn like
 	// a launch does.
@@ -364,15 +364,16 @@ type Notice struct {
 	// (workflow.BackgroundStalledWorker, SilentIssue.BackgroundSince), as admission derives the
 	// list (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
 	// does: the tick is the turn that posts the day's report, and a tick with nothing silent
-	// carries none. The issue's architect is told of each of these by a `worker-silent` or
-	// `worker-background-stalled` notice of its own, judged by the same rules, with the two
+	// carries none. The architect that owns the issue is told of each of these by a `worker-silent`
+	// or `worker-background-stalled` notice of its own, judged by the same rules, with the two
 	// differences admit.Admission.silentWorkers sets out: a handler also refuses a fact whose run
 	// is not the issue's current generation, a term the tick does not weigh, since it reads the
 	// worker's claim by its token alone and that claim carries no serving run; and the sweep that
 	// writes those notices runs once a minute, so a tick can name a worker up to a minute before
-	// its architect is told. The controller is the second reader, because that architect may be
-	// failed or gone, so its notice reaches nobody, and the controller holds `fresh_session` and
-	// reads the whole project.
+	// its architect is told. The controller is the second reader, because the notice can reach
+	// nobody: a child's architect that does not hold its role is passed over for the one above
+	// it, but a notice whose walk ends at a tree root whose architect claim failed, retired or is
+	// gone ends undelivered. The controller holds `fresh_session` and reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
@@ -532,20 +533,26 @@ type SilentIssue struct {
 	BackgroundSince time.Time  `json:"backgroundSince,omitzero"`
 }
 
-// CatchUp is what a tree's root architect is told of its tree when its claim is ready at a launch
-// (a catch-up notice), which is the architect's first instruction: admission launches it with no
-// task, or only with the decisions kept for it. It is the tree as the daemon records it then: the
-// root's generation, the launch of the architect's claim it was written for, whether a hand-over
-// created the root at this generation with its child's phase and pull request (HandedOver) and
-// whether its old root's gate came with them (Carried), the design gate step by step (Gates),
-// and every issue of the tree. A handed-over root's workers already run their phases, so its
-// architect decomposes nothing anew; one that carried no gate registers its own spec. Decided names
-// what a person decided on the tree while nobody in it could hear it and the start did not name (a
-// decision made while the architect's claim had ended, before this relaunch), in the words of
-// workflow.Engine.ParkedDecisionTask; empty when there is none. Kept is what Decided named, which
-// a published catch-up forgets (Store.ForgetKeptDecisions): a catch-up a newer one supersedes
-// hands it over to a fresh catch-up instead (workflow.HandOverKept), and one that finishes
-// undelivered any other way leaves it all for the architect's next ready to name again.
+// CatchUp is what an architect is told of the issues it owns when its claim is ready at a launch
+// (a catch-up notice). It is a child's own architect's first instruction, since a child's first
+// phase start launches that architect with no task; a tree's root architect is launched with the
+// task its record derives (workflow.ArchitectStartTask), or with none where it derives none, and
+// is told its tree here beside it. It is those issues as the daemon records them then: the
+// generation of the architect's own issue, the launch of the architect's claim it was written
+// for, whether a hand-over created the root at this generation with its child's phase
+// and pull request (HandedOver) and whether its old root's gate came with them (Carried), the
+// design gate step by step (Gates), and every issue the architect owns — a root's whole tree, a
+// child's own issue and every issue under it. A child registers no gate and no hand-over creates
+// one, so a child's catch-up states no step and is neither handed over nor carried. A handed-over
+// root's workers already run their phases, so its architect decomposes nothing anew; one that
+// carried no gate registers its own spec. Decided names what a person decided on the tree while
+// nobody in it could hear it and the start did not name (a decision made while the architect's
+// claim had ended, before this relaunch), in the words of workflow.Engine.ParkedDecisionTask;
+// empty when there is none, and on every child's catch-up, since what is kept for a tree is its
+// root architect's to hear. Kept is what Decided named, which a published catch-up forgets
+// (Store.ForgetKeptDecisions): a catch-up a newer one supersedes hands it over to a fresh catch-up
+// instead (workflow.HandOverKept), and one that finishes undelivered any other way leaves it all
+// for the architect's next ready to name again.
 type CatchUp struct {
 	Generation uint64         `json:"generation"`
 	Launch     uint64         `json:"launch"`
@@ -773,8 +780,9 @@ func NoticePerClaim(kind NoticeKind) bool {
 // a suspend stops a role of an issue the workflow is taking out, a release stops a role of an
 // issue that stays in the workflow and comes back at the next wake; "tree_close" is the tree's
 // close — the request that ends the claim, the tree's root claim included; "issue_close" is a
-// child issue's close as done, which ends the claim as a tree close does and drops its session,
-// since the issue is finished and its next run, should a person set it todo again, starts fresh.
+// child issue's close as done, which ends the claim as a tree close does and keeps its session, so
+// the issue's next run, should a person set it todo again, resumes each claim's session rather
+// than starting fresh (supervise's RequestIssueClose).
 // There is no plain stop: only a close ends a claim from the workflow, so the op states which.
 type SuperviseOp string
 
@@ -794,8 +802,11 @@ type SuperviseRequest struct {
 	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
 	Generation uint64 `json:"generation"`
 	// Phase is the phase a phase worker's start serves; a start for a phase the issue has left
-	// finishes without acting. It is empty for the architect, which serves every phase, and for a
-	// suspend or a tree's close, which must still act after the issue moves on.
+	// finishes without acting. It is empty for a root's architect, which serves every phase, for a
+	// child's own architect's plain start (workflow's childArchitectStart), and for a suspend or a
+	// tree's close, which must still act after the issue moves on. The start a re-admission writes
+	// to bring back a mid-phase child's own architect names the phase the child stands in (admit's
+	// startMidPhaseMembers), and finishes without acting once the child has left it.
 	Phase phase.Phase `json:"phase,omitempty"`
 	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
@@ -815,8 +826,10 @@ type SuperviseRequest struct {
 	// retry, which marks it with ResendEntry below. It is zero for every other
 	// operation, and for every start that hands no entry's work at all. Those starts, in full, so
 	// that no other comment need list them: the promotion's architect start of a root the
-	// derivation serves no task (admit's promotion), the roles admission brings back beside a
-	// re-admitted member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
+	// derivation serves no task (admit's promotion), a child's own architect's plain start
+	// (workflow's gateOpened, which a child's first phase start runs, and reviveArchitect, which
+	// each phase start of a child runs), the roles admission brings back beside a re-admitted
+	// member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
 	// (workflow's booted), the boot's one-time start of a merger the `awaiting_merge` cutover left
 	// released (workflow's cutoverMergerRepair), the phase's resume task a ready worker level with
 	// the entry its phases row names is given (workflow's readyWorkerTask), the silence repair's
@@ -839,6 +852,20 @@ type SuperviseRequest struct {
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
 	ResumeTask bool `json:"resumeTask,omitempty"`
+	// RoundNamed is the typed fact that Task ends with the daemon's two sentences of the reviewer's
+	// review round (reviewround.Sentences). The queue sets it on each start of the reviewer that
+	// carries a task, once it has named that task (workflow's queuedRow, namingTheReviewRound), and
+	// three starts set it before the queue, since what they send is the task enter stored with the
+	// sentences already in it (workflow's startMarks.stored), so the queue adds none. The outbox's
+	// start carries it into the claim's delivery (supervise.RequestDeliver.RoundNamed), and the one
+	// place each prompt of a delivery is composed reads it there (supervise's Delivery.message): a
+	// reviewer's task with no such fact, which only a row the release before this one queued can
+	// be, is given the daemon's sentences naming no commit and no entry at its end, so no text a
+	// task of the release before ends with is taken for the daemon's. A row the release before
+	// wrote decodes with it false. The release before decodes strictly (DisallowUnknownFields), so
+	// the way back of 20261116234034_phase_reviewed_head deletes the key from each row before that
+	// release boots.
+	RoundNamed bool `json:"roundNamed,omitempty"`
 	// RuleResume marks the boot's resume-by-rule start, and the boot's one-time start of a merger
 	// the `awaiting_merge` cutover left released (workflow's cutoverMergerRepair). If its resumed
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as
@@ -995,13 +1022,22 @@ type WorkspaceRemove struct {
 func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemove }
 
 // RoleMessage is one message the daemon sends a role holder, published to that role's topic: Role
-// is the claim token, which the
-// runner addresses as a role topic, and Body is the whole of what the holder is told. It is how
-// the daemon reaches a worker with something to read rather than a task to do - a settled head's
-// check results, which move nothing (workflow's tellChecks, dispatch://INFRA-714/spec R1). A role
-// with no live holder is told nothing: the row finishes, since the message is of a moment that
-// has passed by the time anyone claims the role, and every recipient can read the pull request's
-// checks on GitHub for itself.
+// is the claim token, which the runner addresses as a role topic, and Body is the whole of what the
+// holder is told. It is how the daemon reaches a worker with something to read rather than a task
+// to do - a settled head's check results, which move nothing (workflow's tellChecks,
+// dispatch://INFRA-714/spec R1). A role with no live holder is told nothing: the row finishes,
+// since the message is of a moment that has passed by the time anyone claims the role, and every
+// recipient can read the pull request's checks on GitHub for itself.
+//
+// A role whose claim is released is told nothing either, and is not woken for the message: the
+// row finishes without a publish. The message's three senders in the workflow - tellChecks (a CI
+// settlement), tellGateMoved (a design gate's move) and tellStuckMergeState (an approved round
+// stuck on its merge state) - only inform; before a release stopped its session cleanly, such a
+// message to a released role was dropped all the same once that session expired; and a wake for
+// each would start a pod for every CI settlement and every gate move, once per released role.
+// Published, the message would meet a released role as one nobody holds: the listener answers
+// holder_lapsed, or unclaimed once the reaper has freed the claim, and raises the role's wake
+// beside either, so the pod would come back for a message the row had already dropped.
 type RoleMessage struct {
 	Role string `json:"role"`
 	Body string `json:"body"`
@@ -1161,8 +1197,8 @@ func (p PhaseEnded) Message(issue string) string {
 // `owner/name#n` where the issue has one, and Prompt the hook's own words.
 //
 // It rides the role-message lane beside PhaseEnded because a role hears a hook prompt while it is
-// news, as it hears that its phase ended: a prompt held behind whatever its tree's architect is
-// owed would reach the role rounds after the round the firing wrote it for.
+// news, as it hears that its phase ended: a prompt held behind whatever the architect that owns
+// its issue is owed would reach the role rounds after the round the firing wrote it for.
 //
 // The daemon writes the facts and never substitutes anything into the hook's own words: Message
 // states the move, the counts and the pull request in sentences of the daemon's own, and then the
@@ -1170,9 +1206,13 @@ func (p PhaseEnded) Message(issue string) string {
 // that word. There is nothing for a hook to interpolate, because every fact it could ask for
 // stands above its words already.
 //
-// A role with no session holds no topic, and the row ends there undelivered with one log line, as
-// a phase-ended message nobody holds does: the words were written for the round the move back
-// opened, and a role that reads them later reads them of a round that is over.
+// The prompt is published with keep, as a phase-ended message is: for a role no live session
+// holds, the listener answers it kept and holds it for an hour for the role's next live holder,
+// and the row ends with one log line, the listener its keeper. A listener before #4079 keeps
+// nothing for a claim whose holder is not live. The daemon's publishKeptToRole says what each
+// answer does to the row, and why a later round's session can be handed the prompt and what
+// bounds that; the move back and the counts Message states tell that reader which round the
+// words were written for.
 type HookPrompt struct {
 	Hook        string         `json:"hook"`
 	Role        claim.Role     `json:"role"`
@@ -1237,7 +1277,9 @@ func (p HookPrompt) Message(issue string) string {
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
 // row whose role no live session holds finishes undelivered, and a row whose round the claim no
-// longer records finishes without a publish (the daemon's updateAsk).
+// longer records finishes without a publish (the daemon's updateAsk). The daemon marks a claim
+// asked only once its row's publish reached a session, so an ask that finished undelivered is
+// lost, not given, and the daemon's sweep writes the claim a new row of this kind at a later tick.
 type UpdateAsk struct {
 	Role  claim.Role `json:"role"`
 	Round string     `json:"round"`
@@ -1535,9 +1577,10 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("outbox status write has empty status")
 		}
 		// A reason is posted on the issue before the status lands: a done write's, and an ordinary
-		// move's that nothing else on Dispatch explains (workflow's moveReason, a head that
-		// conflicts with its base). A hand-over, a re-assertion or a person's handover repeats or
-		// carries out a move whose cause is already on the issue, so it posts none.
+		// move's that nothing else on Dispatch explains (workflow's moveReason: a head that
+		// conflicts with its base, and a worker's backward move). A hand-over, a re-assertion or a
+		// person's handover repeats or carries out a move whose cause is already on the issue, so it
+		// posts none.
 		if value.Reason != "" && value.Status != "done" && value.Kind != OrdinaryStatusRow {
 			return fmt.Errorf("a %s status write to %s carries a reason; only a done write or the workflow's own move does", value.Kind, value.Status)
 		}

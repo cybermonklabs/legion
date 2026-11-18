@@ -170,7 +170,7 @@ const timeFormat = "2006-01-02T15:04:05.999999999Z07:00"
 // live in process memory and die with a daemon restart, and a registration that changes the
 // record's contract comes after a mint that revokes every controller grant (RevokeControllers), so
 // a redeemable controller grant was always minted for a controller current at the time. Refusing
-// here on the record's contract would also catch the operator-bearer grant `legion status`
+// here on the record's contract would also catch the operator-bearer grant `legion issue status`
 // redeems on this route — also Controller: true — which after migration 0042 leaves every existing
 // controllers row at plugin_contract 0 until its next registration, refusing the operator's own
 // call at the first boot on this release.
@@ -249,7 +249,7 @@ func (s *server) appLease(w http.ResponseWriter, r *http.Request, role appauth.A
 		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
 		return appauth.Lease{}, false
 	}
-	lease, err := s.tokens.Token(r.Context(), role, repo)
+	lease, err := s.tokens.Token(r.Context(), role, repo.Owner())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: mint GitHub App token", "role", logRole, "repo", repo.String())
 		writeFailure(w, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")

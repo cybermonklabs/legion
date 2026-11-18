@@ -41,6 +41,10 @@ type counts struct {
 	// them; tooLarge counts the heads whose answer was past what githubapp reads.
 	mappingsSkipped int
 	tooLarge        int
+	// withoutApp counts the repositories only an issue names that the App is not installed on,
+	// which the pass passes over and which are no part of mappingsSkipped: nothing is there to
+	// mend, where a skipped repository is a fault (appAbsent).
+	withoutApp int
 	// pace is the gap the pass left between its requests, which it set from the work it expected
 	// before it read anything (Reconciler.gap).
 	pace time.Duration
@@ -127,7 +131,9 @@ func (r *Reconciler) known() int {
 // end of the order and left the cursor at the start of it (cycle_complete). One line is then
 // enough to see a pass that no longer fits its interval, a pass whose queries have stopped
 // answering, and where the pass after it will take up. A field added to the line is written
-// after the fields already there, which leaves the order of those unchanged.
+// after the fields already there, which leaves the order of those unchanged: the last of them
+// is repositories_without_app, the repositories only an issue names that the App is not
+// installed on, which mappings_skipped does not count.
 func (r *Reconciler) report(c *counts, at *stop, took time.Duration) {
 	attrs := []any{
 		"list_pages", c.listPages,
@@ -156,6 +162,7 @@ func (r *Reconciler) report(c *counts, at *stop, took time.Duration) {
 		"rest_not_modified", c.restNotModified,
 		"heads_over_rest", c.restHeads,
 		"heads_unchanged", c.unchanged,
-		"duration", took.String())
+		"duration", took.String(),
+		"repositories_without_app", c.withoutApp)
 	r.Logger.Info("ci reconcile pass", attrs...)
 }
