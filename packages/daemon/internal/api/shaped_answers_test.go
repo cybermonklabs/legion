@@ -807,13 +807,15 @@ func TestTheEdgesOfTheContractACallerIsServed(t *testing.T) {
 			t.Errorf("logs %s carry %d lines, want the one line this edge writes", logged, lines)
 		}
 
-		// For a caller that states no contract, the pod decides the shape of the state and of the
-		// per-issue record alone, and every other answer is this daemon's own body. So the record
-		// route of the same pod is read too: each issue's record is the issue the state above
-		// carries for that pod, with every key
+		// For a caller that states no contract, the state and the per-issue record are the only
+		// answers whose shape the pod decides, so the record route of the same pod is read too:
+		// each issue's record is the issue the state above carries for that pod, with every key
 		// added after the floor stripped, `pullRequest.fixAttempts` as its stand-in and no
-		// `check.role` (shapeIssue). The records are read after the log is counted, since each
-		// read is a below-floor caller of its own.
+		// `check.role` (shapeIssue). Every other body is this daemon's own. The pod places a fresh
+		// session's caller too, and there it decides what a stop that could not start the claim
+		// again means: the 200 with `phaseNotRestarted` or the failure contract 103 gave
+		// (readsTheStopAsAFailure), and not the shape of either body. The records are read after
+		// the log is counted, since each read is a below-floor caller of its own.
 		var pullRequests, checks int
 		issues := issuesOf(t, body)
 		for _, key := range slices.Sorted(maps.Keys(issues)) {

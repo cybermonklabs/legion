@@ -45,17 +45,8 @@ import (
 // body carrying the third below 56 is red here. state_caller_test.go holds the dropping itself,
 // entry by entry.
 //
-// A key under the settings block is recorded only where a plugin's reader types it (answers.go's
-// typedSettings): `settings` itself at every contract, and below it the top-level keys that
-// contract's `legionSettings` names, so `settings.max_fix_attempts` from 46 to 58,
-// `settings.worker_boot_timeout_seconds` from 46 up and `settings.review_round_cap` from 86 up,
-// and no path nested deeper at any contract. The block is a `z.looseObject` at every contract,
-// and loose is not blind: it passes a key it does not name and still refuses a key it names and
-// does not find — the defect this change cures included `settings.max_fix_attempts: Invalid
-// input: expected number, received undefined`, read under `settings` — so the typed keys are
-// recorded, and a removal of one is caught. A key the reader does not name is refused for
-// nothing, present or absent, so a record that held it would make every new legion.yaml key a
-// contract change, which the reader's own rule says it is not (withoutUntypedSettings).
+// A settings key path is recorded only where a reader types it, as answers.go's typedSettings
+// declares and withoutUntypedSettings applies.
 const contractShapesFixture = "contract-shapes.json"
 
 // keyPathRule is how a record names one key. The same rule stands in the fixture's entry in
@@ -1048,12 +1039,17 @@ func withoutUntypedSettings(served map[shapeKey]answerShape, typed []TypedSettin
 }
 
 // settingsTyped is whether typed declares key, a top-level key of the state's settings block,
-// typed by the reader at contract: from the row's Since to its Until, or to this daemon's own
-// contract where Until is 0.
+// typed by the reader at contract (typedAt).
 func settingsTyped(typed []TypedSetting, contract int, key string) bool {
 	return slices.ContainsFunc(typed, func(setting TypedSetting) bool {
-		return setting.Key == key && setting.Since <= contract && (setting.Until == 0 || contract <= setting.Until)
+		return setting.Key == key && typedAt(setting, contract)
 	})
+}
+
+// typedAt is whether row types its key at contract: from the row's Since to its Until, or to
+// this daemon's own contract where Until is 0.
+func typedAt(row TypedSetting, contract int) bool {
+	return row.Since <= contract && (row.Until == 0 || contract <= row.Until)
 }
 
 // stateHandlers is one server per state fixture, each serving that state and the claims given.
@@ -1160,7 +1156,13 @@ func loadContractShapes(t *testing.T) map[shapeKey]contractShape {
 	if !written {
 		t.Fatal(bootstrapMessage())
 	}
-	byKey := map[shapeKey]contractShape{}
+	return recordsByKey(records)
+}
+
+// recordsByKey is records by the pair each is held by. A pair records holds twice keeps its
+// later record; TestTheRecordSetIsOneRecordPerAnswerPerContract refuses a fixture that does.
+func recordsByKey(records []contractShape) map[shapeKey]contractShape {
+	byKey := make(map[shapeKey]contractShape, len(records))
 	for _, record := range records {
 		byKey[shapeKey{contract: record.Contract, answer: record.Answer}] = record
 	}
@@ -1222,8 +1224,9 @@ func TestContractShapesFixture(t *testing.T) {
 // there). Both are held to the same records, because a body is owed to the reader and not to the
 // way it said who it is, and the second is the population this change is about. Each caller is
 // placed as production places it (servedShapes). On the state and the record its pod places
-// it. On every other answer no claims reach contractsFor, so the pod kind is served this
-// daemon's own body, and a serving-down there that only the header kind gets is red here.
+// it. On every other answer the pod decides no shape (a fresh session's pod decides only what a
+// stop means, readsTheStopAsAFailure), so the pod kind is served this daemon's own body, and a
+// serving-down there that only the header kind gets is red here.
 func TestEveryAnswerAtEveryContractIsTheShapeItsRecordDescribes(t *testing.T) {
 	if *updateGolden {
 		t.Skip("the fixture is being rewritten; run the suite again without -update")
@@ -1492,7 +1495,7 @@ func TestEveryStateRecordHoldsTheSettingsKeysItsReaderTypesAndNoOther(t *testing
 	for _, setting := range typedSettings {
 		if setting.Since < ServingFloor || setting.Since > DaemonAPIVersion ||
 			(setting.Until != 0 && (setting.Until < setting.Since || setting.Until >= DaemonAPIVersion)) {
-			t.Errorf("answers.go's typedSettings types `%s` from %d to %d, outside the floor %d and this daemon's own contract %d, or with an end at or above %d that no Until writes",
+			t.Errorf("answers.go's typedSettings types `%s` from %d to %d, outside the floor %d and this daemon's own contract %d, with an end below its start, or with an end at or above %d that no Until writes",
 				setting.Key, setting.Since, setting.Until, ServingFloor, DaemonAPIVersion, DaemonAPIVersion)
 		}
 	}
@@ -1503,22 +1506,21 @@ func TestEveryStateRecordHoldsTheSettingsKeysItsReaderTypesAndNoOther(t *testing
 			t.Errorf("contract %d: the state has no record in %s", contract, contractShapesFixture)
 			continue
 		}
-		want := []string{}
+		want := map[string]bool{}
 		for _, setting := range typedSettings {
-			if settingsTyped(typedSettings, contract, setting.Key) {
-				want = append(want, settingsKeyPathPrefix+setting.Key)
+			if typedAt(setting, contract) {
+				want[settingsKeyPathPrefix+setting.Key] = true
 			}
 		}
-		slices.Sort(want)
 		held := []string{}
 		for _, path := range record.KeyPaths {
 			if strings.HasPrefix(path, settingsKeyPathPrefix) {
 				held = append(held, path)
 			}
 		}
-		if !slices.Equal(held, want) {
+		if typed := slices.Sorted(maps.Keys(want)); !slices.Equal(held, typed) {
 			t.Errorf("contract %d: the state's record holds the settings paths %v, and answers.go's typedSettings types %v there: a record holds a settings key exactly where a reader at its contract types it",
-				contract, held, want)
+				contract, held, typed)
 		}
 		if !slices.Contains(record.KeyPaths, "settings") {
 			t.Errorf("contract %d: the state's record holds no `settings`, which every state body this daemon writes carries", contract)
@@ -1602,16 +1604,9 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 	// older one. fields is the enumerated table `-update` would have read, which is answers.go's
 	// own for every change but the value one, whose author widened a field.
 	afterUpdate := func(changed map[shapeKey]answerShape, fields []EnumeratedField) map[shapeKey]contractShape {
-		records := map[shapeKey]contractShape{}
-		for _, record := range updatedRecords(onFile, shapeRecords(changed, fields)) {
-			records[shapeKey{contract: record.Contract, answer: record.Answer}] = record
-		}
-		return records
+		return recordsByKey(updatedRecords(onFile, shapeRecords(changed, fields)))
 	}
-	asOnFile := map[shapeKey]contractShape{}
-	for _, record := range onFile {
-		asOnFile[shapeKey{contract: record.Contract, answer: record.Answer}] = record
-	}
+	asOnFile := recordsByKey(onFile)
 
 	t.Run("a key the current contract serves is removed with no stand-in", func(t *testing.T) {
 		const removed = "daemon.project"
@@ -1648,11 +1643,7 @@ func TestTheGateCatchesAShapeChangeWithNoServingDown(t *testing.T) {
 		}
 		rewrittenFile[at].KeyPaths = slices.Sorted(slices.Values(append(slices.Clone(rewrittenFile[at].KeyPaths), rewritten)))
 
-		records := map[shapeKey]contractShape{}
-		for _, record := range rewrittenFile {
-			records[shapeKey{contract: record.Contract, answer: record.Answer}] = record
-		}
-		problems := allShapeProblems(records, served)
+		problems := allShapeProblems(recordsByKey(rewrittenFile), served)
 		wantProblemsNaming(t, problems, rewritten, []int{ServingFloor}, 0)
 
 		// And `-update` does not clear it: the fixture's own writer leaves a record below this
@@ -1984,7 +1975,7 @@ func TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture(t *testing.T) {
 			t.Logf("the %s answer declares %s (`%s`) and no fixture realises it: %s", key.answer, key.field, paths[key], reason)
 			continue
 		}
-		t.Errorf("the %s answer declares %s and no fixture body realises it (`%s`): give the fixture a value for it, so every record describes the key, rather than leaving the field out of the walk",
+		t.Errorf("the %s answer declares %s and no fixture body realises it (`%s`): give the fixture a value for it, so the bodies every record is taken from carry every field the daemon can write, and a key a later reader types is one they already carry, rather than leaving the field out of the walk",
 			key.answer, key.field, paths[key])
 	}
 	for _, key := range sortedAnswerFields(excludedDeclaredFields) {

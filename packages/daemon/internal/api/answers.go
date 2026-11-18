@@ -111,25 +111,17 @@ type TypedSetting struct {
 // it, and a record holds a settings key path at a contract exactly where this list types that
 // key there, and no settings path below a key at all (contract_shapes_test.go's settingsTyped).
 //
-// The settings block is legion.yaml as the daemon resolved it, and every reader parses it with
-// `legionSettings`, a `z.looseObject`: it passes a key it does not name, and refuses the body
-// only for a key it names and finds absent or of another type. So a key this list does not type
-// is one no reader refuses the body for, present or absent, and a record that held it would tie
-// every new legion.yaml key to a new contract number, where the reader's own rule
-// (`packages/contracts/src/legion-api.ts`) is that a new legion.yaml key is no contract change.
-// A typed key is one whose removal a reader does refuse, which is why `max_fix_attempts` is
-// served to the readers below 59 as a stand-in (shaping.go's withMaxFixAttempts).
+// Only typed keys are recorded because a reader refuses the body for no key it does not type,
+// present or absent, so a record that held such a key would tie every new legion.yaml key to a
+// new contract number, where the reader's own rule (`legionSettings` in
+// `packages/contracts/src/legion-api.ts`) is that a new legion.yaml key is no contract change. A
+// typed key is one whose removal a reader does refuse, which is why `max_fix_attempts`, typed
+// below 59, is served to those readers as a stand-in (shaping.go's withMaxFixAttempts).
 //
-// The list is measured rather than guessed: `legionSettings` was read at the first commit on
-// main of each contract of SupportedContracts
-// (dispatch://INFRA-2694/artifact/settings-typed-by-contract-md). At every contract it types
-// top-level positive integers and nothing nested: `max_fix_attempts` and
-// `worker_boot_timeout_seconds` from 46 (7b4ffe3c) to 58, `worker_boot_timeout_seconds` alone
-// from 59 (7e7bcf21), where `max_fix_attempts` left the schema with the key (version.go's 59),
-// and `review_round_cap` beside it from 86 (a4c0ff99) up to this daemon's own contract. A key a
-// later reader types is a row here from that reader's contract on, and pi-shared's census
-// (`daemon-client.test.ts`) holds the rows typed at this daemon's own contract equal to the keys
-// `legionSettings` types.
+// The rows are measured rather than guessed, at the first commit on main of each contract of
+// SupportedContracts (version.go's 154). A key a later reader types is a row here from that
+// reader's contract on, and pi-shared's census (`daemon-client.test.ts`) holds the rows typed at
+// this daemon's own contract equal to the keys `legionSettings` types.
 var typedSettings = []TypedSetting{
 	{Key: "max_fix_attempts", Since: ServingFloor, Until: fixAttemptsContract - 1},
 	{Key: "worker_boot_timeout_seconds", Since: ServingFloor},

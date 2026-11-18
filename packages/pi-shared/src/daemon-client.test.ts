@@ -1254,6 +1254,16 @@ test("every answer the client parses is a row of the daemon's table, and every r
   expect(wrong).toEqual([]);
 });
 
+/** The state schema's own `settings`, unwrapped as the read-set census walks a schema. */
+function stateSettings(): z.ZodObject {
+  let settings: z.core.$ZodType = legionApi.LegionStateResponse.shape.settings;
+  if (settings instanceof z.ZodOptional) settings = settings.def.innerType;
+  if (!(settings instanceof z.ZodObject)) {
+    throw new Error("LegionStateResponse's settings is no object schema this census can read");
+  }
+  return settings;
+}
+
 // The settings census: the keys the daemon's table declares a reader types at its own contract
 // are the keys `legionSettings` types. The daemon's records of the state hold a settings key path
 // exactly where its table types the key (`typedSettings` in `answers.json`, answers.go's
@@ -1270,16 +1280,53 @@ test("the settings keys answers.json types at the daemon's own contract are the 
     .map((setting) => setting.key)
     .sort();
 
-  // The state schema's own `settings`, unwrapped as the read-set census walks a schema.
-  let settings: z.core.$ZodType = legionApi.LegionStateResponse.shape.settings;
-  if (settings instanceof z.ZodOptional) settings = settings.def.innerType;
-  if (!(settings instanceof z.ZodObject)) {
-    throw new Error("LegionStateResponse's settings is no object schema this census can read");
-  }
-  const typed = Object.keys(settings.def.shape).sort();
+  const typed = Object.keys(stateSettings().def.shape).sort();
   // A schema typing no key would leave the comparison below holding for an empty table.
   expect(typed.length).toBeGreaterThan(0);
   expect(declared).toEqual(typed);
+});
+
+// The premise both the census above and the daemon's settings records rest on, as
+// `packages/daemon/internal/api/version.go` measures it at entry 154: `legionSettings` passes a
+// key it does not name through whole, so a key no reader types is refused for nothing and no
+// record holds it, and each key it types is a scalar, so no path below a typed key is typed and
+// no record holds one either. A block that refused or stripped a key it does not name, or a typed
+// key with keys of its own, departs from that measurement and is red here.
+test("legionSettings passes a key it does not name through, and keeps it whole", () => {
+  const body = {
+    review_round_cap: 1,
+    worker_boot_timeout_seconds: 1,
+    unknown_key: { nested: true },
+  };
+  const parsed = stateSettings().safeParse(body);
+  expect(parsed.error).toBeUndefined();
+  expect(parsed.data).toEqual(body);
+});
+
+/** The kinds a key `legionSettings` types may be: a scalar, which holds no key below it. */
+const SETTINGS_SCALAR_KINDS: Record<string, true> = {
+  boolean: true,
+  enum: true,
+  literal: true,
+  number: true,
+  string: true,
+};
+
+test("every key legionSettings types is a scalar, so no path below a typed key is typed", () => {
+  const shape = stateSettings().def.shape;
+  // A schema typing no key would leave the check below holding for an empty table.
+  expect(Object.keys(shape).length).toBeGreaterThan(0);
+  const nested = Object.entries(shape).flatMap(([key, value]) => {
+    // Unwrapped as the read-set census walks a schema: an optional or nullable key is the
+    // schema it wraps.
+    let node: z.core.$ZodType = value;
+    while (node instanceof z.ZodOptional || node instanceof z.ZodNullable) {
+      node = node.def.innerType;
+    }
+    const kind = node._zod.def.type;
+    return SETTINGS_SCALAR_KINDS[kind] === true ? [] : [`${key} is a ${kind}`];
+  });
+  expect(nested).toEqual([]);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

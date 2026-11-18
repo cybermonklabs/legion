@@ -1226,11 +1226,10 @@ package api
 // `packages/contracts/src/legion-api.ts` reads each `nonEmptyString.optional()` at 85 and at
 // every contract below, so no reader there refuses a body for want of either. The settings this
 // contract stops writing — `settings.projects.*.merge`, its `by_hand` list and
-// `merge_queue_role` — leave those records for the same reason read a second way:
-// `legionSettings` types two keys and passes the rest loosely, and `projects` is typed by
-// nothing, so no reader names those keys at all. The `ready` this contract takes out of the
-// request is read by name again for the plugins below 86 that still send it, which entry 154
-// says.)
+// `merge_queue_role` — are in no record at any contract: no reader types `projects`
+// (answers.go's typedSettings), so no reader names those keys at all. The `ready` this
+// contract takes out of the request is read by name again for the plugins below 86 that still
+// send it, which entry 154 says.)
 // (This branch took 42, then 43 when main landed the consumer-lag state at 43;
 // main landed the background-task contract at 44 and the Dispatch handoff records at 45, and
 // INFRA-484's sjawhar/legion#2538 takes 46, this branch then took 47, and main's #2642 landed

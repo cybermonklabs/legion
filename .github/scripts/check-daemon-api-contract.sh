@@ -186,25 +186,41 @@ def fatal(path: str, message: str) -> None:
     raise SystemExit(1)
 
 
-def gh(args: list[str], what: str, on: str = DECLARATION, absent: bool = False) -> str | None:
-    """Every GitHub read goes through `gh api`, so one stub first on PATH serves them all. A read
-    that fails refuses the change, naming on as the file. Where absent is set, an answer of HTTP
-    404 is None instead: the caller reads a file the ref may not hold (record_file_at)."""
+def gh_run(args: list[str], what: str, on: str) -> subprocess.CompletedProcess[str]:
+    """Every GitHub read goes through `gh api`, so one stub first on PATH serves them all. A gh
+    that cannot be run refuses the change, naming on as the file."""
     try:
-        done = subprocess.run(
+        return subprocess.run(
             ["gh", "api", *args], capture_output=True, text=True, encoding="utf-8"
         )
     except OSError as error:
         fatal(on, f"could not read {what}: gh could not be run ({one_line(error)})")
+
+
+def gh_answer(done: subprocess.CompletedProcess[str], what: str, on: str) -> str:
+    """What a read by gh_run answered. A read that failed refuses the change, naming on as the
+    file."""
     if done.returncode != 0:
-        if absent and "(HTTP 404)" in done.stderr:
-            return None
         fatal(
             on,
             f"could not read {what}: gh api exited {done.returncode} "
             f"({one_line(done.stderr) or one_line(done.stdout) or 'no output'})",
         )
     return done.stdout
+
+
+def gh(args: list[str], what: str, on: str = DECLARATION) -> str:
+    """A GitHub read, which refuses the change where it fails, an answer of HTTP 404 included."""
+    return gh_answer(gh_run(args, what, on), what, on)
+
+
+def gh_unless_absent(args: list[str], what: str, on: str) -> str | None:
+    """A GitHub read as gh makes it, except that an answer of HTTP 404 is None: record_file_at,
+    the one caller, reads a file the ref may not hold."""
+    done = gh_run(args, what, on)
+    if done.returncode != 0 and "(HTTP 404)" in done.stderr:
+        return None
+    return gh_answer(done, what, on)
 
 
 def contents(repository: str, ref: str, path: str) -> list[str]:
@@ -225,7 +241,7 @@ def record_file_at(repository: str, ref: str, site: str, what: str) -> str | Non
     """A record file as one ref of the base repository carries it, or None where that ref holds
     no such file. Every caller has read version.go at ref already, so GitHub's 404 here is the
     file's absence and not the ref's."""
-    return gh(contents(repository, ref, site), what, on=site, absent=True)
+    return gh_unless_absent(contents(repository, ref, site), what, site)
 
 
 def built_on(what: str) -> str:
@@ -397,13 +413,17 @@ def first_change(tree: Records, other: Records, base_number: int) -> tuple[str, 
 
 
 @cache
-def built_from() -> tuple[str, str, str]:
+def built_from(
+    repository: str, event_name: str, base_ref: str, base_is: str, base_text: str
+) -> tuple[str, str, str]:
     """What this tree was built on, read once for both rules that compare with it: its ref, how a
     message names it, and its version.go. For a merge group it is the base itself, the commit the
     queue built the group on, which is already read; for a pull request it is the merge ref's
     first parent (built_on), read only where a rule needs it, so a change that bumps the number
     and leaves the base's records alone costs neither read. Its version.go is read first, so a
-    record file it lacks is that file's absence and not a commit this check cannot read."""
+    record file it lacks is that file's absence and not a commit this check cannot read. The
+    arguments are the run's: the repository, the event, and the base's ref, how a message names
+    it and its version.go. Both rules pass the same ones, so the cache reads it once."""
     if event_name == "merge_group":
         return base_ref, base_is, base_text
     parent = built_on("the commit GitHub built this pull request's merge ref on")
@@ -411,11 +431,21 @@ def built_from() -> tuple[str, str, str]:
     return parent, built_is, read_at(repository, parent, f"{DECLARATION} on {built_is}")
 
 
-def hold_records(tree_number: int) -> None:
+def hold_records(
+    repository: str,
+    event_name: str,
+    base_ref: str,
+    base_is: str,
+    base_text: str,
+    base_number: int,
+    tree_number: int,
+) -> None:
     """The record rule of the header, over each record file in turn. The file is read at the
     base, and where the base holds none nothing of it is compared. On a pull request, a file whose
     records differ from the base's is compared again with the commit this tree was built on
-    (built_from), and refused only where it differs there too.
+    (built_from), and refused only where it differs there too. The arguments are the run's: the
+    repository, the event, the base's ref, how a message names it, its version.go and its number,
+    and the number this tree declares.
 
     A refusal for a tree whose own number is above the base's names no free number: the change
     is to be served down from the number the tree declares, and take would count this pull
@@ -430,7 +460,7 @@ def hold_records(tree_number: int) -> None:
         other, other_is = records_of(site, text, what), base_is
         change = first_change(tree, other, base_number)
         if change is not None and event_name == "pull_request":
-            ref, other_is, _ = built_from()
+            ref, other_is, _ = built_from(repository, event_name, base_ref, base_is, base_text)
             what = f"{site} on {other_is}"
             text = record_file_at(repository, ref, site, what)
             if text is None:
@@ -639,7 +669,7 @@ for site in FIELDS:
 
 # The record rule of the header: it runs whether or not version.go changed, and before the pass
 # for a number above the base's.
-hold_records(tree_number)
+hold_records(repository, event_name, base_ref, base_is, base_text, base_number, tree_number)
 
 if tree_number > base_number:
     print(
@@ -649,7 +679,7 @@ if tree_number > base_number:
     raise SystemExit(0)
 
 # What this tree was built on (built_from), read here unless the record rule read it already.
-_, built_is, built_text = built_from()
+_, built_is, built_text = built_from(repository, event_name, base_ref, base_is, base_text)
 
 # Only the history and the declaration are compared (history_and_declaration).
 if history_and_declaration(tree_text) == history_and_declaration(built_text):
