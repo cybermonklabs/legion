@@ -48,7 +48,6 @@ import {
   CIRCLED_DOT,
   FLAG,
   GRID_SQUARE,
-  HALF_FILLED_CIRCLE,
   HOUSE,
   LINED_SQUARE,
   RIGHT_OVER_LEFT_ARROWS,
@@ -76,6 +75,7 @@ import {
 } from "./page-structure";
 import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
 import { ROW_LINK } from "./row-references";
+import { StatusGlyph } from "./StatusGlyph";
 import { usableControl } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -342,12 +342,12 @@ export function IssueMarginPanel({
         name="development"
         sections={sections}
       >
-        <Row glyph={HALF_FILLED_CIRCLE} label={PROPERTY_LABELS.status}>
+        <Row glyph={<StatusGlyph glyph="◐" />} label={PROPERTY_LABELS.status}>
           <span
             className={`inline-flex items-center gap-1 rounded-full border border-current px-2 text-xs leading-[18px] font-semibold ${statusTone(status)}`}
             {...pageChrome}
           >
-            <span aria-hidden="true">{statusGlyph(status)}</span>
+            <StatusGlyph glyph={statusGlyph(status)} />
             {issueStatusWord(status)}
           </span>
         </Row>

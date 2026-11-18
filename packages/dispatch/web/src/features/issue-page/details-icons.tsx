@@ -32,14 +32,6 @@ function icon(shape: ReactNode): ReactNode {
   );
 }
 
-/** ◐, a circle with its left half filled: Status. */
-export const HALF_FILLED_CIRCLE = icon(
-  <>
-    <circle cx="6" cy="6" r="4.4" />
-    <path d="M6 1.6a4.4 4.4 0 0 0 0 8.8z" fill="currentColor" />
-  </>
-);
-
 /** ▮, an upright filled bar: Priority. */
 export const UPRIGHT_BAR = icon(
   <rect fill="currentColor" height="9" stroke="none" width="5" x="3.5" y="1.5" />

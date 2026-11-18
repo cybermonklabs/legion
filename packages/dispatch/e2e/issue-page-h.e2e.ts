@@ -137,7 +137,7 @@ const ROW_GLYPHS = '[data-margin-section] > div > div > div:first-child > span[a
 const FILE_MARKS = '[data-testid="issue-files"] a > span[aria-hidden="true"]';
 /** The status's own mark, in the pill of the Status row, Development's first row. */
 const STATUS_MARK =
-  '[data-margin-section="development"] > div > div:first-child > div:last-child > span > span[aria-hidden="true"]';
+  '[data-margin-section="development"] > div > div:first-child > div:last-child > span > svg[data-status-glyph]';
 
 /** A font Chromium says it drew a text in (`CSS.getPlatformFontsForNode`). */
 interface DrawnFont {
@@ -527,8 +527,7 @@ test("every property with a value is visible in Details at every width @phone", 
       // does not hold is drawn in one of the machine's faces, at that face's width, or in an
       // emoji face, and a `unicode-range` that takes it in does not say the face holds it (Inter
       // has no ⇄, which DejaVu Sans drew here). Each row's glyph that is text and each file's
-      // mark that is; and, apart, the status's own mark in the Status row's pill, which
-      // `issue-status.ts` draws. Soft, as above.
+      // mark that is. Soft, as above.
       const textGlyphs = (await drawnFonts(page, [ROW_GLYPHS, FILE_MARKS])).filter(
         ({ icon }) => !icon
       );
@@ -542,23 +541,18 @@ test("every property with a value is visible in Details at every width @phone", 
           `a glyph of Details is drawn in a font the page does not ship at ${width} px`
         )
         .toEqual([]);
-      const statusMark = await drawnFonts(page, [STATUS_MARK]);
-      expect(
-        statusMark.map(({ row }) => row),
-        `Details reads no status mark in its Status row at ${width} px`
-      ).toEqual([PROPERTY_LABELS.status]);
-      expect
-        .soft(
-          statusMark.filter(drawnOutsideThePagesTypeface).map(glyphReading),
-          `the status mark's glyph is drawn in a font the page does not ship at ${width} px`
-        )
-        .toEqual([]);
+      // The status's own mark in the Status row's pill is a shape, as the page's other status
+      // marks are (`StatusGlyph`), so no font of the machine draws it.
+      await expect(
+        marginSlot(page).locator(STATUS_MARK),
+        `the Status row's pill draws its status mark other than as one shape at ${width} px`
+      ).toHaveCount(1);
       // The readings, printed so that what each machine drew is on the record when the row
       // passes too.
       console.log(
         `Details' glyphs at ${width} px: ${glyphs
           .map(({ column, drawn, glyph, row }) => `${row} ${glyph} ${drawn} px in ${column} px`)
-          .join("; ")}\nDetails' glyph fonts at ${width} px: ${[...textGlyphs, ...statusMark]
+          .join("; ")}\nDetails' glyph fonts at ${width} px: ${textGlyphs
           .map(glyphReading)
           .join("; ")}`
       );
