@@ -80,14 +80,26 @@ exec nsenter -t "$init" -U -m -p -i --preserve-credentials -- sh -c '"'$role_shi
 # My Pi, the shim's child, is in that group. The container's user owns the role's user namespaces,
 # so it may signal them. No shim, two of them, or a shim that is not the leader of its own group
 # is refused rather than signalled, since that group would be someone else's.
+# It reads role-init's children from role-init itself, every thread's list (INIT/task/*/children,
+# which Linux serves and gVisor does too, pkg/sentry/fsimpl/proc/task.go), with the shell's own
+# `read`, and starts a program only for each of those children. So its work is the role's
+# processes, never a walk of every process the container or the machine runs, each with a program
+# of its own, which on a devbox of about 38,000 processes at load 946 took longer than a row's
+# 120 s. A role-init it can read no list of (gone, or a kernel without the lists) is refused, named.
 # shellcheck disable=SC2016  # expanded by the pod's shell
 role_kill_sh='
-init=$1 shim= proc=${proc_root:-/proc}
-for d in "$proc"/[0-9]*; do
-  [ "$(sed -n "s/^PPid:[[:space:]]*//p" "$d/status" 2>/dev/null)" = "$init" ] || continue
-  [ "$(tr "\0" "\n" 2>/dev/null <"$d/cmdline" | sed -n 2p)" = worker-shim ] || continue
-  [ -z "$shim" ] || { echo "role-init $init runs two worker-shims: $shim and ${d##*/}" >&2; exit 1; }
-  shim=${d##*/}
+init=$1 shim= proc=${proc_root:-/proc} listed= children=
+for list in "$proc/$init"/task/*/children; do
+  [ -e "$list" ] || continue
+  listed=1 line=
+  { read -r line <"$list"; } 2>/dev/null || :
+  children="$children $line"
+done
+[ -n "$listed" ] || { echo "role-init $init lists no children: $proc/$init/task/*/children is not there" >&2; exit 1; }
+for pid in $children; do
+  [ "$(tr "\0" "\n" 2>/dev/null <"$proc/$pid/cmdline" | sed -n 2p)" = worker-shim ] || continue
+  [ -z "$shim" ] || { echo "role-init $init runs two worker-shims: $shim and $pid" >&2; exit 1; }
+  shim=$pid
 done
 [ -n "$shim" ] || { echo "role-init $init runs no worker-shim" >&2; exit 1; }
 group=$(sed "s/.*) //" "$proc/$shim/stat" | cut -d" " -f3)

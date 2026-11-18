@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
@@ -29,14 +29,14 @@ const alive = (pid: number) => {
   }
 };
 
-// role_kill_sh runs a sed for every entry of the proc root it reads, so over the host's /proc its
-// cost is the host's process table, not the role-init's: one call over a devbox's 28,203 processes
-// took 166 s, past these rows' 120 s, where CI's runner holds a few hundred. The rows below hand it
-// a proc root of their own instead, made by own_proc: the role-init and each child the kernel lists
-// for it, each a link to its real /proc entry. role_kill_sh then reads those processes' own status,
-// cmdline and stat and signals their real pids, and every process whose parent is the role-init is
-// in view, which is the whole of what it judges. The waits are on events the stand-ins print, never
-// on a count of polls; the 120 s on each row is the bound on a hang alone.
+// role_kill_sh reads only the role-init's own list of its children (INIT/task/*/children) and
+// those children's files, so its cost is the role-init's children, not the host's process table,
+// where it once ran a sed for every entry of /proc: one call over a devbox's 28,203 processes took
+// 166 s, past these rows' 120 s. The rows below still hand it a proc root of their own, made by
+// own_proc: the role-init and each child the kernel lists for it, each a link to its real /proc
+// entry, so role_kill_sh reads those processes' own files and signals their real pids. The waits
+// are on events the stand-ins print, never on a count of polls; the 120 s on each row is the bound
+// on a hang alone.
 //
 // own_proc INIT PID... makes that proc root for INIT in a fresh directory under the file's scratch
 // directory, and leaves its path in $root: lib/proc-root.ts's procRootOf and notInRoot in bash,
@@ -283,14 +283,27 @@ function fakeProc(name: string, procs: FakeProc[]): string {
     writeFileSync(join(d, "status"), `Name:\t${p.argv[0]}\nPid:\t${p.pid}\nPPid:\t${p.ppid}\n`);
     writeFileSync(join(d, "stat"), `${p.pid} (${p.argv[0]}) S ${p.ppid} ${p.pgrp ?? p.pid} 0\n`);
   }
+  // Each parent's list of its children, as the kernel writes it in its one thread's
+  // /proc/<pid>/task/<pid>/children: in the order the children are given, each pid followed by a
+  // space, and no newline. A parent the tree does not list gets its list alone.
+  const children = new Map<number, number[]>();
+  for (const p of procs) children.set(p.ppid, [...(children.get(p.ppid) ?? []), p.pid]);
+  for (const [ppid, pids] of children) {
+    const task = join(root, String(ppid), "task", String(ppid));
+    mkdirSync(task, { recursive: true });
+    writeFileSync(join(task, "children"), pids.map((pid) => `${pid} `).join(""));
+  }
   return root;
 }
 function snippet(file: string, name: string) {
   return new RegExp(`^${name}='[\\s\\S]*?'$`, "m").exec(readFileSync(file, "utf8"))?.[0] ?? "";
 }
-function runSnippet(definition: string, call: string, root: string) {
+/** Runs `call` after `definition` with `root` as its proc root. `timeout` kills a call that hangs
+ *  and reads as no answer. */
+function runSnippet(definition: string, call: string, root: string, timeout?: number) {
   const r = Bun.spawnSync(["bash", "-c", `${definition}\n${call}`], {
     env: { PATH: process.env.PATH ?? "", HOME: home, proc_root: root },
+    timeout,
   });
   return { out: r.stdout.toString().trim(), err: r.stderr.toString().trim(), code: r.exitCode };
 }
@@ -537,8 +550,8 @@ describe("role_kill_sh reads the proc root it is given", () => {
       { pid: 17, ppid: 5, argv: ["legion", "worker-shim"] },
     ]);
     const run = runSnippet(def, 'sh -c "$role_kill_sh" role-kill 5', root);
-    // The shell's glob lists 17 before 7.
-    expect(run).toEqual({ out: "", err: "role-init 5 runs two worker-shims: 17 and 7", code: 1 });
+    // The role-init's list names them in the order they started.
+    expect(run).toEqual({ out: "", err: "role-init 5 runs two worker-shims: 7 and 17", code: 1 });
   });
 
   test("a shim outside a process group of its own is refused, nothing signalled", () => {
@@ -549,6 +562,38 @@ describe("role_kill_sh reads the proc root it is given", () => {
     expect(run).toEqual({
       out: "",
       err: "the shim 7 of role-init 5 is in process group 4, not its own",
+      code: 1,
+    });
+  });
+
+  // The role-init's list of its children is the only list it reads: no other process of the
+  // root is opened. One of them, a process the role-init did not start, has a status that is a
+  // FIFO nothing writes, so a role_kill_sh that walked the whole root again would wait on it until
+  // the row's 120 s bound on a hang, rather than only take longer as the root grows.
+  test("reads the role-init's own list of its children and no other process", () => {
+    const root = fakeProc("kill-children", [
+      { pid: 7, ppid: 5, pgrp: 4, argv: ["legion", "worker-shim"] },
+      { pid: 9, ppid: 1, argv: ["omp"] },
+    ]);
+    const status = join(root, "9", "status");
+    rmSync(status);
+    const made = Bun.spawnSync(["mkfifo", status]);
+    expect(made.exitCode).toBe(0);
+    const run = runSnippet(def, 'sh -c "$role_kill_sh" role-kill 5', root, 120_000);
+    expect(run).toEqual({
+      out: "",
+      err: "the shim 7 of role-init 5 is in process group 4, not its own",
+      code: 1,
+    });
+  }, 120_000);
+
+  test("a role-init with no list of its children is refused, naming the list", () => {
+    const root = fakeProc("kill-no-list", [{ pid: 7, ppid: 5, argv: ["legion", "worker-shim"] }]);
+    rmSync(join(root, "5", "task"), { recursive: true });
+    const run = runSnippet(def, 'sh -c "$role_kill_sh" role-kill 5', root);
+    expect(run).toEqual({
+      out: "",
+      err: `role-init 5 lists no children: ${root}/5/task/*/children is not there`,
       code: 1,
     });
   });
