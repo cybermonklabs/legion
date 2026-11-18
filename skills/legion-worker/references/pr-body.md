@@ -220,9 +220,11 @@ and decides there, the only gate on such an issue.
   secret-scrub evidence (e.g. "`LEGION_*`/`DISPATCH_*`/`ENVOY_*` unset") is recorded once, in
   its `test` handoff, and only when a check calls for it — never
   re-pasted into the PR body each round. On a new head, read what changed since the head you
-  last tested (`git diff <that head> <new head>`; for a merge of the base,
-  `git show --remerge-diff <merge>`). Size your round to that change: test again only what it can
-  affect, and confirm the rest by naming the earlier head. Each check the change cannot affect
+  last tested (`git diff <that head> <new head>`). Size your round to that change: test again only
+  what it can affect, and confirm the rest by naming the earlier head. For a merge of the base,
+  `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>`
+  lists the files the base brought in. A check those files or the resolution can reach runs again,
+  and a check the merge was made for has no pass to carry. Each check the change cannot affect
   gets a carried record (*A result proves the head it was recorded at*, above). You may tell the
   architect of a forward merge that had no conflict and whose comment names no reason
   *Reintegrating the base* allows (`skill://legion-worker/references/conflicts-and-rewrites.md`).

@@ -22,9 +22,8 @@ changed (*The reviewer*, below).
   `task(agent="thermonuclear-code-quality")` once at that head — the head the round reviews —
   waits for each one's result with `wait`, since each runs as a job of its own, and records the
   verdict from what those results say. Each task names the diff the pair audits. On your first
-  review of the pull request, that is the branch's whole diff. On a later head, it is only the
-  change since your earlier head, which the rule for a new head below names
-  (`git diff <that head> <new head>`; for a merge of the base, `git show --remerge-diff <merge>`).
+  review of the pull request, that is the branch's whole diff. On a later head, it is only what
+  the rule for a new head below has you review.
   Run no pair when that diff touches no runtime code. A result that carries no report, or that names another
   place for it, is a failed run, not a verdict: run that agent again, or read its transcript, and
   record nothing from it until you have the findings text in front of you. Reading the agent's
@@ -143,10 +142,13 @@ changed (*The reviewer*, below).
   it is set aside, the round stays open and the
   architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
   A `COMMENT` decides nothing.
-  On a new head, read what changed since the head you last approved, or, where you have approved none, the head you last reviewed (`git diff <that head> <new head>`; for a merge of the base, `git show --remerge-diff <merge>`).
+  On a new head, read what changed since the head you last approved, or, where you have approved none, the head you last reviewed (`git diff <that head> <new head>`).
   That head is the `head` that review's Legion footer names, never that review's `commit_id`, which GitHub can move onto a later head.
   On your first review of the pull request, the change is the branch's whole diff.
   Size your review to that change: review again only what it can affect, and confirm the rest by naming the earlier head.
+  For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
+  A check those files or the resolution can reach runs again, and a check the merge was made for has no pass to carry.
+  Review the resolution and this change's own commits since your earlier head, and read the base's files only for where they meet this change.
   A re-review after a request for changes also checks each of its findings against the new head.
   You may tell the architect of a forward merge that had no conflict and whose comment names no
   reason *Reintegrating the base* allows (`skill://legion-worker/references/conflicts-and-rewrites.md`).

@@ -49,10 +49,7 @@ func readGitHubGraphQLInputs(t *testing.T) map[string]githubInputType {
 // Every GraphQL mutation a role prompt gives writes an input that GitHub's schema takes: each
 // field of its inline `input` object is a field its input type holds, and it gives each field the
 // type requires. GitHub refuses any other input whole, so one wrong name leaves the role unable to
-// act. The merger's dequeue named `pullRequestId`, which is the field `enqueuePullRequest` takes;
-// `dequeuePullRequest` takes `id`. So a merger under a closed design gate could not take its pull
-// request out of the merge queue, and the queue could merge a head whose design was no longer
-// approved.
+// act.
 //
 // The check reads every part the package embeds, roles/ and go/. It reads a mutation wherever a
 // part writes one, so a command in a form that no pattern of gh's flags matches is read too. The
@@ -93,8 +90,7 @@ func TestEveryMutationARolePromptGivesWritesAnInputGitHubTakes(t *testing.T) {
 }
 
 // The check names what its reader must change: the part and its line, the mutation, and the
-// field with the fields its type holds. The first row is the dequeue the merger's prompt gave
-// until GitHub was found to refuse it.
+// field with the fields its type holds.
 func TestTheMutationCheckNamesThePartTheMutationAndTheFieldsItsTypeHolds(t *testing.T) {
 	inputs := readGitHubGraphQLInputs(t)
 	for _, tc := range []struct {

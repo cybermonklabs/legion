@@ -2,9 +2,9 @@ kind: Changed
 custom:
   Issue: pr3995
 body: |-
-  The `legion` tool's `request_backward_move` description says that the tree's architect moves an
-  issue in `accepting` back to planning, implementing or testing. Before, it named implementing
-  and testing alone.
+  The `legion` tool's `request_backward_move` description says: "The architect that owns an issue
+  in accepting moves it, named by `issue`, back to planning, implementing or testing." Before, it
+  named implementing and testing alone.
 
   The plugin's skills change with it. `legion-worker` says what a news task of an approved new
   version holds, and that the merger merges nothing while the root's design gate is closed. The
@@ -21,35 +21,7 @@ body: |-
   task. `legion-controller` says that a `criteria` step a root registers holds its tree too, and
   that `gatedSteps` and the `design_gate` hold word count it.
 
-  Merges of the base change too. `legion-controller` tells no role to merge the base, to fold
-  another pull request in, or to merge once more before a slot, a restart or the merge queue.
-  Where GitHub reads a pull request `CONFLICTING`, it says so and quotes the read. In
-  `legion-worker`, a message is a reason to merge only when it names the conflict GitHub reports,
-  and a role answers any other with the rule and merges nothing. The implementer quotes
-  `gh pr view --json mergeable,mergeStateStatus` and names the condition the merge meets in its
-  forward-merge comment. The tester and the reviewer may tell the architect of a forward merge
-  that had no conflict and whose comment names no reason the rule allows. A parent's
-  last round in `legion-architect` no longer merges the default branch by rule and no longer runs
-  a full test round: the architect sends the issue back to testing, and the tester sizes that
-  round like any other. The base is merged only where GitHub reads the pull request `CONFLICTING`,
-  or where a check that needs a child's merged code fails at the head without it, and the parent
-  signs off on an approved head at which its checks pass. `legion-worker` no longer names a
-  parent's last round as a reason to merge. In `legion-architect`, an approval request's
-  `--summary` says in one to three sentences what the human is approving, and nothing else: it no
-  longer carries the reviews' results or what they do not show. A measurement or test result the
-  design rests on goes in the document the request names. The line on what a surface's pictures
-  do not show is gone.
-
-  On a new head, `legion-worker` has the implementer, the tester and the reviewer read what
-  changed since the head they last recorded, tested or approved (`git diff`, or
-  `git show --remerge-diff` for a merge of the base), and size their work to that change. A check
-  the change cannot affect is recorded again at the new head as carried from the earlier head,
-  and is not run again; `pr-body.md` gives the command. The unchanged-diff fingerprint and its
-  section in `conflicts-and-rewrites.md` are gone, with the comparison of file sets before and
-  after a merge, and `legion-architect` and `legion-retro` no longer name them. Before, a changed
-  fingerprint meant a full test round and a new review round, and every push meant running every
-  check again. The reviewer's earlier head is the head it last approved, or, where it approved
-  none, the head it last reviewed, and a re-review after a request for changes also checks each
-  of its findings against the new head. The reviewer names in each thermonuclear task the diff
-  the pair audits: the branch's whole diff on its first review of the pull request, then only the
-  change since its earlier head. No pair runs when that diff touches no runtime code.
+  In `legion-architect`, an approval request's `--summary` says in one to three sentences what the
+  human is approving, and nothing else: it no longer carries the reviews' results or what they do
+  not show. A measurement or test result the design rests on goes in the document the request
+  names. The line on what a surface's pictures do not show is gone.

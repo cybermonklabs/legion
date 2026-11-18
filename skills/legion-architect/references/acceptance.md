@@ -173,9 +173,12 @@ move and you tell it which; from `accepting` you send an issue back only to `pla
 
 ## A conflicting head
 
-A conflict-resolution merge goes back through the tester and the reviewer, and each reads what the
-merge changed (`git show --remerge-diff <merge>`). No Legion check compares the head that merges
-with the approved one: a repository that wants a later push reviewed says so in its own rulesets.
+A conflict-resolution merge goes back through the tester and the reviewer. For a merge of the
+base, `git show --remerge-diff <merge>` shows its resolution, and `git diff --stat <merge>^1 <merge>`
+lists the files the base brought in. A check those files or the resolution can reach runs again,
+and a check the merge was made for has no pass to carry. No Legion check compares the head that
+merges with the approved one: a repository that wants a later push reviewed says so in its own
+rulesets.
 
 Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
 (`gh pr view <n> --json mergeable,mergeStateStatus`). From `testing`, `reviewing`, `accepting`,

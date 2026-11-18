@@ -13,3 +13,7 @@ body: |-
   caller names none. Before, it audited the whole branch every time. It ends its report with a
   `Security:` line only when the diff touches a row of its Security Guidelines, and no longer
   writes `Security: no sensitive surface in this diff.`
+
+  In `plain-words`, the row that replaces "name the problem, name the owner, name a date" now
+  reads "say the problem; who owns it is X; Y is left, and Z decides when it ends". Before, it
+  ended with a date projected from the measured rate.

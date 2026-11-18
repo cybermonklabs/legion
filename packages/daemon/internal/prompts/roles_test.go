@@ -526,8 +526,7 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 }
 
 // dispatch://INFRA-332's role-prompt rules R1, R2 and R4, dispatch://INFRA-924's fifth and
-// dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. INFRA-332's
-// R3, the class search of every earlier finding, was deleted by dispatch://INFRA-4406. A pin fails
+// dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
 // when a later edit deletes the rule; it does not show that an agent follows it, which each
 // issue's session runs measure. Each INFRA-332 sentence sits in the core its role composes, so the
 // rule reaches that role and no other: the simplify pass is the implementer's, the procedure and

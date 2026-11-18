@@ -28,8 +28,10 @@ Every path it cites is in cybermonklabs/legion.
   under the branch's own callers.
   After the push, post the forward-merge comment (Legion footer):
   `forward merge <old-tip-sha> → <new-tip-sha>; <the condition it meets>; <the mergeable read>`.
-  Then read what the merge changed (`git show --remerge-diff <merge>`), and run again each check
-  that change can affect.
+  For a merge of the base, `git show --remerge-diff <merge>` shows its resolution, and
+  `git diff --stat <merge>^1 <merge>` lists the files the base brought in.
+  A check those files or the resolution can reach runs again, and a check the merge was made for
+  has no pass to carry.
   Record each other check again at the merge head as a carried pass (*A result proves the head it
   was recorded at* in `skill://legion-worker/references/pr-body.md`), and do not run it again.
   A `ci_check` check is read again from its CI run at the merge head.

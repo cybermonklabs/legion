@@ -10,8 +10,8 @@ body: |-
   and the implementer's fix carries every pass it cannot affect. The implementer's and the
   tester's prompts no longer search every head for the class of every earlier review finding, and
   their handoffs no longer carry `classSearch`. The implementer's simplify pass skips a docs-only
-  change. The root and sub-architect prompts run the gap review and the claim review of a spec as
-  guidance for a large or changed spec, not before every approval request.
+  change. The root architect's prompt runs the gap review and the claim review as guidance for a
+  large or changed spec; the sub-architect prompt no longer names them.
 
   The prompts of every role give a person no estimated date or duration: they say what work is
   left and what decides when it ends. Before, an estimate was allowed where a measured rate or a
