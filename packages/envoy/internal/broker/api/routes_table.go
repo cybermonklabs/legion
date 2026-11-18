@@ -368,10 +368,13 @@ func routes() []apiRoute {
 		// period has committed before the review reads it. It is the one route readsGrantLog
 		// reaches: the review reads the broker's record and changes nothing in it.
 		{http.MethodGet, "/v1/grant-log", accountAuth(readsGrantLog, (*server).listGrantLog)},
-		// List the logins of the calling credential's operator's own machines, as Dispatch's
-		// machine-logins page lists them, without the service logins that page also lists.
+		// List the calling credential's operator's own logins, their machines' logins and the token
+		// logins of the accounts BROKER_POD_OPERATORS maps to them, as Dispatch's machine-logins
+		// page lists them, without the service logins that page also lists. This route, the machine
+		// revoke below and the two grant routes refuse a person's pod login 403 PERSON_POD_LOGIN
+		// and a service's login 403 SERVICE_CREDENTIAL (operatorOf). The retire refuses neither.
 		{http.MethodGet, "/v1/operator/machines", launcherAuth((*server).listOperatorMachines)},
-		// End one of the operator's own machines' logins: no proof signed with it authenticates again
+		// End one of the operator's own logins: no proof signed with it authenticates again
 		// and every session it enrolled ends. A service's login is not found here, like an unknown
 		// id. Revoking the calling machine's own login ends this machine's access.
 		{http.MethodPost, "/v1/operator/machines/{id}/revoke", launcherAuth((*server).revokeOperatorMachine)},

@@ -432,9 +432,10 @@ type Config struct {
 	//
 	// A login of an account that BROKER_POD_OPERATORS maps to a person acts for that person, when
 	// the login token is bound to a pod of the account. No other login of this setting acts for a
-	// person: the credential of each other login has no operator. Two rules above do not apply to
-	// a mapped account. BROKER_SERVICES must not bind it, and it authenticates none of the routes
-	// a service calls as itself.
+	// person: the credential of each other login has no operator. A mapped account is held to two
+	// rules that no other account of this setting is. BROKER_SERVICES must not bind it, though the
+	// paragraph above lets BROKER_SERVICES bind any other account listed here. It authenticates
+	// none of the routes a service calls as itself: serviceAuth refuses it 403 PERSON_ACCOUNT.
 	ServiceLogins map[string]string
 	// BROKER_POD_OPERATORS: the Kubernetes accounts whose pods act for a person,
 	// whitespace-separated <email>=system:serviceaccount:<namespace>:<name> entries, such as
@@ -443,14 +444,22 @@ type Config struct {
 	// this setting names. A person may have several mapped accounts. Keyed by account, each
 	// answering its person.
 	//
-	// A pod whose token login is of a mapped account acts as that person at the broker, on the
-	// terms of the person's dev box. The broker serves the person's own agent-tier secrets to the
-	// pod with no approval. A request for one of the person's human-tier secrets waits for the
-	// person to approve each grant. A request for another person's secret waits for its owner to
-	// approve it. Each mapped account logs in under a login service of its own, which
-	// BROKER_SERVICE_LOGINS names for that account. An account that this setting does not name
-	// acts for no person at the broker, also when BROKER_EXCHANGE_ACCOUNTS maps it to a person for
-	// Dispatch.
+	// A pod of a mapped account logs in with its own projected token, bound to that pod, and
+	// enrols itself (agent-secrets enroll --pod --service <its login service>) under no session
+	// name. That pod acts as the person at the broker, on the terms of the person's dev box. The
+	// broker serves the person's own agent-tier secrets to the pod with no approval. A request for
+	// one of the person's human-tier secrets waits for the person to approve each grant. A request
+	// for another person's secret waits for its owner to approve it. Each mapped account logs in
+	// under a login service of its own, which BROKER_SERVICE_LOGINS names for that account. A token
+	// of a mapped account that is bound to no pod, such as one kubectl create token mints, logs in
+	// for no person. An account that this setting does not name acts for no person at the broker,
+	// also when BROKER_EXCHANGE_ACCOUNTS maps it to a person for Dispatch.
+	//
+	// The operator routes that list and revoke the person's machine logins and grants refuse such a
+	// pod's login 403 PERSON_POD_LOGIN. The routes a service calls as itself refuse the mapped
+	// account 403 PERSON_ACCOUNT. The broker reads this setting at each decision of what
+	// the pod may do. So after the deployment removes an entry, or moves it to another person, the
+	// enrollment that a pod of that account already holds acts for no person from its next call.
 	//
 	// The broker refuses to start in each case below, and the refusal names the entry or the
 	// account. It refuses an entry that is not of the form above. It refuses a person that is not a

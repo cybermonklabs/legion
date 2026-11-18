@@ -124,10 +124,13 @@ A Legion daemon does not log in this way: it logs in with its own Kubernetes Ser
 which no person approves ([Concepts](/legion/broker/concepts/#machine-login)), so no daemon login
 waits on this page. A pending login that names a service is one a broker opened before services
 logged in with their tokens; the page says no one can approve it, and you may deny it or let it
-expire. A pod has no operator, so its requests for your secrets come to you for approval. When the
-broker binds `legion-daemon` to the service accounts its pods run as (`BROKER_SERVICES`), each of
-its pods running as one of those accounts gets every secret `legion-daemon` owns at once, with no
-further approval ([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)).
+expire. A pod acts for no person unless the broker's `BROKER_POD_OPERATORS` maps its account to a
+person, so a Legion worker pod's requests for your secrets come to you for approval. A pod whose
+account the setting maps to you acts as you, on the terms of your dev box
+([Concepts](/legion/broker/concepts/#a-persons-pod)). When the broker binds `legion-daemon` to the
+service accounts its pods run as (`BROKER_SERVICES`), each of its pods running as one of those
+accounts gets every secret `legion-daemon` owns at once, with no further approval
+([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)).
 
 Back on the machine, `agent-secrets machine login` exits 0 and the helper logs
 `machine login issued; the helper holds a launcher credential`: the machine credential the approval

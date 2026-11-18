@@ -758,8 +758,9 @@ func (secret Secret) requesterNames() []string {
 // none): a login record.CanonicalLogin answers may be a GitHub login rather than an email, for
 // a record decided before people were named by email, and such a login has a service name's own
 // alphabet, so an operator named "legion-daemon" would otherwise be served every secret that
-// lists the legion-daemon service. An empty Operator (a pod has no person) and an empty Service
-// (a session has no service) match nothing, never an entry.
+// lists the legion-daemon service. An empty Operator and an empty Service (a session has no
+// service) match nothing, never an entry. A pod's Operator is empty unless BROKER_POD_OPERATORS
+// maps the pod's account to the person its login carried (requests.Machine.requester).
 func (secret Secret) lists(r Requester) bool {
 	operator := record.CanonicalLogin(r.Operator)
 	for _, entry := range secret.requesterNames() {

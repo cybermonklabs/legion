@@ -1086,15 +1086,16 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // newRequestMachine builds the requests.Machine the broker decides every secret request with, from
 // its configuration: the audience and skew every request object is checked against, and, for each
 // service account, the registered service a pod running as it proves, for each Google
-// service account, the one a machine of that fleet proves, and, for each google-service-account
-// secret, the one account the deployment binds it to and so the only one its release mints a
-// token for. A grant lasts the lifetime its request signed, or until its session ends. rules and
-// caCertificate are the airlock's, read at boot: a name the rules name is released as
-// placeholders, and every such release carries the proxy's URL and this certificate. retry is the
-// one retry policy and process-wide retry budget of the three minters that call an upstream over
-// HTTP (main's is secrets.NewRetry on the process's registry, which broker_mint_attempts_total is
-// counted on), so a GitHub brownout that spends the budget leaves a Google mint's failure
-// unretried too: each holds the one pointer, which typeMinters' copies keep.
+// service account, the one a machine of that fleet proves, for each service account
+// BROKER_POD_OPERATORS maps, the person a pod enrolled under its login acts for, and, for each
+// google-service-account secret, the one account the deployment binds it to and so the only one
+// its release mints a token for. A grant lasts the lifetime its request signed, or until its
+// session ends. rules and caCertificate are the airlock's, read at boot: a name the rules name is
+// released as placeholders, and every such release carries the proxy's URL and this certificate.
+// retry is the one retry policy and process-wide retry budget of the three minters that call an
+// upstream over HTTP (main's is secrets.NewRetry on the process's registry, which
+// broker_mint_attempts_total is counted on), so a GitHub brownout that spends the budget leaves a
+// Google mint's failure unretried too: each holds the one pointer, which typeMinters' copies keep.
 func newRequestMachine(cfg config.Config, st *store.Store, current *policy.Current, secretStore secrets.Store, replay func(context.Context, string, time.Time) (bool, error), rules airlock.Rules, caCertificate string, retry *secrets.Retry) *requests.Machine {
 	githubApp := secrets.GitHubApp{Base: cfg.AirlockTestGitHubAPIBase, Retry: retry}
 	m := &requests.Machine{

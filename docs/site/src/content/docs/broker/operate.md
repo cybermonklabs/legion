@@ -231,9 +231,10 @@ which enrolls the pods it launches next, while a pod already running stays witho
 is replaced. To stop a daemon logging in, remove its entry and redeploy the broker: its credential
 stops authenticating at its next call, and its next login is refused.
 
-An account on that list also registers which pod may write under which session name
-(`POST /v1/oauth/exchange/pod-sessions`), which is how a deployment's daemon tells the broker that
-a pod it has just started owns an issue's session. That is a second authority the list carries, so
+An account on that list that `BROKER_POD_OPERATORS` does not map (below) also registers which pod
+may write under which session name (`POST /v1/oauth/exchange/pod-sessions`), which is how a
+deployment's daemon tells the broker that a pod it has just started owns an issue's session. That
+is a second authority the list carries, so
 weigh it before listing an account. The request carries the pod's own projected ServiceAccount
 token, which the broker verifies against the cluster's issuer as it verifies an enrolling pod's,
 bar the one check it does not make here, that the token names a pod: such a token verifies and
@@ -308,6 +309,95 @@ bucket drained for the rest of the credential's life stops it logging in.
 A service login a person approved through a device code before this broker keeps working until
 it expires, at most `BROKER_LAUNCHER_CREDENTIAL_SECONDS` (30 days by default) after its approval:
 nothing refreshes it.
+
+`BROKER_POD_OPERATORS` maps a Kubernetes ServiceAccount to a person, so that a pod running as that
+account acts as the person on the terms of the person's dev box
+([Concepts](/legion/broker/concepts/#a-persons-pod)). It takes whitespace-separated
+`<email>=<service account>` entries, for example
+`BROKER_POD_OPERATORS=ada@example.com=system:serviceaccount:example-ns:ada`. The email is the
+person as they sign in, in lower case. A person may have several accounts, and each account maps
+to one person. Unset, the setting maps no account. Each mapped account logs in with its own token
+under a login service of its own, so it needs a `BROKER_SERVICE_LOGINS` entry, such as
+`person-ada=system:serviceaccount:example-ns:ada`. No `BROKER_SERVICES` or `BROKER_VM_SERVICES`
+entry may name that login service, and no `BROKER_SERVICES` entry may bind the account. The
+broker refuses to start, naming the entry or the account, on:
+
+- an entry that is not `<email>=system:serviceaccount:<namespace>:<name>`, or whose person is not a
+  lower-case email;
+- a namespace's `default` account, which every pod there that names no account runs as;
+- an account given twice;
+- a mapped account that `BROKER_SERVICE_LOGINS` does not name;
+- a mapped account whose login service a `BROKER_SERVICES` entry names, since a secret could then
+  name that service as its owner;
+- a mapped account that a `BROKER_SERVICES` entry binds, since a launcher logged in as that service
+  could then enrol the person's pods as its own workers;
+- a mapped account whose login service a `BROKER_VM_SERVICES` entry names, since the broker
+  registers those services as owners a secret may name too;
+- a mapped account that `BROKER_EXCHANGE_ACCOUNTS` maps to another person.
+
+The pod enrols itself with `agent-secrets enroll --pod --service <its login service>`, which names
+no session. Its login, made with its own projected token, carries the person, and so does its
+enrollment: the person's agent-tier secrets go to it at once, the person's human-tier secrets wait
+for the person's approval, and another person's secret waits for its owner's. A token of the
+account that is bound to no pod, such as one `kubectl create token` mints, logs in for no person
+and enrols nothing. The login enrols its own pod alone: another pod of the account and a pod of any
+other account are each refused `403 POD_SELF_ENROLL_ONLY`, and a session name is refused
+`403 POD_SELF_ENROLL_NO_SESSION`. The pod lists and revokes none of the person's machine logins
+and grants: `GET /v1/operator/machines`, `POST /v1/operator/machines/{id}/revoke`,
+`GET /v1/operator/grants` and `POST /v1/operator/grants/{id}/revoke` refuse its login
+`403 PERSON_POD_LOGIN`. The person lists and revokes those from a box or from Dispatch. The routes
+a service calls as itself refuse the mapped account `403 PERSON_ACCOUNT`, whether or not its token
+is bound to a pod, so it registers no pod's session. Whoever can run a pod as a mapped account, or
+get a token bound to such a pod, acts as its person: Kubernetes access control on that account's
+namespace is the boundary, as it is for a service's account above.
+
+Dispatch's machine-login page lists that login to its person alone, and only that person may
+revoke it, whichever of the account's pods or tokens made it. A revoke ends every enrollment the
+login made, with their grants, and does not last: the pod logs in again with its token, under a
+new credential, the next time it enrols. To stop the pod logging in, take the account out of both
+`BROKER_POD_OPERATORS` and `BROKER_SERVICE_LOGINS` and redeploy the broker. Taking it out of
+`BROKER_SERVICE_LOGINS` alone refuses the start. The enrollment the pod already holds keeps
+renewing until its login is revoked or the pod stops renewing it, as the list below says.
+
+The broker reads the setting when it starts, so a change is an edit and a redeploy of the broker.
+Every decision of what a pod may do reads the setting as it is then, while the stored records keep
+the person each enrollment was made for. After the deployment removes an entry, or moves it to
+another person:
+
+- the enrollment the pod holds keeps renewing, and the broker answers each of its calls as its
+  account's own, for no person, also after a move: the first person's agent-tier secrets wait for
+  that person's approval, and a shared agent-tier secret is still granted;
+- an automatic grant of the person's own agent-tier secret, which the pod got because it acted as
+  the person, stops releasing (`GRANT_NOT_LIVE`) and is not given back to a new request, so the
+  pod's next request for that secret waits for the person. It is not revoked, and putting the entry
+  back makes it release again;
+- a grant a person approved stands on that approval. It keeps releasing, whoever approved it, until
+  it expires, its approver revokes it, the policy refuses it to the account, or the enrollment ends;
+- a grant of a secret whose `requesters` tag names the person ends for good
+  (`requester-not-listed`), and putting the entry back does not revive it;
+- the pod's login keeps the first person until the pod logs in again, and lives at most an hour.
+  Meanwhile it enrols nothing and revokes nothing (`403 OPERATOR_MISMATCH`), and the operator
+  routes still refuse it `403 PERSON_POD_LOGIN`. The pod's next login carries no person after a
+  removal, and the second person after a move;
+- the pod's own login cannot end the enrollment it holds. That enrollment ends at a revoke of the
+  pod's login: after a removal anyone signed in may revoke it, since the login is a service's
+  again, and after a move only the second person may. It also ends once the pod stops renewing it,
+  when its lease lapses, as `BROKER_LEASE_SECONDS` and `BROKER_SWEEP_SECONDS` say in the
+  [configuration reference](/legion/broker/reference/config/)
+  ([when no broker is serving](/legion/broker/concepts/#when-no-broker-is-serving));
+- after a move, the pod enrolling again in the same slot with the same key gets that old
+  enrollment back, and another key in that slot is refused `409 ALREADY_ENROLLED`. So in that slot
+  the second person's access starts only once the old enrollment ends, and a new slot is a new
+  enrollment, the second person's. `agent-secrets whoami` reads the enrollment's record, so for the
+  old enrollment it still names the first person;
+- the grant log (`GET /v1/grant-log`), the first person's **Live grants** (`GET /v1/grants`) and
+  the record of each request's approval keep naming the first person, since they read the
+  enrollment's record. That person still sees the pod's grants and may revoke them. Each new
+  request's `request.created` row records, in its own detail, the person the broker decided for:
+  none.
+
+After a move, have the second person revoke the pod's login on Dispatch's machine-login page, which
+ends the old enrollment, or replace the pod.
 
 A pod trades its own projected ServiceAccount token, minted for `BROKER_EXCHANGE_K8S_AUDIENCE`, at
 the token exchange for a Dispatch access token. `BROKER_EXCHANGE_ACCOUNTS` lists the accounts whose
