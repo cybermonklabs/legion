@@ -25,8 +25,5 @@ export function paragraphsOf(length: number): string {
 /** How the server refuses a body whose first block, a paragraph, is `units` UTF-16 units long,
  *  past the bound it holds each block to (itemblocks.CapExceeded). */
 export function blockCapRefusal(units: number): string {
-  return (
-    `body block 1 (paragraph) is ${units - DISPATCH_BLOCK_UNITS} characters over the ` +
-    `${DISPATCH_BLOCK_UNITS}-character block limit (${units}/${DISPATCH_BLOCK_UNITS})`
-  );
+  return `body block 1 (paragraph): ${units} of at most ${DISPATCH_BLOCK_UNITS}`;
 }

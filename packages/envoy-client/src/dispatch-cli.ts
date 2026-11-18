@@ -149,7 +149,7 @@ export function fitOutput(
   const whole = [text, ...pictures, ...kept].join("\n");
   if (whole.length <= limit) return whole;
   const full = [text, ...pictures].join("\n");
-  const marker = `(the full result, ${full.length} characters: ${writeFull(full)})`;
+  const marker = `(the full result, ${full.length} long, over the ${limit} this output holds: ${writeFull(full)})`;
   const droppedLine = (left: number): string =>
     `(${left} more picture line${left === 1 ? "" : "s"} left out: see the full result)`;
   // The tail's length for each number of picture lines shown, from the parts' lengths alone, one

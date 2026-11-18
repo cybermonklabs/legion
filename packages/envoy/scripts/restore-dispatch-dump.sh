@@ -26,6 +26,7 @@ else
   database_name="dispatch_copy_${basename//[^a-z0-9]/_}"
 fi
 
+# characters: ASCII alone, the test below admits [a-zA-Z0-9_] only.
 if [[ ! "$database_name" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || ((${#database_name} > 63)); then
   printf 'database name must be a PostgreSQL identifier no longer than 63 characters: %s\n' "$database_name" >&2
   exit 2

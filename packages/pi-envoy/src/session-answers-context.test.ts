@@ -544,7 +544,7 @@ test("a request an older copy already gave the list gets no second one and no re
 // own length pushed an item past the reader's character cap, so the list is re-rendered after the
 // last message: a prompt-cache miss, and never a person's words held back. Reading that text more
 // closely to spare the miss swallowed an item twice (see `showsNew`).
-const CAPPED = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.\n\n1 older item left out to stay under 8,000 characters: run \`dispatch answers\` to read every one in full.`;
+const CAPPED = `${SESSION_ANSWERS_MARKER}\nAs read at 2026-10-27T11:00:00.000Z; this read failed: Dispatch did not answer within 800 ms.\n\n2026-10-27T11:00:00.000Z · bob sent you a message\nAlso check the docs.\n\n1 older item left out to stay under 8,000 UTF-16 code units: run \`dispatch answers\` to read every one in full.`;
 const cappedList = { role: "user", content: [{ type: "text", text: CAPPED }], timestamp: 0 };
 
 // The list `LIST` as a copy renders it from its cache when a read fails, and the same list for a

@@ -93,7 +93,7 @@ const maxSecretNameLength = 512
 // ASCII, so the length counts bytes.
 func (a AWS) ValidName(id string) error {
 	if len(id) > maxSecretNameLength {
-		return fmt.Errorf("under the prefix it makes a %d-character secret name, past Secrets Manager's %d-character limit", len(id), maxSecretNameLength)
+		return fmt.Errorf("under the prefix it makes a secret name %d bytes long, past Secrets Manager's %d", len(id), maxSecretNameLength)
 	}
 	return nil
 }

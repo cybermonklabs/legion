@@ -248,11 +248,17 @@ test("the record's allowance is the call's own deadline plus the grace where it 
 
 test("an argument far longer than the bound is cut to it rather than written whole", () => {
   const tail = "end-of-the-very-long-argument";
-  const digest = stallArgumentsDigest({ command: `${"x".repeat(5_000)} ${tail}`, timeout: 0 });
+  const input = { command: `${"x".repeat(5_000)} ${tail}`, timeout: 0 };
+  const digest = stallArgumentsDigest(input);
   expect(digest.length).toBeLessThanOrEqual(STALL_DIGEST_LIMIT);
   expect(digest).not.toContain(tail);
-  expect(digest).toContain("characters in all");
   expect(digest.startsWith('command="xxxx')).toBe(true);
+  // The cut digest carries its marker: the one number in it is the length the whole argument
+  // held, read from the same digest with no bound, and the cut fills the bound exactly.
+  const whole = stallArgumentsDigest(input, Number.POSITIVE_INFINITY);
+  expect(whole).toContain(tail);
+  expect(digest.match(/\d+/g)).toEqual([String(whole.length)]);
+  expect(digest.length).toBe(STALL_DIGEST_LIMIT);
 
   // The bound is a bound, whatever it is set to, and the marker is counted against it.
   expect(boundedText("x".repeat(100), 40).length).toBe(40);

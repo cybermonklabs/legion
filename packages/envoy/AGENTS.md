@@ -3596,7 +3596,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - Keep Envoy API-level with the agent harnesses it serves.
   Do not add DB introspection or harness-specific hidden coupling unless there is no API path.
 
-- Dispatch caps (`CAP_EXCEEDED` 400) read `<field> is N characters over the M-character limit (L/M)` (`capExceededError`, UTF-16 units) or `<field> is N over the M-item limit (C/M)` for counts;
+- Dispatch caps (`CAP_EXCEEDED` 400) read `<field>: L of at most M` (`capExceededError`, UTF-16 units, the words naming no unit; `overCapMessage` in `packages/contracts/src/tool-schema.ts` is its client twin) or `<field> is N over the M-item limit (C/M)` for counts;
   `GET /asks/{id}`, `/comments/{id}`, and `/issues/{key}/messages/{id}` resolve an id written short to the one item of that kind which carries it before the handler runs, answer `409 ID_AMBIGUOUS` where two or more do and their own `404 NOT_FOUND` where none does, and answer any other non-uuid id with 400 `<KIND>_ID_INPUT` (`requireUUIDPath`, behind `api/id_prefix.go`);
   a document-edit quote miss (`TARGET_NOT_FOUND`) names the three nearest blocks, a `# Title` quote selects a heading, and a quote opening with a list marker (`- x`, `5. x`, a task box `[ ]` or `[x]` allowed after it) that matches no text as written selects an item of that kind of list whose text starts with the rest, its number not matched and its box matching only a task item in that state (`pmdoc.ParseListItemQuote`, `listItemQuoteMatches`), a miss saying what the marker means and quoting the text without it;
   a quote written as a table row's cells, its ` | ` the boundary between cells rather than text a cell holds, names instead the run of one row's cells its parts match (`tableRowQuoted`), and a quote reaching from one table cell into another names both cells, a move anchor included, which is refused as an insert anchor is.
@@ -3611,7 +3611,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - A comment, comment-edit, message, broadcast and delivery-reply body is bounded block by block rather than as a whole: `contracts.DispatchBlockUnits` (32,000 UTF-16 units) on each block of it and `contracts.DispatchItemBlocks` (32,768) on how many blocks it holds, generated from `DISPATCH_BLOCK_UNITS` and `DISPATCH_ITEM_BLOCKS` in `packages/contracts` rather than spelled here, and published by `GET /api/v1/limits`:
   `itemblocks.Check` is the one check and `blockBoundError` the one refusal, called from `comment_create.go`, `comment_actions.go`, `messages.go`, `broadcasts.go`, `comment_delivery.go` and `message_delivery.go`.
-  A block over the bound is `400 CAP_EXCEEDED` reading `body block N (<type>) is K characters over the 32000-character block limit (L/M)`, and a body over the count reads `body is K blocks over the 32768-block limit (C/M)`;
+  A block over the bound is `400 CAP_EXCEEDED` reading `body block N (<type>): L of at most M`, and a body over the count reads `body is K blocks over the 32768-block limit (C/M)`;
   the count is checked first, so a body built to break the indexer is refused for how many blocks it holds.
   A body holding a decision block (`:::ask{…}`) is `400 DECISION_BLOCK_IN_BODY` reading `body block N (<type>) holds a decision block, which nobody can answer where it stands`, and then where the question belongs: the issue's own document, as a decision block there, or an ask opened with the `dispatch ask` command, a fenced code block being how a body shows such a block as an example (`itemblocks.DecisionBlock`, worded there and nowhere else).
   Both bounds are checked before it, so a body that also breaks one keeps the bound's refusal, its wording and its code.
@@ -3621,7 +3621,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   Change any of them in `packages/contracts/src/dispatch-tools.ts` and regenerate (`bun run gen:go` there), never in `internal/contracts/generated.go`.
 
 - Caller text PostgreSQL cannot store (`text.Storable`) is refused before anything is written (`api/storable_text.go`, positions in UTF-16 units from 1):
-  a U+0000, which neither its text nor its jsonb holds, is `400 NUL_CHARACTER` reading `<field> holds a NUL character (U+0000) at character N, which Dispatch cannot store`, and a byte that is not UTF-8, which its text does not hold, is `400 INVALID_UTF8` reading `<field> holds a byte that is not UTF-8 (0xFF) at character N, which Dispatch cannot store`.
+  a U+0000, which neither its text nor its jsonb holds, is `400 NUL_CHARACTER` reading `<field> holds a NUL (U+0000) at position N, which Dispatch cannot store`, and a byte that is not UTF-8, which its text does not hold, is `400 INVALID_UTF8` reading `<field> holds a byte that is not UTF-8 (0xFF) at position N, which Dispatch cannot store`.
   A name the caller wrote (a JSON member's, a query parameter's, a multipart field's) is named with a U+0000 in it written as the six characters `\u0000`, so no refusal sends the character back.
   The input layer checks once, not each route:
   `decodeJSON` walks every string and member name of the body it decoded (`unstorableJSON`, naming `title`, `options[1].label`, `ops[0].attributes.title`), and so do the two readers that read a JSON body themselves (an artifact upload's, a credential relay's);

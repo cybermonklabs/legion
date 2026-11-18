@@ -141,7 +141,7 @@ func TestCheckStoresABodyTheReaderDrawsNoCardFor(t *testing.T) {
 func TestCheckRefusesABodyOverABoundForTheBound(t *testing.T) {
 	overTheBlock := theAsk + "\n\n" + strings.Repeat("x", contracts.DispatchBlockUnits+1)
 	err := requireRefusal(t, "a decision block beside a block one character over", overTheBlock,
-		"body block 2 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)")
+		"body block 2 (paragraph): 32001 of at most 32000")
 	var capExceeded *CapExceeded
 	if !errors.As(err, &capExceeded) {
 		t.Fatalf("Check returned %T, want *CapExceeded", err)

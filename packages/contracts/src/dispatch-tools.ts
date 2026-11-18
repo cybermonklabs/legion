@@ -690,7 +690,7 @@ export const dispatchToolSpecs = [
       project: z.string().describe("Project key for the new issue."),
       title: z
         .string({ max: ISSUE_TITLE_MAX })
-        .describe("Concise issue title, at most 1,000 characters."),
+        .describe("Concise issue title, at most 1,000 UTF-16 code units."),
       parent: z.string().describe("Optional parent issue.").optional(),
       blocked_by: z
         .array(z.string({ min: 1 }), { max: MAX_ISSUE_BLOCKERS })
@@ -717,7 +717,7 @@ export const dispatchToolSpecs = [
         .optional(),
       labels: z
         .array(z.string({ min: 1, max: 40 }), { max: 20 })
-        .describe("Optional initial labels, at most 20 labels of up to 40 characters.")
+        .describe("Optional initial labels, at most 20 labels of up to 40 UTF-16 code units.")
         .optional(),
       priority: z
         .number({ int: true, min: 0, max: 3 })
@@ -793,12 +793,12 @@ export const dispatchToolSpecs = [
         .optional(),
       title: z
         .string({ min: 1, max: ISSUE_TITLE_MAX })
-        .describe("Replacement title, at most 1,000 characters.")
+        .describe("Replacement title, at most 1,000 UTF-16 code units.")
         .optional(),
       labels: z
         .array(z.string({ min: 1, max: 40 }), { max: 20 })
         .describe(
-          "Replacement label set, at most 20 labels of up to 40 characters; replaces every existing label."
+          "Replacement label set, at most 20 labels of up to 40 UTF-16 code units; replaces every existing label."
         )
         .optional(),
       // `.describe()` comes last here, unlike every other field. On the OMP host's Zod facade a
@@ -1778,7 +1778,7 @@ export const dispatchToolSpecs = [
       brief: z
         .boolean()
         .describe(
-          "Cut each reading whose result stands at none of the compared commits to its first 200 characters. Every other reading prints whole."
+          "Cut each reading whose result stands at none of the compared commits to its first 200 UTF-16 code units. Every other reading prints whole."
         )
         .optional(),
     }),
@@ -1926,7 +1926,9 @@ export const dispatchToolSpecs = [
           max: SEARCH_QUERY_MAX,
           maxHint: SEARCH_QUERY_HINT,
         })
-        .describe(`Keyword, phrase, or websearch expression; 2 to ${SEARCH_QUERY_MAX} characters.`),
+        .describe(
+          `Keyword, phrase, or websearch expression; 2 to ${SEARCH_QUERY_MAX} UTF-16 code units.`
+        ),
       project: z.string().describe("Optional project key to search within.").optional(),
       limit: z
         .number({ int: true, min: 1, max: 50 })
@@ -1969,7 +1971,7 @@ export const dispatchToolSpecs = [
       project: z.string().describe("Project key to search within, such as CORE."),
       title: z
         .string({ max: ISSUE_TITLE_MAX })
-        .describe("Optional title to check, as an issue title; at most 1,000 characters.")
+        .describe("Optional title to check, as an issue title; at most 1,000 UTF-16 code units.")
         .optional(),
       text: z
         .string()
@@ -2074,7 +2076,7 @@ export const dispatchToolSpecs = [
       "A key that already exists is refused " +
       "with 409 PROJECT_EXISTS whoever created it, so after a retry it can mean the first call made the project. " +
       `A key that is not a project key (${PROJECT_KEY_RULE}) or an empty name is refused with 400 ` +
-      `INVALID_PROJECT, and a name over ${PROJECT_NAME_MAX} characters with 400 CAP_EXCEEDED. ` +
+      `INVALID_PROJECT, and a name over ${PROJECT_NAME_MAX} UTF-16 code units with 400 CAP_EXCEEDED. ` +
       "Every project names a default assignee, the person its unowned work lands on: the login " +
       "default_assignee names, else the person creating the project, else the person your " +
       "credential acts for. A call that names none under a credential acting for no person is " +
@@ -2088,7 +2090,7 @@ export const dispatchToolSpecs = [
       name: z
         .string({ max: PROJECT_NAME_MAX })
         .describe(
-          `The project's name, shown beside its key, at most ${PROJECT_NAME_MAX} characters.`
+          `The project's name, shown beside its key, at most ${PROJECT_NAME_MAX} UTF-16 code units.`
         ),
       default_assignee: z
         .string()
@@ -2279,9 +2281,9 @@ export const dispatchToolSpecs = [
       "agents, Later (the asks they snoozed), Unread threads (the threads they wrote in that " +
       "somebody else has written in since, and the messages they sent an agent session that it " +
       "answered) and Credential requests. An ask's line names its " +
-      "issue key or document slug, its priority, its kind, the first 80 characters of the " +
+      "issue key or document slug, its priority, its kind, the first 80 UTF-16 code units of the " +
       "question and its dispatch:// reference; a thread's line names its issue key, document " +
-      "slug or session, its kind, the first 80 characters of its subject, who wrote the newest " +
+      "slug or session, its kind, the first 80 UTF-16 code units of its subject, who wrote the newest " +
       "reply, how long ago and where to read it; a credential request's line names its kind, its " +
       "identifiers, when it was requested, the sessions it names and the page where it is " +
       "decided. It needs a credential holding the person scope, and one without it is refused " +

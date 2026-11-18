@@ -983,7 +983,7 @@ function AgentFilterBar({
         onChange={(event) => onFilters({ ...filters, search: event.target.value })}
         placeholder="Title, directory, machine, session or open issue"
         ref={searchInputRef}
-        title={`At most ${SEARCH_QUERY_MAX} characters`}
+        title={`${filters.search.length} of at most ${SEARCH_QUERY_MAX}`}
         type="search"
         value={filters.search}
       />

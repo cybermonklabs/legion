@@ -226,7 +226,7 @@ describe("zodSchemaApi", () => {
     });
     expect(result.success).toBe(false);
     expect(result.error?.issues.map((issue) => issue.message)).toEqual([
-      `is 50 characters over the ${ISSUE_TITLE_MAX}-character limit (${ISSUE_TITLE_MAX + 50}/${ISSUE_TITLE_MAX})`,
+      `${ISSUE_TITLE_MAX + 50} of at most ${ISSUE_TITLE_MAX}`,
     ]);
   });
 
@@ -375,7 +375,7 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ query: "x".repeat(SEARCH_QUERY_MAX) }).success).toBe(true);
     const over = schema.safeParse({ query: "x".repeat(SEARCH_QUERY_MAX + 1) });
     expect(over.error?.issues.map((issue) => issue.message)).toEqual([
-      `is 1 characters over the ${SEARCH_QUERY_MAX}-character limit (${SEARCH_QUERY_MAX + 1}/${SEARCH_QUERY_MAX}); search with a short phrase of a few words, not a passage`,
+      `${SEARCH_QUERY_MAX + 1} of at most ${SEARCH_QUERY_MAX}; search with a short phrase of a few words, not a passage`,
     ]);
   });
 
@@ -389,7 +389,7 @@ describe("dispatchToolSpecs", () => {
       expect(schema.safeParse({ ...args, title: "x".repeat(1000) }).success).toBe(true);
       const over = schema.safeParse({ ...args, title: "x".repeat(1001) });
       expect(over.error?.issues.map((issue) => issue.message)).toEqual([
-        `is 1 characters over the ${ISSUE_TITLE_MAX}-character limit (1001/${ISSUE_TITLE_MAX})`,
+        `1001 of at most ${ISSUE_TITLE_MAX}`,
       ]);
     }
   });
@@ -735,7 +735,7 @@ describe("dispatchToolSpecs", () => {
     );
     const over = schema.safeParse({ key: "CORE", name: "n".repeat(PROJECT_NAME_MAX + 1) });
     expect(over.error?.issues.map((issue) => issue.message)).toEqual([
-      `is 1 characters over the ${PROJECT_NAME_MAX}-character limit (${PROJECT_NAME_MAX + 1}/${PROJECT_NAME_MAX})`,
+      `${PROJECT_NAME_MAX + 1} of at most ${PROJECT_NAME_MAX}`,
     ]);
   });
 

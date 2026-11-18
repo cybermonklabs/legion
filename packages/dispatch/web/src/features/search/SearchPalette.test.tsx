@@ -462,7 +462,7 @@ test("does not query below two characters", async () => {
     await tick(KEYSTROKE_DEBOUNCE_MS + MEANING_PAUSE_MS);
 
     expect(search).not.toHaveBeenCalled();
-    expect(screen.getByText("Type at least 2 characters")).not.toBeNull();
+    expect(screen.getByText("Type at least 2 to search (1 so far)")).not.toBeNull();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -483,7 +483,7 @@ test("names the limit instead of querying over it, and queries at it", async () 
 
     expect(
       screen.getByText(
-        `Search with a short phrase: ${SEARCH_QUERY_MAX + 1} characters is over the ${SEARCH_QUERY_MAX}-character limit`
+        `Search with a short phrase: ${SEARCH_QUERY_MAX + 1} of at most ${SEARCH_QUERY_MAX}`
       )
     ).not.toBeNull();
     // Past both of the bar's timers, by the bar's own numbers: a query over the limit must

@@ -542,10 +542,10 @@ func normalizeIssueLabels(values []string) ([]string, error) {
 	}
 	labels := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
+	for index, value := range values {
 		label := strings.TrimSpace(value)
 		if length := itemblocks.Units16(label); length == 0 || length > maxIssueLabel16 {
-			return nil, errorf(http.StatusBadRequest, "LABELS_INPUT", "each label must be 1 to %d characters", maxIssueLabel16)
+			return nil, errorf(http.StatusBadRequest, "LABELS_INPUT", "labels[%d] is %d long; a label is 1 to %d long", index, length, maxIssueLabel16)
 		}
 		key := strings.ToLower(label)
 		if _, duplicate := seen[key]; duplicate {

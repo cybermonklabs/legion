@@ -867,7 +867,7 @@ test("IssuePage retries an unchanged failed title draft", async () => {
 test("IssuePage renders the server's reason when a title save is refused, with no Retry", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
-  const refusal = "title is 1 characters over the 1000-character limit (1001/1000)";
+  const refusal = "title: 1001 of at most 1000";
   patchIssue.mockImplementationOnce(() =>
     Promise.reject(new ApiError(400, { code: "CAP_EXCEEDED", error: refusal }))
   );

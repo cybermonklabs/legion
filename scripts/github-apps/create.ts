@@ -110,7 +110,9 @@ for (const file of positionals) {
     manifest.name = `${values["name-prefix"]}${label}`;
   }
   if (manifest.name !== undefined && manifest.name.length > MAX_NAME_LENGTH) {
-    fail(`App name ${manifest.name} is longer than GitHub's ${MAX_NAME_LENGTH} characters`);
+    fail(
+      `App name ${manifest.name} is ${manifest.name.length} long, past GitHub's ${MAX_NAME_LENGTH}`
+    );
   }
   if ((manifest.default_events ?? []).length > 0 && manifest.hook_attributes === undefined) {
     const url = values["webhook-url"] ?? fail(`${file} subscribes to events: pass --webhook-url`);

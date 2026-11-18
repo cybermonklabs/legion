@@ -1232,13 +1232,13 @@ function checkNoStoredText(files: readonly string[], corpus: string): number {
   for (const hit of hits) {
     console.error(
       `${hit.path}: holds a paragraph of the stored text ${hit.id} (${hit.group}), ` +
-        `at character ${hit.offset} of the file's text`
+        `at position ${hit.offset} of the file's text`
     );
   }
   console.log(
     `--check-no-stored-text: ${files.length} file${files.length === 1 ? "" : "s"} against ` +
       `${index.size} stored paragraphs ` +
-      `of at least ${MIN_STORED_PARAGRAPH} characters, from ${corpus}: ` +
+      `of at least ${MIN_STORED_PARAGRAPH} UTF-16 code units, from ${corpus}: ` +
       `${hits.length === 0 ? "no stored text" : `${hits.length} hits`}`
   );
   return hits.length === 0 ? 0 : 1;

@@ -897,7 +897,7 @@ func TestAMessageWhoseDocumentIsNotOnTheIssueIsLeftToRunAgain(t *testing.T) {
 func TestAMessagePostDispatchRefusesIsFinishedAndItsArchitectTold(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"}, time.Now())
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED",
-		Message: "body block 2 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)"}
+		Message: "body block 2 (paragraph): 32001 of at most 32000"}
 	if !permanentRefusal(row, fmt.Errorf("post Dispatch message for LEGION-208: %w", refusal)) {
 		t.Fatal("a CAP_EXCEEDED post is retried, want it finished refused")
 	}
@@ -926,7 +926,7 @@ func TestAStatusWriteWhoseReasonDispatchRefusesStillSetsTheStatusAndTellsTheArch
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208",
 		record.OrdinaryStatusWrite("done", "in_progress", reason), now))
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED",
-		Message: "body block 1 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)"}
+		Message: "body block 1 (paragraph): 32001 of at most 32000"}
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "in_progress"}, postErr: refusal}
 	runner := &outbox{
 		dispatchProject: "LEGION", log: quietLogger(),
@@ -1013,7 +1013,7 @@ func TestAStatusWriteRetriesUntilTheStatusLandsAfterItsReasonIsRefused(t *testin
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208",
 		record.OrdinaryStatusWrite("done", "in_progress", reason), now))
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED",
-		Message: "body block 1 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)"}
+		Message: "body block 1 (paragraph): 32001 of at most 32000"}
 	outage := &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}
 	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "in_progress"}, postErr: refusal, statusErr: outage}
 	runner := &outbox{
@@ -1078,7 +1078,7 @@ func TestAStatusWriteWhoseAnswerWasLostStillTellsTheArchitectItsRefusedReason(t 
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208",
 		record.OrdinaryStatusWrite("done", "in_progress", reason), now))
 	refusal := &dispatch.Error{Status: http.StatusBadRequest, Code: "CAP_EXCEEDED",
-		Message: "body block 1 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)"}
+		Message: "body block 1 (paragraph): 32001 of at most 32000"}
 	lost := &dispatch.Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "Dispatch is down"}
 	// Dispatch takes the first run's status write (statusApplied) and answers the outage all the
 	// same, so the row retries against an issue that already reads done.

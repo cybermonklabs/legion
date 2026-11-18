@@ -328,11 +328,11 @@ function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/** `text` cut to `limit` characters, saying how long it was. The marker's own length is counted
- * against the limit, so the answer is never longer than the bound, whatever was cut. */
+/** `text` cut to `limit` UTF-16 units, saying how long it was. The marker's own length is
+ * counted against the limit, so the answer is never longer than the bound, whatever was cut. */
 export function boundedText(text: string, limit: number): string {
   if (text.length <= limit) return text;
-  const marker = `… (${text.length} characters in all)`;
+  const marker = `… (${text.length} long in all)`;
   if (marker.length >= limit) return text.slice(0, limit);
   return text.slice(0, limit - marker.length) + marker;
 }

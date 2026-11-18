@@ -383,7 +383,7 @@ describe("running a person's command", () => {
       expect(result.cut).toBe(true);
       expect(result.output).toHaveLength(SHELL_OUTPUT_MAX);
       expect(shellCommandReport("!printf 'a%.0s' $(seq 1 20000)", result)).toContain(
-        `The output was cut at ${SHELL_OUTPUT_MAX} characters.`
+        `The output was cut at ${SHELL_OUTPUT_MAX} UTF-16 code units.`
       );
     } finally {
       rmSync(directory, { recursive: true, force: true });
