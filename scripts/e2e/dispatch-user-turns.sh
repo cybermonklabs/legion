@@ -182,7 +182,9 @@ session_gone() {
   for p in /proc/[0-9]*; do [ "$(readlink "$p/cwd" 2>/dev/null)" != "$session_cwd" ] || return 1; done
 }
 human() { curl -fsS -H "X-Dispatch-User: $login" -H 'Content-Type: application/json' "$@"; }
-bearer() { curl -fsS -H "Authorization: Bearer $(cat "$work/dispatch-token")" -H 'Content-Type: application/json' "$@"; }
+# bearer sends the run's Dispatch token on curl's standard input, in no command line; its callers
+# give their bodies with -d.
+bearer() { printf 'Authorization: Bearer %s' "$(cat "$work/dispatch-token")" | curl -fsS -H @- -H 'Content-Type: application/json' "$@"; }
 listener() { curl -fsS -H "@$work/envoy-auth-header" -H 'Content-Type: application/json' "$@"; }
 page() { bun "$root/scripts/e2e/lib/dispatch-user-turns.ts" "$@"; }
 

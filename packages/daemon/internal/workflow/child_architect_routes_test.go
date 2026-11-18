@@ -80,10 +80,11 @@ func TestASettlementOfAChildTellsTheArchitectThatOwnsIt(t *testing.T) {
 	}
 }
 
-// A child whose repository Legion does not serve is not recorded, and the architect told why is the
-// one that owns its Dispatch parent: the notice is queued on that parent when the record holds it in
-// the tree, so a child released under a child of the root reaches that child's architect while it
-// holds its role, and a child released under the root reaches the root's.
+// A child whose repository Legion does not serve (acme/gadgets, whose review App is not installed)
+// is not recorded, and the architect told why is the one that owns its Dispatch parent: the notice
+// is queued on that parent when the record holds it in the tree, so a child released under a child
+// of the root reaches that child's architect while it holds its role, and a child released under
+// the root reaches the root's.
 func TestAChildNotRecordedIsToldOnItsRecordedParent(t *testing.T) {
 	for _, tc := range []struct {
 		name, parent string
@@ -98,7 +99,7 @@ func TestAChildNotRecordedIsToldOnItsRecordedParent(t *testing.T) {
 				Project: "LEGION", Title: "child", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "V"})
 			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 
-			apply("unserved-todo", intake.DispatchIssue{Key: "LEGION-210", Seq: 1, Type: "issue.updated", Status: "todo", Title: "unserved", Parent: tc.parent, Rank: "W", ResolvedRepo: "other/thing"})
+			apply("unserved-todo", intake.DispatchIssue{Key: "LEGION-210", Seq: 1, Type: "issue.updated", Status: "todo", Title: "unserved", Parent: tc.parent, Rank: "W", ResolvedRepo: "acme/gadgets"})
 			if got := issueRecord(t, pool, "LEGION-210"); got != nil {
 				t.Fatalf("LEGION-210 recorded as %#v, want none", got)
 			}
