@@ -507,7 +507,8 @@ export const DOCUMENT_CLIENT_ID_MESSAGE_PREFIX = "dispatch.client_id:";
  * document is closed with it before any room is made, and an update that would grow a document
  * already open is closed with it too, while an update that shrinks one still applies. It is in the
  * 4500-4599 band collaborative servers publish as transient, so the dashboard keeps the edit it
- * could not send and lets the provider's own backoff retry. Generated into Go as
+ * could not send and reconnects on its own backoff, the live socket's (`reconnectDelayMs`), which
+ * spreads a crowd of tabs and caps at 30 s, to retry it. Generated into Go as
  * `contracts.DocumentBusyCloseCode`.
  */
 export const DOCUMENT_BUSY_CLOSE_CODE = 4503;

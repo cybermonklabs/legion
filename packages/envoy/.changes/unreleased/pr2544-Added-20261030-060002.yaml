@@ -6,8 +6,8 @@ body: |-
     `memory.current`, so a pod near its memory limit can be told from one the runtime is holding
     comfortably inside it. The limit the boot sets bounds what the runtime has mapped less what it has
     released, so that difference, not `vmrss`, is the figure to compare with the container's: a kernel
-    can keep released pages counted resident, and gVisor does. Unset — every deployment — nothing is
-    sampled and no file is written.
+    can keep released pages counted resident, and gVisor does. Unset, nothing is sampled and no
+    file is written.
 time: 2026-10-30T06:00:02.000000000Z
 custom:
     Issue: pr2544
