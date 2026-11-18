@@ -625,7 +625,7 @@ func TestATodoOnAHeldRootReleasesTheHold(t *testing.T) {
 		// release below decides the round rather than the merge state.
 		apply("merge-state", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headOne,
 			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateClean})
-		apply("reviewer-completed", intake.HandoffComplete{Generation: 1, Issue: root, Role: claim.RoleReviewer, Claim: "review-claim",
+		apply("reviewer-completed", intake.HandoffComplete{Generation: 1, Issue: root, Role: claim.RoleReviewer, Claim: reviewClaim,
 			Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 		apply("reviewer-failed", intake.ClaimFailed{Issue: root, Role: claim.RoleReviewer})
 		apply("approved", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "approved", CommitID: headOne, Author: testReviewApp, Body: reviewBody("the review", headOne)})

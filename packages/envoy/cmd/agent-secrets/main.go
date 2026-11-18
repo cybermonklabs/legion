@@ -436,10 +436,12 @@ func flagGiven(flags *flag.FlagSet, name string) bool {
 }
 
 // reportError prints a command's failure as "<prefix>: <err>", except that a helper holding no
-// launcher credential is reported with the one line identity prints for it, whatever the command.
+// launcher credential is reported with the one line identity prints for it, whatever the command:
+// the helper's own answer, which says what cures it in the helper's mode.
 func reportError(stderr io.Writer, prefix string, err error) {
-	if errors.Is(err, errNoCredential) {
-		fmt.Fprintf(stderr, "agent-secrets: %v\n", errNoCredential)
+	var none *noCredentialError
+	if errors.As(err, &none) {
+		fmt.Fprintf(stderr, "agent-secrets: %s\n", none.sessionLine())
 		return
 	}
 	fmt.Fprintf(stderr, "%s: %v\n", prefix, err)
@@ -650,17 +652,12 @@ func writeVerbatim(w io.Writer, raw []byte) {
 	w.Write(raw)
 }
 
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // nextBackoff advances the backoff the poll loops of this package keep: two seconds, doubling
-// to a ten-second cap. The renewer's own step is leasetime.NextBackoff, which the broker's
-// lease bound walks it by; these polls are nobody's lease, and a change made to move that
-// floor is not a change to how often `agent-secrets request --wait` asks.
+// to a ten-second cap. `machine login` sleeps it between reads of its helper; the exec form's
+// wait sleeps it only after a read the broker did not hold (a broker from before ?wait=, or a
+// failed read). The renewer's own step is leasetime.NextBackoff, which the broker's lease bound
+// walks it by; these polls are nobody's lease, and a change made to move that floor is not a
+// change to how often either of them asks.
 func nextBackoff(cur time.Duration) time.Duration {
 	return min(2*cur, 10*time.Second)
 }
@@ -901,7 +898,7 @@ func cmdStatus(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx := context.Background()
 	c := newClient(base)
-	result, raw, err := c.GetRequest(ctx, signer, positional[0])
+	result, raw, err := c.GetRequest(ctx, signer, positional[0], 0)
 	if err != nil {
 		refuse(stderr, "agent-secrets status", c.source(ctx), err)
 		return 1
@@ -1136,15 +1133,24 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	if state == "pending" {
 		reportPending(stderr, requestID, result.Approver, result.ApproveURL, *wait, src())
 		deadline := time.Now().Add(*wait)
+		// backoff is the sleep before the next read after one that came back undecided before
+		// the wait it asked had run out. The broker holds a read until the request is decided or
+		// that wait passes, so a pending answer that comes sooner is from a broker before ?wait=,
+		// which answers every read at once; a failed read that comes back sooner gets the same
+		// sleep. Without it the loop would ask such a broker as fast as it answers.
 		backoff := 2 * time.Second
 		for state == "pending" {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
 				break
 			}
-			time.Sleep(minDuration(backoff, remaining))
-			backoff = nextBackoff(backoff)
-			status, _, err := c.GetRequest(ctx, signer, requestID)
+			// Each read asks the broker to hold it for what is left of --wait, in whole seconds
+			// rounded up so the last read covers the deadline, at most
+			// record.MaxRequestWaitSeconds: the broker answers within a step of a decision, so
+			// the command learns of it at once rather than at its next poll.
+			asked := min(record.MaxRequestWaitSeconds, int((remaining+time.Second-1)/time.Second))
+			sent := time.Now()
+			status, _, err := c.GetRequest(ctx, signer, requestID, asked)
 			switch {
 			case err == nil:
 				pollErr = nil
@@ -1158,6 +1164,10 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 			default:
 				refuse(stderr, "agent-secrets", src(), err)
 				return 1
+			}
+			if state == "pending" && time.Since(sent) < time.Duration(asked)*time.Second {
+				time.Sleep(min(backoff, time.Until(deadline)))
+				backoff = nextBackoff(backoff)
 			}
 		}
 	}

@@ -143,14 +143,14 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 	} else {
 		target, err = s.deps.Envoy.SessionIncludingStopped(ctx, route.ID)
 		if errors.Is(err, dispatchenvoy.ErrNotFound) {
-			return route.ID, "", "no live session " + route.ID
+			return route.ID, "", noLiveSessionPrefix + " " + route.ID
 		}
 	}
 	if err != nil {
 		return "", "", deliveryErrorText(err)
 	}
 	if target.State == dispatchenvoy.StateGone {
-		return target.SessionID, target.Title, "no live session " + target.SessionID
+		return target.SessionID, target.Title, noLiveSessionPrefix + " " + target.SessionID
 	}
 	if !advertisesDelivery(target, delivery) {
 		return target.SessionID, target.Title,
@@ -192,6 +192,14 @@ const listenerNotConfiguredText = "envoy listener: ENVOY_URL is not configured"
 // answered (dispatchenvoy.ErrUnreachable): a connection refused, reset or timed out, a 502, 503 or
 // 504.
 const listenerUnreachablePrefix = "envoy listener: "
+
+// noLiveSessionPrefix begins the failure a delivery records when the listener holds no live
+// session under the id it names, which follows it after a space: resolveDeliveryTarget writes it
+// for no entry and no record and for a record the registry calls gone, and the listener's send
+// words its own 404 the same way (cmd/listener/api.go). sendResolvedDelivery records it bare for
+// a target that names no session. retryableDeliveryFailure, a mention's session pin
+// (resolveMentionTarget) and Dispatch's own queueing (mayQueueForUnknownSession) read it.
+const noLiveSessionPrefix = "no live session"
 
 // listenerAnsweredPrefix begins the failure deliveryErrorText records for every other
 // dispatchenvoy.ErrUnavailable: a status the listener chose, such as the 401 it gives a token it
@@ -249,7 +257,7 @@ func retryableDeliveryFailure(failure string) bool {
 		return false
 	case failure == receiptTimeoutText,
 		strings.HasPrefix(failure, listenerUnreachablePrefix),
-		strings.HasPrefix(failure, "no live session"):
+		strings.HasPrefix(failure, noLiveSessionPrefix):
 		return true
 	}
 	return false

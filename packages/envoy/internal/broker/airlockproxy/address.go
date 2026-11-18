@@ -17,6 +17,8 @@ import (
 	"net"
 	"net/netip"
 	"slices"
+
+	"github.com/sjawhar/envoy/internal/broker/netaddr"
 )
 
 // clusterRange is 100.64.0.0/10, the shared address space of RFC 6598. Kubernetes clusters and
@@ -31,14 +33,14 @@ var clusterRange = netip.MustParsePrefix("100.64.0.0/10")
 // host, and a second copy of it would be a second rule about where a name is.
 func ResolveHost(ctx context.Context, host string) ([]netip.Addr, error) {
 	if addr, err := netip.ParseAddr(host); err == nil {
-		return []netip.Addr{addr.Unmap()}, nil
+		return []netip.Addr{netaddr.Canonical(addr)}, nil
 	}
 	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil {
 		return nil, err
 	}
 	for i, addr := range addrs {
-		addrs[i] = addr.Unmap()
+		addrs[i] = netaddr.Canonical(addr)
 	}
 	return addrs, nil
 }
@@ -66,11 +68,19 @@ func (s *Server) checkedAddresses(ctx context.Context, host, port string) ([]net
 	if len(addrs) == 0 {
 		return nil, fmt.Errorf("%s resolves to no address", host)
 	}
+	// Every answer as every check below reads it and as the dial opens it (netaddr.Canonical):
+	// a resolver of a caller's own - Options.Resolve - may answer a zoned or mapped address, and
+	// a zoned address is inside no range at all. A copy, since the resolver may hold its slice.
+	canonical := make([]netip.Addr, len(addrs))
+	for i, addr := range addrs {
+		canonical[i] = netaddr.Canonical(addr)
+	}
+	addrs = canonical
 	if slices.Contains(s.dialAllow, net.JoinHostPort(host, port)) {
 		return addrs, nil
 	}
 	for _, addr := range addrs {
-		if rule := localRule(addr); rule != "" {
+		if rule := localRule(addr, s.clusterRanges); rule != "" {
 			return nil, fmt.Errorf("%s resolves to %s, %s, which this proxy never dials", host, addr, rule)
 		}
 	}
@@ -119,10 +129,15 @@ func (s *Server) dialAddrs(ctx context.Context, network string, addrs []netip.Ad
 // answer names the rule and the address family, because an operator reading a refusal has to
 // know which of a name's addresses it was about: a name with one public IPv4 address and one
 // link-local IPv6 address is refused, and the line says which half did it.
-func localRule(addr netip.Addr) string {
+//
+// clusterRanges are the broker cluster's own ranges (Options.ClusterRanges), read after the
+// fixed rules: a Service range such as 34.118.224.0/20 is global unicast, so it is the one rule
+// that stands between a tunnel and a ClusterIP of the cluster the broker runs in, and an address
+// a fixed rule already refuses keeps that rule's more particular name.
+func localRule(addr netip.Addr, clusterRanges []netip.Prefix) string {
 	// A 4-in-6 address is the IPv4 address it holds, for every predicate below and for the
 	// family each answer names.
-	addr = addr.Unmap()
+	addr = netaddr.Canonical(addr)
 	family := "IPv6"
 	if addr.Is4() {
 		family = "IPv4"
@@ -147,6 +162,11 @@ func localRule(addr netip.Addr) string {
 		// Everything left that is not a host on the public internet: the unspecified address,
 		// multicast, the IPv4 broadcast address, and the interface-local scopes.
 		return "not a global unicast " + family + " address"
+	}
+	for _, own := range clusterRanges {
+		if own.Contains(addr) {
+			return "an " + family + " address inside BROKER_AIRLOCK_CLUSTER_RANGES, the broker cluster's own addresses"
+		}
 	}
 	return ""
 }

@@ -64,7 +64,7 @@ func recordTime(t *testing.T, rec map[string]any) time.Time {
 	return at
 }
 
-const expiredMsg = dropExpired + "; cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)"
+const expiredMsg = dropExpired + "; cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it"
 
 // expiryTimers stands in for watchExpiry's timers (Broker.testAfter): each timer a watch starts
 // is recorded with how long it was asked to wait, and fires only when the test fires it.
@@ -244,7 +244,7 @@ func TestATokenAnswerWithoutTheCredentialIsNotKept(t *testing.T) {
 	if _, err := b.Login(context.Background(), "example-host-devbox"); err != nil {
 		t.Fatal(err)
 	}
-	line := waitForRecord(t, &out, "machine login approved, but the helper could not keep it; run: agent-secrets machine login again")
+	line := waitForRecord(t, &out, "machine login approved, but the helper could not keep it; run: agent-secrets machine login, and have a human approve it")
 	if line["level"] != "ERROR" {
 		t.Fatalf("the line: %v; want an ERROR", line)
 	}

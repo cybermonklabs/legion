@@ -141,7 +141,7 @@ func (d *DeviceFlow) Refresh(ctx context.Context, refreshToken string) (*SignIn,
 	if err != nil {
 		var refused *oauth2.RetrieveError
 		if errors.As(err, &refused) && refused.ErrorCode == "invalid_grant" {
-			return nil, fmt.Errorf("%s %w; run: %s", d.Issuer, ErrSignInEnded, SignInCommand)
+			return nil, WithHint(fmt.Errorf("%s %w", d.Issuer, ErrSignInEnded), FailureSignInRefused)
 		}
 		return nil, fmt.Errorf("renew the sign-in at %s: %w", d.Issuer, err)
 	}
