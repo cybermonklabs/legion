@@ -644,9 +644,17 @@ Push directly.
 
 Each item below names a task and where its code is, then notes on it.
 
-- Add CLI command — `packages/daemon/cmd/legion/main.go`
+- Add CLI command — `packages/daemon/cmd/legion/cli.go`
 
-  one `command` per subcommand
+  A command is a cobra command that `newRoot` registers.
+  Three tests hold the command tree:
+
+  - `TestLegionTreeGolden` (`tree_test.go`) compares the tree with `testdata/tree.golden`, which `go test -run TestLegionTreeGolden -update` rewrites.
+
+  - `TestConformanceCaseIsTheTree` (`cli_test.go`) fails for a command that `legionCommands` does not name, or `legionHidden` for a hidden command.
+
+  - `TestInvocationTable` (`invocations_test.go`) runs each row of `testdata/invocations.tsv`, one row for each call of `legion` outside the tests.
+    A change that adds such a call adds its row.
 
 - Change Legion API — `packages/daemon/internal/api/`
 
