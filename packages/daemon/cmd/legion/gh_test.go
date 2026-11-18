@@ -1248,6 +1248,19 @@ func TestWithGitHubUseHTTPPathAddsToGitsConfiguration(t *testing.T) {
 // the tick after the release is that test's margin, so a signal sent before the release is
 // taken while the run is still held. A test that names neither variable holds nowhere.
 func ghStandInPrefix(help string) string {
+	return ghStandInHelp(help) +
+		"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n" +
+		"  printf 'visibility %s\\n' \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
+		"  echo public\n" +
+		"  exit 0\n" +
+		"fi\n"
+}
+
+// ghStandInHelp is the start of every stand-in gh of this package: a shell script that answers
+// `[<command>] --help` with the saved help of that command, gh's own for none, holding where
+// GH_STANDIN_HOLD names the command path (ghStandInPrefix says how), and falls through to what
+// the caller appends for every other run.
+func ghStandInHelp(help string) string {
 	return "#!/bin/sh\nfor last; do :; done\n" +
 		"if [ \"$last\" = --help ]; then\n" +
 		"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
@@ -1257,12 +1270,7 @@ func ghStandInPrefix(help string) string {
 		"    while [ ! -f \"$GH_STANDIN_RELEASE\" ] && [ \"$ticks\" -lt 200 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
 		"    sleep 0.05\n" +
 		"  fi\n" +
-		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
-		"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n" +
-		"  printf 'visibility %s\\n' \"$*\" >>\"${GH_STANDIN_RECORD:-/dev/null}\"\n" +
-		"  echo public\n" +
-		"  exit 0\n" +
-		"fi\n"
+		"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n"
 }
 
 // ghRefusal is what the stand-in checks of this package print when they refuse a `legion gh`

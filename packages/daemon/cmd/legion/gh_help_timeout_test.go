@@ -131,9 +131,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 			// the one the guard's read goes back through, and holds the read itself.
 			name: "the guard's visibility read", seconds: "295", check: passes,
 			gh: func(pidFile, seconds string) string {
-				return "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n" +
-					"  path=$(printf '%s ' \"$@\" | sed -e 's/--help $//' -e 's/ $//' -e 's/ /_/g')\n" +
-					"  exec cat '" + help + "'/\"${path:-gh}\".txt\nfi\n" +
+				return ghStandInHelp(help) +
 					"if [ -n \"$" + leakguard.VisibilityReadVar + "\" ]; then\n" + holds(pidFile, seconds) + "fi\nexit 0\n"
 			},
 		},
