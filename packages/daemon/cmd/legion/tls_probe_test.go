@@ -543,6 +543,101 @@ func TestImageTLSClientsKeepEveryVariableTheImageDeclares(t *testing.T) {
 	}
 }
 
+// Every client keeps each trust and verification setting of the pod's, with the pod's value, so the
+// probe holds the image's clients to the trust the roles in the pod get. No client sets one itself,
+// so each reaches every client at every site unchanged.
+func TestImageTLSClientsKeepEveryTrustSettingOfThePods(t *testing.T) {
+	pod := map[string]string{}
+	env := []string{"HOME=/home/legion", "PATH=/usr/bin:/bin"}
+	for index, name := range tlsTrustVariables {
+		pod[name] = fmt.Sprintf("legion-tls-probe-trust-%d", index)
+		env = append(env, name+"="+pod[name])
+	}
+
+	for _, client := range imageTLSCommandLines(t, env, t.TempDir()) {
+		for _, site := range tlsSites {
+			_, _, environment := client.commandLine(site)
+			for name, want := range pod {
+				if got := envValue(environment, name); got != want {
+					t.Errorf("%s at %s has %s=%q, want the pod's %q", client.name(), site.name, name, got, want)
+				}
+			}
+		}
+	}
+}
+
+// A trust setting of the pod's that makes the roles' clients accept the emSign chain fails the
+// probe: NODE_TLS_REJECT_UNAUTHORIZED=0 for the clients that read it, and SSL_CERT_FILE naming a
+// file that holds the emSign root for those on every image that read OpenSSL's or Go's store. Each
+// client runs a stand-in in place of its program and arguments, under the environment its
+// commandLine computes from the pod's and its own command's: the stand-in reaches the control, and
+// at a compromised site it accepts where that environment carries the setting and refuses for a
+// certificate error otherwise. Without the setting the same clients pass, so the test is not
+// blind: a probe that dropped the setting would pass a pod that sets it.
+func TestImageTLSProbeFailsAPodTrustSettingThatAcceptsTheEmSignChain(t *testing.T) {
+	// The image copies packages/daemon/docker/tls-roots to /usr/share/legion/tls-roots, which a
+	// test host may lack, so the root emSignTLSSite.root names is read from the repository's copy.
+	root, err := os.ReadFile(filepath.Join("..", "..", "docker", "tls-roots", filepath.Base(emSignTLSSite.root)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle := filepath.Join(t.TempDir(), "bundle-with-emsign.pem")
+	if err := os.WriteFile(bundle, root, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pod := []string{"HOME=/home/legion", "PATH=/usr/bin:/bin"}
+	for _, testCase := range []struct {
+		name, setting, accepts string
+		clients                []string
+	}{
+		{
+			name:    "NODE_TLS_REJECT_UNAUTHORIZED=0",
+			setting: "NODE_TLS_REJECT_UNAUTHORIZED=0",
+			accepts: `[ "${NODE_TLS_REJECT_UNAUTHORIZED-}" = 0 ]`,
+			clients: []string{"node", "bun", "omp", "codegraph-node"},
+		},
+		{
+			name:    "SSL_CERT_FILE naming the emSign root",
+			setting: "SSL_CERT_FILE=" + bundle,
+			accepts: `[ -f "${SSL_CERT_FILE-}" ] && case "$(cat "$SSL_CERT_FILE")" in *"$2"*) true ;; *) false ;; esac`,
+			clients: []string{"curl", "python3", "gh", "go", "kubectl", "redis-cli"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			script := `if [ "$1" = control ] || { ` + testCase.accepts + `; }; then exit 0; fi; echo certificate verify failed >&2; exit 1`
+			image := imageTLSClientsOf[tlsCommandClient](t, t.TempDir(), t.TempDir(), testCase.clients...)
+			standIns := func(env []string) []tlsClient {
+				clients := make([]tlsClient, 0, len(testCase.clients))
+				for _, name := range testCase.clients {
+					client := image[name]
+					client.env = env
+					command := client.command
+					client.command = func(site tlsSite) (string, []string, []string) {
+						_, _, set := command(site)
+						kind := "compromised"
+						if site.control {
+							kind = "control"
+						}
+						return "sh", []string{"-c", script, "sh", kind, strings.TrimSpace(string(root))}, set
+					}
+					clients = append(clients, client)
+				}
+				return clients
+			}
+
+			_, err := probeTLSClients(context.Background(), standIns(append(slices.Clone(pod), testCase.setting)))
+			for _, name := range testCase.clients {
+				if want := name + " accepts the emSign chain"; err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("probeTLSClients() under a pod env with %s = %v, want an error containing %q", testCase.setting, err, want)
+				}
+			}
+			if _, err := probeTLSClients(context.Background(), standIns(pod)); err != nil {
+				t.Errorf("probeTLSClients() under a pod env without %s = %v, want success", testCase.setting, err)
+			}
+		})
+	}
+}
+
 // Four more variables name a file or a token a probed client sends to the site it reaches, and the
 // pod's value of each must not reach a client. Measured on 2026-11-18 on the pull request's image
 // (sha256:8f30d2f0…, with the legion of 1af3e416) against a local listener, each client run with

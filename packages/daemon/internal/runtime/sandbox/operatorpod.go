@@ -32,8 +32,9 @@ import (
 // (launchers.serveLeakCheck); it is the image's pin and no deployment's to move;
 // PATH, which the runtime sets as well; and USER, the runtime user's name, legion, which the
 // skill-scenario rig's scripts read. TestImageEnvIsWhatTheWorkerImageSets holds the list to
-// the Dockerfile. `legion probe-image`'s TLS probe runs each client with no other variable of its
-// environment (tlsKeptVariables, cmd/legion/tls_probe.go).
+// the Dockerfile. `legion probe-image`'s TLS probe passes each client no variable of its
+// environment but these and the pod's trust settings (tlsKeptVariables and tlsTrustVariables,
+// cmd/legion/tls_probe.go).
 var ImageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH", "USER"}
 
 // setter is who sets a variable a worker's Oh My Pi starts with, and whether the operator's pod

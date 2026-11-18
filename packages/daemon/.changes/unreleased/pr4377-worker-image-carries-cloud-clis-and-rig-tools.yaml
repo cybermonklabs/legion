@@ -11,12 +11,14 @@ body: |-
     `gcloud`, `bq`, `az`, `mise` and `socat` to the compromised emSign and AAA chains where each is
     on `PATH`, and reports it `absent` where it is not. It also holds GNU `wget`, `git`, `go`,
     `kubectl` and `redis-cli` to the chains on every image. Of the pod's variables, every probed
-    client keeps only those the image declares, `PATH` among them, and it runs with a home of its
-    own in the probe's state directory, so no credential variable or file of the pod's reaches a
-    test site. Because the image sets `USER`, `runtime.kubernetes.pod.env` may no longer set it:
-    `legion start`, `--check-config` and the daemon's boot refuse a configuration that does,
-    whatever digest it pins. The daemon's image probe pod now reserves 500m CPU (was 250m), because
-    the image's longer TLS probe needs it.
+    client keeps only those the image declares, `PATH` among them, and the pod's trust and
+    verification settings, such as `SSL_CERT_FILE` and `NODE_TLS_REJECT_UNAUTHORIZED`, so a pod env
+    that sets one to make the roles accept a compromised chain fails the probe; it runs with a home
+    of its own in the probe's state directory, and no trust setting holds a credential, so no
+    credential variable or file of the pod's reaches a test site. Because the image sets `USER`,
+    `runtime.kubernetes.pod.env` may no longer set it: `legion start`, `--check-config` and the
+    daemon's boot refuse a configuration that does, whatever digest it pins. The daemon's image
+    probe pod now reserves 500m CPU (was 250m), because the image's longer TLS probe needs it.
 time: 2026-11-18T03:35:00Z
 custom:
     Issue: pr4377

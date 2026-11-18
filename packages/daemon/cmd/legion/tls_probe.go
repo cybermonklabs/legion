@@ -280,19 +280,76 @@ func chromiumNavigationFailure(stderr string) string {
 // a credential to the server it reached (TestImageTLSClientsReadNoSystemConfigurationOfThePods).
 // Any client may read a variable nobody has found yet; a list of what to keep names all a client gets.
 //
-// What a client keeps is the variables the worker image declares, PATH among them:
-// sandbox.ImageEnv, which TestImageEnvIsWhatTheWorkerImageSets holds to the final stage's ENV in
-// worker.Dockerfile. So the probe tests the trust store the image itself sets: AWS_CA_BUNDLE
-// points the AWS CLI at Debian's bundle, and gcloud's and az's CA settings are no variable at all
-// but the SDK's installation properties and az's wrapper. On top of those, each client runs with
-// the probe's own values: a HOME of its own in the state directory, which replaces the image's
-// (tlsClientSpec.build), the settings its command gives, and LEGION_TLS_URL naming the site. So no
-// credential variable of the pod's reaches a client, and no credential file one names or the pod's
-// home holds.
+// Every client keeps one list of two parts. The first is the variables the worker image declares,
+// PATH among them: sandbox.ImageEnv, which TestImageEnvIsWhatTheWorkerImageSets holds to the final
+// stage's ENV in worker.Dockerfile. So the probe tests the trust store the image itself sets:
+// AWS_CA_BUNDLE points the AWS CLI at Debian's bundle, and gcloud's and az's CA settings are no
+// variable at all but the SDK's installation properties and az's wrapper. The second is the pod's
+// trust and verification settings, tlsTrustVariables, which says which client reads which. They
+// are kept because the probe tests the trust the roles in the pod get: the probe pod runs under
+// the operator's pod env (probeManifest, internal/runtime/sandbox/probe.go), which every role
+// inherits too, so a pod env that sets NODE_TLS_REJECT_UNAUTHORIZED=0, or points SSL_CERT_FILE at
+// a bundle holding the emSign root, makes a role's node, or its curl, accept that chain, and must
+// fail the probe. A trust setting holds a path, a flag, a list of host patterns or GODEBUG's
+// settings, and no credential, so keeping one carries no credential to a site, and a setting the
+// list does not name costs the probe its coverage, never a credential.
+//
+// Left out is every variable that names a file a client reads headers, logins or keys from,
+// or, as GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT do, carries such settings itself, since each
+// can carry a credential: WGETRC and SYSTEM_WGETRC, GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM,
+// GIT_CONFIG_PARAMETERS and GIT_CONFIG_COUNT, CURL_HOME, KUBECONFIG, BIGQUERYRC, CLOUDSDK_CONFIG,
+// AWS_CONFIG_FILE, NETRC, MISE_NETRC_FILE and UV_CONFIG_FILE; and so are git's client certificate
+// and key, GIT_SSL_CERT and GIT_SSL_KEY. A trust setting the pod carries only through one of those,
+// as a wgetrc's check_certificate or a kubeconfig's insecure-skip-tls-verify, is not tested.
+//
+// On top of the kept variables, each client runs with the probe's own values: a HOME of its own
+// in the state directory, which replaces the image's (tlsClientSpec.build), the settings its
+// command gives, and LEGION_TLS_URL naming the site. So no credential variable of the pod's
+// reaches a client, and no credential file one names or the pod's home holds.
 //
 // A proxy variable of the pod's reaches no client either. That changes no verdict: Chromium already
 // fails every load behind a proxy, so the probe cannot pass behind one (chromiumTLSArgs says why).
-var tlsKeptVariables = sandbox.ImageEnv
+var tlsKeptVariables = slices.Concat(sandbox.ImageEnv, tlsTrustVariables)
+
+// tlsTrustVariables are the pod's trust and verification settings every client keeps
+// (tlsKeptVariables), each with the clients that read it. Each measurement below was made on
+// 2026-11-18 in an INFRA issue pod against the emSign site, where "accepted" means the variable
+// alone made the client accept the compromised chain. Not here, because no probed client reads it:
+// PYTHONHTTPSVERIFY, which at 0 changed nothing for the image's python3, and PIP_CERT, for a pip
+// the image does not put on PATH.
+var tlsTrustVariables = []string{
+	// OpenSSL's store and Go's: with SSL_CERT_FILE naming Debian's bundle plus the emSign root,
+	// curl, python3, gh, kubectl, redis-cli ("Error: Server closed the connection") and socat
+	// accepted, and curl did with SSL_CERT_DIR naming a hashed directory holding that root. go
+	// reads both as gh does (crypto/x509), uv in its system-certs mode, and mise
+	// (rustls-native-certs); wget and git (GnuTLS) read neither, nor do node and bun by default.
+	"SSL_CERT_FILE", "SSL_CERT_DIR",
+	// curl: accepted.
+	"CURL_CA_BUNDLE",
+	// node, bun, omp and CodeGraph's node: 0 made node and bun accept.
+	"NODE_TLS_REJECT_UNAUTHORIZED",
+	// node's and bun's store: an extra CA, or the system's. An extra CA of the emSign root made
+	// neither accept, since both answered "certificate revoked"; they are kept because they choose
+	// the store. NODE_OPTIONS stays out, although its --use-openssl-ca and --use-system-ca flags
+	// choose the store too: it also takes --require and --import, which run a script of the pod's
+	// inside the client, so it holds more than a trust setting may (tlsKeptVariables).
+	"NODE_EXTRA_CA_CERTS", "NODE_USE_SYSTEM_CA",
+	// git: GIT_SSL_CAINFO naming the bundle with the emSign root made it accept.
+	"GIT_SSL_NO_VERIFY", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH",
+	// go: GOINSECURE=* made it fetch the emSign page. GODEBUG's x509 and tls settings reach every
+	// Go client: gh, go and kubectl.
+	"GOINSECURE", "GODEBUG",
+	// uv: UV_INSECURE_HOST naming the emSign host made it accept; UV_SYSTEM_CERTS and UV_NATIVE_TLS
+	// choose its store (uv 0.13.5 warns that UV_NATIVE_TLS is deprecated for UV_SYSTEM_CERTS).
+	"UV_INSECURE_HOST", "UV_SYSTEM_CERTS", "UV_NATIVE_TLS",
+	// the AWS CLI: accepted with the bundle. sandbox.ImageEnv holds it too, since the image sets it.
+	"AWS_CA_BUNDLE",
+	// az, whose wrapper sets REQUESTS_CA_BUNDLE to Debian's bundle only where it is unset.
+	"REQUESTS_CA_BUNDLE", "AZURE_CLI_DISABLE_CONNECTION_VERIFICATION",
+	// gcloud and bq: the first, naming Debian's bundle, made the stock SDK, which trusts the roots it
+	// bundles, refuse the emSign chain.
+	"CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE", "CLOUDSDK_AUTH_DISABLE_SSL_VALIDATION",
+}
 
 // tlsEnvironment is the entries of base whose name keep holds and set gives no value, followed by
 // set, where a later entry of set replaces an earlier one of its name (so a client's own HOME
@@ -491,7 +548,8 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 // PATH opens no TLS connection itself, and a Python script opens one only through python3's ssl
 // module: OpenSSL with OpenSSL's default store.
 //
-// The pairs, the clients probed for each, and the programs named under them:
+// The pairs, the clients probed for each, the programs named under them, and the trust settings of
+// tlsTrustVariables the pair's clients read:
 //
 //   - OpenSSL (libssl.so.3) with OpenSSL's default store, /usr/lib/ssl/cert.pem, which is Debian's
 //     bundle: curl, python3 and redis-cli on every image, and socat where it is on PATH. Named
@@ -499,21 +557,31 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 //     pg_restore, pg_basebackup, pg_isready, pg_receivewal, pg_recvlogical, pgbench, createdb,
 //     createuser, dropdb, dropuser, clusterdb, reindexdb, vacuumdb and vacuumlo), which verify
 //     against that store only where a role names sslrootcert=system (psql, below); and every
-//     Python script on PATH.
+//     Python script on PATH. Its clients read SSL_CERT_FILE and SSL_CERT_DIR, and curl
+//     CURL_CA_BUNDLE too.
 //   - GnuTLS with Debian's bundle, /etc/ssl/certs/ca-certificates.crt: wget, and git, whose https
-//     transport, git-remote-https, links libcurl's GnuTLS build (curl itself links OpenSSL).
+//     transport, git-remote-https, links libcurl's GnuTLS build (curl itself links OpenSSL). git
+//     reads GIT_SSL_NO_VERIFY, GIT_SSL_CAINFO and GIT_SSL_CAPATH; wget reads no trust variable,
+//     only a wgetrc's settings, and tlsKeptVariables leaves the wgetrc variables out.
 //   - Go's crypto/tls with the system roots crypto/x509 reads: gh, go and kubectl. Named under
 //     them: legion, agent-secrets and gopls. yq and gofmt are Go programs that do not link
-//     crypto/tls.
+//     crypto/tls. Each reads SSL_CERT_FILE, SSL_CERT_DIR and GODEBUG, and go GOINSECURE too.
 //   - A stack or a CA bundle of the program's own, so each of these is probed itself: node, and
 //     the CodeGraph runtime (/opt/codegraph/node, a link to the same Node), with Node's bundled
-//     stack and roots, the pair a `#!/usr/bin/env node` script uses too; bun, and omp, which is a
-//     Bun program, with BoringSSL and Bun's roots; uv and mise, which link rustls; the AWS CLI,
-//     whose Python and OpenSSL are its own and which verifies against Debian's bundle, not
-//     botocore's own (awscli/botocore/cacert.pem in its dist tree), because the image sets
-//     AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt; gcloud and bq, which bundle their own
-//     Python and are pointed at Debian's bundle; az, whose Python is its own and whose wrapper
-//     points requests at Debian's bundle; and Chromium, with NSS and its own root store.
+//     stack and roots, the pair a `#!/usr/bin/env node` script uses too, both reading
+//     NODE_TLS_REJECT_UNAUTHORIZED, NODE_EXTRA_CA_CERTS and NODE_USE_SYSTEM_CA; bun, and omp, which
+//     is a Bun program, with BoringSSL and Bun's roots, bun reading the same three and omp
+//     NODE_TLS_REJECT_UNAUTHORIZED; uv and mise, which link rustls, uv reading
+//     UV_INSECURE_HOST, UV_SYSTEM_CERTS and UV_NATIVE_TLS, and in its system-certs mode
+//     SSL_CERT_FILE and SSL_CERT_DIR, which mise reads too; the AWS CLI, whose Python and OpenSSL
+//     are its own and which verifies against Debian's bundle, not botocore's own
+//     (awscli/botocore/cacert.pem in its dist tree), because the image sets
+//     AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt, the setting it reads; gcloud and
+//     bq, which bundle their own Python and are pointed at Debian's bundle, reading
+//     CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE and CLOUDSDK_AUTH_DISABLE_SSL_VALIDATION; az, whose Python
+//     is its own and whose wrapper points requests at Debian's bundle, reading REQUESTS_CA_BUNDLE
+//     and AZURE_CLI_DISABLE_CONNECTION_VERIFICATION; and Chromium, with NSS and its own root store,
+//     which reads none of them.
 //
 // The census reads a script as its `#!` interpreter, which hides the client a shell wrapper runs.
 // Each of these runs a probed client and uses that client's pair: the gh and git wrappers in
@@ -545,9 +613,10 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 // default store.
 //
 // No client carries a credential of the pod's to a site: of the pod's variables, each keeps only
-// those the image declares (tlsKeptVariables, which says why it is a list of what to keep), and it
-// runs with a HOME of its own in the state directory, so neither a credential variable of the pod's
-// nor a credential file of the pod's home reaches it.
+// those the image declares and every trust setting named beside the pairs above (tlsKeptVariables,
+// which says why it is a list of what to keep and why a trust setting carries no credential), and
+// it runs with a HOME of its own in the state directory, so neither a credential variable of the
+// pod's nor a credential file of the pod's home reaches it.
 //
 // Deliberately not here, each with what was measured:
 //
