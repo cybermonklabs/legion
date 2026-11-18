@@ -438,6 +438,9 @@ stored_value() { jq -r --arg n "$1" '.secrets[] | select(.name == $n) | .value' 
 header_of() { records "$1" | jq -r --argjson i "$2" --arg h "$3" '.[$i].header[$h][0] // ""'; }
 record_field() { records "$1" | jq -r --argjson i "$2" --arg f "$3" '.[$i][$f] // ""'; }
 
+# github_revokes is how many revokes of an installation token GitHub's stand-in has received.
+github_revokes() { records github | jq '[(. // [])[] | select(.method == "DELETE" and .path == "/installation/token")] | length'; }
+
 psql_stack() { psql "$STACK_DB_URL" -Atq -v ON_ERROR_STOP=1 "$@"; }
 
 ###############################################################################################
@@ -490,6 +493,9 @@ EOF
 	# The broker's own answer to the CLI for this name, read with a release of its own. The
 	# answer is cleared first: `release` leaves RELEASE_JSON as it was when the request fails,
 	# which would search the previous case's answer and call its size this case's coverage.
+	# GitHub's revokes are counted first too, so check_k1 can wait on the one this release gives
+	# back.
+	K1_GITHUB_REVOKES="$(github_revokes)"
 	RELEASE_JSON=""
 	release "$name" 10m >/dev/null 2>&1 || true
 	K1_ANSWER_BYTES="${#RELEASE_JSON}"
@@ -527,14 +533,16 @@ check_k1() {
 	expect "each command exits 0"
 	expect "neither value is found in S's record aside: not in the broker's answer to the CLI, not in /proc/<pid>/environ, not in a scan of the command's readable memory, and not in any file under its working directory"
 	expect "the negative control, the same runs with the secret's entry removed, finds both in env.txt and in the command's environment"
+	expect "the session's own release of the github-app secret gives back to GitHub the token it minted for the slots, and the token the proxy sent S is still live at GitHub afterwards"
 
 	start_stack
 	stack_facts
 
 	local demo_value github_token
 	demo_value="$(stored_value "${STACK_SECRETS_PREFIX}airlock-demo-token")"
-	# The stand-in GitHub App mints ghs_standin_<owner> for each installation it is configured
-	# with, and the stack configures acme-org (dev-airlock.sh's GITHUB_OWNER).
+	# The stand-in GitHub App mints ghs_standin_<owner>_<n>, a token of its own for every request
+	# as GitHub mints one, and the stack configures acme-org (dev-airlock.sh's GITHUB_OWNER), so
+	# every token it mints for this run begins with this string.
 	github_token="ghs_standin_acme-org"
 
 	k1_case AIRLOCK_DEMO_TOKEN stored "$demo_value" true
@@ -550,6 +558,28 @@ check_k1() {
 		"S gets the minted installation token in the Authorization header" \
 		"the header is $(shape "$K1_HEADER") and the minted token is $(shape "$github_token"), compared by SHA-256 and length"
 	k1_judge_places "the minted token"
+	# The session's own release of the name, which k1_case's last step made, minted a token only
+	# to learn the slots it hands placeholders for, and gives it back to GitHub in the background.
+	# The token the proxy sent S stays live: a give-back that ended it, as a stand-in that answers
+	# one string for every request would make it, would end the token the proxy holds for the
+	# grant the session is still running.
+	local proxy_token revokes_before revokes_after proxy_status
+	# The rule names no kind and k1 asks for no --github-token, so the proxy sent S the whole
+	# released value, the JSON object of installations; the token is its one installation's.
+	proxy_token="$(printf '%s' "${K1_HEADER#Bearer }" | jq -Rr '(fromjson? | .installations[]?.token) // empty' | head -n 1)"
+	revokes_before="$K1_GITHUB_REVOKES"
+	revokes_after="$revokes_before"
+	for _ in $(seq 30); do
+		revokes_after="$(github_revokes)"
+		[ "$revokes_after" -gt "$revokes_before" ] && break
+		sleep 0.5
+	done
+	# The token reaches curl on standard input, in no command line.
+	proxy_status="$(printf 'Authorization: Bearer %s' "$proxy_token" | curl -sS -o /dev/null -w '%{http_code}' -H @- "$AIRLOCK_GITHUB_URL/repos/acme-org/k1")"
+	observe "github: GitHub got $((revokes_after - revokes_before)) revoke(s) after the session's own release, and a read at GitHub with the token the proxy sent S, $(shape "$proxy_token"), answered $proxy_status"
+	judge "$([ -n "$proxy_token" ] && [ "$revokes_after" -gt "$revokes_before" ] && [ "$proxy_status" != 401 ] && echo 0 || echo 1)" \
+		"the session's release gives back the token it minted for the slots, and the token the proxy sent S is still live at GitHub" \
+		"$((revokes_after - revokes_before)) revoke(s) after the session's release; the proxy's token, $(shape "$proxy_token") (empty is a header no token was read from), answered $proxy_status, where 401 is a token GitHub no longer knows"
 
 	# The negative control: the same two runs for names the rules file does not hold. The stack
 	# takes its shape from its own rules file, so the control adds the two secrets to the

@@ -69,15 +69,18 @@ func (a Address) Clean() bool { return redact.Clean(a.Raw()) }
 const WordsNotPrinted = "(not printed: the broker's address is not clean)"
 
 // Words is text that whoever answered a request built from Raw wrote - a refusal's words, its
-// code, the answer id it names, a value it quotes - as a message may print it: text itself beside
-// a clean address, and WordsNotPrinted beside any other. Whoever answers at an address that is not
-// clean, the broker or anyone who can answer for it, can repeat the credential the address
-// carries in any text of its answer, so a message made from such an answer prints its status and
-// WordsNotPrinted, and no other part of it. A caller that tells answers apart by their text reads
-// that text as it came, never what Words answers, and prints it nowhere.
+// code, the answer id it names, a value it quotes - as a message may print it: beside a clean
+// address the text on one line (redact.OneLine), as it came where it holds no control character
+// and Go-quoted where it holds one, so a line break or an escape sequence in an answer cannot
+// start a line of its own in the message that prints it; and WordsNotPrinted beside any other.
+// Whoever answers at an address that is not clean, the broker or anyone who can answer for it,
+// can repeat the credential the address carries in any text of its answer, so a message made
+// from such an answer prints its status and WordsNotPrinted, and no other part of it. A caller
+// that tells answers apart by their text reads that text as it came, never what Words answers,
+// and prints it nowhere.
 func (a Address) Words(text string) string {
 	if a.Clean() {
-		return text
+		return redact.OneLine(text)
 	}
 	return WordsNotPrinted
 }

@@ -515,7 +515,7 @@ func TestARetrysTaskNamesThePullRequest(t *testing.T) {
 // admission slot all stand as they were.
 //
 // A person's move in the Dispatch dashboard and the daemon's own write — which the controller's
-// set_status and an operator's `legion status` both reach the record as — are the same event
+// set_status and an operator's `legion issue status` both reach the record as — are the same event
 // here, so each is a row. Each row then fails the worker again, which holds the issue a second
 // time, and writes todo again: the second release runs as the first did, because the first
 // recorded the event it took with the recorded status kept rather than leaving the record to

@@ -281,7 +281,7 @@ Dispatch read them, delete the files, then install every App from
   node and a cluster that bills by requests bills less, but under node memory pressure the kubelet
   evicts a `Burstable` pod using more than its request before any `Guaranteed` one, or the kernel
   OOM-kills it, which stalls the tree until the pod is relaunched and its roles resume. The
-  `resource-limits` row of `legion state --json` and `legion start --check-config` both name the
+  `resource-limits` row of `legion state --json` and `legion config check` both name the
   `Burstable` pods (`resources: Burstable (a request below the limit): the issue pod; every other
   pod is Guaranteed`). On GKE Autopilot's general-purpose, `Balanced` and `Scale-Out` pods, a
   request below the limit is honoured only in a cluster that supports bursting
@@ -423,7 +423,7 @@ What each part is for:
   The checking agent names its own next look, with `wake_at` on each `pending` report but the
   check's last, and nothing else wakes a check. `projects.<KEY>.deploys` is still accepted and
   read for nothing: the loader warns once per project that sets it, `legion start` logs each
-  warning as it boots, and `legion start --check-config` prints each after its `Config OK` line
+  warning as it boots, and `legion config check` prints each after its `Config OK` line
   and exits 0. Remove the key.
 - **`projects.<KEY>.memory`** (optional) decides what each tree that project opens runs with.
   The block **is** the experiment named `memory` (`projects.<KEY>.experiments` below): the daemon
@@ -586,7 +586,7 @@ What each part is for:
   so the second pair would overwrite the first with nothing said; several
   repositories of one owner may move to one owner, and a rename inside the owner (`a/b` to `a/c`)
   counts as a move to that owner, so `a/b` to `a/c` beside `a/e` to `f/g` is refused.
-  `legion start --check-config` prints one line
+  `legion config check` prints one line
   per configured pair, so you can read back what the daemon will treat as one repository before
   the transfer.
 - **`daemon_url`**, **`envoy_url`**, **`dispatch_url`**, every **`nats_urls`** entry and the
@@ -655,7 +655,7 @@ What each part is for:
   value, one with an empty key, one whose key or value does not percent-decode or runs past 255
   characters once decoded, and one naming `legion.issue`, `legion.role` or `legion.arms`, which
   Legion writes itself. The refusal names that one member and what is wrong with it, never the
-  rest of your value, and `legion start --check-config` gives boot's verdict before a restart.
+  rest of your value, and `legion config check` gives boot's verdict before a restart.
   One such member would cost a launch every attribute of the variable, your own
   `theorem.project` among them, because the detector's caller catches the throw with an empty
   hand. Like every other variable here, the attributes reach a role with the start command of its
@@ -789,12 +789,12 @@ What each part is for:
   you leave out is told exactly what it is told without the key. The loader refuses an unknown
   role, an empty list, a relative path, a path named twice or one every role already names, and a
   role `worker_backends` puts on `claude`. Under Kubernetes each file must be in a mount of
-  `runtime.kubernetes.pod.volume_mounts` (`legion start --check-config` refuses one that is not),
+  `runtime.kubernetes.pod.volume_mounts` (`legion config check` refuses one that is not),
   and the image probe reads each named role's overlays in the pod's mounts at boot, so a file the
   ConfigMap lacks, or one Oh My Pi cannot parse, stops the boot naming the role and the file, never
-  that role's start. Under tmux boot and `--check-config` refuse a file the host does not have, and
-  boot refuses one Oh My Pi cannot parse. The capability report's `model-fallback` row reads only
-  the overlays every role names, so a deployment that turns fallback on for some roles alone
+  that role's start. Under tmux boot and `legion config check` refuse a file the host does not have,
+  and boot refuses one Oh My Pi cannot parse. The capability report's `model-fallback` row reads
+  only the overlays every role names, so a deployment that turns fallback on for some roles alone
   records `capabilities.decided.model-fallback`. Only loading is per role: every role of a pod, and every pane
   under tmux, can read every role's overlay file, so never put a secret in one. Adding the mount
   to a running deployment replaces every affected issue pod at the restart: each of its running
@@ -875,14 +875,14 @@ What each part is for:
 The loader refuses any key it does not know, naming it, and refuses `omp_invocation` and
 `omp_launch_prefix` under Kubernetes, since every pod runs the image's Oh My Pi.
 
-**Every key in one place: `legion config-reference --json`.** The command prints the loader's own
+**Every key in one place: `legion config reference --json`.** The command prints the loader's own
 key table as JSON — one object per top-level key with its `name`, `default`, `required` and
 `description`, and, under `nested`, the keys of the mappings that belong to it — and reads
 nothing: no `legion.yaml`, no daemon, no cluster, so it answers anywhere the binary runs. JSON is
 the one shape it prints, which is why `--json` is required rather than one choice among formats:
 
 ```sh
-legion config-reference --json | jq '.[] | select(.name == "projects") | .nested[] | select(.path | startswith("projects.<KEY>.experiments"))'
+legion config reference --json | jq '.[] | select(.name == "projects") | .nested[] | select(.path | startswith("projects.<KEY>.experiments"))'
 ```
 
 The [configuration reference](/legion/legion/reference/config/) on this site is built from that
@@ -973,8 +973,8 @@ Exposure checks: kept-pod drops from the launch log; the date any arm left the f
 ## Secrets and files
 
 - **The operator token** authenticates `legion controller start`, `legion claims` and
-  `legion status <issue> <status>` from an operator's shell. Make one long random string in a file
-  only you can read:
+  `legion issue status <issue> <status>` from an operator's shell. Make one long random string in a
+  file only you can read:
 
   ```sh
   openssl rand -hex 32 > operator-token && chmod 0600 operator-token
@@ -1019,7 +1019,7 @@ To stand it up:
    differs and leaves yours. Either way, stop that tool declaring the ConfigMap first.
 3. Put `pod.yml`'s contents under `runtime.kubernetes.pod` in `legion.yaml`, with your endpoint's
    token audience in place of `${MODEL_TOKEN_AUDIENCE}` and the ServiceAccount your pods run as in
-   place of `${POD_SERVICE_ACCOUNT}`. `legion start --check-config` refuses either placeholder
+   place of `${POD_SERVICE_ACCOUNT}`. `legion config check` refuses either placeholder
    unfilled.
 
 Name every role Legion's agents use in `modelRoles` (`default`, `review`, `oracle`, `deep`, `smol`,
@@ -1033,12 +1033,12 @@ relaunched.
 
 ## Check and start the daemon
 
-Validate the file first. `--check-config` makes every refusal boot would make from the
+Validate the file first. `legion config check` makes every refusal boot would make from the
 configuration, the environment and the files it names, without starting anything, running a key
 command or writing a file:
 
 ```sh
-legion start --config legion.yaml --check-config
+legion config check --config legion.yaml
 # Config OK: project=WIDGETS design-gate-steps=spec
 ```
 
@@ -1160,7 +1160,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 1. **Pick the new image** and note its digest ([The worker image](#the-worker-image)), and take the
    `legion` binary and both plugins from it.
 2. **Update `legion.yaml`**: set `runtime.kubernetes.image` to the new digest and run
-   `legion start --config legion.yaml --check-config`.
+   `legion config check --config legion.yaml`.
 
    **After the first upgrade to a release that takes the project's repositories from Dispatch,** a
    `legion.yaml` that still sets `projects.<KEY>.repo` is refused at load with
@@ -1172,7 +1172,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 
    **After the first upgrade to a release without `review_workflows`,** a `legion.yaml` that still
    sets `projects.<KEY>.review_workflows` is refused at load with
-   `Unknown key "projects.<KEY>.review_workflows"`, by `legion start --check-config` and by the
+   `Unknown key "projects.<KEY>.review_workflows"`, by `legion config check` and by the
    daemon's boot alike, so the daemon does not come up on it: delete the key before or with the
    image pin (an empty list is refused too). A review bot's red is now CI like any other: it sends
    the work back to the implementer, which answers and resolves the bot's threads and pushes, and
@@ -1564,11 +1564,11 @@ Closing the terminal leaves the project without one, and the daemon logs
 
 ## Take a tree out
 
-From an operator's shell, `legion status` sets a root's Dispatch status through the daemon, as the
-controller does through its `legion` tool's `set_status`:
+From an operator's shell, `legion issue status` sets a root's Dispatch status through the daemon, as
+the controller does through its `legion` tool's `set_status`:
 
 ```sh
-legion status WIDGETS-12 backlog --config legion.yaml --operator-token-file operator-token
+legion issue status WIDGETS-12 backlog --config legion.yaml --operator-token-file operator-token
 ```
 
 A root on the backlog or in icebox stops its tree: its agents are suspended and the slots

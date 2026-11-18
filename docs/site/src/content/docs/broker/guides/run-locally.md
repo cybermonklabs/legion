@@ -495,7 +495,7 @@ $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
 {"mode":"fail-once","repository":""}
 $ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP --github-owner acme-org --github-token -- sh -c 'printf "%s characters, starting %s\n" "${#DEMO_GITHUB_APP}" "${DEMO_GITHUB_APP%%_*}"'
 agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
-20 characters, starting ghs
+22 characters, starting ghs
 $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'
 broker_policy_store_reads_total{read="describe"} 6
 broker_policy_store_reads_total{read="list"} 6

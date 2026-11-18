@@ -8,6 +8,8 @@ import (
 	"io"
 	"os"
 
+	"github.com/spf13/cobra"
+
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
@@ -16,50 +18,61 @@ const (
 	leakCheckTextUsage    = "usage: legion leak-check text <kind>  (the text on standard input, <kind> what a refusal calls the write)"
 )
 
-// leakCheckCommands are the two shapes a write reaches the guard in from a shell: a push, which
-// git's pre-push hook runs, and a piece of text, which anything about to publish one runs.
-var leakCheckCommands = map[string]command{
-	"pre-push": runLeakCheckPrePush,
-	"text":     runLeakCheckText,
-}
-
 // leakCheckStdin is where the command reads the write it checks — git's update lines for a
 // pre-push, the text itself for a text: the process's own standard input, which a test replaces.
 var leakCheckStdin io.Reader = os.Stdin
 
-// runLeakCheck is `legion leak-check`, the image's shell door to packages/daemon/internal/leakguard:
-// the guard the daemon runs in process is the one a pod's git hook and a pod's own scripts run
-// here, so one set of rules answers for every write.
+// newLeakCheckCommand is `legion leak-check`, the image's shell door to
+// packages/daemon/internal/leakguard: the guard the daemon runs in process is the one a pod's git
+// hook and a pod's own scripts run here, so one set of rules answers for every write. Its two
+// commands are the two shapes a write reaches the guard in from a shell: a push, which git's
+// pre-push hook runs, and a piece of text, which anything about to publish one runs.
+func newLeakCheckCommand(stderr io.Writer) *cobra.Command {
+	return group(&cobra.Command{
+		Use:    "leak-check",
+		Short:  "run the leak guard over a write the shell is about to make: git's pre-push hook runs its pre-push form, and the rule file's port test runs its text form (never a person)",
+		Hidden: true,
+	},
+		leakCheckCommand("pre-push <remote> <url>", 2, leakCheckPrePushUsage, "check a push before git makes it", runLeakCheckPrePush, stderr),
+		leakCheckCommand("text <kind>", 1, leakCheckTextUsage, "check a text about to be published", runLeakCheckText, stderr),
+	)
+}
+
+// leakCheckCommand is one shape of `legion leak-check`: it takes words words, and any other count
+// is a usage error, the guard's StatusSetupFailure, with usage on stderr.
 //
 // The guard starts each of its children, the shared check among them, in a process group of its
 // own (leakguard's Guard.run), which none of the terminal's signals reach: git runs its pre-push
 // hook, and so this command, in the terminal's foreground group with git. So the guard runs under
-// a context that ends on a SIGINT or a SIGTERM (main's signal.NotifyContext) and on a SIGHUP, which
-// this command catches while it runs (hangupCancels), and the end of that context stops the
-// child's group. Without the SIGHUP, a pane that closes during a push would kill this command
-// where it stood and leave the shared check running, reparented and waited for by nobody. A
-// signal that ended the context before the guard's answer is reported ends the command with
-// 128+<signal> rather than with the setup failure its stopped check reads as (leakCheckReport),
-// which refuses the push either way.
-func runLeakCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	guarded, stop := hangupCancels(ctx)
-	defer stop()
-	return runSubcommand(guarded, "leak-check", leakCheckCommands, args, stdout, stderr)
+// a context that ends on a SIGINT or a SIGTERM (main's signal.NotifyContext, which cobra hands
+// every command) and on a SIGHUP, which this command catches while the shape runs and reports
+// (hangupCancels), and the end of that context stops the child's group. Without the SIGHUP, a
+// pane that closes during a push would kill this command where it stood and leave the shared check
+// running, reparented and waited for by nobody. A signal that ended the context before the guard's
+// answer is reported ends the command with 128+<signal> rather than with the setup failure its
+// stopped check reads as (leakCheckReport), which refuses the push either way.
+func leakCheckCommand(use string, words int, usage, short string, do func(ctx context.Context, args []string, stderr io.Writer) int, stderr io.Writer) *cobra.Command {
+	return &cobra.Command{
+		Use:    use,
+		Short:  short,
+		Hidden: true,
+		RunE: runs(func(ctx context.Context, args []string) int {
+			if len(args) != words {
+				fmt.Fprintln(stderr, usage)
+				return leakguard.StatusSetupFailure
+			}
+			guarded, stop := hangupCancels(ctx)
+			defer stop()
+			return do(guarded, args, stderr)
+		}),
+	}
 }
 
 // runLeakCheckPrePush is the hook's half: git hands it the remote's name and URL and the update
 // lines it computed, and the repository it runs the hook in is the working directory, which is
 // the repository the guard reads the push's commits from.
-func runLeakCheckPrePush(ctx context.Context, args []string, _, stderr io.Writer) int {
-	flags := newFlags("leak-check pre-push", leakCheckPrePushUsage, stderr)
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
-	}
-	if flags.NArg() != 2 {
-		flags.Usage()
-		return leakguard.StatusSetupFailure
-	}
-	remote, url := flags.Arg(0), flags.Arg(1)
+func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) int {
+	remote, url := args[0], args[1]
 	what := leakguard.PushName(remote)
 	updates, err := leakguard.ParseUpdates(leakCheckStdin)
 	if err != nil {
@@ -84,16 +97,8 @@ func runLeakCheckPrePush(ctx context.Context, args []string, _, stderr io.Writer
 // fail-closed answer: a caller that runs this knows it is about to publish the text. Its one
 // caller today is .github/scripts/check-private-names-port.test.sh, which drives this door and
 // the frozen check-private-names.sh over one fixture set and compares their verdicts.
-func runLeakCheckText(ctx context.Context, args []string, _, stderr io.Writer) int {
-	flags := newFlags("leak-check text", leakCheckTextUsage, stderr)
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
-	}
-	if flags.NArg() != 1 {
-		flags.Usage()
-		return leakguard.StatusSetupFailure
-	}
-	kind := flags.Arg(0)
+func runLeakCheckText(ctx context.Context, args []string, stderr io.Writer) int {
+	kind := args[0]
 	text, err := io.ReadAll(leakCheckStdin)
 	if err != nil {
 		return leakCheckReport(ctx, stderr, kind, &leakguard.SetupFailure{What: kind, Why: "the text could not be read", Err: err})
@@ -118,10 +123,10 @@ func runLeakCheckText(ctx context.Context, args []string, _, stderr io.Writer) i
 // text shape's kind — and leaves the guard's wording alone when it is empty, which is what the
 // push shape wants: the guard already calls it "the push to origin".
 //
-// A signal that ended ctx — main's SIGINT or SIGTERM, or the SIGHUP runLeakCheck catches — is the
-// status whatever the guard answered, 128+<signal> (endedBySignal), and nothing is printed: the
-// guard's answer is then the setup failure of a check the signal stopped, which says nothing about
-// the write and is not reported as if it did. The push is refused either way.
+// A signal that ended ctx — main's SIGINT or SIGTERM, or the SIGHUP leakCheckCommand catches — is
+// the status whatever the guard answered, 128+<signal> (endedBySignal), and nothing is printed:
+// the guard's answer is then the setup failure of a check the signal stopped, which says nothing
+// about the write and is not reported as if it did. The push is refused either way.
 func leakCheckReport(ctx context.Context, stderr io.Writer, what string, err error) int {
 	if status, ok := signalled(ctx); ok {
 		return status
