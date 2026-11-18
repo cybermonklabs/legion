@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
 // maxPages bounds one listing's pages, so a pass can never read on for ever: an answer GitHub
@@ -220,7 +221,8 @@ func (r *Reconciler) kept(writer Writer, head pullHead) headState {
 // the cursor names it, and the next pass reads it from the start.
 //
 // Every other failure is the head's own. It drops what the pass kept of that head, so the next
-// pass reads it in full, and leaves the pass to the head after it.
+// pass reads it in full, and leaves the pass to the head after it. It is a GitHub read the pass
+// gave up, too large to read or not answered, so it is noted on the pass's attempt (githubreads).
 func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c *counts) *stop {
 	// A limit GitHub answered is read before the pass's own end, as every other read of the pass
 	// reads it (identify, openPullRequests, the query): it is GitHub's answer, not a request the
@@ -234,6 +236,7 @@ func (r *Reconciler) headFailed(ctx context.Context, err error, head pullHead, c
 	}
 	c.heads++
 	delete(r.heads, head.key())
+	githubreads.NoteFailure(ctx, err)
 	var tooLarge *githubapp.ResponseTooLargeError
 	if errors.As(err, &tooLarge) {
 		// GitHub's answer is past what githubapp reads at all, so this head cannot be read: it is

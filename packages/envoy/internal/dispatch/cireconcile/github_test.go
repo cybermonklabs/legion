@@ -57,6 +57,9 @@ type fakeGitHub struct {
 	// stalls is how long one path's answer is held back before it is given, which is how a test
 	// makes GitHub slower than the pass's own bound (stall).
 	stalls map[string]time.Duration
+	// statuses is the status one path is answered with in place of its route's answer, which is
+	// how a test makes GitHub give up on or refuse that one read (answerStatus).
+	statuses map[string]int
 	// The state the GraphQL stand-in holds beside the REST one (graphql_test.go): the queries
 	// it was asked, the heads whose Checks fields it refuses, the heads whose node or head
 	// commit it answers null, the pages of one repository it refuses whole, the rate limits it
@@ -117,6 +120,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		etags:         map[string]string{},
 		limitOnce:     map[string]int{},
 		stalls:        map[string]time.Duration{},
+		statuses:      map[string]int{},
 		refusedChecks: map[string]struct{}{},
 		nulled:        map[string]nulledHead{},
 		refusedPages:  map[string]map[int]struct{}{},
@@ -195,8 +199,8 @@ func commitKey(r *http.Request) string {
 	return r.PathValue("owner") + "/" + r.PathValue("repo") + "@" + r.PathValue("sha")
 }
 
-// serve records one request, answers it as a rate limit when a test asked for that, and
-// otherwise hands it to the routes above.
+// serve records one request, answers it as a rate limit or with its path's status when a test
+// asked for that, and otherwise hands it to the routes above.
 func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.requests = append(f.requests, fakeRequest{
@@ -210,6 +214,7 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		limited = true
 	}
 	stall := f.stalls[r.URL.Path]
+	status := f.statuses[r.URL.Path]
 	f.mu.Unlock()
 	if stall > 0 {
 		// GitHub is slower to answer this than the pass has left. The caller giving up on the
@@ -228,6 +233,14 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10))
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
+		return
+	}
+	if status != 0 {
+		// No rate limit: the answer carries no limit header and no wording of one, so the
+		// client reads the status alone.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"message":%q}`, http.StatusText(status))
 		return
 	}
 	f.mux.ServeHTTP(w, r)
@@ -359,6 +372,19 @@ func (f *fakeGitHub) stall(path string, wait time.Duration) {
 		return
 	}
 	f.stalls[path] = wait
+}
+
+// answerStatus answers every request to path with status and GitHub's short message for it,
+// in place of what its route would answer, as GitHub answers a read it gave up on (a 5xx) or
+// refused (a 4xx). A status of zero answers the path from its route again.
+func (f *fakeGitHub) answerStatus(path string, status int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if status == 0 {
+		delete(f.statuses, path)
+		return
+	}
+	f.statuses[path] = status
 }
 
 // received is every request the stand-in has been sent, oldest first.

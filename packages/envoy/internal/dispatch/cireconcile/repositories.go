@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -60,7 +61,10 @@ func (repository reconciled) head(number int64, sha string) pullHead {
 // resolve reads one mapped row: the installation token it is read with, and the name and id
 // GitHub gives it. It answers the stop a rate limit ended the pass at, and
 // counts and names at WARN each repository it skips, every one of which is a repository nothing
-// within this pass can mend.
+// within this pass can mend. A repository skipped on GitHub's answer -- no token, no answer
+// about it, a name that is not owner/name -- is a GitHub read the pass gave up, which it notes on
+// its attempt (githubreads); a mapping that is not owner/name is the database's, and asks GitHub
+// nothing.
 //
 // read is the repositories this pass has read the heads of already, by the id GitHub gives
 // them, which is this pass's own: two rows naming one repository are read once within a pass,
@@ -87,6 +91,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 		// mends itself within a pass, so the repository is named once and the pass goes on.
 		c.mappingsSkipped++
 		r.Logger.Warn("ci reconcile skipped a repository it holds no token for", "repository", row, "error", err)
+		githubreads.NoteFailure(ctx, err)
 		return reconciled{}, nil
 	}
 	// Every read made with this token is budgeted under its installation, so that scope is read
@@ -103,6 +108,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 		}
 		c.mappingsSkipped++
 		r.Logger.Warn("ci reconcile skipped a repository GitHub did not answer for", "repository", row, "error", err)
+		githubreads.NoteFailure(ctx, err)
 		delete(r.rows, row)
 		return reconciled{}, nil
 	}
@@ -122,6 +128,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, c *counts, read ma
 	if !ok {
 		c.mappingsSkipped++
 		r.Logger.Warn("ci reconcile skipped a repository GitHub named oddly", "repository", row, "full_name", state.fullName)
+		githubreads.NoteFailure(ctx, fmt.Errorf("ci reconcile skipped %s: GitHub named it %q, which is not owner/name", row, state.fullName))
 		return reconciled{}, nil
 	}
 	headScopes := scopes(scope)
