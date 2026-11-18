@@ -161,7 +161,7 @@ function walkedFrom(branch: readonly unknown[], at: number): ModelChangeEntry | 
 
 /** When the branch says an entry was written, or undefined when this build cannot read it: the
  * host stamps every entry with an ISO time (`SessionEntryBase`,
- * `session/session-entries.ts:93-111` at the pinned tag). */
+ * `session/session-entries.ts:98-116` at the pinned tag). */
 function changedAt(entry: ModelChangeEntry): number | undefined {
   const at = entry.timestamp === undefined ? Number.NaN : Date.parse(entry.timestamp);
   return Number.isFinite(at) ? at : undefined;

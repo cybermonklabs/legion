@@ -4837,10 +4837,13 @@ Each step runs as a subtest of its own, on a claim no earlier step left working,
 
 What stands in is the model endpoint and one pane's memory backend.
 Each pane talks to a model stand-in of the driver's own, which answers every turn alike unless a step scripts a request: a `tool_use` answer, ported from the plugins' own pane harness (`packages/pi-shared/test/omp-harness.ts`), so a turn starts a `task` subagent of the `deep-worker` agent or an `async` bash job; or a request held open until the step lets it go or the process that asked dies, so a late turn runs while the step reads the claim, a turn of the agent's own runs while a task waits, and a subagent is alive when its process is killed.
-The implementer of the first issue also runs Oh My Pi's memory backend at a Hindsight stand-in, through one more overlay: `memory.backend: hindsight`, `hindsight.apiUrl` at the stand-in, and `hindsight.mentalModelsEnabled` and `hindsight.autoRetain` off, so the recall before each prompt's turn is the one call it is asked.
+The implementer of the first issue also runs Oh My Pi's memory backend at a Hindsight stand-in, through one more overlay: `memory.backend: hindsight`, `hindsight.apiUrl` at the stand-in, `hindsight.mentalModelsEnabled` and `hindsight.autoRetain` off, so the recall before each prompt's turn is the one call it is asked, and `hindsight.recallCooldownMs: 0`, below.
 At the pin Oh My Pi acknowledges a prompt at its admission and waits on that recall before the turn's `agent_start`, with the session counted as streaming the whole time, so a recall held 20 s is the measured wait between the acknowledgement and the turn: past the daemon's own five-second wait for the turn and under the client's own 30 s bound on a recall.
 The stand-in answers every recall 503.
-Read on the pin by a run made for this proof: a recall answered 200 is committed to the session and the next prompt starts its turn at once, while one answered 503 commits nothing and the next prompt recalls again, which is what lets a later step hold one again.
+Read by a run made for this proof on 18.16.0-sami.20261105-032528, the pin then, which has no pause after a failed recall: a recall answered 200 is committed to the session and the next prompt starts its turn at once, while one answered 503 commits nothing and the next prompt recalls again, which is what lets a later step hold one again.
+The pinned build pauses automatic recall after a failed one, for `hindsight.recallCooldownMs` (60,000 ms by default, doubled for each further failure in a row up to 30 minutes, and kept in the process's memory: `hindsight/recall-wait.ts` and `hindsight/settings.ts` at the pinned tag), and `0` turns that pause off.
+So the overlay sets it to `0`: each prompt after a 503 recalls again, as on the pin that read was made on.
+No run of this proof has been made on the pinned build.
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |
@@ -5558,9 +5561,9 @@ the caller does, with its work directory, which holds both (the profile holds `p
 
 ### The natives download
 
-OMP's native module (`pi_natives.linux-x64-modern.node` or `…-baseline.node`, the one the CPU selects, 116 MiB at the pin;
-builds before 18.11.0 wrote every variant they embed, about twice that) lives in `$HOME/.omp/natives/<omp version>/` — `$XDG_DATA_HOME/omp/natives/` when `$XDG_DATA_HOME/omp` exists
-— and every profile under that `HOME` shares it (`getNativesDir`, `@oh-my-pi/pi-natives/native/loader-state.js`); a profile has no natives of its own.
+OMP's native module (`pi_natives.linux-x64-modern.node` or `…-baseline.node`, the one the CPU selects, 123 MiB at the pin;
+builds before 18.11.0 wrote every variant they embed, about twice that) lives in `$HOME/.omp/natives/<omp version>/`, and every profile under that `HOME` shares it; a profile has no natives of its own.
+`getNativesDir` (`@oh-my-pi/pi-natives/native/loader-state.js`) takes the first of `PI_NATIVES_DIR`, `$OMP_DOWNLOAD_ROOT/natives`, `$XDG_DATA_HOME/omp/natives` when `$XDG_DATA_HOME/omp` exists, and `natives/` under `OMP_CONFIG_ROOT`, else under `$HOME/.omp`; the pinned build reads all of them, and none of the four variables is set by any Legion process.
 OMP writes it on its first run under a `HOME` that has not run this OMP version, and in this script that run is `omp plugin install`.
 The run's own home links `.omp/natives` to the operator's ([`lib/omp-home.sh`](#libomp-homesh)), so a fresh CI runner, a container, or a newly bumped OMP pin pays that once, into the operator's cache;
 on a box where the pinned OMP has already run, a fresh profile pays nothing.
@@ -6115,9 +6118,9 @@ omp_setup_wizard_off "$work/omp-home/.omp/profiles/$profile/agent/config.yml"
 env "${omp_session_unsets[@]}" HOME="$work/omp-home" OMP_PROFILE="$profile" "$work/legion" controller start --config "$work/controller.yaml"
 ```
 
-Oh My Pi places a profile from the home directory alone: `os.homedir()/.omp/profiles/<name>` (`getProfileConfigRoot`, `@oh-my-pi/pi-utils` `dirs.ts`).
+Oh My Pi places a profile under its config root: `os.homedir()/.omp/profiles/<name>` (`getProfileConfigRoot`, `@oh-my-pi/pi-utils` `dirs.ts`), or `profiles/<name>` under the directory `OMP_CONFIG_ROOT` names, which the pinned build reads and which the driver's own shell is taken not to set.
 `XDG_DATA_HOME` moves only a named profile's data, and only once `$XDG_DATA_HOME/omp/profiles/<name>` exists, so the profile's `agent/models.yml` and `config.yml` would stay in the operator's home;
-`PI_CONFIG_DIR` reaches no pane, since neither daemon's pane allow-list carries it.
+`PI_CONFIG_DIR` and `OMP_CONFIG_ROOT` reach no pane, since neither daemon's pane allow-list carries them.
 So the driver runs every Oh My Pi process of the run under `HOME=<dir>`:
 the daemon, and through the pane allow-list every pane, the controller, and each `omp` the libs run (`--home`).
 

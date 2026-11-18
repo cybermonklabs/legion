@@ -61,7 +61,7 @@ It carries:
   A pod's agent has that tool because its launch loads profile plugins (dispatch://LEGION-629), which the capability report's `codegraph` row says ([The deployment's capability report](#the-deployments-capability-report));
 
 - OMP's native module, extracted at build into `/home/legion/.omp/natives/<version>/`:
-  from 18.11.0 OMP writes only the variant the CPU selects (AVX2 or not), so this is the build runner's variant, and a pod whose node selects the same one extracts nothing, while a node that selects the other has each role write that one (116 MiB) into its own home overlay, on the pod's `role-homes` volume, at its first OMP run;
+  from 18.11.0 OMP writes only the variant the CPU selects (AVX2 or not), so this is the build runner's variant, and a pod whose node selects the same one extracts nothing, while a node that selects the other has each role write that one (123 MiB) into its own home overlay, on the pod's `role-homes` volume, at its first OMP run;
 
 - pinned Bun, `jj` (Sami's fork, the version the dogfood daemon runs) and `gh` at `/usr/local/bin`, and `git` at `/usr/bin/git` from the `debian:trixie-slim` base
   — jj's git backend requires git >= 2.42 (bookworm's 2.39.5 made every `jj git clone` in the init container fail), so the build also proves the image's jj accepts its git with a network-free `jj git clone` of a scratch bare repository before the probes run, and its last step refuses a git anywhere but `/usr/bin/git`;
@@ -810,7 +810,7 @@ One row is one session; `path` is the same string the session would have had as 
 `omp --resume=<row path>` — the value is exactly the session path the extension reports to the daemon at `/worker/started` as `ompSessionFile`, and in Postgres it is the row's `path` key:
 `<sessions root>/<encoded cwd>/<timestamp>_<session id>.jsonl`.
 The second child keeps that `ompSessionFile` field and carries the row path in it unchanged — no rename, no wire or contract change.
-The key embeds the home-relative sessions root, so the resuming pod must carry the same two `OMP_SESSION_*` variables and the same `HOME` (and `OMP_PROFILE`) as the pod that wrote it.
+The key embeds the home-relative sessions root, so the resuming pod must carry the same two `OMP_SESSION_*` variables and the same `HOME` (and `OMP_PROFILE`) as the pod that wrote it, and the same `OMP_CONFIG_ROOT` or none: from the pinned build on, that variable replaces the home-relative root.
 Nothing else changes: the daemon already relaunches a dead worker with `--resume=<recorded session file>`.
 
 ### Refusals
@@ -7068,6 +7068,7 @@ each issue's pod (every role of it alike) and the image probe's.
   Legion writes no overlay at all: the list a role reads is the operator's own overlays, then that role's own (`role_config_files`), then the project's memory overlays (`projects.<KEY>.memory.config_files`) where the role's tree was drawn into the memory group, composed by the runtime that starts the role, and the shim passes it through untouched.
   So nothing of Legion's holds a repository's settings off — they reach a pod's agent as they reach any agent session, under the operator's overlay — and nothing of Legion's turns a pinned binary's own defaults off either: background work (`async.enabled`, `bash.autoBackground.enabled`) is on for every role, as it is for `--mode rpc`.
   The pod sets `PI_CONFIG_DIR=.omp` and `OMP_SESSION_STORAGE=file` on the agent where the pod leaves them unset, which an operator's pod may not set, since they decide where Oh My Pi keeps the session a resume reads.
+  From the pinned build on, `OMP_CONFIG_ROOT` decides it too, and outranks `PI_CONFIG_DIR`: an operator's pod may not set it either, but the pod does not set it, so a repository's `.env` that sets it moves the config root (read from Oh My Pi's source, `env.ts` and `dirs.ts`; not run).
 
 - **Model roles.**
   Legion's shipped agents dispatch by role alias:

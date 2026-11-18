@@ -173,7 +173,7 @@ export interface SessionContext {
 }
 
 /** The branch entry a model change leaves, as `sessionManager.getBranch()` hands it
- * (`packages/coding-agent/src/session/session-entries.ts:132-152` at the pinned tag).
+ * (`packages/coding-agent/src/session/session-entries.ts:153-161` at the pinned tag).
  * `resolvedModelIsFallback` marks a change the host's own fallback walk made. */
 export interface ModelChangeEntry {
   readonly type: "model_change";
@@ -184,7 +184,7 @@ export interface ModelChangeEntry {
   readonly resolvedModelIsFallback?: boolean;
 }
 
-/** The branch entry a thinking-level change leaves (`session/session-entries.ts:132-152` at the
+/** The branch entry a thinking-level change leaves (`session/session-entries.ts:142-151` at the
  * pinned tag). */
 export interface ThinkingLevelChangeEntry {
   readonly type: "thinking_level_change";
