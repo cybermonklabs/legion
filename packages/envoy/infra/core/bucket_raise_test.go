@@ -19,8 +19,11 @@ import (
 // of the bucket's stream (bus.EnsureKeyValue). On a three-server cluster enforcing the users this
 // module renders, a client holding ListenerPermissions raises the interest bucket from one copy to
 // three. The negative control is a client holding the same grant without the update of any
-// bucket's stream: the server refuses its raise, the start's error names ENVOY_NATS_REPLICAS, and
-// the bucket keeps its one copy.
+// bucket's stream: the server refuses its raise, the start ends at once with the server's refusal
+// and names ENVOY_NATS_REPLICAS, and the bucket keeps its one copy. That client is a bus.Client,
+// as every production caller's connection is, so the refusal the server reports on the connection
+// is recorded and answers the raise (bus.ErrPublishDenied); a connection no client owns would read
+// the refusal as an update nothing answered and send it again until the start's hang guard.
 func TestListenerPermissionsRaiseABucketOnACluster(t *testing.T) {
 	grant := core.ListenerPermissions("example-host-a")
 	withoutUpdate := grant
@@ -58,14 +61,21 @@ func TestListenerPermissionsRaiseABucketOnACluster(t *testing.T) {
 	cluster.CreateKeyValue(t, listener, bucket(1))
 	testnats.AwaitStreamCopies(t, adminJS, bucketStream, 1)
 
-	refused, refusedJS, refusedErrs := connectGranted(t, cluster.URL(), refusedSeed, 2*time.Second)
-	_, err = bus.EnsureKeyValue(t.Context(), refused, refusedJS, bucket(3))
-	require.Error(t, err, "a client without the bucket's stream update raised it")
+	t.Setenv("NATS_NKEY_SEED", refusedSeed)
+	refused, err := bus.Connect(cluster.URLs())
+	require.NoError(t, err)
+	t.Cleanup(refused.Close)
+	refusedJS, err := refused.Conn.JetStream(natsgo.MaxWait(2 * time.Second))
+	require.NoError(t, err)
+	started := time.Now()
+	_, err = bus.EnsureKeyValue(t.Context(), refused.Conn, refusedJS, bucket(3))
+	took := time.Since(started)
+	require.ErrorIs(t, err, bus.ErrPublishDenied, "a client without the bucket's stream update raised it, or its raise did not end at the refusal")
 	refusedRaise := "raise KV_" + bus.InterestBucket + ": " + bus.ReplicasEnvVar + "=3: "
 	require.True(t, strings.HasPrefix(err.Error(), refusedRaise), "the refused raise's error %q does not start %q", err, refusedRaise)
-	t.Logf("the refused raise: %v", err)
-	require.NoError(t, refused.Flush())
-	requirePublishRefused(t, refusedErrs, "$JS.API.STREAM.UPDATE.KV_"+bus.InterestBucket)
+	require.Contains(t, err.Error(), `Publish to "$JS.API.STREAM.UPDATE.KV_`+bus.InterestBucket+`"`)
+	require.Less(t, took, 3*time.Second, "the refused raise ended after %s, not at the server's refusal", took)
+	t.Logf("the refused raise, after %s: %v", took, err)
 	testnats.AwaitStreamCopies(t, adminJS, bucketStream, 1)
 
 	_, err = bus.EnsureKeyValue(t.Context(), listener, listenerJS, bucket(3))

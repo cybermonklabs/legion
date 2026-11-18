@@ -917,9 +917,10 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		reconciliation.log()
 		return info.Config.Subjects, nil
 	}
-	// Each write below is a request a server can leave unanswered (updateStream says when), and
-	// each is abandoned when ctx ends (Bounded), so the ensure ends at ctx or the start's hang
-	// guard like every other wait of it, naming the write that was in flight.
+	// The migrate and the purge below are requests a server can leave unanswered, and each is
+	// abandoned when ctx ends (Bounded), so the ensure ends at ctx or the start's hang guard like
+	// every other wait of it, naming the write that was in flight. The update bounds itself
+	// (updateStream).
 	written := func(step string, write func() error) error {
 		_, answered, err := Bounded(ctx, func() (struct{}, error) { return struct{}{}, write() })
 		if !answered {
@@ -936,13 +937,15 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		reconciled, _ := reconciledStream(current, cfg, defaultsAnUnsetCap)
 		return reconciled
 	}
-	if err := written("update", func() error {
-		sent, err := updateStream(ctx, js, info, reconcile, func(again *nats.StreamInfo) bool {
-			return reflect.DeepEqual(reconcile(again), again.Config)
-		})
-		return refusedSettings(err, &info.Config, &sent)
-	}); err != nil {
-		return nil, err
+	sent, err := updateStream(ctx, js, info, reconcile, func(again *nats.StreamInfo) bool {
+		return reflect.DeepEqual(reconcile(again), again.Config)
+	})
+	switch {
+	case err != nil && ctx.Err() != nil:
+		// updateStream ends on a silence only when ctx does, and a silence refused no setting.
+		return nil, fmt.Errorf("update %s: %w", Stream, err)
+	case err != nil:
+		return nil, refusedSettings(err, &info.Config, &sent)
 	}
 	reconciliation.log()
 	if desired.Replicas > info.Config.Replicas {
