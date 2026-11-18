@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+    The secrets broker reads `BROKER_POD_OPERATORS`, whitespace-separated
+    `<email>=system:serviceaccount:<namespace>:<name>` entries that map a Kubernetes account to a
+    person. A pod that logs in with a pod-bound token of a mapped account, under that account's own
+    `BROKER_SERVICE_LOGINS` service, acts as the person on the terms of the person's dev box: the
+    person's own agent-tier secrets with no approval, a human-tier secret after the person approves
+    it, and another person's secret after its owner approves it. The pod enrols itself alone, with
+    no session name. Only the person lists and revokes its login. The four operator routes refuse it
+    (`403 PERSON_POD_LOGIN`), and every service route refuses the mapped account
+    (`403 PERSON_ACCOUNT`). The broker reads the setting at each request and release, so a removed
+    or moved entry stops the pod acting as the person at its next request. The broker refuses to
+    start on a mapped account that `BROKER_SERVICE_LOGINS` does not name, that `BROKER_SERVICES`
+    binds, whose login service `BROKER_SERVICES` or `BROKER_VM_SERVICES` names, or that
+    `BROKER_EXCHANGE_ACCOUNTS` maps to another person. `GET /v1/launcher-credentials` names such a
+    login's person in a new `person` field, and Dispatch's machine logins page shows the login as
+    the viewer's own pod.
+time: 2026-11-18T23:02:57.000000000Z
+custom:
+    Issue: pr4452
