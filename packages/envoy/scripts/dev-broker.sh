@@ -316,8 +316,11 @@ DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]
 # with. ---
 echo "dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay..." >&2
 mkdir -p "$BIN_DIR"
+# GOTOOLCHAIN=auto: a shell whose GOTOOLCHAIN is local (setup-go sets it, a golang image sets it)
+# and whose go is older than go.work's go line would refuse the build; auto lets go fetch the
+# version go.work names instead, so no version is written here.
 for cmd in broker dev-oidc-issuer dev-airlock-stands agent-secrets agent-secrets-helper agent-secrets-devrelay; do
-  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd" )
+  ( cd "$ENVOY_DIR" && GOTOOLCHAIN=auto go build -o "$BIN_DIR/$cmd" "./cmd/$cmd" )
 done
 # The end of the build, which github-narrowing-check.sh waits for under a bound of its own: on a
 # cold build cache the six builds take far longer than the start of what they built.

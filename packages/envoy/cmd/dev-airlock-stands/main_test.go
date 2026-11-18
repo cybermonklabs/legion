@@ -28,7 +28,7 @@ import (
 // buildStands builds the command into a directory of the test's own and returns its path.
 func buildStands(t *testing.T) string {
 	t.Helper()
-	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "dev-airlock-stands", Env: append(os.Environ(), "GOTOOLCHAIN=go1.27.3")})
+	return cmdtest.Build(t, "dev-airlock-stands")
 }
 
 // TestTheStandsServeTheirRecordsAndStopOnASignal is the whole of what a check script does with

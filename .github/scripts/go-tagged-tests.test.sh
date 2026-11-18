@@ -100,6 +100,29 @@ check "exits 0" "$(is "$status" 0)"
 check "the bare name and the underscore one are tests, the lower-case ones are not" \
   "$(is "$out" '^(Test|Test_one)$')"
 
+echo "case: a tagged test whose name is not ASCII is named"
+# go runs TestÉclair, Test日本 and TestᲉ: cmd/go asks only that the rune after the prefix is not
+# lower case. A lister that read ASCII letters alone left them out of the -run, so the tagged job
+# passed without running them. TestᲉ is U+1C89, a letter of Unicode 16.0: a rule that judged the
+# rune by a table older than Go's would leave it out too, and this one judges no table. Read twice:
+# in the shell's own locale and under LC_ALL=C, where awk reads bytes, as mawk always does.
+root=$(fixture unicode)
+gofile "$root/unicode_test.go" demo \
+  'func TestÉclair(t *testing.T) {}' \
+  'func Test日本(t *testing.T) {}' \
+  'func TestᲉ(t *testing.T) {}' \
+  'func FuzzÜber(f *testing.F) {}' \
+  'func ExampleÅ() {}' \
+  'func (h *harness) TestÉtude(t *testing.T) {}' \
+  'func Testify(t *testing.T) {}'
+run_lister demo "$root"
+check "exits 0" "$(is "$status" 0)"
+check "every non-ASCII test is named, sorted by byte; the method and Testify are not" \
+  "$(is "$out" '^(ExampleÅ|FuzzÜber|TestÉclair|TestᲉ|Test日本)$')"
+LC_ALL=C run_lister demo "$root"
+check "under LC_ALL=C, exits 0" "$(is "$status" 0)"
+check "under LC_ALL=C, the same names" "$(is "$out" '^(ExampleÅ|FuzzÜber|TestÉclair|TestᲉ|Test日本)$')"
+
 echo "case: a fuzz target and an example of a tagged file"
 root=$(fixture fuzz)
 gofile "$root/fuzz_test.go" demo \

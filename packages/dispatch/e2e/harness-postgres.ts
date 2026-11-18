@@ -36,6 +36,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { goOutput } from "@legion/test-fixtures/go-command";
+
 import { Interrupted } from "./local-instance-support";
 import { sqlAt } from "./psql";
 
@@ -89,7 +91,9 @@ async function readMaxConnections(env: NodeJS.ProcessEnv): Promise<number> {
   const named = `\`go ${connectionsArgs.join(" ")}\` in ${envoyDirectory}`;
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync("go", connectionsArgs, { cwd: envoyDirectory }));
+    // go's standard error reaches this process's as go writes it, so a module download that
+    // stalls the first stack's start is named in the run's log rather than lost with it.
+    stdout = await goOutput(connectionsArgs, { cwd: envoyDirectory });
   } catch (error) {
     throw new Error(
       `The Dispatch e2e harness cannot start: ${named} failed: ` +

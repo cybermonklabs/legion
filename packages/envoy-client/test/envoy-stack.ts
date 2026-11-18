@@ -1,6 +1,7 @@
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import * as path from "node:path";
+import { goOutput } from "@legion/test-fixtures/go-command";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess } from "bun";
 import { z } from "zod";
@@ -93,17 +94,9 @@ export async function buildGoBinaries(build: GoBuild): Promise<void> {
   }
   // An -o ending in a separator names a directory: each main package's binary goes in it, named
   // after the package's directory.
-  const spawned = Bun.spawn(["go", "build", "-o", `${build.bin}${path.sep}`, ...build.packages], {
+  await goOutput(["build", "-o", `${build.bin}${path.sep}`, ...build.packages], {
     cwd: ENVOY_MODULE,
-    stdout: "pipe",
-    stderr: "pipe",
   });
-  const [stderr, code] = await Promise.all([new Response(spawned.stderr).text(), spawned.exited]);
-  if (code !== 0) {
-    throw new Error(
-      `go build ${build.packages.join(" ")} in ${ENVOY_MODULE} exited ${code}: ${stderr}`
-    );
-  }
 }
 
 /**

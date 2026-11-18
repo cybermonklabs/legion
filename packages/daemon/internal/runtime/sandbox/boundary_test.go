@@ -31,6 +31,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/sjawhar/envoy/testgo"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -643,8 +644,8 @@ func (rig *initRig) plantHooks(dir string, hooks ...string) {
 // from the next pod is the fresh disk's.
 func TestWhatAnIssuePlantsNeitherReadsTheProvisioningTokenNorOutlivesItsPod(t *testing.T) {
 	legion := filepath.Join(t.TempDir(), "legion")
-	if output, err := exec.Command("go", "build", "-o", legion, "github.com/sjawhar/legion/daemon/cmd/legion").CombinedOutput(); err != nil {
-		t.Fatalf("build the Go legion: %v\n%s", err, output)
+	if _, err := testgo.Output(exec.Command("go", "build", "-o", legion, "github.com/sjawhar/legion/daemon/cmd/legion")); err != nil {
+		t.Fatalf("build the Go legion: %v", err)
 	}
 	testbin.RequireJJFilters(t)
 

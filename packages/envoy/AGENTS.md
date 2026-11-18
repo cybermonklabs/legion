@@ -955,6 +955,7 @@ the `docs` package's few in `envoy-go`'s step "Test what the race build cannot r
 Each race job runs only when a file its own filter in `.github/workflows/ci.yaml` names changes
 — `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it a 60-minute deadline, and `envoy_go_race_api` for the API;
 see Critical conventions for what keeps those filters current.
+The API's race job is a matrix: each leg runs the shard of the package's tests that `.github/scripts/go-test-shards.py` assigns it by test name, and fails, naming the test, when a test is in no leg or in two, so a test you add runs in exactly one leg with no edit.
 
 A cleanup this package registers captures nothing that reaches the document it is attached to.
 `runtime.AddCleanup` says what that costs: "If ptr is reachable from cleanup or arg, ptr will never be collected and the cleanup will never run."

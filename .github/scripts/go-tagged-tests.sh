@@ -114,8 +114,15 @@ fi
 # method's `func` is followed by its receiver's `(`. go runs a `func TestXxx(` whose Xxx does not
 # start with a lower-case letter, so `func Test(` and `func Test_one(` are tests and
 # `func Testify(` is an ordinary function; naming one in a -run would be a dead alternative.
+# The rest of the name is any character but a space or `(`, not ASCII alone: go also runs
+# `func TestÉclair(` and `func Test日本(` (cmd/go asks only that the rune after the prefix is not
+# lower case), and a class of ASCII letters left such a test out of the -run, so its tagged job
+# passed without running it. This holds in awk's byte mode (mawk, or any awk under LC_ALL=C) as
+# in its multibyte mode: the first byte of a non-ASCII letter is not a-z either way. Neither mode
+# knows which non-ASCII letters are lower case, so `func Testé(` is named too; go runs no such
+# function, and that name is a dead alternative of the -run, as `Testify` would be.
 names=$(awk '
-  /^func[[:space:]]+(Test|Fuzz|Example)([^a-z][A-Za-z0-9_]*)?[[:space:]]*\(/ {
+  /^func[[:space:]]+(Test|Fuzz|Example)([^a-z[:space:](][^[:space:](]*)?[[:space:]]*\(/ {
     name = $0
     sub(/^func[[:space:]]+/, "", name)
     sub(/[[:space:]]*\(.*$/, "", name)

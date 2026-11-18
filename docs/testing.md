@@ -27,9 +27,18 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   A server that is no fake GitHub keeps its body, whatever it mentions: the daemon's own API, the issue-sandbox API, a fake Dispatch, a fake secrets broker, a reverse proxy in front of another fake, and a real `git http-backend` CGI behind a TLS proxy.
   A fake a test builds inline, in its own body rather than in a function of its own, is the same skeleton and takes the helper the same way; it is no shared copy, though, so nothing counts it, and most of the two modules' inline fakes still write it out.
 
+- Every go command a test or a test helper starts, in any of the three Go modules, goes through `packages/envoy/testgo`'s `Output`, so that what go writes on its standard error reaches the test's output as go writes it.
+  A go command whose output a test only buffers shows nothing until it returns, and a module download that stalls into the test's timeout never returns: the timeout's panic loses the buffer, and the log does not name the download.
+  `Output` returns standard output and refuses a command whose `Stdout` is set; a `Stderr` already set gets the stream too.
+  It is a public package, as `testnatsimages` is, so `packages/daemon` imports it through its `replace` of `../envoy`; Go's internal-package rule keeps that module from importing an internal package of this one.
+
 - An in-test `go build` in `packages/envoy` goes through `internal/cmdtest`: `Build`, `BuildStamped`, or `BuildCommand` for a build that needs a directory, a target, flags or an environment of its own.
-  One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
+  One body holds `ENVOY_TEST_GO_OVERLAY`, the output under the test's own temporary directory and the failure, and it runs the build through `testgo.Output`; the overlay that variable names must be an absolute path, because a build whose `Dir` is another directory reads it from there.
   A `go build` that produces no binary, such as a compile check of a generated module, is not a build of this kind, and neither is one that takes no `testing.TB`: `infra/internal/pulumitest/pulumitest.go` builds the test binary's own plugin once per binary, under a `sync.Once` and removed by its `Main`, and returns an error rather than failing a test.
+  Both still run go through `testgo.Output`.
+
+- A Bun test or test helper that starts go takes `goOutput` or `goOutputSync` from `@legion/test-fixtures/go-command`, which do for Bun what `testgo.Output` does for Go: go's standard error reaches the test's output as go writes it, and a failure names the command and carries both streams.
+  `goOutput` returns a promise and runs under Node as well as Bun, because Playwright's runner loads the Dispatch e2e harness under Node; `goOutputSync` is for a caller that cannot wait on a promise, takes go's standard input, and needs Bun.
 
 - A peer that is not there is the module's `internal/testport`: `Refused(t)` is a loopback address whose port the test holds bound, never listening, until it ends, so every dial to it is refused and no other program can bind the port, with or without `SO_REUSEADDR` or `SO_REUSEPORT`.
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
@@ -225,10 +234,15 @@ go test -timeout 20m ./internal/dispatch/api
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
-CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
-gives it 30 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
-steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
-tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
+CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself
+(`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's steps). The job is a
+matrix: each leg runs one shard of the package's tests under its own `-timeout 30m`, because the
+whole package took up to 1,527 s of one 30-minute deadline on CI's runners. A test's shard is
+`crc32(name) mod` the leg count, which `.github/scripts/go-test-shards.py` computes from the race
+test binary's own list, and the script fails the leg, naming the test, when the legs' `-run`
+patterns leave a test out or run one twice. A test you add needs no edit there. `envoy-go`
+leaves the package out of its unit step, and `text-checks` runs its fifteen source-guard tests by
+name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60 minutes.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default

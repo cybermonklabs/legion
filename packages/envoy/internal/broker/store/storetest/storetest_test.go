@@ -1,10 +1,11 @@
 package storetest
 
 import (
-	"errors"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // containerModule is the import prefix every testcontainers package shares.
@@ -19,13 +20,8 @@ const containerModule = "github.com/testcontainers/testcontainers-go"
 //
 // Control: import internal/testpg here again (or in testdb) and this fails, naming the path.
 func TestStoretestLinksNoContainerRuntime(t *testing.T) {
-	list := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", ".")
-	out, err := list.Output()
+	out, err := testgo.Output(exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", "."))
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			t.Fatalf("go list -deps .: %v: %s", err, exit.Stderr)
-		}
 		t.Fatalf("go list -deps .: %v", err)
 	}
 	deps := strings.Fields(string(out))

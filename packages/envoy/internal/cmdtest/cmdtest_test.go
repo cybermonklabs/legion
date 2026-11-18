@@ -2,12 +2,14 @@ package cmdtest
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -22,6 +24,9 @@ const (
 	heldPortChildEnv = "CMDTEST_HELD_PORT_CHILD"
 	// heldPortFD is the variable Pass names the child's inherited socket in.
 	heldPortFD = "CMDTEST_LISTEN_FD"
+	// stalledGoEnv names the directory of the stand-in go TestTheStalledGoBuild builds with; it is
+	// set only in the child TestAStalledBuildShowsGoStandardErrorWhenTheTestTimesOut starts.
+	stalledGoEnv = "CMDTEST_STALLED_GO"
 )
 
 func TestMain(m *testing.M) {
@@ -153,4 +158,61 @@ func TestStartThenRunsAfterExitBeforeExited(t *testing.T) {
 	if !exitedFirst {
 		t.Fatalf("afterExit ran before the process's exit was recorded (Cmd.ProcessState was nil)")
 	}
+}
+
+// A build whose go stalls, as a module download that never ends does, is named in the test's
+// output when the test times out: runBuild runs go through testgo.Output, which hands go's
+// standard error to the test binary's as go writes it, where a buffer read once go returns is lost
+// with the timeout's panic. The stand-in go writes the line a module download starts with, then
+// waits until the test binary that started it has exited, so it outlives that binary by a tenth of
+// a second at most.
+func TestAStalledBuildShowsGoStandardErrorWhenTheTestTimesOut(t *testing.T) {
+	if os.Getenv(stalledGoEnv) != "" {
+		t.Skip("the child runs TestTheStalledGoBuild, not this test")
+	}
+	dir := t.TempDir()
+	stand := "#!/bin/sh\n" +
+		"echo 'go: downloading example.com/stalled v1.0.0' >&2\n" +
+		"parent=$PPID\n" +
+		"for _ in $(seq 1 600); do\n" +
+		"  kill -0 \"$parent\" 2>/dev/null || exit 1\n" +
+		"  sleep 0.1\n" +
+		"done\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "go"), []byte(stand), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	killing, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(killing, os.Args[0], "-test.run=^TestTheStalledGoBuild$", "-test.timeout=3s")
+	// The child's -test.timeout panic skips its cleanups, so the t.TempDir runBuild makes in it
+	// stays. GOTMPDIR and TMPDIR, which t.TempDir reads in that order, put it under this test's dir,
+	// which goes when this test ends.
+	cmd.Env = append(os.Environ(), stalledGoEnv+"="+dir, "GOTMPDIR="+dir, "TMPDIR="+dir)
+	// The stand-in holds none of this command's pipes: testgo.Output's writers are no *os.File, so
+	// exec gives go pipes of the child's own, and the child's exit ends CombinedOutput. WaitDelay
+	// bounds that wait only if something the child starts ever inherits these pipes.
+	cmd.WaitDelay = 10 * time.Second
+	output, err := cmd.CombinedOutput()
+	if killing.Err() != nil {
+		t.Fatalf("the child outlived its 3s -test.timeout and was killed a minute in:\n%s", output)
+	}
+	if err == nil || !strings.Contains(string(output), "panic: test timed out") {
+		t.Fatalf("the child did not end in its -test.timeout (exit: %v):\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "go: downloading example.com/stalled v1.0.0") {
+		t.Fatalf("the child's output, which ends in its test timeout, does not show the stalled go's downloading line:\n%s", output)
+	}
+}
+
+// TestTheStalledGoBuild builds with the stand-in go its parent wrote, which never returns, so the
+// child's -test.timeout ends it.
+func TestTheStalledGoBuild(t *testing.T) {
+	dir := os.Getenv(stalledGoEnv)
+	if dir == "" {
+		t.Skip("run by TestAStalledBuildShowsGoStandardErrorWhenTheTestTimesOut, in a child of its own")
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	BuildCommand(t, Command{Name: "stalled"})
+	t.Fatal("the stand-in go returned; it waits until this binary has exited")
 }

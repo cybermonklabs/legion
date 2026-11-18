@@ -36,6 +36,23 @@ jobs:
     # the dump that names it: about 1 minute of setup, up to 5 minutes to compile the race
     # binaries, then the step's own 30 minutes, which is 36.
     timeout-minutes: 45
+    # One leg per shard of the package's tests. Run whole, the package
+    # took 913 s to 1,527 s of its 1,800-second -timeout on the runners of 2026-11-16 (jobs
+    # 133268762448 and 133298210013), over the race lane's bar of 1,080 s, which is 60 % of that
+    # timeout: whether the job passed depended on the runner it got. Each
+    # leg now runs the shard .github/scripts/go-test-shards.py gives it, a test's shard being
+    # crc32(name) mod the leg count, so a test added later lands in exactly one leg and none is
+    # kept by hand. The script reads the leg count and this leg's index from the matrix itself
+    # (strategy.job-total, strategy.job-index), so this list is the one place the count is
+    # written: a leg added here re-splits every shard. Every leg pays the race compile again,
+    # about 2.3 minutes, and runs one shard of the package. Measured in run 43903619730 at
+    # d61e8261f5: legs 1 to 3 ran 708, 736 and 730 of the 2,174 tests, and their go test took
+    # 515.9 s, 476.6 s and 384.8 s, each under the 1,080 s bar.
+    # fail-fast is off so one leg's failure leaves the others to name theirs, as one job did.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -64,8 +81,17 @@ jobs:
           cache: false
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The leg's shard of the package. go-test-shards.py builds the race test binary this
+      # step's go test then runs (the go test takes every package from the build cache and links
+      # once more), lists the binary's tests, proves the legs' -run patterns together select
+      # each of them exactly once - failing the step, by test name, on one in no shard or in two
+      # - and prints this leg's pattern. The assignment is a line of its own: under bash -e it
+      # carries the script's exit status, so a refusal fails the step instead of running
+      # -run "", which matches every test.
       - name: Race-test the Dispatch API
-        run: go test -count=1 -race -timeout 30m ./internal/dispatch/api/
+        run: |
+          pattern=$(../../.github/scripts/go-test-shards.py pattern ${{ strategy.job-index }} ${{ strategy.job-total }} -race ./internal/dispatch/api/)
+          go test -count=1 -race -timeout 30m -run "$pattern" ./internal/dispatch/api/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

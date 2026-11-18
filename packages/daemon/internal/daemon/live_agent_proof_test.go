@@ -48,6 +48,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testgo"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -294,8 +295,8 @@ func buildProofLegion(t *testing.T, root, work string) string {
 	build := exec.Command("go", "build", "-o", binary, "./cmd/legion")
 	build.Dir = filepath.Join(root, "packages", "daemon")
 	build.Env = append(os.Environ(), "GOFLAGS=")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build legion from %s: %v\n%s", build.Dir, err, out)
+	if _, err := testgo.Output(build); err != nil {
+		t.Fatalf("build legion from %s: %v", build.Dir, err)
 	}
 	return binary
 }

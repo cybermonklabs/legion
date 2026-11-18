@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // RootEnv names the checkout whose packages/envoy is built. A driver that runs one checkout's
@@ -110,8 +112,8 @@ func buildEnvoy(command string) (string, error) {
 	binary := filepath.Join(dir, path.Base(command))
 	started := time.Now()
 	build := exec.Command("go", "build", "-C", module, "-o", binary, command)
-	if output, err := build.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("build %s in %s: %v\n%s", command, module, err, output)
+	if _, err := testgo.Output(build); err != nil {
+		return "", fmt.Errorf("build %s in %s: %w", command, module, err)
 	}
 	fmt.Fprintf(os.Stderr, "testbuild: built %s in %s\n", command, time.Since(started).Round(time.Millisecond))
 	return binary, nil

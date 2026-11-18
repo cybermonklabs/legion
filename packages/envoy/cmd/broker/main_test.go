@@ -310,7 +310,7 @@ func noAWSEnv(t *testing.T) []string {
 // buildBroker builds cmd/broker into a temporary directory and returns its path.
 func buildBroker(t *testing.T) string {
 	t.Helper()
-	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "broker", Env: append(os.Environ(), "GOTOOLCHAIN=go1.27.3")})
+	return cmdtest.Build(t, "broker")
 }
 
 // runRefusedBroker runs the broker binary with env and returns its output, failing t unless it

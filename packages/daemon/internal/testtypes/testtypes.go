@@ -11,13 +11,14 @@ package testtypes
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"go/importer"
 	"io"
 	"os"
 	"os/exec"
 	"sync"
+
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // lists is the go command's answer for each pattern asked of it in this process, each asked on
@@ -57,12 +58,8 @@ func CompiledDependencies(pattern string) (importer.Lookup, error) {
 // listExports asks the go command where the compiler left the types of pattern and of each
 // package it imports, and answers the lookup that opens them by import path.
 func listExports(pattern string) (importer.Lookup, error) {
-	listed, err := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Export", pattern).Output()
+	listed, err := testgo.Output(exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Export", pattern))
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return nil, fmt.Errorf("ask the go command where the dependencies of %s were compiled: %w: %s", pattern, err, exit.Stderr)
-		}
 		return nil, fmt.Errorf("ask the go command where the dependencies of %s were compiled: %w", pattern, err)
 	}
 	exports := make(map[string]string)

@@ -26,6 +26,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/envoy/testgo"
 )
 
 // lockEffect is a lock a function's own statements, or the functions it calls, take in the
@@ -263,11 +265,9 @@ func buildCopyLockGraph() (*lockGraph, error) {
 	}
 	command := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Dir,GoFiles,Export,Module", "./cmd/dispatch")
 	command.Dir = root
-	var stderr strings.Builder
-	command.Stderr = &stderr
-	output, err := command.Output()
+	output, err := testgo.Output(command)
 	if err != nil {
-		return nil, fmt.Errorf("list the Dispatch server's packages: %w\n%s", err, stderr.String())
+		return nil, fmt.Errorf("list the Dispatch server's packages: %w", err)
 	}
 	listed := map[string]listedPackage{}
 	decoder := json.NewDecoder(bytes.NewReader(output))

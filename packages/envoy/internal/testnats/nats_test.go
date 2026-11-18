@@ -22,6 +22,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/testgo"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -870,12 +872,8 @@ func containerImporters(t *testing.T) []containerImport {
 	const format = `{{.ImportPath}} {{join .Imports " "}} {{join .TestImports " "}} {{join .XTestImports " "}}`
 	list := exec.Command("go", "list", "-f", format, "./...")
 	list.Dir = envoyRoot
-	out, err := list.Output()
+	out, err := testgo.Output(list)
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			t.Fatalf("go list ./...: %v: %s", err, exit.Stderr)
-		}
 		t.Fatalf("go list ./...: %v", err)
 	}
 	var importers []containerImport

@@ -26,6 +26,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testgo"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
@@ -154,10 +155,10 @@ func buildLegion(t *testing.T) string {
 		if legionDir, legionErr = os.MkdirTemp("", "legion-it-bin"); legionErr != nil {
 			return
 		}
-		out, err := exec.Command("go", "build", "-o", filepath.Join(legionDir, "legion"),
-			"github.com/sjawhar/legion/daemon/cmd/legion").CombinedOutput()
+		_, err := testgo.Output(exec.Command("go", "build", "-o", filepath.Join(legionDir, "legion"),
+			"github.com/sjawhar/legion/daemon/cmd/legion"))
 		if err != nil {
-			legionErr = fmt.Errorf("go build cmd/legion: %v\n%s", err, out)
+			legionErr = fmt.Errorf("go build cmd/legion: %w", err)
 		}
 	})
 	if legionErr != nil {

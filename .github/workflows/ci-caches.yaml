@@ -22,21 +22,22 @@ name: CI caches
 # go-envoy-test (envoy-go, and the binaries, multiprocess and visual jobs of
 # .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: those three
 # build the Dispatch server and the real broker's commands, whose packages the go-envoy entry's
-# build of the listener and natsd alone does not hold) and go-envoy-infra (envoy-infra-go, and
-# the build job of release-envoy-infra.yaml).
+# build of the listener and natsd alone does not hold) and go-envoy-infra (envoy-infra-go,
+# envoy-smoke, whose live tests and plugin build are packages of the infra module this family
+# builds, and the build job of release-envoy-infra.yaml).
 # The key carries `runner.arch` because Go's build cache holds the objects of the architecture
 # that compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of
 # its objects. So each family is filled on every architecture one of its readers runs on, one
 # matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon,
 # go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
 # each has a reader on each (typecheck and the envoy lanes on the first; daemon-go, plugin-pack,
-# pi-legion, envoy-go-checks, the browser lane and the release builds on the second). A leg builds
-# what that runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its
-# arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg. One
-# Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
-# go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy
-# module's for go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is
-# first looked up (`lookup-only`, and no `restore-keys`: the question is whether that exact key
+# pi-legion, envoy-go-checks, envoy-smoke, the browser lane and the release builds on the second).
+# A leg builds what that runner's readers build and no more: go-daemon's arm64 reader is typecheck
+# alone, so its arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64
+# leg. One Go setup per leg, since the key carries the version that module's go.mod names: the
+# daemon's go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the
+# envoy module's for go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family
+# is first looked up (`lookup-only`, and no `restore-keys`: the question is whether that exact key
 # exists, and the answer downloads nothing), and only a miss runs the build the ci.yaml job runs
 # and saves what it left in the module cache and the build cache. A family whose key is already
 # there builds nothing, so a run that finds every key costs a checkout and a setup-go. Where a
