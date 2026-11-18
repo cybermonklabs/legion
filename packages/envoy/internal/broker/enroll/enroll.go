@@ -859,7 +859,7 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // principal is the pod's account alone, when the token login that enrolled it proved the same
 // account as this enrollment's login: the same daemon's own row, written by a broker replica that
 // had not yet taken the pair (exchange.PodLaunchPrincipal). The broker rolls one replica at a
-// time, so the old one writes such rows after migration 0033 has rewritten the rest, and without
+// time, so the old one writes such rows after migration 0035 has rewritten the rest, and without
 // this they would be adopted by nothing and their grants swept. Another daemon's legacy row is
 // still no predecessor, so no pod takes another daemon's grants under either spelling.
 //
