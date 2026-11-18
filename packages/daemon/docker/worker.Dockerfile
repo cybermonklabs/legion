@@ -69,11 +69,10 @@
 # lacks fails the build. That download is checked against no hash, so it runs in a stage of its
 # own and only its one-line marker reaches the runtime stage, whose bind mount of it is what makes
 # BuildKit build that stage. The other three run as the runtime user: the second checks every
-# binary runs on the base, proves
-# jj accepts the image's git with a network-free `jj git clone` of a scratch repository, and links
-# the CodeGraph plugin into the profile, which extracts Oh My Pi's natives from its binary; the
-# third runs every toolchain command, the language servers', Python's and the browser's included;
-# the last
+# binary runs on the base, proves jj accepts the image's git with a network-free `jj git clone` of
+# a scratch repository, and links the CodeGraph plugin into the profile, which extracts Oh My Pi's
+# natives from its binary; the third runs every toolchain command, the language servers', Python's
+# and the browser's included; the last
 # runs `legion version` and `legion probe-image`, which runs the three launch probes (the daemon's two
 # plus the session-storage probe), holds the Legion plugin to the daemon API contract and proves it
 # loads with the Envoy plugin, holds the claude-envoy root the same way — its built channel server,
@@ -253,11 +252,10 @@ COPY docs/site/package.json docs/site/package.json
 RUN bun install --frozen-lockfile
 # The playwright-core of the Playwright packages/dispatch locks, copied to /out/playwright-core:
 # the webkit-check stage launches this Playwright's WebKit. The install above uses Bun's isolated
-# linker, so playwright-core is not hoisted at /repo/node_modules. The RUN resolves it with
-# packages/daemon/docker/resolve-playwright-core.mjs, from packages/dispatch along the chain
-# @playwright/test, playwright, playwright-core, with Node's module resolution, which answers with
-# the real path, rather than assuming where it lies, so the check follows the version that package
-# locks; it prints that version and the directory it found.
+# linker, so playwright-core is not hoisted at /repo/node_modules, and
+# packages/daemon/docker/resolve-playwright-core.mjs finds it from packages/dispatch with Node's
+# module resolution (its header says how), so the check follows the version that package locks.
+# The RUN prints that version and the directory it found.
 RUN --mount=type=bind,source=packages/daemon/docker/resolve-playwright-core.mjs,target=/tmp/resolve-playwright-core.mjs \
     set -eu; \
     core="$(bun /tmp/resolve-playwright-core.mjs /repo/packages/dispatch/package.json)"; \

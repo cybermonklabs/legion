@@ -424,7 +424,6 @@ dispatch://INFRA-3257 makes the image larger again, each size read from the imag
 `ghcr.io/cybermonklabs/legion-worker@sha256:25d2edfc2a8c1bb7c3cb83689456f8e2892d91a7fcd544f9cf6719528395c5fe`, the `sha-c665b75abc16` build of that issue's pull request, is 39 layers and 2,332,350,242 bytes compressed, where legion-v20.25.1's `sha256:fd41039d01eda098e66f0475b359ac298732c1f256e2e029f1be469a382cacbd` is 35 layers and 1,865,031,383 bytes
 — 467,318,859 bytes more, +25%.
 Among what the pull request adds are the Google Cloud SDK, azure-cli and WebKit's host libraries (the image's contents above); no figure for any one of them is recorded here.
-The pull of the larger image must still fit `worker_boot_timeout_seconds`, as the lines below explain.
 On EKS, how long a node takes to pull that is not recorded here: the stage 4a launch below is where it is measured.
 The pull must fit the launch's wait for the role's launcher before any init container runs:
 `worker_boot_timeout_seconds` (`packages/daemon/internal/config/config.go`;
@@ -842,7 +841,7 @@ an SDK unpacked at `/opt/google-cloud-sdk` writes over the base's tree, and a `g
 The daemon's image probe then holds the layer's program to the compromised chains in the base's place.
 A stock SDK trusts the CA files it ships, which hold those roots: measured on 2026-11-18, gcloud 589.0.0 and bq 2.1.40 accepted the emSign chain, which fails the probe ([Worker image](#worker-image)).
 Drop such a step.
-A copy kept under a prefix of its own and run by its path is no way around the probe: the probe reads only `PATH`, so that copy is outside it, and nothing checks what it trusts.
+A copy kept under a prefix of its own and run by its path escapes the probe rather than passing it: the probe finds `gcloud`, `bq` and `az` on `PATH` alone, so nothing checks what that copy trusts.
 A deployment that needs its own copy of the SDK installs it in the base's place, `/opt/google-cloud-sdk`, with `core/custom_ca_certs_file` set to Debian's bundle, as `packages/daemon/docker/worker.Dockerfile` does, so the probe holds that copy to the chains.
 An `az` of its own goes in the base's place the same way, behind a wrapper that sets `REQUESTS_CA_BUNDLE` to that bundle, as the base's `/opt/azure-cli/bin/az` does.
 

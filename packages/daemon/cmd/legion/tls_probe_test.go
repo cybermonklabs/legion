@@ -245,8 +245,7 @@ func TestImageTLSClientsCoverTheWorkerInventory(t *testing.T) {
 	}
 }
 
-// optionalTLSClientNames is the name of each optional client of the image: gcloud, bq, az, mise
-// and socat.
+// optionalTLSClientNames names each optional client of the image.
 var optionalTLSClientNames = []string{"gcloud", "bq", "az", "mise", "socat"}
 
 // imageTLSClientsOf returns the image's clients of type T by name, built with no environment,
@@ -393,11 +392,13 @@ func TestImageRedisCLITLSClientTargetsTheSitesHost(t *testing.T) {
 }
 
 // No client carries a credential of the pod's to a site. The pod below holds, with a value of the
-// shape a real one has, every variable a probed client reads a credential from; at every site,
-// each client's environment holds none of those names and none of those values, but for a name
-// the client sets again to a dummy value of its own. The names are written out here rather than
-// read from tlsCredentialVariables, so a name dropped from that list fails this test. Each value is
-// one no client sets of its own.
+// shape a real one has, every variable a probed client reads a credential from, or reads the file
+// of one from; at every site, each client's environment holds none of those names and none of
+// those values, but for a name the client sets again to a dummy value of its own. The names are
+// written out here rather than read from tlsCredentialVariables, so a name dropped from that list
+// fails this test. Each value is one no client sets of its own. curl, wget, git and uv, which read
+// a netrc, an rc file or a user configuration from their home, run with a home of their own in the
+// state directory, never the pod's.
 func TestImageTLSClientsCarryNoCredentialOfThePods(t *testing.T) {
 	githubToken := func(seed string) string { return "ghp_" + strings.Repeat(seed, 9) }
 	pod := map[string]string{
@@ -435,15 +436,21 @@ func TestImageTLSClientsCarryNoCredentialOfThePods(t *testing.T) {
 		"AWS_CONTAINER_CREDENTIALS_RELATIVE_URI":    "/v2/credentials/5f1d2a3b-legion",
 		"AWS_CONTAINER_AUTHORIZATION_TOKEN":         strings.Repeat("c2VjcmV0", 5),
 		"AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE":    "/var/run/secrets/pods.eks.amazonaws.com/serviceaccount/eks-pod-identity-token",
+		"CURL_HOME":                                 "/home/legion/.curl-credentials",
+		"WGETRC":                                    "/home/legion/.wgetrc",
+		"UV_CONFIG_FILE":                            "/home/legion/.config/uv/uv.toml",
+		"GIT_CONFIG_GLOBAL":                         "/home/legion/.gitconfig-credentials",
 	}
 	// setAgain is each name a client sets again, to a dummy value of its own.
 	setAgain := map[string][]string{
 		"gh":      {"GH_TOKEN"},
+		"git":     {"GIT_CONFIG_GLOBAL"},
 		"go":      {"GOAUTH"},
 		"kubectl": {"KUBECONFIG"},
 		"gcloud":  {"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"},
 		"bq":      {"CLOUDSDK_AUTH_ACCESS_TOKEN_FILE"},
 	}
+	homeOfTheirOwn := []string{"curl", "wget", "git", "uv"}
 	env := []string{"HOME=/home/legion", "PATH=/usr/bin:/bin"}
 	for name, value := range pod {
 		env = append(env, name+"="+value)
@@ -471,6 +478,13 @@ func TestImageTLSClientsCarryNoCredentialOfThePods(t *testing.T) {
 				for credentialName, credential := range pod {
 					if value == credential {
 						t.Errorf("%s at %s carries the pod's %s value in %s", client.name(), site.name, credentialName, name)
+					}
+				}
+			}
+			if slices.Contains(homeOfTheirOwn, client.name()) {
+				for _, name := range []string{"HOME", "XDG_CONFIG_HOME"} {
+					if value := envValue(environment, name); !strings.HasPrefix(value, stateDir+string(os.PathSeparator)) {
+						t.Errorf("%s at %s has %s %q, want a directory under the state directory %s", client.name(), site.name, name, value, stateDir)
 					}
 				}
 			}

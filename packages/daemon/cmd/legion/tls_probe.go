@@ -296,7 +296,9 @@ var tlsCredentialVariables = []string{
 	// credential prompts.
 	"GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_ASKPASS", "SSH_ASKPASS",
 	// go: GOAUTH names the authentication commands that add headers to go's module fetches. NETRC
-	// names the netrc file go, uv, curl and wget can read credentials from.
+	// names the netrc file go and uv read credentials from, and git through a libcurl of 8.16 or
+	// later (leakguard's visibility_lsremote_test.go). GNU wget 1.25.0 ignores it, and curl reads
+	// no netrc without --netrc (both measured on 2026-11-18).
 	"GOAUTH", "NETRC",
 	// kubectl: with KUBERNETES_SERVICE_HOST and KUBERNETES_SERVICE_PORT unset, client-go never takes
 	// the in-cluster configuration, which would send the pod's service-account token. KUBECONFIG
@@ -310,11 +312,18 @@ var tlsCredentialVariables = []string{
 	"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_ROLE_ARN",
 	"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
 	"AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
-	// No other variable gives a credential for a request to node, bun, omp, CodeGraph's node, uv (its
-	// --index-url names the site with no credential; UV_INDEX_USERNAME and UV_INDEX_PASSWORD sent
-	// nothing, measured), curl, python3, wget, socat, az (`az rest --skip-authorization-header`
-	// sends no Authorization header, from a new configuration directory in the state directory) or
-	// Chromium.
+	// Configuration files a client reads a credential from, besides the netrc above: curl's
+	// .curlrc (in CURL_HOME), wget's wgetrc (WGETRC), uv's uv.toml (UV_CONFIG_FILE), and git's user
+	// configuration (GIT_CONFIG_GLOBAL), each of which can carry a header or a password to every
+	// host. curl, wget, git and uv also run with a home and XDG_CONFIG_HOME of their own in the
+	// state directory (tlsClientHome), so no ~/.netrc, ~/.curlrc, ~/.wgetrc, ~/.gitconfig or
+	// ~/.config file of the pod's is read; git reads its user configuration from /dev/null.
+	"CURL_HOME", "WGETRC", "UV_CONFIG_FILE", "GIT_CONFIG_GLOBAL",
+	// No other variable or file gives a credential for a request to node, bun, omp, CodeGraph's
+	// node, uv (its --index-url names the site with no credential; UV_INDEX_USERNAME and
+	// UV_INDEX_PASSWORD sent nothing, measured), curl, python3, wget, socat, az (`az rest
+	// --skip-authorization-header` sends no Authorization header, from a new configuration
+	// directory in the state directory) or Chromium.
 }
 
 // tlsEnvironment is base without each variable unset names and each variable set gives a value,
@@ -481,6 +490,14 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 	}
 }
 
+// tlsClientHome is the home and configuration directory client keeps under stateDir, for a
+// client that would otherwise read a credential from a file of the pod's home: a netrc, a .curlrc,
+// a wgetrc, a git configuration or a uv.toml.
+func tlsClientHome(stateDir, client string) []string {
+	home := filepath.Join(stateDir, client)
+	return []string{"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, "config")}
+}
+
 // workerTLSClients is the worker image's TLS client inventory. It is complete by trust path, not
 // by program: for each pair of a TLS stack and the CA store it trusts that a program on a role's
 // PATH uses, at least one client here is held to the chains on every image. A program that carries
@@ -619,8 +636,8 @@ var workerTLSClients = []tlsClientSpec{
 	},
 	{
 		name: "uv", program: "uv", timeout: tlsDefaultProbeTimeout, applicationSeen: uvResponseSeen,
-		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"pip", "install", "--system", "--break-system-packages", "--dry-run", "--no-deps", "--no-cache", "--index-url", site.url, "legion-tls-probe-not-a-package"}, nil
+		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
+			return []string{"pip", "install", "--system", "--break-system-packages", "--dry-run", "--no-deps", "--no-cache", "--index-url", site.url, "legion-tls-probe-not-a-package"}, tlsClientHome(stateDir, "uv")
 		},
 	},
 	{
@@ -631,8 +648,8 @@ var workerTLSClients = []tlsClientSpec{
 	},
 	{
 		name: "curl", program: "curl", timeout: tlsDefaultProbeTimeout,
-		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"--fail", "--silent", "--show-error", site.url}, nil
+		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
+			return []string{"--fail", "--silent", "--show-error", site.url}, tlsClientHome(stateDir, "curl")
 		},
 	},
 	{
@@ -651,18 +668,20 @@ var workerTLSClients = []tlsClientSpec{
 	// the control's page, so, as curl, it needs no response marker.
 	{
 		name: "wget", program: "wget", timeout: tlsDefaultProbeTimeout,
-		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"--no-verbose", "--no-hsts", "--tries=1", "--output-document=/dev/null", site.url}, nil
+		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
+			return []string{"--no-verbose", "--no-hsts", "--tries=1", "--output-document=/dev/null", site.url}, tlsClientHome(stateDir, "wget")
 		},
 	},
 	// The PATH's git: in a pod, the /opt/legion/bin/git wrapper, which hands ls-remote to
-	// /usr/bin/git unchanged. GIT_TERMINAL_PROMPT=0 keeps it from waiting on a credential prompt.
+	// /usr/bin/git unchanged. GIT_TERMINAL_PROMPT=0 keeps it from waiting on a credential prompt,
+	// and GIT_CONFIG_GLOBAL=/dev/null keeps it from reading a user configuration, whose
+	// http.extraHeader git sends to every host; the image's system configuration still applies.
 	// No site is a git repository, so git fails ls-remote at the control too, after the handshake;
 	// gitSiteAnswer reads that answer.
 	{
 		name: "git", program: "git", timeout: tlsDefaultProbeTimeout, applicationSeen: gitSiteAnswer.MatchString,
-		command: func(site tlsSite, _, _ string) ([]string, []string) {
-			return []string{"ls-remote", site.url}, []string{"GIT_TERMINAL_PROMPT=0"}
+		command: func(site tlsSite, stateDir, _ string) ([]string, []string) {
+			return []string{"ls-remote", site.url}, append(tlsClientHome(stateDir, "git"), "GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_GLOBAL=/dev/null")
 		},
 	},
 	// go's fetch of a module path at the site's host, the fetch `go install` and `go get` make with
