@@ -557,10 +557,11 @@ assert_instance_isolated() {
   # The example that takes a github-app secret runs its curl in a shell of its own, so that
   # shell expands the name the grant put in the child's environment. An example that printed
   # the name with a backslash before it, outside any shell, would have curl send those
-  # characters, and the stand would answer 401 to a token it never minted. grep -F reads a
-  # newline as another pattern, so the one line that carries the shell is the pattern here.
+  # characters, and the stand would answer 401 to a token it never minted. The header reaches
+  # curl on standard input, so the token is in no command line. grep -F reads a newline as
+  # another pattern, so the one line that carries the shell is the pattern here.
   local github_example
-  github_example=$'sh -c \'curl -fsS -H "Authorization: Bearer $DEMO_GITHUB_APP" http://'
+  github_example=$'sh -c \'printf "Authorization: Bearer %s" "$DEMO_GITHUB_APP" | curl -fsS -H @- http://'
   if ! grep -qF -- "$github_example" "$log_file"; then
     cat "$log_file" >&2
     echo "FAIL: $label's banner does not run its --github-token example's curl in a shell that expands DEMO_GITHUB_APP" >&2

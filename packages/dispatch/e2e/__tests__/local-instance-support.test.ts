@@ -8,11 +8,15 @@ import {
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { ServerWebSocket } from "bun";
 
+import { expectTimeout } from "../expect-timeout";
 import {
+  awaitDecisionBlock,
+  awaitPostgres,
   awaitSeededInbox,
   databaseUrlRefusal,
   type InboxRowRead,
   Interrupted,
+  type OpenAskRead,
   type SeededInboxRow,
   Supervisor,
   shellQuote,
@@ -87,6 +91,72 @@ function killLeft(pid: number): void {
  *  two turns before it stops listening for an unhandled rejection: Bun 1.4.4 reports one within
  *  the first turn, and the second keeps the row from resting on which turn that is. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/** Runs every row of the calling `describe` on Bun's fake timers. A wait's deadline, its sleeps
+ *  and each read's budget are `setTimeout`s and `Date.now()` readings, so a row moves the clock
+ *  with `jest.advanceTimersByTime` and decides by where the clock stands, never by how fast the
+ *  machine runs. */
+function onFakeClock(): void {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+  // A fake clock left behind stops the timers of every row the same worker runs after this one.
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+}
+
+/** Moves the fake clock `ms` on one millisecond at a time, and lets what each step released run
+ *  before the next, so a sleep or a read the helper starts inside the span is timed from the
+ *  moment it starts. One jump is not enough: once the process has spawned a child, Bun fires
+ *  every timer of the span before the helper's continuations run, and the next sleep then
+ *  starts at the end of the span. Each step ends on `nextTurn`, so every promise the helper
+ *  chained runs as far as it goes before the clock moves again. */
+async function pass(ms: number): Promise<void> {
+  await nextTurn();
+  for (let step = 0; step < ms; step += 1) {
+    jest.advanceTimersByTime(1);
+    await nextTurn();
+  }
+}
+
+/** Moves the fake clock on as `pass` does until `waiting` settles, and answers how far it had
+ *  moved by then, in milliseconds. A wait still unsettled once the clock has moved `limitMs`
+ *  fails here, naming that limit, rather than on the runner's timeout. */
+async function clockWhenSettled(waiting: Promise<unknown>, limitMs: number): Promise<number> {
+  const started = Date.now();
+  const settled = watch(waiting);
+  await nextTurn();
+  for (let step = 0; !settled() && step < limitMs; step += 1) {
+    jest.advanceTimersByTime(1);
+    await nextTurn();
+  }
+  if (!settled()) {
+    throw new Error(`the wait had not settled once the fake clock moved ${limitMs} ms`);
+  }
+  // The clock moves only in the loop above, so it still reads the moment the wait settled.
+  return Date.now() - started;
+}
+
+/** The message `waiting` rejects with, which must be an Error. */
+async function rejectionOf(waiting: Promise<unknown>): Promise<string> {
+  const error = await waiting.then(
+    () => undefined,
+    (reason: unknown) => reason
+  );
+  expect(error).toBeInstanceOf(Error);
+  return (error as Error).message;
+}
+
+/** The bound each wait's never-holding row gives it, and how long past that bound the wait may
+ *  still give up: within one second, as each wait's own interval keeps it. */
+const neverHoldsBoundMs = 2_000;
+const pastBoundMs = 1_000;
+
+/** How far a never-holding row moves the clock before it stops waiting: past the bound and the
+ *  margin the row asserts, so a wait that gives up late fails that assertion, and only a wait
+ *  that never gives up fails on this limit. */
+const unsettledLimitMs = neverHoldsBoundMs + 2 * pastBoundMs;
 
 /** A `Supervisor.stop` the row started and did not await. A stop that never sees a leader exit
  *  never returns, so the row waits for `returned` with `eventually`, which fails naming the stop,
@@ -393,27 +463,39 @@ describe("agentViewRefusal", () => {
     for (const server of servers.splice(0)) server.stop();
   });
 
-  /** The answer `agentViewRefusal` gives for `sessionId` against `baseUrl`, read from a process
-   *  with the runtime's own WebSocket: its refusal, or null for none. The first frame gets the
-   *  short bound, which the child's own bound ends too, so no row reads a stall of this machine
-   *  as Dispatch's silence. */
-  async function refusalFrom(
+  /** The answer `agentViewRefusal` gives for `sessionId` against `baseUrl` with `boundMs`, read
+   *  from a process with the runtime's own WebSocket: its refusal, or null for none, and how long
+   *  the call took there, in whole milliseconds rounded up. */
+  async function answerFrom(
     baseUrl: string,
     headers: Record<string, string>,
-    sessionId: string
-  ): Promise<string | null> {
+    sessionId: string,
+    boundMs: number
+  ): Promise<{ readonly refusal: string | null; readonly elapsedMs: number }> {
     const script =
       `const { agentViewRefusal } = await import(${JSON.stringify(supportModule)});\n` +
+      "const started = performance.now();\n" +
       `const answer = await agentViewRefusal(${JSON.stringify(baseUrl)}, ` +
-      `${JSON.stringify(headers)}, ${JSON.stringify(sessionId)}, ${bounds.short});\n` +
-      "process.stdout.write(JSON.stringify(answer ?? null));\n";
+      `${JSON.stringify(headers)}, ${JSON.stringify(sessionId)}, ${boundMs});\n` +
+      "const elapsedMs = Math.ceil(performance.now() - started);\n" +
+      "process.stdout.write(JSON.stringify({ elapsedMs, refusal: answer ?? null }));\n";
     const { code, named, stderr, stdout } = await runBounded({
       argv: [process.execPath, "-e", script],
       bound: "short",
       from: import.meta.url,
     });
     if (code !== 0) throw new Error(`the child ${named} exited ${code}: ${stderr}`);
-    return JSON.parse(stdout) as string | null;
+    return JSON.parse(stdout) as { readonly refusal: string | null; readonly elapsedMs: number };
+  }
+
+  /** `answerFrom`'s refusal, where the first frame gets the short bound, which the child's own
+   *  bound ends too, so no row reads a stall of this machine as Dispatch's silence. */
+  async function refusalFrom(
+    baseUrl: string,
+    headers: Record<string, string>,
+    sessionId: string
+  ): Promise<string | null> {
+    return (await answerFrom(baseUrl, headers, sessionId, bounds.short)).refusal;
   }
 
   /** A Dispatch whose live socket answers the agent view's subscribe with `answer`, recording the
@@ -497,21 +579,32 @@ describe("agentViewRefusal", () => {
     },
     rowLimit("short")
   );
+
+  test(
+    "a Dispatch that never answers is the refusal within 1 s of the 2 s bound, naming what came instead",
+    async () => {
+      const other = JSON.stringify({
+        data: { responding: true, v: 1 },
+        event: "responder",
+        sub: "another-page",
+        type: "agent",
+      });
+      const dispatch = dispatchAnswering((socket) => socket.send(other));
+      const { elapsedMs, refusal } = await answerFrom(dispatch.url, {}, SESSION, neverHoldsBoundMs);
+      expect(elapsedMs).toBeGreaterThanOrEqual(neverHoldsBoundMs);
+      expect(elapsedMs).toBeLessThanOrEqual(neverHoldsBoundMs + pastBoundMs);
+      expect(refusal).toBe(
+        `Dispatch's first frame for the agent view of ${SESSION} (subscription ` +
+          `local-instance-smoke) had not come after 2.0 s; the socket received 1 other frame, ` +
+          `the last ${other}`
+      );
+    },
+    rowLimit("short")
+  );
 });
 
 describe("awaitSeededInbox", () => {
-  // Every row runs on Bun's fake timers. The helper's deadline, its sleeps and each read's budget
-  // are `setTimeout`s and `Date.now()` readings, so a row moves the clock with
-  // `jest.advanceTimersByTime` and decides by where the clock stands, never by how fast the
-  // machine runs.
-  beforeEach(() => {
-    jest.useFakeTimers();
-  });
-
-  // A fake clock left behind stops the timers of every row the same worker runs after this one.
-  afterEach(() => {
-    jest.useRealTimers();
-  });
+  onFakeClock();
 
   /** Five rows like the seed's: four of its own asks, the runbook's on a document and no issue,
    *  and the spec's decision row, declared by its block id on its issue. */
@@ -546,11 +639,15 @@ describe("awaitSeededInbox", () => {
   ];
   const wholeSet: readonly InboxRowRead[] = [...shortSet, decisionRow];
   const missingDecision = "    - the spec decision block on CORE-1 (block b-9f3c1a)";
+  /** The fact the wait reads, which its failure starts with. */
+  const fact = "inbox rows: the Inbox lists exactly the 5 rows the seed declares";
+  /** The closing line of every failure before the owner's: how many rows the seed declares. */
+  const declares = "  the seed declares 5 rows.";
   const owner =
     "  These rows are written by the seed (packages/dispatch/e2e/workspace.ts) and by Dispatch's " +
     "own document settlement, not by the change under test.";
   /** For every row that waits out its deadline: 300 ms on the moved clock. */
-  const quick = { deadlineMs: 300, intervalMs: 20 };
+  const quick = { boundMs: 300, intervalMs: 20 };
 
   /** A reader that answers `answer(call)` for its 1-based call, or throws it when it is an error,
    *  and counts its calls. */
@@ -565,20 +662,6 @@ describe("awaitSeededInbox", () => {
       },
     };
     return made;
-  }
-
-  /** Moves the fake clock `ms` on one millisecond at a time, and lets what each step released run
-   *  before the next, so a sleep or a read the helper starts inside the span is timed from the
-   *  moment it starts. One jump is not enough: once the process has spawned a child, Bun fires
-   *  every timer of the span before the helper's continuations run, and the next sleep then
-   *  starts at the end of the span. Each step ends on `nextTurn`, so every promise the helper
-   *  chained runs as far as it goes before the clock moves again. */
-  async function pass(ms: number): Promise<void> {
-    await nextTurn();
-    for (let step = 0; step < ms; step += 1) {
-      jest.advanceTimersByTime(1);
-      await nextTurn();
-    }
   }
 
   /** Moves the clock `ms` on and checks that `waiting` has settled by then, so a wait that never
@@ -616,19 +699,14 @@ describe("awaitSeededInbox", () => {
 
   /** The message `waiting` rejects with, which must be an Error ending in the owner line. */
   async function failureOf(waiting: Promise<unknown>): Promise<string> {
-    const error = await waiting.then(
-      () => undefined,
-      (reason: unknown) => reason
-    );
-    expect(error).toBeInstanceOf(Error);
-    const { message } = error as Error;
+    const message = await rejectionOf(waiting);
     expect(message.split("\n").at(-1)).toBe(owner);
     return message;
   }
 
   test("a row that arrives late is waited for", async () => {
     const inbox = reader((call) => (call < 3 ? shortSet : wholeSet));
-    const waiting = awaitSeededInbox(declared, inbox.read, { deadlineMs: 10_000, intervalMs: 20 });
+    const waiting = awaitSeededInbox(declared, inbox.read, { boundMs: 10_000, intervalMs: 20 });
     // Reads at 0, 20 and 40 ms.
     await settledAfter(40, waiting);
     const match = await waiting;
@@ -641,15 +719,16 @@ describe("awaitSeededInbox", () => {
     const stray: InboxRowRead = { block_id: "b-9f3c1a", id: "ask-stray", issue_key: "CORE-7" };
     const inbox = reader(() => [...shortSet, stray]);
     const waiting = awaitSeededInbox(declared, inbox.read, quick);
-    await settledAfter(quick.deadlineMs, waiting);
+    await settledAfter(quick.boundMs, waiting);
     const message = await failureOf(waiting);
     expect(message).toContain(
       [
+        "  the last read answered: 5 rows",
         "  missing (the seed declares it, the Inbox did not list it):",
         missingDecision,
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - ask ask-stray on CORE-7 (block b-9f3c1a)",
-        "  the Inbox answered 5 rows; the seed declares 5.",
+        declares,
       ].join("\n")
     );
   });
@@ -658,15 +737,16 @@ describe("awaitSeededInbox", () => {
     const extra: InboxRowRead = { block_id: null, id: "ask-extra", issue_key: "CORE-9" };
     const inbox = reader(() => [...wholeSet, extra]);
     const waiting = awaitSeededInbox(declared, inbox.read, quick);
-    await settledAfter(quick.deadlineMs, waiting);
+    await settledAfter(quick.boundMs, waiting);
     const message = await failureOf(waiting);
     expect(message).toContain(
       [
+        "  the last read answered: 6 rows",
         "  missing (the seed declares it, the Inbox did not list it):",
         "    - none",
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - ask ask-extra on CORE-9 (block none)",
-        "  the Inbox answered 6 rows; the seed declares 5.",
+        declares,
       ].join("\n")
     );
   });
@@ -674,41 +754,41 @@ describe("awaitSeededInbox", () => {
   test("a row that never arrives is named missing after the deadline", async () => {
     const inbox = reader(() => shortSet);
     const waiting = awaitSeededInbox(declared, inbox.read, quick);
-    await settlesAt(quick.deadlineMs, waiting);
+    await settlesAt(quick.boundMs, waiting);
     const message = await failureOf(waiting);
     const waited = message.match(
-      new RegExp(
-        `^inbox rows: the Inbox and the seed still disagree after (\\d+\\.\\d) s and ${inbox.calls} reads\\.\\n`
-      )
+      new RegExp(`^${fact}: still not so after (\\d+\\.\\d) s and ${inbox.calls} reads\\.\\n`)
     );
     expect(waited).not.toBeNull();
     expect(Number(waited?.[1])).toBeGreaterThanOrEqual(0.3);
     expect(message).toContain(
       [
+        "  the last read answered: 4 rows",
         "  missing (the seed declares it, the Inbox did not list it):",
         missingDecision,
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - none",
-        "  the Inbox answered 4 rows; the seed declares 5.",
+        declares,
       ].join("\n")
     );
     expect(message).not.toContain("the last read failed");
   });
 
-  test("a wait given no options ends at the 15 s default deadline", async () => {
-    // `e2e/workspace.e2e.ts` passes no options, so this deadline is the one its wait has.
+  test("a wait given the browser rows' bound ends at its 15 s", async () => {
+    // `e2e/workspace.e2e.ts` passes its project's expect timeout, so this deadline is the one
+    // its seed's wait has.
     const inbox = reader(() => shortSet);
-    const waiting = awaitSeededInbox(declared, inbox.read);
+    const waiting = awaitSeededInbox(declared, inbox.read, { boundMs: expectTimeout });
     await settlesAt(15_000, waiting);
     const message = await failureOf(waiting);
     expect(message.split("\n")[0]).toBe(
-      `inbox rows: the Inbox and the seed still disagree after 15.0 s and ${inbox.calls} reads.`
+      `${fact}: still not so after 15.0 s and ${inbox.calls} reads.`
     );
   });
 
   test("the whole set at once returns on the first read", async () => {
     const inbox = reader(() => wholeSet);
-    const waiting = awaitSeededInbox(declared, inbox.read);
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
     await settledAfter(0, waiting);
     const match = await waiting;
     expect(inbox.calls).toBe(1);
@@ -725,7 +805,7 @@ describe("awaitSeededInbox", () => {
         asked.resolve();
         return new Promise<never>(() => {});
       },
-      { deadlineMs: 10_000, intervalMs: 20, signal: stopping.signal }
+      { boundMs: 10_000, intervalMs: 20, signal: stopping.signal }
     );
     await asked.promise;
     // The clock does not move after the abort: "at once" is before any timer fires.
@@ -738,7 +818,7 @@ describe("awaitSeededInbox", () => {
     const inbox = reader((call) =>
       call <= 3 ? new Error("GET /api/v1/inbox failed: 502 bad gateway") : wholeSet
     );
-    const waiting = awaitSeededInbox(declared, inbox.read, { deadlineMs: 10_000, intervalMs: 20 });
+    const waiting = awaitSeededInbox(declared, inbox.read, { boundMs: 10_000, intervalMs: 20 });
     // Reads at 0, 20, 40 and 60 ms.
     await settledAfter(60, waiting);
     const match = await waiting;
@@ -750,17 +830,15 @@ describe("awaitSeededInbox", () => {
   test("reads that always fail say that no read answered, and the last error", async () => {
     const inbox = reader((call) => new Error(`GET /api/v1/inbox failed: 500 attempt ${call}`));
     const waiting = awaitSeededInbox(declared, inbox.read, quick);
-    await settledAfter(quick.deadlineMs, waiting);
+    await settledAfter(quick.boundMs, waiting);
     const message = await failureOf(waiting);
     const lines = message.split("\n");
     expect(lines[0]).toMatch(
-      new RegExp(
-        `^inbox rows: no read of the Inbox answered in \\d+\\.\\d s over ${inbox.calls} reads\\.$`
-      )
+      new RegExp(`^${fact}: no read answered in \\d+\\.\\d s over ${inbox.calls} reads\\.$`)
     );
     expect(lines.slice(1)).toEqual([
-      "  the seed declares 5 rows.",
       `  the last read failed: GET /api/v1/inbox failed: 500 attempt ${inbox.calls}`,
+      declares,
       owner,
     ]);
   });
@@ -768,15 +846,16 @@ describe("awaitSeededInbox", () => {
   test("a second copy of a declared row is unexpected, and no row is missing", async () => {
     const inbox = reader(() => [...wholeSet, shortSet[1]]);
     const waiting = awaitSeededInbox(declared, inbox.read, quick);
-    await settledAfter(quick.deadlineMs, waiting);
+    await settledAfter(quick.boundMs, waiting);
     const message = await failureOf(waiting);
     expect(message).toContain(
       [
+        "  the last read answered: 6 rows",
         "  missing (the seed declares it, the Inbox did not list it):",
         "    - none",
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - ask ask-snoozed on CORE-3 (block none)",
-        "  the Inbox answered 6 rows; the seed declares 5.",
+        declares,
       ].join("\n")
     );
   });
@@ -786,17 +865,18 @@ describe("awaitSeededInbox", () => {
       call === 1 ? shortSet : new Error(`GET /api/v1/inbox failed: 500 attempt ${call}`)
     );
     const waiting = awaitSeededInbox(declared, inbox.read, quick);
-    await settledAfter(quick.deadlineMs, waiting);
+    await settledAfter(quick.boundMs, waiting);
     const message = await failureOf(waiting);
-    expect(message).toStartWith("inbox rows: the Inbox and the seed still disagree after ");
+    expect(message).toStartWith(`${fact}: still not so after `);
     expect(message).toContain(
       [
+        "  the last read answered: 4 rows",
         "  missing (the seed declares it, the Inbox did not list it):",
         missingDecision,
         "  unexpected (the Inbox listed it, the seed declares no such row):",
         "    - none",
-        "  the Inbox answered 4 rows; the seed declares 5.",
         `  the last read failed: GET /api/v1/inbox failed: 500 attempt ${inbox.calls}`,
+        declares,
         owner,
       ].join("\n")
     );
@@ -804,11 +884,11 @@ describe("awaitSeededInbox", () => {
 
   test("a read that never answers is a failed read once the deadline passes", async () => {
     const waiting = awaitSeededInbox(declared, () => new Promise<never>(() => {}), quick);
-    await settlesAt(quick.deadlineMs, waiting);
+    await settlesAt(quick.boundMs, waiting);
     const message = await failureOf(waiting);
     expect(message.split("\n").slice(1)).toEqual([
-      "  the seed declares 5 rows.",
       "  the last read failed: the read had not answered within 0.3 s",
+      declares,
       owner,
     ]);
   });
@@ -823,25 +903,24 @@ describe("awaitSeededInbox", () => {
       return Date.now() - started < 200 ? Promise.resolve(shortSet) : new Promise<never>(() => {});
     };
     const waiting = awaitSeededInbox(declared, read, quick);
-    await settlesAt(quick.deadlineMs, waiting, quick.intervalMs);
+    await settlesAt(quick.boundMs, waiting, quick.intervalMs);
     const message = await failureOf(waiting);
     expect(calls).toBeGreaterThan(1);
     const lines = message.split("\n");
     expect(lines[0]).toMatch(
-      new RegExp(
-        `^inbox rows: the Inbox and the seed still disagree after \\d+\\.\\d s and ${calls} reads\\.$`
-      )
+      new RegExp(`^${fact}: still not so after \\d+\\.\\d s and ${calls} reads\\.$`)
     );
-    expect(lines.slice(1, -2)).toEqual([
+    expect(lines.slice(1, -3)).toEqual([
+      "  the last read answered: 4 rows",
       "  missing (the seed declares it, the Inbox did not list it):",
       missingDecision,
       "  unexpected (the Inbox listed it, the seed declares no such row):",
       "    - none",
-      "  the Inbox answered 4 rows; the seed declares 5.",
     ]);
-    expect(lines.at(-2)).toMatch(
+    expect(lines.at(-3)).toMatch(
       /^ {2}the last read failed: the read had not answered within 0\.\d s$/
     );
+    expect(lines.at(-2)).toBe(declares);
     expect(lines.at(-1)).toBe(owner);
   });
 
@@ -849,7 +928,7 @@ describe("awaitSeededInbox", () => {
     // Reads at 0 ms and at 200 ms; the second sleep is cut to the 100 ms the deadline leaves, so
     // no third read starts at 400 ms with no time left to answer in.
     const inbox = reader(() => shortSet);
-    const waiting = awaitSeededInbox(declared, inbox.read, { deadlineMs: 300, intervalMs: 200 });
+    const waiting = awaitSeededInbox(declared, inbox.read, { boundMs: 300, intervalMs: 200 });
     await settlesAt(300, waiting);
     const message = await failureOf(waiting);
     expect(inbox.calls).toBeLessThanOrEqual(2);
@@ -866,7 +945,7 @@ describe("awaitSeededInbox", () => {
     };
     const inbox = reader(() => [...wholeSet, stray]);
     const waiting = awaitSeededInbox(declared, inbox.read, quick);
-    await settledAfter(quick.deadlineMs, waiting);
+    await settledAfter(quick.boundMs, waiting);
     const message = await failureOf(waiting);
     expect(message).toContain("    - ask ask-notes on the document Notes (block none)\n");
   });
@@ -879,7 +958,7 @@ describe("awaitSeededInbox", () => {
       return shortSet;
     });
     const waiting = awaitSeededInbox(declared, inbox.read, {
-      deadlineMs: 10_000,
+      boundMs: 10_000,
       intervalMs: 5_000,
       signal: stopping.signal,
     });
@@ -891,5 +970,98 @@ describe("awaitSeededInbox", () => {
     await settledAfter(0, waiting);
     await expect(waiting).rejects.toBeInstanceOf(Interrupted);
     expect(inbox.calls).toBe(1);
+  });
+
+  test("a read that never holds gives up within 1 s of its 2 s bound, naming the rows it last read", async () => {
+    const inbox = reader(() => shortSet);
+    const waiting = awaitSeededInbox(declared, inbox.read, { boundMs: neverHoldsBoundMs });
+    const at = await clockWhenSettled(waiting, unsettledLimitMs);
+    expect(at).toBeGreaterThanOrEqual(neverHoldsBoundMs);
+    expect(at).toBeLessThanOrEqual(neverHoldsBoundMs + pastBoundMs);
+    expect(await failureOf(waiting)).toBe(
+      [
+        `${fact}: still not so after 2.0 s and ${inbox.calls} reads.`,
+        "  the last read answered: 4 rows",
+        "  missing (the seed declares it, the Inbox did not list it):",
+        missingDecision,
+        "  unexpected (the Inbox listed it, the seed declares no such row):",
+        "    - none",
+        declares,
+        owner,
+      ].join("\n")
+    );
+  });
+});
+
+describe("awaitDecisionBlock", () => {
+  onFakeClock();
+
+  /** A read of an issue's open asks that answers `answer(call)` for its 1-based call, and counts
+   *  its calls. */
+  function openAsks(answer: (call: number) => readonly OpenAskRead[]) {
+    const made = {
+      calls: 0,
+      read: async (): Promise<readonly OpenAskRead[]> => {
+        made.calls += 1;
+        return answer(made.calls);
+      },
+    };
+    return made;
+  }
+
+  test("a block that arrives on the third read is the answer", async () => {
+    const asks = openAsks((call) =>
+      call < 3 ? [] : [{ block_id: "b-9f3c1a", id: "ask-decision" }]
+    );
+    const waiting = awaitDecisionBlock("CORE-1", asks.read, neverHoldsBoundMs);
+    // Reads at 0, 100 and 200 ms.
+    expect(await clockWhenSettled(waiting, neverHoldsBoundMs)).toBe(200);
+    expect(await waiting).toBe("b-9f3c1a");
+    expect(asks.calls).toBe(3);
+  });
+
+  test("open asks that never name a block give up within 1 s of the 2 s bound, naming the last read", async () => {
+    const asks = openAsks((call) => [{ block_id: null, id: `ask-other-${call}` }]);
+    const waiting = awaitDecisionBlock("CORE-1", asks.read, neverHoldsBoundMs);
+    const at = await clockWhenSettled(waiting, unsettledLimitMs);
+    expect(at).toBeGreaterThanOrEqual(neverHoldsBoundMs);
+    expect(at).toBeLessThanOrEqual(neverHoldsBoundMs + pastBoundMs);
+    expect(await rejectionOf(waiting)).toBe(
+      [
+        "seedWorkspace: CORE-1's open asks name its spec's decision block: still not so after " +
+          `2.0 s and ${asks.calls} reads.`,
+        `  the last read answered: ask ask-other-${asks.calls} (block none)`,
+      ].join("\n")
+    );
+  });
+});
+
+describe("awaitPostgres", () => {
+  onFakeClock();
+
+  test("a server that never answers gives up within 1 s of the 2 s bound, naming psql's last error", async () => {
+    const attempts: { readonly query: string; readonly limitMs: number }[] = [];
+    const refused = (attempt: number) =>
+      `psql: error: connection to server at "127.0.0.1", port 55432 failed: Connection refused ` +
+      `(attempt ${attempt})`;
+    const probe = async (query: string, limitMs: number): Promise<string> => {
+      attempts.push({ limitMs, query });
+      throw new Error(refused(attempts.length));
+    };
+    const waiting = awaitPostgres("127.0.0.1:55432", probe, neverHoldsBoundMs);
+    const at = await clockWhenSettled(waiting, unsettledLimitMs);
+    expect(at).toBeGreaterThanOrEqual(neverHoldsBoundMs);
+    expect(at).toBeLessThanOrEqual(neverHoldsBoundMs + pastBoundMs);
+    expect(await rejectionOf(waiting)).toBe(
+      [
+        `PostgreSQL at 127.0.0.1:55432 answers \`select 1\`: no read answered in 2.0 s over ` +
+          `${attempts.length} reads.`,
+        `  the last read failed: ${refused(attempts.length)}`,
+      ].join("\n")
+    );
+    // Attempts at 0, 500, 1000 and 1500 ms, each given the time the deadline left it then.
+    expect(attempts).toEqual(
+      [2_000, 1_500, 1_000, 500].map((limitMs) => ({ limitMs, query: "select 1" }))
+    );
   });
 });

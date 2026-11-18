@@ -159,12 +159,15 @@ function callDetails(home: string): Record<string, unknown> {
   return entry.details ?? {};
 }
 
-/** A sidebar entry's number: the badge after its name, 0 when it carries none, and undefined when
- *  the sidebar has no such entry at all. */
-async function railCount(page: Page, name: RegExp): Promise<number | undefined> {
-  const entry = page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name });
-  if ((await entry.count()) === 0) return undefined;
-  const digits = /(\d+)\s*$/.exec((await entry.innerText()).trim());
+/** A sidebar entry, found by how its name begins. */
+function railEntry(page: Page, name: RegExp): Locator {
+  return page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name });
+}
+
+/** A sidebar entry's number, read off the entry's text: the badge after its name, 0 when it
+ *  carries none. */
+function badgeNumber(text: string): number {
+  const digits = /(\d+)\s*$/.exec(text.trim());
   return digits === null ? 0 : Number(digits[1]);
 }
 
@@ -320,6 +323,8 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     await page.goto("/settings");
     await page.getByLabel("Token label").fill("Inbox reader");
     await page.getByRole("button", { name: "New token" }).click();
+    // textContent waits for the code element to attach, and an element's text is never null,
+    // so the check below only narrows the type.
     const token = await page.getByRole("status").locator("code").first().textContent();
     if (token === null) throw new Error("Settings minted no agent token");
     expect(token).toMatch(/^dsp_[A-Za-z0-9_-]{43}$/);
@@ -347,8 +352,16 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     expect(unreadThreads).toBe(
       (await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" })).total
     );
-    await expect.poll(() => railCount(page, /^Inbox/)).toBe(needsYou + unreadThreads);
-    expect(await railCount(page, /^Replies/)).toBeUndefined();
+    // An Inbox entry the rail has not drawn yet reads as no number, which the poll waits out.
+    const inboxEntry = railEntry(page, /^Inbox/);
+    await expect
+      .poll(async () =>
+        (await inboxEntry.count()) === 0 ? undefined : badgeNumber(await inboxEntry.innerText())
+      )
+      .toBe(needsYou + unreadThreads);
+    // Read once the poll above has held the rail's Inbox entry, so the rail has drawn: no
+    // Replies entry at this instant is none in the rail.
+    expect(await railEntry(page, /^Replies/).count()).toBe(0);
 
     await page.goto("/");
     await expect(inboxRow(page, seeded.ordinaryAsk)).toBeVisible();

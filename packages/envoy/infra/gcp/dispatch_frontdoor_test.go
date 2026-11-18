@@ -90,13 +90,17 @@ func writeFrontDoorCert(t *testing.T, dir, base, name string, notAfter time.Time
 	return certPEM
 }
 
+// frontDoorTestToken is the ServiceAccount token newFrontDoorCertPaths mounts, the one bearer the
+// test API servers admit, so a request that carried none, or another, is refused.
+const frontDoorTestToken = "not-a-real-token"
+
 // newFrontDoorCertPaths roots a dispatchCertPaths in the test's own directories, with tailscaled's
 // certificate cache created as tailscaled creates it, and a token for the scripts to present.
 func newFrontDoorCertPaths(t *testing.T, secretURL string) dispatchCertPaths {
 	t.Helper()
 	p := dispatchCertPaths{service: tailnetServicePaths{mount: t.TempDir()}, secret: t.TempDir(), tokens: t.TempDir(), secretURL: secretURL}
 	require.NoError(t, os.MkdirAll(p.cache(), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(p.tokens, "token"), []byte("not-a-real-token"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(p.tokens, "token"), []byte(frontDoorTestToken), 0o600))
 	return p
 }
 
@@ -172,7 +176,7 @@ func newFrontDoorSecretStore(t *testing.T) *frontDoorSecretStore {
 			http.Error(w, "want a merge patch, got "+got, http.StatusBadRequest)
 			return
 		}
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		if r.Header.Get("Authorization") != "Bearer "+frontDoorTestToken {
 			http.Error(w, "unauthenticated", http.StatusUnauthorized)
 			return
 		}
@@ -288,6 +292,38 @@ func TestDispatchCertPublishWritesOnlyALaterCertificate(t *testing.T) {
 	require.NotEqual(t, later, store.published(t))
 	latest.publish(t)
 	require.Equal(t, 1, store.count(), "and then goes quiet: the published certificate is its own")
+}
+
+// The ServiceAccount's token and the certificate's private keys reach the API server, and no
+// command's arguments, which every process of the pod can read. The publisher runs under a curl
+// that writes down every argument it is handed and then runs the real one. The server admits only
+// the mounted token, so the write proves the bearer arrived; the record must hold the Secret's
+// URL, so it is the publish call's own, and none of the three.
+func TestDispatchCertPublishPutsNoCredentialInACommandLine(t *testing.T) {
+	store := newFrontDoorSecretStore(t)
+	p := newPublishPod(t, store)
+	p.holds(t, frontDoorTestFQDN, time.Now().Add(60*24*time.Hour))
+	realCurl, err := exec.LookPath("curl")
+	require.NoError(t, err)
+	shim := t.TempDir()
+	record := filepath.Join(shim, "arguments")
+	require.NoError(t, os.WriteFile(filepath.Join(shim, "curl"),
+		[]byte(fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" >>%q\nexec %q \"$@\"\n", record, realCurl)), 0o755))
+
+	p.publish(t, "PATH="+shim+string(os.PathListSeparator)+os.Getenv("PATH"))
+	require.Equal(t, 1, store.count(), "the publish reached the API server, which admits only the mounted token")
+	arguments, err := os.ReadFile(record)
+	require.NoError(t, err)
+	require.Contains(t, string(arguments), store.url, "the record is the publish call's own")
+	key, err := os.ReadFile(filepath.Join(p.paths.cache(), frontDoorTestFQDN+".key"))
+	require.NoError(t, err)
+	for what, secret := range map[string]string{
+		"the ServiceAccount token":      frontDoorTestToken,
+		"the certificate's private key": base64.StdEncoding.EncodeToString(key),
+		"the ACME account key":          base64.StdEncoding.EncodeToString([]byte("account key")),
+	} {
+		require.False(t, strings.Contains(string(arguments), secret), "%s is in curl's command line", what)
+	}
 }
 
 // Two pods whose certificates expire at the same instant converge. The comparison is -le for
@@ -572,7 +608,7 @@ func newFrontDoorLedger(t *testing.T, claims string) *frontDoorLedger {
 		return map[string]*string{dispatchCertificateClaimsAnnotation: &l.claims, dispatchFrontDoorNodesAnnotation: &l.nodes}
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		if r.Header.Get("Authorization") != "Bearer "+frontDoorTestToken {
 			http.Error(w, "unauthenticated", http.StatusUnauthorized)
 			return
 		}
