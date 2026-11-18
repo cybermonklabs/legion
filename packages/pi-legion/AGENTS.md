@@ -95,21 +95,7 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 160 (dispatch://INFRA-2009:
-the daemon's answer to an issue pod launcher's hello carries the cache trimmer's settings in
-`volumeTrim`, the launcher reports a sweep that leaves the volume above its low mark, and a trimmer
-that switched itself off, in a new `launcher_volume_report` frame, and the state body's
-`settings.runtime.kubernetes` gains `volume_trim`, which the plugin parses loosely, so no shape the
-plugin parses moves), after contract 152's App-installation reach (dispatch://INFRA-2543: the
-GitHub App installation, and no longer the project's Dispatch repository mapping, decides which
-repositories a project works in, so the state's `repositories.mapped` is every repository the
-daemon serves and each entry gains `apps`, which `packages/contracts/src/legion-api.ts` reads as
-optional, the controller's GitHub credential answer carries `renames` and `installed`, and a role's
-gh bundle gains `renames.txt`), after contract 151's microVM issue pods (dispatch://INFRA-3729: the
-launcher's command line gains `--microvm` and its metadata flags, the daemon's answer to an issue
-pod launcher's hello gains `kernelKills`, `launcher_memory_kill` gains `cause`, and the state's
-settings carry `runtime.kubernetes.sandbox`, which the plugin parses loosely, so no shape the
-plugin parses moves), after contract 146 (dispatch://INFRA-2614:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 146 (dispatch://INFRA-2614:
 a root at `admitted` carries its architect's `phaseEntry` and `givenEntry`, every issue carries
 `entryQueuedAt` and `entryConfirmedAt`, the two times of a claim's own record of its handshake of
 its last entry, which outlast that entry's task and which a tree's own root carries from its

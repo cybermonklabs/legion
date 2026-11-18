@@ -129,21 +129,9 @@ filesystem is what `roleEnvironment` (`packages/daemon/internal/runtime/sandbox/
 exists for, because a pod whose caches pass its ephemeral-storage limit is evicted — so an install
 under `$HOME` fails the first condition and is outside the sanctioned form, however little else it
 changes. The three artefacts above are the whole of that line's ground. Disk is not: every cache is
-already relocated onto the issue's volume (`docs/kubernetes.md`, "The tools a role's own work
-needs", carries the figures, and the cache trimmer that holds part of that volume under a mark is
-in `skill://legion-worker/references/tools.md`), and a sanctioned install is paid on the issue's
-own disk, by the issue's roles together. It is paid once per issue pod where the trimmer never
-deletes: uv's cache and its Pythons, the Go module cache and the Playwright registry. It is paid
-again after a sweep where the trimmer does delete. A `bunx --package` run installs its package
-into a directory of its own inside the bun install cache, `.bunx-<uid>/<package>@<version>`, but
-a sweep's entry is the cache's immediate child `.bunx-<uid>`: one entry for every role's bunx
-installs, since the roles share one uid, judged by the newest modification time inside it and
-deleted whole. `bunx` installs the package again — downloading what a sweep deleted of the
-cache's own entries for it — at the first run after its `<package>@<version>` directory is gone
-or its `package.json` is more than a day old; while it stands with a younger one, a run installs
-nothing, whatever a sweep deleted beside it (bun 1.4.4, measured in an issue pod on 2026-11-15).
-A `go run …@version` compiles again, from the module cache, once a sweep has deleted its entries
-of the Go build cache.
+already relocated onto the issue's volume, which has the room for them (`docs/kubernetes.md`, "The
+tools a role's own work needs", carries the figure), and a sanctioned install is paid once per
+issue pod, on the issue's own disk, by the issue's roles together.
 
 **The worked case, and the one a role actually meets: the Dispatch e2e stack.** A spec a role
 added or changed in `packages/dispatch` runs in the pod while it is written, as a development run,
