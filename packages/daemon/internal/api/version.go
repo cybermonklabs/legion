@@ -34,8 +34,8 @@ package api
 // package's tests (`contract_shapes_test.go`) and `.github/scripts/check-daemon-api-contract.sh`,
 // which keeps each contract's record fixed once the base carries it, refuse a change that does not.
 // Under `settings` the rule covers only the top-level keys a supported reader types (answers.go's
-// `typedSettings`): a settings key no reader types needs no band, no stand-in and no contract
-// number, only a value in the settings fixture, which the field census reads.
+// `typedSettings`): a settings key no reader types needs no band, stand-in or contract number,
+// only its row in settings_test.go's classification and, if `omitempty`, a fixture value.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.
@@ -2262,7 +2262,13 @@ package api
 // `updateReaskedForPushCheck` and `unpromptedTurnTakesAnswerBack`, and a fifth update state,
 // `push-check-reask`. main's #3982 removed the push-check re-ask and the take-back that they
 // reported, so this change dropped them before it merged. Neither field shipped in any contract,
-// so no record holds them and no caller is served them down.
+// so no record holds them and no caller is served them down. main's #4337 (ba774f01) moved what
+// `asked` reads, with no contract number: `UpdateTaskedAt` is now set when the round's ask reached
+// a session of the claim's role (supervise's Machine.PublishUpdateAsk), where it was set when the
+// ask was queued, and an ask that reached none leaves the claim `open` and is asked again. So
+// `open` is a round whose ask has reached no session of the role yet and `asked` one whose ask
+// reached one. `updateState` is this contract's own field, read by no reader below it, so no
+// serving-down is owed for the change.
 // The two contracts the boot gate alone covered are now served the shape their own entry
 // describes: a caller below 54
 // is served the state with each check view's `role` left off (`withoutCheckRole`), and a caller

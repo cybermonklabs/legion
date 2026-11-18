@@ -67,7 +67,7 @@ func TestUpdateStateOfAnswersOneOfTheFourStates(t *testing.T) {
 		{name: "the worker answered and reported no head", set: func(c *supervise.Claim) {
 			c.UpdateTaskedAt, c.UpdateSignalledAt = &askedAt, &answeredAt
 		}, want: UpdateStateAnswered},
-		// A worker can answer before the sweep queues the round's ask, so the answer
+		// A worker can answer before the round's ask reaches a session of its role, so the answer
 		// stands with the ask clock still empty (supervise's
 		// TestPodUpdateARoundDoesNotTakeTheAnswerOfTheRoundItReplaced).
 		{name: "the worker answered before the round published its ask", set: func(c *supervise.Claim) {

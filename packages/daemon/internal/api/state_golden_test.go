@@ -414,7 +414,7 @@ func populatedState(t *testing.T) State {
 							},
 							// The same round, on the worker that has not answered it yet: no head is
 							// reported until a worker answers, and the reasons are the round's own.
-							// The round queued its ask for this worker's role topic.
+							// The round's ask reached a session of this worker's role.
 							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
 							UpdateState:   UpdateStateAsked,
