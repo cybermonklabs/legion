@@ -227,7 +227,7 @@ type PassCounts struct {
 }
 
 // PassCursor is where a pass left the order, which is the address the pass after it takes the
-// order up at: the mapped repository, the number that names the page of its open pull requests
+// order up at: the covered repository, the number that names the page of its open pull requests
 // -- one more than the last head of the page before it, and zero for a repository's first page
 // -- and the first pull request of that page the pass did not finish, zero for the whole page.
 // Rest says the page is read from the repository's REST listing rather than from a query, and

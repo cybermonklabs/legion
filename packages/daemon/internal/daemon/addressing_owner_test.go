@@ -46,7 +46,7 @@ func TestTheAddressingNamesTheIssuesOwnArchitect(t *testing.T) {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
 	answers := &workflowRuntime{pool: pool, records: records}
-	s := specs{stateDir: t.TempDir(), project: "legion", prompts: composer, repositories: noRepositoriesView, owner: answers.owningArchitect}
+	s := specs{stateDir: t.TempDir(), project: "legion", prompts: composer, appOwners: noAppOwners, owner: answers.owningArchitect}
 	architect := func(issue string, state supervise.ClaimState) {
 		t.Helper()
 		if err := st.PutClaim(ctx, supervise.Claim{Token: mustClaimToken(t, issue, claim.RoleArchitect), Project: "legion", Tree: root, Issue: issue,

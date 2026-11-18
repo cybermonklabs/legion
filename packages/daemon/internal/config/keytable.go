@@ -237,7 +237,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod's workspace is a repository Dispatch maps to the daemon's project",
-			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's repositories are Dispatch's own mapping, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
+			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; a project's default repository and the repositories the daemon prepares before an issue names one are Dispatch's own mapping, while an issue may name any repository both role Apps are installed on, and its block carries what only that project does — its Slack channels, its production check, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
 				// order: one list carries both, so neither producer may write over the other.
@@ -266,7 +266,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "github_apps", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `projects` is set, and when runtime is kubernetes: every pod's workspace is cloned with the implement App's token",
-			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, narrowed to the repositories that agent works.",
+			Description: "The implement App (the implementer's and merger's identity) and the review App (every other role's), each with its id and its private key, from which the daemon mints every agent's GitHub token, which carries that App's permissions over every repository its installation holds (INFRA-2543).",
 			Read:        reads(readGitHubApps, func(f *fileConfig, v *GitHubApps) { f.GitHubApps = v }),
 		},
 		{
@@ -510,7 +510,7 @@ var nestedKeys = []memberGroup{
 	}},
 	{Path: "projects.<KEY>", Members: []member{
 		{Name: "commit_issue_trailer_repos", Default: "a pane stamps no commit with its issue key", RequiredBy: "no",
-			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; each must be one Dispatch maps to this project."},
+			Description: "The repositories whose commits carry their issue key, as the `Dispatch: <KEY>` trailer the pane's jj appends, so a squash landing the branch carries the key; the boot checks each name against Dispatch's mapping for this project and warns about one it does not find, which catches a typo, and a pane working that repository stamps its commits all the same."},
 		{Name: "deploys", Default: "", RequiredBy: "no",
 			Description: "Removed: the daemon no longer wakes a production check from a deploy run, so the workflows this key names configure nothing; a project that still sets it is warned about once at boot and the key is read for nothing."},
 		{Name: "experiments", Default: "every tree and issue of the project runs on the deployment's own settings", RequiredBy: "no",

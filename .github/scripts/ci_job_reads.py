@@ -50,6 +50,7 @@ covers them, not that they are complete.
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import NamedTuple
 
@@ -149,6 +150,27 @@ def envoy_go_files_but_infra():
         if entry.is_dir() and entry.name not in {"infra", "node_modules", "testdata"} and holds_go(entry):
             globs.append(f"{ENVOY}/{entry.name}/**/*.go")
     return globs
+
+
+def credential_check_reads():
+    """The files packages/daemon/internal/textcheck/credential_argument_test.go reads: every one
+    git tracks but those under docs/plans and docs/superpowers. A glob cannot leave a tree out, so
+    the read is one glob per top-level entry git tracks - `<dir>/**` for a directory, the name for
+    a file - with docs/ split the same way one level down, and each glob names a tracked file, as
+    rule 9 holds every read to."""
+    listed = subprocess.run(["git", "ls-files", "-z"], capture_output=True, check=True).stdout
+    globs = set()
+    for path in os.fsdecode(listed).split("\0"):
+        parts = path.split("/")
+        if not path:
+            continue
+        if parts[0] == "docs" and len(parts) > 1:
+            if parts[1] in {"plans", "superpowers"}:
+                continue
+            globs.add(f"docs/{parts[1]}/**" if len(parts) > 2 else path)
+        else:
+            globs.add(f"{parts[0]}/**" if len(parts) > 1 else path)
+    return sorted(globs)
 
 
 def files_but_tests(directory, suffix=".go", tree=False, skip=()):
@@ -480,6 +502,13 @@ RULES = {
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": [
         Read(path, "internal/textcheck/classify_imports_test.go:19 globs ../classify/*.go, and :29 parses each file it finds but the test files (:26)")
         for path in files_but_tests(f"{DAEMON}/internal/classify")],
+    # The credential-argument check reads every text file of the repository
+    # but docs/plans and docs/superpowers, which the text_checks filter leaves out with two `!`
+    # patterns (credential_check_reads says how the read is written).
+    f"{DAEMON}/internal/textcheck/credential_argument_test.go": reads(
+        *[(glob, "internal/textcheck/credential_argument_test.go:143 lists the repository's files with git ls-files "
+                 "under ../../../.. and :174 reads each of them but docs/plans and docs/superpowers")
+          for glob in credential_check_reads()]),
     # The branch of dispatch://INFRA-2614 wrote this check in internal/workflow's role_for_test.go;
     # it moved here because it walks every .go file of the module, test files included, and a row
     # keyed on a file of internal/workflow would put every test file of packages/daemon - this
@@ -902,6 +931,11 @@ TWO_BUILDS_STEP = "Two-build tests of the Dispatch server"
 TWO_BUILDS_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} twobuild ./cmd/dispatch)
 go test -tags twobuild -count=1 -timeout 30m -run "$pattern" ./cmd/dispatch"""
+# The same suite in the same file's dispatch-two-builds-same job, with this tree's own build as
+# the previous build, which a merge-group run alone runs (that job's comment says why). Its gates
+# and its TAG_RUNS entry are the Go step's.
+TWO_BUILDS_SAME_JOB = "dispatch-two-builds-same"
+TWO_BUILDS_SAME_STEP = "Two-build tests of the Dispatch server against its own build"
 BROKER_MP_STEP = "Two-process tests of the secrets broker"
 BROKER_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/broker)
@@ -963,6 +997,14 @@ def two_builds_go_step():
     ])
 
 
+def two_builds_same_step():
+    """The same-build job's Go step, pinned whole for the Go step's reason, in both of the Go
+    step's gates for the same reason."""
+    return pinned_step(TWO_BUILDS_SAME_JOB, TWO_BUILDS_SAME_STEP, ENVOY, TWO_BUILDS_SCRIPT, [
+        (ENVOY, ["./cmd/dispatch"], "go test -tags twobuild ./cmd/dispatch", {"tags": "twobuild"}),
+    ], workflow=job_file(TWO_BUILDS_JOB))
+
+
 def two_builds_go_reads():
     """What the two-build job's Go step reads beyond its closure and the RULES rows of the
     twobuild files: the script its -run comes from, the script that wrote the previous build it
@@ -973,7 +1015,9 @@ def two_builds_go_reads():
         (f"{ENVOY}/scripts/build-dispatch-build.sh",
          f"{at(TWO_BUILDS_JOB, 'Build the previous build')} writes the previous build "
          f"{at(TWO_BUILDS_JOB, TWO_BUILDS_STEP)} runs against (DISPATCH_PREVIOUS_BUILD), whose parts "
-         "cmd/dispatch/twobuild_harness_test.go checks"),
+         "cmd/dispatch/twobuild_harness_test.go checks, and "
+         f"{at(TWO_BUILDS_SAME_JOB, 'Build this tree as the previous build', job_file(TWO_BUILDS_JOB))} "
+         "writes the one its own Go step runs against"),
     ) + ceiling_reads(TWO_BUILDS_JOB) + setup_go(TWO_BUILDS_JOB, f"{ENVOY}/go.mod") + bun_job(TWO_BUILDS_JOB)
 
 
@@ -2897,6 +2941,7 @@ GATES = [
         ceiling_run(TWO_BUILDS_JOB),
     ], exact=[
         two_builds_go_step(),
+        two_builds_same_step(),
         pinned_step(TWO_BUILDS_JOB, "Build the Dispatch server", ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
             (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
         ]),
@@ -2919,7 +2964,7 @@ GATES = [
     # twobuild_cli_test.go runs and the scripts the step leans on - and not to the browser half's
     # reads, which a change to cmd/dispatch's untagged tests never needs.
     gate("dispatch_two_builds_go", TWO_BUILDS_JOB, step=TWO_BUILDS_STEP, runs=[ceiling_run(TWO_BUILDS_JOB)],
-         exact=[two_builds_go_step()], reads=two_builds_go_reads()),
+         exact=[two_builds_go_step(), two_builds_same_step()], reads=two_builds_go_reads()),
 
     gate("listener_server_change", "listener-server-change", exact=[
         pinned_step("listener-server-change", SOAK_STEP, ENVOY, SOAK_SCRIPT, [
@@ -3258,6 +3303,9 @@ TAG_RUNS = [
     # The two-build job's Go step has a gate of its own (dispatch_two_builds_go), so envoy_go is
     # held to that step's reads and not to the browser half's.
     TagRun("dispatch_two_builds_go", TWO_BUILDS_JOB, TWO_BUILDS_STEP, "envoy_go", "envoy-go",
+           f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",
+           job_file(TWO_BUILDS_JOB)),
+    TagRun("dispatch_two_builds_go", TWO_BUILDS_SAME_JOB, TWO_BUILDS_SAME_STEP, "envoy_go", "envoy-go",
            f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",
            job_file(TWO_BUILDS_JOB)),
     TagRun("broker_multiprocess", "broker-multiprocess", BROKER_MP_STEP, "envoy_go", "envoy-go",
