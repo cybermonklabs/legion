@@ -456,6 +456,18 @@ def steps_of(found: dict) -> list[Step]:
     return steps
 
 
+def spellings(path: str, workdir: str) -> set[str]:
+    """The ways a run: in workdir names path, a repository-relative file: its path from workdir,
+    bare or behind `./`."""
+    if workdir in ("", "."):
+        relative = path
+    elif path.startswith(f"{workdir}/"):
+        relative = path[len(workdir) + 1:]
+    else:
+        return set()
+    return {relative, f"./{relative}"}
+
+
 def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
     """The step a run: that is exactly the path of an AUDITED_SCRIPTS script makes, read as that
     entry's command in its module, or None where the run's text holds no such script's file name.
@@ -468,8 +480,9 @@ def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) 
     if not named:
         return None
     alone = script.strip()
-    matches = [path for path in named
-               if (Path(workdir) / alone).as_posix().removeprefix("./") == path]
+    # The literal spelling, compared with no path normalization: `path/` and `path/.` resolve to
+    # the file in Python and name nothing the shell can run.
+    matches = [path for path in named if alone in spellings(path, workdir)]
     if len(named) != 1 or len(matches) != 1 or any(c.isspace() for c in alone):
         raise Refused(f"{label}: names {', '.join(named)} in a form no AUDITED_SCRIPTS entry "
                       "reads: an entry reads a run: that is that one path alone")
