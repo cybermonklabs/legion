@@ -1,4 +1,4 @@
--- packages/envoy/internal/broker/store/migrations/0034_pod_carry_launcher.up.sql
+-- packages/envoy/internal/broker/store/migrations/0033_pod_carry_launcher.up.sql
 -- A pod's grants follow the pair of its account and the token login that enrolled it, not its
 -- account alone (enroll.carryPrincipal, exchange.PodLaunchPrincipal; plan E's
 -- t-e-54). Every public Legion project's pods run as one account, legion-worker, and each
