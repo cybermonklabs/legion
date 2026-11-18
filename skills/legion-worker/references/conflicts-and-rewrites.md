@@ -26,9 +26,7 @@ Every path it cites is in cybermonklabs/legion.
   ask when its next push lands, and merge once, after it.
   After any forward merge, build the branch: a clean merge can change a function's signature
   under the branch's own callers.
-  Before you push the merge, search its head for the class of every finding of every earlier
-  review round, and record each search in the forward-merge comment.
-  After the push, post that comment (Legion footer):
+  After the push, post the forward-merge comment (Legion footer):
   `forward merge <old-tip-sha> → <new-tip-sha>; <the condition it meets>; <the mergeable read>`.
   Then read what the merge changed (`git show --remerge-diff <merge>`), and run again each check
   that change can affect.

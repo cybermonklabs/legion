@@ -115,7 +115,7 @@ template, and the later phases fill in their own lines:
   line Dispatch printed when the result was recorded — the check, when it runs, the verdict, the
   commit it ran at and the role that ran it.
 - **Look at first** and **Not proven / risk**: written by Legion's reviewer, naming where a wrong
-  decision would hurt and every claim left unproven.
+  decision would hurt and, where one stands, a risk.
 - The `after_merge` check, recorded after the merge closes the issue by the role your project's
   `production_check` names — the tester, unless the setting is `off`, where no production check
   opens — once your deploy carries the change; its line reads `not yet run` until then.

@@ -61,7 +61,7 @@ For each row whose surface the diff touches, answer with a file:line citation, b
 - A security finding with no stated exploit path is hardening, ranked Minor. One that states an exploit path is its own finding at its real priority, so no exploit is filed as optional.
 - Report at most two hardening items, ranked, and put the rest in one paragraph, so they do not bury findings.
 - Start each security finding with its row's tag, `Security[<tag>]:`, so readers can count findings by row.
-- End the report with one `Security:` line, because the Legion reviewer copies it: each touched row's tag and its answer with file:line, or `Security: no sensitive surface in this diff.` when the diff touches none.
+- When the diff touches a row, end the report with one `Security:` line: each touched row's tag and its answer with file:line.
 
 ## Findings
 

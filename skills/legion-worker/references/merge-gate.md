@@ -122,8 +122,6 @@ changed (*The reviewer*, below).
   A check whose `run` is a whole test suite and has no pass standing at the head has wrong words, which the architect rewrites: tell the architect as a finding, wait for the rewrite with a `WAITING` line naming it, and request no changes for it. One that has a pass standing at the head is a finding for the architect too, and its pass decides the check, so the review goes on.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
   A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
-  On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
-  reported, and its pair half reads `thermonuclear pair: not run (docs-only)`.
   Submit **one review per round** —
   `REQUEST_CHANGES` when any correctness finding stands, otherwise `APPROVE` of the head you
   reviewed — always named by SHA — carrying every inline comment in that single
@@ -150,20 +148,13 @@ changed (*The reviewer*, below).
   On your first review of the pull request, the change is the branch's whole diff.
   Size your review to that change: review again only what it can affect, and confirm the rest by naming the earlier head.
   A re-review after a request for changes also checks each of its findings against the new head.
-  Where `git -C "$LEGION_WORKSPACE" merge-tree --write-tree <sha>^1 <sha>^2` exits 0 for the
-  merge commit `<sha>` (its parents merge with no conflict), and its forward-merge comment names
-  no reason *Reintegrating the base* allows
-  (`skill://legion-worker/references/conflicts-and-rewrites.md`), send the architect the finding
-  `forward merge <sha>: no conflict and no reason the rule allows`.
+  You may tell the architect of a forward merge that had no conflict and whose comment names no
+  reason *Reintegrating the base* allows (`skill://legion-worker/references/conflicts-and-rewrites.md`).
 - Answer every thread you opened, and every thread a bot opened that is none of Legion's role
   Apps, as `skill://legion-worker/references/review-threads.md` says; the same reference says
   when every thread is settled enough to approve, and resolving one never gates your approval.
-- **The reviewer pushes nothing to the branch it reviews**, a prose fix included: it names a
-  prose fault (wording, a count, a tense, a citation) in its review, as any other finding. A
-  commit of the reviewer's is a new head, so the passes the tester and the checks recorded at the
-  head before it do not stand at it, and on a base whose rules want each change approved by
-  someone other than its author, the reviewer's approval cannot cover a commit it wrote, so
-  GitHub holds the merge.
+- A prose fault (wording, a count, a tense, a citation) is a finding for the implementer, and it
+  need not hold your approval; the implementer's fix carries every pass it cannot affect.
 
 A reviewer's phase ends with its completion, not with its review. Every round records a handoff
 and takes this order: read CI as above; write the handoff and record it with

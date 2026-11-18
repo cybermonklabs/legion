@@ -337,7 +337,6 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
     expect(silent).toEqual([]);
     expect(dispatching.sort()).toEqual([
       "skills/AGENTS.md",
-      "skills/dispatch-writing-specs/SKILL.md",
       "skills/legion-architect/SKILL.md",
       "skills/legion-architect/references/decomposition.md",
       "skills/legion-architect/references/design-gate.md",
@@ -385,32 +384,20 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
   expect(counts).toEqual(relativePaths.map((file) => ({ file, found: 1 })));
 }
 
-// R1: the simplify pass covers every file of the diff, docs-only diffs included, and a defect it
-// sees is reported rather than dropped as out of scope (dispatch://INFRA-198).
+// R1: the simplify pass covers every file of the diff, and a defect it sees is reported rather
+// than dropped as out of scope (dispatch://INFRA-198).
 test("the simplify pass reads every file of its scope and reports the defects it sees", () => {
   const simplify = collapsed(path.join(staged, "simplify-settled-diff", "SKILL.md"));
   expect(simplify).toContain(
-    "Every file of the scope is in the pass: documentation, workflow and configuration files as much as code, and a scope that holds no code at all still runs."
+    "Every file of the scope is in the pass: documentation, workflow and configuration files as much as code."
   );
   expect(simplify).toContain("A defect you see is reported, never dropped.");
   expect(simplify).not.toContain("For mixed scopes, retain only the code.");
   const prBody = collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"));
-  expect(prBody).toContain("whatever the diff touches, a docs-only diff included.");
   expect(prBody).toContain(
     "The pass covers every file of the diff, workflow YAML and documentation with the code, and a defect it reports is fixed outside the pass with the results recorded again, never dropped as out of scope; the `Thermo` line's `defects reported` half names how many and the commit that fixed them"
   );
-  // The Thermo line is written on every diff now, and carries what the pass reported; only its
-  // pair half is omitted on a docs-only one, which leaves the reviewer's pair where it was.
   expect(prBody).toContain("defects reported: <none | <n>, fixed in <sha>>");
-  expect(prBody).toContain(
-    "(on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`)"
-  );
-  expect(prBody).not.toContain("a docs-only diff gets none");
-  const mergeGate = collapsed(path.join(staged, "legion-worker", "references", "merge-gate.md"));
-  expect(mergeGate).toContain(
-    "On a docs-only PR the `Thermo` line still records the simplify pass and the defects it reported, and its pair half reads `thermonuclear pair: not run (docs-only)`."
-  );
-  expect(mergeGate).not.toContain("Skip the `Thermo` line entirely on a docs-only PR.");
 });
 
 // R2: a check that cannot fail is not a result, and a documented procedure counts only when it
@@ -420,16 +407,6 @@ test("a check that cannot fail is not a result, and a documented procedure count
   expect(prBody).toContain("**A check that cannot fail is not a result.**");
   expect(prBody).toContain(
     "A documented procedure counts only when it ran: reading it, or reading the document that describes it, is not a run"
-  );
-});
-
-// R3: a forward merge can bring a new instance of a class the branch already answered, so the
-// implementer searches the merge head for each earlier finding's class (dispatch://INFRA-83).
-test("a forward merge's head is searched for each earlier finding's class", () => {
-  expect(
-    collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
-  ).toContain(
-    "Before you push the merge, search its head for the class of every finding of every earlier review round"
   );
 });
 
@@ -545,7 +522,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     "a merger while its tree's design gate is closed, which merges nothing and ends each turn with a WAITING line until the opening reaches it",
     ["skills/legion-worker/SKILL.md"]
   );
-  countedOncePerFile("Create no commit and push nothing, a prose fix included", [
+  countedOncePerFile("Create no commit and push nothing", [
     "packages/daemon/internal/prompts/roles/reviewer.md",
   ]);
   expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(

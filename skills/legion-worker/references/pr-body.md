@@ -18,8 +18,7 @@ later phase keeps it current rather than replacing it:
 - <two to five bullets, each one behaviour a user or operator meets, never a file name>
 **Look at first:** <one to three `path:line` places where a wrong decision would hurt> (the reviewer writes this line)
 **Proven by:** <the surface and the run of the check the change turns on, one line>
-**Not proven / risk:**
-- <one line per claim recorded as unproven before the merge>, or the single word `none` (the reviewer writes this line; `none` is invalid while such a claim stands)
+**Not proven / risk:** <a risk that stands, in one sentence; leave the line out where none stands>
 **Size:** <files changed, +added/−removed>
 
 ## Verification
@@ -31,7 +30,7 @@ later phase keeps it current rather than replacing it:
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
 **Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha>:
-<verdict>. (on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`)
+<verdict>. (a docs-only PR has no `Thermo` line)
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's
 order. Each is the line `dispatch result` printed when the result was recorded, or the
@@ -87,14 +86,12 @@ about whether the head merges.
 ledger the reviewer and merger check against GitHub. The implementer writes `Outcome`, `Why`,
 `Change`, `Proven by`, and `Size` when the pull request opens, and keeps them true after every
 push; `Outcome` is a sentence a user of the repository would recognise, never "fix bug" or a file
-name, and `Why` ends with the Dispatch key, never a URL. The reviewer writes `Look at first` and
-`Not proven / risk` at each round, into the live body (`gh api
-repos/{owner}/{repo}/pulls/{number} --jq .body`, edit, then `--method PATCH ... -F body=@body.md`);
-`Not proven / risk` copies every claim recorded as unproven before the merge — the tester's
-`failures`, the reviewer's own review, any proof-check comment already on the pull request —
-word for word, and `none` is a finding while one stands. The merger reads `Outcome` and
-`Not proven / risk` from the body at the head it merges, and a stale `Outcome` that no
-longer describes the diff is a finding against the implementer, not a line the merger rewrites.
+name, and `Why` ends with the Dispatch key, never a URL. The reviewer writes `Look at first` into
+the live body (`gh api repos/{owner}/{repo}/pulls/{number} --jq .body`, edit, then
+`--method PATCH ... -F body=@body.md`), and a risk on the `Not proven / risk` line where one
+stands. The merger reads `Outcome` from the body at the head it merges, and a stale `Outcome`
+that no longer describes the diff is a finding against the implementer, not a line the merger
+rewrites.
 
 ## What a result is
 
@@ -226,15 +223,12 @@ and decides there, the only gate on such an issue.
   last tested (`git diff <that head> <new head>`; for a merge of the base,
   `git show --remerge-diff <merge>`). Size your round to that change: test again only what it can
   affect, and confirm the rest by naming the earlier head. Each check the change cannot affect
-  gets a carried record (*A result proves the head it was recorded at*, above). Where
-  `git -C "$LEGION_WORKSPACE" merge-tree --write-tree <sha>^1 <sha>^2`
-  exits 0 for the merge commit `<sha>` (its parents merge with no conflict), and its forward-merge
-  comment names no reason *Reintegrating the base* allows
-  (`skill://legion-worker/references/conflicts-and-rewrites.md`), send the architect the finding
-  `forward merge <sha>: no conflict and no reason the rule allows`.
+  gets a carried record (*A result proves the head it was recorded at*, above). You may tell the
+  architect of a forward merge that had no conflict and whose comment names no reason
+  *Reintegrating the base* allows (`skill://legion-worker/references/conflicts-and-rewrites.md`).
 - **The implementer runs `skill://simplify-settled-diff` once per pull request, in its first
-  implementing round, after its own results and before it completes that round,
-  whatever the diff touches, a docs-only diff included.** The daemon starts no implementing round
+  implementing round, after its own results and before it completes that round; a docs-only
+  diff needs none.** The daemon starts no implementing round
   between a clean review and the approval, so this is the one slot before the tester and the
   reviewer read the head; a later round answering a review runs no second pass. It is scoped to
   the pull request's own diff at that head: nothing applied leaves the head as it is; applied →

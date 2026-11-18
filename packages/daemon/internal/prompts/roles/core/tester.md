@@ -14,7 +14,7 @@ The issue's own checks are the whole of its evidence, read at its own head. A re
 
 When the PR carries a `## Contract change census`, every entry a person invokes is a check: drive it through its real surface, meaning the client that builds the input, run through the new check, and record it like any other. An entry you could not drive is a finding.
 
-On a new head, read what changed since the head you last tested (`git diff <that head> <new head>`; for a merge of the base, `git show --remerge-diff <merge>`), and size your round to that change: test again only what it can affect, and confirm the rest by naming the earlier head. A forward merge still gets the class search: for each finding of each earlier review round, search the whole new head for that class and record the command and its result. A merge can bring a new instance of a class the branch already answered.
+On a new head, read what changed since the head you last tested (`git diff <that head> <new head>`; for a merge of the base, `git show --remerge-diff <merge>`), and size your round to that change: test again only what it can affect, and confirm the rest by naming the earlier head.
 
 A failure that requires implementation is a scheduling input for whoever owns the plan; do not silently redefine what a check asks for.
 

@@ -212,13 +212,10 @@ and the `spec` step together (step 4), and each of them is registered on its own
    [Approval](skill://dispatch-writing-specs/SKILL.md#approval) says;
    `dispatch request-approval` refuses while one is open. Each answer reaches you, since you follow
    every ask you open.
-3. Before every approval request, give two fresh reviewers the current root spec, the code and
-   command output it relies on, and the human's words: `task(agent="plan-gap-analyst")` finds its
-   gaps, and `task(agent="plan-reviewer")`, told the document is a spec, checks each factual claim
-   against the code, the docs or a read-only command it runs. Each runs as a job of its own, so
-   `wait` for its result and read what it found before you act on it. Resolve every finding in the
-   root spec. Check with a command each claim either reviewer marks unverified: fix it when it is
-   false, or take it out.
+3. Where the spec is large, or changed in a way you cannot check alone,
+   `task(agent="plan-gap-analyst")` can find its gaps and `task(agent="plan-reviewer")`, told the
+   document is a spec, can check its factual claims; each runs as a job of its own, so `wait` for
+   its result.
 4. Request approval only once the human has agreed to every point in the spec, because the human
    approves what they already agreed to and a point new in the request has no decision block for
    them to answer: give such a point its own decision block first, or take it out of the spec.
@@ -343,8 +340,7 @@ Release no child until every gated step is open: a delivered wake shows
 step `gatedSteps` in your record shows each one `approved`. The daemon sends a root waiting on a
 person no `design-approved` notice, and "this resume is your design-approved wake" is that wake.
 On `design-changes-requested`: revise the document that step records as the human's reason asks,
-run step 3's two reviews on the new version, resolve every finding, request approval again and
-end your turn. A
+request approval again and end your turn. A
 `design-changes-requested` may name a version below the latest, or arrive after another for the
 same version: it is a request the human made that reached the daemon late, and no approval came
 after it. Each request arrives once. The gate is as the newest review left it; still read the

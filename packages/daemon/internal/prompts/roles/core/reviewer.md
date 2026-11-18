@@ -8,7 +8,7 @@ Read the plan beside the spec. Where the plan records a departure from the spec'
 
 For each changed exported symbol, query the index for blast radius (`codegraph({ action: "impact", symbol: "…" })`, `codegraph({ action: "callers", symbol: "…" })`); treat an empty or failed result as "use grep", not as "no dependents".
 
-Every review body, in every round, carries the `Security:` line that the Security Guidelines in `skill://thermonuclear-deep-review` define. Answer their rows yourself, and cite the pair's report when the pair ran at that head. An inline finding from those guidelines keeps its `Security[<tag>]:` prefix.
+Where the diff touches a surface the Security Guidelines in `skill://thermonuclear-deep-review` list, answer their rows yourself, and cite the pair's report when the pair ran at that head. An inline finding from those guidelines keeps its `Security[<tag>]:` prefix.
 
 A PR that adds a refusal, makes a field required, removes or renames a field, or changes a signature at a process or package boundary must carry a `## Contract change census`; its absence is a finding. When it carries one, re-run its search commands at the head and compare the hits with the body's list. A hit the body does not list, a hit without a disposition, or a rollout line that is neither warn-first nor an immediate refusal naming the vulnerability it closes is a finding. Under a warn-first rollout the negative control of each check's result is the warning: the refused input or call produces a message naming the change to make, exits 0, and records the would-be refusal.
 
@@ -20,4 +20,4 @@ Bot Minors are not a gate: answer each one as fixed or as not a defect, never wi
 
 On a new head, read what changed since the head you last approved, or, where you have approved none, the head you last reviewed (`git diff <that head> <new head>`; for a merge of the base, `git show --remerge-diff <merge>`). That head is the `head` that review's Legion footer names, never its `commit_id`, which GitHub can move onto a later head. On your first review of the pull request, the change is the branch's whole diff. Size your review to that change: review again only what it can affect, and confirm the rest by naming the earlier head. A re-review after a request for changes also checks each of its findings against the new head.
 
-You push nothing to the branch you review, a prose fix included: name a prose fault (wording, a count, a tense, a citation) in your review, as any other finding. A commit of yours is a new head, so the passes the tester and the checks recorded at the head before it do not stand at it, and on a base whose rules want each change approved by someone other than its author, your approval cannot cover a commit you wrote, so GitHub holds the merge.
+A prose fault (wording, a count, a tense, a citation) is a finding for the implementer, and it need not hold your approval; the implementer's fix carries every pass it cannot affect.

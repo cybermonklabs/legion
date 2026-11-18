@@ -27,8 +27,8 @@ body: |-
   `legion-worker`, a message is a reason to merge only when it names the conflict GitHub reports,
   and a role answers any other with the rule and merges nothing. The implementer quotes
   `gh pr view --json mergeable,mergeStateStatus` and names the condition the merge meets in its
-  forward-merge comment. The tester and the reviewer send the architect each forward merge whose
-  parents merge with no conflict and whose comment names no reason the rule allows. A parent's
+  forward-merge comment. The tester and the reviewer may tell the architect of a forward merge
+  that had no conflict and whose comment names no reason the rule allows. A parent's
   last round in `legion-architect` no longer merges the default branch by rule and no longer runs
   a full test round: the architect sends the issue back to testing, and the tester sizes that
   round like any other. The base is merged only where GitHub reads the pull request `CONFLICTING`,

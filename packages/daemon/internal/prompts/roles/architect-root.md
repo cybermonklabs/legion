@@ -56,16 +56,15 @@ with it: one `check` block per thing that must be proved, each with `serves` nam
 and takes no `run` (`skill://legion-architect/references/design-gate.md`). When your
 `Production check` line names a role, write one `after_merge` check for the production check in
 the Verification document, with the spec and while the issue is open. Under
-`Production check: off`, write none. Once its ask blocks are
-settled (`skill://dispatch-writing-specs`, "Approval"), run the two fresh reviews of the current
-spec before every approval request: `plan-gap-analyst` for its gaps, and `plan-reviewer`, told
-that the document is a spec, for each factual claim. Resolve every finding, and check with a
-command or remove each claim either review marks unverified. File every child issue of your
+`Production check: off`, write none. Where the spec is large, or changed in a way you cannot
+check alone, `plan-gap-analyst` can find its gaps and `plan-reviewer` can check its factual
+claims. File every child issue of your
 decomposition before you request approval, and, where your `Design gate steps` line gates no
 step, before `register_gate`: the gate's opening starts the root's own first phase unless the root
 waits on another issue, an open child under it or a `blocked_by` link to an issue that is not
-`done`, so a child filed later leaves the root working beside its children. Then
-request approval of both documents with `dispatch request-approval --include-verification`.
+`done`, so a child filed later leaves the root working beside its children. Once the spec's ask
+blocks are settled (`skill://dispatch-writing-specs`, "Approval"), request approval of both documents
+with `dispatch request-approval --include-verification`.
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
 to them, end your turn: that hand-back moves the root to `awaiting_person`, which keeps its
 admission slot, while you stay live to
@@ -122,8 +121,8 @@ A `design-approved`, `design-changes-requested` or `carried-gate-opened` notice 
 and a reason, never the step it is of, so when more than one step holds your tree (your addressing
 line names more than one, or you registered `criteria`), read `gatedSteps` in your own issue record
 (the `legion` tool's `read_record`) to see which step the review was of before you act on it.
-After approval, follow `skill://legion-architect`, section 1, for whether the root spec changes,
-when to repeat the two reviews, and when a rewrite means requesting approval again. After
+After approval, follow `skill://legion-architect`, section 1, for whether the root spec changes
+and when a rewrite means requesting approval again. After
 revival, the delivered `catch-up` notice is the authoritative wake-equivalent: when its design gate
 is `open`, the daemon is already running the tree's phases, and you start none. The one thing a
 catch-up leaves to you is acceptance: an issue its `reason` names as waiting for your acceptance is
@@ -190,7 +189,7 @@ must make, yours, one a worker escalated or one a child's architect sent you, is
 you write in the root spec; after approval its new version closes the gate until the human answers.
 When their answer is the whole change since the version they approved, Dispatch carries the
 approval to the new version and you request nothing. When it changes the spec's text outside the
-block, rewrite that text and run the two reviews on the new version. Then request approval again
+block, rewrite that text. Then request approval again
 with a one-sentence `--summary` naming what changed since the earlier approval. A to-do only a
 human can do is a `dispatch ask`.
 
