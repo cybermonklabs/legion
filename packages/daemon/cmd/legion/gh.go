@@ -86,6 +86,12 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // visibility reads, which come back through this command, are the guard's and not that gh's.
 // Each such read runs its own real gh under the variable again, so a real gh that leads back is
 // still refused one start later, with or without a caller's GH_TOKEN.
+//
+// The help reads run in a process group of their own (readGhHelp), which none of the terminal's
+// signals reach, so this command stops them itself: on a SIGINT or a SIGTERM, which cancel its
+// context (main's signal.NotifyContext), and on a SIGHUP, which it catches while they run
+// (hangupCancels). Such a signal ends the command with 128+<signal> (endedBySignal), and gh is
+// never started, as for a signal that came before runGhChild's forwarding.
 func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status int) {
 	env := processEnvironment()
 	repo, commandPath, visibilitySource := "", "", ""
@@ -148,8 +154,17 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// command refused where they route to two directories (selectors.dir), before the guard
 		// reads anything of it.
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
-		target, err = ghTargetOf(args, env, func(path []string) (string, error) { return readGhHelp(gh, path) }, readGitRemotes,
+		// The help reads stop on a SIGHUP as well as on the end of ctx (hangupCancels), and a
+		// signal that stopped one ends the command with its status rather than with the refusal
+		// the stopped read made of the command. So does a SIGHUP that came as the reads ended:
+		// this took it from the runtime, so nothing else ends the command on it.
+		reads, stopReads := hangupCancels(ctx)
+		target, err = ghTargetOf(args, env, func(path []string) (string, error) { return readGhHelp(reads, gh, path) }, readGitRemotes,
 			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
+		stopReads()
+		if status, ok := signalled(reads); ok {
+			return status
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
@@ -565,10 +580,10 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 // which are the only ones a cause of this process's context can name.
 var mainNotified = []syscall.Signal{syscall.SIGINT, syscall.SIGTERM}
 
-// endedBySignal is the status for a context whose cause is one of those signals, and whether it
-// is one: 128+<signal>, the status a shell reads a death by that signal as, which is what
-// runGhChild answers for a gh a signal killed and what this command answers for a signal that
-// came before gh was started at all.
+// endedBySignal is the status for a context whose cause is one of those signals, or the SIGHUP
+// hangupCancels names (errHangup), and whether it is one: 128+<signal>, the status a shell reads a
+// death by that signal as, which is what runGhChild answers for a gh a signal killed and what this
+// command answers for a signal that came before gh was started at all.
 //
 // The cause is where that signal is left: signal.NotifyContext's own goroutine takes the signal,
 // cancels with a cause naming it and raises it no further. Each name is matched against the
@@ -577,12 +592,60 @@ var mainNotified = []syscall.Signal{syscall.SIGINT, syscall.SIGTERM}
 // carries no signal to read, so the words are the only way back to the name, and the two
 // spellings of them are one edit of os/signal apart.
 func endedBySignal(cause error) (status int, ok bool) {
+	if errors.Is(cause, errHangup) {
+		return 128 + int(syscall.SIGHUP), true
+	}
 	for _, sig := range mainNotified {
 		if cause.Error() == sig.String()+" signal received" {
 			return 128 + int(sig), true
 		}
 	}
 	return 0, false
+}
+
+// errHangup is the cause hangupCancels cancels its context with on a SIGHUP, in the words
+// os/signal gives main's own signals, so a message that prints it reads as theirs do.
+var errHangup = errors.New(syscall.SIGHUP.String() + " signal received")
+
+// hangupCancels is ctx, cancelled with errHangup as well when a SIGHUP reaches this process before
+// stop is called. It is for work of this command's own that runs in a process group of its own
+// (readGhHelp): a pane that closes sends its SIGHUP to the terminal's foreground group, which that
+// work is not in, and main catches no SIGHUP, so without this the signal would kill this process
+// where it stood and leave the group running, reparented and waited for by nobody. stop ends the
+// watch and cancels the context. A SIGHUP that arrived just before stop is still read as one, so a
+// caller reads the context's cause after stop, and finds errHangup there whenever this took one.
+//
+// Where this process was started with SIGHUP ignored it is ctx itself and arms nothing, for the
+// reason runGhChild arms no forwarding of it there: arming it would undo a `nohup gh …`.
+func hangupCancels(ctx context.Context) (context.Context, func()) {
+	if signal.Ignored(syscall.SIGHUP) {
+		return ctx, func() {}
+	}
+	hup, cancel := context.WithCancelCause(ctx)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGHUP)
+	done, watched := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watched)
+		select {
+		case <-signals:
+			cancel(errHangup)
+		case <-done:
+		}
+	}()
+	return hup, func() {
+		signal.Stop(signals)
+		close(done)
+		<-watched
+		// The watch may have taken done over a SIGHUP already in the channel; Stop has made sure
+		// no other comes.
+		select {
+		case <-signals:
+			cancel(errHangup)
+		default:
+		}
+		cancel(nil)
+	}
 }
 
 // forwardTo sends each signal it reads from signals on to process, until the returned stop is
@@ -1059,11 +1122,13 @@ var ghHelpTimeout = 30 * time.Second
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
 // gh's own), refused when gh answers it with an error. gh runs in a process group of its own,
-// which a read that outlives ghHelpTimeout stops whole (procgroup.Configure): a timeout that
-// killed gh alone would leave whatever gh started running, reparented and unwaited for. It runs
-// under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is refused there.
-func readGhHelp(gh string, path []string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), ghHelpTimeout)
+// which is stopped whole when the read outlives ghHelpTimeout or ctx ends (procgroup.Configure):
+// a stop that killed gh alone would leave whatever gh started running, reparented and unwaited
+// for. That group is not the terminal's, so none of the terminal's signals reach it, and ctx is
+// how they do: runGh's, which main cancels on a SIGINT or a SIGTERM and hangupCancels on a SIGHUP.
+// It runs under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is refused there.
+func readGhHelp(ctx context.Context, gh string, path []string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, ghHelpTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gh, append(slices.Clone(path), "--help")...)
 	killed := procgroup.Configure(cmd)
@@ -1071,8 +1136,11 @@ func readGhHelp(gh string, path []string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		if killed() {
+		switch {
+		case killed() && errors.Is(ctx.Err(), context.DeadlineExceeded):
 			return "", fmt.Errorf("gh did not answer its help within %s, and its process group was stopped", ghHelpTimeout)
+		case killed():
+			return "", fmt.Errorf("gh's help read was stopped, with its process group: %v", context.Cause(ctx))
 		}
 		return "", fmt.Errorf("gh answered its help with %v: %s", err, strings.TrimSpace(stderr.String()))
 	}
