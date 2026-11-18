@@ -67,7 +67,7 @@ func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newStepRecordRigOf(t, tc.plan, nil)
 			rig.run()
-			if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
+			if left := rig.left(); left != 0 {
 				t.Fatalf("rows left after Dispatch took the plan = %d, want none", left)
 			}
 			plans, steps := rig.client.receivedPlans(), rig.client.received()
@@ -85,7 +85,7 @@ func TestAPlanRecordIsWrittenUnderItsIssueAndItsID(t *testing.T) {
 func TestTheRetrosRatingReachesDispatch(t *testing.T) {
 	rig := newStepRecordRigOf(t, ratingRecordOf(), nil)
 	rig.run()
-	if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
+	if left := rig.left(); left != 0 {
 		t.Fatalf("rows left after Dispatch took the rating = %d, want none", left)
 	}
 	steps := rig.client.received()
@@ -121,12 +121,12 @@ func TestAPlanAndARatingWaitForADispatchThatHasNoRouteForThem(t *testing.T) {
 			rig.runner.log = slog.New(slog.NewJSONHandler(rig.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 			for attempt := 1; attempt <= 2; attempt++ {
 				rig.run()
-				if left := outboxRowsOf(t, rig.pool, stepIssue); left != 1 {
+				if left := rig.left(); left != 1 {
 					t.Fatalf("rows left after attempt %d = %d, want the write kept for its next run", attempt, left)
 				}
 			}
 			rig.run()
-			if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
+			if left := rig.left(); left != 0 {
 				t.Fatalf("rows left after Dispatch took the write = %d, want none", left)
 			}
 			plans, steps := rig.client.receivedPlans(), rig.client.received()
@@ -175,7 +175,7 @@ func TestAPlanRecordThatDispatchRefusesEndsWithAWarning(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newStepRecordRigOf(t, planRecordOf(), answersInTurn(tc.err))
 			rig.run()
-			if left := outboxRowsOf(t, rig.pool, stepIssue); left != 0 {
+			if left := rig.left(); left != 0 {
 				t.Fatalf("rows left after Dispatch refused the plan = %d, want none", left)
 			}
 			if plans := rig.client.receivedPlans(); len(plans) != 1 {
