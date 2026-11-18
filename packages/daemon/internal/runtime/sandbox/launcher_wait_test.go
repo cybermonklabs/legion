@@ -2,9 +2,9 @@ package sandbox
 
 import (
 	"log/slog"
-	goruntime "runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -363,66 +363,96 @@ func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing
 	}
 }
 
-// A launch judges a pod its node never started by one reading of the clock (replacement): the
-// reading that replaces such a pod is the one that says it ran no role, so the suspension names
-// nothing displaced. Two readings could disagree about a pod at the boot timeout's edge — live by
-// the first, never started by the second — and a launch that replaced the pod by the second while
-// it named it displaced by the first would have the roles recorded in it, which never ran there,
-// read as ended by the daemon's replacement. The clock here is that edge: relaunch's own reading
-// of it is the boot timeout after the pod's creation, not past it, and every other reading is a
-// second later, past it, as two readings straddling the edge would be.
-func TestAPodReplacedAtTheBootTimeoutsEdgeIsNamedDisplacedByNoReadingOfTheClock(t *testing.T) {
+// replacement judges a pod its node never started by one reading of the clock (runsNoRole): the
+// reading that replaces such a pod is the one that says no role ran in it, so its answer never
+// names that pod's roles displaced. The pod here is the one a launch timed out on, its launcher
+// Secrets bound to it and nothing about it drifted, so never having started is the one reason
+// replacement could replace it. Past the boot timeout it is replaced, displacing nothing. At the
+// boot timeout's edge, with the clock past the edge from the second reading on, its one reading
+// keeps it — or, where something else read the clock first, replaces it displacing nothing — and a
+// replacement that read the clock twice would judge the pod live by the first reading and replace
+// it by the second, naming roles that never ran in it displaced.
+func TestReplacementJudgesAPodItsNodeNeverStartedByOneReadingOfTheClock(t *testing.T) {
 	boot := testOptions().BootTimeout
-	g := newRig(t, nil, func(g *rig, o *Options) {
-		o.Now = func() time.Time {
-			if readByRelaunch() {
-				return g.now.Load().Add(-time.Second)
+	for _, tc := range []struct {
+		name string
+		// past is how far past the boot timeout after the pod's creation each reading of the
+		// clock is, in turn; the last one answers every reading after it.
+		past []time.Duration
+		// replaced is the pod replaced as never started whatever reading replacement takes; a row
+		// at the edge may see it kept.
+		replaced bool
+	}{
+		{name: "past the boot timeout", past: []time.Duration{time.Second}, replaced: true},
+		{name: "at the boot timeout's edge, the clock moving past it between readings", past: []time.Duration{0, time.Second}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var readings []time.Time
+			g := newRig(t, nil, func(g *rig, o *Options) {
+				o.Now = func() time.Time {
+					mu.Lock()
+					defer mu.Unlock()
+					if len(readings) == 0 {
+						return *g.now.Load()
+					}
+					at := readings[0]
+					if len(readings) > 1 {
+						readings = readings[1:]
+					}
+					return at
+				}
+			})
+			g.autoStart.Store(false)
+			spec := workerSpec(t)
+			name := SandboxName(spec.Claim)
+			result := make(chan error, 1)
+			go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
+			g.pendingPod(name, notReadyToStart(*g.now.Load()))
+			select {
+			case err := <-result:
+				want := "wait for its role launcher: timed out after " + boot.String()
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("Spawn = %v, want %q, the failure the supervisor charges", err, want)
+				}
+			case <-time.After(90 * time.Second):
+				t.Fatal("hang guard: the launch never ended for a pod that never started")
 			}
-			return *g.now.Load()
-		}
-	})
-	g.autoStart.Store(false)
-	spec := workerSpec(t)
-	name := SandboxName(spec.Claim)
-	result := make(chan error, 1)
-	go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
-	g.pendingPod(name, notReadyToStart(*g.now.Load()))
-	stuck := g.pod(name).UID
-	select {
-	case err := <-result:
-		want := "wait for its role launcher: timed out after " + boot.String()
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Fatalf("Spawn = %v, want %q, the failure the supervisor charges", err, want)
-		}
-	case <-time.After(90 * time.Second):
-		t.Fatal("hang guard: the launch never ended for a pod that never started")
-	}
+			s, err := g.r.storedSandbox(name)
+			if err != nil || s == nil {
+				t.Fatalf("the stored Sandbox %s = %v, %v", name, s, err)
+			}
+			pod := g.r.storedPod(name)
+			spec.Generation = 2
+			l, err := g.r.prepare(spec)
+			if err != nil {
+				t.Fatal(err)
+			}
+			created := pod.CreationTimestamp.Time
+			mu.Lock()
+			for _, past := range tc.past {
+				readings = append(readings, created.Add(boot+past))
+			}
+			mu.Unlock()
 
-	g.advance(boot + time.Second)
-	g.autoStart.Store(true)
-	spec.Generation = 2
-	loc := g.spawn(spec)
-	if loc.Sandbox.PodUID == string(stuck) {
-		t.Fatalf("the next try launched in pod %s, which its node never started past the boot timeout, want it replaced", stuck)
-	}
-	if displaced := g.sandbox(name).Annotations[displacedAnnotation]; displaced == string(stuck) {
-		t.Fatalf("the Sandbox names the pod that never started, %s, displaced: the launch replaced it by one reading of the clock and named it displaced by another", stuck)
-	}
-}
+			decided, err := g.r.replacement(g.ctx, s, pod, &l)
+			mu.Lock()
+			readings = nil
+			mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
 
-// readByRelaunch reports whether the clock is being read by relaunch itself rather than by
-// anything it calls: the runtime's method nearest the reading on its stack.
-func readByRelaunch() bool {
-	pcs := make([]uintptr, 32)
-	frames := goruntime.CallersFrames(pcs[:goruntime.Callers(1, pcs)])
-	for {
-		frame, more := frames.Next()
-		if strings.Contains(frame.Function, ".(*Runtime).") {
-			return strings.HasSuffix(frame.Function, ".(*Runtime).relaunch")
-		}
-		if !more {
-			return false
-		}
+			never := strings.Contains(decided.why, "has not started its containers")
+			switch {
+			case decided.displacesRoles:
+				t.Fatalf("replacement = %+v, want it to name nothing displaced: no role ran in a pod its node never started", decided)
+			case decided.why != "" && !never, tc.replaced && !never:
+				t.Fatalf("replacement = %+v, want the pod replaced as one its node never started, and for nothing else", decided)
+			case never && decided.unstarted <= boot:
+				t.Fatalf("replacement = %+v, want the pod replaced for an age past the boot timeout %s", decided, boot)
+			}
+		})
 	}
 }
 
