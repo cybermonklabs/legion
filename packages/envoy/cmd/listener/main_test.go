@@ -2792,11 +2792,11 @@ func TestBindListenerDurablePassesARefusalThrough(t *testing.T) {
 	}
 }
 
-// deniedDurableClient is a client of a server whose listener user may publish anything but deny
+// deniedGrantClient is a client of a server whose listener user may publish anything but deny
 // (testnats.StartNkeyDenied), and the stream that server holds, created by the server's admin. It
 // is the listener's own client (bus.Connect), so the server's refusal of a request reaches it as
 // bus.ErrPublishDenied.
-func deniedDurableClient(t *testing.T, deny ...string) *bus.Client {
+func deniedGrantClient(t *testing.T, deny ...string) *bus.Client {
 	t.Helper()
 	seed, public := testnats.User(t)
 	uri := testnats.StartNkeyDenied(t, public, deny...)
@@ -2821,7 +2821,7 @@ func deniedDurableClient(t *testing.T, deny ...string) *bus.Client {
 func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
 	const consumer = "listener-bind-denied"
 	create := "$JS.API.CONSUMER.CREATE." + bus.Stream + "." + consumer
-	client := deniedDurableClient(t, create, create+".>", "$JS.API.CONSUMER.DURABLE.CREATE."+bus.Stream+"."+consumer)
+	client := deniedGrantClient(t, create, create+".>", "$JS.API.CONSUMER.DURABLE.CREATE."+bus.Stream+"."+consumer)
 
 	started := time.Now()
 	bind, err := bindListenerDurable(context.Background(), client, consumer, func(msg *natsgo.Msg) { _ = msg.Ack() },
@@ -2843,7 +2843,7 @@ func TestBindListenerDurableEndsAtTheGrantsRefusal(t *testing.T) {
 func TestAwaitDurableBoundEndsAtTheGrantsRefusal(t *testing.T) {
 	const consumer = "listener-await-denied"
 	info := "$JS.API.CONSUMER.INFO." + bus.Stream + "." + consumer
-	client := deniedDurableClient(t, info)
+	client := deniedGrantClient(t, info)
 
 	started := time.Now()
 	err := awaitDurableBound(context.Background(), client, consumer, 50*time.Millisecond, 10*time.Second)

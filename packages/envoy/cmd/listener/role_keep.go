@@ -818,8 +818,12 @@ type keptRoleHandover struct {
 // once, for the holder the next pass resolves.
 //
 // A walk that failed is not one that made no progress: it is waited out on a widening cadence
-// (roleKeepDrainBackoff) and its error is carried out of the handover. A walk whose read of the
-// role's claim record did not answer is one (roleKeepDrainHolds), so the pass after its pause
+// (roleKeepDrainBackoff) and its error is carried out of the handover. A walk or a read the
+// server refused under the listener's grant (bus.ErrPublishDenied) is the exception: the server
+// refuses it again however often it is sent, so the handover ends at once with that refusal
+// carried out, rather than holding the role's guard until its window ends, and the lane is left to
+// the role's next claim and to the sweep. A walk whose read of the role's claim record did not
+// answer is a walk that failed (roleKeepDrainHolds), so the pass after its pause
 // resolves the holder again rather than forwarding on a claim no read answered. A read that did
 // not answer - the lane head's, on whichever pass it was made, or the holder's resolution behind
 // one - says nothing about the holder, so the role's claim record decides whether the handover
@@ -881,6 +885,10 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		cfg.logger.LogEvent(slog.LevelDebug, line,
 			slog.String("role", role),
 			slog.String("error", cause.Error()))
+		if errors.Is(cause, bus.ErrPublishDenied) {
+			readErr = cause
+			return false
+		}
 		if shutDown() {
 			return false
 		}
@@ -958,6 +966,9 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		case roleKeepLaneDrained, roleKeepCopyWaits:
 			return ended()
 		case roleKeepDrainFailed:
+			if errors.Is(err, bus.ErrPublishDenied) {
+				return ended()
+			}
 			waitOut()
 			continue
 		case roleKeepLaneBusy:

@@ -206,6 +206,28 @@ func TestAWakeReportIsRetriedUntilTheBusTakesIt(t *testing.T) {
 	}
 }
 
+// A wake report the server refuses under the listener's grant is given up at its first attempt,
+// naming the refusal, rather than published again until its five-minute budget runs out with one
+// of the reports in flight held all that time: the grant refuses it again however often it is
+// sent.
+func TestAWakeReportTheGrantRefusesIsGivenUpAtOnce(t *testing.T) {
+	client := deniedGrantClient(t, bus.LegionWakeTopic)
+	logs := &lockedBuffer{}
+	lifetime, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	started := time.Now()
+	publishWakeReport(lifetime, client, logging.NewWithWriter("test", logs), wakeReport{Kind: wakeKindAgent, Session: "session-denied"})
+	elapsed := time.Since(started)
+	output := logs.String()
+	if !strings.Contains(output, "legion wake report not published") || !strings.Contains(output, `bus: NATS denied the publish to \"`+bus.LegionWakeTopic) {
+		t.Fatalf("the refused report's log names no refusal:\n%s", output)
+	}
+	if strings.Contains(output, "retrying until the bus takes it") || elapsed > wakeReportAttempt+3*time.Second {
+		t.Fatalf("the refused report was retried, or ended after %s, want one attempt within %s:\n%s",
+			elapsed.Round(time.Millisecond), wakeReportAttempt+3*time.Second, output)
+	}
+}
+
 // One report retries for up to wakeReportBudget, and during a bus outage one is raised per role
 // send with no holder and per message nothing can place. So the reports run under the
 // listener's own lifetime, which the shutdown ends, and no more than wakeReportsInFlight run at
