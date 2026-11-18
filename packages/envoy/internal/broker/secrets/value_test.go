@@ -17,12 +17,12 @@ import (
 // refusal may quote it.
 const leak = "s3cr3t"
 
-// refusedValue is one value a kind's minter refuses, and what the refusal must say.
+// refusedValue is one value a type's minter refuses, and what the refusal must say.
 type refusedValue struct {
-	kind, name, value, says string
+	secretType, name, value, says string
 }
 
-// refusedValues are, for each kind, the values its minter refuses: for github-app a value that is
+// refusedValues are, for each type, the values its minter refuses: for github-app a value that is
 // not a JSON object, no app_id, an app_id that is not digits, no private_key, a key that does not
 // parse and one that cannot sign.
 func refusedValues(t *testing.T) []refusedValue {
@@ -61,12 +61,12 @@ func refusedValues(t *testing.T) []refusedValue {
 // mint is one minter's Mint.
 type mint func(context.Context, secrets.MintRequest) (secrets.Minted, error)
 
-// minterOf is the minter of kind as the broker holds it, set up so that the stored value is the
+// minterOf is the minter of type as the broker holds it, set up so that the stored value is the
 // first thing it reads: the Azure login minter is configured for the secret the request names, at
 // human tier, since that gate comes before the value.
-func minterOf(t *testing.T, kind string) (mint, secrets.MintRequest) {
+func minterOf(t *testing.T, secretType string) (mint, secrets.MintRequest) {
 	t.Helper()
-	switch kind {
+	switch secretType {
 	case "github-app":
 		return secrets.GitHubApp{}.Mint, secrets.MintRequest{Name: "APP_KEY", GitHubOwners: []string{"acme"}}
 	case "google-login":
@@ -76,47 +76,47 @@ func minterOf(t *testing.T, kind string) (mint, secrets.MintRequest) {
 	case "azure-login":
 		return secrets.AzureLogin{SecretName: "AZURE_LOGIN"}.Mint, secrets.MintRequest{Name: "AZURE_LOGIN", HumanTier: true}
 	}
-	t.Fatalf("no minter for kind %q", kind)
+	t.Fatalf("no minter for type %q", secretType)
 	return nil, secrets.MintRequest{}
 }
 
-// TestParseValueRefusesWhatEachMinterRefusesInItsWords: ParseValue refuses each value its kind's
+// TestParseValueRefusesWhatEachMinterRefusesInItsWords: ParseValue refuses each value its type's
 // minter refuses, wrapping ErrMintStoredValue, naming what is wrong and quoting no byte of the
 // value; the minter, driven with the same value, answers the same words, because the decoder is
 // the only reader of a stored value.
 func TestParseValueRefusesWhatEachMinterRefusesInItsWords(t *testing.T) {
 	for _, row := range refusedValues(t) {
-		t.Run(row.kind+"/"+row.name, func(t *testing.T) {
-			_, err := secrets.ParseValue(row.kind, row.value)
+		t.Run(row.secretType+"/"+row.name, func(t *testing.T) {
+			_, err := secrets.ParseValue(row.secretType, row.value)
 			if !errors.Is(err, secrets.ErrMintStoredValue) || !strings.Contains(err.Error(), row.says) {
-				t.Fatalf("ParseValue(%s) = %v; want ErrMintStoredValue saying %q", row.kind, err, row.says)
+				t.Fatalf("ParseValue(%s) = %v; want ErrMintStoredValue saying %q", row.secretType, err, row.says)
 			}
 			if strings.Contains(err.Error(), leak) || strings.Contains(err.Error(), "PRIVATE KEY") || strings.Contains(err.Error(), "AAAA") {
-				t.Fatalf("ParseValue(%s) = %q quotes the value", row.kind, err)
+				t.Fatalf("ParseValue(%s) = %q quotes the value", row.secretType, err)
 			}
-			minter, req := minterOf(t, row.kind)
+			minter, req := minterOf(t, row.secretType)
 			req.Value = row.value
 			minted, mintErr := minter(t.Context(), req)
 			if mintErr == nil || minted.Value != "" {
-				t.Fatalf("%s minter minted %q from a value ParseValue refuses", row.kind, minted.Value)
+				t.Fatalf("%s minter minted %q from a value ParseValue refuses", row.secretType, minted.Value)
 			}
 			if mintErr.Error() != err.Error() || secrets.MintErrorClass(mintErr) != "stored-value" {
-				t.Fatalf("%s minter = %q (class %s); want ParseValue's own %q, class stored-value", row.kind, mintErr, secrets.MintErrorClass(mintErr), err)
+				t.Fatalf("%s minter = %q (class %s); want ParseValue's own %q, class stored-value", row.secretType, mintErr, secrets.MintErrorClass(mintErr), err)
 			}
 		})
 	}
 }
 
-// TestParseValueDecodesEachKindsFields: a value each kind's minter mints from decodes into that
-// kind's fields, and only them.
-func TestParseValueDecodesEachKindsFields(t *testing.T) {
+// TestParseValueDecodesEachTypesFields: a value each type's minter mints from decodes into that
+// type's fields, and only them.
+func TestParseValueDecodesEachTypesFields(t *testing.T) {
 	key, err := testAppKey()
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, row := range []struct {
-		kind, value string
-		want        func(secrets.Value) bool
+		secretType, value string
+		want              func(secrets.Value) bool
 	}{
 		{"github-app", githubAppValue(t, "123456", key), func(v secrets.Value) bool {
 			return v.GitHubApp.AppID == "123456" && v.GitHubApp.Key != nil && v.GitHubApp.Key.Equal(key) && v.GoogleLogin == (secrets.GoogleLoginValue{})
@@ -131,19 +131,19 @@ func TestParseValueDecodesEachKindsFields(t *testing.T) {
 			return v.AzureLogin == secrets.AzureLoginValue{TenantID: "tenant-id", ClientID: "client-id"} && v.GoogleServiceAccount == (secrets.GoogleServiceAccountValue{})
 		}},
 	} {
-		got, err := secrets.ParseValue(row.kind, row.value)
+		got, err := secrets.ParseValue(row.secretType, row.value)
 		if err != nil || !row.want(got) {
-			t.Fatalf("ParseValue(%s) = %+v, %v; want that kind's fields alone", row.kind, got, err)
+			t.Fatalf("ParseValue(%s) = %+v, %v; want that type's fields alone", row.secretType, got, err)
 		}
 	}
 }
 
-// TestParseValueRefusesAKindNoMinterReads: the decoder knows the four kinds and no other, so a
-// kind tag naming any other, or none, is refused as a value no minter mints from.
-func TestParseValueRefusesAKindNoMinterReads(t *testing.T) {
-	for _, kind := range []string{"", "other", "GitHub-App"} {
-		if _, err := secrets.ParseValue(kind, azureLoginValue); !errors.Is(err, secrets.ErrMintStoredValue) || !strings.Contains(err.Error(), "is no kind a minter reads") {
-			t.Fatalf("ParseValue(%q) = %v; want a refusal naming no kind a minter reads", kind, err)
+// TestParseValueRefusesATypeNoMinterReads: the decoder knows the four types and no other, so a
+// type tag naming any other, or none, is refused as a value no minter mints from.
+func TestParseValueRefusesATypeNoMinterReads(t *testing.T) {
+	for _, secretType := range []string{"", "other", "GitHub-App"} {
+		if _, err := secrets.ParseValue(secretType, azureLoginValue); !errors.Is(err, secrets.ErrMintStoredValue) || !strings.Contains(err.Error(), "is no type a minter reads") {
+			t.Fatalf("ParseValue(%q) = %v; want a refusal naming no type a minter reads", secretType, err)
 		}
 	}
 }

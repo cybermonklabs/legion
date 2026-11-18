@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  `legion` reads its command line with cobra. Three commands moved, and each old form exits 2 and
+  names the new one, with no alias: `legion start --check-config` is `legion config check`, whose
+  refusals now start `legion config check: `; `legion config-reference --json` is
+  `legion config reference --json`; and `legion status <issue> todo|backlog|icebox` is
+  `legion issue status <issue> todo|backlog|icebox`, while `legion status <team>` is unchanged.
+  A word, a flag or a command that `legion` does not take is a usage error: it exits 2 and names
+  what it refuses (`launcher role-init`, which only the launcher runs, exits its setup-failure
+  status instead), and each command's other exit statuses are kept. A single-dash long flag
+  (`-config`, `-json`) and `-help` are refused: write `--config`, `--json` and `-h` or `--help`.
+  Help (`-h`, `--help`, `help <command>`) prints on stdout and exits 0, flags may follow a
+  positional, a mistyped command is answered with a suggestion, and
+  `legion completion bash|zsh|fish|powershell` prints a completion script. The
+  commands only a program runs (`worker-shim`, `launcher` and `launcher role-init`,
+  `claude-bridge`, `model-token`, `probe-image`, `workspace-init`, `skills-check`,
+  `git-credential`, `git`, `gh`, `leak-check`) are hidden from help and completion. `worker-shim`,
+  `claude-bridge` and `launcher role-init` refuse a word between their flags and the `--` that
+  starts the command they run, which Go's flag package passed on as that command's first word:
+  `worker-shim` and `claude-bridge` exit 2, and `role-init` its setup-failure status. Every caller
+  the daemon renders puts `--` first. `git`, `gh` and `git-credential` still hand every word to the
+  program they wrap unread. The image probe reads a probed `legion`'s refusal of an unknown flag in
+  pflag's words as well as in Go's.

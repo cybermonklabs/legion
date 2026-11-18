@@ -35,6 +35,11 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   It replaces the address of a server or listener the test closed: a freed port is any program's to take, and on a shared machine one took it and answered HTTP (dispatch://INFRA-3904).
   It holds no listening socket and hands nothing to a child: a process the test starts takes a socket the test holds (`cmdtest.HoldPort` and `Pass`, `DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`, `LEGION_LISTEN_FD`) or binds port 0 and names its port, never a port the test picked and let go of.
 
+- A test that a command line keeps the rules of a cobra command line takes `packages/envoy/clitest`, one body for both modules: `packages/daemon` can import it through its `replace` of `packages/envoy`, and it imports the standard library alone.
+  `Conformance` runs the built binary, of any framework, and checks help on every command; a typo, an unknown flag at the root and on each command, an unknown shell for `completion` and an unknown topic for `help` that each exit 2, print the word they refuse, are no Go runtime crash and make no contact with its `Recorder`; a flag read after a positional; the completion script of each shell; and `__complete`.
+  The package documentation is the whole list and the rule each check holds.
+  It does not check what a command does with its arguments, its other exit codes or the shape of its tree, which each conversion's own tests hold, and it builds no binary: the caller hands it one.
+
 
 ## Bun tests
 
@@ -148,7 +153,7 @@ itself, whose tests import its sources by relative path.
   module caches of the `go run` in `runDaemonPane`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
   `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
-  `go-daemon-<runner os>-go<version>`, before it runs that scenario
+  `go-daemon-<runner os>-<runner arch>-go<version>`, before it runs that scenario
   (`.github/workflows/ci-job-pi-legion.yaml`). Those of `scripts/e2e/lib/held-port.test.ts` stay
   there too, although the `test` job that runs it restores no Go cache now that the daemon's Go
   suite is `daemon-go`'s. The condition is the rename: `fillNativesCache` in

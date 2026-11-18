@@ -450,7 +450,7 @@ func TestUnsubscribeIssueSessionRemovesTopicsAppendsEventAndNotifiesTheSession(t
 	if removed.Type != "subscription.removed" || !removed.Notify {
 		t.Fatalf("last event = %#v, want a notifying subscription.removed", removed)
 	}
-	if removed.Payload.SessionID != "planner" || removed.Payload.By != (model.Actor{Kind: "user", ID: "alice"}) ||
+	if removed.Payload.SessionID != "planner" || removed.Payload.By != (model.Actor{Kind: "user", ID: "alice", Proven: true}) ||
 		!reflect.DeepEqual(removed.Payload.Topics, []string{"notifications.dispatch.issue." + key + ".>"}) {
 		t.Fatalf("subscription.removed payload = %#v", removed.Payload)
 	}

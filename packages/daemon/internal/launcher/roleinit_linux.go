@@ -135,6 +135,41 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 			return fmt.Errorf("bind %s at %s: %w", bind.source, bind.target, err)
 		}
 	}
+	// The log of the pod's test database, at the fixed path every role is told (testPGEnv): the
+	// one file from under the roles directory a role reads, so a role whose connect was refused
+	// reads what the server said of it. A pod that serves no test database has no such file, and
+	// its role starts with the image's empty mount point there.
+	//
+	// The file is bound, read-only, and never the directory it is in. Under gVisor a read-only
+	// bind is not locked: measured in an issue pod on 2026-11-17, a role's own `unshare -Urm`
+	// remounted one read-write, which Linux refuses, while the cover over the roles directory
+	// held (its unmount answered EINVAL). A bound directory would therefore be writable to a
+	// role that tried, and that role could replace the log with a link, which the next `pg_ctl
+	// --log` or the script's own append would follow: into postgresql.auto.conf, say, where a
+	// line the role made the server log becomes configuration of a server that runs in the
+	// launcher's namespace. A role that remounts its view of the bound file read-write can write
+	// it, truncate it or chmod it, and can neither replace it with a link or another file nor
+	// remove it, since it is a mount point: measured in an issue pod on 2026-11-18, a rename,
+	// an unlink and a link over it from such a namespace each answered EBUSY. legion-testpg puts
+	// the log's mode back before each start, so a chmod cannot stop a restart, and nothing that
+	// reads the cluster's configuration reads the log.
+	//
+	// The source is opened without following a link and bound through that descriptor, and
+	// anything but a regular file is refused: a link planted at the source would otherwise bind
+	// its target into every role. Nothing can plant one today, since the directory is behind the
+	// locked cover, and the check costs nothing.
+	source, target := testPGLog(cfg.RolesDir), filepath.Join(cfg.FixedRoot, RoleTestPGLog)
+	switch fd, err := unix.Open(source, unix.O_PATH|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0); {
+	case errors.Is(err, unix.ENOENT):
+	case err != nil:
+		return fmt.Errorf("the pod's test database log %s: %w", source, err)
+	default:
+		err := bindRegularFileReadOnly(fd, target)
+		_ = unix.Close(fd)
+		if err != nil {
+			return fmt.Errorf("bind %s read-only at %s: %w", source, target, err)
+		}
+	}
 	if err := privateHome(cfg, homes, work); err != nil {
 		return err
 	}
@@ -465,20 +500,6 @@ func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error 
 	return nil
 }
 
-// roleNamespaceDrain bounds the wait role-init gives a role whose shim exited on its own: the
-// span between the SIGTERM it sends over the role's namespace and the SIGKILL that ends the
-// namespace, which is the only time anything the role left running has to finish what it was
-// doing. Two seconds, because what the wait is there for is a git or a jj whose index or
-// operation lock is held across a write of a few files, which it finishes in milliseconds, and
-// the wait ends the moment the namespace is empty, so the bound is paid only by a process that
-// ignores SIGTERM or hangs on it. It is a constant and no flag of role-init and no setting of the
-// pod, so no deployment can set it to a span that holds the launcher's next generation up.
-//
-// It costs the role's next generation nothing the daemon waits on: the launcher reads the status
-// pipe and only then waits on role-init (manager.wait), so the daemon learns the role's exit
-// before this wait begins, and only the generation's own teardown spends it.
-const roleNamespaceDrain = 2 * time.Second
-
 // runRoleShim runs the generation's shim as this init's own child, in a nested user namespace as
 // the image's unprivileged user with no capability outside it. role-init stays the role's PID 1:
 // it reaps the orphans the role leaves behind, reports the shim's own wait status, and ends the
@@ -773,4 +794,54 @@ func mountTmpfs(path, options string) error {
 
 func bindMount(source, target string) error {
 	return unix.Mount(source, target, "", unix.MS_BIND|unix.MS_REC, "")
+}
+
+// bindReadOnly binds source at target and makes that one mount read-only, which takes a second
+// call: the kernel ignores every flag but MS_REC on the call that makes a bind, so a bind is born
+// with its source mount's flags. The remount names, beside MS_RDONLY, each flag the new mount
+// already carries, read from statfs. Linux locks the nosuid, nodev, noexec and access-time flags
+// of every mount a user namespace was given by a more privileged one, which in a role's is every
+// mount of the container; a bind of such a mount inherits the locks, and a remount that would
+// drop or change a locked flag is refused with EPERM.
+func bindReadOnly(source, target string) error {
+	if err := bindMount(source, target); err != nil {
+		return err
+	}
+	var stat unix.Statfs_t
+	if err := unix.Statfs(target, &stat); err != nil {
+		return fmt.Errorf("read the mount's flags: %w", err)
+	}
+	flags := uintptr(unix.MS_BIND | unix.MS_REMOUNT | unix.MS_RDONLY)
+	for _, carried := range []struct{ held, remount uintptr }{
+		{unix.ST_NOSUID, unix.MS_NOSUID},
+		{unix.ST_NODEV, unix.MS_NODEV},
+		{unix.ST_NOEXEC, unix.MS_NOEXEC},
+		{unix.ST_NOATIME, unix.MS_NOATIME},
+		{unix.ST_NODIRATIME, unix.MS_NODIRATIME},
+		{unix.ST_RELATIME, unix.MS_RELATIME},
+	} {
+		if uintptr(stat.Flags)&carried.held != 0 {
+			flags |= carried.remount
+		}
+	}
+	if err := unix.Mount("", target, "", flags, ""); err != nil {
+		return fmt.Errorf("make the mount read-only: %w", err)
+	}
+	return nil
+}
+
+// bindRegularFileReadOnly binds the file fd was opened on read-only at target, through the
+// descriptor's own /proc/self/fd entry, so the mount is of that file and never of whatever its
+// name names by the time the mount runs. fd is an O_PATH|O_NOFOLLOW descriptor, which on Linux
+// opens a link itself rather than failing, so a link is refused here, with anything else that is
+// no regular file.
+func bindRegularFileReadOnly(fd int, target string) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return fmt.Errorf("read what the file is: %w", err)
+	}
+	if kind := stat.Mode & unix.S_IFMT; kind != unix.S_IFREG {
+		return fmt.Errorf("it is no regular file (kind %#o)", kind)
+	}
+	return bindReadOnly("/proc/self/fd/"+strconv.Itoa(fd), target)
 }

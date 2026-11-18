@@ -80,7 +80,7 @@ var (
 	// ErrGrantRequiresLifetime: a request names a secret whose max-grant tag requires a signed
 	// lifetime no longer than that tag. Its returned error names the secret and the limit.
 	ErrGrantRequiresLifetime = errors.New("a requested secret requires a shorter grant lifetime")
-	// ErrMintFailed: a kind secret's minter could not make a token from the stored value, such as
+	// ErrMintFailed: a type secret's minter could not make a token from the stored value, such as
 	// a Google login that needs a new sign-in or a GitHub App GitHub refuses. Its returned error
 	// carries the minter's own message, which never holds the stored value or a token.
 	ErrMintFailed = errors.New("the broker could not mint a token from this secret")
@@ -218,10 +218,17 @@ type Decision struct {
 	Detail string
 }
 
-// Minter makes one release of a kind secret from its stored value and the policy's facts about it
+// Minter makes one release of a type secret from its stored value and the policy's facts about it
 // (secrets.GitHubApp.Mint, secrets.GoogleLogin.Mint): the token, and when it stops working. Its
 // error never holds the stored value or a token.
 type Minter func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, error)
+
+// GiveBack tries to undo, at its upstream, one minted value of a type that a release minted for the
+// secret name and then handed to nobody (secrets.GitHubApp.GiveBack): a release that failed after
+// the mint, or a session's release of a name the airlock holds back, which mints the value only to
+// learn its slots. It runs to a bound of its own whatever ctx does, logs what the upstream did not
+// confirm, and answers nothing, since nothing the release answers depends on it.
+type GiveBack func(ctx context.Context, name, value string)
 
 // PendingRequest is one credential request Create has just written pending, as it hands it to
 // Machine.Judge: what the broker's model judge reads of a request, and nothing else.
@@ -271,8 +278,9 @@ type Machine struct {
 	MissRereads *ratelimit.Limit
 	// NarrowingCheckBudget bounds the whole check Create makes of a request's GitHub App
 	// narrowing before it asks a person (narrowing_check.go), and NarrowingCheckMint one mint of
-	// that check and that mint's revoke; zero means DefaultNarrowingCheckBudget and
-	// DefaultNarrowingCheckMint.
+	// that check and that mint's revoke, but for the give-back of a token whose answer the check
+	// could not use, which runs to a detached bound of its own; zero means
+	// DefaultNarrowingCheckBudget and DefaultNarrowingCheckMint.
 	NarrowingCheckBudget time.Duration
 	NarrowingCheckMint   time.Duration
 	// NarrowingChecks bounds, per enrollment, the checks of that narrowing that reach GitHub;
@@ -288,9 +296,13 @@ type Machine struct {
 	// credential's service is that one (requester). It is read on every call, so an account
 	// dropped from the setting stops its machines' service secrets at their next one.
 	VMServicesByAccount map[string]string
-	// Minters maps each policy kind (policy.Kinds) to its Minter. A release never returns the
-	// stored value of a kind secret.
+	// Minters maps each policy type (policy.Types) to its Minter. A release never returns the
+	// stored value of a type secret.
 	Minters map[string]Minter
+	// GiveBacks maps a policy type whose minted value the upstream can take back to its GiveBack,
+	// which a release calls for each such value it read and hands to nobody (giveBack, heldBack,
+	// release.go). A type with none, and a Machine with no map, leaves such a value to lapse.
+	GiveBacks map[string]GiveBack
 	// Airlock is the airlock's rules as the broker read them at boot
 	// (BROKER_AIRLOCK_RULES_FILE), and the zero value for a deployment with no rules file. A
 	// granted name the rules name is released as placeholders rather than as its value
@@ -328,6 +340,9 @@ type Machine struct {
 	// (narrowingCheckLimiter).
 	narrowingChecks     *ratelimit.Keyed
 	narrowingChecksOnce sync.Once
+	// givingBack counts the give-backs running in the background (giveBack, release.go), which a
+	// test waits on before it reads what they did.
+	givingBack sync.WaitGroup
 	// leftOut is, by record id, each pending record PendingForApprover has logged as left out of
 	// a list because it does not verify for this broker, with when to forget it: the later of the
 	// record's expiry and leftOutRetention after the last list that left it out. It is logged once

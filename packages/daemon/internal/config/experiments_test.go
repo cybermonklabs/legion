@@ -287,11 +287,39 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 	}
 }
 
+// A launch names one arm of each experiment it runs in, in the `legion.arms` attribute of its
+// telemetry (runtime.SpendArmsValue), which the agent's detector takes up to 255 characters of and
+// throws past, costing the launch every attribute it carries. So a project whose experiments, each
+// at its longest arm's name, would name 255 characters loads, and one that would name 256 is
+// refused. The memory experiment every project declares counts in both: `memory:memory` is 13 of
+// them.
+func TestProjectExperimentsHoldTheirArmsToTheTelemetryBound(t *testing.T) {
+	var block strings.Builder
+	block.WriteString("{")
+	// Three experiments of 32-character names, each with a 32-character arm beside a short one:
+	// 65 characters each and a comma before each, 198 after memory's 13.
+	for _, letter := range []string{"a", "b", "c"} {
+		name := strings.Repeat(letter, 32)
+		block.WriteString(name + ": {variants: [{name: x}, {name: " + name + "}]}, ")
+	}
+	file := func(arm int) string {
+		// A fourth of a 21-character name: a comma, the name, `:` and the arm, 23 + arm.
+		return experimentsFile(block.String()+strings.Repeat("d", 21)+": {variants: [{name: "+strings.Repeat("e", arm)+"}]}}", "")
+	}
+	if _, err := Load(writeConfigFile(t, file(21)), noEnv); err != nil {
+		t.Fatalf("Load of experiments whose longest arms make 255 characters: %v", err)
+	}
+	want := "projects.DEMO declares experiments whose arms one launch could name in legion.arms in 256 characters, over the 255 the agent's telemetry takes: shorten the experiments' or their variants' names, or declare fewer experiments"
+	if _, err := Load(writeConfigFile(t, file(22)), noEnv); err == nil || err.Error() != want {
+		t.Fatalf("Load error = %v, want %q", err, want)
+	}
+}
+
 // Under kubernetes a variant's overlay must be a file one of the operator's mounts holds, since a
 // role's pod and the image probe see only those and the image: a sub_path mount of the file, an
 // item a directory mount of a ConfigMap projects, or any file under a whole Secret volume. A path
 // no mount holds, a directory mount itself, a key the projection leaves out and a role on a
-// harness that reads no overlay are refused at load, which is what `legion start --check-config`
+// harness that reads no overlay are refused at load, which is what `legion config check`
 // runs — and the mode is off throughout, since a unit already drawn keeps the files its variant
 // names.
 func TestProjectExperimentsUnderKubernetesMustBeInTheOperatorsMounts(t *testing.T) {

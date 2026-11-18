@@ -527,7 +527,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		writeError(w, http.StatusNotFound, "SECRET_NOT_IN_STORE", err.Error())
 		return
 	case errors.Is(err, requests.ErrMintFailed):
-		// The kind's upstream (GitHub or Google) refused or failed a mint the narrowing, if any, is
+		// The type's upstream (GitHub or Google) refused or failed a mint the narrowing, if any, is
 		// not at fault: an App with no installation, a Google login that needs a new sign-in, an
 		// upstream that could not be asked. Its message says why and never holds the stored value.
 		writeError(w, http.StatusBadGateway, "MINT_FAILED", err.Error())

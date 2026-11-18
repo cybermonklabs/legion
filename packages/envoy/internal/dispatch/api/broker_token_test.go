@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 	"github.com/sjawhar/envoy/internal/testport"
@@ -380,6 +381,160 @@ func TestABrokerTokenWritesAsTheSessionItProves(t *testing.T) {
 	}
 	if actor.Origin == nil || actor.Origin.Cwd != "/workspace" || actor.Origin.Host != "example-host-one" || actor.Origin.Pane != "%7" {
 		t.Fatalf("the write's origin = %+v, want the body's cwd, host and pane kept", actor.Origin)
+	}
+}
+
+// TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession: each credential below writes an
+// issue with a spec, a comment on it and an edit of the spec as one and the same session, and a
+// reader tells them apart by the stored actor's proven mark alone. A broker-issued token proved
+// the session, so the comment's author, the author of both versions - the spec's first, which
+// the issue's create writes, and the edit's, which the document service writes - and the actor
+// of both events carry proven: true. The shared agent token, a personal token and a pod's
+// service-account token prove no session, so the session their body names is recorded as it
+// always was and carries no mark, though it is the very session the broker's token proves.
+//
+// Each of those three also writes once with a forged body: its actor says proven: true, with an
+// act whose session_proven is true. Both are declared fields of model.Actor, so the server's
+// strict decode takes the body (every write below must answer its success code) and the mark
+// reaches the handler as the caller's own word. The write is still recorded with no mark on the
+// comment's author, either version's author or either event's actor: a server that copied the
+// body's actor, or its mark, into what it records fails every one of those assertions.
+func TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession(t *testing.T) {
+	issuer := newServiceTokenIssuer(t)
+	rig := newBrokerTokenRigOn(t, testServerOptions{oidc: issuer.verifier(t)})
+	caller := newBrokerCaller(t)
+	const brokerToken = "a-token-whose-session-is-proven"
+	rig.broker.Says(brokerToken, liveNamedToken(caller.jkt))
+	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
+		"key": brokerTestProject, "name": "Broker",
+	}); created.Code != http.StatusCreated {
+		t.Fatalf("create the project as a person: status=%d body=%s", created.Code, created.Body.String())
+	}
+	minted := rig.asPerson(t, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "laptop"})
+	if minted.Code != http.StatusCreated {
+		t.Fatalf("mint a personal token: status=%d body=%s", minted.Code, minted.Body.String())
+	}
+	personal := decodeBody[agentTokenResponse](t, minted).Token
+	service := issuer.mint(t, serviceTokenAudience)
+	bearer := func(token string) func(*testing.T, string, string, map[string]any) *httptest.ResponseRecorder {
+		return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+			return rig.serve(brokerRequest(t, method, path, body, "Bearer "+token, ""))
+		}
+	}
+
+	claimed := map[string]any{"kind": "session", "id": brokerTestSession}
+	forged := map[string]any{
+		"kind": "session", "id": brokerTestSession, "proven": true,
+		"act": map[string]any{"session": brokerTestSession, "session_proven": true},
+	}
+	// Each row's issue is written in words no other row's shares - its title, its spec's one
+	// sentence and the sentence its edit puts there - so the near-copy gate on POST /api/v1/issues
+	// reads no row's issue as a copy of an earlier row's (409 POSSIBLE_DUPLICATE).
+	for _, credential := range []struct {
+		name string
+		// title, first and second are the row's issue title, its spec's sentence and the
+		// sentence the edit replaces it with.
+		title, first, second string
+		// actor is the body's actor: none for the token that proves its session, the session
+		// claimed, or claimed with a forged mark, for every other.
+		actor  map[string]any
+		proven bool
+		send   func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder
+	}{
+		{"a broker-issued token", "Harbor lighthouse inventory", "Seagulls circle the pier.", "Ferries dock at dawn.", nil, true,
+			func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+				return rig.serve(caller.presenting(t, method, path, brokerToken, body))
+			}},
+		{"the shared agent token", "Orchard pruning calendar", "Apples ripen in autumn.", "Pears follow in winter.", claimed, false, bearer("agent-token")},
+		{"a personal token", "Volcanic basalt survey", "Lava cools into columns.", "Ash settles downhill.", claimed, false, bearer(personal)},
+		{"a service-account token", "Violin rehearsal notes", "Strings need fresh rosin.", "Bows rest overnight.", claimed, false, bearer(service)},
+		{"the shared agent token with a body that says proven", "Glacier melt telemetry", "Ice retreats each July.", "Meltwater feeds rivers.", forged, false, bearer("agent-token")},
+		{"a personal token with a body that says proven", "Bakery sourdough starter", "Flour ferments slowly.", "Loaves rise by noon.", forged, false, bearer(personal)},
+		{"a service-account token with a body that says proven", "Comet orbit sketch", "Tails point sunward.", "Perihelion arrives soon.", forged, false, bearer(service)},
+	} {
+		t.Run(credential.name, func(t *testing.T) {
+			write := func(method, path string, body map[string]any) *httptest.ResponseRecorder {
+				if credential.actor != nil {
+					body["actor"] = credential.actor
+				}
+				return credential.send(t, method, path, body)
+			}
+			issue := write(http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": brokerTestProject, "title": credential.title, "spec": credential.first,
+			})
+			if issue.Code != http.StatusCreated {
+				t.Fatalf("create the issue: status=%d body=%s", issue.Code, issue.Body.String())
+			}
+			created := decodeBody[struct {
+				Key               string `json:"key"`
+				PrimaryArtifactID string `json:"primary_artifact_id"`
+			}](t, issue)
+			comment := write(http.MethodPost, "/api/v1/issues/"+created.Key+"/comments", map[string]any{"body": "A comment."})
+			if comment.Code != http.StatusCreated {
+				t.Fatalf("comment: status=%d body=%s", comment.Code, comment.Body.String())
+			}
+			commentID := decodeBody[struct {
+				ID string `json:"id"`
+			}](t, comment).ID
+			edited := write(http.MethodPost, "/api/v1/artifacts/"+created.PrimaryArtifactID+"/edits", map[string]any{
+				"ops": []map[string]string{{"op": "replace", "find": credential.first, "with": credential.second}},
+			})
+			if edited.Code != http.StatusOK {
+				t.Fatalf("edit the spec: status=%d body=%s", edited.Code, edited.Body.String())
+			}
+			waitForArtifactVersion(t, rig.handler, created.PrimaryArtifactID, 2)
+
+			read := rig.asPerson(t, http.MethodGet, "/api/v1/comments/"+commentID, nil)
+			if read.Code != http.StatusOK {
+				t.Fatalf("read the comment: status=%d body=%s", read.Code, read.Body.String())
+			}
+			requireSessionProven(t, "the comment's author", decodeBody[struct {
+				Comment commentAuthor `json:"comment"`
+			}](t, read).Comment.Author, credential.proven)
+			for _, number := range []string{"1", "2"} {
+				version := rig.asPerson(t, http.MethodGet, "/api/v1/artifacts/"+created.PrimaryArtifactID+"/versions/"+number, nil)
+				if version.Code != http.StatusOK {
+					t.Fatalf("read version %s: status=%d body=%s", number, version.Code, version.Body.String())
+				}
+				authors := decodeBody[struct {
+					Authors []model.Actor `json:"authors"`
+				}](t, version).Authors
+				if len(authors) != 1 {
+					t.Fatalf("version %s authors = %#v, want the writing session alone", number, authors)
+				}
+				requireSessionProven(t, "version "+number+"'s author", authors[0], credential.proven)
+			}
+			events := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+created.Key+"/events", nil)
+			if events.Code != http.StatusOK {
+				t.Fatalf("read the issue's events: status=%d body=%s", events.Code, events.Body.String())
+			}
+			seen := map[string]bool{}
+			for _, event := range decodeBody[[]model.Event](t, events) {
+				if event.Type == "issue.created" || event.Type == "comment.created" {
+					seen[event.Type] = true
+					requireSessionProven(t, "the "+event.Type+" event's actor", event.Actor, credential.proven)
+				}
+			}
+			if !seen["issue.created"] || !seen["comment.created"] {
+				t.Fatalf("the issue's events hold %v, want issue.created and comment.created", seen)
+			}
+		})
+	}
+}
+
+// requireSessionProven fails t unless actor is the broker's test session, carries the proven
+// mark exactly when want says the credential proved it, and names no act: a session's own write
+// is no person's, so no session_proven a body sent can ride on it.
+func requireSessionProven(t *testing.T, what string, actor model.Actor, want bool) {
+	t.Helper()
+	if actor.Kind != "session" || actor.ID != brokerTestSession {
+		t.Fatalf("%s = %s:%s, want the session %s", what, actor.Kind, actor.ID, brokerTestSession)
+	}
+	if actor.Proven != want {
+		t.Fatalf("%s proven = %t, want %t", what, actor.Proven, want)
+	}
+	if actor.Act != nil {
+		t.Fatalf("%s act = %+v, want none", what, *actor.Act)
 	}
 }
 

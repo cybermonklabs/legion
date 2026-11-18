@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+    A launch in an arm of a declared experiment carries `legion.arms` in `OTEL_RESOURCE_ATTRIBUTES`
+    after `legion.issue` and `legion.role`: one `<experiment>:<variant>` for each arm whose
+    overlays it runs with, comma-joined in the order the project's file declares the experiments
+    and percent-encoded. A Kubernetes launch that keeps a pod lacking some of an arm's overlays
+    names that arm nowhere, a role an experiment's `roles` leaves out names none of its arms, and
+    a launch in no arm carries no such pair, so each model call says which arm's files it ran with.
+    The loader refuses an operator member naming `legion.arms`, and a project whose experiments,
+    each at its longest arm's name, could make the value longer than the 255 characters the
+    agent's telemetry takes.
+time: 2026-11-17T07:21:30Z
+custom:
+    Issue: pr4283

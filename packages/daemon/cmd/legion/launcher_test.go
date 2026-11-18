@@ -133,6 +133,25 @@ func TestTheLauncherCommandRefusesAMixOfItsTwoForms(t *testing.T) {
 	}
 }
 
+// A word under `legion launcher` names a command of its or is a usage error naming the word, even
+// when a flag the launcher does not have follows it: `launcher role-inix --generation 1` is a
+// mistyped role-init, and naming --generation would send the reader to the wrong word.
+func TestTheLauncherCommandRefusesAWordItDoesNotKnowByTheWord(t *testing.T) {
+	for _, args := range [][]string{
+		{"role-inix"},
+		{"role-inix", "--generation", "1"},
+		{"--connect", "tcp://127.0.0.1:1", "role-inix", "--status-fd", "3"},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		var stdout, stderr bytes.Buffer
+		code := run(ctx, append([]string{"legion", "launcher"}, args...), &stdout, &stderr)
+		cancel()
+		if want := `legion launcher: unknown command "role-inix" for "legion launcher"`; code != 2 || !strings.Contains(stderr.String(), want) || strings.Contains(stderr.String(), "unknown flag") {
+			t.Errorf("legion launcher %q = %d, stderr %q; want 2 naming the word: %q", args, code, stderr.String(), want)
+		}
+	}
+}
+
 // A service account to impersonate names a session database, so the launcher told one without the
 // instance, the database and the login refuses before it dials anything. A launcher that did not
 // know the flag would exit 2 on its usage, and one that parsed it and dropped it would take the
@@ -153,6 +172,47 @@ func TestTheLauncherCommandRefusesAServiceAccountWithoutItsSessionDatabase(t *te
 	const want = "the session database is named in part: no --session-instance, no --session-database, no --session-user"
 	if code != 1 || !strings.Contains(stderr.String(), want) {
 		t.Fatalf("exit %d, stderr %q; want 1 naming %q", code, stderr.String(), want)
+	}
+}
+
+// The metadata endpoint is a microVM issue pod's alone and named whole: both of its flags, with
+// --microvm and --roles-dir. Each other mixture is refused before anything is dialled or listened
+// on, naming what it lacks, which proves each flag reaches the launcher: one it did not know would
+// exit 2 on its usage, and one it dropped would change the refusal or dial the unreachable daemon
+// until the context ends. The controller's form with --microvm is refused for its roles directory
+// alone, so --microvm reached it too.
+func TestTheLauncherCommandRefusesTheMetadataEndpointOutsideAMicroVMIssuePod(t *testing.T) {
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	const (
+		pool     = "example-project.svc.id.goog"
+		provider = "https://container.googleapis.com/v1/projects/example-project/locations/example-location/clusters/example-cluster"
+	)
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"the pool alone", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--microvm", "--metadata-workload-pool", pool},
+			"the metadata endpoint is named in part: no --metadata-identity-provider"},
+		{"the identity provider alone", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--microvm", "--metadata-identity-provider", provider},
+			"the metadata endpoint is named in part: no --metadata-workload-pool"},
+		{"a gVisor pod", []string{"--roles-dir", t.TempDir(), "--role", "tester", "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
+			"the metadata endpoint serves a microVM's pod: it needs --microvm"},
+		{"the controller's form", []string{"--token-file", token, "--role", "tester", "--private-dir", t.TempDir(), "--microvm", "--metadata-workload-pool", pool, "--metadata-identity-provider", provider},
+			"the metadata endpoint is an issue pod's container: it needs --roles-dir"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"legion", "launcher", "--connect", "tcp://127.0.0.1:1", "--sandbox", "s", "--pod-uid", "p"}, tc.args...)
+			if code := run(ctx, args, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), tc.want) {
+				t.Fatalf("exit %d, stderr %q; want 1 naming %q", code, stderr.String(), tc.want)
+			}
+		})
 	}
 }
 

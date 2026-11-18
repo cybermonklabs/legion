@@ -2065,4 +2065,152 @@ package api
 // again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 146
+//
+// 151: dispatch://INFRA-3729 -- issue pods in GKE Sandbox microVMs, which is four shapes of the
+// launcher wire and one of the state. The launcher's command line gains `--microvm` and, with
+// `runtime.kubernetes.sandbox.microvm.metadata` set, `--metadata-workload-pool` and
+// `--metadata-identity-provider`, which a microVM issue pod's container passes (sandbox's
+// issuePod.launcherContainer). The daemon's answer to an issue pod launcher's hello gains
+// `kernelKills` (`shimwire.LauncherHelloAck.KernelKills`), set on every issue pod's answer and on
+// no controller pod's. `launcher_memory_kill` gains `cause` (`shimwire.LauncherMemoryKill.Cause`,
+// a `shimwire.MemoryKillCause`): empty for the gVisor guard's own kill, as 144 sends it; `kernel`
+// for a command of a role that a microVM pod's own kernel stopped; and `kernel-protected` for one
+// of the processes that run a role's session (its agent, shim, role-init or a helper) that the
+// kernel stopped all the same. The launcher's guest watch names both (memoryguard.Guest), and the
+// daemon tells that role with a note of its own for each (workflow's kernelKillNote and
+// kernelProtectedKillNote) under the same event id `memory-guard-kill:<id>:<sequence>`. The
+// state's settings block carries the new `runtime.kubernetes.sandbox` key as
+// `settings.runtime.kubernetes.sandbox`, which the plugin parses loosely (35 above), so that key
+// alone would bump nothing.
+//
+// The skew is safe in both directions. An older launcher refuses an unknown flag and exits, so a
+// daemon of this release must never render the microVM flags into a pod whose image predates
+// them: the image probe pairs a daemon with an image by this number (`runtime/sandbox/probe.go`),
+// as it did for 39, 48 and 144, which is why the flags carry one. A gVisor pod's command line is
+// unchanged. An older daemon sends no `kernelKills`, and a microVM pod's launcher then sends no
+// kill report, since it sends one only on a connection whose answer carried `kernelKills`
+// (`internal/launcher`'s manager.serve), so such a daemon never tells a role of the kernel's kill
+// in the guard's words, and the launcher's own line in the pod's log keeps what it would have
+// said. An older launcher ignores `kernelKills`, as it ignored `memoryGuard` (144), and sends no
+// `cause`. `kernelKills` is set on every issue pod's acknowledgement, a gVisor pod's included, so
+// only the controller pod's acknowledgement is the bytes 144 writes, where the member is left
+// out; the guard's report is those bytes too, since `cause` is left out when empty.
+//
+// An earlier loader refuses the `runtime.kubernetes.sandbox` key by name, so a file that sets it
+// takes the block out before an earlier image is pinned (docs/kubernetes.md, "Issue pods in
+// microVMs").
+// (This change took 151, the lowest number above main's 144 that no open pull request declared,
+// read on 2026-11-15 in each open head's own copy of this file: #3659 holds 145, #3711
+// 146, #4017 147, #4049 and #3519 148, #2731 149 and #3730 150. It keeps 151 at the forward merge
+// of 2026-11-16 that brings main in at 47a901c14da2, which carries #3711's INFRA-2614 at 146, the
+// entry right above and the number the base now carries: 151 is still above it, and a reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request, made between
+// 2026-11-16T19:30:30Z and 19:35:10Z, gave 151 to this change alone (147 #4017, 148 #3519, 149
+// #2230, 150 #4049 and #4065, 152 #3730, 153 #4115). That is a reading and never the rule: read
+// main's own number and every open head again at the next forward merge rather than from this
+// line.)
+// 152: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
+// mapping, decides which repositories a project works in, so the `repositories` block of
+// `GET /legion/v1/state` stops being that mapping. `mapped` is every repository the daemon
+// serves, the ones the mapping names and the ones the project's own records name, and each entry
+// gains `apps`, the installation of each role App on that repository (`implement` and `review`,
+// both always written): that is the answer an operator and a plugin ask of a repository, and no
+// reader should have to parse it out of a refusal's prose. `refused` keeps `repo` and `reason`
+// and holds a repository a role App is not installed on, or one whose installation could not be
+// read, and never one for want of a mapping; it gains an optional `apps` of that same shape,
+// written wherever GitHub answered both Apps' installation reads of `repo` and left out where a
+// read failed or `repo` is no `<owner>/<name>`, so which App is missing is read from the field on
+// a refused repository as on a served one; `withoutWebhookApp` and `caches` cover the
+// repositories the records name beside the mapped ones. `packages/contracts/src/legion-api.ts`
+// mirrors the entry and reads `apps` as optional, so a plugin of this contract meeting a daemon
+// of an earlier one mid-roll loses that one answer rather than refusing the whole body, and a
+// plugin of an earlier contract loses it the same way, its answer side stripping a key it does
+// not name. The bump is for what a reader takes the block to mean — a plugin built before it
+// reads `mapped` as the project's mapping, which it no longer is, and `refused` as the mapping's
+// leftovers — and the boot gate and `legion probe-image` are what keep daemon and plugin from
+// meeting across it at all. The addressing every pane, pod and controller is launched with moves
+// with the same change: it names the issue's own repository and then the owner accounts the
+// role's App is installed on, in place of the project's repositories, which are no bound on the
+// work any more and would be a whole installation's worth of names
+// (`daemon.RepositoriesClause`).
+// The bundle a pane and a pod hold gains one file of its own with the same change, in the root
+// beside the owner directories: `renames.txt`, the configured renames the project's pairs
+// resolve to (`ghconfig.PairsFile`), projected from the role Secret's `github-renames` key. For
+// a pair the routing key is the repository rather than the owner — the image's `legion gh` and
+// `legion git-credential` answer a request for the pair's `from` repository from the `to`
+// owner's directory, every other repository of that owner from its own, and a pair whose `to`
+// owner the bundle holds no directory for from nothing at all, naming the pair — so an image
+// built before it reads none of the file and answers the moved repository with the old owner's
+// token, a push GitHub refuses; `legion probe-image` is what keeps that pair apart.
+// `POST /legion/v1/controller/github-credential` carries the same pairs as `renames`, each with
+// its `from` and `to`, absent where the project has none that resolve, so the controller's own
+// bundle routes as a pod's does.
+// The same answer carries `installed`, the owner accounts the review App is installed on, sorted
+// and read with the bundle, which `legion controller start` names in its controller's addressing;
+// an older `legion controller start` decodes the answer with plain `json.Unmarshal` and ignores
+// the key, so the field is served to every caller and needs no serving down, as `renames` needs
+// none.
+// That route's refusal of a default owner the review App is not installed on answers
+// `DEFAULT_OWNER_NOT_INSTALLED` at this contract, renamed from a code that said the project's
+// repository mapping bounds the owner, which it no longer does. The status is the same, 400, and
+// nothing in Legion reads the code, so what the rename reaches is an operator's own log filter or
+// alert. The MESSAGE changed with the rule, not with the rename: against main it reads "is not an
+// owner of the project's repositories", and here it reads "is no owner the controller's App is
+// installed on", so a filter matching the old text is told nothing by the code alone.
+// (This branch's own base carried 59; it declared 80 until the forward merge of 2026-11-12 that
+// brought main in at 85, and then 86, which five other open heads declared as well, and then 88,
+// which the forward merge that brought main in at 86 left standing, and then 102 at the forward
+// merge of 2026-11-13 that brought main in at 94 — main stood at 104 after the merge of 17:3xZ
+// that day, which was then the entry right above this one, where 144 is now — since 88 is
+// below that base, which the gate refuses (.github/scripts/check-daemon-api-contract.sh), and
+// since the two keys contract 94 added are served to a caller at the declared number alone
+// (api's phaseEntriesContract). It took 106 at the merge after that, because
+// cybermonklabs/legion#3659 declares 105 and is the change that gives every later contract its
+// own serving-down, so a number below its own would be served without that machinery, and 112
+// at the merge after that, which #2731 had taken thirteen minutes earlier and which is
+// therefore its number rather than this one's. It takes 114 here: a census of
+// `const DaemonAPIVersion` at refs/pull/<n>/head over all 148 open pull requests of this
+// repository, taken at 2026-11-13T19:38:05Z, reads 104 ten times, then 105, 107, 108, 109, 110,
+// 111 twice, 112 twice and 113 once, with nothing above, so 114 is the lowest number above
+// main's 104 that no open head declares. The gate
+// compares a head with main alone, so every head at a number another head holds passes it today
+// and all but the first to land are renumbered after their review has run; that is
+// dispatch://INFRA-1569's to cure. Read main's own number and every open pull request's again at
+// the next forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. main at 61685f973c9a declares 111, and a census of `const DaemonAPIVersion` at
+// refs/pull/<n>/head over all open pull requests of this repository, taken at
+// 2026-11-14T00:08Z, reads 104 sixteen times, 107 once, 111 twice, 112 once (#2731), 113 once
+// (#3575), 114 once (this head), 115 four times and 116 once — so 114 is above main's 111 and
+// no other open head declares it, and this merge keeps it rather than renumbering.)
+// (The forward merge of 2026-11-14 that brought main in at 123 takes this entry to 128. A census
+// of `const DaemonAPIVersion` at refs/pull/<n>/head over every open pull request of this
+// repository, taken at 2026-11-14T13:0xZ, reads above main's 123: 123 three times (#2733, #3995,
+// #4000), 124 (#4021), 125 (#4030), 126 twice (#2230, #4017) and 127 (#3519), with nothing above,
+// so 128 is the lowest number above main's that no open head declares. Read main's own number and
+// every open pull request's again at the next forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+// (The forward merge of 2026-11-15 that brought main in at 132 (#3715) takes this entry to 136.
+// A census of const DaemonAPIVersion at refs/pull/<n>/head over every open pull request of this
+// repository, taken at 2026-11-15T01:32:08Z, reads above main's 132: 133 (#3937), 134 (#4021)
+// and 135 (#3659), with nothing above, so 136 is the lowest number above 132 that no open head
+// declares. Read main's own number and every open pull request's again at the next forward
+// merge rather than from this line.)
+// (The forward merges of 2026-11-15 take this entry to 152. A census of const DaemonAPIVersion
+// at refs/pull/<n>/head over every open pull request of this repository, taken at the push at
+// 2026-11-15T23:55:22Z, reads main at 144 and above it 145 (#3659), 146 (#3711), 147 (#4017),
+// 148 (#3519), 149 (#2731), 150 (#4049, which took this entry's own number while it stood there)
+// and 151 (#4106), with nothing above, so 152 is the lowest number above main's that no open
+// head declares. This entry stood at 143 until main passed it, and at 150 until #4049 took that.
+// At the forward merge of 2026-11-16 main declares 146, cybermonklabs/legion#3711's entry
+// being the one right above this one, and a census taken at that push -- const DaemonAPIVersion
+// read at refs/pull/<n>/head for every one of the 156 open pull requests of this repository --
+// reads above main's 146: 147 (#4017), 148 (#3519), 149 (#2230), 150 (#4049 and #4065), 151
+// (#4106) and 153 (#4115), with 152 declared by this pull request alone, so 152 is above the
+// base's number and free and this entry keeps it. An earlier census of that same push read only
+// the first 100 of those heads, which is a sample and not the census: #4115's 153 and this
+// entry's own 152 were both outside it.
+// Read main's own number and every open pull request's again at the next forward merge rather
+// than from this line.)
+const DaemonAPIVersion = 152

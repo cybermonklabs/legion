@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -60,7 +61,8 @@ const podShapeAnnotation = "legion.dev/pod-shape"
 // replaced to run as a pod created now does. Each field is the operator's or the deployment's own
 // value, never the daemon's own derivation of it, which the daemon changes with its own releases:
 // volumes and mounts are runtime.kubernetes.pod's alone (Options.Pod), and resources the pod
-// kind's one reservation.
+// kind's one reservation. Sandbox is where a microVM pod runs (sandboxShape), and nil for a gVisor
+// pod, which so records exactly what it recorded before the sandbox setting existed.
 //
 // The field order is fixed and encoding/json's own: Go sorts a map's keys, so a ResourceList
 // encodes the same whatever order it was built in, and a resource.Quantity marshals as its own
@@ -74,22 +76,56 @@ type podShapeRecord struct {
 	Mounts           []corev1.VolumeMount        `json:"mounts,omitempty"`
 	Disk             string                      `json:"disk"`
 	SkillsRepository string                      `json:"skills_repository,omitempty"`
+	Sandbox          *sandboxShape               `json:"sandbox,omitempty"`
+}
+
+// sandboxShape is the sandbox a microVM issue pod runs in, as its shape records it: the
+// RuntimeClass (microVMRuntimeClass), the ComputeClass whose nodes run it, the StorageClass its
+// disk is on (diskSpec), and the metadata endpoint its launcher serves, nil for none — each
+// runtime.kubernetes.sandbox.microvm's own (MicroVM). A gVisor pod records none
+// (podShapeRecord.Sandbox), so every gVisor shape encodes byte for byte as it did before the
+// setting existed and the setting's arrival opens no round over a gVisor pod, and the gVisor
+// pods' storage class stays out of every shape as it always was. A change of the microVM block's
+// storage class or metadata endpoint opens a round over each microVM pod and no other, and a change
+// of an issue's sandbox one over that issue's pod, from null to a microVM or back.
+type sandboxShape struct {
+	RuntimeClass string                `json:"runtime_class"`
+	ComputeClass string                `json:"compute_class"`
+	StorageClass string                `json:"storage_class"`
+	Metadata     *sandboxMetadataShape `json:"metadata,omitempty"`
+}
+
+// sandboxMetadataShape is the metadata endpoint a microVM pod's launcher serves, as its shape
+// records it (MetadataEndpoint).
+type sandboxMetadataShape struct {
+	WorkloadPool     string `json:"workload_pool"`
+	IdentityProvider string `json:"identity_provider"`
 }
 
 // podShape is the configuration a pod of kind is built from now, as its template's annotation
 // records it: the image every container runs, the kind's own reservation (podKind.resources), the
-// operator's volumes and mounts, the size of the pod's disk, and the kind's skills repository.
-// Skills are cloned once at pod start, so changing that repository needs the same ordinary update
-// round as changing a volume. An encoding failure is unreachable — every field is an API object
-// or a string — and is logged and recorded as no shape, compared by image alone.
+// operator's volumes and mounts, the size of the pod's disk, the kind's skills repository, and,
+// for a pod that runs in a microVM, where that microVM runs (microVM, launch.microVM; nil for a
+// gVisor pod, which records no sandbox). Skills are cloned once at pod start, so changing that
+// repository needs the same ordinary update round as changing a volume. An encoding failure is
+// unreachable — every field is an API object or a string — and is logged and recorded as no
+// shape, compared by image alone.
 //
 // Every field is settled when the runtime is built and never written again, so the runtime calls
-// this once per kind, as it is built, and keeps what it answers (r.podShapes): the pod template
-// that records a shape and the sweep that compares one read that string.
-func podShape(r *Runtime, kind podKind) string {
+// this once per kind and sandbox, as it is built, and keeps what it answers (podShapes,
+// r.podShapes): the pod template that records a shape and the sweep that compares one read that
+// string.
+func podShape(r *Runtime, kind podKind, microVM *MicroVM) string {
 	skills := ""
 	if repository := kind.skillsRepository(r); !repository.IsZero() {
 		skills = repository.String()
+	}
+	var where *sandboxShape
+	if microVM != nil {
+		where = &sandboxShape{RuntimeClass: microVMRuntimeClass, ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass}
+		if endpoint := microVM.Metadata; endpoint != nil {
+			where.Metadata = &sandboxMetadataShape{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
+		}
 	}
 	encoded, err := json.Marshal(podShapeRecord{
 		Image:            r.image,
@@ -98,6 +134,7 @@ func podShape(r *Runtime, kind podKind) string {
 		Mounts:           r.pod.VolumeMounts,
 		Disk:             r.volumeSize.String(),
 		SkillsRepository: skills,
+		Sandbox:          where,
 	})
 	if err != nil {
 		r.log.Error("sandbox runtime: the pod shape cannot be encoded; pods will be compared by image alone", "error", err)
@@ -106,9 +143,60 @@ func podShape(r *Runtime, kind podKind) string {
 	return string(encoded)
 }
 
+// podShapeKey is what picks the shape a pod is built from and compared with (r.podShapes): its
+// kind, and the sandbox it runs in. An issue pod has one shape per sandbox, the controller's pod
+// one, in gVisor, whatever the configuration names.
+type podShapeKey struct {
+	kind    podKind
+	sandbox SandboxType
+}
+
+// podShapes are the shapes the runtime's pods are built from now, each encoded once (podShape):
+// an issue pod's in gVisor and, where the configuration names a microvm block, in a microVM, and
+// the controller's pod's in gVisor.
+func podShapes(r *Runtime) map[podShapeKey]string {
+	shapes := map[podShapeKey]string{
+		{kind: issuePod{}, sandbox: SandboxGVisor}:      podShape(r, issuePod{}, nil),
+		{kind: controllerPod{}, sandbox: SandboxGVisor}: podShape(r, controllerPod{}, nil),
+	}
+	if microVM := r.sandboxConfig.MicroVM; microVM != nil {
+		shapes[podShapeKey{kind: issuePod{}, sandbox: SandboxMicroVM}] = podShape(r, issuePod{}, microVM)
+	}
+	return shapes
+}
+
+// shapeKey is the key of the shape l's pod is built from: its kind, in the sandbox prepare decided
+// for it from its issue (launch.microVM).
+func (l launch) shapeKey() podShapeKey {
+	if l.microVM != nil {
+		return podShapeKey{kind: l.kind, sandbox: SandboxMicroVM}
+	}
+	return podShapeKey{kind: l.kind, sandbox: SandboxGVisor}
+}
+
+// storedShapeKey is the key of the shape the pod of the stored Sandbox u, a pod of kind, is
+// compared with now: an issue pod's in the sandbox the configuration now gives the issue the
+// Sandbox is labelled with (labelIssue, SandboxConfig.Of), the issue a launch decides its pod's
+// sandbox from (prepare), and the controller's pod's in gVisor. The label holds an issue key as
+// labelValue writes it, which past a label value's 63 characters is a hashed form, so the canary
+// list is matched through that same form and a key of any length reads as its launch decides it.
+func (r *Runtime) storedShapeKey(kind podKind, u *unstructured.Unstructured) podShapeKey {
+	if _, issue := kind.(issuePod); !issue {
+		return podShapeKey{kind: kind, sandbox: SandboxGVisor}
+	}
+	label, _, _ := unstructured.NestedString(u.Object, "metadata", "labels", labelIssue)
+	issue := label
+	if i := slices.IndexFunc(r.sandboxConfig.CanaryIssues, func(key string) bool { return labelValue(key) == label }); i >= 0 {
+		issue = r.sandboxConfig.CanaryIssues[i]
+	}
+	return podShapeKey{kind: kind, sandbox: r.sandboxConfig.Of(issue)}
+}
+
 // podShapeDrift names what the pod of the Sandbox read as s was built from that the runtime would
 // build a pod from otherwise now (want, podShape), one short phrase per key: `image`, `resources`,
-// `volumes`, `mounts`, `disk` or `skills_repository`, with what the pod holds and would be handed now.
+// `volumes`, `mounts`, `disk`, `skills_repository` or `sandbox`, with what the pod holds and would
+// be handed now. `sandbox` is where a microVM pod runs (sandboxShape) and null for a gVisor pod, so
+// a pod whose issue moved from one sandbox to the other reads null on one side.
 // Nil means nothing drifted.
 //
 // It reads the stored Sandbox's template, never the pod: GKE Autopilot rewrites a pod's
@@ -156,6 +244,7 @@ func podShapeDrift(s *sandbox, want string) []string {
 	if !sameQuantity(was.Disk, now.Disk) {
 		drifted = append(drifted, "disk "+was.Disk+", now "+now.Disk)
 	}
+	named("sandbox", was.Sandbox, now.Sandbox)
 	return drifted
 }
 
@@ -193,17 +282,17 @@ func templateImageDrift(s *sandbox, image string) []string {
 	return nil
 }
 
-// shapeDrift is why the pod of the Sandbox read as s, a pod of kind, was built from a
-// configuration other than the one a pod of that kind is built from now: podShapeDrift against the
-// shape the runtime computed for that kind when it was built (r.podShapes).
+// shapeDrift is why the pod of the Sandbox read as s, a pod of the kind and sandbox key names, was
+// built from a configuration other than the one such a pod is built from now: podShapeDrift
+// against the shape the runtime computed for that key when it was built (r.podShapes).
 //
 // It is the one reading of a pod's shape, which both sides of a drifted pod's replacement take:
-// the round names its reasons in the task it opens with (PodDrift), and a launch into a live pod
-// no round covers replaces that pod when it answers anything (relaunch, roundCovers). So the two
-// can never disagree about whether a pod's shape has moved, or about which kind's shape it is
-// compared with.
-func (r *Runtime) shapeDrift(s *sandbox, kind podKind) []string {
-	return podShapeDrift(s, r.podShapes[kind])
+// the round names its reasons in the task it opens with (PodDrift, storedShapeKey), and a launch
+// into a live pod no round covers replaces that pod when it answers anything (relaunch,
+// launch.shapeKey, roundCovers). So the two can never disagree about whether a pod's shape has
+// moved, or about which kind's shape, in which sandbox, it is compared with.
+func (r *Runtime) shapeDrift(s *sandbox, key podShapeKey) []string {
+	return podShapeDrift(s, r.podShapes[key])
 }
 
 // PodDrift satisfies runtime.Runtime: why the pod k's process runs in no longer matches the
@@ -211,10 +300,11 @@ func (r *Runtime) shapeDrift(s *sandbox, kind podKind) []string {
 // and in a log line, nil when nothing drifted.
 //
 // It is the configuration a running pod cannot be changed to carry: what its template was built
-// from (podShapeDrift — the image, the kind's reservation, the operator's volumes and mounts, and
-// the disk), the ServiceAccount the pod runs as (accountDrift), and what driftedInPod reads of the
-// pod itself whose worker can be asked to push first — the operator's volume and mount holding its
-// role's overlays, the secrets broker's enrollment, the session store, and the GitHub owners its
+// from (podShapeDrift — the image, the kind's reservation, the operator's volumes and mounts, the
+// disk, and the sandbox its issue's pod runs in), the ServiceAccount the pod runs as
+// (accountDrift), and what driftedInPod reads of the pod itself whose worker can be asked to push
+// first — the operator's volume and mount holding its role's overlays, the secrets broker's
+// enrollment, the session store, and the GitHub owners its
 // gh volume projects a directory for. The two facets whose worker cannot be
 // reached at all stay a launch's business and are never a round's (movedInPod).
 //
@@ -242,10 +332,11 @@ func (r *Runtime) shapeDrift(s *sandbox, kind podKind) []string {
 //
 // The sweep asks this of every claim of the deployment at every tick, so the steady state — a
 // Sandbox running and a pod built from the configuration the runtime still has — costs one read
-// of the operating mode and one of the annotation the stored template records, against the shape
-// the runtime holds for that kind (r.podShapes), all strings of the object this call already
-// holds. The Sandbox itself is decoded only where the two shapes differ, which is the pod a round
-// is about to be opened over.
+// of the operating mode, one of the issue the Sandbox is labelled with and one of the annotation
+// the stored template records, against the shape the runtime holds for that kind in that issue's
+// sandbox (r.podShapes, storedShapeKey), all strings of the object this call already holds. The
+// Sandbox itself is decoded only where the two shapes differ, which is the pod a round is about to
+// be opened over.
 func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error) {
 	if err := k.Validate(); err != nil {
 		return nil, fmt.Errorf("sandbox runtime: pod drift: %w", err)
@@ -283,15 +374,16 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 		return nil, nil
 	}
 	var drifted []string
-	if held, _, _ := unstructured.NestedString(u.Object, "spec", "podTemplate", "metadata", "annotations", podShapeAnnotation); held != r.podShapes[kind] {
+	shape := r.storedShapeKey(kind, u)
+	if held, _, _ := unstructured.NestedString(u.Object, "spec", "podTemplate", "metadata", "annotations", podShapeAnnotation); held != r.podShapes[shape] {
 		// Only a template whose recorded shape differs is decoded, which is the pod a round is
-		// about to be opened over; shapeDrift reads that same recorded shape and answers nothing
-		// where the two are equal, so the skipped decode hides no reason.
+		// about to be opened over; shapeDrift reads that same recorded shape against that same
+		// key's and answers nothing where the two are equal, so the skipped decode hides no reason.
 		s, err := decodeSandbox(u)
 		if err != nil {
 			return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", k.Claim, err)
 		}
-		drifted = r.shapeDrift(s, kind)
+		drifted = r.shapeDrift(s, shape)
 	}
 	// The account the pod runs as is read from the live pod this call already holds, and both
 	// sides go through serviceAccountOr, so a configured account left unset matches a pod on
