@@ -2265,11 +2265,12 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 
 // gh 2.104.0's --attach uploads the file it names to GitHub, an SVG's text among what it takes,
 // and the leak guard reads no such file, so `legion gh` refuses a call giving one, naming the
-// option, before anything runs, on each of the six issue and pr leaves whose help lists it. The
-// same calls without it read as they did, so the option alone is what is refused; and at gh
-// 2.98.0, which has no --attach, each is refused already, as an option its help does not list.
-// The seventh leaf listing it, `gh issue artifact create`, which also uploads the files its
-// arguments name, is refused whole with or without it, for an argument this does not know.
+// option, before anything runs, on each of the eight leaves whose help lists it. On the six issue
+// and pr leaves the same calls without it read as they did, so the option alone is what is
+// refused; and at gh 2.98.0, which has no --attach, each is refused already, as an option its help
+// does not list. On `gh issue artifact create` and `edit` --attach is refused by name too; a
+// create that names a file by argument, which it also uploads, is refused for an argument this
+// does not know.
 func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
 	latest := savedGhHelpOf(t, "2.104.0")
 	rows := 0
@@ -2304,12 +2305,16 @@ func TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead(t *testing.T) {
 	if rows != 6 {
 		t.Errorf("%d rows ran, want 6", rows)
 	}
-	for _, argv := range [][]string{
-		{"issue", "artifact", "create", "5", "-R", "acme/widgets", "--attach", "notes.svg"},
-		{"issue", "artifact", "create", "5", "plan.md", "-R", "acme/widgets"},
+	for _, tc := range []struct {
+		argv   []string
+		refuse string
+	}{
+		{[]string{"issue", "artifact", "create", "5", "-R", "acme/widgets", "--attach", "notes.svg"}, `"--attach" uploads the file it names to GitHub, which the leak guard does not read`},
+		{[]string{"issue", "artifact", "edit", "142", "2", "-R", "acme/widgets", "--attach", "./flow.png"}, `"--attach" uploads the file it names to GitHub, which the leak guard does not read`},
+		{[]string{"issue", "artifact", "create", "5", "plan.md", "-R", "acme/widgets"}, "an argument this does not know"},
 	} {
-		if _, err := ghTargetOf(argv, nil, latest, noGitRepository, ownersOwnDirectories); err == nil {
-			t.Errorf("ghTargetOf(%q) at gh 2.104.0 = nil, want a refusal", argv)
+		if _, err := ghTargetOf(tc.argv, nil, latest, noGitRepository, ownersOwnDirectories); err == nil || !strings.Contains(err.Error(), tc.refuse) {
+			t.Errorf("ghTargetOf(%q) at gh 2.104.0 = %v, want a refusal containing %q", tc.argv, err, tc.refuse)
 		}
 	}
 }
