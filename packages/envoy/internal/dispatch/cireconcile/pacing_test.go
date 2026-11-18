@@ -338,6 +338,139 @@ func TestAPassWithNoWorkExpectedOfItPacesItselfAtTheFloor(t *testing.T) {
 	}
 }
 
+// The pass after one that a deadline ended before it reached a head reads at the floor. That
+// pass listed the heads and learned no page of any of them, so the work it leaves is one
+// repository's identity, and nine tenths of a bound of a second or more spread over one request
+// is above the ceiling: the gap is Pace, the pace at which the pass before it reached no head.
+// Paced so, the next pass would reach no head either, and nor would any pass after it, so the
+// cursor would stay at the first head for good. At the floor the pass reads the heads, learns
+// their pages, and the pass after it paces itself by those again.
+func TestThePassAfterOneThatReadNoHeadWholeReadsAtTheFloor(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHeads(head(7), head(8))
+	h.github.refuseChecks(gitHubRepository, head(7).sha)
+	h.github.refuseChecks(gitHubRepository, head(8).sha)
+	h.reconciler.Pace = RequestPace
+	starveFirstPass(t, h)
+
+	// Set by the arithmetic, the gap would be nine tenths of the five-second bound over the one
+	// identity read the first pass left: 4.5 seconds, which the ceiling clamps to 500ms.
+	h.pass()
+
+	line := h.passLine()
+	if got, want := text(t, line, "pace"), FastestRequestPace.String(); got != want {
+		t.Errorf("the pass after one that reached no head paced itself at %s, want the floor %s: at the ceiling the pass before it reached no head: %v", got, want, line)
+	}
+	if number(t, line, "heads") != 2 || line["deadline_reached"] != false {
+		t.Fatalf("the pass after the one that reached no head reached %v heads (deadline_reached %v), want both within its bound: %v", line["heads"], line["deadline_reached"], line)
+	}
+
+	h.pass()
+
+	// Two heads over REST are two listings each, and the repository's identity: five requests,
+	// and nine tenths of five seconds over five is 900ms, which the ceiling clamps to 500ms. The
+	// floor was the starved pass's successor's alone.
+	line = h.passLine()
+	if got, want := text(t, line, "pace"), RequestPace.String(); got != want {
+		t.Errorf("the pass after one that read every head paced itself at %s, want %s from the work it learned: %v", got, want, line)
+	}
+}
+
+// starveFirstPass runs a pass that a one-second bound ends before it reaches a head: GitHub holds
+// the first head's check runs until the bound cancels the request. It requires that pass to have
+// listed both heads and reached neither, and then lets GitHub answer at speed again under a bound
+// of five seconds, which holds these few requests many times over, so what the passes after it
+// read turns on their pace alone.
+func starveFirstPass(t *testing.T, h *harness) {
+	t.Helper()
+	h.reconciler.PassTimeout = time.Second
+	h.github.stall(runsOf(head(7)), time.Minute)
+	h.pass()
+	line := h.passLine()
+	if line["deadline_reached"] != true || number(t, line, "heads") != 0 || number(t, line, "heads_known") != 2 {
+		t.Fatalf("the first pass reads deadline_reached %v, %v heads reached and %v heads known, want its bound to end it with both heads listed and neither reached: nothing here is tested: %v",
+			line["deadline_reached"], line["heads"], line["heads_known"], line)
+	}
+	h.github.stall(runsOf(head(7)), 0)
+	h.reconciler.PassTimeout = 5 * time.Second
+}
+
+// A rate limit that ends the passes after one a deadline ended before it reached a head leaves
+// the floor in place: the limit, not the pace, stopped them, and they learned no work either. So
+// the pass after the limit's reset reads at the floor too, whether GitHub answered the limit
+// inside a pass or the limit was still in force as a pass began. Cleared by the limited pass, the
+// floor would give way to the arithmetic, which spreads the one identity read over the bound and
+// lands on the ceiling again.
+func TestARateLimitAfterAPassThatReachedNoHeadLeavesTheFloorInPlace(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHeads(head(7), head(8))
+	h.github.refuseChecks(gitHubRepository, head(7).sha)
+	h.github.refuseChecks(gitHubRepository, head(8).sha)
+	h.reconciler.Pace = RequestPace
+	starveFirstPass(t, h)
+
+	// GitHub answers the first head's check runs as an exhausted limit, which ends the second
+	// pass before it reaches a head.
+	h.github.rateLimitNext(runsOf(head(7)))
+	h.pass()
+	line := h.passLine()
+	if line["rate_limited"] != true || number(t, line, "heads") != 0 {
+		t.Fatalf("the second pass reads rate_limited %v and %v heads reached, want the limit to end it before it reached a head: %v",
+			line["rate_limited"], line["heads"], line)
+	}
+	// The limit is still in the ledger every process shares, so the third pass reaches no head
+	// either.
+	h.pass()
+	if line := h.passLine(); line["rate_limited"] != true || number(t, line, "heads") != 0 {
+		t.Fatalf("the third pass reads rate_limited %v and %v heads reached, want the limit still in force to end it: %v",
+			line["rate_limited"], line["heads"], line)
+	}
+
+	// GitHub's reset passes, which takes the limit out of the ledger.
+	scope := githubapp.InstallationScope(h.github.installationID())
+	limit, found, err := h.reconciler.Limits.Get(h.ctx, scope)
+	if err != nil || !found {
+		t.Fatalf("the limit GitHub answered with was recorded under %s: %v, %v", scope, found, err)
+	}
+	if err := h.reconciler.Limits.Clear(h.ctx, limit); err != nil {
+		t.Fatalf("clear the limit as its reset does: %v", err)
+	}
+	h.pass()
+
+	line = h.passLine()
+	if got, want := text(t, line, "pace"), FastestRequestPace.String(); got != want {
+		t.Errorf("the pass after the limit's reset paced itself at %s, want the floor %s: no pass since the one its deadline ended has reached a head: %v", got, want, line)
+	}
+	if number(t, line, "heads") != 2 {
+		t.Errorf("the pass after the limit's reset reached %v heads, want both: %v", line["heads"], line)
+	}
+}
+
+// A deployment that configures a pause below the floor keeps it for the pass after one a deadline
+// ended before it reached a head: the floor never makes a pass slower than the pause configured.
+func TestThePassAfterOneThatReachedNoHeadKeepsAShorterConfiguredPace(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(rowRepository)
+	h.listHeads(head(7), head(8))
+	h.github.refuseChecks(gitHubRepository, head(7).sha)
+	h.github.refuseChecks(gitHubRepository, head(8).sha)
+	const configured = 50 * time.Millisecond
+	h.reconciler.Pace = configured
+	starveFirstPass(t, h)
+
+	h.pass()
+
+	line := h.passLine()
+	if got, want := text(t, line, "pace"), configured.String(); got != want {
+		t.Errorf("the pass after one that reached no head paced itself at %s, want the configured %s, which is shorter than the floor: %v", got, want, line)
+	}
+	if number(t, line, "heads") != 2 {
+		t.Errorf("the pass after one that reached no head reached %v heads, want both: %v", line["heads"], line)
+	}
+}
+
 // The pass's queries go one at a time and leave GitHub the processing time its secondary limit
 // asks for: no two queries of a pass overlap, each is followed by a wait of a third of what the
 // query before it took, and the query time the pass sustains is three quarters of the clock,
