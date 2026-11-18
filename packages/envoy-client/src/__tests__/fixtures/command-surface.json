@@ -222,7 +222,8 @@
         "Pull requests whose keys wait to be read again: 42.",
         "Changes of attribution whose events wait: 9.",
         "The key reading: 3c59dc048e8850243be8079a5c74d079.",
-        "Links that more than one issue holds in other letter cases: 2."
+        "Links that more than one issue holds in other letter cases: 2.",
+        "Pull requests whose head is not read while a read is owed: 23 that GitHub did not answer (the oldest owed since 2026-11-17 06:05 UTC), and 4 that GitHub refuses (the oldest refused since 2026-11-17 08:09 UTC)."
       ]
     },
     {

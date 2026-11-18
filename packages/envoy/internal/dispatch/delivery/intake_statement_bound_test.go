@@ -43,7 +43,7 @@ func TestTheSettleOfAnOwedReadWaitsOnALockNoLongerThanTheOwe(t *testing.T) {
 	github := serveGitHubPulls(t, fake, "acme/widgets")
 	at := time.Now().UTC().Add(-time.Minute).Truncate(time.Second)
 	github.set("acme/widgets", number, "open", head, branch, "", at)
-	if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure); err != nil {
+	if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure, ""); err != nil {
 		t.Fatal(err)
 	}
 	reading, answer := make(chan struct{}), make(chan struct{})

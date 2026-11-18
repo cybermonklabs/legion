@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // One answer of GitHub, asked with the token of the read GitHub refused, is what ends an owed
@@ -38,7 +39,7 @@ func TestAReadRefusedAfterTheRepositoryLeftTheInstallationStaysOwed(t *testing.T
 	branch, body := "legion/"+issue, "Dispatch: "+issue
 	github.set("acme/widgets", real, "open", head, branch, body, time.Now().UTC().Add(-time.Minute).Truncate(time.Second))
 	for _, number := range []int{absent, real} {
-		if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedRefusal); err != nil {
+		if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedRefusal, model.RefusedAsPullRequestNotFound); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -100,8 +101,11 @@ func TestARepositoryWithNoInstallationCostsAPassOneLookup(t *testing.T) {
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			fake.notInstalled.Store("ghost/nowhere", true)
 			client := fake.newTestClient()
+			// GitHub refuses a number that acme/widgets does not have with 404, and the
+			// installation lookup of ghost/nowhere with 404.
+			refusedAs := map[string]string{"acme/widgets": model.RefusedAsPullRequestNotFound, "ghost/nowhere": model.RefusedAsAppNotInstalled}[repo]
 			for n := 1; n <= rows; n++ {
-				if err := owePullRequestRead(ctx, pool, repo, n, owedRefusal); err != nil {
+				if err := owePullRequestRead(ctx, pool, repo, n, owedRefusal, refusedAs); err != nil {
 					t.Fatal(err)
 				}
 			}

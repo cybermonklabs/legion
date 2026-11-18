@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -168,4 +169,62 @@ func TestTheAttributionCountsNeedNoDeliverySettings(t *testing.T) {
 		values ($1, 'https://example.com/PLAN', 'url'), ($2, 'https://example.com/plan', 'url')`, third, held)
 	want.LinksInTwoCases = 1
 	check("two_issues_hold_one_url_in_two_cases")
+}
+
+// The count route names the pull requests whose head is not read while a read is owed: the
+// failures, which GitHub did not answer, and the refusals, which GitHub refuses. The control comes
+// first: with nothing owed, both counts are 0, and the body holds neither time. Then
+// acme/widgets#61 is owed a failure since 2 hours ago. acme/widgets#62 is owed a refusal, first
+// refused 3 hours ago and owed again 1 hour ago. So a count of the refusals that reads owed_at
+// in place of refused_since fails. Want owed_failures 1 since the owe of #61, and owed_refusals 1
+// since the first refusal of #62.
+func TestTheAttributionCountsNameTheReadsThatAreOwed(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	ctx := context.Background()
+	read := func(step string) (delivery.AttributionCounts, map[string]json.RawMessage) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/delivery/attribution", nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s: GET /api/v1/delivery/attribution: status=%d body=%s", step, response.Code, response.Body.String())
+		}
+		t.Logf("%s: %s", step, response.Body.String())
+		var members map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &members); err != nil {
+			t.Fatalf("%s: decode the members of %s: %v", step, response.Body.String(), err)
+		}
+		return decodeBody[delivery.AttributionCounts](t, response), members
+	}
+
+	counts, members := read("control_nothing_owed")
+	for _, member := range []string{"owed_failures", "owed_refusals"} {
+		if got := string(members[member]); got != "0" {
+			t.Errorf("control_nothing_owed: %s is %q, want 0", member, got)
+		}
+	}
+	for _, member := range []string{"owed_failures_oldest_at", "owed_refusals_since"} {
+		if got, present := members[member]; present {
+			t.Errorf("control_nothing_owed: the body holds %s %s, want no such member", member, got)
+		}
+	}
+	if counts.OwedFailuresOldestAt != nil || counts.OwedRefusalsSince != nil {
+		t.Errorf("control_nothing_owed: the times are %v and %v, want none", counts.OwedFailuresOldestAt, counts.OwedRefusalsSince)
+	}
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	failureOwed, refusalOwed, firstRefused := now.Add(-2*time.Hour), now.Add(-time.Hour), now.Add(-3*time.Hour)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into pull_request_reads_owed (repo, number, reason, owed_at, refused_as, refused_since)
+		values ('acme/widgets', 61, 'failure', $1, null, null),
+		       ('acme/widgets', 62, 'refusal', $2, $3, $4)
+	`, failureOwed, refusalOwed, model.RefusedAsAppNotInstalled, firstRefused); err != nil {
+		t.Fatalf("owe a failure of #61 and a refusal of #62: %v", err)
+	}
+	counts, _ = read("one_failure_and_one_refusal_owed")
+	if counts.OwedFailures != 1 || counts.OwedFailuresOldestAt == nil || !counts.OwedFailuresOldestAt.Equal(failureOwed) {
+		t.Errorf("owed_failures is %d since %v, want 1 since %s, the owe of #61", counts.OwedFailures, counts.OwedFailuresOldestAt, failureOwed.Format(time.RFC3339Nano))
+	}
+	if counts.OwedRefusals != 1 || counts.OwedRefusalsSince == nil || !counts.OwedRefusalsSince.Equal(firstRefused) {
+		t.Errorf("owed_refusals is %d since %v, want 1 since %s, the first refusal of #62 and not its last owe at %s",
+			counts.OwedRefusals, counts.OwedRefusalsSince, firstRefused.Format(time.RFC3339Nano), refusalOwed.Format(time.RFC3339Nano))
+	}
 }

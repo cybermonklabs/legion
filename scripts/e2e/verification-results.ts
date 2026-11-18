@@ -41,6 +41,7 @@ import type {
   CheckBlock,
   CheckResult,
   CheckResultRecorded,
+  HeadNotRead,
   IssueSummaryPage,
 } from "@legion/contracts";
 import { connect, StringCodec } from "nats";
@@ -388,12 +389,34 @@ function basisOf(basis: CheckBasis): string {
   return `${basis.kind} ${(basis.commit ?? "").slice(0, 12)}${number}${learned}`;
 }
 
+/** One pull request whose head Dispatch has not read, in the words a case compares with: its
+ *  number, and the word and the time of GitHub's refusal of its read where GitHub refuses it. */
+function headNotReadOf(head: HeadNotRead): string {
+  if (head.refused_as === undefined) return `#${head.number}`;
+  const since = head.refused_since === undefined ? "" : ` ${head.refused_since}`;
+  return `#${head.number} (${head.refused_as}${since})`;
+}
+
 /** What one check compares its results with, as a case prints and compares it: every basis in
- *  the order the answer carries them, or the reason the check compared with nothing. */
+ *  the order the answer carries them, or the reason the check compared with nothing. Then each
+ *  pull request whose head Dispatch has not read, and each one whose answer is not known. */
 function comparedOf(check: CheckBlock): string {
   const bases = check.compared_with ?? [];
-  if (bases.length > 0) return bases.map(basisOf).join(", ");
-  return `nothing: ${check.compared_nothing ?? "no reason"}`;
+  const compared =
+    bases.length > 0
+      ? bases.map(basisOf).join(", ")
+      : `nothing: ${check.compared_nothing ?? "no reason"}`;
+  const headsNotRead = check.heads_not_read ?? [];
+  const issuesNotKnown = check.issues_not_known ?? [];
+  return [
+    compared,
+    ...(headsNotRead.length === 0
+      ? []
+      : [`heads_not_read ${headsNotRead.map(headNotReadOf).join(", ")}`]),
+    ...(issuesNotKnown.length === 0
+      ? []
+      : [`issues_not_known ${issuesNotKnown.map((entry) => `#${entry.number}`).join(", ")}`]),
+  ].join("; ");
 }
 
 /** The input that names the `dispatch` command to run, empty when it is unset. The shell script

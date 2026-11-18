@@ -482,7 +482,7 @@ func TestAReadThatCannotReadTheOwedRevisionDeletesNothingAndTheReconcileReadsAga
 			github := serveGitHubPulls(t, fake, "acme/widgets")
 			github.set("acme/widgets", number, "open", head, branch, body, at)
 			client := fake.newTestClient()
-			if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure); err != nil {
+			if err := owePullRequestRead(ctx, pool, "acme/widgets", number, owedFailure, ""); err != nil {
 				t.Fatal(err)
 			}
 			release := func() {}

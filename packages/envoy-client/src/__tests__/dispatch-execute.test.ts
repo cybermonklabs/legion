@@ -4440,7 +4440,7 @@ describe("executeDispatchTool", () => {
   });
 
   // Each count of the answer has its own value, so a line that prints the wrong field fails.
-  test("attribution prints the six lines of the server's count route", async () => {
+  test("attribution prints the seven lines of the server's count route", async () => {
     const requests: string[] = [];
     const counts = {
       facts_left: 1_204,
@@ -4450,6 +4450,8 @@ describe("executeDispatchTool", () => {
       keys_on_another_reading: 42,
       moves_queued: 9,
       links_in_two_cases: 2,
+      owed_failures: 5,
+      owed_refusals: 6,
     };
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       requests.push(new URL(String(url)).pathname);
@@ -4477,7 +4479,52 @@ describe("executeDispatchTool", () => {
       "Changes of attribution whose events wait: 9.",
       "The key reading: 3c59dc048e8850243be8079a5c74d079.",
       "Links that more than one issue holds in other letter cases: 2.",
+      "Pull requests whose head is not read while a read is owed: 5 that GitHub did not answer, and 6 that GitHub refuses.",
     ]);
+  });
+
+  // B5: the counts of the reads owed, and the oldest time of each kind, are one line. Each time is
+  // in UTC to the minute. Control: with nothing owed, the counts are 0 and the server names no
+  // time, so the line has no parenthesis.
+  test("attribution prints the reads owed, with the oldest time of each kind the server names", async () => {
+    const owed = {
+      facts_left: 0,
+      reads_left: 0,
+      facts_refused: 0,
+      reading: "3c59dc048e8850243be8079a5c74d079",
+      keys_on_another_reading: 0,
+      moves_queued: 0,
+      links_in_two_cases: 0,
+    };
+    const lineOf = async (counts: Record<string, unknown>) => {
+      const fetchImpl = async (): Promise<Response> => response({ ...owed, ...counts });
+      const result = await executeDispatchTool({
+        tool: "dispatch_attribution",
+        args: {},
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-1",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      return result.text.split("\n")[6];
+    };
+
+    expect(
+      await lineOf({
+        owed_failures: 3,
+        owed_failures_oldest_at: "2026-11-17T06:05:59.987654Z",
+        owed_refusals: 1_250,
+        owed_refusals_since: "2026-11-17T08:09:00Z",
+      })
+    ).toBe(
+      "Pull requests whose head is not read while a read is owed: 3 that GitHub did not answer (the oldest owed since 2026-11-17 06:05 UTC), and 1,250 that GitHub refuses (the oldest refused since 2026-11-17 08:09 UTC)."
+    );
+    expect(await lineOf({ owed_failures: 0, owed_refusals: 0 })).toBe(
+      "Pull requests whose head is not read while a read is owed: 0 that GitHub did not answer, and 0 that GitHub refuses."
+    );
   });
 
   test("dispatch_whoami returns the session and the personal token's owner", async () => {
@@ -8195,6 +8242,199 @@ describe("executeDispatchTool", () => {
         "  No result is recorded for this check.",
       ].join("\n")
     );
+  });
+
+  /** Runs dispatch_results against a server that answers `answer` for DSP-42. */
+  async function readAnswer(answer: Record<string, unknown>) {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") return response(answer);
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    return await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+  }
+
+  // A pull request whose head Dispatch has not read is named under the head line of its check,
+  // whatever the check compared with. Its reason says that the head is not read. No line says
+  // "none of the compared commits", because that head can be the commit. Control: check k2 has a
+  // read head too, and the tests above print no such line for a check with no heads_not_read.
+  test("dispatch_results words the reason head_not_read and names each head Dispatch has not read", async () => {
+    const read = await readAnswer({
+      issue: "DSP-42",
+      verification_artifact_id: "artifact-9",
+      checks: [
+        {
+          ...threeResults.checks[0],
+          compared_with: [],
+          compared_nothing: "head_not_read",
+          heads_not_read: [{ number: 81 }],
+          pass_stands: { answer: "unknown" },
+          results: [
+            {
+              ...threeResults.checks[0].results[2],
+              commit_stands: { answer: "unknown", reason: "head_not_read" },
+            },
+          ],
+        },
+        {
+          ...threeResults.checks[0],
+          block_id: "k2",
+          heads_not_read: [{ number: 82 }],
+          pass_stands: { answer: "unknown" },
+          results: [],
+        },
+      ],
+    });
+
+    expect(read.text).toBe(
+      [
+        "Checks of DSP-42:",
+        "",
+        "- k1 (before_merge). Compared with nothing: Dispatch has not read the head of a pull request of this issue yet. A pass stands: not known.",
+        "  Not read yet: the head of pull request #81.",
+        "  The check's words: Run bun test in packages/envoy-client and see every case pass.",
+        "  - pass by implementer at 1111111111111111111111111111111111111111. Where that commit stands is not known: Dispatch has not read the head of a pull request of this issue yet. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:00:00Z. Result res-1.",
+        "    Reading: bun test: 1598 pass, 0 fail.",
+        "",
+        "- k2 (before_merge). Compared with the head of pull request #3530 at 1111111111111111111111111111111111111111 (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: not known.",
+        "  Not read yet: the head of pull request #82.",
+        "  The check's words: Run bun test in packages/envoy-client and see every case pass.",
+        "  No result is recorded for this check.",
+      ].join("\n")
+    );
+  });
+
+  // Revision 19, D1: a pull request whose answer is not known has its own reason, issue_not_known.
+  // Its words say only what Dispatch knows: it read the pull request, and it does not know yet
+  // whether the pull request is this issue's. They never say that Dispatch has not read the head,
+  // nor that the pull request is "of this issue". Control: revision 18's words, the words of
+  // head_not_read, fail this test.
+  test("dispatch_results words the reason issue_not_known as what Dispatch knows, and no more", async () => {
+    const read = await readAnswer({
+      issue: "DSP-42",
+      verification_artifact_id: "artifact-9",
+      checks: [
+        {
+          ...threeResults.checks[0],
+          compared_with: [],
+          compared_nothing: "issue_not_known",
+          issues_not_known: [{ number: 85 }],
+          pass_stands: { answer: "unknown" },
+          results: [
+            {
+              ...threeResults.checks[0].results[2],
+              commit_stands: { answer: "unknown", reason: "issue_not_known" },
+            },
+          ],
+        },
+      ],
+    });
+    const words = "Dispatch does not know yet whether a pull request it read is this issue's";
+    expect({
+      compared: read.text.includes(`Compared with nothing: ${words}. A pass stands: not known.`),
+      stands: read.text.includes(`Where that commit stands is not known: ${words}.`),
+      line: read.text.includes("  Not known yet: whether pull request #85 is this issue's."),
+      notReadHead: read.text.includes("has not read the head"),
+      ofThisIssue: read.text.includes("of this issue"),
+      undefinedWord: read.text.includes("undefined"),
+    }).toEqual({
+      compared: true,
+      stands: true,
+      line: true,
+      notReadHead: false,
+      ofThisIssue: false,
+      undefinedWord: false,
+    });
+  });
+
+  // B5: a read that GitHub refuses stays owed until the App can read the repository again. The
+  // line under the head that is not read says why GitHub refuses, and since when. Control: #81
+  // has no refusal and prints no refusal line, and #767 has no time and prints no "since".
+  test("dispatch_results says which head GitHub refuses to read, why, and since when", async () => {
+    const read = await readAnswer({
+      issue: "DSP-42",
+      verification_artifact_id: "artifact-9",
+      checks: [
+        {
+          ...threeResults.checks[0],
+          compared_with: [],
+          compared_nothing: "head_not_read",
+          heads_not_read: [
+            {
+              number: 765,
+              refused_as: "app_not_installed",
+              refused_since: "2026-11-17T08:09:41.123456Z",
+            },
+            {
+              number: 766,
+              refused_as: "repository_unreadable",
+              refused_since: "2026-11-16T23:59:00Z",
+            },
+            { number: 767, refused_as: "pull_request_not_found" },
+            { number: 81 },
+          ],
+          pass_stands: { answer: "unknown" },
+          results: [],
+        },
+      ],
+    });
+
+    expect(read.text).toBe(
+      [
+        "Checks of DSP-42:",
+        "",
+        "- k1 (before_merge). Compared with nothing: Dispatch has not read the head of a pull request of this issue yet. A pass stands: not known.",
+        "  Not read yet: the head of pull request #765.",
+        "  Not read: GitHub refuses the read of pull request #765 (the GitHub App is not installed on the repository), since 2026-11-17 08:09 UTC.",
+        "  Not read yet: the head of pull request #766.",
+        "  Not read: GitHub refuses the read of pull request #766 (the GitHub App cannot read the repository), since 2026-11-16 23:59 UTC.",
+        "  Not read yet: the head of pull request #767.",
+        "  Not read: GitHub refuses the read of pull request #767 (GitHub has no such pull request).",
+        "  Not read yet: the head of pull request #81.",
+        "  The check's words: Run bun test in packages/envoy-client and see every case pass.",
+        "  No result is recorded for this check.",
+      ].join("\n")
+    );
+  });
+
+  // A refused_since that is not a time prints as the server gave it: the command does not stop on
+  // it, and it does not make up a time. Control: #766 carries a time and prints it to the minute.
+  test("dispatch_results prints a refusal time that is not a time as the server gave it", async () => {
+    const read = await readAnswer({
+      issue: "DSP-42",
+      verification_artifact_id: "artifact-9",
+      checks: [
+        {
+          ...threeResults.checks[0],
+          compared_with: [],
+          compared_nothing: "head_not_read",
+          heads_not_read: [
+            { number: 765, refused_as: "app_not_installed", refused_since: "not a time" },
+            {
+              number: 766,
+              refused_as: "repository_unreadable",
+              refused_since: "2026-11-16T23:59:00Z",
+            },
+          ],
+          pass_stands: { answer: "unknown" },
+          results: [],
+        },
+      ],
+    });
+
+    expect(read.text.split("\n").filter((line) => line.startsWith("  Not read: "))).toEqual([
+      "  Not read: GitHub refuses the read of pull request #765 (the GitHub App is not installed on the repository), since not a time.",
+      "  Not read: GitHub refuses the read of pull request #766 (the GitHub App cannot read the repository), since 2026-11-16 23:59 UTC.",
+    ]);
   });
 
   // A check CI proves prints as one line: its derived result, or why it has none, in the sentence
