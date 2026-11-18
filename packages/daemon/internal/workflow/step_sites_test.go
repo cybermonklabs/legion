@@ -445,7 +445,16 @@ func TestAReviewsReportIsItsCompletionsWhicheverLandsFirst(t *testing.T) {
 				engine := testEngine(config.DesignGateRootIssues, nil)
 				var starts int64
 				if counted {
-					onStored(t, pool, engine, "LEGION-208", engine.StartStepRecord)
+					// The start this release counted is in the store before the daemon boots, so
+					// it is written with no boot pass before it (factTx); the boot then finds
+					// the run open and opens nothing.
+					factTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
+						issue, err := engine.store.Issue(ctx, tx, "LEGION-208")
+						if err != nil {
+							return err
+						}
+						return engine.StartStepRecord(ctx, tx, *issue)
+					})
 					starts = 1
 				}
 				apply := applyFacts(t, pool, engine)

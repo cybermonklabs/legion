@@ -170,10 +170,19 @@ func withRelease(park map[string]int) map[string]int {
 	return kinds
 }
 
-// applyInTx runs one of engine's departures in a transaction of its own and commits it, with the
-// commit scope the engine's deferred logging needs (intake.WithCommitHooks) and the settle of the
-// runs its writes end (Engine.OpenFact, Engine.SettleFact), as a fact's application gives them.
+// applyInTx runs one of engine's departures as a fact applies it (factTx), after the boot's open
+// of each run no start counted (bootBefore), which comes before any fact the daemon applies.
 func applyInTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx context.Context, tx pgx.Tx) error) {
+	t.Helper()
+	bootBefore(t, pool, engine)
+	factTx(t, pool, engine, apply)
+}
+
+// factTx runs apply in a transaction of its own and commits it, with the commit scope the
+// engine's deferred logging needs (intake.WithCommitHooks) and the settle of the runs its writes
+// end (Engine.OpenFact, Engine.SettleFact), as a fact's application gives them, and with no boot
+// pass before it: a test that writes what the store held before the daemon booted calls it alone.
+func factTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
 	tx, err := pool.Begin(t.Context())
 	if err != nil {
