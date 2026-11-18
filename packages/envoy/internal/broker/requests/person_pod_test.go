@@ -116,10 +116,10 @@ func listsGrant(t *testing.T, m *Machine, person, grantID string) bool {
 }
 
 // TestPersonPodIsDecidedAsItsPerson: a pod whose account the setting maps to a person asks as that
-// person asks from the person's dev box (spec R3). The person's agent-tier secret is granted with
-// no approval. The person's human-tier secret waits for the person. Another person's agent-tier
-// secret waits for its owner. A shared agent-tier secret is granted. A service's secret is
-// denied. The request.created audit row names the person.
+// person asks from the person's dev box (dispatch://INFRA-4511/spec#b-r3). The person's
+// agent-tier secret is granted with no approval. The person's human-tier secret waits for the
+// person. Another person's agent-tier secret waits for its owner. A shared agent-tier secret is
+// granted. A service's secret is denied. The request.created audit row names the person.
 func TestPersonPodIsDecidedAsItsPerson(t *testing.T) {
 	ctx := context.Background()
 	m, pod, key := newPersonPodFixture(t)
@@ -195,8 +195,9 @@ func TestPersonPodIsOnTheListThatNamesItsPerson(t *testing.T) {
 }
 
 // TestPersonPodGrantsFollowTheSetting: the setting drops the pod's account, or maps it to another
-// person, while the pod holds grants it got as its person (D4). The policy's version does not
-// move, so only the setting can open the re-check.
+// person, while the pod holds grants it got as its person (D4 of
+// dispatch://INFRA-4511/artifact/plan-md). The policy's version does not move, so only the
+// setting can open the re-check.
 //
 //   - The automatic grant of the person's agent-tier secret is not reused: a new request for the
 //     secret waits for the person. It does not release, through Values or AirlockValues. It is

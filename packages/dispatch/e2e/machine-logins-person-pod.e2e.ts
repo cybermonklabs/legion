@@ -4,7 +4,8 @@ import { expect, type Locator, type Page, test } from "./test";
 import { withAlice } from "./users";
 
 /** The login service alice's pod account logs in as, which the broker names as the login's
- *  service. The page before this change labelled the row with it, `person-alice on <host>`. */
+ *  service. The pod's row must not show it: a row labelled `person-alice on <host>` reads as a
+ *  service's login. */
 const alicePodService = "person-alice";
 
 /** Alice's pod login: the token login of a pod whose Kubernetes account the broker's
@@ -57,8 +58,9 @@ async function revokeQuestion(page: Page, row: Locator): Promise<string> {
 // Dispatch relays the broker's answer to the page. So alice's page shows the fake broker's row
 // that names her as her own pod: its machine, who approved it, the section's sentence on who
 // may revoke it, and its Revoke's question. None of them calls it a service's login. The
-// daemon's login beside it names no person and still reads as a service's login. The page
-// before this change reads the pod's row as the login of its service, `person-alice`.
+// daemon's login beside it names no person and reads as a service's login. The pod's row must not
+// show its login service, `person-alice`: a row labelled `person-alice on <host>` reads as a
+// service's login.
 test("the machine logins section shows a person's pod login as that person's own, beside a service's login", async ({
   browser,
 }) => {

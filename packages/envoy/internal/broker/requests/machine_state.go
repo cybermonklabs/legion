@@ -410,7 +410,7 @@ type enrollmentRow struct {
 // A pod acts for its enrollment's operator only while `BROKER_POD_OPERATORS` (PodOperators)
 // still maps the account the enrollment recorded to that same person, both compared through
 // record.CanonicalLogin. Otherwise the pod acts for no person: it is its account's own, and its
-// service is read as above. A pod whose login carried no person acts for no person, as before.
+// service is read as above. A pod whose login carried no person acts for no person.
 // Every other session acts for its enrollment's operator. The enrollment row keeps the person it
 // was made for, and GrantsForApprover, mayRevoke, the approval record and the grant log read
 // that row, not this answer.
@@ -451,7 +451,7 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 		}
 	}
 	operator := deref(e.Operator)
-	if e.Kind == "pod" && operator != "" {
+	if personPodGrant(e) {
 		var mapped string
 		if e.Subject != nil {
 			mapped = record.CanonicalLogin(m.PodOperators[*e.Subject])

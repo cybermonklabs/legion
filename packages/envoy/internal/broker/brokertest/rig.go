@@ -233,8 +233,9 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 
 	serviceLogins := map[string]string{DaemonAccount: "legion-daemon"}
 	// BROKER_POD_OPERATORS: one map, empty unless WithPersonPod names an account. An empty map
-	// maps no account, as nil does, so a Rig without the option decides as before. Each mapped
-	// account logs in with its own token as its service, as config.Load requires.
+	// maps no account, as nil does, so a Rig without the option decides as a broker with the
+	// setting unset does. Each mapped account logs in with its own token as its service, as
+	// config.Load requires.
 	podOperators := map[string]string{}
 	for _, pod := range config.personPods {
 		serviceLogins[pod.account] = pod.service

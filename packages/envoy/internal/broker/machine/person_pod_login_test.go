@@ -163,17 +163,16 @@ func TestPersonPodOperatorsGiveAnUnmappedAccountNoOperator(t *testing.T) {
 	}
 }
 
-// TestPersonPodOperatorsGiveADaemonOfAPersonNoOperator is b1's "a daemon's login maps to no
-// person". A BROKER_EXCHANGE_ACCOUNTS entry maps adaWorkerAccount to ada, and
-// BROKER_SERVICE_LOGINS lists the account. This package does not read
-// BROKER_EXCHANGE_ACCOUNTS, so the test models the account as BROKER_SERVICE_LOGINS lists it, with
-// no BROKER_POD_OPERATORS entry. BROKER_POD_OPERATORS maps another account to ada. A pod-bound
-// token of adaWorkerAccount logs in with no operator.
+// TestPersonPodOperatorsGiveADaemonOfAPersonNoOperator pins that a pod-bound token of a daemon's
+// account, adaWorkerAccount, logs in with no operator. BROKER_SERVICE_LOGINS lists the account.
+// BROKER_POD_OPERATORS does not map it, while the setting maps another account to ada
+// (newPersonPodFixture). This package does not read BROKER_EXCHANGE_ACCOUNTS, the setting that
+// maps a daemon's account to a person for Dispatch. config's
+// TestPodOperatorsUnsetMapsNoDaemonToAPerson checks that half: with BROKER_EXCHANGE_ACCOUNTS
+// mapping each daemon's account to a person and BROKER_POD_OPERATORS unset, Load maps no account
+// to a person.
 func TestPersonPodOperatorsGiveADaemonOfAPersonNoOperator(t *testing.T) {
 	svc := newPersonPodFixture(t)
-	if _, mapped := svc.Enroll.PodOperators[adaWorkerAccount]; mapped {
-		t.Fatalf("BROKER_POD_OPERATORS maps %s; want no entry for it", adaWorkerAccount)
-	}
 	account, cred := personPodTokenLogin(t, svc, adaWorkerAccount, "pod-uid-worker-one", adaWorkerService)
 	if account.Person != "" {
 		t.Fatalf("VerifyServiceToken(%s) = person %q; want none", adaWorkerAccount, account.Person)

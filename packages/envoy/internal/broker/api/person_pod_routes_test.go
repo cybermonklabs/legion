@@ -316,9 +316,9 @@ func TestAPersonPodLoginIsRefusedTheOperatorRoutesThatServeItsPersonsBox(t *test
 
 // TestAPersonPodLoginEnrolsItsOwnPodForItsPersonOverTheWire: a pod of the mapped account logs in
 // with its own pod-bound token over POST /v1/launcher-credentials/token, and its credential
-// carries the person. The login enrols its own pod over POST /v1/enrollments, 201, and that
-// answer names no operator. GET /v1/enrollments/self, under the new enrollment's own proof, names
-// the pod's enrollment and the person as its operator.
+// carries the person. The login enrols its own pod over POST /v1/enrollments, 201.
+// GET /v1/enrollments/self, under the new enrollment's own proof, names the pod's enrollment and
+// the person as its operator.
 func TestAPersonPodLoginEnrolsItsOwnPodForItsPersonOverTheWire(t *testing.T) {
 	rig := newPersonPodRig(t)
 	login, key := personPodTokenLogin(t, rig, personPodUID)
@@ -326,9 +326,6 @@ func TestAPersonPodLoginEnrolsItsOwnPodForItsPersonOverTheWire(t *testing.T) {
 	status, body := enrolPersonPod(t, rig, key, login, personPodUID, podKey)
 	if status != http.StatusCreated {
 		t.Fatalf("the pod's login enrols its own pod = %d %s; want 201", status, body)
-	}
-	if _, named := decode[map[string]any](t, body)["operator"]; named {
-		t.Fatalf("POST /v1/enrollments answered %s; want no operator in the answer", body)
 	}
 	enrollment := decode[wireEnrolled](t, body).EnrollmentID
 

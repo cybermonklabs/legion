@@ -1496,15 +1496,17 @@ func (s *Service) livePersonPodLogin(cred Credential) bool {
 	if !PersonPodLogin(cred) || cred.PodUID == "" {
 		return false
 	}
-	owner := s.podOperator(cred.Subject)
+	owner := s.PodOperator(cred.Subject)
 	return owner != "" && owner == *cred.Operator
 }
 
-// podOperator answers the person that BROKER_POD_OPERATORS maps subject to now, in
+// PodOperator answers the person that BROKER_POD_OPERATORS maps subject to now, in
 // record.CanonicalLogin's form. It answers "" for no subject and for a subject that the setting
-// does not map. Each caller tests for "" first, so an unmapped subject never matches an operator
-// or a person.
-func (s *Service) podOperator(subject *string) string {
+// does not map. A caller that compares the answer with an operator tests for "" first.
+// liveCredentials compares it with a person only after it refuses an empty person. So an
+// unmapped subject never matches an operator or a person. machine.Service reads it as the person
+// of a token login (ServiceAccount.Person), where "" is no person.
+func (s *Service) PodOperator(subject *string) string {
 	if subject == nil {
 		return ""
 	}
@@ -1587,10 +1589,11 @@ func (s *Service) podUnderTokenLogin(cred Credential, claims PodClaims, in Enrol
 	if cred.Subject == nil || (cred.Operator != nil && !person) {
 		return nil
 	}
-	if person && !ownPod(cred, claims.Subject) {
+	own := ownPod(cred, claims.Subject)
+	if person && !own {
 		return fmt.Errorf("%w: this login is account %s's, the enrollment's pod runs as %s", ErrPodSelfEnrollOnly, *cred.Subject, claims.Subject)
 	}
-	if ownPod(cred, claims.Subject) {
+	if own {
 		if cred.PodUID != in.RuntimeID {
 			return fmt.Errorf("%w: this login is pod %q's, the enrollment names %q", ErrPodSelfEnrollOnly, cred.PodUID, in.RuntimeID)
 		}
@@ -1848,9 +1851,9 @@ func (s *Service) liveCredentials(ctx context.Context, person string, services b
 		return nil, nil
 	}
 	mine, mapped := []string{}, make([]string, 0, len(s.PodOperators))
-	for subject, owner := range s.PodOperators {
+	for subject := range s.PodOperators {
 		mapped = append(mapped, subject)
-		if record.CanonicalLogin(owner) == person {
+		if s.PodOperator(&subject) == person {
 			mine = append(mine, subject)
 		}
 	}
@@ -1883,7 +1886,7 @@ func (s *Service) liveCredentials(ctx context.Context, person string, services b
 	// Person is person. It is read from the setting, as the statement's arrays are, and not from
 	// the row's operator, which can name no one or a person the setting no longer names.
 	for i := range live {
-		if owner := s.podOperator(live[i].Subject); owner != "" {
+		if owner := s.PodOperator(live[i].Subject); owner != "" {
 			live[i].Person = &owner
 		}
 	}
@@ -1966,7 +1969,7 @@ func (s *Service) revokeCredential(ctx context.Context, id, person, actor string
 		return ErrNoCredential
 	}
 	var svc string
-	if owner := s.podOperator(subject); owner != "" {
+	if owner := s.PodOperator(subject); owner != "" {
 		// BROKER_POD_OPERATORS maps the credential's subject, so the credential is its person's
 		// own machine login, as liveCredentials lists it. The setting decides and the row does not:
 		// a login from a token bound to no pod moves the row to no operator (LiveCredentials says

@@ -432,10 +432,12 @@ type Config struct {
 	//
 	// A login of an account that BROKER_POD_OPERATORS maps to a person acts for that person, when
 	// the login token is bound to a pod of the account. No other login of this setting acts for a
-	// person: the credential of each other login has no operator. A mapped account is held to two
-	// rules that no other account of this setting is. BROKER_SERVICES must not bind it, though the
-	// paragraph above lets BROKER_SERVICES bind any other account listed here. It authenticates
-	// none of the routes a service calls as itself: serviceAuth refuses it 403 PERSON_ACCOUNT.
+	// person: the credential of each other login has no operator. A mapped account is held to
+	// rules that no other account of this setting is held to, and PodOperators lists them. Among
+	// them are these two. BROKER_SERVICES must not bind a mapped account, though the paragraph
+	// above lets BROKER_SERVICES bind any other account listed here. A mapped account
+	// authenticates none of the routes a service calls as itself: serviceAuth refuses it
+	// 403 PERSON_ACCOUNT.
 	ServiceLogins map[string]string
 	// BROKER_POD_OPERATORS: the Kubernetes accounts whose pods act for a person,
 	// whitespace-separated <email>=system:serviceaccount:<namespace>:<name> entries, such as

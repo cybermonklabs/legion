@@ -576,10 +576,11 @@ A deployment can let a Kubernetes pod work for one person on the terms of that p
 `BROKER_POD_OPERATORS` maps the pod's ServiceAccount to the person
 ([Operate](/legion/broker/operate/#what-to-run)). Each such account logs in under a login service
 of its own, which `BROKER_SERVICE_LOGINS` names and no `BROKER_SERVICES` or `BROKER_VM_SERVICES`
-entry names. The pod enrolls itself with `agent-secrets enroll --pod`. The login it makes with its
-own projected token carries the person as its operator, and so does its enrollment
-(`machine.Service.TokenLogin`, `enroll.PersonPodLogin`). A token of the account that is bound to
-no pod, such as one `kubectl create token` mints, logs in for no person and enrolls nothing.
+entry names. The pod enrolls itself with `agent-secrets enroll --pod --service <its login service>`.
+The login it makes with its own projected token carries the person as its operator, and so does
+its enrollment (`machine.Service.TokenLogin`, `enroll.PersonPodLogin`). A token of the account
+that is bound to no pod, such as one `kubectl create token` mints, logs in for no person and
+enrolls nothing.
 
 Such a pod is its person's own session in the table above. The person's agent-tier secrets are
 granted to it at once, the person's human-tier secrets go to the person for approval, and another

@@ -84,33 +84,6 @@ func personLogin(t *testing.T, r podRig, account, podUID, person string) Credent
 	return cred
 }
 
-// personsMachineLogin mints a person's own machine login as machine.Service.ApplyDecision mints
-// it: through MintLauncherCredentialTx, from a launcher_credential record that names the person.
-// It reads the credential back as Create sees it.
-func personsMachineLogin(t *testing.T, svc *Service, person, host string) Credential {
-	t.Helper()
-	ctx := context.Background()
-	key := newLoginKey(t)
-	recordID := insertRecord(t, svc, "launcher_credential", person)
-	tx, err := svc.Store.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tx.Rollback(ctx)
-	id, err := svc.MintLauncherCredentialTx(ctx, tx, person, host, key.thumbprint, key.jwk, recordID, time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatalf("MintLauncherCredentialTx(%s): %v", person, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	cred, err := svc.CredentialForKey(ctx, id.String(), key.thumbprint)
-	if err != nil {
-		t.Fatalf("CredentialForKey(%s): %v", id, err)
-	}
-	return cred
-}
-
 // personsSignIn issues the launcher credential of a person's sign-in on a machine, as the token
 // exchange issues it: a subject that exchange.PersonSubject writes, the fleet's service, and the
 // person as its operator. It reads the credential back as Create sees it.
@@ -139,7 +112,7 @@ func personsSignIn(t *testing.T, svc *Service, person string) Credential {
 // session's name would take (adopt).
 func adaBoxSessionWithGrant(t *testing.T, r podRig) (Enrollment, uuid.UUID) {
 	t.Helper()
-	box := personsMachineLogin(t, r.svc, adaPerson, "ada-devbox")
+	box := mintApprovedCredential(t, r.svc, adaPerson, nil, "ada-devbox")
 	enr, err := r.svc.Create(context.Background(), box, Enrollment{
 		Kind: "session", RuntimeID: "ada-devbox", Thumbprint: "tp-ada-devbox", SessionID: str(adaBoxSession),
 	})
@@ -327,13 +300,13 @@ func TestAPersonPodLoginReadsTheAccountThenThePodThenTheSessionName(t *testing.T
 // TestAPersonPodRuleLeavesAMachineLoginAndASignInRefusedAPod: the rule of a person's pod login
 // admits no other credential with an operator to a pod. A person's own machine login has no
 // subject. A person's sign-in on a machine has a subject of its own kind. Neither is a person's
-// pod login, and each is refused ada's pod as before, though the setting maps the pod's account
-// to ada. Ada's pod login of that account then enrols the same pod.
+// pod login, and each is refused ada's pod, though the setting maps the pod's account to ada.
+// Ada's pod login of that account then enrols the same pod.
 func TestAPersonPodRuleLeavesAMachineLoginAndASignInRefusedAPod(t *testing.T) {
 	for _, schema := range personPodSchemas() {
 		t.Run(schema.name, func(t *testing.T) {
 			r := newPersonPodRig(t, schema)
-			box := personsMachineLogin(t, r.svc, adaPerson, "ada-devbox")
+			box := mintApprovedCredential(t, r.svc, adaPerson, nil, "ada-devbox")
 			if box.Subject != nil || textOf(box.Operator) != adaPerson {
 				t.Fatalf("ada's machine login = subject %s, operator %s; want no subject and operator %s", textOf(box.Subject), textOf(box.Operator), adaPerson)
 			}

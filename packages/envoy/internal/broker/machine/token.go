@@ -132,7 +132,7 @@ func (s *Service) verifyKubernetes(claims enroll.AccountClaims) (ServiceAccount,
 	namespace, name, _ := strings.Cut(strings.TrimPrefix(claims.Subject, "system:serviceaccount:"), ":")
 	return ServiceAccount{
 		AccountClaims: claims, Service: service, Host: namespace + "/" + name,
-		Person: record.CanonicalLogin(s.Enroll.PodOperators[claims.Subject]),
+		Person: s.Enroll.PodOperator(&claims.Subject),
 	}, nil
 }
 
