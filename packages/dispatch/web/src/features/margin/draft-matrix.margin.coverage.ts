@@ -23,7 +23,6 @@ const REASONS = {
   11: "11. Where the margin sits moves no composer: the desktop column's width, class and resize handle, the compact layout's `contents` class (`Margin`), and the panel's dialog role, its place at the foot of the screen and its backdrop (`MarginSheet`).",
   12: "12. The rest is focus and scrolling: the compose takes focus once it is on screen (`onScreen`, `autoFocus`), the margin scrolls the compose or a linked card into view only in an open panel (`useMarginListeners`, `useCardHold`), and an open panel or thread view keeps focus inside it and the page still under it (`useDialog`). None moves an address or ends a mount. The app shell's forms, above every host, are the sign-in file's.",
   13: "13. The compose's kind (`composer.kind`) changes only by the compose's own Comment, Suggest and Ask switch (`onKindChange`), the reader's own control, which retypes the same mark (`retypeCompose`) and leaves the draft in the field (`useKeptDrafts`), so it re-addresses the same compose and moves nothing it holds.",
-  14: "14. A typed or refused draft offered beside a newer compose is kept for its words in the unsent store (`AwayDraft.anchor`), and a sign-in after a lapse draws the margin's provider again with no compose open, which ends the tree that offered it as a reload does. Drawing such a kept draft on its document's arrival with no compose open is the reload rows' task, so these cells are that task's.",
 } as const;
 
 /** The rows that end a newer compose offering the earlier compose's draft beside its field. */
@@ -31,9 +30,6 @@ const OFFER_CLOSED = `${HOST} · a compose offering an earlier draft, then Close
 const OFFER_ESCAPED = `${HOST} · a compose offering an earlier draft, then Escape (the margin's compose)`;
 const OFFER_ISSUE_CLOSED = `${HOST} · a suggestion compose offering an earlier draft, then its issue closed (the margin's compose)`;
 const OFFER_LAPSED = `${HOST} · a compose offering an earlier draft, then signed in again after a lapse (the margin's compose)`;
-
-/** What a lifetime item answers to until the reload rows of this round are written. */
-const PENDING = { reason: "pending: the reload rows of this round" };
 
 export const coverage: readonly CoverageEntry[] = [
   ...answers(
@@ -100,8 +96,15 @@ export const coverage: readonly CoverageEntry[] = [
     cells(`${HOST} · document left, then back (the margin's compose)`),
     cells(`${HOST} · phone · panel closed, document left, then back (the margin's compose)`),
     cells(OFFER_ISSUE_CLOSED),
-    cells(OFFER_LAPSED, ["stopped"]),
-    { reason: REASONS[14] }
+    cells(OFFER_LAPSED),
+    cells(
+      `${HOST} · a suggestion compose with a typed draft, then its issue closed (the margin's compose)`,
+      ["typed"]
+    ),
+    cells(
+      `${HOST} · an ask compose with a typed draft, then its issue closed (the margin's compose)`,
+      ["typed"]
+    )
   ),
   ...answers(
     "MarginSheet | MarginComposerSlot | conditional | <div hidden={covered}>",
@@ -112,7 +115,7 @@ export const coverage: readonly CoverageEntry[] = [
     "MarginSheet | MarginComposerSlot | address prop | composer={composer}",
     cells(`${HOST} · document left, then back (the margin's compose)`),
     cells(`${HOST} · a compose opened on another document, then back (the margin's compose)`),
-    cells(OFFER_LAPSED, ["stopped"])
+    cells(OFFER_LAPSED)
   ),
   ...answers(
     'MarginSheet | MarginComposerSlot | address prop | hidden={tab.value !== "comments"}',
@@ -301,10 +304,10 @@ export const coverage: readonly CoverageEntry[] = [
   }),
   ...answers(
     "MarginComposerSlot | MentionComposer | lifetime | <MentionComposer mutationKey={sendKey}>",
-    PENDING
+    cells(`${HOST} · the page reloaded, then back (the margin's compose)`)
   ),
   ...answers(
     "ThreadCard | MentionComposer | lifetime | <MentionComposer mutationKey={replyMutationKey}>",
-    PENDING
+    cells(`${HOST} · the page reloaded, then back`)
   ),
 ];

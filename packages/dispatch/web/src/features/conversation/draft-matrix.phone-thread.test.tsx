@@ -32,12 +32,16 @@
  * | Another tab, then back (hidden)          | (5)    | (5)     | (5)     |
  * | Another comment's thread opened (hidden) | no (6) | no (6)  | no (6)  |
  * | The Conversation's reads fail or wait    | no (7) | no (7)  | no (7)  |
+ * | The page reloaded, then back (off)       | cell   | cell    | cell    |
  *
  * (off) marks a host move that takes the composer off the screen: Back hides the thread view,
  * and the docked composer it uncovers answers the issue, not the comment. (on) marks one that
  * keeps the same thread composer on screen at another comment's address. A refused or stopped
  * draft never leaves its field there, since another comment's Reply opens the held comment's
- * thread instead, so only the typed draft needs the line.
+ * thread instead, so only the typed draft needs the line. The reload row ends the whole page, as
+ * any reload does (`endAsAReload`), and loads it again over the same tab: a new query client and
+ * write store over the tab's `sessionStorage`, with the reader signed in as before. It is the
+ * composer's lifetime the census finds (`lifetime.ts`).
  *
  * The moves this host cannot make:
  * 1. Every Reply the thread composer answers is redirected onto the comment its refusal answers
@@ -86,6 +90,7 @@ import {
   BODY,
   commentA,
   commentB,
+  endAsAReload,
   HELD,
   type Held,
   keptLineNaming,
@@ -96,6 +101,7 @@ import {
   noteIn,
   REFUSAL,
   REFUSED_NOTE,
+  signedInAsReader,
   stubLists,
   tab,
 } from "../../__tests__/draft-matrix-fixture";
@@ -123,19 +129,30 @@ const replyToA: ReplyTarget = {
 
 interface Page {
   readonly createComment: Mock<typeof api.createComment>;
+  /** Ends the page as a reload does and loads it again over the same tab, signed in as the same
+   *  reader, with a new query client (`endAsAReload`, `signedInAsReader`). */
+  readonly reload: () => Promise<void>;
   readonly restore: () => void;
   readonly user: UserEvent;
+}
+
+/** Waits for both comments to be listed. */
+async function listed(): Promise<void> {
+  await waitFor(() =>
+    expect(document.querySelector('[data-turn="comment:comment-b"]')).not.toBe(null)
+  );
 }
 
 /**
  * The Conversation of CORE-1 on a phone, over Comment A and Comment B. Every comment the page
  * writes is refused, so a send pressed here comes back refused; with `stopped`, a reply of `BODY`
  * to Comment A is sent through the held-send store under the thread composer's name before the
- * page is drawn and stopped once late, as the reader's Stop trying does.
+ * page is drawn and stopped once late, as the reader's Stop trying does. With `signedIn` the page
+ * is signed in as the reader, as a reload row's is, so the tab keeps what it sends.
  */
-async function openPhone(stopped: boolean): Promise<Page> {
+async function openPhone(stopped: boolean, signedIn = false): Promise<Page> {
   const user = userEvent.setup();
-  const queryClient = newQueryClient();
+  const queryClient = signedIn ? signedInAsReader(newQueryClient()) : newQueryClient();
   const reads = stubLists({ comments: [commentA, commentB] });
   const createComment = spyOn(api, "createComment");
   if (stopped) {
@@ -143,12 +160,15 @@ async function openPhone(stopped: boolean): Promise<Page> {
   }
   createComment.mockRejectedValue(REFUSAL);
   const restoreViewport = stubViewport(PHONE_WIDTH);
-  const view = render(tab(NOTHING_READ, true, queryClient));
-  await waitFor(() =>
-    expect(document.querySelector('[data-turn="comment:comment-b"]')).not.toBe(null)
-  );
+  let view = render(tab(NOTHING_READ, true, queryClient));
+  await listed();
   return {
     createComment,
+    reload: async () => {
+      endAsAReload(() => view.unmount());
+      view = render(tab(NOTHING_READ, true, signedInAsReader(newQueryClient())));
+      await listed();
+    },
     restore: () => {
       view.unmount();
       restoreViewport();
@@ -326,3 +346,23 @@ test(`${HOST} · Close, then Discard draft? · cannot make: the thread composer 
     page.restore();
   }
 });
+
+// A reload ends the whole page and loads it again over the same tab (`endAsAReload`), with the
+// reader signed in as before. Comment A's Reply, the way back to the reply, opens its thread with
+// the reply the reader wrote there and its note.
+for (const held of HELD) {
+  test(`${HOST} · the page reloaded, then back · ${held}`, async () => {
+    const page = await openPhone(held === "stopped", true);
+    try {
+      await holdInThreadA(page, held);
+      await page.reload();
+      const dialog = await reply(page.user, commentA.id);
+      expect({ note: note(dialog), text: threadField(dialog).value }).toEqual({
+        note: held === "typed" ? "none" : held,
+        text: BODY,
+      });
+    } finally {
+      page.restore();
+    }
+  });
+}

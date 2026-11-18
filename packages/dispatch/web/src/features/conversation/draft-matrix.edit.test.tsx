@@ -66,6 +66,19 @@
  * | margin card                                      | cell   | cell    | cell    |
  * | margin phone thread                              | cell   | cell    | cell    |
  *
+ * The fourth part ends the whole page, as any reload does (`endAsAReload`), and loads it again
+ * over the same tab: a new query client and write store over the tab's `sessionStorage`, with the
+ * reader signed in as before. It is the editor's lifetime the census finds (`lifetime.ts`). The
+ * comment's thread, opened again, holds the edit over the body it was written over, in the editor
+ * a held save opens on its own, else in the one the comment's Edit opens.
+ *
+ * | Host · the page reloaded, then back | typed | refused | stopped |
+ * | ----------------------------------- | ----- | ------- | ------- |
+ * | Conversation card                   | cell  | cell    | cell    |
+ * | Conversation phone thread           | cell  | cell    | cell    |
+ * | margin card                         | cell  | cell    | cell    |
+ * | margin phone thread                 | cell  | cell    | cell    |
+ *
  * The moves the composer census found that these rows do not make:
  * 1. The editor's address is its comment (`edit`, under the send name `["comment-edit", id]`):
  *    another comment's editor is another address under a name of its own, so no move of the
@@ -114,6 +127,7 @@ import userEvent, { type UserEvent } from "@testing-library/user-event";
 
 import {
   commentA,
+  endAsAReload,
   HELD,
   type Held,
   listTurn,
@@ -128,6 +142,7 @@ import {
   REFUSED_NOTE,
   RegisterDocument,
   STOPPED_NOTE,
+  signedInAsReader,
   stubLists,
   tab,
   threadA,
@@ -153,15 +168,14 @@ const REPLY_BODY = "A reply the reader wrote";
 type Base = "unchanged" | "changed";
 const BASES: readonly Base[] = ["unchanged", "changed"];
 
-/** The reader, who wrote the comment the cells edit: the card draws Edit for their own comments
- *  alone. */
-const READER = { kind: "user", login: "alice" } as const;
-
 interface Page {
   /** Has another writer change the edited comment to `body`, as a refetch would bring it. */
   readonly changeBody: (body: string) => void;
   /** Every save of an edit the page made: the request log a cell reads. */
   readonly editComment: Mock<typeof api.editComment>;
+  /** Ends the page as a reload does and loads it again over the same tab, signed in as the same
+   *  reader, with a new query client (`endAsAReload`, `signedInAsReader`). */
+  readonly reload: () => Promise<void>;
   readonly restore: () => void;
   readonly user: UserEvent;
 }
@@ -195,25 +209,25 @@ const conversationReply: Comment = {
 /** The Conversation of CORE-1 over the reader's Comment A, at a phone width or above it; with
  *  `stopped`, an edit of Comment A whose save the reader stopped is held before it is drawn, and
  *  with `withReply`, Comment A's thread holds the reader's reply under it. Every save is
- *  refused, and the comment's blocks answer it not indexed, so a save carries no block ids. */
+ *  refused, and the comment's blocks answer it not indexed, so a save carries no block ids. The
+ *  reader is signed in, since a card draws Edit for the reader's own comments alone. */
 async function openConversation(
   phone: boolean,
   stopped: boolean,
   withReply = false
 ): Promise<Page> {
   const user = userEvent.setup();
-  const queryClient = newQueryClient();
-  queryClient.setQueryData(["whoami"], READER);
+  let queryClient = signedInAsReader(newQueryClient());
   const reads = stubLists({
     comments: withReply ? [conversationComment, conversationReply] : [conversationComment],
   });
   const editComment = spyOn(api, "editComment").mockRejectedValue(REFUSAL);
   if (stopped) await stopTheEditSave(queryClient, editComment, conversationComment);
   const restoreViewport = stubViewport(phone ? PHONE_WIDTH : DESKTOP_WIDTH);
-  const view = render(tab(NOTHING_READ, true, queryClient));
-  await waitFor(() =>
-    expect(document.querySelector('[data-turn="comment:comment-a"]')).not.toBe(null)
-  );
+  let view = render(tab(NOTHING_READ, true, queryClient));
+  const listed = () =>
+    waitFor(() => expect(document.querySelector('[data-turn="comment:comment-a"]')).not.toBe(null));
+  await listed();
   return {
     changeBody: (body) => {
       const changed = [{ ...conversationComment, body, edited_at: "2026-09-21T00:00:00Z" }];
@@ -223,6 +237,12 @@ async function openConversation(
       });
     },
     editComment,
+    reload: async () => {
+      endAsAReload(() => view.unmount());
+      queryClient = signedInAsReader(newQueryClient());
+      view = render(tab(NOTHING_READ, true, queryClient));
+      await listed();
+    },
     restore: () => {
       view.unmount();
       restoreViewport();
@@ -249,14 +269,14 @@ const marginReply: Comment = {
 /** The margin of CORE-1's spec over threads A and B, at a phone width or above it; with
  *  `stopped`, an edit of thread A's comment whose save the reader stopped is held before it is
  *  drawn, and with `withReply`, thread A holds the reader's reply under its comment. Every save
- *  is refused, and the comment's blocks answer it not indexed, so a save carries no block ids. */
+ *  is refused, and the comment's blocks answer it not indexed, so a save carries no block ids.
+ *  The reader is signed in, since a card draws Edit for the reader's own comments alone. */
 async function openMargin(phone: boolean, stopped: boolean, withReply = false): Promise<Page> {
   const user = userEvent.setup();
   let comments: readonly Comment[] = withReply
     ? [threadA, marginReply, threadB]
     : [threadA, threadB];
-  const queryClient = marginClient(comments);
-  queryClient.setQueryData(["whoami"], READER);
+  let queryClient = signedInAsReader(marginClient(comments));
   const reads = [
     spyOn(api, "getIssue").mockResolvedValue(issue),
     spyOn(api, "listComments").mockImplementation(async () => [...comments]),
@@ -269,7 +289,7 @@ async function openMargin(phone: boolean, stopped: boolean, withReply = false): 
   const editComment = spyOn(api, "editComment").mockRejectedValue(REFUSAL);
   if (stopped) await stopTheEditSave(queryClient, editComment, threadA);
   const restoreViewport = stubViewport(phone ? PHONE_WIDTH : DESKTOP_WIDTH);
-  const view = render(marginPage(queryClient, <RegisterDocument />));
+  let view = render(marginPage(queryClient, <RegisterDocument />));
   await waitFor(() => expect(marginCard(threadA.id)).toBeInTheDocument());
   return {
     changeBody: (body) => {
@@ -279,6 +299,12 @@ async function openMargin(phone: boolean, stopped: boolean, withReply = false): 
       });
     },
     editComment,
+    reload: async () => {
+      endAsAReload(() => view.unmount());
+      queryClient = signedInAsReader(marginClient(comments));
+      view = render(marginPage(queryClient, <RegisterDocument />));
+      await waitFor(() => expect(marginCard(threadA.id)).toBeInTheDocument());
+    },
     restore: () => {
       view.unmount();
       restoreViewport();
@@ -521,6 +547,41 @@ for (const host of HOSTS) {
           back: BODY,
           note: held === "typed" ? "none" : held,
           saves,
+        });
+      } finally {
+        page.restore();
+      }
+    });
+  }
+}
+
+// A reload ends the whole page and loads it again over the same tab (`endAsAReload`), with the
+// reader signed in as before. The comment's thread, opened again, holds the edit the reader wrote
+// over its unchanged body, with its note and no save made meanwhile: in the editor a refused or
+// stopped save opens on its own, else in the one the comment's Edit opens, since the comment is
+// the editor's address.
+for (const host of HOSTS) {
+  for (const held of HELD) {
+    test(`${host.name} edit · the page reloaded, then back · ${held}`, async () => {
+      const page = await host.open(held === "stopped");
+      try {
+        await writeEdit(page, await host.show(page), held);
+        // Counted here, so a refused cell's own Save, and a stopped one's attempts, are not saves
+        // made since.
+        const saves = page.editComment.mock.calls.length;
+        await page.reload();
+        const place = await host.show(page);
+        if (editField(place) === null) {
+          // The comment's own Edit comes first, above any reply's.
+          const [own] = within(place).getAllByRole("button", { name: "Edit" });
+          if (own === undefined) throw new Error("expected the comment's Edit");
+          await page.user.click(own);
+        }
+        expect({ ...inEditor(page, host.here()), note: noteIn(host.here()) }).toEqual({
+          note: held === "typed" ? "none" : held,
+          offered: false,
+          saves,
+          text: BODY,
         });
       } finally {
         page.restore();

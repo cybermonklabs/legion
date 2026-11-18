@@ -50,6 +50,11 @@ function replyEdit(host: Host): Answer[] {
   );
 }
 
+/** The fourth table's cells of a host. */
+function reloaded(host: Host): Answer[] {
+  return cells(`${host.name} edit · the page reloaded, then back`);
+}
+
 /** The numbered reasons of the matrix file's header. */
 const REASONS = {
   1: "1. The editor's address is its comment (`edit`, under the send name `[\"comment-edit\", id]`): another comment's editor is another address under a name of its own, so no move of the host's gives an editor another comment.",
@@ -60,9 +65,6 @@ const REASONS = {
   6: "6. Each view's card is drawn only while its thread is open there (`phoneThread`, and `MarginSheet`'s `sheet.thread` at a phone width) and keyed by its thread: widening the page past the phone layout closes the Conversation's view as Back does unless a send from it is out (`usePhoneThread`'s `outlived`), and takes the margin's off the page, either ending the editor's mount as Back does; the editor drawn for its comment next is the one the phone rows' return draws.",
   7: "7. The margin's phone panel open or closed, its rail, where it sits, and the focus and scrolling the layout decides move no editor (the margin file's reasons 9 to 12), and neither does the read mark's ref on the Conversation's newest card (`register`). The app shell's forms are the sign-in file's.",
 } as const;
-
-/** What a lifetime item answers to until the reload rows of this round are written. */
-const PENDING = { reason: "pending: the reload rows of this round" };
 
 export const coverage: readonly CoverageEntry[] = [
   ...answers(
@@ -175,6 +177,9 @@ export const coverage: readonly CoverageEntry[] = [
   ),
   ...answers(
     "ThreadCard | MentionComposer | lifetime | <MentionComposer mutationKey={[...COMMENT_EDIT_SEND_KEY, comment.id]}>",
-    PENDING
+    reloaded(CONVERSATION_CARD),
+    reloaded(CONVERSATION_PHONE),
+    reloaded(MARGIN_CARD),
+    reloaded(MARGIN_PHONE)
   ),
 ];

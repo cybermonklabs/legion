@@ -25,9 +25,6 @@ const REASONS = {
   13: "13. Below the reading column's width, a phone's included, the Inbox draws no column: each thread row is a card that draws its thread's own box (`ThreadRowCard`, `renderRow`'s `paneShown`), so no move takes a box from one row to another there, and each box stays at its thread while its row is listed. What ends a card's box is (12)'s: leaving the page, closing the drawer the compact header's Peek opens (`inboxDrawerOpen`), the row leaving the list. The box's own moves are the same `ThreadBody`'s as the rows above. The layout's other branches in `Inbox` and `usePaneSelection` pick, focus and scroll the column's row and draw the list beside the column, and move no box; the app shell's forms are the sign-in file's.",
 } as const;
 
-/** What a lifetime item answers to until the reload rows of this round are written. */
-const PENDING = { reason: "pending: the reload rows of this round" };
-
 export const coverage: readonly CoverageEntry[] = [
   ...answers("AgentMessageComposer | MentionComposer | address prop | standing={standing}", {
     reason: REASONS[4],
@@ -395,10 +392,10 @@ export const coverage: readonly CoverageEntry[] = [
   }),
   ...answers(
     "AgentMessageComposer | MentionComposer | lifetime | <MentionComposer mutationKey={sendKey}>",
-    PENDING
+    cells(`${HOST} · the page reloaded, then back · an Agent row's box`)
   ),
   ...answers(
     "CommentThreadBody | MentionComposer | lifetime | <MentionComposer mutationKey={threadSendKey(thread.thread_id)}>",
-    PENDING
+    cells(`${HOST} · the page reloaded, then back`)
   ),
 ];

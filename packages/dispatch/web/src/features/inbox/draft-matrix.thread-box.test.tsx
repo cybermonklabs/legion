@@ -38,11 +38,16 @@
  * | The thread is drawn in its document, or beside   | no (10)| no (10) | no (10) |
  * | The thread's root is no longer read              | no (11)| no (11) | no (11) |
  * | The Inbox resized, closed or left, then back     | no (12)| no (12) | no (12) |
+ * | The page reloaded, then back (off)               | cell   | cell    | cell    |
+ * | The same, an Agent row's box (off)               | cell   | cell    | cell    |
  *
  * (off) marks a host move that takes the box off the screen: the column draws another thread's
  * box in its place. (on) marks one that keeps the same box on screen at another address; the
  * refused or stopped draft stays in its field there, with Send saying it was written for an
- * earlier message, so no line is needed.
+ * earlier message, so no line is needed. The reload rows end the whole page, as any reload does
+ * (`endAsAReload`), and load it again over the same tab: a new query client and write store over
+ * the tab's `sessionStorage`, with the reader signed in as before. They are the boxes' lifetimes
+ * the census finds (`lifetime.ts`).
  *
  * The moves this host cannot make:
  * 1. The box draws no Back of its own; Escape from the reading column takes focus back to its row
@@ -104,12 +109,14 @@ import { MemoryRouter } from "react-router-dom";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import {
   BODY,
+  endAsAReload,
   HELD,
   type Held,
   newQueryClient,
   noteIn,
   REFUSAL,
   REFUSED_NOTE,
+  signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
@@ -270,8 +277,19 @@ interface Column {
   readonly listAgentMessages: Mock<typeof api.listAgentMessages>;
   /** The column moved to another row, as the Inbox moves it: the same column, drawn again. */
   readonly move: (row: MyReplyRow) => void;
+  /** Ends the page as a reload does and loads it again over the same tab on `row`, signed in as
+   *  the same reader, with a new query client (`endAsAReload`, `signedInAsReader`). */
+  readonly reload: (row: MyReplyRow) => void;
   readonly restore: () => void;
   readonly user: UserEvent;
+}
+
+/** A query client signed in as the reader, holding the two comment threads' roots. */
+function commentsClient(): QueryClient {
+  const client = signedInAsReader(newQueryClient());
+  client.setQueryData(["comments", "CORE-1"], [rootComment("comment-1", "CORE-1")]);
+  client.setQueryData(["comments", "CORE-2"], [rootComment("comment-9", "CORE-2")]);
+  return client;
 }
 
 /**
@@ -285,10 +303,7 @@ async function openColumn(
   stopped?: { readonly key: MutationKey; readonly request: SentRequest }
 ): Promise<Column> {
   const user = userEvent.setup();
-  const client = newQueryClient();
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  client.setQueryData(["comments", "CORE-1"], [rootComment("comment-1", "CORE-1")]);
-  client.setQueryData(["comments", "CORE-2"], [rootComment("comment-9", "CORE-2")]);
+  let client = commentsClient();
   const reads = [
     spyOn(api, "getArtifact").mockRejectedValue(new Error("no document seeded")),
     spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
@@ -328,13 +343,20 @@ async function openColumn(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const view = render(tree(row));
+  let view = render(tree(row));
   return {
-    client,
+    get client() {
+      return client;
+    },
     createAgentMessage,
     createComment,
     listAgentMessages,
     move: (shown) => view.rerender(tree(shown)),
+    reload: (shown) => {
+      endAsAReload(() => view.unmount());
+      client = commentsClient();
+      view = render(tree(shown));
+    },
     restore: () => {
       view.unmount();
       createComment.mockRestore();
@@ -530,3 +552,45 @@ test(`${HOST} · Agents pick · cannot make: an Agent row's box draws no issue p
     column.restore();
   }
 });
+
+// A reload ends the whole page and loads it again over the same tab (`endAsAReload`), with the
+// reader signed in as before. The column drawn on the thread again, the way back to the box,
+// shows the reply the reader wrote there, with its note: in a comment thread's box, and in an
+// Agent row's.
+for (const held of HELD) {
+  test(`${HOST} · the page reloaded, then back · ${held}`, async () => {
+    const column = await openColumn(firstRow, stoppedComment(held));
+    try {
+      await holdInBox(column, "Reply", held);
+      column.reload(firstRow);
+      const field = await within(
+        await screen.findByTestId("inbox-pane")
+      ).findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+      expect({ note: note(), text: field.value }).toEqual({
+        note: held === "typed" ? "none" : held,
+        text: BODY,
+      });
+    } finally {
+      column.restore();
+    }
+  });
+}
+
+for (const held of HELD) {
+  test(`${HOST} · the page reloaded, then back · an Agent row's box · ${held}`, async () => {
+    const column = await openColumn(plannerAgentRow(), stoppedAgent(held));
+    try {
+      await holdInBox(column, "Comment", held);
+      column.reload(plannerAgentRow());
+      const field = await within(
+        await screen.findByTestId("inbox-pane")
+      ).findByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+      expect({ note: note(), text: field.value }).toEqual({
+        note: held === "typed" ? "none" : held,
+        text: BODY,
+      });
+    } finally {
+      column.restore();
+    }
+  });
+}

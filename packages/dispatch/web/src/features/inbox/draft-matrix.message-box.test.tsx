@@ -31,9 +31,13 @@
  * | The thread's replies are ordered the other way   | no (8) | no (8)  | no (8)  |
  * | The Inbox resized, closed or left, then back     | no (9) | no (9)  | no (9)  |
  * | The thread's root message is no longer read      | no (10)| no (10) | no (10) |
+ * | The page reloaded, then back (off)               | cell   | cell    | cell    |
  *
  * (off) marks a host move that takes the box off the screen: the column draws another thread's
- * box in its place.
+ * box in its place. The reload row ends the whole page, as any reload does (`endAsAReload`), and
+ * loads it again over the same tab: a new query client and write store over the tab's
+ * `sessionStorage`, with the reader signed in as before. It is the box's lifetime the census finds
+ * (`lifetime.ts`).
  *
  * The moves this host cannot make:
  * 1. The box draws no Back of its own; Escape from the reading column takes focus back to its row
@@ -86,12 +90,14 @@ import { MemoryRouter } from "react-router-dom";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import {
   BODY,
+  endAsAReload,
   HELD,
   type Held,
   newQueryClient,
   noteIn,
   REFUSAL,
   REFUSED_NOTE,
+  signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
@@ -178,6 +184,9 @@ const messageReply = sentRequest(BODY, {
 interface Column {
   /** The column moved to another row, as the Inbox moves it: the same column, drawn again. */
   readonly move: (row: MyReplyRow) => void;
+  /** Ends the page as a reload does and loads it again over the same tab on `row`, signed in as
+   *  the same reader, with a new query client (`endAsAReload`, `signedInAsReader`). */
+  readonly reload: (row: MyReplyRow) => void;
   readonly restore: () => void;
   readonly user: UserEvent;
 }
@@ -190,8 +199,7 @@ interface Column {
  */
 async function openColumn(row: MyReplyRow, stopped: boolean): Promise<Column> {
   const user = userEvent.setup();
-  const client = newQueryClient();
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  let client = signedInAsReader(newQueryClient());
   const reads = [
     // The box reads one field of the issue: whether it is closed.
     spyOn(api, "getIssue").mockResolvedValue({ closed_at: null } as unknown as IssueDetails),
@@ -224,9 +232,14 @@ async function openColumn(row: MyReplyRow, stopped: boolean): Promise<Column> {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const view = render(tree(row));
+  let view = render(tree(row));
   return {
     move: (shown) => view.rerender(tree(shown)),
+    reload: (shown) => {
+      endAsAReload(() => view.unmount());
+      client = signedInAsReader(newQueryClient());
+      view = render(tree(shown));
+    },
     restore: () => {
       view.unmount();
       createComment.mockRestore();
@@ -327,3 +340,25 @@ test(`${HOST} · Close, then Discard draft? · cannot make: the box draws no Clo
     column.restore();
   }
 });
+
+// A reload ends the whole page and loads it again over the same tab (`endAsAReload`), with the
+// reader signed in as before. The column drawn on the thread again, the way back to the box,
+// shows the reply the reader wrote there, with its note.
+for (const held of HELD) {
+  test(`${HOST} · the page reloaded, then back · ${held}`, async () => {
+    const column = await openColumn(firstRow, held === "stopped");
+    try {
+      await holdInBox(column, held);
+      column.reload(firstRow);
+      const field = await within(
+        await screen.findByTestId("inbox-pane")
+      ).findByRole<HTMLTextAreaElement>("textbox", { name: "Reply" });
+      expect({ note: note(), text: field.value }).toEqual({
+        note: held === "typed" ? "none" : held,
+        text: BODY,
+      });
+    } finally {
+      column.restore();
+    }
+  });
+}

@@ -32,11 +32,17 @@
  * | Issue left, then back (off)              | (6)    | (6)     | (6)     |
  * | Another tab, then back (hidden)          | (6)    | (6)     | (6)     |
  * | The Conversation's reads fail or wait    | no (7) | no (7)  | no (7)  |
+ * | The page reloaded, then back (off)       | cell   | cell    | cell    |
  *
  * (on) marks a host move that keeps the same composer on screen at another address. A refused or
  * stopped draft never leaves its field there (another message's Reply is redirected onto it, and
  * the elsewhere row keeps it in the field with Send saying where it was written), so only the
  * typed draft needs the line.
+ *
+ * (off) marks a host move that takes the composer off the screen. The reload row ends the whole
+ * page, as any reload does (`endAsAReload`), and loads it again over the same tab: a new query
+ * client and write store over the tab's `sessionStorage`, with the reader signed in as before. It
+ * is the composer's lifetime the census finds (`lifetime.ts`).
  *
  * On a phone a comment's Reply answers in the comment's full-screen thread, by the thread view's
  * own composer (`usePhoneThread`), rather than moving this one, which changes what that move does
@@ -91,6 +97,7 @@ import {
   alice,
   BODY,
   commentA,
+  endAsAReload,
   HELD,
   type Held,
   keptLineNaming,
@@ -101,6 +108,7 @@ import {
   noteIn,
   REFUSAL,
   REFUSED_NOTE,
+  signedInAsReader,
   stubLists,
   tab,
 } from "../../__tests__/draft-matrix-fixture";
@@ -159,6 +167,9 @@ interface Page {
   readonly createMessage: Mock<typeof api.createMessage>;
   /** Draws the Conversation again over the same client, as a reader coming back to the issue. */
   readonly mount: () => void;
+  /** Ends the page as a reload does and loads it again over the same tab, signed in as the same
+   *  reader, with a new query client (`endAsAReload`, `signedInAsReader`). */
+  readonly reload: () => Promise<void>;
   readonly restore: () => void;
   /** Takes the Conversation off the page, as a reader leaving the issue does. */
   readonly unmount: () => void;
@@ -170,11 +181,12 @@ interface Page {
  * `phone`, on a phone, where Comment A is listed too. Every write the page makes is refused, so a
  * send pressed here comes back refused; `stopped`, when given, is sent through the held-send store
  * under the docked composer's name before the page is drawn and stopped once late, as the
- * reader's Stop trying does, so the composer mounts showing it.
+ * reader's Stop trying does, so the composer mounts showing it. With `signedIn` the page is
+ * signed in as the reader, as a reload row's is, so the tab keeps what it sends.
  */
-async function openDocked(stopped?: SentRequest, phone = false): Promise<Page> {
+async function openDocked(stopped?: SentRequest, phone = false, signedIn = false): Promise<Page> {
   const user = userEvent.setup();
-  const queryClient = newQueryClient();
+  let queryClient = signedIn ? signedInAsReader(newQueryClient()) : newQueryClient();
   const reads = stubLists({
     comments: phone ? [commentA] : [],
     messages: [
@@ -202,6 +214,13 @@ async function openDocked(stopped?: SentRequest, phone = false): Promise<Page> {
     createComment,
     createMessage,
     mount,
+    reload: async () => {
+      endAsAReload(unmount);
+      unmount = () => {};
+      queryClient = signedInAsReader(newQueryClient());
+      mount();
+      await listed();
+    },
     restore: () => {
       unmount();
       restoreViewport();
@@ -500,6 +519,31 @@ for (const held of HELD) {
           retry: held !== "typed",
           text: BODY,
         },
+      });
+    } finally {
+      page.restore();
+    }
+  });
+}
+
+// A reload ends the whole page, whichever reload it is (the browser's, or the app's own after a
+// deploy), and loads it again over the same tab: a new query client and write store, over the
+// tab's `sessionStorage`, with the reader signed in as before. Coming back to the issue finds
+// the comment the reader wrote there, with its note and its Retry.
+for (const held of HELD) {
+  test(`${HOST} · the page reloaded, then back · ${held}`, async () => {
+    const page = await openDocked(
+      held === "stopped" ? sentRequest(BODY, null) : undefined,
+      false,
+      true
+    );
+    try {
+      await holdAtIssue(page, held);
+      await page.reload();
+      expect({ note: note(), retry: retryOffered(), text: field().value }).toEqual({
+        note: held === "typed" ? "none" : held,
+        retry: held !== "typed",
+        text: BODY,
       });
     } finally {
       page.restore();

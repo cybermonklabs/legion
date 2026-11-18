@@ -34,12 +34,16 @@
  * | The row folded, filtered out or scrolled past  | no (5) | no (5)  | no (5)  |
  * | The session leaves the list, or none is listed | no (6) | no (6)  | no (6)  |
  * | A list item drawn as a group's heading         | no (7) | no (7)  | no (7)  |
+ * | The page reloaded, then back (off)             | cell   | cell    | cell    |
  *
  * (off) marks a host move that takes the composer off the screen: the folded row hides it, and
  * leaving the page (`app.tsx`'s `/agents` route) unmounts the page and the composer, so the way
  * back opens the row again. (on) marks one that keeps the same composer on screen at another
  * address. A refused or stopped draft stays in its field there, with Send saying where it was
- * written, so only the typed draft needs the line.
+ * written, so only the typed draft needs the line. The reload row ends the whole app, as any
+ * reload does (`endAsAReload`), and loads it again over the same tab: a new query client and write
+ * store over the tab's `sessionStorage`, and the app signing the same reader in again. It is the
+ * composer's lifetime the census finds (`lifetime.ts`).
  *
  * The moves this host cannot make:
  * 1. The Agents page has no thread view and no Back of its own; the row's composer stays on the
@@ -79,6 +83,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import {
   BODY,
+  endAsAReload,
   HELD,
   type Held,
   keptLineNaming,
@@ -185,6 +190,9 @@ interface Page {
   /** Draws the app again over the same client, as a reader coming back to the page. */
   readonly mount: () => void;
   readonly queryClient: QueryClient;
+  /** Ends the app as a reload does and loads it again over the same tab (`endAsAReload`): a new
+   *  query client, whose sign-in check answers the same reader. */
+  readonly reload: () => void;
   readonly restore: () => void;
   /** Takes the app off the page, as a reader leaving it does. */
   readonly unmount: () => void;
@@ -197,7 +205,8 @@ interface Page {
  */
 async function openAgents(): Promise<Page> {
   const user = userEvent.setup();
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  let queryClient = newClient();
   const reads = [
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getInbox").mockResolvedValue([]),
@@ -230,7 +239,15 @@ async function openAgents(): Promise<Page> {
   return {
     createAgentMessage,
     mount,
-    queryClient,
+    get queryClient() {
+      return queryClient;
+    },
+    reload: () => {
+      endAsAReload(unmount);
+      unmount = () => {};
+      queryClient = newClient();
+      mount();
+    },
     restore: () => {
       unmount();
       createAgentMessage.mockRestore();
@@ -592,3 +609,24 @@ test(`${HOST} · Close, then Discard draft? · cannot make: the row's composer d
     page.restore();
   }
 });
+
+// A reload ends the whole app and loads it again over the same tab (`endAsAReload`): a new query
+// client, and the app signing in again as the same reader (`AuthGate`). Opening the row again,
+// the way back to the composer, finds the message the reader wrote to the session, with its note.
+for (const held of HELD) {
+  test(`${HOST} · the page reloaded, then back · ${held}`, async () => {
+    const page = await openAgents();
+    try {
+      await holdAtSession(page, held);
+      page.reload();
+      await openRow(page.user);
+      expect({ note: note(), quoted: quoted(), text: field().value }).toEqual({
+        note: held === "typed" ? "none" : held,
+        quoted: "none",
+        text: BODY,
+      });
+    } finally {
+      page.restore();
+    }
+  });
+}

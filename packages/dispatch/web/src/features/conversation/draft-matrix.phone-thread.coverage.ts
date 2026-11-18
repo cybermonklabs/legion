@@ -21,9 +21,6 @@ const REASONS = {
   9: "9. Widening the page past the phone layout closes the view as Back does, unless a send from it is out, which keeps the view open at any width until Back (`usePhoneThread`'s `outlived`); the composer stays mounted while its reply is set, whatever the width. The Jump to latest pill and the read mark's ref on the newest card move no composer, and the app shell's forms are the sign-in file's.",
 } as const;
 
-/** What a lifetime item answers to until the reload rows of this round are written. */
-const PENDING = { reason: "pending: the reload rows of this round" };
-
 export const coverage: readonly CoverageEntry[] = [
   ...answers(
     "ConversationTab | MentionComposer | address prop | intake={phone.dockedIntake}",
@@ -108,6 +105,6 @@ export const coverage: readonly CoverageEntry[] = [
   ),
   ...answers(
     "ConversationTab | MentionComposer | lifetime | <MentionComposer mutationKey={phone.composerKey}>",
-    PENDING
+    cells(`${HOST} · the page reloaded, then back`)
   ),
 ];

@@ -20,9 +20,6 @@ const REASONS = {
   8: "8. The layout changes one thing in a row: from `md` its directory shows the path's last segment and below it the whole path (`mdViewport`). The row, its details and its composer are drawn the same at every width, so a phone makes the rows above as they are. The app shell's forms are the sign-in file's.",
 } as const;
 
-/** What a lifetime item answers to until the reload rows of this round are written. */
-const PENDING = { reason: "pending: the reload rows of this round" };
-
 export const coverage: readonly CoverageEntry[] = [
   ...answers(
     "AgentMessageComposer | MentionComposer | address prop | mutationKey={sendKey}",
@@ -137,6 +134,6 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("AgentRow | - | form | (mdViewport) ? …", { reason: REASONS[8] }),
   ...answers(
     "AgentMessageComposer | MentionComposer | lifetime | <MentionComposer mutationKey={sendKey}>",
-    PENDING
+    cells(`${HOST} · the page reloaded, then back`)
   ),
 ];

@@ -22,9 +22,6 @@ const REASONS = {
   10: "10. The read mark's ref on the newest card (`register`) moves to the view's copy of it while a thread is open; it marks the issue read and moves no reply. The margin's thread reply is the margin file's, and the app shell's forms are the sign-in file's.",
 } as const;
 
-/** What a lifetime item answers to until the reload rows of this round are written. */
-const PENDING = { reason: "pending: the reload rows of this round" };
-
 export const coverage: readonly CoverageEntry[] = [
   ...answers("ThreadCard | MentionComposer | address prop | owner={composerOwner(owner)}", {
     reason: REASONS[1],
@@ -168,6 +165,6 @@ export const coverage: readonly CoverageEntry[] = [
   }),
   ...answers(
     "ThreadCard | MentionComposer | lifetime | <MentionComposer mutationKey={replyMutationKey}>",
-    PENDING
+    cells(`${HOST} · the page reloaded, then back`)
   ),
 ];

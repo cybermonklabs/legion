@@ -36,12 +36,16 @@
  * | The Conversation's reads fail or wait           | no (5) | no (5)  | no (5)  |
  * | Issue left, or another tab, then back           | no (6) | no (6)  | no (6)  |
  * | The thread's replies ordered the other way      | no (7) | no (7)  | no (7)  |
+ * | The page reloaded, then back (off)              | cell   | cell    | cell    |
  *
  * (off) marks a host move that takes the card's reply off the screen: Back hides the thread
  * view, Collapse thread unmounts the reply, and the comment's Reply hides it while another
  * composer answers the comment with a prefill of its own, not the card's draft: the docked
  * composer above the phone layout, and on a phone the thread view's own (`usePhoneThread`). Every
- * host move of this row is one, so none needs a line while away.
+ * host move of this row is one, so none needs a line while away. The reload row ends the whole
+ * page, as any reload does (`endAsAReload`), and loads it again over the same tab: a new query
+ * client and write store over the tab's `sessionStorage`, with the reader signed in as before. It
+ * is the composer's lifetime the census finds (`lifetime.ts`).
  *
  * The moves this host cannot make:
  * 1. The card's reply always answers its own thread's root on its own issue, so no move of the
@@ -92,6 +96,7 @@ import {
   alice,
   BODY,
   commentA,
+  endAsAReload,
   expectedBack,
   HELD,
   type Held,
@@ -102,6 +107,7 @@ import {
   noteIn,
   REFUSAL,
   REFUSED_NOTE,
+  signedInAsReader,
   stubLists,
   tab,
 } from "../../__tests__/draft-matrix-fixture";
@@ -114,19 +120,31 @@ const HOST = "inline reply";
 
 interface Page {
   readonly createComment: Mock<typeof api.createComment>;
+  /** Ends the page as a reload does and loads it again over the same tab, signed in as the same
+   *  reader, with a new query client (`endAsAReload`, `signedInAsReader`). */
+  readonly reload: () => Promise<void>;
   readonly restore: () => void;
   readonly user: UserEvent;
+}
+
+/** Waits for Comment A to be listed. */
+async function listed(): Promise<void> {
+  await waitFor(() =>
+    expect(document.querySelector('[data-turn="comment:comment-a"]')).not.toBe(null)
+  );
 }
 
 /**
  * The Conversation of CORE-1 over Comment A, at a phone width or above it. Every comment the
  * page writes is refused, so a send pressed here comes back refused; with `stopped`, the card's
  * reply of `BODY` to Comment A is sent through the held-send store under the card's send name
- * before the page is drawn and stopped once late, as the reader's Stop trying does.
+ * before the page is drawn and stopped once late, as the reader's Stop trying does. With
+ * `signedIn` the page is signed in as the reader, as a reload row's is, so the tab keeps what it
+ * sends.
  */
-async function openConversation(stopped: boolean, phone = false): Promise<Page> {
+async function openConversation(stopped: boolean, phone = false, signedIn = false): Promise<Page> {
   const user = userEvent.setup();
-  const queryClient = newQueryClient();
+  const queryClient = signedIn ? signedInAsReader(newQueryClient()) : newQueryClient();
   const reads = stubLists({ comments: [commentA] });
   const createComment = spyOn(api, "createComment");
   if (stopped) {
@@ -139,12 +157,15 @@ async function openConversation(stopped: boolean, phone = false): Promise<Page> 
   }
   createComment.mockRejectedValue(REFUSAL);
   const restoreViewport = stubViewport(phone ? PHONE_WIDTH : DESKTOP_WIDTH);
-  const view = render(tab(NOTHING_READ, true, queryClient));
-  await waitFor(() =>
-    expect(document.querySelector('[data-turn="comment:comment-a"]')).not.toBe(null)
-  );
+  let view = render(tab(NOTHING_READ, true, queryClient));
+  await listed();
   return {
     createComment,
+    reload: async () => {
+      endAsAReload(() => view.unmount());
+      view = render(tab(NOTHING_READ, true, signedInAsReader(newQueryClient())));
+      await listed();
+    },
     restore: () => {
       view.unmount();
       restoreViewport();
@@ -321,3 +342,19 @@ test(`${HOST} · Close, then Discard draft? · cannot make: the card's reply dra
     page.restore();
   }
 });
+
+// A reload ends the whole page and loads it again over the same tab (`endAsAReload`), with the
+// reader signed in as before. Expand thread, the way back to the reply, opens the card with the
+// reply the reader wrote there and its note.
+for (const held of HELD) {
+  test(`${HOST} · the page reloaded, then back · ${held}`, async () => {
+    const page = await openConversation(held === "stopped", false, true);
+    try {
+      await holdInCard(page, held);
+      await page.reload();
+      expect(heldIn(await expand(page.user, false))).toEqual(expectedBack(held));
+    } finally {
+      page.restore();
+    }
+  });
+}

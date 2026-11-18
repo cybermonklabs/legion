@@ -3,12 +3,13 @@
  * writes get and the notes a composer shows about a send it holds, the draft a cell writes and the
  * states it holds it in, the lines a cell reads to tell whether a draft is kept, the comments the
  * Conversation's hosts answer, the Conversation page as each Conversation host draws it (and as
- * `ConversationTab.test.tsx` draws it), the margin's page over two threads, and the Planner
- * session an Agents row draws. A stopped send is seeded with `stop-late-write.ts`.
+ * `ConversationTab.test.tsx` draws it), the margin's page over two threads, the Planner session
+ * an Agents row draws, and the reload a reload row makes. A stopped send is seeded with
+ * `stop-late-write.ts`.
  */
 import { spyOn } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { screen, within } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
@@ -26,6 +27,9 @@ import type {
   UserState,
 } from "../api/types";
 import { ConversationTab } from "../features/conversation/ConversationTab";
+import { unsentDraftsOf } from "../features/conversation/unsent-drafts";
+import { answerDraftsSignedIn } from "../features/inbox/answer-drafts";
+import { replyDraftsSignedIn } from "../features/inbox/reply-drafts";
 import { Margin } from "../features/margin/Margin";
 import { MarginProvider, useMargin } from "../features/margin/margin-context";
 import {
@@ -37,6 +41,7 @@ import {
 import { buildIssuePath } from "../features/refs/routes";
 import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { SendStoppedError } from "../features/writes/keyed-write";
+import { writesOf } from "../features/writes/write-store";
 import { commentDeliveryFields } from "./comment-fixture";
 import { graphNode } from "./graph-fixture";
 
@@ -199,6 +204,47 @@ export function newQueryClient(): QueryClient {
   return new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
+}
+
+/** The login of the reader every cell writes as. */
+const READER_LOGIN = "alice";
+
+/**
+ * `queryClient` signed in as the reader, as the app's shell signs in on each load of the page
+ * (`AuthGate`, `AuthenticatedApp`): the sign-in check's answer, which stamps each write with the
+ * reader's login so that the tab's `sessionStorage` keeps it; every store told who is signed in;
+ * and the writes the tab kept taken up again (`Writes.resume`). A reload row signs in the page it
+ * starts on so, and the page the reload loads, whose query client is new, and so are its write
+ * store and its unsent drafts, over the same tab.
+ */
+export function signedInAsReader(queryClient: QueryClient): QueryClient {
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: READER_LOGIN });
+  writesOf(queryClient).signedIn(READER_LOGIN);
+  unsentDraftsOf(queryClient).signedIn(READER_LOGIN);
+  answerDraftsSignedIn(READER_LOGIN);
+  replyDraftsSignedIn(READER_LOGIN);
+  writesOf(queryClient).resume(READER_LOGIN);
+  return queryClient;
+}
+
+/**
+ * Ends the page as a reload does, whoever starts it: the browser's own reload, or the app's after
+ * a deploy (`DeploymentResilience`). The page is told it goes (`pagehide`), and what the tab's
+ * `sessionStorage` holds then is all the next load of the page finds. `end` takes the whole tree
+ * away, and React runs every unmount in it, which a reload never does, so whatever those unmounts
+ * write there is put back as the page left it.
+ */
+export function endAsAReload(end: () => void): void {
+  act(() => {
+    window.dispatchEvent(new Event("pagehide"));
+  });
+  const names = Array.from({ length: sessionStorage.length }, (_, index) =>
+    sessionStorage.key(index)
+  ).filter((name): name is string => name !== null);
+  const left = names.map((name) => [name, sessionStorage.getItem(name) ?? ""] as const);
+  end();
+  sessionStorage.clear();
+  for (const [name, value] of left) sessionStorage.setItem(name, value);
 }
 
 /** The reader's state of CORE-1 with nothing read, dismissed or pinned. */
