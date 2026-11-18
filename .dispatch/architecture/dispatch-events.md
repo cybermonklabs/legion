@@ -4,7 +4,7 @@ parent: dispatch-server
 depends_on: [contracts, dispatch-model, dispatch-store]
 paths: [packages/envoy/internal/dispatch/events, packages/envoy/internal/dispatch/envoy]
 ---
-The append-only event log every Dispatch write lands in.
+The append-only event log nearly every Dispatch write lands in (a settings write such as `putDeliverySettings` or `putRepoProject` is a bare pool write with no event).
 An append (`Broker.QueueAppend`) puts its statements on the write phase's batch (`store.WriteBatch`):
 the event owner's advisory lock (`store.QueueLockOwner`, which returns at once when the transaction took it in its read phase), then the owner's row `for no key update`, which takes the transaction id (`pg_current_xact_id`) in the same statement, so the transaction holds an id before the insert draws an event id whether or not an earlier write gave it one, then one insert that takes the next sequence from the owner row and, in the same statement, advances the row's `last_seq` (and an issue's `updated_at`) to the row it inserted.
 It takes no other lock (an ownerless, session-addressed event takes neither, only its transaction id, in a statement of its own queued before the insert), so one owner's events commit in id order while two owners' writes never wait for each other and can commit out of id order.
@@ -16,7 +16,7 @@ the appended event (id, sequence, time, project) reaches the caller through a ca
 An append a document ledger queues runs in the transaction's write phase, in the order the transaction made it.
 The broker writes through the transaction its caller hands it and imports `dispatch-store` for the owner lock and the write batch.
 `internal/dispatch/envoy` is the small outbound client that calls the Envoy listener's API;
-it exists only to carry broker-produced events onward, so the two are one component.
+it carries broker-produced events onward and is the client of the listener's control API (sessions, roles, interests, agents), which only `api` calls.
 
 `Stream[T]` is the in-process fan-out: `Subscribe(buffer)` gives each subscriber a channel of the size it chooses, and a subscriber whose channel is full is dropped and its channel closed rather than waited for.
 `Broker` fans this process's committed events out to the outbox through one, and the API's event stream relay publishes every committed event, with its encoded frame, through another.
@@ -38,16 +38,16 @@ An event waits for every transaction holding an id when the first observation th
 so it also waits for transactions that began after it committed, and for id holders that write no event, such as a `SELECT ... FOR UPDATE` or another database's job on the instance.
 A read whose own observation proved itself publishes in that same read (`Horizon.Gap` reports `GapNone`), so a read taken while nothing on the instance holds a transaction id costs one observation, not two;
 otherwise a reader whose read leaves only its own observation unproven (`GapUnproven`) observes again at once, which proves it unless an older transaction id still runs (`Horizon.Await` every time, the relay when the gap is new or the horizon moved since its last read);
-a gap an older transaction holds (`GapHeld`) the relay reads again on the next commit notification, without that window, or after a fallback of 10 ms doubling to 250 ms for a holder that ends without notifying, and `Horizon.Await` after that backoff alone, each only while such a gap is open, so an idle process observes nothing.
+a gap an older transaction holds (`GapHeld`) the relay reads again on the next commit notification (without that window on the first read after the gap is found held or the horizon moved, through it after that), or after a fallback of 10 ms doubling to 250 ms for a holder that ends without notifying, and `Horizon.Await` after that backoff alone, each only while such a gap is open, so an idle process observes nothing.
 A Dispatch write transaction is to hold its id only in its write phase, the statements from its first write to its commit, so its document work and write advice never delay a live event.
 The writers that join a document ledger (`Docs.Join`) send the writes and events they queue on it as one pipelined batch (`Ledger.Commit`), after the row writes the issue create and the issue patch make inline, and the claim and message create put their writes and their event on one batch they send themselves (`store.RunWrite`);
 most other writers send that phase a statement at a time, each row write on its own and each append a batch of its own, and a writer's append call shows which it does: `queueEvent`, `queueStampedEvent`, `queueLoggedEvent` or `Broker.QueueAppend` puts the event on a batch, while `appendEvent` and `Broker.Append` send it at once.
 Some writers do not yet hold the rule: they make a write or take a row lock before they wait on the owner lock of the event they append, so they hold an id while another writer's document work holds that lock.
 dispatch://INFRA-3397 converts them and keeps the list of them;
 at commit `9e578bcc` of sjawhar/legion#2468 it was `keepDecision`, `putArchitectureSource`, `deleteArchitectureSource`, `putAskSnooze`, `deleteAskSnooze`, `markInboxReadThreads`, `dismissInboxThreads`, the architecture importer's `Importer.project` and `Importer.recordFailure`, and delivery's `UpsertPullRequestHead`, which locks and upserts the pull request's head row before it locks the issues the head moved between.
-Main's `patchPriority` is one more, of another lock: a priority has no owner, but a rename with a move writes the priority's row (`prioritystore.SetAttributes`) before the move takes the order's allocation lock and reads the order (`prioritystore.Move`, `RankAt`), so it holds an id while it waits for that lock.
+Main's `patchPriority` is one more, of another lock: a priority has no owner, but a rename with a move writes the priority's row (`prioritystore.SetAttributes`) before the move takes the order's allocation lock and reads the order (`prioritystore.Move`, `RankAt`), so it holds an id while it waits for that lock. The issue create is another, of the rank-allocation lock: its first write, the project's `next_number`, comes before `lockProjectRankAllocation`, which a patch that moves a rank holds through its read phase.
 A pending observation older than five seconds logs the oldest holder.
-A live event stream that resumes from an id opens at once and heartbeats while the horizon is held, a cold one opens once its subscription is in place, and shutdown ends a stream still waiting.
+A live event stream, resumed or cold, sends its `events_start` once its relay subscription is in place, which waits on the horizon only when that subscription starts the relay's generation (`firstRelayCursor`); its socket heartbeats meanwhile, and shutdown ends a stream still waiting.
 A cold stream starts at the relay's published cursor.
 The relay runs only while someone subscribes:
 the first subscription of a process, and the first after the last one was cancelled, starts a generation, and each generation reads its first cursor afresh.
@@ -63,6 +63,6 @@ After the event log is reset, the relay forgets the horizon the old log proved a
 a cold stream that finds the relay still on the old log's cursor opens once that reset has run, replayed from the newest id below which the new log has no gap.
 The delivery hub is ready and takes delivery changes while the horizon is held, because its relay subscription is taken on a goroutine of its own, and it acts on events once that subscription stands.
 Each observation uses one transaction id; concurrent callers share one, and an idle process takes none.
-The server observes through a two-connection pool of its own (`store.Pool.Horizon`), so the horizon never waits behind requests for a shared connection.
+The server observes through a two-connection pool of its own (`store.Pool.Horizon`), so the horizon does not wait behind requests for a shared connection; a process whose horizon pool cannot open observes through the shared pool until it restarts, and logs that once.
 A failed observation is logged, and a reader waiting on the horizon gets the error back once every observation has failed for ten seconds, so a horizon that cannot be read never stalls a reader silently.
 Observations and every read capped at the horizon run on the primary.
