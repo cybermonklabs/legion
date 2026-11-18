@@ -35,6 +35,17 @@ const (
 // because the secondary limit it sits inside is the App's and this pass is not the only reader
 // the App pays for; Pace is the ceiling, so the pass is never slower than the pause a deployment
 // configures and the work only ever buys GitHub more room, never less.
+//
+// The passes after one that a deadline ended before it reached a head read at the floor, until
+// one reaches a head (Reconciler.starved). That pass learned no work: the heads it listed count,
+// but no page of any of them, so the arithmetic spreads one repository's identity over the bound
+// and can land on Pace -- the pace at which it reached no head. A pass set by that arithmetic
+// would reach no head either and learn nothing again, so every pass after would end on its bound
+// at Pace and the cursor would stay where it is for good. At the floor the pass reads as fast as
+// this package ever lets it, so it reaches a head wherever the bound holds one head's requests at
+// the floor, learns that head's pages, and the pass after it paces itself by them. This does not
+// depend on how many listings a head needs; a bound that does not hold one head's requests at the
+// floor holds them at no slower pace either.
 func (r *Reconciler) gap(rows int) time.Duration {
 	if r.Pace <= 0 {
 		// A caller that waits for nothing, which is what every test of this package is.
@@ -44,6 +55,10 @@ func (r *Reconciler) gap(rows int) time.Duration {
 		// An unbounded pass has no budget to spread its requests over, so it keeps the pause its
 		// deployment configured.
 		return r.Pace
+	}
+	if r.starved {
+		// Never slower than the pause the deployment configured, as the clamp below never is.
+		return min(FastestRequestPace, r.Pace)
 	}
 	work := r.restWork()
 	if r.known() == 0 && work == 0 {

@@ -51,26 +51,8 @@ const (
 // the repository's open pull requests listed page by page and each head read with two requests
 // of its own. That is the read a cursor is needed for, and the one this test bounds.
 func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
-	database := storetest.Open(t)
-	mapCIReconcileRepository(t, database)
-	_, natsURL := testnats.Start(t)
-	makeCIStateBucket(t, natsURL)
 	github := startCIReconcileCursorGitHub(t)
-	_, pemText := githubapptest.Key(t)
-
-	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
-		NATSURL: natsURL,
-		Env: map[string]string{
-			"DISPATCH_APP_CLIENT_ID":   "Iv1.cireconcile",
-			"DISPATCH_APP_PEM_B64":     pemText,
-			"DISPATCH_GITHUB_API_BASE": github.server.URL,
-			"DISPATCH_REVIEWER_APP_ID": ciReconcileReviewerApp,
-			// The pass's bound as well as the loop's period: five minutes is longer than any
-			// test may wait for a pass.
-			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s",
-		},
-	})
-	process.waitHealthy(t)
+	process := startCIReconcileCursorProcess(t, github)
 
 	// The passes until the first that covers the whole order, which is the first cycle.
 	cycle := waitForCIReconcilePasses(t, process, "a cycle of bounded passes covering every head",
@@ -166,6 +148,67 @@ func TestTheCIReconcileCursorResumesInTheDispatchProcess(t *testing.T) {
 		}
 		break
 	}
+}
+
+// A first pass of the process that lists every head and reads none whole -- GitHub slower than
+// the one-second bound leaves, as on a loaded runner -- leaves the passes after it reading the
+// order all the same. That pass learned no page of any head, so the gap the work sets would be
+// the 500ms ceiling, and at 500ms a one-second pass sends three requests: the listing and the
+// first of the two reads a head takes. Every pass after it would then end on its bound with no
+// head read and the cursor where it was, and no cycle would ever close. The process paces the
+// pass after such a pass at the floor instead, which reads heads whole, learns their pages and
+// moves the cursor on.
+//
+// GitHub holds the first head's check suites, the second of its two reads, until the first
+// pass's own bound gives the request up, so the first pass lists the ten heads and reads none of
+// them whole however fast the machine runs.
+func TestTheCIReconcileCursorResumesInTheDispatchProcessAfterAPassThatReadNoHead(t *testing.T) {
+	github := startCIReconcileCursorGitHub(t)
+	github.holdFirst(ciReconcileCursorSuitesPath(1))
+	process := startCIReconcileCursorProcess(t, github)
+
+	passes := waitForCIReconcilePasses(t, process, "two passes", func(passes []map[string]string) bool {
+		return len(passes) >= 2
+	})
+	if starved := passes[0]; starved["deadline_reached"] != "true" || starved["heads"] != "0" ||
+		starved["heads_known"] != strconv.Itoa(ciReconcileCursorHeads) {
+		t.Fatalf("the first pass reads deadline_reached %s, %s heads read whole and %s heads known, want its bound to end it with all %d heads listed and none read: nothing here is tested: %v",
+			starved["deadline_reached"], starved["heads"], starved["heads_known"], ciReconcileCursorHeads, starved)
+	}
+	if got, want := passes[1]["pace"], "100ms"; got != want {
+		t.Fatalf("the pass after one that read no head whole paced itself at %s, want the floor %s: at the ceiling a one-second pass reads no head: %v",
+			got, want, passes[1])
+	}
+	waitForCIReconcilePasses(t, process, "a cycle of bounded passes covering every head",
+		func(passes []map[string]string) bool {
+			return cycleCompleted(passes) >= 0
+		})
+}
+
+// startCIReconcileCursorProcess starts the envoy-dispatch process the cursor tests read: one
+// mapped repository whose GitHub is github, a NATS server holding the CI state bucket, and the
+// reconcile loop on a one-second interval, which is each pass's bound as well.
+func startCIReconcileCursorProcess(t *testing.T, github *cursorGitHub) *dispatchProcess {
+	t.Helper()
+	database := storetest.Open(t)
+	mapCIReconcileRepository(t, database)
+	_, natsURL := testnats.Start(t)
+	makeCIStateBucket(t, natsURL)
+	_, pemText := githubapptest.Key(t)
+	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{
+		NATSURL: natsURL,
+		Env: map[string]string{
+			"DISPATCH_APP_CLIENT_ID":   "Iv1.cireconcile",
+			"DISPATCH_APP_PEM_B64":     pemText,
+			"DISPATCH_GITHUB_API_BASE": github.server.URL,
+			"DISPATCH_REVIEWER_APP_ID": ciReconcileReviewerApp,
+			// The pass's bound as well as the loop's period: five minutes is longer than any
+			// test may wait for a pass.
+			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s",
+		},
+	})
+	process.waitHealthy(t)
+	return process
 }
 
 // requireCIReconcileCursorOrder requires that each pass began at the head after the one the pass
@@ -282,7 +325,7 @@ func ciReconcileCursorSuitesPath(number int) string {
 
 // cursorGitHub is the loopback GitHub the cursor test's process calls: the installation lookup
 // and the token mint, the repository's identity, its ten open pull requests and each head's two
-// listings, and the one-shot rate limit a test arms on one of those reads.
+// listings, the one-shot rate limit a test arms on one of those reads, and the one-shot hold.
 type cursorGitHub struct {
 	t      *testing.T
 	server *httptest.Server
@@ -291,6 +334,32 @@ type cursorGitHub struct {
 	// limits is the reset of the rate limit the next request to each armed path is answered
 	// with, and the path is disarmed once it has been answered so.
 	limits map[string]time.Duration
+	// holds is the paths whose next request is held until its caller gives it up (holdFirst),
+	// and the path is disarmed once a request to it has been held so.
+	holds map[string]bool
+}
+
+// holdFirst holds the next request to path until the process gives it up, which a pass does at
+// its own bound, and answers it nothing: GitHub slower than the pass has time for.
+func (g *cursorGitHub) holdFirst(path string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.holds[path] = true
+}
+
+// held holds one request when a test armed its path (holdFirst), and reports whether it did. It
+// waits on the request's own end -- its caller giving it up, or the stand-in closing -- and on
+// no clock.
+func (g *cursorGitHub) held(r *http.Request) bool {
+	g.mu.Lock()
+	armed := g.holds[r.URL.Path]
+	delete(g.holds, r.URL.Path)
+	g.mu.Unlock()
+	if !armed {
+		return false
+	}
+	<-r.Context().Done()
+	return true
 }
 
 // rateLimitNext answers the next request to path as GitHub answers an exhausted limit, naming a
@@ -325,7 +394,7 @@ func (g *cursorGitHub) limited(w http.ResponseWriter, r *http.Request) bool {
 // and the webhook redelivery sweep's own listing answers empty.
 func startCIReconcileCursorGitHub(t *testing.T) *cursorGitHub {
 	t.Helper()
-	github := &cursorGitHub{t: t, limits: map[string]time.Duration{}}
+	github := &cursorGitHub{t: t, limits: map[string]time.Duration{}, holds: map[string]bool{}}
 	write := func(w http.ResponseWriter, status int, payload any) {
 		body, err := json.Marshal(payload)
 		if err != nil {
@@ -404,7 +473,7 @@ func startCIReconcileCursorGitHub(t *testing.T) *cursorGitHub {
 		}})
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-suites", func(w http.ResponseWriter, r *http.Request) {
-		if github.limited(w, r) {
+		if github.held(r) || github.limited(w, r) {
 			return
 		}
 		write(w, http.StatusOK, map[string]any{"total_count": 0, "check_suites": []map[string]any{}})

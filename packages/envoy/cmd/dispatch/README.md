@@ -425,6 +425,8 @@ It runs under the lease `ci-reconcile` with that 5 minutes as its period, so one
   Before each REST request it leaves the gap it set itself: the requests the last pass learned this one will take — the pages of each listing of each head a query could not answer, and one identity read for each mapped repository — divided into nine tenths of its own deadline.
   That gap is never below `cireconcile.FastestRequestPace` (100ms, ten requests a second, inside GitHub's secondary limit of 900 points a minute) and never above `cireconcile.RequestPace` (500ms), which is the pace a deployment configures and the slowest the pass reads.
   The first pass of a process knows of no work and reads at the floor, and the pass after it knows the real count.
+  A pass that a deadline ended before it reached a head — read one whole or gave one up — learned no work either, and the passes after it read at the floor until one reaches a head: set by the arithmetic they would read at the ceiling, where that pass reached no head, and with a short deadline no pass would ever reach one and the cursor would never move.
+  A pass that reached no head for another reason, a rate limit among them, leaves that floor as it was.
 
 - A pass is bound at the interval its loop runs it on, so it always ends before the pass after it is due and always logs its one line.
   The pass walks one stable order — the mapped repositories, and within each its open pull requests by number — from the first repository to the last page of the last one, and keeps a cursor in it.

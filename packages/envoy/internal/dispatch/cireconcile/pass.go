@@ -183,6 +183,17 @@ func (r *Reconciler) Pass(ctx context.Context) {
 		return
 	}
 	at = r.reconcile(ctx, writer, &c)
+	// A pass a deadline ended before it reached a head learned no work to pace the next by, so the
+	// passes after it read at the floor until one reaches a head (gap). A pass that reached no
+	// head for another reason -- a rate limit, its caller's cancellation, an order with no head
+	// in it -- says nothing about the pace and leaves the floor as it was, as a pass a limit in
+	// force ended before it read anything does above.
+	switch {
+	case c.heads > 0:
+		r.starved = false
+	case c.deadline:
+		r.starved = true
+	}
 	r.report(&c, at, time.Since(started))
 }
 
