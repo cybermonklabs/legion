@@ -282,3 +282,85 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 		t.Fatalf("goroutines serving lanes as the held lane's own parks started their timers: %v, want none for the second and third: the lane's goroutine starts its timer before it gives the lane up", servingAtStart)
 	}
 }
+
+// A send whose claim turned unknown - a refresh's answer was lost - and whose claim read then fails
+// makes no try and parks as a send that waited does, but it waited behind no earlier event: it is
+// no held copy, so the held gauges count nothing of it and no WARN names an earlier event of its
+// owner, which would be event 0. The control row's read answers, and the send is tried.
+func TestASendParkedForAFailedClaimReadIsNoHeldCopy(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		readFail bool
+	}{
+		{name: "control: the claim read answers"},
+		{name: "the claim read fails", readFail: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &storetest.LockedLog{}
+			logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
+			lifetime, stop := context.WithCancel(context.Background())
+			tried := make(chan mentionKey, 4)
+			sender := newMentionSender(lifetime, time.Hour,
+				func(_ context.Context, item mentionSend) (mentionSend, bool) {
+					tried <- item.key()
+					return mentionSend{}, false
+				},
+				func(context.Context, []mentionClaim) ([]mentionClaim, error) { return nil, errLostAfterCommit },
+				func(_ context.Context, named []mentionClaim) ([]mentionClaim, error) {
+					if tc.readFail {
+						return nil, errDatabaseUnreachable
+					}
+					return named, nil
+				},
+				func(context.Context, []mentionClaim) error { return nil },
+			)
+			timers := make(chan func(), 4)
+			sender.mu.Lock()
+			sender.heldWarnAfter = 0
+			sender.after = func(_ time.Duration, f func()) { timers <- f }
+			// Every goroutine the sender may start counts as busy, so the send waits ready on its
+			// lane until its claim is unknown.
+			sender.serving = mentionSendLanes
+			sender.mu.Unlock()
+			t.Cleanup(func() {
+				stop()
+				sender.wait()
+			})
+			item := mentionSend{
+				comment: model.Comment{ID: "a-first", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
+				attempt: 1, claimed: time.Now(),
+			}
+			sender.enqueue(context.Background(), item)
+			sender.refreshHeldClaims(context.Background())
+			sender.mu.Lock()
+			sender.serving = 0
+			sender.mu.Unlock()
+			sender.unpark(item.lane())
+
+			parked := false
+			select {
+			case <-tried:
+			case <-timers:
+				parked = true
+			case <-time.After(10 * time.Second):
+				t.Fatal("the send neither went nor parked")
+			}
+			if parked != tc.readFail {
+				t.Fatalf("the send parked: %t, want %t", parked, tc.readFail)
+			}
+			count, _ := sender.heldSamples(time.Now())
+			var held int64
+			for _, sample := range count {
+				held += sample.Value
+			}
+			const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
+			logged := logs.String()
+			warns := strings.Count(logged, marker)
+			t.Logf("parked %t: the held gauge reads %d, and %d WARN lines name an earlier event", parked, held, warns)
+			if held != 0 || warns != 0 {
+				t.Fatalf("a send no earlier event holds counts %d in the held gauge, with %d WARN lines naming an earlier event it does not wait behind:\n%s",
+					held, warns, logged)
+			}
+		})
+	}
+}
