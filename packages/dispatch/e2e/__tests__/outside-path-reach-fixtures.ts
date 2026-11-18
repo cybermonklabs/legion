@@ -367,9 +367,10 @@ const eachRunner = [
  *  make and remove the directory in the scope it is called from, and this module is evaluated
  *  once per process, so a directory reserved in its own body would belong to the first file. */
 export function reachFixtures() {
-  // The rows write more than 800 files here and the removal hook removes them inside its 60 s. On
-  // a disk other programs share one creation took up to 84 ms, so the directory is on tmpfs where
-  // the host has one that allows exec, which the `curl` and `sleep` the rows write here need.
+  // The rows write about 3,600 entries here, the target files and the three result files of each
+  // `driveEach` run, and the removal hook removes them inside its 60 s. On a disk other programs
+  // share one creation took up to 84 ms, so the directory is on tmpfs where the host has one that
+  // allows exec, which the `curl` and `sleep` the rows write here need.
   const scratch = temporaryDirectory("outside-path-reach", { root: memoryRoot() });
 
   /** The environment every run of the script starts with, whether `drive` or `driveEach` starts
@@ -490,11 +491,19 @@ export function reachFixtures() {
     );
     const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
     if (code !== 0) throw new Error(`the runner of ${runs.length} runs exited ${code}:\n${stderr}`);
-    return runs.map((_, n) => ({
-      code: Number(readFileSync(join(out, `${n}.code`), "utf8")),
-      stdout: readFileSync(join(out, `${n}.out`), "utf8"),
-      stderr: readFileSync(join(out, `${n}.err`), "utf8"),
-    }));
+    return runs.map((_, n) => {
+      const exit = readFileSync(join(out, `${n}.code`), "utf8");
+      if (!/^\d+$/.test(exit)) {
+        throw new Error(
+          `run ${n} of ${runs.length} left no exit code (${JSON.stringify(exit)}):\n${stderr}`
+        );
+      }
+      return {
+        code: Number(exit),
+        stdout: readFileSync(join(out, `${n}.out`), "utf8"),
+        stderr: readFileSync(join(out, `${n}.err`), "utf8"),
+      };
+    });
   }
 
   /** A target file holding `lines`, under the run's scratch directory. */
