@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"net/url"
@@ -428,7 +429,43 @@ type Config struct {
 	// each answering its service. A token whose subject is not listed is refused, and a credential
 	// an account's login issued stops authenticating once its entry is gone. Needs
 	// BROKER_K8S_OIDC_ISSUER, whose tokens it trusts. Unset, no service logs in with a token.
+	//
+	// A login of an account that BROKER_POD_OPERATORS maps to a person acts for that person, when
+	// the login token is bound to a pod of the account. No other login of this setting acts for a
+	// person: the credential of each other login has no operator. Two rules above do not apply to
+	// a mapped account. BROKER_SERVICES must not bind it, and it authenticates none of the routes
+	// a service calls as itself.
 	ServiceLogins map[string]string
+	// BROKER_POD_OPERATORS: the Kubernetes accounts whose pods act for a person,
+	// whitespace-separated <email>=system:serviceaccount:<namespace>:<name> entries, such as
+	// ada@example.com=system:serviceaccount:example-ns:ada. The email is the person, in lower
+	// case, as the person signs in (record.CanonicalLogin). A mapped account is an account that
+	// this setting names. A person may have several mapped accounts. Keyed by account, each
+	// answering its person.
+	//
+	// A pod whose token login is of a mapped account acts as that person at the broker, on the
+	// terms of the person's dev box. The broker serves the person's own agent-tier secrets to the
+	// pod with no approval. A request for one of the person's human-tier secrets waits for the
+	// person to approve each grant. A request for another person's secret waits for its owner to
+	// approve it. Each mapped account logs in under a login service of its own, which
+	// BROKER_SERVICE_LOGINS names for that account. An account that this setting does not name
+	// acts for no person at the broker, also when BROKER_EXCHANGE_ACCOUNTS maps it to a person for
+	// Dispatch.
+	//
+	// The broker refuses to start in each case below, and the refusal names the entry or the
+	// account. It refuses an entry that is not of the form above. It refuses a person that is not a
+	// lower-case email. It refuses an account that is not system:serviceaccount:<namespace>:<name>.
+	// It refuses a namespace's default account, because every pod of the namespace that names no
+	// account runs as it. It refuses an account given twice, because one account acts for one
+	// person. It refuses a mapped account that BROKER_SERVICE_LOGINS does not name. It refuses a
+	// mapped account whose login service a BROKER_SERVICES entry names, because a secret could then
+	// name that service as its owner. It refuses a mapped account that a BROKER_SERVICES entry
+	// binds, because a launcher logged in as that service could then enrol the person's pods as its
+	// own workers, with that service's secrets. It refuses a mapped account whose login service a
+	// BROKER_VM_SERVICES entry names, because the broker registers the services of BROKER_SERVICES
+	// and BROKER_VM_SERVICES alike as owners a secret may name. It refuses a mapped account that a
+	// BROKER_EXCHANGE_ACCOUNTS entry maps to another person. Unset, the setting maps no account.
+	PodOperators map[string]string
 	// BROKER_K8S_OIDC_ISSUER: the issuer of the Kubernetes service-account tokens pods enroll
 	// with. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no pod can enroll.
 	K8sOIDCIssuer string
@@ -1056,15 +1093,103 @@ func exchangeFields(text string, want int) ([]string, bool) {
 }
 
 // podAccountRefusal refuses, naming setting and the entry text, an account no exchange entry for
-// a pod may name: one that is not system:serviceaccount:<namespace>:<name>, and a namespace's
-// default account. It answers nil for an account such an entry may name, and is to a pod's
-// account what vmAccountRefusal is to a VM's.
+// a pod, and no BROKER_POD_OPERATORS entry, may name: one that is not
+// system:serviceaccount:<namespace>:<name>, and a namespace's default account. It answers nil for
+// an account such an entry may name, and is to a pod's account what vmAccountRefusal is to a VM's.
 func podAccountRefusal(setting, text, account string) error {
 	switch {
 	case !serviceAccountPattern.MatchString(account):
 		return fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)
 	case isDefaultServiceAccount(account):
 		return fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it, so its token says nothing about which pod is asking; name a dedicated account", setting, text)
+	}
+	return nil
+}
+
+// parsePodOperators reads setting's whitespace-separated <person>=<ServiceAccount subject>
+// entries, the accounts BROKER_POD_OPERATORS maps to a person. It answers them keyed by account,
+// each answering its person, which is the map Config.PodOperators holds. It cuts each entry at
+// its first "=", because the person comes first and no account holds an "=". Each refusal names
+// setting and the entry text. It refuses an entry with no "=". It refuses a person that is not a
+// lower-case email in record.CanonicalLogin's form, because every login comparison of the broker
+// reads that form. It refuses an account podAccountRefusal refuses. It refuses an account given
+// twice, because one account acts for one person. A person may have several accounts. No entry
+// gives a nil map, as an unset setting does. Load checks the mapped accounts against the other
+// settings (mappedAccountRefusal).
+func parsePodOperators(setting, value string) (map[string]string, error) {
+	var people map[string]string
+	for _, text := range strings.Fields(value) {
+		person, account, ok := strings.Cut(text, "=")
+		if !ok {
+			return nil, fmt.Errorf("%s must be <email>=system:serviceaccount:<namespace>:<name> entries, such as ada@example.com=system:serviceaccount:example-ns:ada, got %q", setting, text)
+		}
+		if record.CanonicalLogin(person) != person || !policy.ValidPersonOwner(person) {
+			return nil, fmt.Errorf("%s must name each person by their email in lower case, as they sign in, such as ada@example.com, got %q", setting, text)
+		}
+		if err := podAccountRefusal(setting, text, account); err != nil {
+			return nil, err
+		}
+		if _, twice := people[account]; twice {
+			return nil, fmt.Errorf("%s names the service account %s twice, got %q again; one account acts for one person, so name it once", setting, account, text)
+		}
+		if people == nil {
+			people = map[string]string{}
+		}
+		people[account] = person
+	}
+	return people, nil
+}
+
+// mappedAccountRefusal refuses an account that BROKER_POD_OPERATORS maps (cfg.PodOperators) when
+// another setting gives that account, or its login service, a role that a person's account must
+// not have. Load calls it after it reads each setting it checks. Each refusal names the account
+// and both settings, and says what to change. It examines the mapped accounts in sorted order, so
+// one configuration always gets the same refusal first.
+//
+// It refuses a mapped account that BROKER_SERVICE_LOGINS does not name, because a mapped account
+// logs in with its own token. It refuses a mapped account whose login service a BROKER_SERVICES
+// entry names, because a secret could then name that service as its owner. It refuses a mapped
+// account that a BROKER_SERVICES entry binds, because a launcher logged in as that service could
+// then enrol the person's pods as its own workers (enroll.Service.launches). It refuses a mapped
+// account whose login service a BROKER_VM_SERVICES entry names, because cmd/broker's serviceNames
+// gives the policy loader the services of BROKER_SERVICES and BROKER_VM_SERVICES alike. It
+// refuses a mapped account that a BROKER_EXCHANGE_ACCOUNTS entry maps to another person, after it
+// writes both people in record.CanonicalLogin's form.
+func mappedAccountRefusal(cfg *Config) error {
+	const setting = "BROKER_POD_OPERATORS"
+	if len(cfg.PodOperators) == 0 {
+		return nil
+	}
+	services := make(map[string]bool, len(cfg.ServicesByAccount))
+	for _, service := range cfg.ServicesByAccount {
+		services[service] = true
+	}
+	vmServices := make(map[string]bool, len(cfg.VMServicesByAccount))
+	for _, service := range cfg.VMServicesByAccount {
+		vmServices[service] = true
+	}
+	exchangePeople := make(map[string]string, len(cfg.ExchangeAccounts))
+	for _, entry := range cfg.ExchangeAccounts {
+		exchangePeople[entry.Account] = entry.Person
+	}
+	for _, account := range slices.Sorted(maps.Keys(cfg.PodOperators)) {
+		person := cfg.PodOperators[account]
+		login, listed := cfg.ServiceLogins[account]
+		if !listed {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_SERVICE_LOGINS does not name it; a mapped account logs in with its own token under a login service of the person's own, so add <service>=%s to BROKER_SERVICE_LOGINS", setting, account, person, account)
+		}
+		if services[login] {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_SERVICES names its login service %q (BROKER_SERVICE_LOGINS); a secret could then name that service as its owner, and a person's login service must grant nothing by itself, so log the account in under a service BROKER_SERVICES does not name", setting, account, person, login)
+		}
+		if bound, binds := cfg.ServicesByAccount[account]; binds {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_SERVICES binds it to the service %q; a launcher logged in as that service would enrol the person's pods as its own workers, with that service's secrets, so take the account out of BROKER_SERVICES or out of %s", setting, account, person, bound, setting)
+		}
+		if vmServices[login] {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_VM_SERVICES names its login service %q (BROKER_SERVICE_LOGINS); the broker registers that setting's services as owners a secret may name, as it does BROKER_SERVICES', and a person's login service must grant nothing by itself, so log the account in under a service BROKER_VM_SERVICES does not name", setting, account, person, login)
+		}
+		if other, exchanges := exchangePeople[account]; exchanges && record.CanonicalLogin(other) != record.CanonicalLogin(person) {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_ACCOUNTS maps it to %s; one account acts for one person, so map it to the same person in both settings or take it out of one of them", setting, account, person, other)
+		}
 	}
 	return nil
 }
@@ -1619,7 +1744,8 @@ func Load(getenv func(string) string) (Config, error) {
 	// service's own account logging the service in with its own projected token and enrolling
 	// itself (agent-secrets enroll --pod). What narrows such a login to one pod is
 	// enroll.Service.podUnderTokenLogin rather than this loader, as the ServiceLogins field
-	// doc says.
+	// doc says. An account BROKER_POD_OPERATORS maps is the exception: mappedAccountRefusal,
+	// below, refuses it.
 	cfg.ServiceLogins = servicesByAccount(logins)
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
@@ -1760,6 +1886,15 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	if len(cfg.ExchangeAccounts) > 0 && cfg.ExchangeK8sAudience == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_ACCOUNTS needs BROKER_K8S_OIDC_ISSUER and BROKER_EXCHANGE_K8S_AUDIENCE, whose tokens its pods present")
+	}
+	// BROKER_POD_OPERATORS is read after each setting it is checked against: the logins
+	// (BROKER_SERVICE_LOGINS), the services of both kinds (BROKER_SERVICES and
+	// BROKER_VM_SERVICES) and the exchange's accounts (BROKER_EXCHANGE_ACCOUNTS).
+	if cfg.PodOperators, err = parsePodOperators("BROKER_POD_OPERATORS", getenv("BROKER_POD_OPERATORS")); err != nil {
+		return Config{}, err
+	}
+	if err := mappedAccountRefusal(&cfg); err != nil {
+		return Config{}, err
 	}
 	if cfg.ExchangeReadAccounts, err = parseExchangeReadAccounts("BROKER_EXCHANGE_READ_ACCOUNTS", getenv("BROKER_EXCHANGE_READ_ACCOUNTS")); err != nil {
 		return Config{}, err
