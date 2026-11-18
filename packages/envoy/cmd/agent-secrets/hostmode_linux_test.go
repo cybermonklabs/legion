@@ -477,6 +477,22 @@ func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
 	}
 }
 
+// TestRegisterPrintsTheBrokersEnrollmentOnOneLine: the enrollment register prints, which the
+// broker made, and the runtime id and state beside it print as they came where they hold no
+// control character and Go-quoted where they hold one, as TestTheEnrollmentIDsPrintOnOneLine
+// checks for the other forms that print an enrollment. It is here because register without
+// --exec takes the helper's answer only for a root above this process, which only Linux can check.
+func TestRegisterPrintsTheBrokersEnrollmentOnOneLine(t *testing.T) {
+	launcher := fixedLauncher(t)
+	sock, _ := fakeHelperByOp(t, map[string]helper.Response{"register": {OK: true, RuntimeID: forged, EnrollmentID: forged, State: forged, RootPID: launcher}})
+	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
+	var stdout, stderr bytes.Buffer
+	if code := cmdRegister(nil, &stdout, &stderr); code != 0 {
+		t.Fatalf("register = %d (stderr %q), want 0", code, stderr.String())
+	}
+	everyLineIsOne(t, "register's stdout", stdout.String(), 3)
+}
+
 // TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero: with no positive --wait, a confirmed root
 // whose session is still enrolling is printed as that state, and the command exits 0.
 func TestRegisterWithoutAWaitPrintsEnrollingAndExitsZero(t *testing.T) {

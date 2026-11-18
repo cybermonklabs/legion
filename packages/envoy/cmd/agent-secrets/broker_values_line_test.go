@@ -1,8 +1,10 @@
 // broker_values_line_test.go drives every broker-answer value this CLI prints to a terminal -
 // request and grant ids, a request's state, who decided it and the broker's sentence about it, the
-// approver a pending request waits on, the ids enroll, register, a pod's enrolment and a sign-in
-// print, a pod refusal's code, and the cells of the machine and grant tables - with a control
-// character in it, each of which must print on one line.
+// approver a pending request waits on, the ids enroll, a pod's enrolment and a sign-in print, a
+// pod refusal's code, and the cells of the machine and grant tables - with a control character in
+// it, each of which must print on one line. The ids register prints are driven in
+// hostmode_linux_test.go (TestRegisterPrintsTheBrokersEnrollmentOnOneLine), beside register's
+// other tests, since register takes the helper's answer only on Linux.
 package main
 
 import (
@@ -188,9 +190,9 @@ func TestTheTablesPrintTheBrokersValuesOnOneLine(t *testing.T) {
 	}
 }
 
-// TestTheEnrollmentIDsPrintOnOneLine: the enrollment enroll, register and a pod's enrolment print,
-// which the broker made, prints as it came where it holds no control character and Go-quoted
-// where it holds one.
+// TestTheEnrollmentIDsPrintOnOneLine: the enrollment enroll and a pod's enrolment print, which the
+// broker made, prints as it came where it holds no control character and Go-quoted where it holds
+// one. TestRegisterPrintsTheBrokersEnrollmentOnOneLine does the same for register.
 func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 	t.Run("enroll", func(t *testing.T) {
 		sock, _ := fakeHelperByOp(t, map[string]helper.Response{"enroll-session-key": {OK: true, EnrollmentID: forged}})
@@ -201,15 +203,6 @@ func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 			t.Fatalf("enroll = %d (stderr %q), want 0", code, stderr.String())
 		}
 		everyLineIsOne(t, "enroll's stdout", stdout.String(), 1)
-	})
-	t.Run("register", func(t *testing.T) {
-		sock, _ := fakeHelperByOp(t, map[string]helper.Response{"register": {OK: true, RuntimeID: forged, EnrollmentID: forged, State: forged}})
-		t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
-		var stdout, stderr bytes.Buffer
-		if code := cmdRegister(nil, &stdout, &stderr); code != 0 {
-			t.Fatalf("register = %d (stderr %q), want 0", code, stderr.String())
-		}
-		everyLineIsOne(t, "register's stdout", stdout.String(), 3)
 	})
 	t.Run("a pod's enrolment", func(t *testing.T) {
 		tokenFile := writePodToken(t, fakePodToken(t, testPodAccount, testPodUID))
@@ -263,8 +256,7 @@ func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 		t.Setenv(brokerclient.SignInDirVar, filepath.Join(t.TempDir(), "signins"))
 		t.Setenv(brokerclient.BrokerURLVar, broker.server.URL)
 		t.Setenv(brokerclient.SessionVar, "")
-		t.Setenv(brokerclient.IdentityVar, brokerclient.IdentityKubernetes)
-		t.Setenv(brokerclient.MachineTokenFileVar, writeLoginFile(t, "machine-token", "projected.service.account.token"))
+		forceMetadataMachine(t)
 		var stdout bytes.Buffer
 		if err := login(context.Background(), &stdout, &approvingWriter{t: t, issuer: issuer}); err != nil {
 			t.Fatalf("login: %v", err)
