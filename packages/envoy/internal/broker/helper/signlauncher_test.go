@@ -28,11 +28,11 @@ func TestSignLauncherRefusedInsideASessionAndSignsOutside(t *testing.T) {
 	if resp := r.call(t, Request{Op: "register"}); !resp.OK && resp.Code != CodeNoCredential {
 		t.Fatalf("register: %+v", resp)
 	}
-	if resp := r.call(t, Request{Op: "sign-launcher", Method: "GET", URL: r.srv.Broker.URL + "/v1/operator/machines"}); resp.Code != CodeInSession {
+	if resp := r.call(t, Request{Op: "sign-launcher", Method: "GET", URL: r.srv.Broker.URL.Raw() + "/v1/operator/machines"}); resp.Code != CodeInSession {
 		t.Fatalf("inside a session: %+v, want IN_SESSION", resp)
 	}
 	r.callerPID.Store(0) // the operator's own shell: not a registered session
-	resp := r.call(t, Request{Op: "sign-launcher", Method: "GET", URL: r.srv.Broker.URL + "/v1/operator/machines"})
+	resp := r.call(t, Request{Op: "sign-launcher", Method: "GET", URL: r.srv.Broker.URL.Raw() + "/v1/operator/machines"})
 	if resp.Code != CodeNoCredential || resp.Error != noCredentialMsg {
 		t.Fatalf("outside: %+v, want NO_CREDENTIAL until a login", resp)
 	}
@@ -55,7 +55,7 @@ func TestSignLauncherSignsOnlyTheOperatorRoutesOfThisHelpersBroker(t *testing.T)
 	v := &proof.Verifier{Skew: time.Minute,
 		LookupLauncher: func(_ context.Context, id string) (string, bool, error) { return tp, id == cred.id, nil },
 		Replay:         func(context.Context, string, time.Time) (bool, error) { return true, nil }}
-	broker := r.srv.Broker.URL
+	broker := r.srv.Broker.URL.Raw()
 	id := "0f9a6c1e-2b7d-4c3a-9e5f-8a1b2c3d4e5f"
 	for _, call := range []struct{ method, url string }{
 		{http.MethodGet, broker + "/v1/operator/machines"},
@@ -128,7 +128,7 @@ func TestSignLauncherRefusesACallerItCannotTraceOutOfEverySession(t *testing.T) 
 	self := os.Getpid()
 	// Every walk leaves self for pids past any kernel's pid_max, so none meets the session root.
 	const far = 10_000_000
-	url := r.srv.Broker.URL + "/v1/operator/machines"
+	url := r.srv.Broker.URL.Raw() + "/v1/operator/machines"
 	for _, tc := range []struct {
 		name   string
 		parent func(int) (int, error)
@@ -183,7 +183,7 @@ func TestSignLauncherRejectsAPeerWhosePIDChangedDuringTheAncestryWalk(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := r.srv.signLauncher(peer, os.Getpid(), "GET", r.srv.Broker.URL+"/v1/operator/machines")
+	resp := r.srv.signLauncher(peer, os.Getpid(), "GET", r.srv.Broker.URL.Raw()+"/v1/operator/machines")
 	if resp.OK || resp.Code != CodeUnidentified || resp.Proof != "" {
 		t.Fatalf("a peer no longer matching the walked pid must be refused a launcher proof: %+v", resp)
 	}

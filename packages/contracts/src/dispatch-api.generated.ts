@@ -2616,6 +2616,42 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/projects/{key}/legion/board": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The Legion board of the project its path names, from what the sampler recorded of that project's daemon: eleven columns (queue, design, planning, implementing, testing, reviewing, accepting, retro, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon, 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    get: operations["getApiV1ProjectsByKeyLegionBoard"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/projects/{key}/legion/daemon": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The Legion daemon this project's state is read from, the one Dispatch reads `GET /legion/v1/state` from once a minute, with the actor that first named it and when it was last written; null when the project names none. No route lists every project's daemon: a page that shows them all reads each project's. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    get: operations["getApiV1ProjectsByKeyLegionDaemon"];
+    /** @description Name the Legion daemon this project's state is read from {state_url}: an absolute http(s) URL with a host and no path, else 400 LEGION_SETTING_INPUT. The daemon belongs to the deployment, so a project-scoped credential is refused it, the project this path names included. 400 INVALID_PROJECT for a key that is not a project key, 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    put: operations["putApiV1ProjectsByKeyLegionDaemon"];
+    post?: never;
+    /** @description Stop reading this project's Legion daemon; what was already read stays. 404 NOT_FOUND when the project names none, 400 INVALID_PROJECT for a key that is not a project key and 404 PROJECT_NOT_FOUND for a project that does not exist. */
+    delete: operations["deleteApiV1ProjectsByKeyLegionDaemon"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/projects/{key}/related": {
     parameters: {
       query?: never;
@@ -5345,6 +5381,71 @@ export interface components {
       opened_to_merge: components["schemas"]["DeliverySpread"];
       opened_to_production: components["schemas"]["DeliverySpread"];
     };
+    LegionBoardCard: {
+      blocked_by: string[] | null;
+      children: number;
+      key: string;
+      phase: string;
+      /** Format: date-time */
+      phase_since: null | string;
+      priority: null | number;
+      roles: string[] | null;
+      slot: null | number;
+      title: string;
+      tree: string;
+      waiting_on: components["schemas"]["LegionBoardWait"] | null;
+    };
+    LegionBoardColumn: {
+      cards: components["schemas"]["LegionBoardCard"][] | null;
+      /** @enum {string} */
+      id:
+        | "queue"
+        | "design"
+        | "planning"
+        | "implementing"
+        | "testing"
+        | "reviewing"
+        | "accepting"
+        | "retro"
+        | "merging"
+        | "awaiting_person"
+        | "held";
+      label: string;
+    };
+    LegionBoardHeader: {
+      queue_length: number;
+      /** Format: date-time */
+      read_at: null | string;
+      read_error: null | string;
+      read_ok: boolean;
+      slot_cap: null | number;
+      slots_in_use: number;
+      trees: number;
+    };
+    LegionBoardResponse: {
+      columns: components["schemas"]["LegionBoardColumn"][] | null;
+      /** Format: date-time */
+      computed_at: string;
+      header: components["schemas"]["LegionBoardHeader"];
+      project: string;
+      settings: {
+        [key: string]: unknown;
+      } | null;
+    };
+    LegionBoardWait: {
+      /** Format: date-time */
+      answered_at: null | string;
+      kind: string;
+      /** Format: date-time */
+      since: null | string;
+    };
+    LegionSetting: {
+      created_by: components["schemas"]["Actor"];
+      project: string;
+      state_url: string;
+      /** Format: date-time */
+      updated_at: string;
+    };
     ListUsersResponse: {
       users: components["schemas"]["DispatchUser"][] | null;
     };
@@ -5769,6 +5870,10 @@ export interface components {
     PutArchitectureSourceInput: {
       actor?: components["schemas"]["Actor"] | null;
       branch: string;
+    };
+    PutLegionSettingInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      state_url: string;
     };
     PutRepoProjectInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -13046,6 +13151,144 @@ export interface operations {
       };
     };
   };
+  getApiV1ProjectsByKeyLegionBoard: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LegionBoardResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ProjectsByKeyLegionDaemon: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LegionSetting"] | null;
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1ProjectsByKeyLegionDaemon: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PutLegionSettingInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LegionSetting"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1ProjectsByKeyLegionDaemon: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1ProjectsByKeyRelated: {
     parameters: {
       query?: {
@@ -14129,6 +14372,12 @@ export type KeepDecisionInput = components["schemas"]["KeepDecisionInput"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];
+export type LegionBoardCard = components["schemas"]["LegionBoardCard"];
+export type LegionBoardColumn = components["schemas"]["LegionBoardColumn"];
+export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
+export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
+export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
+export type LegionSetting = components["schemas"]["LegionSetting"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
@@ -14181,6 +14430,7 @@ export type ProjectDefaultAssigneeInput = components["schemas"]["ProjectDefaultA
 export type ProjectGatedSteps = components["schemas"]["ProjectGatedSteps"];
 export type ProjectGatedStepsInput = components["schemas"]["ProjectGatedStepsInput"];
 export type PutArchitectureSourceInput = components["schemas"]["PutArchitectureSourceInput"];
+export type PutLegionSettingInput = components["schemas"]["PutLegionSettingInput"];
 export type PutRepoProjectInput = components["schemas"]["PutRepoProjectInput"];
 export type RebuildArtifactInput = components["schemas"]["RebuildArtifactInput"];
 export type RecordCheckResultInput = components["schemas"]["RecordCheckResultInput"];

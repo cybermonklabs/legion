@@ -1,0 +1,5 @@
+kind: Added
+body: Dispatch records where Legion's time goes. Each project names the Legion daemon whose state Dispatch reads (`GET`, `PUT` and `DELETE /api/v1/projects/{key}/legion/daemon`, the two writes deployment-scoped, with no route listing every project's), and one replica reads every configured daemon's `GET /legion/v1/state` each minute under a lease and records what changed. That lease takes one more connection of the lease pool (`store.LeasePoolSize` 22), so a server opens up to 113 connections to Postgres (`store.ConnectionsPerProcess`). `GET /api/v1/projects/{key}/legion/board` serves that project's Legion board from what the sampler recorded, and the `/ws/live` socket gains a `legion` view that carries the board and pushes each change.
+time: 2026-11-04T00:45:19.598815852Z
+custom:
+    Issue: pr2731

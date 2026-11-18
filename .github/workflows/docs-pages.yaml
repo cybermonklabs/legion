@@ -123,6 +123,7 @@ on:
       - 'packages/daemon/internal/wakepace/*'
       - 'packages/daemon/internal/workflow/*'
       - 'packages/daemon/internal/workspace/*'
+      - 'packages/envoy/brokeraddr/*'
       - 'packages/envoy/brokerclient/*'
       - 'packages/envoy/dispatchbody/*'
       - 'packages/envoy/internal/brokerclient/*'
@@ -172,6 +173,7 @@ on:
       - 'packages/envoy/internal/dispatch/githubreads/*'
       - 'packages/envoy/internal/dispatch/identity/*'
       - 'packages/envoy/internal/dispatch/itemblocks/*'
+      - 'packages/envoy/internal/dispatch/legion/*'
       - 'packages/envoy/internal/dispatch/model/*'
       - 'packages/envoy/internal/dispatch/outbox/*'
       - 'packages/envoy/internal/dispatch/pmdoc/**'
@@ -311,7 +313,7 @@ jobs:
   deploy:
     needs: build
     if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     # Publishes the built site to GitHub Pages: pages: write performs the deployment, id-token:
     # write is the OIDC token actions/deploy-pages exchanges for it.

@@ -298,12 +298,15 @@ func legionVolumeNames(exchange bool) []string {
 // mount every issue pod's container carries there, RolesDir is where an issue pod mounts every
 // role's own volumes, which each role's namespace covers whole, HomeMountsDir is where an issue
 // pod's roles container mounts what belongs under the home (homeMountsView), which each role's
-// namespace covers too once it has bound each back, and RoleProbeDir is the image probe's volume
-// for its role-namespace check.
+// namespace covers too once it has bound each back, RoleProbeDir is the image probe's volume
+// for its role-namespace check, and TestPGLogFile is reserved whether or not the deployment
+// serves a test database: it is where each role's namespace binds the pod's test server log when
+// the pod serves one.
 func legionMountPaths(exchange bool) []string {
 	paths := []string{
 		TreeRoot, FeedDir, LauncherDir, LauncherPrivateDir, StateDir, xdgConfigHome, ProvidersDir,
 		AgentSecretsKeyDir, AgentSecretsTokenDir, GHConfigDir, RolesDir, HomeMountsDir, RoleProbeDir, SkillsDir,
+		TestPGLogFile,
 	}
 	if exchange {
 		paths = append(paths, AgentSecretsExchangeDir)
@@ -739,12 +742,14 @@ func SessionFromVolume(file, root string) (string, error) {
 // by --extension twice, which the boot gate's pod lane refuses an image for.
 //
 // `--model @default` rides every launch, not the resuming one alone: @default is Oh My Pi's name
-// for the `default` model role, which every pod's operator overlay sets, and a resumed session
-// otherwise runs the model its first launch saved for ever. A launch under the flag writes no
-// `model_change` entry of its own, so the saved pin stays in the session file and a later launch
-// without the flag would read it again. A profile with no `default` role is not refused here: Oh
-// My Pi launches silently on a built-in model instead, which is the deployment's to notice
-// (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
+// for the `default` model role, which every pod's operator overlay sets, the operator's current
+// role is resolved per launch, and a resumed session without the flag runs the session file's
+// recorded model. From Oh My Pi 18.18.6 of the fork (upstream oh-my-pi #18534), a resumed launch
+// under this role alias appends a replacement `model_change` for its resolved model, which later
+// launches without the flag read; that replacement is the role as it stood at the launch that
+// wrote it, so it stands in for no later launch's flag. A profile with no `default` role is not
+// refused here: Oh My Pi launches silently on a built-in model instead, which is the deployment's
+// to notice (deploy/kubernetes/operator-route/README.md, "Changing a role's model").
 func (l launch) agentArgv(agent []string) []string {
 	if l.runsClaude() {
 		return l.claudeArgv()

@@ -93,6 +93,12 @@ const (
 	// write postgresql.auto.conf would have the launcher load it, outside every role namespace,
 	// at the server's next start.
 	TestPGDir = RolesDir + "/" + launcher.TestPGDirName
+	// TestPGLogFile is where `legion launcher role-init` binds that cluster's server log, the one
+	// file, read-only, in every role's namespace of such a pod, over the empty file the worker
+	// image makes there; the launcher names it to every role as launcher.TestPGLogVariable. No
+	// container mounts anything at it, and legionMountPaths fences it all the same, since an
+	// operator's mount there would turn that bind into a refusal of every role's start.
+	TestPGLogFile = launcher.FixedRoot + "/" + launcher.RoleTestPGLog
 	// WorkloadIdentityDir is where a microVM issue pod whose deployment names the metadata
 	// endpoint (runtime.kubernetes.sandbox.microvm.metadata) mounts, read-only, the projected
 	// ServiceAccount token its launcher exchanges for a Google one (workloadIdentityTokenVolume),

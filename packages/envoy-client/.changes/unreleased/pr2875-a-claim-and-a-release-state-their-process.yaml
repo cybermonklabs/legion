@@ -19,8 +19,8 @@ body: |-
   ones the request named: a role lane topic whose claim the release could not free stays in the
   record, since one interest record serves every process running under one session id and that
   topic is the interest half of a claim that still stands. A
-  release that states no process frees no claim that names one, frees a claim that names none
-  outright, and — where it names a role's own lane topic — marks the claim it could not free.
+  release that states no process frees no claim, and — where it names a role's own lane topic —
+  marks the claim it could not free, whether that claim names a process or none.
 time: 2026-11-06T17:29:51.000000000Z
 custom:
     Issue: pr2875

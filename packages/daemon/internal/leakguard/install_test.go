@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
 
 // theTag is the pin these tests install, spelled as the worker image spells one.
@@ -125,7 +126,7 @@ func leftovers(t *testing.T, dir string) []string {
 func install(t *testing.T, dir, tag string, body []byte) ([]string, error) {
 	t.Helper()
 	var logged []string
-	err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: tag, Body: body, Log: func(format string, args ...any) {
+	err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: tag, Body: body, Start: procgroup.NoReaper, Log: func(format string, args ...any) {
 		logged = append(logged, format)
 	}})
 	return logged, err
@@ -497,4 +498,61 @@ func remove(t *testing.T, path string) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The install's one run of the check starts through the caller's starter (ServedInstall.Start),
+// which is how the pod's launcher, its container's PID 1, holds the run out of its own reaper:
+// the starter is given the staged check's --help, and its done is called only once the run's own
+// wait has read the exit. A start the starter refuses refuses the install, and an install named no
+// starter at all is refused before it writes anything, rather than run the check under a start
+// nobody chose; either leaves nothing behind.
+func TestTheInstallsRunOfTheCheckStartsThroughItsStarter(t *testing.T) {
+	t.Run("a starter", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "leak-check")
+		var started []*exec.Cmd
+		var exitAtDone *os.ProcessState
+		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp)),
+			Start: func(cmd *exec.Cmd) (func(), error) {
+				started = append(started, cmd)
+				return func() { exitAtDone = cmd.ProcessState }, cmd.Start()
+			}})
+		if err != nil {
+			t.Fatalf("install: %v", err)
+		}
+		if len(started) != 1 || filepath.Base(started[0].Path) != checkName || !slices.Equal(started[0].Args[1:], []string{"--help"}) {
+			t.Fatalf("the starter was given %d commands (%v), want the one run of the check's --help", len(started), started)
+		}
+		if exitAtDone == nil || exitAtDone.ExitCode() != 1 {
+			t.Errorf("done ran with the exit %v, want it called once the run's wait had read its exit 1", exitAtDone)
+		}
+		if got := recordedTag(t, dir); got != theTag+"\n" {
+			t.Errorf("the install records %q, want %q", got, theTag+"\n")
+		}
+	})
+	t.Run("a start the starter refuses", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "leak-check")
+		refused := errors.New("the guard refused the start")
+		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp)),
+			Start: func(*exec.Cmd) (func(), error) { return nil, refused }})
+		if want := "the served check could not be run: " + refused.Error(); err == nil || err.Error() != want || !errors.Is(err, refused) {
+			t.Fatalf("install = %v, want %q", err, want)
+		}
+		if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the refused install left %s (%v), want nothing there", dir, err)
+		}
+		if left := leftovers(t, dir); len(left) != 0 {
+			t.Errorf("the refused install left %v beside %s, want nothing", left, dir)
+		}
+	})
+	t.Run("no starter", func(t *testing.T) {
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "leak-check")
+		err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: theTag, Body: served(t, wholeCheck(t, answersItsHelp))})
+		if want := "the pod's launcher named no starter for the check's run"; err == nil || err.Error() != want {
+			t.Fatalf("install = %v, want %q", err, want)
+		}
+		if entries, err := os.ReadDir(parent); err != nil || len(entries) != 0 {
+			t.Errorf("the refused install left %v (%v) in %s, want nothing", entries, err, parent)
+		}
+	})
 }
