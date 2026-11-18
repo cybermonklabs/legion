@@ -73,7 +73,8 @@ func mergingEngineAt(now time.Time) *Engine {
 
 // applyFacts applies each fact to pool through engine, failing the test on an error, and returns
 // the fact's result. The boot's open of each run no start counted comes before each fact
-// (bootBefore), as it comes before any fact the daemon applies.
+// (bootBefore), as it comes before any fact the daemon applies, and what the fact left is kept
+// for the next pass's check (factLeft).
 func applyFacts(t *testing.T, pool *pgxpool.Pool, engine *Engine) func(id string, fact intake.Fact) intake.Result {
 	return func(id string, fact intake.Fact) intake.Result {
 		t.Helper()
@@ -82,19 +83,9 @@ func applyFacts(t *testing.T, pool *pgxpool.Pool, engine *Engine) func(id string
 		if err != nil {
 			t.Fatalf("ApplyFact %s: %v", id, err)
 		}
+		factLeft(t, pool)
 		return result
 	}
-}
-
-// bootBefore runs the daemon's boot pass that opens each run no start of this release counted
-// (Engine.OpenUncountedRuns), which the daemon runs once, before it applies any fact
-// (internal/daemon's openUncountedRuns). These tests seed an issue standing in a step between
-// their facts, a run only an earlier release could have started, which a boot before the next fact
-// would open; so they run the pass before each fact. It is idempotent: a run already open or
-// ended, and a run the end rule holds over, are left as they are.
-func bootBefore(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
-	t.Helper()
-	openUncountedRuns(t, pool, engine)
 }
 
 // messageBodies is every Dispatch message the outbox holds, in order.

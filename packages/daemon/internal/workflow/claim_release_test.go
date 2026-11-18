@@ -180,8 +180,9 @@ func applyInTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx 
 
 // factTx runs apply in a transaction of its own and commits it, with the commit scope the
 // engine's deferred logging needs (intake.WithCommitHooks) and the settle of the runs its writes
-// end (Engine.OpenFact, Engine.SettleFact), as a fact's application gives them, and with no boot
-// pass before it: a test that writes what the store held before the daemon booted calls it alone.
+// end (Engine.OpenFact, Engine.SettleFact), as a fact's application gives them, and keeps what it
+// left for the next boot pass's check (factLeft). It runs no boot pass before it: a test that
+// writes what the store held before the daemon booted calls it alone.
 func factTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx context.Context, tx pgx.Tx) error) {
 	t.Helper()
 	tx, err := pool.Begin(t.Context())
@@ -201,6 +202,7 @@ func factTx(t *testing.T, pool *pgxpool.Pool, engine *Engine, apply func(ctx con
 		t.Fatalf("commit: %v", err)
 	}
 	committed()
+	factLeft(t, pool)
 }
 
 // seedOperatorTree opens key's tree lifecycle under the operator's authority, as an operator root

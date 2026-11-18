@@ -184,7 +184,8 @@ func TestTheStartAndTheEndOfARunShareAnIDAcrossARestart(t *testing.T) {
 		stepRoot(t, pool, phase.Implementing)
 		move(t, pool, stepEngine(nil), "LEGION-208", TriggerImplementationReady, "", record.PhaseRow{})
 		between(pool)
-		// The restart: a new engine on a new store over the same database.
+		// The restart: a new engine on a new store over the same database, and its boot.
+		rebooted(t, pool)
 		move(t, pool, stepEngine(nil), "LEGION-208", TriggerTesterPassed, "", record.PhaseRow{})
 		start, end = runOf(stepWrites(t, pool, "LEGION-208"), "step", 3)
 		return start, end, pool

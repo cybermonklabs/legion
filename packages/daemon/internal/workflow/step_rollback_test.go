@@ -215,7 +215,8 @@ func rollBackStepRecords(t *testing.T, pool *pgxpool.Pool) {
 }
 
 // rollForwardStepRecords is the newer image's boot over the store the earlier release left: its
-// Migrate, which applies the roll forward the way back re-armed, and that one migration alone.
+// Migrate, which applies the roll forward the way back re-armed, and that one migration alone, and
+// the boot that follows it (rebooted).
 func rollForwardStepRecords(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	st, err := store.Open(t.Context(), pool.Config().ConnString())
@@ -226,4 +227,5 @@ func rollForwardStepRecords(t *testing.T, pool *pgxpool.Pool) {
 	if applied, err := st.Migrate(t.Context()); err != nil || applied != 1 {
 		t.Fatalf("the roll forward's Migrate applied %d migrations, %v; want the one the way back re-armed", applied, err)
 	}
+	rebooted(t, pool)
 }
