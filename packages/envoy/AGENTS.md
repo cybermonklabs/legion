@@ -4825,7 +4825,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   A client reads an absent field as "no other process holds this role" and an empty one as "another process does", so a 200 that wrote `""` would send such a claim's own holder a soft claim it does not need and a 409 naming itself, until its next registration adopted the claim for its process.
   It answers `handed_back` beside the holder on the 200 and on a lapsed holder's 404 alike, `true` where the claim carries the hand-back mark (`store.RoleClaim.HandedBack`) and the key left out where it carries none, as `client_instance_id` is left out where the claim names no process:
   the holder gave this role back through a release that could not free the claim, so no registration renews it any more and the role claim reaper frees the role at its first pass past the live window.
-  Both clients read a marked claim as a role they do not hold (`roleHeldBy` in `@legion/envoy-client/transport`), so a holder an older client's hand-back marked wrongly claims the role again at its next heartbeat and has it back, the fresh record that grant writes carrying no mark.
+  Both clients read a marked claim as a role they do not hold (`roleHeldBy` in `@legion/envoy-client/transport`), so a holder whose claim names its process and an older client's hand-back marked wrongly claims the role again at its next heartbeat and has it back, the fresh record that grant writes carrying no mark (a marked claim that names no process comes back later: see the hand-back below).
   A 404 has `reason: "unclaimed"` when no role claim exists;
   for a holder whose own record does not read live it has `reason: "holder_lapsed"` with that holder's id, that holder's `client_instance_id` and `handed_back` on the same terms as the 200's, its `holder_state` (`unresponsive` or `gone`), `claim_released: false`, since the lookup takes nothing from a holder in either state, and the last registration the listener still keeps (`session.LastSeenMemory`, 2 hours).
   The holder is resolved as a role send's first resolution through the publish route resolves it (`roles.ResolveHolder`, live only), within 3.5 s (`sendRequestBudget`) of the request's own context, and writes nothing to the role bucket.
@@ -4939,15 +4939,12 @@ Each item below names an endpoint and its method, then its contract, and an item
   A client that compared the spellings as they stand would answer such a frame `done` and move its resume point past it, losing the message with no notice.
 
 - The registration is also the holder's heartbeat for the role claims it holds:
-  it stamps `renewed_at` on each claim this session holds that names this same `client_instance_id`, among the roles it weighs, and the first registration of that session id stating any instance adopts a claim that names no process (`store.Registry.RenewRoleClaims`), which is what `/v1/roles/set` and the role claim reaper weigh against the live window.
+  it stamps `renewed_at` on each claim this session holds that names this same `client_instance_id`, among the roles it weighs, and a registration of that session id stating any instance adopts a claim that names no process only while no registration stating none has renewed it (`store.Registry.RenewRoleClaims`), which is what `/v1/roles/set` and the role claim reaper weigh against the live window.
   The roles it weighs are the role topics of the interest row the registration's own write returned (`UpsertPlanned`, which read that row from the bucket and merged the plan into it, so no cache that has not yet followed the bucket hides one) and the roles the registry's watched copy names for the session (`RolesHeldBy`), sorted and without repeats (`weighedRoles`).
   Each is renewed only as its own claim record, read for that renewal, says (`renewRoleClaim`), and the renewal makes no interest-record read of its own.
   The row is what renews a claim the copy lost, since a grant writes the role's lane topic into its holder's row beside the claim, and the copy is what renews a claim the row does not name, such as one in a row this build could not decode, which the registration's write replaced;
   a role either names whose claim record gives it to another session or process, or to nobody, is left as the store holds it.
   While the copy cannot be served the row's roles are the set, and that is no failure.
-  A registration that states no instance renews the claims of its own session that name no process, leaving them naming none, and adopts nothing:
-  an absent instance names no process, so it can be neither a holder's heartbeat for a claim that names one nor the adopter of what another process holds.
-  That arm is what keeps every claim standing at a deploy renewed, since such a claim names no process until a registration that states one adopts it, and a client built before registrations carried an instance renews it meanwhile.
   The topics only say which claims to read, and the claims say what is renewed:
   a release that hands one role back and may not free its claim marks the claim instead (`store.RoleClaim.HandedBack`, `POST /v1/interests/unsubscribe` below), no registration renews a marked claim, and the role claim reaper frees the role at its first pass past the live window — one live window plus up to one reap interval, about ten minutes with the shipped defaults.
   A registration carrying no topic list at all is no case of its own, a lane topic a hand-back left on the row renews nothing, and a claim its holder gave up is renewed by nobody, its own process included.
@@ -4957,6 +4954,13 @@ Each item below names an endpoint and its method, then its contract, and an item
   A lost compare-and-swap, a claim another session or process holds, a handed-back claim and a role with no claim record are no failure: the claim record said what stands.
   A refused renewal buys the session's claims nothing: the claim keeps the renewal it already carries, and the reaper weighs it exactly as it weighs any other.
   It costs one role-bucket read per role it weighs and one write per role the session holds, at every heartbeat.
+
+- A claim that names no process — one whose claimant stated no `client_instance_id` — is renewed and adopted by a rule of its own (`store.Registry.renewRoleClaim`).
+  A registration that states no instance renews the claims of its own session that name no process, leaving them naming none, adopts nothing, and notes that renewal on the claim (`renewed_without_process`, `store.RoleClaim.RenewedWithoutProcess`):
+  an absent instance names no process, so it can be neither a holder's heartbeat for a claim that names one nor the adopter of what another process holds.
+  That arm is what keeps the claim of a client that states no instance renewed while it runs, and the note is what ends the adoption: once the holder has renewed such a claim, a registration that states an instance may be a second process that resumed the session's id, and it leaves the claim as it stands.
+  A claim no registration has renewed so is adopted by the first registration of its session that states an instance, which is the one heartbeat in which such a claim is open to any process of its session: a claim that stood before claims named a process, at its holder's next heartbeat, and a session pod's claim of its launch role, which the pod's role claimer makes with no `client_instance_id` for the session the pod's agent registered, at that agent's next registration.
+  Whether the claim was renewed is read off that note and never off `renewed_at` against `claimed_at`, which a clock that does not move, and two listeners whose clocks differ, make equal or reversed.
 
 - The stored subscription records the `machine_id` and `dir` of the registration that last wrote it, and a registration through another listener moves both (`store.mergeForUpsert`;
   a field the request leaves empty keeps the stored value, so `/v1/roles/set`, which sends no directory, keeps the stored one).
@@ -4993,8 +4997,7 @@ Each item below names an endpoint and its method, then its contract, and an item
   What the record's role topics are read for is the session's own deregistration, which releases the claims they name (`store.Registry.Remove`, `releaseAllRoleClaims`), so a lane topic taken out from under the live holder would leave its standing claim with nothing in the record naming it.
   A deregistration, which names no topic and deletes the whole record, and a release whose every named topic was kept both answer the empty list, and `removed` is never written as `null`.
   It carries `client_instance_id`, the process handing the interests back, and that is what decides the role claims it frees: the claims naming that same process and no others (`store.RoleReleaseAuthority`).
-  A release that names no process frees no claim that names one, and neither does any other process's instance — an absent instance is no match against a claim that names a process — while every topic it named that is not such a claim's lane is removed either way.
-  A claim that names no process at all, one an earlier build wrote before its holder's first registration adopts it, is the carve-out: it keeps the rule it was written under and this session's own release frees it, whichever process asks, so no claim standing at the deploy waits out the role claim reaper.
+  A release that names no process frees no claim, and neither does any other process's instance than the one the claim names — an absent instance is no match on either side — while every topic it named that is not such a claim's lane is removed either way.
   So a second process that resumed this session's id hands back a role it does not hold, and the process that holds it keeps it.
   This route never forces a release; `DELETE /v1/interests/<session_id>` is the only caller that does.
   A release that loses its conditional delete to a record written since is not answered as a success: the claim is read again, and one still naming that same session and that same process is its own holder's renewal, which moves nothing a release weighs, so the delete goes out again at the revision that renewal left, three deletes in all (`store.roleClaimReleaseAttempts`).
@@ -5009,11 +5012,17 @@ Each item below names an endpoint and its method, then its contract, and an item
 
 - An unsubscribe naming a topic in either form of its name takes out every form of it the record holds (`store.Remove`), and `removed` names each, the named form first and then the record's other forms (`otherFormsHeld`), so a client that followed both forms and dropped one reads that both are gone.
 
+- A claim that names no process at all — one whose claimant stated none, a client of an older build or a session pod's role claimer — is freed by no release `/v1/interests/unsubscribe` makes, whatever process it states: an absent process matches nothing in a release, so the holder's own clean stop cannot be told from a second process's.
+  Its deregistration frees nothing, its hand-back marks it (below), and the role claim reaper frees it, a marked claim once its renewal has lapsed and an unmarked one once its session is gone.
+
 - A hand-back is the one release that marks a claim it could not free (`store.RoleClaim.HandedBack`, `store.markRoleClaimHandedBack`):
-  a release that states no process, does not force, and names a role's own lane topic, which is the shape a client built before a release named its process sends.
-  No registration renews a marked claim, so the role claim reaper frees the role at its first pass past the live window — one live window plus up to one reap interval — and `GET /v1/roles/<role>` answers `handed_back` meanwhile.
-  The empty-topics deregistration names no one role's lane and so hands no one role back, a release that names a process frees the claims of that process and marks none, the administrator's force frees them all, and a claim that names no process at all is freed outright rather than marked.
-  A current client reads a marked claim as a role it does not hold (`roleHeldBy`) and claims it again at its next heartbeat, which writes a fresh record and so clears the mark, so a live holder an older client's hand-back marked keeps its role.
+  a release that states no process, does not force, and names a role's own lane topic, which is the shape a client built before a release named its process sends, or any caller that leaves `client_instance_id` out; no current client sends it for a role's lane, since the hand-back of a role by pi-envoy and by claude-envoy states its instance.
+  It marks a claim that names no process as it marks one that names a process.
+  No registration renews or adopts a marked claim, so the role claim reaper frees the role at its first pass past the live window — one live window plus up to one reap interval — and `GET /v1/roles/<role>` answers `handed_back` meanwhile.
+  The empty-topics deregistration names no one role's lane and so hands no one role back, a release that names a process frees the claims of that process and marks none, and the administrator's force frees them all.
+  A current client reads a marked claim as a role it does not hold (`roleHeldBy`) and claims it again at its next heartbeat, which writes a fresh record and so clears the mark, so a live holder whose claim names its process and an older client's hand-back marked keeps its role.
+  A marked claim that names no process is not granted back to a soft claim at once: that claim is weighed by the marked claim's renewal and refused `409` until the renewal is older than the live window or the reaper frees the claim.
+  The way back is an outright claim (`/v1/roles/set` without `soft`, as a session pod's role claimer sends), which reads no holder and lands at once, writing a fresh record with no mark.
 
 - `/v1/sessions` (GET)
 
@@ -5513,7 +5522,7 @@ A write the page pressed names its presser in the `Dispatch-Login` request heade
 a caller that is another person, compared as `model.CanonicalLogin` compares them, or no person at all (any bearer), is answered `409 LOGIN_CHANGED` (`contracts.DispatchLoginChanged`) before anything runs and before its key is read, so the key is untouched.
 Another tab can sign someone else in in place, and a retry can go out on the new cookie before this tab knows;
 the page drops the presser's writes on that answer.
-A caller that resolves to nobody (a lapsed cookie) keeps the route's own `401`, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
+A caller that resolves to nobody (a lapsed cookie) is passed on to the `401` written further in, the keyed layer's for a keyed write and the handler's for any other, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
 
 `keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every `POST` and `PATCH` route, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
 `login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.
@@ -5528,7 +5537,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
   one that committed and lost its answer is `409 KEY_COMMITTED`;
   and a first that gave the key up meanwhile (released after a 5xx, a dead holder with nothing committed, its window past) is `409 KEY_IN_FLIGHT` with `Retry-After: 1`, its message saying it ended while this one's body arrived, so the retry under the same key runs the request.
   So a repeat of a large upload whose first attempt still runs is never written to disk.
-  A repeat whose body runs past the route's limit gets the route's `413`, unkeyed;
+  A repeat whose body runs past the route's limit gets the route's `413` from the layer, with no handler run;
   an `Expect: 100-continue` repeat gets `409 KEY_IN_FLIGHT` at once with nothing read.
   A fresh upload to a closed or missing issue (`POST /api/v1/issues/{key}/artifacts`) is refused as its handler would refuse it (`409 ISSUE_CLOSED` for a closed one) before its body is spooled, keyed or not, and claims no key (`refuseUploadToAClosedIssue`, mounted ahead of the layer).
   That refusal stands in for the handler, so it answers only a request whose handler would run - a fresh key, one past its window, an abandoned one:
@@ -5557,7 +5566,7 @@ The row holds a SHA-256 of the method, the route pattern, its path values, the q
 - The layer then reads the body, spooling at most the route's own limit (`routeBody`:
   an upload's file and a megabyte of fields for the three upload routes, `keyedUploads`, 26 MiB;
   `handoffRequestLimit`, 1,576,960 bytes, for the handoff write;
-  `maxJSONRequestBytes`, 1 MiB, for every other); a body past it runs unkeyed and its route refuses it.
+  `maxJSONRequestBytes`, 1 MiB, for every other); a body past it is answered its route's `413` by the layer itself, and the handler does not run.
   A body the client did not finish sending is `400 REQUEST_BODY_UNREADABLE`, and a spill Dispatch could not write (`keyedSpillError`:
   a full disk, a temporary directory it cannot write) is a 5xx with the key echoed, Dispatch's own failure, which the client asks again.
 
@@ -5630,7 +5639,7 @@ migration `0138` indexes the pending attempts (`message_deliveries_pending`, `co
 `cmd/dispatch/keyed_kill_multiprocess_test.go` proves the takeover on two real processes:
 one killed mid-handler (held there by the slow-write hook), the other answers `409 KEY_IN_FLIGHT` while the lease lasts, then makes the write once and replays it.
 
-Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, nor a request whose caller it could not resolve, nor one whose body is past its route's limit, each of which runs unkeyed - and `/healthz` answers `idempotency_keys: true` on every build that judges the header, a fact of the binary rather than of the probe, so its `503` carries it too.
+Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, nor the refusal of a caller it could not resolve, nor the `413` of a body past its route's limit, each of which it answers before it judges the key and none of which runs the handler - and `/healthz` answers `idempotency_keys: true` on every build that judges the header, a fact of the binary rather than of the probe, so its `503` carries it too.
 Together they are how a client tells a Dispatch that runs this layer from one that ignores the header and would run a retried write a second time:
 the agents' client resends only against a Dispatch whose answer carried the echo, or whose `/healthz` said so, in the last five minutes (`packages/envoy-client/README.md`).
 

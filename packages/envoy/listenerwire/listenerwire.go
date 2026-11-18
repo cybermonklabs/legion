@@ -434,9 +434,10 @@ type UnsubscribeRequest struct {
 	Topics    []string `json:"topics,omitempty"`
 	// ClientInstanceID is the process handing these interests back, which is what decides the
 	// role claims this release frees: the claims naming that same process and no others
-	// (store.RoleReleaseAuthority). A request that leaves it out states no process: it frees a
-	// claim that names none outright, marks a claim it cannot free as handed back and keeps that
-	// claim's lane topic in the record, and removes the session's other topics.
+	// (store.RoleReleaseAuthority). A request that leaves it out states no process: it frees no
+	// claim, marks this session's claim of each role lane it names as handed back, whether that
+	// claim names a process or none, keeps that claim's lane topic in the record, and removes the
+	// session's other topics.
 	ClientInstanceID string `json:"client_instance_id,omitempty"`
 }
 
