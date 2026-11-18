@@ -45,16 +45,19 @@ var (
 	ErrInvalidSlot     = errors.New("a slot is only for a pod enrollment and must match ^[a-z][a-z0-9-]{0,62}$")
 	ErrNoCredential    = errors.New("no such machine login")
 	ErrNotApprover     = errors.New("only the person who approved a person's machine login may revoke it")
-	// ErrNotEnrollingCredential refuses a revoke of an enrollment that carries no operator — a
-	// pod's, or a machine's own session — by any launcher credential but the one that enrolled
-	// it (Revoke).
-	ErrNotEnrollingCredential = errors.New("only the machine login that made an enrollment carrying no operator may end it")
+	// ErrNotEnrollingCredential refuses a revoke of an enrollment by any launcher credential but
+	// the one that made it (Revoke). It holds for the enrollments that carry no operator, a pod's
+	// or a machine's own session. It holds too for the pod enrollments that a person's pod login
+	// makes (PersonPodLogin), which carry that person as their operator.
+	ErrNotEnrollingCredential = errors.New("only the machine login that made this enrollment may end it")
 	ErrPodTokenRequired       = errors.New("a pod enrollment's renewal must carry its projected token")
 	// ErrPodSelfEnrollOnly refuses a pod enrollment under the enrolling pod's own token login —
 	// one whose subject is the very ServiceAccount the presented pod token proves — whose runtime
 	// id names another pod. Such a credential belongs to one pod, the pod whose token logged in
 	// (launcher_credentials.pod_uid), so it enrols that pod and nothing else, and under no session
-	// name (ErrPodSelfEnrollNoSession, which says why).
+	// name (ErrPodSelfEnrollNoSession, which says why). A person's pod login (PersonPodLogin)
+	// enrols its own pod alone too. It also gets this refusal for a pod of any other account,
+	// and that refusal names the login's account and the pod's account.
 	ErrPodSelfEnrollOnly = errors.New("a pod's own machine login enrols that pod alone")
 	// ErrPodSelfEnrollNoSession refuses a session name on the enrolment ErrPodSelfEnrollOnly holds
 	// to one pod: a pod enrolling itself under its own token login. Every pod of one account
@@ -71,7 +74,8 @@ var (
 	// service launches an account's pods, and a token login is authorized by those settings
 	// alone, so a token it was handed proves whose pod it is and never who may enrol it. A
 	// service's login a person approved carries no subject and keeps that person's approval as
-	// its authorization, so this never reaches one.
+	// its authorization, so this never reaches one. A person's pod login (PersonPodLogin) never
+	// reaches it either: it enrols its own pod alone and never reads BROKER_SERVICES.
 	ErrPodNotLaunched = errors.New("this machine login does not launch the pods of that service account")
 	// ErrMachineLoginEnded refuses a machine's own session a renewal because the launcher
 	// credential its exchange minted is no longer live: revoked, past the expiry its Google
@@ -102,21 +106,22 @@ type Credential struct {
 }
 
 // LiveCredential is one of the machine logins a person may revoke, as their machine-login page
-// lists it: a launcher credential of one of their own machines, or of any service's login whoever
+// lists it: a launcher credential of one of their own machines, of a pod login of theirs (a token
+// login of an account that BROKER_POD_OPERATORS maps to them), or of any service's login whoever
 // approved it, not revoked, and either unexpired or still holding a live session it enrolled
 // (Lookup's live: not revoked, its lease not lapsed).
 type LiveCredential struct {
 	ID   uuid.UUID
 	Host string
-	// Service names the service a service's login is for (legion-daemon); nil for a person's own
-	// machine.
+	// Service names the service a service's login is for (legion-daemon), or the login service
+	// of a person's pod login. It is nil for a person's own machine.
 	Service *string
 	// Subject is what a token login proved: its ServiceAccount
 	// (system:serviceaccount:<namespace>:<name>), or a machine as the token exchange names it
 	// (exchange.MachineSubject); nil for every login a person approved.
 	Subject *string
-	// ApprovedBy is the login of the person who approved it, "" for a service's token login, which
-	// no person approves.
+	// ApprovedBy is the login of the person who approved it, "" for every token login, a person's
+	// pod login among them, which no person approves.
 	ApprovedBy string
 	IssuedAt   time.Time
 	ExpiresAt  time.Time
@@ -202,6 +207,18 @@ type Service struct {
 	// with its token, answering that service. AuthenticateLauncher reads it for every credential a
 	// Kubernetes token login issued.
 	ServiceLogins map[string]string
+	// PodOperators is BROKER_POD_OPERATORS: each Kubernetes ServiceAccount subject that the
+	// deployment maps to a person, answering that person's login (record.CanonicalLogin).
+	// machine.Service.TokenLogin reads it at each login of a mapped account from a pod-bound
+	// token, and writes the person as the credential's operator. That credential is a person's
+	// pod login (PersonPodLogin).
+	//
+	// This package reads the setting as it is now, and not the person that a row recorded.
+	// Create and Revoke admit a person's pod login only while the setting still maps its subject
+	// to its operator (livePersonPodLogin). LiveCredentials and RevokeCredential give each
+	// credential of a mapped subject to that person alone, whatever its row's operator. Unset,
+	// the setting maps no account.
+	PodOperators map[string]string
 	// ServicesByAccount is BROKER_SERVICES: each ServiceAccount a service's pods run as, answering
 	// that service. It is the deployment's own statement of which pods a service launches, and so
 	// of which pods a service's token login may enrol besides its own (Create, ErrPodNotLaunched);
@@ -265,18 +282,23 @@ func (s *Service) MintLauncherCredentialTx(ctx context.Context, tx pgx.Tx, opera
 // proved (a ServiceAccount subject, a machine as the token exchange names it,
 // exchange.MachineSubject, or a person's sign-in on a machine, exchange.PersonSubject), the
 // service BROKER_SERVICE_LOGINS or BROKER_VM_SERVICES maps it to,
-// the person its sessions act for (a sign-in's, "" for a machine's and for a Kubernetes
-// service's, which act as nobody), the host the credential names (a ServiceAccount's
+// the person its enrollments act for (Operator), the host the credential names (a ServiceAccount's
 // <namespace>/<name>, a machine's <project>/<zone>/<instance name>), the pod its token is bound
 // to ("" for none) and when the token expires, the key the request object or the DPoP proof
 // proved (its thumbprint and public JWK), and when the credential expires.
 type TokenLogin struct {
 	Subject, Service, Host, PodUID string
-	// Operator is the person the credential's enrollments run for, which makes them that
-	// person's sessions exactly as a dev box's machine login does (authorized). A person's
-	// sign-in on a machine sets it and nothing else does: a machine's own credential and a
-	// Kubernetes service's act for no person, and their sessions reach their service's secrets
-	// alone.
+	// Operator is the person the credential's enrollments run for. Two logins set it, and no
+	// other login does:
+	//
+	//   - A person's sign-in on a machine. Its sessions are that person's sessions, exactly as a
+	//     dev box's machine login makes them (authorized).
+	//   - A Kubernetes token login of an account that BROKER_POD_OPERATORS maps, from a token
+	//     bound to a pod (machine.Service.TokenLogin). The credential is then a person's pod
+	//     login (PersonPodLogin). It enrols its own pod alone, and that pod acts as the person.
+	//
+	// A machine's own credential and every other Kubernetes login act for no person. Their
+	// enrollments reach their service's secrets alone.
 	Operator     string
 	TokenExpires time.Time
 	Thumbprint   string
@@ -552,10 +574,12 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 	return cred, nil
 }
 
-// Create enrolls in under cred. An enrollment's operator is its credential's: the email of the
-// person who approved the machine login that minted it (machine.Service.ApplyDecision), recorded
-// whether or not the launcher states one. A stated operator that names anyone else, or any operator
-// stated under a service credential, is ErrOperatorMismatch. A live enrollment is unique per
+// Create enrolls in under cred. An enrollment's operator is its credential's, recorded whether or
+// not the launcher states one. For a person's machine login it is the email of the person who
+// approved that login (machine.Service.ApplyDecision). For a person's pod login (PersonPodLogin)
+// it is the person that BROKER_POD_OPERATORS mapped the pod's account to when the pod logged in.
+// A stated operator that names anyone else, or any operator stated under a service credential, is
+// ErrOperatorMismatch. A live enrollment is unique per
 // launcher credential, runtime id and slot: the same key in the same slot gets its live enrollment
 // back (Existing), a different key in a live slot is ErrAlreadyEnrolled, and another slot of the
 // same pod is an enrollment of its own. A slot is valid only on a pod enrollment (ErrInvalidSlot);
@@ -568,15 +592,19 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // saying that service launches those pods (ErrPodNotLaunched for anything else). A pod enrolling
 // its own pod states no session name either (ErrPodSelfEnrollNoSession), while a launcher's
 // enrolment of a pod it launches states one as before; podUnderTokenLogin holds both rules and
-// says why. A machine whose
+// says why. A person's pod login enrols its own pod alone and states no session name. It never
+// reads BROKER_SERVICES, and a pod of any other account is ErrPodSelfEnrollOnly. It enrols no
+// other kind, and it enrols nothing once BROKER_POD_OPERATORS no longer maps its account to its
+// person (authorized, ErrOperatorMismatch). A machine whose
 // Google identity token the exchange
 // accepted enrolls a session under the credential that exchange minted it, which is why it
 // needs no kind and no token of its own here: the credential is the proof. Such a session
 // records that credential's subject, which is what makes it its fleet's service's and no
 // person's (requests.Machine.requester), as a pod's recorded service account makes it its
 // service's.
-// A credential revoked (RevokeCredential: by the person who approved a person's machine login, or
-// by anyone signed in for a service's), even after the caller's launcher proof was verified, is
+// A credential revoked (RevokeCredential: by the person who approved a person's machine login, by
+// the person that BROKER_POD_OPERATORS maps a pod login's account to, or by anyone signed in for
+// a service's), even after the caller's launcher proof was verified, is
 // ErrUnauthenticated.
 //
 // An enrollment that names a session also records the principal that session belongs to
@@ -603,7 +631,7 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		return Enrollment{}, ErrOperatorMismatch
 	}
 	in.Operator = cred.Operator
-	if !authorized(cred, in.Kind, in.Operator) {
+	if !s.authorized(cred, in.Kind, in.Operator) {
 		return Enrollment{}, ErrOperatorMismatch
 	}
 	in.Subject = nil
@@ -1440,11 +1468,56 @@ func podTokenRatcheted(ctx context.Context, tx pgx.Tx, podUID string) (bool, err
 	return ratcheted, err
 }
 
-// authorized reports whether cred may act on an enrollment of the given kind and operator — the
-// trust boundary both Create (when creating one) and Revoke (when ending one) enforce: an
-// operator credential may only act on that same operator's own sessions; a service credential
-// (no operator) may only act on an enrollment that carries no operator either, a pod's or a
-// machine's own session.
+// PersonPodLogin reports whether cred is a person's pod login: a token login of a Kubernetes
+// ServiceAccount that carries an operator. Only machine.Service.TokenLogin writes one, for a
+// pod-bound token of an account that BROKER_POD_OPERATORS maps to a person. The answer reads the
+// credential's row alone, so it holds whatever the setting says now. No other credential is one.
+// A person's machine login has no subject. The subject of a person's sign-in reads
+// exchange.SubjectSignIn. A machine's own credential has no operator.
+//
+// Each rule of this package that sets a person's pod login apart keys on this test. So no rule
+// reads a stale one as a person's machine login. A stale one is a person's pod login whose entry
+// the setting dropped, or moved to another person. Only livePersonPodLogin admits a person's pod
+// login to anything.
+func PersonPodLogin(cred Credential) bool {
+	return cred.Operator != nil && cred.Subject != nil && exchange.ReadSubject(*cred.Subject).Kind == exchange.SubjectOther
+}
+
+// livePersonPodLogin reports whether cred is a person's pod login (PersonPodLogin) that the
+// setting still admits: it names a pod, and BROKER_POD_OPERATORS maps its subject to its operator
+// now. After the setting drops the entry or moves it to another person, the row keeps the first
+// person until the pod logs in again. Until then, this answers false.
+func (s *Service) livePersonPodLogin(cred Credential) bool {
+	if !PersonPodLogin(cred) || cred.PodUID == "" {
+		return false
+	}
+	owner := s.podOperator(cred.Subject)
+	return owner != "" && owner == *cred.Operator
+}
+
+// podOperator answers the person that BROKER_POD_OPERATORS maps subject to now, in
+// record.CanonicalLogin's form. It answers "" for no subject and for a subject that the setting
+// does not map. Each caller tests for "" first, so an unmapped subject never matches an operator
+// or a person.
+func (s *Service) podOperator(subject *string) string {
+	if subject == nil {
+		return ""
+	}
+	return record.CanonicalLogin(s.PodOperators[*subject])
+}
+
+// authorized reports whether cred may act on an enrollment of the given kind and operator. It is
+// the trust boundary that both Create (when it creates an enrollment) and Revoke (when it ends
+// one) enforce. A credential is of one of three kinds:
+//
+//   - A person's pod login (PersonPodLogin) may act only on a pod enrollment of its own operator,
+//     and only while livePersonPodLogin holds. It may act on no session. So it never enrols under
+//     the session name of its person's box, and never takes that session's grants (adopt). Once
+//     BROKER_POD_OPERATORS no longer maps its subject to its operator, it may act on nothing.
+//   - Any other operator credential, a person's own machine login or that person's sign-in on a
+//     machine, may only act on that same operator's own sessions, and never on a pod.
+//   - A service credential (no operator) may only act on an enrollment that carries no operator
+//     either, a pod's or a machine's own session.
 //
 // A machine's credential, which the token exchange mints, names its fleet's service and never a
 // person, whatever that fleet's entry says: secret authority follows the access token, so the
@@ -1452,7 +1525,10 @@ func podTokenRatcheted(ctx context.Context, tx pgx.Tx, podUID string) (bool, err
 // that machine only through their own sign-in. Its session is the one kind a service credential
 // may enrol beside a pod, and only a machine's credential may: a Kubernetes service's login
 // enrols the pods its tokens prove and nothing else.
-func authorized(cred Credential, kind string, operator *string) bool {
+func (s *Service) authorized(cred Credential, kind string, operator *string) bool {
+	if PersonPodLogin(cred) {
+		return kind == "pod" && operator != nil && *operator == *cred.Operator && s.livePersonPodLogin(cred)
+	}
 	serviceKind := kind == "pod" || (kind == "session" && machineCredential(cred))
 	switch {
 	case cred.Operator != nil && (operator == nil || *operator != *cred.Operator):
@@ -1465,8 +1541,9 @@ func authorized(cred Credential, kind string, operator *string) bool {
 	return true
 }
 
-// podUnderTokenLogin holds a service's token login to the pods the deployment's settings give it,
-// and lets every other credential through. A token login is authorized by those settings and by
+// podUnderTokenLogin holds a token login of a Kubernetes account to the pods the deployment's
+// settings give it, and lets every other credential through. Such a login is a service's login,
+// or a person's pod login (PersonPodLogin). A token login is authorized by those settings and by
 // nothing else — no person approved it — so a projected token handed to it proves whose pod the
 // token is and never who may enrol that pod. There are two pods it may enrol:
 //
@@ -1486,16 +1563,27 @@ func authorized(cred Credential, kind string, operator *string) bool {
 //     service's secrets to its pods. It states a session name as before: the launcher names the
 //     session each pod it starts runs, and that name is the launcher's own to give.
 //
+// A person's pod login takes the first rule alone, and it never reads BROKER_SERVICES. It reads
+// the pod's account first: a pod of any other account is ErrPodSelfEnrollOnly, which names the
+// login's account and the pod's account. Then it reads the pod UID and the session name, as the
+// first rule does.
+//
 // A credential a person approved — a person's own machine login, or a service's login approved
 // through a machine-login code, neither of which carries a subject — keeps that person's approval
-// as its authorization and is not held to either rule.
+// as its authorization and is not held to either rule. A person's sign-in on a machine carries an
+// operator and a subject of its own kind (exchange.SubjectSignIn). Neither rule holds it, and
+// authorized has already refused it a pod.
 //
 // It reads two fields of the enrollment, its runtime id and its session name, and takes the
 // enrollment itself rather than the two values, so no caller can pair one request's pod UID
 // with another's session name.
 func (s *Service) podUnderTokenLogin(cred Credential, claims PodClaims, in Enrollment) error {
-	if cred.Operator != nil || cred.Subject == nil {
+	person := PersonPodLogin(cred)
+	if cred.Subject == nil || (cred.Operator != nil && !person) {
 		return nil
+	}
+	if person && !ownPod(cred, claims.Subject) {
+		return fmt.Errorf("%w: this login is account %s's, the enrollment's pod runs as %s", ErrPodSelfEnrollOnly, *cred.Subject, claims.Subject)
 	}
 	if ownPod(cred, claims.Subject) {
 		if cred.PodUID != in.RuntimeID {
@@ -1547,8 +1635,9 @@ func ownPod(cred Credential, podAccount string) bool {
 // It decides launchers and nothing else. A pod enrollment of the login's own account never
 // reaches it: Revoke's own-account branch answers that case itself (ownPod), whatever
 // BROKER_SERVICES binds the account to, and reads this only for the enrollments that branch
-// leaves. It gives nothing across services either, and nothing to a credential a person
-// approved, which carries no subject.
+// leaves. It gives nothing across services either. It gives nothing to a credential a person
+// approved, which carries no subject, and nothing to a credential with an operator. So a
+// person's pod login ends no pod enrollment that another login of its person made (Revoke).
 // enrolledLoginSubject, enrolledLoginService and enrolledPodAccount are the enrolling
 // credential's subject and service and the enrollment's own verified pod account, each nil where
 // the row has none.
@@ -1567,9 +1656,9 @@ func (s *Service) sameLauncher(cred Credential, enrolledLoginSubject, enrolledLo
 
 // machineCredential reports whether cred is one the token exchange minted for a machine: a
 // credential with a service, no person and a subject that reads as a machine's
-// (exchange.SubjectMachine). A Kubernetes service's token login holds a subject of its own
-// shape, a person's sign-in on a machine a subject of its own kind, and a person's machine
-// login holds an operator.
+// (exchange.SubjectMachine). A Kubernetes token login holds a subject of its own shape, and a
+// person's pod login (PersonPodLogin) holds an operator as well. A person's sign-in on a machine
+// holds a subject of its own kind, and a person's machine login holds an operator.
 func machineCredential(cred Credential) bool {
 	if cred.Operator != nil || cred.Service == nil || cred.Subject == nil {
 		return false
@@ -1594,8 +1683,10 @@ func machineCredential(cred Credential) bool {
 // against, so that case alone falls through to ErrNotLive below rather than ErrOperatorMismatch.
 //
 // A pod enrollment and a machine's own session carry no operator, so the operator cannot tell
-// one service's sessions from another's. Which credential ends one is decided in the two
-// branches below, and a pod enrollment of the login's own account takes the first of them:
+// one service's sessions from another's. A pod enrollment that a person's pod login made carries
+// its person, and that operator cannot tell one of the person's pods from another. Which
+// credential ends one of these is decided in the two branches below, and a pod enrollment of
+// the login's own account takes the first of them:
 //
 //   - such an enrollment ends under the credential that made it, and only while that credential
 //     is the one its own pod holds: cred.PodUID is the enrollment's runtime id (ownPod, the
@@ -1609,8 +1700,8 @@ func machineCredential(cred Credential) bool {
 //     credential row. So a session pod of an account both settings name ends its own
 //     enrollment and no other pod's of that account, on either schema.
 //
-//   - every other enrollment with no operator ends under the credential that made it, and a pod
-//     enrollment under the same launcher logging in again from another pod as well
+//   - every other enrollment these branches reach ends under the credential that made it, and a
+//     pod enrollment under the same launcher logging in again from another pod as well
 //     (sameLauncher): never another service's credential, nor a second credential of the same
 //     service, nor another machine of the same fleet (ErrNotEnrollingCredential for every other
 //     caller). A launcher's machine login is per pod (IssueTokenLoginTx), so a restarted Legion
@@ -1621,6 +1712,14 @@ func machineCredential(cred Credential) bool {
 //     takes the same ServiceAccount logging in and the pod's own account being one
 //     BROKER_SERVICES binds to that login's service — the launcher relation POD_NOT_LAUNCHED
 //     reads at Create.
+//
+// A person's pod login (PersonPodLogin) is held to the same two branches. authorized has already
+// refused it every enrollment but a pod enrollment of its own person, and refused a stale one
+// everything. So the first branch lets it end only the pod enrollment that it made of its own
+// pod, and never a sibling pod's, on either schema. The second branch gives it nothing that
+// another credential made, since sameLauncher admits no credential with an operator. So it never
+// ends a pod of another mapped account of the same person. It never ends a box session either,
+// since authorized refuses it every session.
 //
 // An enrollment neither branch reaches — a service login a person approved before token logins,
 // or the daemon's credential before someone revoked it — ends when its pod stops renewing, one
@@ -1652,12 +1751,13 @@ func (s *Service) Revoke(ctx context.Context, cred Credential, id, by string) er
 	if err != nil {
 		return err
 	}
-	if !authorized(cred, kind, operator) {
+	if !s.authorized(cred, kind, operator) {
 		return ErrOperatorMismatch
 	}
-	// The two branches the doc above describes. A credential with an operator — a person's own
-	// machine login — is held to neither: the operator test above is its whole ownership rule.
-	if cred.Operator == nil {
+	// The two branches the doc above describes. They hold a credential with no operator and a
+	// person's pod login. Any other credential with an operator, a person's own machine login or
+	// sign-in, is held to neither: the operator test above is its whole ownership rule.
+	if cred.Operator == nil || PersonPodLogin(cred) {
 		if kind == "pod" && enrolledSubject != nil && ownPod(cred, *enrolledSubject) {
 			if cred.PodUID != enrolledRuntimeID || enrolledBy != cred.ID {
 				return ErrNotEnrollingCredential
@@ -1679,7 +1779,8 @@ func (s *Service) Revoke(ctx context.Context, cred Credential, id, by string) er
 // LiveCredentials lists the machine logins person may list and revoke that can still reach a
 // secret, newest first: every unrevoked launcher credential minted from a launcher_credential
 // record, a service's whoever approved it, a person's own machine's only when it is the person
-// whose record names them, and every service's token login (machine.Service.TokenLogin), while it
+// whose record names them, every service's token login (machine.Service.TokenLogin), and a token
+// login of an account BROKER_POD_OPERATORS maps only when it maps that account to person, while it
 // is unexpired or a session it enrolled is live as Lookup means it: not revoked, its lease not
 // lapsed. A login's sessions outlive its expiry, since each renews with its own key and Renew
 // reads the credential only for a machine's own session, so an expired login stays listed,
@@ -1690,7 +1791,16 @@ func (s *Service) Revoke(ctx context.Context, cred Credential, id, by string) er
 // operator and acts as no person, so anyone signed in to Dispatch lists it and revokes it, its
 // Service set. Each login names who approved it, the login its approved event records, or "" for a
 // token login, which no person approved. The sentinel record.AnyoneApprover and an empty login list
-// nothing. OwnLiveCredentials lists the person's own machines' alone.
+// nothing. OwnLiveCredentials lists the person's own machines' and pod logins alone.
+//
+// A token login whose subject BROKER_POD_OPERATORS maps is its person's own machine login, with
+// or without a pod and an operator on its row. It is listed to that person alone, here and by
+// OwnLiveCredentials, and to nobody else, whatever its row's operator. The list reads the setting
+// as it is now and not the row, because the row can lose its person. On the schema this release
+// ships, every pod of one account shares one row (IssueTokenLoginTx). A login of the account from
+// a token bound to no pod moves that row to no operator and no pod. Read by the row, the login
+// would then be every person's to revoke, and that revoke would end the person's pod enrollments
+// (endCredential).
 //
 // A person's sign-in on a machine holds a launcher credential too, and that one is never listed
 // here: it is one person's, it is already listed as that person's sign-in
@@ -1702,8 +1812,9 @@ func (s *Service) LiveCredentials(ctx context.Context, person string) ([]LiveCre
 }
 
 // OwnLiveCredentials is LiveCredentials without any service's login: the logins of the person's
-// own machines alone, those minted from a launcher_credential record that names them, as the
-// person's own machine lists them (GET /v1/operator/machines).
+// own machines, those minted from a launcher_credential record that names them, and the token
+// logins of the accounts that BROKER_POD_OPERATORS maps to the person, as the person's own
+// machine lists them (GET /v1/operator/machines).
 func (s *Service) OwnLiveCredentials(ctx context.Context, person string) ([]LiveCredential, error) {
 	return s.liveCredentials(ctx, person, false)
 }
@@ -1721,19 +1832,35 @@ func signInCredential(subject *string) bool {
 }
 
 // liveCredentials is LiveCredentials, every service's login among them only when services is set.
+// It gives the statement two arrays: the subjects that BROKER_POD_OPERATORS maps to person ($3),
+// and every subject that the setting maps ($4). So one statement holds the whole rule. A
+// credential with no subject matches neither array, and the rule of an unmapped credential
+// decides it.
 func (s *Service) liveCredentials(ctx context.Context, person string, services bool) ([]LiveCredential, error) {
 	person = record.CanonicalLogin(person)
 	if person == "" || person == record.AnyoneApprover {
 		return nil, nil
 	}
+	mine, mapped := []string{}, make([]string, 0, len(s.PodOperators))
+	for subject, owner := range s.PodOperators {
+		mapped = append(mapped, subject)
+		if record.CanonicalLogin(owner) == person {
+			mine = append(mine, subject)
+		}
+	}
+	// c.subject = any(...) is null for a credential with no subject, and coalesce reads that
+	// null as "not mapped". So a login a person approved, which has no subject, keeps the rule of
+	// an unmapped credential.
 	rows, err := s.Store.Pool.Query(ctx, `select c.id, c.host, c.service, c.subject,
 			coalesce((select ev.login from credential_request_events ev where ev.record_id = r.id and ev.event = 'approved'), ''),
 			c.created_at, c.expires_at, c.expires_at <= now() from launcher_credentials c
 		left join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential'
-		where ((c.service is null and r.approver = $1) or ($2 and c.service is not null and (r.id is not null or c.subject is not null)))
+		where (coalesce(c.subject = any($3::text[]), false)
+				or (not coalesce(c.subject = any($4::text[]), false)
+					and ((c.service is null and r.approver = $1) or ($2 and c.service is not null and (r.id is not null or c.subject is not null)))))
 			and c.revoked_at is null
 			and (c.expires_at > now() or exists (select 1 from enrollments e where e.launcher_credential_id = c.id and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)))
-		order by c.created_at desc, c.id`, person, services)
+		order by c.created_at desc, c.id`, person, services, mine, mapped)
 	if err != nil {
 		return nil, err
 	}
@@ -1750,20 +1877,22 @@ func (s *Service) liveCredentials(ctx context.Context, person string, services b
 
 // RevokeCredential ends launcher credential id on the word of person, expired or not: from then on
 // no launcher proof signed with it authenticates (AuthenticateLauncher), and every enrollment it
-// made that has not ended — a person's machine sessions and boxes, or every pod a service's login
-// enrolled, which outlive the credential's expiry — and every dormant one it made, holding a
+// made that has not ended — a person's machine sessions and boxes, every pod a service's login
+// enrolled, or the pods a person's pod login enrolled, which outlive the credential's expiry — and
+// every dormant one it made, holding a
 // moved session's grants, is ended terminally (endEnrollment, an
 // enrollment.revoked audit row), revoking each one's grants and cancelling its pending requests,
 // all in one transaction with one launcher_credential.revoked audit row. person may revoke a
 // service's login whoever approved it, a service's token login (which no person approved, and whose
 // service logs in again with its token under a new credential unless BROKER_SERVICE_LOGINS no
-// longer names its account), and a person's own machine's only as the approver of the
-// launcher_credential record it was minted from (ErrNotApprover); the sentinel
-// record.AnyoneApprover and an empty login revoke nothing. An unknown id, like a credential with
-// neither a record nor a token login's subject, is ErrNoCredential, and so is a person's
-// sign-in's credential, which is no machine login: it is ended whole, with the sign-in row that
-// mints it, by RevokePersonSignIn, and ending it here would leave that row to mint it again at
-// the box's next trade. actor
+// longer names its account), a person's own machine's only as the approver of the
+// launcher_credential record it was minted from, and a token login of an account that
+// BROKER_POD_OPERATORS maps only as the person it maps that account to (ErrNotApprover); the
+// sentinel record.AnyoneApprover and an empty login revoke nothing. An unknown id, like a
+// credential with neither a record nor a token login's subject, is ErrNoCredential, and so is a
+// person's sign-in's credential, which is no machine login: it is ended whole, with the sign-in
+// row that mints it, by RevokePersonSignIn, and ending it here would leave that row to mint it
+// again at the box's next trade. actor
 // is what every row it writes records as having done it, which the caller proved:
 // "human:<person>" for a revoke Dispatch relays from its signed-in person,
 // "launcher:<credential id>" for one the person's own machine login makes. Revoking a credential
@@ -1772,12 +1901,20 @@ func (s *Service) liveCredentials(ctx context.Context, person string, services b
 // credential (which holds the row for share) commits first and is ended here, or waits and finds
 // the credential revoked; and it takes those enrollments' rows, so a launcher's own Revoke of one
 // either commits first, leaving it out of the list here, or waits and finds it ended.
+//
+// A token login whose subject BROKER_POD_OPERATORS maps is its person's own machine login,
+// whatever its row's operator, as LiveCredentials lists it. Only that person revokes it, and
+// RevokeOwnCredential revokes it too. The pod logs in again with its token under a new
+// credential. So the revoke ends the enrollments that the login made, but it does not keep the
+// pod out while the setting maps its account.
 func (s *Service) RevokeCredential(ctx context.Context, id, person, actor string) error {
 	return s.revokeCredential(ctx, id, person, actor, true)
 }
 
 // RevokeOwnCredential is RevokeCredential for the logins OwnLiveCredentials lists: a service's
-// login is ErrNoCredential, as an unknown id is, and ends nothing.
+// login is ErrNoCredential, as an unknown id is, and ends nothing. A token login whose subject
+// BROKER_POD_OPERATORS maps is its person's own login and no service's, so this revokes it as
+// RevokeCredential does.
 func (s *Service) RevokeOwnCredential(ctx context.Context, id, person, actor string) error {
 	return s.revokeCredential(ctx, id, person, actor, false)
 }
@@ -1792,9 +1929,10 @@ func (s *Service) revokeCredential(ctx context.Context, id, person, actor string
 	var approver, host string
 	var service, subject *string
 	var revokedAt *time.Time
-	// A token login's credential has no record, so no approver: as every service's login, anyone
-	// signed in may revoke it (record.MayDecide), and its service logs in again with its token at
-	// its next call, under a new credential, unless BROKER_SERVICE_LOGINS no longer names its account.
+	// A token login's credential has no record, so no approver. Anyone signed in may revoke a
+	// service's token login, as for every service's login (record.MayDecide). Its service logs in
+	// again with its token at its next call, under a new credential, unless BROKER_SERVICE_LOGINS
+	// no longer names its account. A token login of a mapped account is the exception below.
 	err = tx.QueryRow(ctx, `select coalesce(r.approver, ''), c.service, c.subject, c.host, c.revoked_at from launcher_credentials c
 		left join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential'
 		where c.id = $1 and (r.id is not null or c.subject is not null) for no key update of c`, id).Scan(&approver, &service, &subject, &host, &revokedAt)
@@ -1813,7 +1951,14 @@ func (s *Service) revokeCredential(ctx context.Context, id, person, actor string
 		return ErrNoCredential
 	}
 	var svc string
-	if service != nil {
+	if owner := s.podOperator(subject); owner != "" {
+		// BROKER_POD_OPERATORS maps the credential's subject, so the credential is its person's
+		// own machine login, as liveCredentials lists it. The setting decides and the row does not:
+		// a login from a token bound to no pod moves the row to no operator (LiveCredentials says
+		// why that matters). The person is the approver and no service decides it. So anyone else
+		// is ErrNotApprover, and RevokeOwnCredential finds it.
+		approver = owner
+	} else if service != nil {
 		if !services {
 			return ErrNoCredential
 		}
