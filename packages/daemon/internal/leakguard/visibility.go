@@ -45,9 +45,11 @@ func (wallClock) Sleep(ctx context.Context, wait time.Duration) error {
 	}
 }
 
-// VisibilitySource says where a guard's answer came from: GitHub's REST API, the role's kept
-// answer, GitHub's GraphQL API, or git's ls-remote. The last two are the reads the guard makes
-// when the REST read is refused for a spent rate limit it does not wait for (Guard.Visibility).
+// VisibilitySource says where a guard's answer came from: GitHub's REST API through gh, the role's
+// kept answer, GitHub's GraphQL API, git's ls-remote, or GitHub's REST API through curl. GraphQL
+// and ls-remote are the reads the guard makes when the REST read is refused for a spent rate limit
+// it does not wait for (Guard.Visibility). curl and ls-remote are the reads it makes when gh's REST
+// read failed on its connection to GitHub (Guard.readWithoutGh).
 type VisibilitySource string
 
 const (
@@ -55,6 +57,7 @@ const (
 	VisibilityFromCache    VisibilitySource = "kept"
 	VisibilityFromGraphQL  VisibilitySource = "graphql"
 	VisibilityFromLsRemote VisibilitySource = "ls-remote"
+	VisibilityFromCurl     VisibilitySource = "rest-curl"
 )
 
 // Visibility is what GitHub reports the repository slug ("owner/name") as. Public answers stay
@@ -64,7 +67,9 @@ const (
 // The REST read comes first (readVisibility). A read GitHub refuses for a rate limit, read with
 // internal/githubrest's model (rateLimitFrom), is read once more after the wait GitHub asks for,
 // where waitFits allows that wait. A limit still spent after it, and one not waited for, is read
-// another way (readWithoutREST). The answer is kept as gh's is.
+// another way (readWithoutREST). A gh read that failed on its connection to GitHub, with no answer
+// from GitHub (ghTransportFailure), is read without gh (readWithoutGh). The answer is kept as gh's
+// is.
 //
 // The header-bearing read is:
 //
@@ -109,8 +114,12 @@ func (g *Guard) visibility(ctx context.Context, slug string, kept bool) (Visibil
 		}
 	}
 	source := VisibilityFromGitHub
-	if errors.As(err, &limited) {
+	var unreached *transportError
+	switch {
+	case errors.As(err, &limited):
 		visibility, source, err = g.readWithoutREST(ctx, slug, limited)
+	case errors.As(err, &unreached):
+		visibility, source, err = g.readWithoutGh(ctx, slug, unreached)
 	}
 	if err != nil {
 		return "", err
@@ -344,7 +353,9 @@ func ghReadEnv(slug string) []string {
 }
 
 // ghVisibility is the gh read itself, the guard's answer where a caller named no reader of its
-// own.
+// own. A rate limit is a *rateLimitError, and a failure on gh's connection to GitHub, with no
+// answer from GitHub, is a *transportError (ghTransportFailure); a gh that the caller's bound
+// stopped is the *stoppedError run answers, since no bound is left for another read.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
 	status, printed, err := g.run(ctx, child{
 		argv: append([]string{"gh"}, VisibilityReadWithHeadersArgs(slug)...),
@@ -355,6 +366,9 @@ func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, erro
 	}
 	if limited := rateLimitFrom(printed); limited != nil {
 		return "", limited
+	}
+	if unreached := ghTransportFailure(status, printed, slug); unreached != nil {
+		return "", unreached
 	}
 	if status != 0 {
 		return "", fmt.Errorf("gh api repos/%s exited %d: %s", maskPath(slug), status, strings.TrimSpace(printed))
@@ -501,10 +515,11 @@ const githubOrigin = "https://github.com"
 // lsRemote is what `git ls-remote <origin>/<slug>.git HEAD`, read with no credential, says of the
 // repository's visibility: public where git exits 0, listing the repository's HEAD (an empty
 // repository lists nothing and exits 0 all the same), and an error for anything else. origin is a
-// parameter so that a test can point the read at a server of its own; the guard's one caller
-// passes githubOrigin. That read goes through git's smart HTTP protocol, which GitHub does not
-// count against the REST rate limit: pushes refused for that limit have met `git ls-remote origin`
-// answering at the same moments.
+// parameter so that a test can point the read at a server of its own; the guard's two callers
+// (readWithoutREST, readWithoutGh) pass githubOrigin. That read goes through git's smart HTTP
+// protocol, which GitHub does not count against the REST rate limit: pushes refused for that limit
+// have met `git ls-remote origin` answering at the same moments. It uses no Go TLS either: git's
+// HTTPS is libcurl's.
 //
 // Public is the one answer because a refusal says nothing of the repository. GitHub answers an
 // anonymous read of a private repository, and of a name no repository has, with a 401; it also
