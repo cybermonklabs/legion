@@ -123,6 +123,9 @@ COPY packages/envoy/natsversion ./natsversion
 # brokeraddr: the secrets broker's configured address, in a type no output prints whole, which
 # agent-secrets holds AGENT_SECRETS_URL as (cmd/agent-secrets/identity.go).
 COPY packages/envoy/brokeraddr ./brokeraddr
+# excerpt: one redacted line of a body a server's place wrote, which every Go client names such a
+# body through; it reads internal/redact, which the COPY of internal above holds.
+COPY packages/envoy/excerpt ./excerpt
 # The Go contracts file is generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go

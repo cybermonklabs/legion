@@ -124,22 +124,39 @@ func (c *Client) UI(t *testing.T, method, path string, body any) (int, []byte) {
 // public URL's own path, which is what the broker reconstructs and verifies against.
 func (c *Client) Session(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, method, path string, body any) (int, []byte) {
 	t.Helper()
+	got := c.session(t, key, enrollmentID, method, path, body)
+	return got.status, got.body
+}
+
+// session is Session's answer, carrying the proof it signed for a failure naming the body to
+// redact (answered.text).
+func (c *Client) session(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, method, path string, body any) answered {
+	t.Helper()
 	p, err := proof.Sign(key, enrollmentID, method, c.PublicURL+path, time.Now())
 	if err != nil {
 		t.Fatalf("proof.Sign: %v", err)
 	}
-	return c.Req(t, method, path, map[string]string{"Proof": p}, body)
+	status, answer := c.Req(t, method, path, map[string]string{"Proof": p}, body)
+	return answered{status: status, body: answer, carried: []string{p}}
 }
 
 // Launcher is Req carrying a launcher proof: the machine key that holds launcherID signing for it,
 // which is how a launcher credential authenticates an enrollment.
 func (c *Client) Launcher(t *testing.T, key *ecdsa.PrivateKey, launcherID, method, path string, body any) (int, []byte) {
 	t.Helper()
+	got := c.launcher(t, key, launcherID, method, path, body)
+	return got.status, got.body
+}
+
+// launcher is Launcher's answer, carrying the proof it signed as session's does.
+func (c *Client) launcher(t *testing.T, key *ecdsa.PrivateKey, launcherID, method, path string, body any) answered {
+	t.Helper()
 	p, err := proof.SignLauncher(key, launcherID, method, c.PublicURL+path, time.Now())
 	if err != nil {
 		t.Fatalf("proof.SignLauncher: %v", err)
 	}
-	return c.Req(t, method, path, map[string]string{"Proof": p}, body)
+	status, answer := c.Req(t, method, path, map[string]string{"Proof": p}, body)
+	return answered{status: status, body: answer, carried: []string{p}}
 }
 
 // NewSigningKey is a fresh P-256 key: what a machine, its launcher credential and each of its
@@ -200,10 +217,11 @@ func (c *Client) DeviceLogin(t *testing.T, key *ecdsa.PrivateKey, person, host s
 // ApproveMachineLogin approves the pending machine login whose confirmation code is code, as the
 // operator does on Dispatch's machine-login page — look the login up by the code the person typed,
 // then approve that record naming person as the approver — and answers the launcher credential the
-// approval minted.
+// approval minted. A failure names a body that is not the broker's own with the UI bearer and the
+// code redacted.
 func (c *Client) ApproveMachineLogin(t *testing.T, person, code string) (credentialID string) {
 	t.Helper()
-	return decideMachineLogin(t, c.UI, person, code, true, " (at "+c.Addr+")")
+	return decideMachineLogin(t, c.Req, c.UIToken, person, code, true, " (at "+c.Addr+")")
 }
 
 // DeviceToken exchanges an approved device code for the machine's token pair, over a DPoP
@@ -249,24 +267,25 @@ func (c *Client) EnrollSession(t *testing.T, machineKey *ecdsa.PrivateKey, crede
 	if err != nil {
 		t.Fatalf("thumbprint: %v", err)
 	}
-	status, body := c.Launcher(t, machineKey, credentialID, http.MethodPost, "/v1/enrollments",
+	got := c.launcher(t, machineKey, credentialID, http.MethodPost, "/v1/enrollments",
 		map[string]any{"kind": "session", "runtime_id": runtimeID, "thumbprint": thumbprint})
-	if status != http.StatusCreated {
-		t.Fatalf("enroll a session under credential %s (at %s) = %d, want 201: %s", credentialID, c.Addr, status, body)
+	if got.status != http.StatusCreated {
+		t.Fatalf("enroll a session under credential %s (at %s) = %d, want 201: %s", credentialID, c.Addr, got.status, got.text())
 	}
 	var enrolled struct {
 		EnrollmentID string `json:"enrollment_id"`
 	}
-	if err := json.Unmarshal(body, &enrolled); err != nil || enrolled.EnrollmentID == "" {
+	if err := json.Unmarshal(got.body, &enrolled); err != nil || enrolled.EnrollmentID == "" {
 		t.Fatalf("enroll a session under credential %s (at %s) answered %s (%v), want an enrollment id",
-			credentialID, c.Addr, body, err)
+			credentialID, c.Addr, got.text(), err)
 	}
 	return enrolled.EnrollmentID, sessionKey
 }
 
 // AgentSecretAnswer is what POST /v1/requests answered one session's ask for one name: the status
-// and the body itself, so a failure message names what the broker actually said, and the fields a
-// row reads the policy's own verdict from.
+// and the body itself, and the fields a row reads the policy's own verdict from. A failure message
+// names the body as text does, so what the broker said is named and a page something else wrote
+// in its place prints no credential the request carried.
 type AgentSecretAnswer struct {
 	// Status and Body are the HTTP answer exactly as it came back.
 	Status int
@@ -277,7 +296,12 @@ type AgentSecretAnswer struct {
 	State    string
 	GrantID  *string
 	Approver *string
+	// carried is every credential the request carried: its session proof and its signed request.
+	carried []string
 }
+
+// text is the answer's body as a failure names it (answerText).
+func (a AgentSecretAnswer) text() string { return answerText([]byte(a.Body), a.carried...) }
 
 // AskForAgentSecret opens an agent_secret request for one name from the session, signed by its own
 // key, and answers what the broker said without asserting any of it.
@@ -295,10 +319,10 @@ func (c *Client) AskForAgentSecret(t *testing.T, key *ecdsa.PrivateKey, enrollme
 	if err != nil {
 		t.Fatalf("sign the request for %s: %v", name, err)
 	}
-	status, body := c.Session(t, key, enrollmentID, http.MethodPost, "/v1/requests",
+	got := c.session(t, key, enrollmentID, http.MethodPost, "/v1/requests",
 		map[string]any{"request": request, "session_id": nil})
-	answer := AgentSecretAnswer{Status: status, Body: string(body)}
-	if status != http.StatusOK {
+	answer := AgentSecretAnswer{Status: got.status, Body: string(got.body), carried: append(got.carried, request)}
+	if got.status != http.StatusOK {
 		return answer
 	}
 	var created struct {
@@ -306,9 +330,9 @@ func (c *Client) AskForAgentSecret(t *testing.T, key *ecdsa.PrivateKey, enrollme
 		GrantID  *string `json:"grant_id"`
 		Approver *string `json:"approver"`
 	}
-	if err := json.Unmarshal(body, &created); err != nil || created.State == "" {
+	if err := json.Unmarshal(got.body, &created); err != nil || created.State == "" {
 		t.Fatalf("POST /v1/requests (%s, at %s) answered %s (%v), want the state the policy decided it in",
-			name, c.Addr, body, err)
+			name, c.Addr, answer.text(), err)
 	}
 	answer.State, answer.GrantID, answer.Approver = created.State, created.GrantID, created.Approver
 	return answer
@@ -324,7 +348,7 @@ func (c *Client) RequestAgentSecret(t *testing.T, key *ecdsa.PrivateKey, enrollm
 	answer := c.AskForAgentSecret(t, key, enrollmentID, reason, name)
 	if answer.Status != http.StatusOK || answer.State != "granted" || answer.GrantID == nil || *answer.GrantID == "" {
 		t.Fatalf("POST /v1/requests (%s, at %s) = %d %s, want 200 with state granted and a grant id",
-			name, c.Addr, answer.Status, answer.Body)
+			name, c.Addr, answer.Status, answer.text())
 	}
 	return *answer.GrantID
 }
@@ -332,15 +356,15 @@ func (c *Client) RequestAgentSecret(t *testing.T, key *ecdsa.PrivateKey, enrollm
 // GrantValues reads the values the grant releases to the session that holds it.
 func (c *Client) GrantValues(t *testing.T, key *ecdsa.PrivateKey, enrollmentID, grantID string) map[string]string {
 	t.Helper()
-	status, body := c.Session(t, key, enrollmentID, http.MethodPost, "/v1/grants/"+grantID+"/values", nil)
-	if status != http.StatusOK {
-		t.Fatalf("POST /v1/grants/%s/values (at %s) = %d, want 200: %s", grantID, c.Addr, status, body)
+	got := c.session(t, key, enrollmentID, http.MethodPost, "/v1/grants/"+grantID+"/values", nil)
+	if got.status != http.StatusOK {
+		t.Fatalf("POST /v1/grants/%s/values (at %s) = %d, want 200: %s", grantID, c.Addr, got.status, got.text())
 	}
 	var released struct {
 		Values map[string]string `json:"values"`
 	}
-	if err := json.Unmarshal(body, &released); err != nil {
-		t.Fatalf("POST /v1/grants/%s/values (at %s) answered %s (%v), want the grant's values", grantID, c.Addr, body, err)
+	if err := json.Unmarshal(got.body, &released); err != nil {
+		t.Fatalf("POST /v1/grants/%s/values (at %s) answered %s (%v), want the grant's values", grantID, c.Addr, got.text(), err)
 	}
 	return released.Values
 }

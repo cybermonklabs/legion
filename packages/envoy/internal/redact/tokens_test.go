@@ -98,7 +98,8 @@ func TestTokensIsBoundedForAHostileTextOrToken(t *testing.T) {
 // Basic pair's password as sent and unescaped, a DPoP proof whole, a password in the URL, and the
 // credential fields of its query and its form, the form read again through GetBody.
 func TestRequestTokensReadsEveryCredentialARequestCarries(t *testing.T) {
-	form := url.Values{"client_secret": {"form-secret-RDX-1a2b"}, "refresh_token": {"form-refresh-RDX-3c4d"}, "scope": {"openid"}}
+	form := url.Values{"client_secret": {"form-secret-RDX-1a2b"}, "refresh_token": {"form-refresh-RDX-3c4d"},
+		"request": {"form-request-RDX-6e7f"}, "scope": {"openid"}}
 	request, err := http.NewRequest(http.MethodPost, "http://127.0.0.1:1/token?code=query-code-RDX-5e6f", strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +109,8 @@ func TestRequestTokensReadsEveryCredentialARequestCarries(t *testing.T) {
 	request.SetBasicAuth("client", url.QueryEscape("basic secret/RDX"))
 	request.Header.Set("DPoP", "proof-RDX-9c0d")
 	got := strings.Join(requestTokens(request), "\n")
-	for _, want := range []string{"basic+secret%2FRDX", "basic secret/RDX", "proof-RDX-9c0d", "url-secret-RDX-7a8b", "query-code-RDX-5e6f", "form-secret-RDX-1a2b", "form-refresh-RDX-3c4d"} {
+	for _, want := range []string{"basic+secret%2FRDX", "basic secret/RDX", "proof-RDX-9c0d", "url-secret-RDX-7a8b", "query-code-RDX-5e6f",
+		"form-secret-RDX-1a2b", "form-refresh-RDX-3c4d", "form-request-RDX-6e7f"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("requestTokens holds no %q: %q", want, got)
 		}

@@ -120,10 +120,12 @@ func characterOffset(s string, n int) int {
 var credentialHeaders = []string{"Authorization", "Proxy-Authorization", "DPoP"}
 
 // credentialFields are the form and query fields a token request carries a credential in (RFC
-// 6749, 7009, 7523, 7636, 8628 and 8693, and Google's token exchange).
+// 6749, 7009, 7523, 7636, 8628 and 8693, and Google's token exchange), and the signed request
+// object a device authorization carries (RFC 9101's `request`, which the broker's machine login
+// takes as its proof of the machine's key).
 var credentialFields = []string{
 	"access_token", "actor_token", "assertion", "client_assertion", "client_secret", "code",
-	"code_verifier", "device_code", "password", "refresh_token", "subject_token", "token",
+	"code_verifier", "device_code", "password", "refresh_token", "request", "subject_token", "token",
 }
 
 // requestTokens is each credential r carries, for Tokens: the value of each of credentialHeaders
