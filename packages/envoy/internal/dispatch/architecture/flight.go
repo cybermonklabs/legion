@@ -129,38 +129,31 @@ func (i *Importer) flight(ctx context.Context, project, repo string) (*syncFligh
 	defer cancel()
 	// Each try runs in a held scope (githubreads.Hold) of the attempt syncCtx carries when a
 	// leased import started the flight, since syncCtx keeps the starter's values: a try another
-	// write superseded is asked again, so only the try the flight ends with counts. syncOnce
+	// write superseded is asked again, so only the last try that reached GitHub counts. syncOnce
 	// notes on try alone: base, its parent, is only where it records a failure on the source's
 	// row once try has ended.
 	//
-	// A superseded try's notes are dropped only once a later try has reached GitHub
-	// (githubreads.Held.Reached), since only that try's outcome replaces them: a retry can end
-	// before it asks GitHub anything, at its load on the flight's spent deadline or on a database
-	// error, and a flight that ended so with the superseded try's failure dropped would record
-	// a GitHub read that failed as one that succeeded. superseded is the scope of the newest
-	// superseded try that reached GitHub, unsettled: the next try that reaches GitHub drops it,
-	// and the flight's end keeps it when the final try did not, before that try's own so its
-	// cause comes first.
-	var superseded *githubreads.Held
+	// standing is the scope of the newest try that reached GitHub (githubreads.Held.Reached),
+	// unsettled: a later try that reaches GitHub drops it, since only that try's outcome replaces
+	// its notes, and the flight's end keeps it. A try that reached nothing holds nothing, and is
+	// dropped at once: a retry can end before it asks GitHub anything, at its load on the
+	// flight's spent deadline or on a database error, and a flight that ended so with the
+	// superseded try's failure dropped would record a GitHub read that failed as one that
+	// succeeded.
+	var standing *githubreads.Held
 	for {
 		try, held := githubreads.Hold(syncCtx)
 		source, err := i.syncOnce(try, base, project, repo, flight)
-		reached := held.Reached()
-		if reached {
-			superseded.Drop()
-			superseded = nil
+		if held.Reached() {
+			standing.Drop()
+			standing = held
+		} else {
+			held.Drop()
 		}
 		if errors.Is(err, errSuperseded) {
-			if reached {
-				superseded = held
-			} else {
-				// A try that reached nothing holds nothing, so the newest that did stays held.
-				held.Drop()
-			}
 			continue
 		}
-		superseded.Keep()
-		held.Keep()
+		standing.Keep()
 		flight.source = source
 		return flight, err
 	}

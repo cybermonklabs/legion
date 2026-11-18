@@ -427,7 +427,7 @@ These answers are not failures. The loop takes each one as data and goes on, so 
   changed the source first, once the import syncs the source again and that sync reaches GitHub:
   it sends a request, or meets a failure such as a rate limit already recorded. When the import
   stops before a later sync reaches GitHub, because the time for the sync ran out or the database
-  failed, the first sync's failure counts.
+  failed, the failure of the last sync that reached GitHub counts.
 
 The GitHub client counts no other 403, and no 404, 409 or 422, because the same answer is data at
 one point and a failure at another. It does not count a request that was cut off because its

@@ -2,13 +2,20 @@ package cireconcile
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"slices"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // The GraphQL half of the GitHub stand-in: it answers the pass's one query (headsQuery) out of
@@ -614,5 +621,37 @@ func (f *fakeGitHub) answerQueryWith(repository, body string) {
 			}
 			f.cursorsGiven[cursor] = at
 		}
+	}
+}
+
+// A query GitHub answers with a status other than 200 is an error that words the answer as the
+// client's own errors do (githubapp.StatusText): the status and GitHub's body, and the status
+// alone, with no `: ` after it, when GitHub answered no body.
+func TestAQueryGitHubAnsweredWithNoBodyEndsItsErrorAtTheStatus(t *testing.T) {
+	for _, answer := range []string{"", `{"message":"Server Error"}`} {
+		name := "no body"
+		if answer != "" {
+			name = "GitHub's body"
+		}
+		t.Run(name, func(t *testing.T) {
+			base := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusBadGateway)
+				fmt.Fprint(w, answer)
+			}})
+			_, pemText := githubapptest.Key(t)
+			client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: pemText}, base)
+			if err != nil {
+				t.Fatalf("new client: %v", err)
+			}
+			reconciler := &Reconciler{GitHub: client}
+			_, err = reconciler.query(context.Background(), reconciled{owner: "acme", repo: "web", token: "ghs_test"}, "", &counts{})
+			want := "the GraphQL query for acme/web answered status 502"
+			if answer != "" {
+				want += ": " + answer
+			}
+			if err == nil || err.Error() != want {
+				t.Fatalf("the query GitHub answered 502 gave %v, want %q", err, want)
+			}
+		})
 	}
 }

@@ -543,6 +543,152 @@ func TestSendNotesTheAnswersNoCallerTakesAsData(t *testing.T) {
 	}
 }
 
+// Each error the client gives for an answer it takes as a failure words that answer with
+// StatusText, `status <n>: <body>`, and ends at `status <n>` when GitHub answered no body: a loop
+// notes such an error as it is, and GET /healthz serves the note as the read's cause, which must
+// not end at a `: ` that nothing follows. A limit GitHub answered with no body ends at its wait
+// the same way (RateLimitError). Each row is one call that words such an answer, asked once with
+// no body and once with GitHub's.
+func TestAnErrorOfAnAnswerWithNoBodyEndsAtItsStatus(t *testing.T) {
+	const refusal = `{"message":"refused"}`
+	rows := []struct {
+		name string
+		// refuse is the request GitHub answers with status, "<METHOD> <path>"; the installation
+		// lookup and the token mint a call makes before it are answered as GitHub answers them.
+		refuse string
+		status int
+		call   func(ctx context.Context, client *Client) error
+		// want is the error's text when GitHub answered no body, {base} standing for the API
+		// origin; with a body it is that text, `: ` and the body.
+		want string
+	}{{
+		name:   "an installation lookup",
+		refuse: "GET /repos/acme/web/installation",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Installation(ctx, "acme", "web")
+			return err
+		},
+		want: "GET {base}/repos/acme/web/installation: status 500",
+	}, {
+		name:   "a token mint",
+		refuse: "POST /app/installations/7/access_tokens",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Token(ctx, 7)
+			return err
+		},
+		want: "POST {base}/app/installations/7/access_tokens: status 500",
+	}, {
+		name:   "the repository read of a source's check",
+		refuse: "GET /repos/acme/web",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.CheckSource(ctx, "acme", "web")
+			return err
+		},
+		want: "GET {base}/repos/acme/web: status 500",
+	}, {
+		name:   "a branch's head commit",
+		refuse: "GET /repos/acme/web/commits/main",
+		status: http.StatusConflict,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Ref(ctx, "ghs_test", "acme", "web", "main")
+			return err
+		},
+		want: "GET {base}/repos/acme/web/commits/main: status 409",
+	}, {
+		name:   "a branch's exact ref",
+		refuse: "GET /repos/acme/web/git/ref/heads/main",
+		status: http.StatusBadGateway,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Branch(ctx, "ghs_test", "acme", "web", "main")
+			return err
+		},
+		want: "GET {base}/repos/acme/web/git/ref/heads/main: status 502",
+	}, {
+		name:   "a directory's listing",
+		refuse: "GET /repos/acme/web/git/trees/c0ffee:docs",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Dir(ctx, "ghs_test", "acme", "web", "c0ffee", "docs")
+			return err
+		},
+		want: "GET {base}/repos/acme/web/git/trees/c0ffee:docs: status 500",
+	}, {
+		name:   "a file's blob",
+		refuse: "GET /repos/acme/web/git/blobs/b1",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.DirFiles(ctx, "ghs_test", "acme", "web", Dir{SHA: "t1", Files: []DirFile{{Name: "a.md", Path: "docs/a.md", SHA: "b1", Size: 1}}})
+			return err
+		},
+		want: "GET {base}/repos/acme/web/git/blobs/b1 (docs/a.md): status 500",
+	}, {
+		name:   "the App webhook's deliveries",
+		refuse: "GET /app/hook/deliveries",
+		status: http.StatusInternalServerError,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Deliveries(ctx, time.Now(), nil)
+			return err
+		},
+		want: "GET {base}/app/hook/deliveries?per_page=100: status 500",
+	}, {
+		name:   "a redelivery request",
+		refuse: "POST /app/hook/deliveries/5/attempts",
+		status: http.StatusUnprocessableEntity,
+		call: func(ctx context.Context, client *Client) error {
+			return client.Redeliver(ctx, 5)
+		},
+		want: "POST {base}/app/hook/deliveries/5/attempts: status 422",
+	}, {
+		name:   "a limit GitHub answered",
+		refuse: "GET /app/hook/deliveries",
+		status: http.StatusTooManyRequests,
+		call: func(ctx context.Context, client *Client) error {
+			_, err := client.Deliveries(ctx, time.Now(), nil)
+			return err
+		},
+		want: "rate-limited by GitHub (status 429), next request in 1m0s",
+	}}
+	for _, row := range rows {
+		for _, answer := range []string{"", refusal} {
+			name := row.name + " with no body"
+			if answer != "" {
+				name = row.name + " with GitHub's body"
+			}
+			t.Run(name, func(t *testing.T) {
+				base := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+					switch request := r.Method + " " + r.URL.Path; request {
+					case row.refuse:
+						w.WriteHeader(row.status)
+						fmt.Fprint(w, answer)
+					case "GET /repos/acme/web/installation":
+						fmt.Fprint(w, `{"id":7,"app_slug":"dispatch-test","permissions":{"contents":"read"}}`)
+					case "POST /app/installations/7/access_tokens":
+						w.WriteHeader(http.StatusCreated)
+						fmt.Fprintf(w, `{"token":"ghs_test","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
+					default:
+						githubtest.Unexpected(t, w, r)
+					}
+				}})
+				_, pemText := testKeyPEM(t)
+				client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
+				if err != nil {
+					t.Fatalf("new client: %v", err)
+				}
+				want := strings.ReplaceAll(row.want, "{base}", base)
+				if answer != "" {
+					want += ": " + answer
+				}
+				if err := row.call(context.Background(), client); err == nil || err.Error() != want {
+					t.Fatalf("the call GitHub answered %d answered %v, want %q", row.status, err, want)
+				}
+			})
+		}
+	}
+}
+
 // A request GitHub gave no answer to is noted, with the error the caller is given: a transport
 // error, and the client's own RequestTimeout ending while the caller's context is live. A request
 // whose caller's context ended is not noted, since the caller's end -- a pass's own bound, or the
