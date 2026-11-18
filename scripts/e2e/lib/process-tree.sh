@@ -10,8 +10,8 @@
 # (/proc/<pid>/exe).
 #
 # Sourced, never run, by lib/rig.sh, by lib/leftovers.sh when no script has sourced it yet (for
-# proc_walk_complaint), and by stage2-tmux-supervision.sh, which sources no rig. It needs nothing
-# of its caller's.
+# proc_walk_complaint), by stage2-tmux-supervision.sh, which sources no rig, and by
+# packages/dispatch/e2e/acceptance/replace-blocks.sh. It needs nothing of its caller's.
 
 # record_pid_sh is the POSIX sh a tmux pane's command runs as
 # `sh -c "$record_pid_sh" record-pid FILE COMMAND…`: it writes its own pid and its start time (stat

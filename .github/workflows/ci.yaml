@@ -2615,6 +2615,9 @@ jobs:
               - 'packages/envoy/going/testdata/**'
               # The SPA build writes dist/THIRD_PARTY_NOTICES.txt (web/vite.config.ts:11).
               - 'scripts/third-party-notices.ts'
+              # e2e/acceptance/replace-blocks.sh sources it for proc_group, and
+              # e2e/__tests__/replace-blocks-guard.test.ts, which this job runs, runs that script.
+              - 'scripts/e2e/lib/process-tree.sh'
               # The dashboard's tsc program compiles @legion/envoy-client's sources, and its e2e
               # helpers' test/fake-dispatch with them, through the workspace's "bun" export
               # condition, so check-ts-filters.sh holds this filter to both. The two suites that
