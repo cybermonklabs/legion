@@ -353,15 +353,23 @@ func ghReadEnv(slug string) []string {
 }
 
 // ghVisibility is the gh read itself, the guard's answer where a caller named no reader of its
-// own. A rate limit is a *rateLimitError, and a failure on gh's connection to GitHub, with no
-// answer from GitHub, is a *transportError (ghTransportFailure); a gh that the caller's bound
-// stopped is the *stoppedError run answers, since no bound is left for another read.
+// own. gh runs under a bound of the guard's own (ghReadContext), which leaves part of the caller's
+// bound to the read through curl. A rate limit is a *rateLimitError. A failure on gh's connection
+// to GitHub with no answer from GitHub is a *transportError: one gh reports (ghTransportFailure),
+// or a stop by the guard's own bound before GitHub sent a status line (ghStoppedByItsBound). A gh
+// that the caller's bound stopped is the *stoppedError run answers, since no bound is left for
+// another read.
 func (g *Guard) ghVisibility(ctx context.Context, slug string) (Visibility, error) {
-	status, printed, err := g.run(ctx, child{
+	bounded, cancel := ghReadContext(ctx)
+	defer cancel()
+	status, printed, err := g.run(bounded, child{
 		argv: append([]string{"gh"}, VisibilityReadWithHeadersArgs(slug)...),
 		env:  ghReadEnv(slug),
 	})
 	if err != nil {
+		if unreached := ghStoppedByItsBound(ctx, err, printed, slug); unreached != nil {
+			return "", unreached
+		}
 		return "", err
 	}
 	if limited := rateLimitFrom(printed); limited != nil {

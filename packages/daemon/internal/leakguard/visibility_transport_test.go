@@ -429,25 +429,154 @@ func TestTransportFailureWithNoCurlIsReadWithLsRemote(t *testing.T) {
 }
 
 // A gh REST read that the caller's own bound stops is no transport failure: the call is refused
-// at once, naming gh's stop, and neither curl nor git runs, since no bound is left for them.
+// at once, naming gh's stop, and neither curl nor git runs, since no bound is left for them. The
+// caller cancels, or its deadline of 2 s, which leaves less than curlReserve and so sets no bound
+// of the guard's own, comes first. Each caller's context ends only once the stand-in gh has
+// started, so it is a running gh the end stops on a loaded machine too.
 func TestTransportPathLeavesTheCallersStopAnError(t *testing.T) {
-	started := filepath.Join(t.TempDir(), "started")
-	rig := newTransportRig(t, ": > "+shQuote(started)+"\nsleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
-	ctx, cancel := context.WithCancel(bound(t))
+	for _, tc := range []struct {
+		name string
+		// caller is the caller's context, given the file the stand-in gh writes before it hangs.
+		caller func(t *testing.T, started string) context.Context
+		// stop checks what the failure says of gh's stop.
+		stop func(t *testing.T, err error)
+	}{
+		{
+			name: "the caller cancels",
+			caller: func(t *testing.T, started string) context.Context {
+				ctx, cancel := context.WithCancel(bound(t))
+				t.Cleanup(cancel)
+				whenWritten(ctx, started, cancel)
+				return ctx
+			},
+			stop: func(t *testing.T, err error) {
+				if want := "and was stopped by a cancel"; !strings.Contains(err.Error(), want) {
+					t.Errorf("the failure %q does not say %q", err, want)
+				}
+			},
+		},
+		{
+			name: "the caller's deadline comes first",
+			caller: func(t *testing.T, started string) context.Context {
+				deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				t.Cleanup(cancel)
+				ctx := &deadlineOnceStarted{Context: deadline, done: make(chan struct{})}
+				whenWritten(bound(t), started, func() {
+					<-deadline.Done()
+					close(ctx.done)
+				})
+				return ctx
+			},
+			stop: func(t *testing.T, err error) {
+				if got := stopBound(t, err); got > 2 {
+					t.Errorf("gh was stopped by a bound of %d s, want the caller's deadline of 2 s", got)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			started := filepath.Join(t.TempDir(), "started")
+			rig := newTransportRig(t, ": > "+shQuote(started)+"\nsleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+			ctx := tc.caller(t, started)
+			began := time.Now()
+			visibility, err := rig.guard.Visibility(ctx, theRepo)
+			answeredWithin10s(t, began)
+			if err == nil {
+				t.Fatalf("read %q, want the call refused", visibility)
+			}
+			var stopped *stoppedError
+			if !errors.As(err, &stopped) {
+				t.Fatalf("the failure %q is no stop of gh, want gh's stop", err)
+			}
+			tc.stop(t, err)
+			if _, _, curl, git := rig.runs(t); curl != 0 || git != 0 {
+				t.Errorf("curl ran %d times and git %d, want neither", curl, git)
+			}
+		})
+	}
+}
+
+// shorten sets *bound to d for the test, and back after it.
+func shorten(t *testing.T, bound *time.Duration, d time.Duration) {
+	t.Helper()
+	saved := *bound
+	*bound = d
+	t.Cleanup(func() { *bound = saved })
+}
+
+// A gh REST read that hangs, as gh did for about 42 s in the busy one-CPU pod, is stopped by the
+// guard's own bound, which leaves the rest of the caller's bound to curl: curl answers private
+// within the caller's bound, and gets what is left of it as its --max-time. The guard's bound is
+// ghReadBound inside a caller's 15 s (the bound `legion gh` gives the shared check's own read),
+// here shortened to 1 s; or the caller's deadline less curlReserve where that is sooner, here a
+// deadline of 6 s and a reserve of 3 s.
+func TestTransportBoundStopsAHangingGhAndCurlAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// caller is the caller's bound; ghBound and reserve are ghReadBound and curlReserve for the
+		// case; stoppedAt is when the guard's bound stops gh.
+		caller, ghBound, reserve, stoppedAt time.Duration
+	}{
+		{name: "the read's own cap", caller: 15 * time.Second, ghBound: time.Second, reserve: curlReserve, stoppedAt: time.Second},
+		{name: "the caller's deadline less the reserve", caller: 6 * time.Second, ghBound: ghReadBound, reserve: 3 * time.Second, stoppedAt: 3 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shorten(t, &ghReadBound, tc.ghBound)
+			shorten(t, &curlReserve, tc.reserve)
+			rig := newTransportRig(t, "sleep 30\n", noGraphQL, curlAnswers("private"), answersTheRefs)
+			ctx, cancel := context.WithTimeout(context.Background(), tc.caller)
+			t.Cleanup(cancel)
+			began := time.Now()
+			visibility, err := rig.guard.Visibility(ctx, theRepo)
+			if took := time.Since(began); took >= tc.caller {
+				t.Errorf("the call answered after %s, want within the caller's %s", took.Round(time.Millisecond), tc.caller)
+			}
+			if err != nil || visibility != Private {
+				t.Fatalf("read %q, %v; want curl's private", visibility, err)
+			}
+			if want := []VisibilitySource{VisibilityFromCurl}; !slices.Equal(rig.sources, want) {
+				t.Errorf("the guard reported the sources %q, want %q", rig.sources, want)
+			}
+			if rest, graphql, curl, git := rig.runs(t); rest != 1 || curl != 1 || graphql != 0 || git != 0 {
+				t.Errorf("gh's REST read ran %d times, curl %d, GraphQL %d and git %d; want 1, 1, 0 and 0", rest, curl, graphql, git)
+			}
+			calls := readCalls(t, rig.curl)
+			if len(calls) != 1 {
+				t.Fatalf("curl ran %d times, want once", len(calls))
+			}
+			_, after, _ := strings.Cut(calls[0]["argv"], "--max-time ")
+			word, _, _ := strings.Cut(after, " ")
+			maxTime, err := time.ParseDuration(word + "s")
+			if err != nil {
+				t.Fatalf("curl ran with --max-time %q: %v", word, err)
+			}
+			if left := tc.caller - tc.stoppedAt; maxTime < curlLeast || maxTime >= left {
+				t.Errorf("curl ran with --max-time %s, want at least %s and less than the %s the caller's bound has left after gh's stop",
+					maxTime, curlLeast, left)
+			}
+		})
+	}
+}
+
+// Where less than curlLeast of the caller's bound is left after gh's transport failure, the call
+// is refused as it was before the reads after gh existed, naming gh's failure, and neither curl nor
+// git runs. The caller's deadline is 1 s away, and its context does not end before the guard
+// answers, so the refusal is the guard's own and not a stop.
+func TestTransportFailureWithNoTimeLeftForCurlRefuses(t *testing.T) {
+	rig := newTransportRig(t, ghTLSTimeout, noGraphQL, curlAnswers("private"), answersTheRefs)
+	deadline, cancel := context.WithTimeout(context.Background(), time.Second)
 	t.Cleanup(cancel)
-	whenWritten(ctx, started, cancel)
-	began := time.Now()
-	visibility, err := rig.guard.Visibility(ctx, theRepo)
-	answeredWithin10s(t, began)
+	visibility, err := rig.guard.Visibility(&deadlineOnceStarted{Context: deadline, done: make(chan struct{})}, theRepo)
 	if err == nil {
 		t.Fatalf("read %q, want the call refused", visibility)
 	}
-	var stopped *stoppedError
-	if !errors.As(err, &stopped) {
-		t.Errorf("the failure %q is no stop of gh, want gh's stop", err)
+	for _, want := range []string{"gh could not reach GitHub", "TLS handshake timeout", "too little of the caller's bound is left for the read through curl"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the failure %q does not say %q", err, want)
+		}
 	}
-	if _, _, curl, git := rig.runs(t); curl != 0 || git != 0 {
-		t.Errorf("curl ran %d times and git %d, want neither", curl, git)
+	if _, graphql, curl, git := rig.runs(t); curl != 0 || graphql != 0 || git != 0 {
+		t.Errorf("curl ran %d times, GraphQL %d and git %d, want none", curl, graphql, git)
 	}
 }
 

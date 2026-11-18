@@ -98,9 +98,63 @@ func ghTransportFailure(status int, printed, slug string) *transportError {
 	return nil
 }
 
+// ghReadBound is the longest the guard lets gh's REST read run (Guard.ghVisibility, through
+// ghReadContext). A healthy read takes about a second: five reads of a repository's visibility by
+// the real gh took 0.72 to 0.88 s on 2026-11-18. A gh whose TLS handshake cannot finish takes far
+// longer to fail: about 42 s in the busy one-CPU pod, which is longer than the whole bound some
+// callers give a read (`legion gh` gives the shared check's own read 15 s). Stopping gh sooner leaves
+// the rest of the caller's bound to curl. It is a variable so that a test can shorten it.
+var ghReadBound = 8 * time.Second
+
+// curlReserve is how much of a caller's bound the guard keeps for the curl read when it bounds gh's
+// REST read (ghReadContext): 5 s. In the pod where gh could not finish a handshake, curl answered
+// GitHub in under a second. It is a variable so that a test can shorten it.
+var curlReserve = 5 * time.Second
+
+// ghReadContext is the context gh's REST read runs under: ctx bounded at ghReadBound, or, where ctx
+// has a deadline, at that deadline less curlReserve if that is sooner. Where ctx's deadline leaves
+// curlReserve or less, gh runs under ctx alone, as it did before this bound: what time there is is
+// the caller's, and a stop is the caller's.
+func ghReadContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	bound := ghReadBound
+	if deadline, ok := ctx.Deadline(); ok {
+		left := time.Until(deadline) - curlReserve
+		if left <= 0 {
+			return ctx, func() {}
+		}
+		bound = min(bound, left)
+	}
+	return context.WithTimeout(ctx, bound)
+}
+
+// ghStoppedByItsBound is the transport failure of a gh REST read of slug that the guard's own bound
+// (ghReadContext) stopped: err is run's error, printed what gh printed before the stop, and ctx the
+// caller's context. It is one only where the stop was a deadline and the caller's ctx has not
+// ended, so the deadline was the guard's own, and where gh printed no status line, so GitHub sent
+// no response. Anything else is nil: a stop by the caller's deadline or by its cancel stays the
+// error it is, since no bound is left for another read.
+func ghStoppedByItsBound(ctx context.Context, err error, printed, slug string) *transportError {
+	var stopped *stoppedError
+	if !errors.As(err, &stopped) || stopped.cancelled || ctx.Err() != nil {
+		return nil
+	}
+	if httpStatus, _ := responseHeaders(printed); httpStatus != 0 {
+		return nil
+	}
+	said := stopped.Error()
+	if line := strings.TrimSpace(printed); line != "" {
+		said += ": " + line
+	}
+	return &transportError{program: "gh", said: strings.ReplaceAll(said, slug, maskPath(slug))}
+}
+
 // errNoCurlRead is a curl read that the guard could not make: no curl on PATH, or no token for it
 // (Guard.curlVisibility).
 var errNoCurlRead = errors.New("the read through curl could not be made")
+
+// errNoTimeForCurl is a curl read that the guard did not make because less than curlLeast of the
+// caller's bound was left for it (curlTime).
+var errNoTimeForCurl = errors.New("too little of the caller's bound is left for the read through curl")
 
 // readWithoutGh reads slug's visibility after gh's REST read failed on its connection to GitHub
 // with no answer from GitHub (unreached, ghTransportFailure). It does not make the GraphQL read,
@@ -112,7 +166,8 @@ var errNoCurlRead = errors.New("the read through curl could not be made")
 // cannot be made, or where curl fails on its connection too, the visibility is read with git's
 // ls-remote and no credential (Guard.lsRemote), which answers public and nothing else. Every other
 // outcome refuses the call, naming gh's failure and what each read said. A read that the caller's
-// bound stops refuses the call too, because no bound is left for another read.
+// bound stops refuses the call too, because no bound is left for another read, and so does too
+// little time left for curl (errNoTimeForCurl), which leaves none for ls-remote either.
 func (g *Guard) readWithoutGh(ctx context.Context, slug string, unreached *transportError) (Visibility, VisibilitySource, error) {
 	visibility, err := g.curlVisibility(ctx, slug)
 	var limited *rateLimitError
@@ -126,6 +181,8 @@ func (g *Guard) readWithoutGh(ctx context.Context, slug string, unreached *trans
 			return "", "", fmt.Errorf("%w; the read through curl: %w", unreached, err)
 		}
 		return visibility, source, nil
+	case errors.Is(err, errNoTimeForCurl):
+		return "", "", fmt.Errorf("%w, and %w", unreached, err)
 	case !errors.As(err, &curlUnreached) && !errors.Is(err, errNoCurlRead):
 		return "", "", fmt.Errorf("%w, and curl could not answer: %w", unreached, err)
 	}
@@ -142,6 +199,25 @@ func (g *Guard) readWithoutGh(ctx context.Context, slug string, unreached *trans
 // ls-remote.
 const curlBound = 20 * time.Second
 
+// curlMargin is how much sooner than its read's deadline curl's --max-time ends, so that curl
+// stops itself and says why before the deadline kills it.
+const curlMargin = 500 * time.Millisecond
+
+// curlLeast is the least time the curl read is made with. With less left there is no time for
+// curl or for ls-remote after it, and the call is refused as it was before these reads existed.
+const curlLeast = time.Second
+
+// curlTime is the --max-time of a curl read made under ctx: the time left before ctx's deadline,
+// less curlMargin, and whether that is at least curlLeast.
+func curlTime(ctx context.Context) (time.Duration, bool) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return curlBound - curlMargin, true
+	}
+	left := time.Until(deadline) - curlMargin
+	return left, left >= curlLeast
+}
+
 // curlVisibility is gh's REST read of slug made through curl, whose TLS is OpenSSL's: the same
 // request (GET /repos/<slug> at gitHubAPI) with the same token (Guard.ghToken), read by
 // curlAnswer. The token goes to curl on its standard input, as the `Authorization` header that
@@ -155,19 +231,23 @@ const curlBound = 20 * time.Second
 //     gh's, and `--suppress-connect-headers` leaves out a proxy's answer to CONNECT, which would
 //     otherwise come first;
 //   - `--proto =https` allows no other protocol, and no redirect is followed;
-//   - `--max-time` is the time left before the read's bound: curlBound, or the caller's own
-//     deadline where that is sooner.
+//   - `--max-time` is the time left before the read's bound, curlBound or the caller's own
+//     deadline where that is sooner, less curlMargin (curlTime).
 //
-// No curl on PATH, and no token, are errNoCurlRead. A curl that its own bound stops is a
+// Less than curlLeast left, before the token read or after it, is errNoTimeForCurl, and no curl
+// runs. No curl on PATH, and no token, are errNoCurlRead. A curl that its own bound stops is a
 // *transportError. A curl or a token read that the caller's bound stops is the *stoppedError run
 // answers.
 func (g *Guard) curlVisibility(ctx context.Context, slug string) (Visibility, error) {
+	bounded, cancel := context.WithTimeout(ctx, curlBound)
+	defer cancel()
+	if _, ok := curlTime(bounded); !ok {
+		return "", errNoTimeForCurl
+	}
 	curl, ok := lookpath.On(value(g.base(), "PATH"), "curl")
 	if !ok {
 		return "", fmt.Errorf("%w: curl is not on PATH", errNoCurlRead)
 	}
-	bounded, cancel := context.WithTimeout(ctx, curlBound)
-	defer cancel()
 	token, err := g.ghToken(bounded, slug)
 	switch {
 	case err != nil && ctx.Err() != nil:
@@ -175,12 +255,14 @@ func (g *Guard) curlVisibility(ctx context.Context, slug string) (Visibility, er
 	case err != nil:
 		return "", fmt.Errorf("%w: %w", errNoCurlRead, err)
 	}
-	deadline, _ := bounded.Deadline()
-	maxTime := max(1, int(time.Until(deadline)/time.Second))
+	maxTime, ok := curlTime(bounded)
+	if !ok {
+		return "", errNoTimeForCurl
+	}
 	var stderr bytes.Buffer
 	status, printed, err := g.run(bounded, child{
 		argv: []string{curl, "-q", "--no-netrc", "--silent", "--show-error", "--include", "--suppress-connect-headers",
-			"--proto", "=https", "--max-time", strconv.Itoa(maxTime),
+			"--proto", "=https", "--max-time", strconv.FormatFloat(maxTime.Seconds(), 'f', 1, 64),
 			"--header", "@-", "--header", "Accept: application/vnd.github+json", "--header", "X-GitHub-Api-Version: 2022-11-28",
 			gitHubAPI + "/repos/" + slug},
 		inherit: curlInherits,
