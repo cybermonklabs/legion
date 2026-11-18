@@ -785,6 +785,51 @@ edits for every run, which is what A9 measures: run it after the statement timin
 before anything reads a row count again. `--requests`, `--body-bytes`, `--artifact` and
 `--large-artifact` are the knobs; `--help` lists them.
 
+## coverage-scale.sh
+
+Measures the search coverage statement (`coverageQuery`, the head) against the statement it replaced (`mainCoverageQuery`, the base) at production's size and twice it,
+and states the corpus size at which the head would reach its 10 s bound.
+It runs `TestCoverageStatementScale` (`internal/dispatch/embedqueue`), which builds a synthetic corpus in a database of its own at each scale:
+`testdata/coverage_corpus.sql`, production's counts and proportions of 2026-11-17 times the scale
+(11,151 issues, 216,414 document versions and 984,012 window rows at scale 1),
+with texts cut from this repository's `docs/` and `skills/` and each issue's spec of a size sampled from real specs.
+On each corpus it checks that the two statements answer the same rows in one snapshot,
+times both on one connection, one warm-up and then five alternating runs each under `EXPLAIN (ANALYZE, BUFFERS)`,
+and drops the database before the next scale.
+
+It runs as a Job in the cluster's `builds` namespace, never in an issue pod.
+It starts a Postgres of its own on 127.0.0.1:5433 with `legion-testpg ensure`, where an issue pod's own test server already listens,
+and a corpus of production's size is more disk than an issue pod may use;
+the script refuses to start where a server already answers on that port.
+It needs the worker image, which carries Go, the PostgreSQL 18 server with pgvector and `legion-testpg`,
+and a scratch disk of about 10 GB for scales 1 and 2:
+one scale's database at a time, the write-ahead log, the Go caches and the clone.
+The Job runs it from `packages/envoy` of a clone:
+
+```bash
+cd packages/envoy && COVERAGE_SCALE_SCRATCH=/scratch scripts/coverage-scale.sh
+```
+
+`COVERAGE_SCALE_SCRATCH` (default `/scratch`) names the scratch disk.
+The server's data directory (`LEGION_TESTPG_DIR`), `GOCACHE`, `GOTMPDIR`, `GOMODCACHE` and the test's log, `coverage-scale.log`, go under it.
+`DISPATCH_COVERAGE_SCALES` (default `1 2`) lists the scales, space-separated, and reaches the test as it is.
+The script sets `LEGION_TEST_PG_DSN`, `DISPATCH_TEST_DATABASE_URL` and `DISPATCH_COVERAGE_SCALE_URL` itself,
+all three to `postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable`.
+
+It prints the server's version and the settings the times depend on
+(`shared_buffers`, `work_mem`, `maintenance_work_mem`, `jit`, `max_parallel_workers_per_gather`, `effective_cache_size`),
+then the test's output: for each scale the corpus's counts, the head's report kind by kind, the items, the database's size,
+each statement's median and every run, and one plan of each.
+Read the result from the line that starts `coverage-scale:`, which the script prints again as its last line.
+It names the four medians (head and base at the two smallest scales),
+the item count at which the head would reach 10 s by a linear fit and by a power law `t = a × s^k` through those two points,
+the smaller of the two as a multiple of the 1 × corpus's items,
+and the negative control: whether the base's median at scale 1 is above 10 s.
+`pass` means the multiple is at least 4.
+`FAIL` means it is below 4, or that the head's time did not grow between the two scales, so no fit is defined.
+The script exits with the test's own status, and with 1 when the test printed no `coverage-scale:` line.
+CI never runs it: the test skips while `DISPATCH_COVERAGE_SCALE_URL` is unset.
+
 ## going-smoke.sh
 
 Proves, on a booted server, that the real `envoy-dispatch` binary answers a question over HTTP and
