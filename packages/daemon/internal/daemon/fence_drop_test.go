@@ -105,8 +105,9 @@ func TestADroppedHandOverFenceEndsTheMergeItHeldOpen(t *testing.T) {
 // A re-admission cancels a hand-over's fence, and the hand-over row's check drops it
 // (handOverHolds). The drop matches the tree and the linger generation, not the cancel, so a fact
 // that put the fence again for the same linger between the check's read and its drop would lose
-// the fence it put. The read and the drop are one transaction under the lock every fact applies
-// under, so such a fact waits for the drop and its fence stands after it, not cancelled.
+// the fence it put. The read takes no fact lock, so here such a fact commits right after it; the
+// drop reads the fence again under the lock every fact applies under and deletes it only while it
+// is still cancelled, so the fence the fact put stands after the drop, not cancelled.
 func TestAFenceAFactPutsAgainOutlivesTheDropOfTheCancelledOne(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
