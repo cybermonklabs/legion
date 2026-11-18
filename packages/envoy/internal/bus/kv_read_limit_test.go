@@ -259,3 +259,27 @@ func TestAServerThatAnswersEveryReadLateKeepsALimitAboveItsDelay(t *testing.T) {
 		t.Fatalf("the wait answered after %s, before its first answered read could have found no leader: this row holds nothing", took.Round(time.Millisecond))
 	}
 }
+
+// The steps of one start share one run of reads (withReadLimit), so a delay the first step's reads
+// measured holds for the next step's first read: here a server answers every read 3 s late, a read
+// sent again until it is answered (readAgain) learns the delay over three cut reads, and the leader
+// wait after it (awaitStreamLeader) waits for its first read at three times that delay and finds the
+// leader in one read, inside a 13 s wait. A step that learnt the delay again would cut three more
+// reads and answer at about 15 s, after the wait ended.
+func TestTheStepsOfOneStartShareOneRunOfReads(t *testing.T) {
+	reads := &slowReads{delay: 3 * time.Second}
+	ctx, cancel := context.WithTimeout(withReadLimit(t.Context()), 13*time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, err := readAgain(ctx, "KV_envoy_shared_run_test STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) {
+		return reads.StreamInfo("KV_envoy_shared_run_test")
+	}); err != nil {
+		t.Fatalf("the first step's read = %v after %s, want it answered", err, time.Since(start).Round(time.Millisecond))
+	}
+	if err := awaitStreamLeader(ctx, reads, "open", "KV_envoy_shared_run_test"); err != nil {
+		t.Fatalf("the leader wait after it = %v after %s, want the leader in one read: the steps share the run of reads", err, time.Since(start).Round(time.Millisecond))
+	}
+	if readLimitOf(ctx) != readLimitOf(ctx) {
+		t.Fatal("two reads of one context's run of reads found two runs")
+	}
+}

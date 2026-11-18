@@ -287,6 +287,9 @@ func EnsureKeyValue(ctx context.Context, conn *nats.Conn, js nats.JetStreamConte
 func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	ctx, cancel := hangGuard(ctx, guard)
 	defer cancel()
+	// One run of reads for every read of this open, so a delay one step measured holds for the
+	// next (withReadLimit).
+	ctx = withReadLimit(ctx)
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"
 	create := stream + " create"
@@ -299,9 +302,8 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 	// to name it. The name wraps the server's answer with %w (namedRequest), so awaitBucketApplied
 	// still reads the member's "bucket not found" through it (bucketMissing) and the switch below
 	// still reads nats.ErrBucketNotFound.
-	lookupLimits := newReadLimit(ctx)
 	lookUpBucket := func() (nats.KeyValue, error) {
-		kv, err := readAgain(ctx, lookup, lookupLimits, func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
+		kv, err := readAgain(ctx, lookup, readLimitOf(ctx), func() (nats.KeyValue, error) { return js.KeyValue(config.Bucket) })
 		return kv, namedRequest(lookup, err)
 	}
 	kv, err := lookUpBucket()
@@ -363,7 +365,7 @@ func ensureKeyValue(ctx context.Context, guard time.Duration, conn *nats.Conn, j
 			step = "raise"
 		}
 		var info *nats.StreamInfo
-		info, err = readAgain(ctx, lookup, lookupLimits, func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+		info, err = readAgain(ctx, lookup, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 		if err != nil {
 			err = fmt.Errorf("%s %s: %w", step, stream, namedRequest(lookup, err))
 			break
@@ -522,7 +524,7 @@ func awaitStreamLeader(ctx context.Context, js nats.JetStreamContext, step, stre
 // it cost more, and a server that answers every read late is not cut and read again.
 func awaitStream(ctx context.Context, js nats.JetStreamContext, step, stream, want, waiting string, short func(*nats.StreamInfo) string) error {
 	behind := "no read of the stream answered yet"
-	limits := newReadLimit(ctx)
+	limits := readLimitOf(ctx)
 	for attempt := 1; ; attempt++ {
 		wait := limits.limit
 		readCtx, cancelRead := context.WithTimeout(ctx, wait)
@@ -613,10 +615,11 @@ func SetKeyValueMaxAge(ctx context.Context, conn *nats.Conn, js nats.JetStreamCo
 	}
 	ctx, cancel := hangGuard(ctx, startHangGuard)
 	defer cancel()
+	ctx = withReadLimit(ctx)
 	js = readsRefusals(conn, js)
 	stream := "KV_" + bucket
 	read := stream + " STREAM.INFO"
-	info, err := readAgain(ctx, read, newReadLimit(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
+	info, err := readAgain(ctx, read, readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(stream) })
 	if err != nil {
 		return 0, fmt.Errorf("set %s max age: %w", stream, namedRequest(read, err))
 	}
@@ -713,8 +716,7 @@ func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, create
 	}
 	if sendAgain {
 		send := open
-		openLimits := newReadLimit(ctx)
-		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, request, openLimits, send) }
+		open = func() (jetstream.KeyValue, error) { return readAgain(ctx, request, readLimitOf(ctx), send) }
 	}
 	var watch jetstream.KeyValue
 	if created {

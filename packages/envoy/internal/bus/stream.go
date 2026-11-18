@@ -861,10 +861,10 @@ func (r streamReconciliation) log() {
 func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool) ([]string, error) {
 	ctx, cancel := hangGuard(ctx, startHangGuard)
 	defer cancel()
+	ctx = withReadLimit(ctx)
 	read, create := Stream+" STREAM.INFO", Stream+" STREAM.CREATE"
 	readStream := func() (*nats.StreamInfo, error) { return js.StreamInfo(Stream) }
-	readLimits := newReadLimit(ctx)
-	info, err := readAgain(ctx, read, readLimits, readStream)
+	info, err := readAgain(ctx, read, readLimitOf(ctx), readStream)
 	if errors.Is(err, nats.ErrStreamNotFound) {
 		created := *cfg
 		created.Metadata = stampGeneration(cfg.Metadata)
@@ -891,7 +891,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
 			return nil, refusedSettings(err, nil, &created)
 		}
-		info, err = readAgain(ctx, read, readLimits, readStream)
+		info, err = readAgain(ctx, read, readLimitOf(ctx), readStream)
 	}
 	if unanswered(err) || ctx.Err() != nil {
 		return nil, namedRequest(read, err)
@@ -1095,9 +1095,8 @@ func keptSubjects(deployed, own []string) []string {
 // sent while the stream's group elects a leader can draw no answer, and a read sent then can be
 // lost too, so a read sent once could leave a raise that landed reported as one that failed.
 func updateStream(ctx context.Context, js nats.JetStreamContext, update *nats.StreamConfig, holds func(*nats.StreamInfo) bool) error {
-	readLimits := newReadLimit(ctx)
 	settled := func() bool {
-		again, err := readAgain(ctx, update.Name+" STREAM.INFO", readLimits, func() (*nats.StreamInfo, error) { return js.StreamInfo(update.Name) })
+		again, err := readAgain(ctx, update.Name+" STREAM.INFO", readLimitOf(ctx), func() (*nats.StreamInfo, error) { return js.StreamInfo(update.Name) })
 		return err == nil && holds(again)
 	}
 	var err error
@@ -1274,17 +1273,32 @@ func firstReadLimitOf(ctx context.Context) time.Duration {
 	return firstReadLimit
 }
 
-// readLimit is the limit of the next read of one stream's state in a run of reads of it: the reads
-// of one wait (awaitStream), or the sends of one request sent again (readAgain) and the calls of a
-// step that reads again until a member has applied a create (awaitBucketApplied over readAgain),
-// which share one readLimit so that the next call starts where the last one left off.
+// readLimit is the limit of the next read of a stream's state in a run of reads: every read of one
+// bucket's open (EnsureKeyValue), of one ensure of the notification stream (ensureStreamWithConfig)
+// or of one setting of the session bucket's age (SetKeyValueMaxAge), each of which carries its run
+// in its context (withReadLimit), so that a delay one step's reads measured holds for the next
+// step's first read and a slow server is not learnt again at every step. The reads of a run are made
+// one after the other, never two at once. A read made under a context that carries no run, such as
+// a keeper pass's, starts a run of its own (readLimitOf).
 type readLimit struct {
 	first, limit time.Duration
 }
 
-// newReadLimit is a run of reads made under ctx, starting at its first read limit
-// (firstReadLimitOf).
-func newReadLimit(ctx context.Context) *readLimit {
+// readLimitKey is the context key of the run of reads withReadLimit puts in a context.
+type readLimitKey struct{}
+
+// withReadLimit is ctx carrying a new run of reads, starting at ctx's first read limit
+// (firstReadLimitOf). Each call makes a new run, so two calls under one parent context never share.
+func withReadLimit(ctx context.Context) context.Context {
+	first := firstReadLimitOf(ctx)
+	return context.WithValue(ctx, readLimitKey{}, &readLimit{first: first, limit: first})
+}
+
+// readLimitOf is the run of reads ctx carries (withReadLimit), or a new one when it carries none.
+func readLimitOf(ctx context.Context) *readLimit {
+	if run, ok := ctx.Value(readLimitKey{}).(*readLimit); ok {
+		return run
+	}
 	first := firstReadLimitOf(ctx)
 	return &readLimit{first: first, limit: first}
 }
