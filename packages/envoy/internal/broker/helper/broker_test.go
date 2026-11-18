@@ -101,10 +101,6 @@ type fakeBroker struct {
 	lastProof              string // the Proof header the most recent Enroll call carried
 	lastProofURL           string // the exact URL that Proof header was signed for
 
-	// enrollHeldFor, while set, answers every Enroll whose proof is present 403 MEMBERSHIP_HELD
-	// naming that person, as the broker answers a launcher route of a credential whose operator
-	// Dispatch holds until they sign in again, or a refresh confirms them: a refusal of the
-	// person, not of the credential.
 	enrollHeldFor string
 
 	lastLoginRequest   string // the compact request object the most recent device authorization carried

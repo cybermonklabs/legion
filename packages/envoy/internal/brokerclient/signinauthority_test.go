@@ -210,8 +210,7 @@ func TestARevokedSignInFallsBackToTheMachine(t *testing.T) {
 		records[0].Message != "this machine's sign-in was refused; sessions enrol under this machine's own authority" {
 		t.Fatalf("the authority logged %v; want one WARN that the sign-in was refused", messagesOf(records))
 	}
-	attrs := map[string]string{}
-	records[0].Attrs(func(attr slog.Attr) bool { attrs[attr.Key] = attr.Value.String(); return true })
+	attrs := attrsOf(t, records[0])
 	if attrs["person"] != "ada@example.com" || attrs["code"] != "invalid_grant" || !strings.Contains(attrs["error"], refusal) {
 		t.Errorf("the refused sign-in's line carries %v; want ada@example.com, invalid_grant and the broker's words %q", attrs, refusal)
 	}

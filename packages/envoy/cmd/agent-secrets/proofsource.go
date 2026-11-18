@@ -97,15 +97,8 @@ type helperSigner struct {
 	sock string
 }
 
-// errNoCredential is what a command gets from a helper that holds no launcher credential
-// (NO_CREDENTIAL): until the helper holds one it enrolls no one, so a machine session has no
-// broker identity and a machine or grant command has no login to act under. What cures it is the
-// helper's to say (noCredential), since only the helper knows its mode: in machine-login mode a
-// machine login a human approves, in identity mode its own trade loop.
 var errNoCredential = errors.New("this machine's agent-secrets-helper holds no credential at the secrets broker")
 
-// noCredentialError is errNoCredential with the helper's own NO_CREDENTIAL answer, which ends with
-// the hint of the helper's mode (brokerclient.Hint). errors.Is finds errNoCredential in it.
 type noCredentialError struct{ helper string }
 
 func (e *noCredentialError) Error() string {
@@ -114,13 +107,10 @@ func (e *noCredentialError) Error() string {
 
 func (e *noCredentialError) Is(target error) bool { return target == errNoCredential }
 
-// sessionLine is the line identity prints, and reportError for every command run in a session,
-// however deep the command wrapped the error: such a command is not an agent session.
 func (e *noCredentialError) sessionLine() string {
 	return errNoCredential.Error() + "; not an agent session (the helper: " + e.helper + ")"
 }
 
-// noCredential is the error for a helper's NO_CREDENTIAL answer resp.
 func noCredential(resp helper.Response) *noCredentialError {
 	return &noCredentialError{helper: resp.Error}
 }

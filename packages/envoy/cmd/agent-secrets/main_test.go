@@ -1518,15 +1518,11 @@ func TestMachineLoginStatusExitsZeroOnlyWhileACredentialIsHeld(t *testing.T) {
 		{name: "expired", resp: helper.Response{LoginState: "expired"}, want: "expired\n", exit: 1, remedy: true},
 		{name: "none", resp: helper.Response{}, want: "none\n", exit: 1, remedy: true,
 			stderr: prefix + "no machine login since the helper started, and none kept on this machine; run: agent-secrets machine login, and have a human approve it\n"},
-		// A helper in identity mode gets its credential from its own trade loop, so login-status
-		// names no machine login for it.
 		{name: "none, in identity mode", resp: helper.Response{MachineIdentity: true}, want: "none\n", exit: 1,
 			stderr: prefix + "no machine login since the helper started, and none kept on this machine; the helper's trade loop is trading this machine's identity for a new credential\n"},
 		{name: "dropped at its expiry, in identity mode", resp: helper.Response{LoginState: "expired", LoginRefused: true, CredentialDropped: "the launcher credential reached its expiry", MachineIdentity: true},
 			want: "expired\n", exit: 1,
 			stderr: prefix + "the launcher credential reached its expiry; the helper's trade loop is trading this machine's identity for a new credential\n"},
-		// A helper in identity mode whose trade loop stopped renews nothing: the credential it
-		// still holds lapses, and the line says so, rather than promising a renewal.
 		{name: "a live credential, the trade loop stopped", resp: helper.Response{LoginState: "issued", CredentialHeld: true, CredentialExpiresAt: expiresAt, MachineIdentity: true, IdentityStopped: true},
 			want: "issued\n",
 			stderr: prefix + "nothing renews the launcher credential, which lapses at " + expiresAt + " (in 2d1h59m), and no session enrols under this machine's credential after that; " +

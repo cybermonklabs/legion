@@ -32,34 +32,16 @@ import (
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
-// errNoCredential is the failure of every launcher call while the helper has no machine credential
-// to authenticate the launcher routes with: never having logged in, and having dropped its
-// credential (drop), because the broker refused it with 401 LAUNCHER_INVALID (clearOnInvalid),
-// refused its refresh (refresh), or it reached its expiry without a refresh (watchExpiry). What
-// cures it depends on the mode (noCredentialFailure), so a session is told noCredentialText.
 var errNoCredential = errors.New("no machine credential")
 
-// noCredentialFailure is the class of holding no launcher credential. In identity mode the trade
-// loop trades this machine's identity for one on its own, until a refusal no retry cures stops
-// it (identityStopped); otherwise the helper never logs in by itself, since a machine login is a
-// human ceremony.
 func (b *Broker) noCredentialFailure() brokerclient.Failure {
-	switch {
-	case b.Identity != nil && b.identityStopped.Load():
-		return brokerclient.FailureIdentityStopped
-	case b.Identity != nil:
-		return brokerclient.FailureIdentityLapsed
-	}
-	return brokerclient.FailureNoMachineLogin
+	return modeFailure(b.Identity != nil, b.identityStopped.Load())
 }
 
-// noCredential is the error every launcher call fails with while the helper holds no launcher
-// credential: errNoCredential, which errors.Is still finds, followed by the hint of its class.
 func (b *Broker) noCredential() error {
 	return brokerclient.WithHint(errNoCredential, b.noCredentialFailure())
 }
 
-// noCredentialText is what a session is told while the helper holds no launcher credential.
 func (b *Broker) noCredentialText() string {
 	return b.noCredential().Error()
 }
@@ -175,10 +157,7 @@ type Broker struct {
 	// never a proof, a token, a request object or key material. Nil logs nothing.
 	Log *slog.Logger
 
-	cred atomic.Pointer[machineCredential]
-	// identityStopped is set once startIdentity's trade loop has stopped on a refusal no retry
-	// cures: from then on nothing trades this machine's identity again until the helper restarts,
-	// so what it tells a session names that, and not a trade to wait for.
+	cred            atomic.Pointer[machineCredential]
 	identityStopped atomic.Bool
 	loginMu         sync.Mutex                 // one login at a time
 	login           atomic.Pointer[loginState] // most recent login: code, state
@@ -284,6 +263,10 @@ func (e *BrokerError) Error() string {
 		s += ": " + e.Message
 	}
 	return s
+}
+
+func (e *BrokerError) notTheEnrollingCredential() bool {
+	return e.Status == http.StatusForbidden && (e.Code == "OPERATOR_MISMATCH" || e.Code == "NOT_ENROLLING_CREDENTIAL")
 }
 
 // readOperator reads OperatorFile, trimmed, per call: it names the login_hint for a machine
@@ -711,8 +694,6 @@ func (b *Broker) Start(ctx context.Context) error {
 // it is.
 var errAnswerLacksCredential = fmt.Errorf("the broker's token answer carries no %s or RFC 3339 %s, so it gives this machine no launcher credential", oauthwire.ExtraCredentialID, oauthwire.ExtraCredentialExpiresAt)
 
-// identityShutdownLine is what the trade loop logs when it ends with the helper's own shutdown,
-// rather than stopping on a refusal nothing cures (identityStopped).
 const identityShutdownLine = "the helper stopped trading this machine's identity: it is shutting down"
 
 // startIdentity is Start for a machine that proves an identity of its own: the token client
@@ -755,8 +736,6 @@ func (b *Broker) startIdentity(ctx context.Context) error {
 			}
 			b.logger().Error("the helper stopped trading this machine's identity: nothing renews its launcher credential, and no session enrols under this machine's credential once that lapses, until the helper restarts", "error", reason)
 		} else {
-			// Run answers nil only once the helper's context ends, which is this helper shutting
-			// down: no fault of the deployment's, and a restart trades again.
 			b.logger().Info(identityShutdownLine)
 		}
 		once.Do(func() { close(first) })
@@ -1353,14 +1332,6 @@ func (b *Broker) drop(cred *machineCredential, why string, attrs ...any) bool {
 	return true
 }
 
-// dropLeaves is what a drop leaves the machine, for its log line: no session enrols under this
-// machine's credential until one comes back, and the hint of holding none (noCredentialFailure).
-// A person signed in on the machine still enrols sessions under their own sign-in, which the
-// helper tries first (signingAuthority), so the line names the machine's credential alone. In
-// identity mode the trade loop trades this machine's identity again on its own, so nobody is told
-// to log in: the credential it traded for lives an hour, and a broker that refuses trades for
-// longer, for a person Dispatch holds among others, lets it lapse with nothing for a person to do
-// here.
 func (b *Broker) dropLeaves() string {
 	return "no session can enroll under this machine's credential; " + brokerclient.Hint(b.noCredentialFailure())
 }
@@ -1606,8 +1577,7 @@ func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
 	}
 	err = b.revokeUnder(ctx, authority, cred, enrollmentID)
 	var be *BrokerError
-	if cred != nil || !errors.As(err, &be) || be.Status != http.StatusForbidden ||
-		(be.Code != "OPERATOR_MISMATCH" && be.Code != "NOT_ENROLLING_CREDENTIAL") {
+	if cred != nil || !errors.As(err, &be) || !be.notTheEnrollingCredential() {
 		return err
 	}
 	machine := b.cred.Load()

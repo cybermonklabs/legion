@@ -110,11 +110,11 @@ func TradeFailure(err error) Failure {
 	switch {
 	case errors.Is(err, ErrSignInEnded):
 		return FailureUnclassified
-	case errors.As(err, &refused) && refused.Code == oauthwire.MembershipHeld:
-		return FailureHeld
-	case errors.As(err, &refused):
-		return FailureBrokerRefused
-	default:
+	case !errors.As(err, &refused):
 		return FailureBrokerUnavailable
+	case refused.Code == oauthwire.MembershipHeld:
+		return FailureHeld
+	default:
+		return FailureBrokerRefused
 	}
 }

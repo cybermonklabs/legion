@@ -416,11 +416,6 @@ func (c *Client) Run(ctx context.Context, onToken func(context.Context, *Token) 
 	}
 }
 
-// retriedTrade names a failed trade the client asks again about, for a log line, in one of two
-// forms: a refusal the broker answered that a later trade may cure (RefusedError.Permanent is
-// false), with its HTTP status and OAuth code, and a trade that got no answer the client can use —
-// none at all, a 5xx, an answer that is not this grant's, or an identity token its source could
-// not read. Either carries the error whole, the broker's own words included.
 func retriedTrade(err error) (string, []any) {
 	var refused *RefusedError
 	if errors.As(err, &refused) {

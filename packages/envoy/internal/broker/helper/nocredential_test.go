@@ -17,8 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 )
 
-// noCredentialMsg is what a helper in machine-login mode tells a session while it holds no
-// launcher credential: the failure, then the machine-login hint (brokerclient.Hint).
 const noCredentialMsg = "no machine credential; run: agent-secrets machine login, and have a human approve it"
 
 // TestNoCredentialReasonNamesWhyTheHelperHoldsNone: every state login-status can report with no

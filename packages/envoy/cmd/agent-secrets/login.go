@@ -231,9 +231,6 @@ func registerSignInSession(ctx context.Context, record brokerclient.SignInRecord
 	}
 	token, err := client.Token(ctx)
 	if err != nil {
-		// The hint follows the trade's class: a sign-in no retry renews is told to sign in again,
-		// and a person Dispatch holds or a broker that did not answer is told nothing a login
-		// would not cure.
 		return record, brokerclient.WithHint(err, brokerclient.TradeFailure(err))
 	}
 	if token.CredentialID == "" {

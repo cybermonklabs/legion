@@ -209,28 +209,18 @@ func TestADPoPRefusalKeepsTheRenewalLoopTrading(t *testing.T) {
 	}
 }
 
-// The two forms a trade the client asks again about is logged in: a refusal the broker answered,
-// which a later trade may cure, and a trade that got no answer the client can use.
 const (
 	retriedRefusalLine  = "the secrets broker refused a trade, which a later trade may cure"
 	retriedNoAnswerLine = "a trade got no usable answer from the secrets broker"
 )
 
-// TestARetriedTradeIsLoggedAsWhatHappened: a trade the client asks again about is logged as what
-// happened to it. Each refusal a later trade may cure — a person Dispatch holds, the broker's
-// 429, its two DPoP refusals — is logged as a refusal, naming the broker's status and code beside
-// its words; a broker that answered 503, and one that answered nothing at all, are logged as a
-// trade with no usable answer, naming no code. Token, answering the token in hand, and Run,
-// waiting to ask again, say it alike, and neither says the broker did not answer a refusal.
 func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		status int
 		body   map[string]any
-		// down closes the broker after the first trade, so every later one gets no answer.
-		down bool
-		// code is the refusal's OAuth code the lines name, "" for a trade with no usable answer.
-		code string
+		down   bool
+		code   string
 	}{
 		{name: "a person Dispatch holds", status: 400, code: "membership_held",
 			body: map[string]any{"error": "membership_held", "error_description": heldDescription}},
@@ -263,8 +253,6 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 				broker.server.Close()
 			}
 
-			// Token inside the renewal window, the token in hand still live: it trades, fails, and
-			// answers the token in hand. The trade is the stub's second.
 			client.held.Expiry = time.Now().Add(30 * time.Second)
 			if held, err := client.Token(ctx); err != nil || held.AccessToken != mintedToken(1)["access_token"] {
 				t.Fatalf("Token = %+v, %v; want the token in hand, which is still live", held, err)
@@ -272,7 +260,6 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 			if n := len(broker.Requests()); !tc.down && n != 2 {
 				t.Fatalf("the broker saw %d trades; want two, the first and Token's renewal", n)
 			}
-			// Run trades, fails, and ends at the wait it then asks for.
 			loop, cancel := context.WithCancel(ctx)
 			client.after = func(time.Duration) <-chan time.Time {
 				cancel()
@@ -285,7 +272,6 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 				t.Fatalf("Run = %v; want it waiting to ask again", err)
 			}
 
-			// The error a trade fails with now, which each line must carry whole.
 			client.mu.Lock()
 			_, tradeErr := client.trade(ctx)
 			client.mu.Unlock()
@@ -332,8 +318,6 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 	}
 }
 
-// attrsOf is a record's attributes, each as its value's text. A key the record carries twice
-// fails the test, since a map would keep only the last of the two.
 func attrsOf(t *testing.T, record slog.Record) map[string]string {
 	t.Helper()
 	attrs := map[string]string{}
@@ -347,7 +331,6 @@ func attrsOf(t *testing.T, record slog.Record) map[string]string {
 	return attrs
 }
 
-// messagesOf is each record's message, for a failure to show what was logged.
 func messagesOf(records []slog.Record) []string {
 	messages := make([]string, 0, len(records))
 	for _, record := range records {

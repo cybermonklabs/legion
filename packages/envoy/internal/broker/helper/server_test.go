@@ -69,9 +69,6 @@ func newLoggedRig(t *testing.T, statePath string, log *slog.Logger) *rig {
 	return r
 }
 
-// serveBroker serves broker on a socket of the test's own, as cmd/agent-secrets-helper serves it,
-// with log as the Server's logger: newLoggedRig's helper, and that of a test that builds its Broker
-// itself (one in identity mode, say). The rig's fake is nil.
 func serveBroker(t *testing.T, broker *Broker, statePath string, log *slog.Logger) *rig {
 	t.Helper()
 	r := &rig{}

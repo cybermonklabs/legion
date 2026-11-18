@@ -91,8 +91,6 @@ const USE_DPOP_NONCE = "use_dpop_nonce";
  *  description begins {@link POD_SESSION_NOT_REGISTERED} and a colon. */
 const INVALID_GRANT = "invalid_grant";
 
-/** What the broker answers a trade that names a person whom Dispatch holds until they sign in
- *  again (`oauthwire.MembershipHeld` in the Go client). */
 const MEMBERSHIP_HELD = "membership_held";
 
 /** The first wait before trading again on a missing registration, doubling to

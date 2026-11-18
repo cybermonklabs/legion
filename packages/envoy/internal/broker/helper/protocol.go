@@ -130,10 +130,14 @@ func NoCredentialReason(loginState string, refused bool, dropped string) string 
 // machine login a human approves. An answer from a helper before MachineIdentity reads as
 // machine-login mode, the only mode such a helper reports a login for.
 func (r Response) NoCredentialFailure() brokerclient.Failure {
+	return modeFailure(r.MachineIdentity, r.IdentityStopped)
+}
+
+func modeFailure(machineIdentity, identityStopped bool) brokerclient.Failure {
 	switch {
-	case r.MachineIdentity && r.IdentityStopped:
+	case machineIdentity && identityStopped:
 		return brokerclient.FailureIdentityStopped
-	case r.MachineIdentity:
+	case machineIdentity:
 		return brokerclient.FailureIdentityLapsed
 	}
 	return brokerclient.FailureNoMachineLogin
