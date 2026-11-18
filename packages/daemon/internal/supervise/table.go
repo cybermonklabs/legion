@@ -240,8 +240,9 @@ type StallBackstop struct {
 // so the action is idempotent: the first post of a round records the round, its reasons and its
 // clock, and each later post of the same round changes nothing. The round's terms are fixed when
 // it opens, so the ask a role reads and the record an operator reads name the same reasons. The
-// machine asks the role nothing: the sweep publishes the round's ask to the role's own Envoy
-// topic (record.UpdateAsk) and marks it on the claim (Machine.PodUpdateAsked).
+// machine asks the role nothing: the sweep enqueues the round's ask to the role's own Envoy topic
+// (record.UpdateAsk), and the outbox marks it on the claim once it reached a session
+// (Machine.PublishUpdateAsk).
 type PodUpdateOpen struct {
 	Claim   claim.Token
 	Round   string
@@ -2680,11 +2681,13 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 // finished agent's claim never stays live, its secret still authenticating. A root's stop records
 // what it ended as a suspension by its exit (endSuspended), as every suspension does; a worker's
 // retirement records nothing (noEnd, retire), since the exit is the agent's own end of its work.
+// The root's suspension sends the clean stop of its Envoy session once the runtime's stop has
+// returned, and none for a stop the runtime refused (stopForSuspension).
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
 	if m.claim.treeRoot() {
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.endProcess(ctx, endSuspended(SuspendedByExit)); err != nil {
+		if err := m.stopForSuspension(ctx, SuspendedByExit, stopOwed); err != nil {
 			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
 				"incarnation", incarnation, "error", err)
 		}
@@ -2706,11 +2709,12 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // the ask the sweep publishes and the record an operator reads name the same reasons for one
 // round id, however the drift the sweep reads moves while the round runs.
 //
-// The machine asks the role nothing. The sweep publishes the round's ask to the role's own Envoy
-// topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk) and
-// marks the publish on the claim (Machine.PodUpdateAsked). A claim whose process is suspended or
-// released is not revived for the ask: the round ends at its bound whether or not the role
-// answers.
+// The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
+// topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
+// the outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk):
+// an ask that reached none marks nothing, so a later sweep asks again. A claim whose process is
+// suspended or released is not revived for the ask: if no ask has reached it, the sweep asks it
+// once its agent is ready again, and the round ends at its bound whether or not the role answers.
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.
 // The answer the worker gives carries the round its own ask named (PodUpdateSignalled), so an

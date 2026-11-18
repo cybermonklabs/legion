@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -35,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -135,6 +137,17 @@ type podUpdateRig struct {
 	logs *syncBuffer
 	// log is that logger, kept so a rig that builds a second engine writes into the same buffer.
 	log *slog.Logger
+	// listener is the Envoy listener the rig's role-message lane publishes to (runLane): every
+	// role topic has a live holder until a test names the ones that have none (setAbsent), as the
+	// real listener refuses a topic nobody holds (notify.ErrNoHolder).
+	listener *holderPublisher
+	// lane is the outbox's own executor of the rig's update-ask rows (runLane), over the rig's
+	// supervisor, so an ask reaches a session and marks its claim as the daemon's do
+	// (supervise's Machine.PublishUpdateAsk).
+	lane *outbox
+	// asked is every update-ask row the sweep has written, by id, kept once read: the lane
+	// deletes each row it finishes, as the outbox does, and asks reads every row ever written.
+	asked map[int64]record.UpdateAsk
 }
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
@@ -246,7 +259,9 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	// context the pool refuses nothing, so a sweep that asked it for a second connection under a
 	// held one would pass every test of this rig (INFRA-3169).
 	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
-		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log}
+		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log,
+		listener: &holderPublisher{}, asked: map[int64]record.UpdateAsk{}}
+	rig.lane = &outbox{project: podUpdateProject, notices: rig.listener, supervisor: sup, log: log}
 	for _, role := range roles {
 		if !role.session {
 			continue
@@ -333,13 +348,101 @@ func (r *podUpdateRig) awaitRound(role claim.Role, round string) supervise.Claim
 	})
 }
 
-// awaitAsked sweeps until role's claim records round and the sweep's publish mark of its ask
-// (supervise.Claim.UpdateTaskedAt).
+// awaitAsked sweeps until role's claim records round and the mark of an ask of it that reached a
+// session (supervise.Claim.UpdateTaskedAt), running the role-message lane after each sweep: the
+// sweep enqueues the ask and the lane's row publishes it and marks the claim (runLane). A role
+// whose topic has no holder is never marked; awaitAskQueued waits for its row instead.
 func (r *podUpdateRig) awaitAsked(role claim.Role, round string) supervise.Claim {
 	r.t.Helper()
-	return r.awaitSwept(role, "the ask of the update round "+round, func(c supervise.Claim) bool {
-		return c.UpdateRound == round && c.UpdateTaskedAt != nil
+	marked := func(c supervise.Claim) bool { return c.UpdateRound == round && c.UpdateTaskedAt != nil }
+	// landing is the first poll, which leaves a decision the last sweep posted the time to land
+	// (awaitSwept).
+	landing := true
+	testwait.Eventually(r.t, fmt.Sprintf("%s: the ask of the update round %s to reach its session", role, round), func() bool {
+		if marked(r.claimOf(role)) {
+			return true
+		}
+		if landing {
+			landing = false
+			return false
+		}
+		r.tick()
+		r.runLane()
+		return marked(r.claimOf(role))
 	})
+	return r.claimOf(role)
+}
+
+// awaitAskQueued sweeps until the outbox holds an update-ask row of round for role, and returns
+// it. It runs no lane, so the row is the one the sweep enqueued and nothing has published yet.
+func (r *podUpdateRig) awaitAskQueued(role claim.Role, round string) record.OutboxRow {
+	r.t.Helper()
+	var queued record.OutboxRow
+	found := func() bool {
+		for _, row := range r.rows(record.OutboxKindUpdateAsk) {
+			var ask record.UpdateAsk
+			if err := json.Unmarshal(row.Payload, &ask); err != nil {
+				r.t.Fatalf("decode update ask %d: %v", row.ID, err)
+			}
+			if ask.Role == role && ask.Round == round {
+				queued = row
+				return true
+			}
+		}
+		return false
+	}
+	landing := true
+	testwait.Eventually(r.t, fmt.Sprintf("%s: an ask of the update round %s queued", role, round), func() bool {
+		if found() {
+			return true
+		}
+		if landing {
+			landing = false
+			return false
+		}
+		r.tick()
+		return found()
+	})
+	return queued
+}
+
+// roleTopic is the Envoy topic of role's claim, which the round's ask to that role goes to.
+func (r *podUpdateRig) roleTopic(role claim.Role) string {
+	return notify.RoleTopicPrefix + string(r.tokens[role])
+}
+
+// runLane runs every update-ask row the outbox holds through the rig's lane, oldest first, as
+// the role-message lane runs them, and deletes each row it finishes, as the outbox does
+// (FinishOutbox). Each run starts with every machine settled, as the lane's rows meet them
+// between sweeps; a row that still meets a machine's lock held (a post of the sweep's landing)
+// answers a wait and is run again, as the lane runs a waiting row again. Every row here is
+// delivered or finds no holder, which both finish the row, so any other error fails the test.
+func (r *podUpdateRig) runLane() {
+	r.t.Helper()
+	for _, row := range r.rows(record.OutboxKindUpdateAsk) {
+		r.runAsk(row)
+	}
+}
+
+// runAsk runs one update-ask row through the rig's lane until it finishes, and deletes it then.
+// The rows the outbox holds are read into asks first, so a row this deletes is still counted.
+func (r *podUpdateRig) runAsk(row record.OutboxRow) {
+	r.t.Helper()
+	r.asks()
+	testwait.Eventually(r.t, fmt.Sprintf("update ask %d to finish", row.ID), func() bool {
+		r.settleAll()
+		err := r.lane.execute(r.ctx, row)
+		if errors.Is(err, wait.ErrWaiting) {
+			return false
+		}
+		if err != nil {
+			r.t.Fatalf("run update ask %d: %v", row.ID, err)
+		}
+		return true
+	})
+	if _, err := r.pool.Exec(r.ctx, "delete from outbox where id = $1", row.ID); err != nil {
+		r.t.Fatalf("finish update ask %d: %v", row.ID, err)
+	}
 }
 
 // awaitSwept waits for role's claim to satisfy want, sweeping between the polls, and is how
@@ -1491,7 +1594,9 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 		workers[role] = conn
 	}
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
-		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log}
+		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log,
+		listener: r.listener, asked: r.asked}
+	next.lane = &outbox{project: podUpdateProject, notices: next.listener, supervisor: sup, log: r.log}
 	next.s = &supervision{
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
 		applySweepFacts: r.s.applySweepFacts,

@@ -16,6 +16,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -55,33 +56,27 @@ const controllerPersonTradeVar = "PERSON_SIGNIN_TRADE"
 // stdinIsTerminal says whether this process's stdin is a terminal; a test replaces it.
 var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
-// controllerCommands is `legion controller`'s subcommands, the one list of them `legion controller
-// --help` names.
-var controllerCommands = map[string]command{
-	"start": runControllerStart,
-}
-
-func runController(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	return runSubcommand(ctx, "controller", controllerCommands, args, stdout, stderr)
-}
-
-func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("controller start", "usage: legion controller start --config <controller.yaml> [--daemon-url <url>]", stderr)
-	configPath := flags.String("config", "", "path to the operator-side controller.yaml (required)")
-	daemonURL := flags.String("daemon-url", "", "the daemon's API address, overriding the file's daemon_url")
-	if code, ok := parseFlags(flags, args); !ok {
+// newControllerStartCommand is `legion controller start` (controllerStart).
+func newControllerStartCommand(stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "start --config <controller.yaml>",
+		Short: "start the operator's controller from controller.yaml",
+		Args:  noArguments,
+	}
+	configPath := cmd.Flags().String("config", "", "path to the operator-side controller.yaml (required)")
+	daemonURL := cmd.Flags().String("daemon-url", "", "the daemon's API address, overriding the file's daemon_url")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		if *configPath == "" {
+			return refuse(cmd, "--config is required")
+		}
+		code, err := controllerStart(ctx, *configPath, *daemonURL, stderr)
+		if err != nil {
+			fmt.Fprintf(stderr, "legion controller start: %v\n", err)
+			return 1
+		}
 		return code
-	}
-	if *configPath == "" || flags.NArg() > 0 {
-		flags.Usage()
-		return 2
-	}
-	code, err := controllerStart(ctx, *configPath, *daemonURL, stderr)
-	if err != nil {
-		fmt.Fprintf(stderr, "legion controller start: %v\n", err)
-		return 1
-	}
-	return code
+	})
+	return cmd
 }
 
 // controllerStart is `legion controller start`, the operator's side of the controller under

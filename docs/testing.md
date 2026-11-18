@@ -153,7 +153,7 @@ itself, whose tests import its sources by relative path.
   module caches of the `go run` in `runDaemonPane`
   (`packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts`) stay for the same reason: CI's
   `pi-legion` job restores `~/.cache/go-build` and `~/go/pkg/mod`, keyed
-  `go-daemon-<runner os>-go<version>`, before it runs that scenario
+  `go-daemon-<runner os>-<runner arch>-go<version>`, before it runs that scenario
   (`.github/workflows/ci-job-pi-legion.yaml`). Those of `scripts/e2e/lib/held-port.test.ts` stay
   there too, although the `test` job that runs it restores no Go cache now that the daemon's Go
   suite is `daemon-go`'s. The condition is the rename: `fillNativesCache` in

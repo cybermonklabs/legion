@@ -407,8 +407,9 @@ func TestSendHandlerRefusesAModeThatIsNotADeliveryMode(t *testing.T) {
 }
 
 // TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload proves the guard
-// checks messageEnvelope's effective payload, not only the optional HTTP
-// payload field. A long structured message becomes the receiver's payload.
+// checks the envelope's effective payload (contracts.MessageEnvelope), not only
+// the optional HTTP payload field. A long structured message becomes the
+// receiver's payload.
 func TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload(t *testing.T) {
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, nil)

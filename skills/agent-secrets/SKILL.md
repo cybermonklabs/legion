@@ -190,8 +190,13 @@ Without the grant line the status is the client's own:
   source with why it had nothing.
 - **2** — a usage error: no `AGENT_SECRETS_URL`, no `--`, no `NAME`, or a flag value the client
   refuses.
-- **75** — the request still waits for a person. The message names who decides it, where, and the
-  `agent-secrets status <request_id>` that reads it.
+- **75** — the request still waits for a person when `--wait` runs out. The message names who
+  decides it, where, and the `agent-secrets status <request_id>` that reads it. A status poll
+  that did not reach the broker (a reset, a timeout, a 502 or 503) does not end the wait: stderr
+  says once that the command keeps waiting, and polling goes on. If the wait runs out while polls
+  still fail, the exit is 75 too, and the message names the last failure; `agent-secrets status
+  <request_id>` says whether the request was decided, and running the same command again (the same
+  names and `--ttl`, from the same session) collects a grant it already has, asking no one again.
 - **77** — the request was denied. The approver denied it, the policy refused a name (a
   service's secret, or one whose requesters list does not name this session), or the request
   named a secret a person must approve and carried no reason, which the detail reads
@@ -273,8 +278,12 @@ prompt, a skill, or the issue you work on. There is no list to browse and nothin
 ## Before you say that a service is out of reach
 
 1. Run the call through `agent-secrets`, with the secret your instructions name.
-2. Report a service unreachable only with the command you ran and the output you saw.
-3. When no instruction names a secret for that service, report that instead, with what you checked:
+2. A GitHub `404` under your session's own token is that token's reach, not your access: GitHub
+   answers `404` for a repository a token cannot see. Ask the broker for the GitHub App secret
+   your instructions name, narrowed to that repository with `--github-owner`, `--github-repo`,
+   `--github-read-only` and `--github-token`, and make the call again under it.
+3. Report a service unreachable only with the command you ran and the output you saw.
+4. When no instruction names a secret for that service, report that instead, with what you checked:
    `agent-secrets identity --source`, and which instructions you read. Request no name you guessed.
 
 ## On a person's own machine

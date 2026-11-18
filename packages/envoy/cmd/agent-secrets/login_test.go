@@ -27,6 +27,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -48,6 +49,8 @@ type loginBroker struct {
 	enrollments int
 	live        string
 	settings    map[string]any
+	// enrollmentID, when set, is the id every registration is answered with.
+	enrollmentID string
 }
 
 func newLoginBroker(t *testing.T) *loginBroker {
@@ -81,6 +84,9 @@ func newLoginBroker(t *testing.T) *loginBroker {
 		b.mu.Lock()
 		b.enrollments++
 		b.live = fmt.Sprintf("enrollment-%d", b.enrollments)
+		if b.enrollmentID != "" {
+			b.live = b.enrollmentID
+		}
 		id := b.live
 		b.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
@@ -255,7 +261,7 @@ func TestASignInWhoseLeaseLapsedRegistersItselfAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selectSigner after the lease lapsed: %v", err)
 	}
-	if _, _, err := newClient(broker.server.URL).Self(context.Background(), signer); err != nil {
+	if _, _, err := newClient(brokeraddr.New(broker.server.URL)).Self(context.Background(), signer); err != nil {
 		t.Fatalf("a call on a lapsed sign-in = %v; want the session registered again and the call answered", err)
 	}
 

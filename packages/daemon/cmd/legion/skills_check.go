@@ -11,10 +11,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
-
-const skillsCheckUsage = "legion skills-check --dir <skills volume> --omp <omp path>"
 
 // ompPluginList is what `omp plugin list --json` answers, of which this reads the marketplace
 // plugins alone: each entry's id is `<plugin>@<marketplace>`, and each of its install entries names
@@ -126,16 +126,21 @@ func skillsRecordLine(path string) (string, error) {
 	return line, nil
 }
 
-func runSkillsCheck(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	flags := newFlags("skills-check", "usage: "+skillsCheckUsage, stderr)
-	dir := flags.String("dir", "", "the pod's skills volume root, which its init container filled (required)")
-	ompPath := flags.String("omp", "", "the Oh My Pi the pod runs, by its image path (required)")
-	if code, ok := parseWorkspaceInitFlags(flags, args, stderr); !ok {
-		return code
+func newSkillsCheckCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "skills-check --dir <skills volume> --omp <omp path>",
+		Short:  "compare the skills a role installed with the commit its pod's init container recorded (a role's start wrapper runs it, never a person)",
+		Hidden: true,
+		Args:   noArguments,
 	}
-	if err := skillsCheck(ctx, *dir, *ompPath, stdout); err != nil {
-		fmt.Fprintf(stderr, "legion skills-check: %v\n", err)
-		return 1
-	}
-	return 0
+	dir := cmd.Flags().String("dir", "", "the pod's skills volume root, which its init container filled (required)")
+	ompPath := cmd.Flags().String("omp", "", "the Oh My Pi the pod runs, by its image path (required)")
+	cmd.RunE = runs(func(ctx context.Context, _ []string) int {
+		if err := skillsCheck(ctx, *dir, *ompPath, stdout); err != nil {
+			fmt.Fprintf(stderr, "legion skills-check: %v\n", err)
+			return 1
+		}
+		return 0
+	})
+	return cmd
 }
