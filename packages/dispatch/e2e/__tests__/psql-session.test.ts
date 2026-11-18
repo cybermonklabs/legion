@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { hostTool } from "@legion/test-fixtures/host-tools";
 
-import { resetSession, sql, sqlAt } from "../psql";
+import { dropDatabase, resetSession, sql, sqlAt } from "../psql";
 import { bounds, eventually, rowLimit } from "./bounded-subprocess";
 
 /** The PostgreSQL server this run may make a database on: an issue pod names it, a developer
@@ -75,13 +75,15 @@ afterAll(
     // of this process - a rerun of this file, or another file - from a database that is gone.
     resetSession();
     if (!live) return;
-    // FORCE because the psql just killed may not have left the server yet. The connection is the
-    // test role's own, which that role may terminate.
-    await sqlAt(server, [`drop database if exists ${database} with (force)`]);
+    // `dropDatabase` first ends the test role's own sessions on that database, which that role
+    // may do, so the psql just killed cannot keep it if it has not left the server yet; then it
+    // drops it without FORCE: FORCE refuses a login that is not a superuser, as CI's is not, while
+    // an autovacuum worker is attached.
+    await dropDatabase(server, database);
   },
-  // This hook drops that database through the same shared helper, which two modules outside this
-  // directory call too, so bounding its psql would reach past this file. The minute here is what
-  // stops a drop that waits forever on a connection.
+  // This hook drops that database with `dropDatabase`, whose psql is `sqlAt`'s, which two modules
+  // outside this directory call too, so bounding its psql would reach past this file. The minute
+  // here is what stops a drop that waits forever on a connection.
   60_000
 );
 

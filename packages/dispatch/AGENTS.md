@@ -2741,7 +2741,9 @@ after it runs, and a `ROLLBACK` leaves the session usable for the next caller. A
 while another holds that session runs as a psql of its own, so two calls still reach the database
 at once. `sqlAt` runs one psql against a URL it is given, and kills it when an `AbortSignal` it is
 passed fires, which `e2e/local-instance.ts` uses to create its database through the server's
-`postgres` one.
+`postgres` one. `dropDatabase` drops a database a test made there: it ends the login's own
+sessions on it, then drops it without FORCE, since FORCE refuses a login that is not a superuser,
+as CI's is not, while an autovacuum worker is attached.
 
 That reset is also the one rig failure that presents as a code failure. A transaction that holds
 one of the emptied tables for 5 s, such as a session left idle in a transaction, a long query, or

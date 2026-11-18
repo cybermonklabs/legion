@@ -268,3 +268,29 @@ export async function sqlAt(
   );
   return stdout.trim();
 }
+
+/** Drops the database `name`, one a test made on `server` with `create database`, where the login
+ *  `server` names may not be a superuser, as CI's is not. It has no FORCE: `drop database ... with
+ *  (force)` first checks that the caller may signal every process on the database, and an
+ *  autovacuum worker has no role, so a login without superuser or `pg_signal_backend` is refused
+ *  while one is attached. A plain drop ends an autovacuum worker itself, with no such check, and
+ *  waits up to 5 s for any other session to leave. So the login's own sessions on the database,
+ *  which any login may end, are ended first: a psql the test just killed that has not left the
+ *  server yet, or one it left open, cannot keep the database. The two statements are two `-c`
+ *  arguments of `sqlAt`'s psql, each a request of its own: `drop database` cannot run inside the
+ *  transaction block one request holding both would be. `name` is written into both as it is, so
+ *  a name that is not a lowercase unquoted identifier, which every name the harness generates is,
+ *  is refused rather than quoted. */
+export async function dropDatabase(server: string, name: string): Promise<void> {
+  if (!/^[a-z_][a-z0-9_]*$/.test(name)) {
+    throw new Error(
+      "dropDatabase takes a lowercase unquoted identifier, as the harness generates; " +
+        `it refuses ${JSON.stringify(name)}`
+    );
+  }
+  await sqlAt(server, [
+    "select pg_terminate_backend(pid) from pg_stat_activity " +
+      `where datname = '${name}' and usename = current_user and pid <> pg_backend_pid()`,
+    `drop database if exists ${name}`,
+  ]);
+}
