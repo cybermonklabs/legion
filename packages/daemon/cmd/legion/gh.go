@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -87,11 +88,14 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // Each such read runs its own real gh under the variable again, so a real gh that leads back is
 // still refused one start later, with or without a caller's GH_TOKEN.
 //
-// The help reads run in a process group of their own (readGhHelp), which none of the terminal's
-// signals reach, so this command stops them itself: on a SIGINT or a SIGTERM, which cancel its
-// context (main's signal.NotifyContext), and on a SIGHUP, which it catches while they run
-// (hangupCancels). Such a signal ends the command with 128+<signal> (endedBySignal), and gh is
-// never started, as for a signal that came before runGhChild's forwarding.
+// Everything this command starts before gh — the help reads (readGhHelp), and the leak guard's
+// children, the shared check and the visibility reads, which the guard starts under the context
+// it is given (leakguard's Guard.run) — runs in a process group of its own, which none of the
+// terminal's signals reach. So this command stops them itself: on a SIGINT or a SIGTERM, which
+// cancel its context (main's signal.NotifyContext), and on a SIGHUP, which it catches until it
+// hands over to runGhChild's own forwarding (hangupCancels). Such a signal ends the command with
+// 128+<signal> (endedBySignal), and gh is never started, as for a signal that came before
+// runGhChild's forwarding.
 func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status int) {
 	env := processEnvironment()
 	repo, commandPath, visibilitySource := "", "", ""
@@ -115,11 +119,17 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		commandPath = "auth git-credential"
 		return runGitCredential(ctx, args[2:], stdout, stderr)
 	}
+	// Everything this command starts from here until gh runs under beforeGh, which a SIGHUP
+	// cancels as well (hangupCancels): each runs in a process group of its own, which a closing
+	// pane's SIGHUP does not reach, and the cancel is what stops that group. A signal that stopped
+	// one ends the command with its status rather than with the refusal its stopped work made.
+	beforeGh, stopHangup := hangupCancels(ctx)
+	defer stopHangup()
 	if read, ok := sharedCheckVisibilityRead(args, env); ok {
 		// The shared check's own read, which this command answers by the guard's rule. Like the
 		// guard's own reads, it is not logged as a wrapped call.
 		logCall = false
-		return answerVisibilityRead(ctx, read, stdout, stderr)
+		return answerVisibilityRead(beforeGh, read, stdout, stderr)
 	}
 	// Past the two answers above, gh's own git credential helper and the shared check's read,
 	// nothing a real gh runs is a `legion gh`: one started under the variable is a loop. The
@@ -154,15 +164,9 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		// command refused where they route to two directories (selectors.dir), before the guard
 		// reads anything of it.
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
-		// The help reads stop on a SIGHUP as well as on the end of ctx (hangupCancels), and a
-		// signal that stopped one ends the command with its status rather than with the refusal
-		// the stopped read made of the command. So does a SIGHUP that came as the reads ended:
-		// this took it from the runtime, so nothing else ends the command on it.
-		reads, stopReads := hangupCancels(ctx)
-		target, err = ghTargetOf(args, env, func(path []string) (string, error) { return readGhHelp(reads, gh, path) }, readGitRemotes,
+		target, err = ghTargetOf(args, env, func(path []string) (string, error) { return readGhHelp(beforeGh, gh, path) }, readGitRemotes,
 			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
-		stopReads()
-		if status, ok := signalled(reads); ok {
+		if status, ok := signalled(beforeGh); ok {
 			return status
 		}
 		if err != nil {
@@ -241,7 +245,7 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 				visibilitySource = string(source)
 			},
 		})
-		answer, err := guard.GhCall(ctx, leakguard.GhRequest{
+		answer, err := guard.GhCall(beforeGh, leakguard.GhRequest{
 			Args:          args,
 			Stdin:         os.Stdin,
 			Repo:          repo,
@@ -249,6 +253,9 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 			WritesNothing: mode == ghReadCall,
 			ProvenCheck:   ghReadsProvenCheck.sha256,
 		})
+		if status, ok := signalled(beforeGh); ok {
+			return status
+		}
 		if err != nil {
 			fmt.Fprintf(stderr, "legion gh: %v\n", err)
 			return 2
@@ -292,6 +299,12 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	if childEnv, err = withGitHubUseHTTPPath(childEnv); err != nil {
 		fmt.Fprintf(stderr, "legion gh: %v\n", err)
 		return 2
+	}
+	// runGhChild arms a forwarding of its own, so the SIGHUP watch ends here, and a SIGHUP it took
+	// in its last moment, which nothing else will end the command on, is read after it ends.
+	stopHangup()
+	if status, ok := signalled(beforeGh); ok {
+		return status
 	}
 	return runGhChild(ctx, gh, args, childEnv, buffered, stderr)
 }
@@ -608,11 +621,13 @@ func endedBySignal(cause error) (status int, ok bool) {
 var errHangup = errors.New(syscall.SIGHUP.String() + " signal received")
 
 // hangupCancels is ctx, cancelled with errHangup as well when a SIGHUP reaches this process before
-// stop is called. It is for work of this command's own that runs in a process group of its own
-// (readGhHelp): a pane that closes sends its SIGHUP to the terminal's foreground group, which that
-// work is not in, and main catches no SIGHUP, so without this the signal would kill this process
-// where it stood and leave the group running, reparented and waited for by nobody. stop ends the
-// watch and cancels the context. A SIGHUP that arrived just before stop is still read as one, so a
+// stop is called. It is for work of this command's own that runs in a process group of its own:
+// the help reads (readGhHelp) and the leak guard's children (leakguard's Guard.run starts each
+// with procgroup.Configure under the context it is given). A pane that closes sends its SIGHUP to
+// the terminal's foreground group, which that work is not in, and main catches no SIGHUP, so
+// without this the signal would kill this process where it stood and leave the group running,
+// reparented and waited for by nobody. stop ends the watch and cancels the context, and a call
+// after the first does nothing. A SIGHUP that arrived just before stop is still read as one, so a
 // caller reads the context's cause after stop, and finds errHangup there whenever this took one.
 //
 // Where this process was started with SIGHUP ignored it is ctx itself and arms nothing, for the
@@ -633,18 +648,21 @@ func hangupCancels(ctx context.Context) (context.Context, func()) {
 		case <-done:
 		}
 	}()
+	var once sync.Once
 	return hup, func() {
-		signal.Stop(signals)
-		close(done)
-		<-watched
-		// The watch may have taken done over a SIGHUP already in the channel; Stop has made sure
-		// no other comes.
-		select {
-		case <-signals:
-			cancel(errHangup)
-		default:
-		}
-		cancel(nil)
+		once.Do(func() {
+			signal.Stop(signals)
+			close(done)
+			<-watched
+			// The watch may have taken done over a SIGHUP already in the channel; Stop has made
+			// sure no other comes.
+			select {
+			case <-signals:
+				cancel(errHangup)
+			default:
+			}
+			cancel(nil)
+		})
 	}
 }
 

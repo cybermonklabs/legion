@@ -267,8 +267,9 @@ shim is compiled and passes, and where mise has no gh for the directory it runs 
 `LEGION_GH_RUN_BY_REAL_GH`, under which a `legion gh` that gh leads back to exits 2 and runs nothing.
 The leak guard blanks that variable for every child it runs, so a push the real gh makes still
 passes the pre-push hook's visibility read, whose own real gh carries the variable again. Its help
-read of the real gh runs in a process group of its own, which a read past its timeout, a SIGINT or
-SIGTERM, or a SIGHUP while the reads run stops whole.
+read of the real gh runs in a process group of its own, which a read past its timeout stops whole,
+and a SIGINT, SIGTERM or SIGHUP that comes before the real gh starts stops that group and the leak
+guard's children whole.
 
 The daemon runs tmux itself: the first `tmux` on its `PATH`, with the pane environment, whose XDG
 directories are under the state directory. A mise shim, or a wrapper script that hands the call to
