@@ -27,11 +27,13 @@ import {
 import {
   anchoredAsk,
   comment,
+  DESKTOP_WIDTH,
   issue,
+  PHONE_WIDTH,
   SelectedItemLabel,
   specArtifact,
   stubDocumentBridge,
-  stubMatchMedia,
+  stubViewport,
 } from "./margin-fixture";
 
 const secondIssue: IssueDetails = {
@@ -197,7 +199,7 @@ test("clicking a document mark opens its thread in the margin and stays on the d
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [comment]);
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const specPath = buildIssuePath({ key: issue.key, kind: "spec" });
   const view = render(
     <MemoryRouter initialEntries={[specPath]}>
@@ -248,7 +250,7 @@ test("focusItemForMark opens the matching thread in the compact sheet", async ()
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [comment]);
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>

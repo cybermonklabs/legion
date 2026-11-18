@@ -10,7 +10,7 @@ import { buildIssuePath } from "../refs/routes";
 import { SendStoppedError } from "../writes/keyed-write";
 import { Margin } from "./Margin";
 import { MarginProvider, marginReplySendKey } from "./margin-context";
-import { comment, issue, stubMatchMedia } from "./margin-fixture";
+import { comment, issue, PHONE_WIDTH, stubViewport } from "./margin-fixture";
 
 /** What a refusal Dispatch gave says in the reply composer. */
 const refusedText = "Couldn't send — the server is down";
@@ -26,7 +26,7 @@ function phoneMargin(queryClient: QueryClient): () => void {
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [comment]);
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>

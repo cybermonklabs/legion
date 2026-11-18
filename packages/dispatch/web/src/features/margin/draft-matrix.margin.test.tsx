@@ -154,7 +154,14 @@ import type { IssueDetails } from "../../api/types";
 import type { SentRequest } from "../conversation/send-request";
 import { buildIssuePath } from "../refs/routes";
 import { marginComposeSendKey, marginReplySendKey, useMargin } from "./margin-context";
-import { issue, specArtifact, stubDocumentBridge, stubMatchMedia } from "./margin-fixture";
+import {
+  DESKTOP_WIDTH,
+  issue,
+  PHONE_WIDTH,
+  specArtifact,
+  stubDocumentBridge,
+  stubViewport,
+} from "./margin-fixture";
 
 const HOST = "margin thread";
 
@@ -300,7 +307,7 @@ async function openMargin(
     await stopSend(queryClient, stopped.key, stopped.request, [createComment]);
   }
   createComment.mockRejectedValue(REFUSAL);
-  const restoreViewport = stubMatchMedia(phone);
+  const restoreViewport = stubViewport(phone ? PHONE_WIDTH : DESKTOP_WIDTH);
   const view = render(
     marginPage(
       queryClient,

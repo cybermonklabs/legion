@@ -101,7 +101,7 @@ import {
 } from "../../__tests__/draft-matrix-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
-import { stubMatchMedia } from "../margin/margin-fixture";
+import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import type { ReplyTarget } from "./composer-model";
 
 const HOST = "phone thread";
@@ -142,7 +142,7 @@ async function openPhone(stopped: boolean): Promise<Page> {
     await stopSend(queryClient, THREAD_KEY, sentRequest(BODY, replyToA), [createComment]);
   }
   createComment.mockRejectedValue(REFUSAL);
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const view = render(tab(NOTHING_READ, true, queryClient));
   await waitFor(() =>
     expect(document.querySelector('[data-turn="comment:comment-b"]')).not.toBe(null)

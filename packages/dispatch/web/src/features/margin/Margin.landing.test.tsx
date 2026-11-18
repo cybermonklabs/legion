@@ -14,11 +14,13 @@ import {
   anchoredAsk,
   CommentLink,
   comment,
+  DESKTOP_WIDTH,
   issue,
+  PHONE_WIDTH,
   ReportEmptyLayoutButton,
   SameCommentLink,
   SelectedItemLabel,
-  stubMatchMedia,
+  stubViewport,
 } from "./margin-fixture";
 import { RELAYOUT_SETTLES_FRAMES } from "./useCardHold";
 
@@ -139,7 +141,7 @@ test("a phone comment deep link highlights its card without expanding it or open
   // reader finds it when they open the review panel, but a thread on a phone opens only in the
   // Thread dialog: an inline expansion left behind here would strand a Reply composer whose Cancel
   // opens the fullscreen thread (#1239).
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter
       initialEntries={[buildIssuePath({ id: comment.id, key: issue.key, kind: "comment" })]}
@@ -179,7 +181,7 @@ test("a desktop comment deep link activates Comments and scrolls its card from P
   const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
   const restoreRects = stubRects(() => 900);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "issue" })]}>
@@ -228,7 +230,7 @@ test("a reader who lands on a comment link can still select another card", async
   // The URL keeps naming its item for the whole visit, so reading it ahead of the reader's own
   // selection - or re-applying it on every render - would pin the linked card as the selected one
   // and leave every later click with nothing to show for it.
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
   const getAsk = answerAnchoredAsk();
   const view = renderCommentLinkLanding([comment, secondComment], [anchoredAsk]);
@@ -259,7 +261,7 @@ test("a reader who lands on a comment link can still select another card", async
 
 test("a reader who lands on a comment link can select a Needs you ask", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
   const getAsk = answerAnchoredAsk();
   const view = renderCommentLinkLanding([comment], [anchoredAsk]);
@@ -285,7 +287,7 @@ test("following the same comment link again brings the reader back to its card",
   // Once per link is once per navigation: the URL still names comment-1 after the reader has
   // moved to another card, so a link back to it has to be honoured rather than seen as already
   // applied.
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
   const view = render(
     <MemoryRouter
@@ -328,7 +330,7 @@ test("following a second comment link selects the item that link names", async (
   const user = userEvent.setup();
   // The route selection is applied once per link, not once ever: a reader who follows another
   // link from the same page has to land on its card.
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
   const view = render(
     <MemoryRouter
@@ -371,7 +373,7 @@ test("the margin holds a linked card in view while the margin is still filling i
   let cardTop = 0;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -416,7 +418,7 @@ test("the margin stops correcting a linked card once the reader scrolls the marg
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -470,7 +472,7 @@ test("a press in the document takes over once the document has reported an empty
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   // The spec's margin reads the issue's decisions, which this issue has none of.
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
     decisions: [],
@@ -516,7 +518,7 @@ test("a press in the document leaves the hold armed while the layout reported is
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = renderLandingWithReport("artifact-handbook");
 
   try {
@@ -550,7 +552,7 @@ test("a text update in the margin keeps its anchoring scroll from taking over", 
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = renderCommentLinkLanding();
 
   try {
@@ -593,7 +595,7 @@ test("a scroll the margin did not perform, with nothing having changed, ends the
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -633,7 +635,7 @@ test("a relayout that scrolls the margin twice leaves the hold alone", async () 
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -673,7 +675,7 @@ test("a stream of scrolls after one relayout does not slide the window along", a
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -719,7 +721,7 @@ test("a relayout's own scroll that lands after a long task leaves the hold alone
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 

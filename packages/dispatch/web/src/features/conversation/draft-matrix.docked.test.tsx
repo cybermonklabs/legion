@@ -107,7 +107,7 @@ import {
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type { Actor, Message } from "../../api/types";
-import { stubMatchMedia } from "../margin/margin-fixture";
+import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import type { ReplyTarget } from "./composer-model";
 import type { SentRequest } from "./send-request";
 
@@ -190,7 +190,7 @@ async function openDocked(stopped?: SentRequest, phone = false): Promise<Page> {
   createComment.mockRejectedValue(REFUSAL);
   createMessage.mockRejectedValue(REFUSAL);
   // Above the phone layout the page keeps the test DOM's own viewport, as it always has.
-  const restoreViewport = phone ? stubMatchMedia(true) : () => {};
+  const restoreViewport = phone ? stubViewport(PHONE_WIDTH) : () => {};
   let unmount = () => {};
   const mount = () => {
     const view = render(tab(NOTHING_READ, true, queryClient));

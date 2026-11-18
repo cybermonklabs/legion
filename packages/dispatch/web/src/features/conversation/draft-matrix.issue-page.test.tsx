@@ -91,7 +91,13 @@ import type { IssueDetails } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { IssuePage } from "../issue-page/IssuePage";
 import { MarginProvider } from "../margin/margin-context";
-import { issue, specArtifact, stubMatchMedia } from "../margin/margin-fixture";
+import {
+  DESKTOP_WIDTH,
+  issue,
+  PHONE_WIDTH,
+  specArtifact,
+  stubViewport,
+} from "../margin/margin-fixture";
 import { buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import type { SentRequest } from "./send-request";
@@ -192,7 +198,7 @@ async function openIssuePage(
     await stopSend(queryClient, stopped.key, stopped.request, [createComment]);
   }
   createComment.mockRejectedValue(REFUSAL);
-  const restoreViewport = stubMatchMedia(phone);
+  const restoreViewport = stubViewport(phone ? PHONE_WIDTH : DESKTOP_WIDTH);
   const runtime = fakeDocumentRuntime();
   const view = render(
     <MemoryRouter

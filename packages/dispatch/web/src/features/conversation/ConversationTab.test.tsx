@@ -36,7 +36,7 @@ import type {
   UserState,
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
-import { stubMatchMedia } from "../margin/margin-fixture";
+import { PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { seedUnread } from "../threads/replies-fixture";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -1188,7 +1188,7 @@ const refusedText = "Couldn't send — the server is down";
 // Resolve on a phone as they do at a desktop width.
 test("on a phone, the reader's own Resolve keeps the thread composer's refused reply and its comment", async () => {
   const user = userEvent.setup();
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const resolve = ownResolveOverAReply();
 
   try {
@@ -1225,7 +1225,7 @@ test("on a phone, the reader's own Resolve keeps the thread composer's refused r
 // that already shows the refusal.
 test("on a phone, a thread reply refused while the reader's Resolve is out outlives the Resolve", async () => {
   const user = userEvent.setup();
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const resolve = ownResolveOverAReply();
 
   try {
@@ -1263,7 +1263,7 @@ test("on a phone, a thread reply refused while the reader's Resolve is out outli
 for (const width of ["phone", "desktop"] as const) {
   test(`at a ${width} width, the reader's own Resolve keeps the card's refused reply and its comment`, async () => {
     const user = userEvent.setup();
-    const restoreViewport = width === "phone" ? stubMatchMedia(true) : () => {};
+    const restoreViewport = width === "phone" ? stubViewport(PHONE_WIDTH) : () => {};
     const resolve = ownResolveOverAReply();
 
     try {
@@ -1303,7 +1303,7 @@ for (const width of ["phone", "desktop"] as const) {
 // the composer, and its draft, to the other comment.
 test("on a phone, another comment's Reply opens the thread whose reply was refused after Back", async () => {
   const user = userEvent.setup();
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const stub = stubLists({
     comments: [
       comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" }),
@@ -1561,7 +1561,7 @@ function phoneOverCommentA(
   createComment: Mock<typeof api.createComment>,
   queryClient = newQueryClient()
 ) {
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const stub = stubLists({
     comments: [comment("comment-a", { body: "Comment A", created_at: "2026-09-20T00:00:00Z" })],
   });
@@ -2491,7 +2491,7 @@ test("landing on a comment's reply opens the thread it belongs to and marks that
 });
 
 test("on a phone, landing on a comment opens its thread dialog and reading it marks it", async () => {
-  const restoreViewport = stubMatchMedia(true);
+  const restoreViewport = stubViewport(PHONE_WIDTH);
   const root = comment("root-comment", { body: "Root comment" });
   const reply = comment("reply-comment", {
     body: "Reply comment",

@@ -137,7 +137,7 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { sentRequest, stopSend } from "../../__tests__/stop-late-write";
 import { api } from "../../api/client";
 import type { Comment } from "../../api/types";
-import { issue, stubMatchMedia } from "../margin/margin-fixture";
+import { DESKTOP_WIDTH, issue, PHONE_WIDTH, stubViewport } from "../margin/margin-fixture";
 import { saveCommentEdit } from "./send-request";
 
 /** The send name of a comment's editor (`ThreadCard`'s `COMMENT_EDIT_SEND_KEY`). */
@@ -209,7 +209,7 @@ async function openConversation(
   });
   const editComment = spyOn(api, "editComment").mockRejectedValue(REFUSAL);
   if (stopped) await stopTheEditSave(queryClient, editComment, conversationComment);
-  const restoreViewport = stubMatchMedia(phone);
+  const restoreViewport = stubViewport(phone ? PHONE_WIDTH : DESKTOP_WIDTH);
   const view = render(tab(NOTHING_READ, true, queryClient));
   await waitFor(() =>
     expect(document.querySelector('[data-turn="comment:comment-a"]')).not.toBe(null)
@@ -268,7 +268,7 @@ async function openMargin(phone: boolean, stopped: boolean, withReply = false): 
   ];
   const editComment = spyOn(api, "editComment").mockRejectedValue(REFUSAL);
   if (stopped) await stopTheEditSave(queryClient, editComment, threadA);
-  const restoreViewport = stubMatchMedia(phone);
+  const restoreViewport = stubViewport(phone ? PHONE_WIDTH : DESKTOP_WIDTH);
   const view = render(marginPage(queryClient, <RegisterDocument />));
   await waitFor(() => expect(marginCard(threadA.id)).toBeInTheDocument());
   return {
