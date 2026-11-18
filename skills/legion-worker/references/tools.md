@@ -4,9 +4,8 @@ Part of `skill://legion-worker`. Read it before you read a shared database, a se
 another role's transcript among them; before you run a build or a test suite in your pod; the
 moment your phase needs a tool the worker image may not carry — a database client, a linter, a
 one-off CLI — before you install, download, or vendor anything; before you measure Oh My Pi's
-binary; before you run knives on a fork in a pod; and when a test fails in your pod. Every path it
-cites is in cybermonklabs/legion, except the knives paths of its knives section, which are in
-knives v3.2.6.
+binary; and when a test fails in your pod. Every path it cites is in cybermonklabs/legion, except
+the knives paths of its knives section, which are in knives v3.2.6.
 
 ## What runs in your pod, and what runs on the pull request
 
