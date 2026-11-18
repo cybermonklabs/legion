@@ -698,118 +698,69 @@ func TestSessionConsumerRegistrationAskingForNoConsumerIsRefused(t *testing.T) {
 	rig.requireNothingWritten(t, "ses_no_ask")
 }
 
-// The floor a client is dated against rises with each release that changes what a client must do,
-// so the comparison has to hold for floors this repository has not reached yet. Comparing each
-// part as text is the bug this table exists to catch: it calls "9" above "16" and "10" below "9",
-// which dates a two-year-old build as current and a current one as too old. The cases below are
-// the ones a refusal table pinned to the floor 14.1.0 cannot write.
-func TestVersionAtLeastComparesEachPartAsANumber(t *testing.T) {
-	for _, c := range []struct {
-		version string
-		floor   string
-		want    bool
-	}{
-		// A minor of two digits is above a single-digit floor, which a comparison made as text
-		// gets backwards.
-		{version: "14.10.0", floor: "14.9.0", want: true},
-		{version: "16.10.0", floor: "16.6.0", want: true},
-		// As text "9" sorts above "16", so that comparison calls a two-year-old build current.
-		{version: "9.0.0", floor: "16.6.0", want: false},
-		// A prerelease of a release carries that release's behaviour: the suffix is cut off the
-		// part rather than making the build undatable.
-		{version: "14.1.0-rc.1", floor: "14.1.0", want: true},
-		// A patch above the floor's does not make up for a minor below it.
-		{version: "14.0.9", floor: "14.1.0", want: false},
-		// A build that is no version at all cannot be dated, and the refusal then names the
-		// upgrade.
-		{version: "source", floor: "14.1.0", want: false},
-		// A version missing its patch part is not one this listener can date either.
-		{version: "14.1", floor: "14.1.0", want: false},
-	} {
-		t.Run(c.version+" against "+c.floor, func(t *testing.T) {
-			if got := versionAtLeast(c.version, c.floor); got != c.want {
-				t.Fatalf("versionAtLeast(%q, %q) = %t, want %t", c.version, c.floor, got, c.want)
-			}
-		})
-	}
-}
-
 // A session that receives nothing reads why in its own transcript, from this refusal, so the
-// refusal has to say what that session's own client must do. A build older than consumer delivery,
-// another client, or one that names its build vaguely is told the release to upgrade to and what
-// it registered as; a pi-envoy at or above that release is told the truth about itself instead,
-// since it asks for a consumer whenever its relay subject is open and that subject was not open -
-// telling it to upgrade to a release it already runs would name the wrong cause.
+// refusal has to say what that session's own client must do. Every client that reaches it predates
+// @sjawhar/pi-envoy 17.8.0, the first release that asks for a consumer on every registration: a
+// build older than consumer delivery, a pi-envoy that asks for one only while its relay subject is
+// open (14.1.0 to 17.7.0), another client, or one that names its build vaguely. Each is told to
+// upgrade to that release, and what it registered as. None is told only that it registers again
+// at its next heartbeat, as a pi-envoy from 14.1.0 once was: that release goes on registering
+// without a consumer whenever its relay subject is closed, and only the upgrade stops it.
 func TestSessionConsumerRefusalSaysWhatTheClientMustDo(t *testing.T) {
-	const upgrade = "upgrade to @sjawhar/pi-envoy 14.1.0 or later"
+	const remedy = "; this client predates the consumer delivery this listener requires, so upgrade to @sjawhar/pi-envoy 17.8.0 or later, the first release that asks for a consumer on every registration, or to a build of this client that does (this registration came from "
 	for _, c := range []struct {
 		name      string
 		sessionID string
 		client    string
-		want      []string
-		unwanted  string
+		named     string
 	}{
 		{
 			name:      "a pi-envoy older than consumer delivery",
 			sessionID: "ses_old_plugin",
 			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.0.0"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy 14.0.0"},
+			named:     "@sjawhar/pi-envoy 14.0.0",
 		},
 		{
-			// 8 sorts above 14 as text, so a comparison made part by part as strings would call
-			// this release current and tell a session on a two-year-old plugin that its relay
-			// subject is closed. The tag pi-envoy-v8.14.1 exists.
-			name:      "a released pi-envoy whose major sorts above the floor as text",
-			sessionID: "ses_text_sorted_plugin",
-			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"8.14.1"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy 8.14.1"},
-		},
-		{
-			// A prerelease of the floor carries the floor's behaviour, so its suffix is left out
-			// of the comparison rather than making the build undatable.
-			name:      "a prerelease of the release that asks for one",
-			sessionID: "ses_prerelease_plugin",
-			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.1.0-rc.1"`,
-			want:      []string{"@sjawhar/pi-envoy 14.1.0-rc.1 asks for a consumer only while its relay subject is open"},
-			unwanted:  upgrade,
-		},
-		{
-			name:      "a pi-envoy at the release that asks for one",
+			name:      "the first pi-envoy with consumer delivery, which asks only while its relay subject is open",
 			sessionID: "ses_floor_plugin",
 			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"14.1.0"`,
-			want:      []string{"@sjawhar/pi-envoy 14.1.0 asks for a consumer only while its relay subject is open"},
-			unwanted:  upgrade,
+			named:     "@sjawhar/pi-envoy 14.1.0",
 		},
 		{
-			name:      "a pi-envoy newer than it",
-			sessionID: "ses_current_plugin",
+			name:      "a pi-envoy between the two",
+			sessionID: "ses_between_plugin",
 			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"16.5.0"`,
-			want:      []string{"@sjawhar/pi-envoy 16.5.0 asks for a consumer only while its relay subject is open", "next heartbeat"},
-			unwanted:  upgrade,
+			named:     "@sjawhar/pi-envoy 16.5.0",
+		},
+		{
+			name:      "the last pi-envoy that asks only while its relay subject is open",
+			sessionID: "ses_last_plugin",
+			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"17.7.0"`,
+			named:     "@sjawhar/pi-envoy 17.7.0",
 		},
 		{
 			name:      "a pi-envoy whose build is no version at all",
 			sessionID: "ses_unparsed_plugin",
 			client:    `"plugin":"@sjawhar/pi-envoy","plugin_version":"source"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy source"},
+			named:     "@sjawhar/pi-envoy source",
 		},
 		{
 			name:      "another plugin at a bundle commit",
 			sessionID: "ses_other_plugin",
 			client:    `"plugin":"@sjawhar/claude-envoy","plugin_version":"68de3e90c155"`,
-			want:      []string{upgrade, "@sjawhar/claude-envoy 68de3e90c155"},
+			named:     "@sjawhar/claude-envoy 68de3e90c155",
 		},
 		{
 			name:      "a client naming a package and no version",
 			sessionID: "ses_no_version",
 			client:    `"plugin":"@sjawhar/pi-envoy"`,
-			want:      []string{upgrade, "@sjawhar/pi-envoy, which names no version"},
+			named:     "@sjawhar/pi-envoy, which names no version",
 		},
 		{
 			name:      "a client naming a version and no package",
 			sessionID: "ses_no_package",
 			client:    `"plugin_version":"16.5.0"`,
-			want:      []string{upgrade, "a client naming version 16.5.0 and no package"},
+			named:     "a client naming version 16.5.0 and no package",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -818,13 +769,11 @@ func TestSessionConsumerRefusalSaysWhatTheClientMustDo(t *testing.T) {
 			refusal := rig.refusedSubscribe(t, `{"session_id":"`+c.sessionID+`","self_subscribed":true,"topics":[],`+c.client+`}`)
 
 			refusal.requireRefused(t, http.StatusConflict, "not_requested")
-			for _, want := range c.want {
-				if !strings.Contains(refusal.Error, want) {
-					t.Fatalf("refusal %q names no %q", refusal.Error, want)
-				}
-			}
-			if c.unwanted != "" && strings.Contains(refusal.Error, c.unwanted) {
-				t.Fatalf("refusal %q names %q, which this client already runs", refusal.Error, c.unwanted)
+			// The whole answer, so an old answer kept beside the new one fails too.
+			want := c.sessionID + " asked for no session consumer: a session receives only what its own consumer holds, so register with delivery.consumer true" +
+				remedy + c.named + ")"
+			if refusal.Error != want {
+				t.Fatalf("refusal %q, want %q", refusal.Error, want)
 			}
 			rig.requireNothingWritten(t, c.sessionID)
 		})

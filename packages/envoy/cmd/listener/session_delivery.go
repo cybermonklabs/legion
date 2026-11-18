@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,14 +43,22 @@ const (
 	deliveryReasonNotRequested = "not_requested"
 )
 
-// consumerPluginPackage and consumerPluginMinimumVersion name the release of Oh My Pi's plugin
-// that first asked for the session's durable consumer, @sjawhar/pi-envoy 14.1.0
-// (packages/pi-envoy/CHANGELOG.md, 14.1.0, "Consumer delivery"); every release before it receives
-// from a plain NATS subscription this listener no longer feeds. noConsumerRemedy says what the
-// refusal below tells a client at or above that release and what it tells every other.
+// consumerPluginPackage and consumerPluginAlwaysAsksVersion name the first release of Oh My Pi's
+// plugin that asks for the session's consumer on every registration it sends, @sjawhar/pi-envoy
+// 17.8.0, tagged (pi-envoy-v17.8.0) on the change that made this listener refuse every other
+// registration (#2603). Measured on the published bundles: 17.7.0's dist/envoy.js sends its
+// delivery field only while the session's relay subject is open and no replay is starting (the
+// `...asking === undefined ? {} : { delivery: asking.delivery.registration() }` spread of its
+// registration body), and 17.8.0's holds no such spread: it sends `consumer: true` on every
+// registration and refuses, before sending anything, to register a session holding no relay
+// subject (registerWithRelay). https://unpkg.com/@sjawhar/pi-envoy@17.7.0/dist/envoy.js and
+// https://unpkg.com/@sjawhar/pi-envoy@17.8.0/dist/envoy.js; in this tree, registerWithRelay in
+// packages/envoy-client/src/consumer-delivery.ts and SubscribeInput.delivery, which every
+// registration must carry, in packages/envoy-client/src/transport.ts. noConsumerRemedy names this
+// release as the upgrade.
 const (
-	consumerPluginPackage        = "@sjawhar/pi-envoy"
-	consumerPluginMinimumVersion = "14.1.0"
+	consumerPluginPackage           = "@sjawhar/pi-envoy"
+	consumerPluginAlwaysAsksVersion = "17.8.0"
 )
 
 // sessionConsumerCallTimeout bounds the consumer calls a registration makes before it answers,
@@ -624,57 +630,20 @@ func clientNamed(body subscribeBody) string {
 	}
 }
 
-// noConsumerRemedy says what the client that asked for no consumer must do, for the refusal below.
-// A pi-envoy at or above consumerPluginMinimumVersion asks for a consumer whenever its relay
-// subject is open, and sends no delivery field while it holds none
-// (packages/pi-envoy/extensions/envoy.ts, the `asking === undefined` spread of its registration
-// body), so such a session needs no upgrade: what it lacks is that subject, and its next heartbeat
-// registers again once it has one. Every other client - an older pi-envoy, another plugin, or one
-// naming no version or no package at all - is told the build to replace, since an operator reading
-// this refusal in the session's own transcript has nothing else to go on.
+// noConsumerRemedy says what the client that asked for no consumer must do, for the refusal below:
+// upgrade to consumerPluginAlwaysAsksVersion or later, or to a build of its own that asks for a
+// consumer on every registration, and the answer names the client the registration came from
+// (clientNamed). Every client that reaches this refusal predates that release: a pi-envoy below
+// 14.1.0 asks for no consumer at all (packages/pi-envoy/CHANGELOG.md, 14.1.0, "Consumer
+// delivery"), one from 14.1.0 to 17.7.0 asks only while its relay subject is open, and every
+// release since asks on every registration and sends none while it holds no relay subject. So the
+// answer is one for every client and dates none of them, and an operator reading it in the
+// session's own transcript has nothing else to go on.
 func noConsumerRemedy(body subscribeBody) string {
-	named := clientNamed(body)
-	if body.Plugin == consumerPluginPackage && versionAtLeast(body.PluginVersion, consumerPluginMinimumVersion) {
-		return named + " asks for a consumer only while its relay subject is open, so this session holds none; it registers again at its next heartbeat, with a consumer once that subject is open"
-	}
-	return "upgrade to " + consumerPluginPackage + " " + consumerPluginMinimumVersion +
-		" or later, or to a build of this client that sends the field (this registration came from " + named + ")"
-}
-
-// versionAtLeast reports whether version is floor or newer, both as major.minor.patch. A version
-// that does not parse that way - a bundle commit, a build name, an empty field - is not: the
-// refusal then names the upgrade, which is the answer that holds for a client this listener
-// cannot date.
-func versionAtLeast(version, floor string) bool {
-	for i := range 3 {
-		got, gotOK := versionPart(version, i)
-		want, wantOK := versionPart(floor, i)
-		if !gotOK || !wantOK {
-			return false
-		}
-		if got != want {
-			return got > want
-		}
-	}
-	return true
-}
-
-// versionPart is the i-th dot-separated number of version, and whether it is one. A suffix on that
-// number - a prerelease, a build - is left out of the comparison.
-func versionPart(version string, i int) (int, bool) {
-	parts := strings.Split(version, ".")
-	if i >= len(parts) {
-		return 0, false
-	}
-	digits := parts[i]
-	if end := strings.IndexFunc(digits, func(r rune) bool { return r < '0' || r > '9' }); end >= 0 {
-		digits = digits[:end]
-	}
-	number, err := strconv.Atoi(digits)
-	if err != nil {
-		return 0, false
-	}
-	return number, true
+	return "this client predates the consumer delivery this listener requires, so upgrade to " +
+		consumerPluginPackage + " " + consumerPluginAlwaysAsksVersion +
+		" or later, the first release that asks for a consumer on every registration, or to a build of this client that does (this registration came from " +
+		clientNamed(body) + ")"
 }
 
 // consumerFor creates the session's consumer when the stream holds none and otherwise updates it
@@ -705,8 +674,8 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, t
 	if body.Delivery == nil || !body.Delivery.Consumer {
 		// A registration with no delivery field asks for nothing this listener delivers, so it is
 		// told so rather than left registered and silent, with what to do about it
-		// (noConsumerRemedy, which says which client each answer is for), since the session's own
-		// transcript is where whoever runs it reads why its Envoy went quiet.
+		// (noConsumerRemedy), since the session's own transcript is where whoever runs it reads
+		// why its Envoy went quiet.
 		return sessionDeliveryOutcome{}, &deliveryRefusal{
 			status: http.StatusConflict,
 			Error: fmt.Sprintf("%s asked for no session consumer: a session receives only what its own consumer holds, so register with delivery.consumer true; %s",

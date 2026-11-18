@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The listener's `409 not_requested` refusal now tells every client to upgrade `@sjawhar/pi-envoy`
+  to 17.8.0 or later, the first release that asks for a consumer on every registration. It told a
+  pi-envoy from 14.1.0 that it asks for a consumer only while its relay subject is open, which is
+  not true of any release that can reach this refusal.
+custom:
+    Issue: pr4109
