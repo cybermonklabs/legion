@@ -1,0 +1,25 @@
+kind: Added
+body: |-
+    The controller's `legion` tool gains `op: "relaunch"`, which takes a `claim` token as the
+    daemon's notice of an unreachable claim names it and posts `POST /legion/v1/claims/relaunch`.
+    The daemon stops that claim's process through its launcher and starts it again on the same
+    session. `read_state`'s summary ends a claim's line with `unreachable <since> claim <token>`
+    while Envoy cannot reach it, and adds a `controller unreachable <since>` line while Envoy
+    cannot reach the controller.
+    Every Oh My Pi session Legion drives sends its activity report again every 5 minutes while a
+    turn is open, whatever it says, from a timer of its own process: the daemon's relaunch guard
+    reads a report of the open turn in the last 20 minutes as a process that still runs that turn.
+    The controller the daemon launched sends its activity report too, under its registration's
+    claim, at each turn's end and on a change between turns.
+    The claim boot (`claims/register` and `claims/ready`) now waits up to an hour for a daemon that
+    is not serving, and `handoff_complete`, `sign_off`, `register_gate` and the turn outcome wait
+    up to an hour where they waited 10 minutes. A daemon is not serving for a refused, reset,
+    closed or timed-out connection, a host that does not resolve or cannot be reached, an uncoded
+    502, 503 or 504, and an attempt that has no answer after 5 minutes, which is ended before the
+    next. The stall watch does not count the time a tool call spent waiting for the daemon.
+    A phase reminder that comes while a cut-turn note is on its way to the session waits for the
+    note, for 10 seconds at most. The plugin declares daemon API contract 159 and plugin interface
+    version 6: install it with the `@sjawhar/pi-envoy` released beside it.
+time: 2026-11-18T13:20:10Z
+custom:
+    Issue: pr4175

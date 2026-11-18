@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+    Daemon API contract 159. `@legion/contracts/legion-api` exports `LegionRelaunchRequest`
+    (`grantId` and `claim`, the claim's token) and `LegionRelaunchResponse` (`{}`), the shapes of
+    `POST /legion/v1/claims/relaunch`, the controller's relaunch of a claim Envoy cannot reach on
+    its same session. Every claim view of `GET /legion/v1/state` and the controller's locator
+    take an optional `unreachable`, `{since, lastSeen?}`: the daemon's mark of a claim whose
+    session has not registered with Envoy for more than 20 minutes, absent while the claim is
+    reachable. The daemon API fixtures carry the relaunch's answer (`relaunch.json`), a marked
+    claim in `state.json`, contract 159 in `version.json`, and in `stall-defaults.json`
+    `daemonWaitBudgetMs`, the hour a worker's call waits for a daemon that is not serving.
+time: 2026-11-18T13:20:10Z
+custom:
+    Issue: pr4175
