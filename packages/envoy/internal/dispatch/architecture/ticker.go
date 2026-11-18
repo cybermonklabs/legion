@@ -31,7 +31,16 @@ const architectureImportLease = "architecture-import"
 // its own, finds that interval imported and skips rather than spending the same GitHub calls
 // again; leases is required, as it is of every leased loop (cmd/dispatch exits at boot if the
 // lease pool cannot be opened).
-func Run(ctx context.Context, importer *Importer, leases duty.Leases) {
+//
+// atStart runs one pass as Run starts, before its jittered ticks, for an end-to-end test that must
+// see a pass inside its window (DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START, under the test hooks),
+// as delivery.Reconcile.FirstPassAtStart does for the delivery reconcile. The pass takes the lease
+// for the current interval as any tick's does, so a jittered tick inside that interval finds it
+// served. A deployment never sets it: the jitter is what keeps a restart from stampeding GitHub.
+func Run(ctx context.Context, importer *Importer, leases duty.Leases, atStart bool) {
+	if atStart && importer.HasApp() {
+		syncAllLeased(ctx, importer, leases, time.Now())
+	}
 	duty.RunJittered(ctx, SyncInterval, func() bool {
 		if importer.HasApp() {
 			return false
