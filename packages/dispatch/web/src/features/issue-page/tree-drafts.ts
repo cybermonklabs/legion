@@ -71,8 +71,9 @@ import { storedReading } from "./stored-reading";
  * conversation for an ask, a comment and a message, and the one batched reference read for every
  * other block, whose `name` for a block is that block's stored excerpt. No document's text is
  * read, and no request is made per node. Where the read sends the server's reading of those
- * words beside them - every one of these reads does, but for a result - the draft keeps it with
- * the record the words are, which is what the row draws (`TreeNode.tree`).
+ * words beside them - every one of these reads does, a result's (`observed_tree`) included,
+ * though a server of the build before sends none for a result - the draft keeps it with the
+ * record the words are, which is what the row draws (`TreeNode.tree`).
  *
  * The tree is the issue's conversation and what it revealed: a document, an artifact and a
  * handoff are nodes of the issue and not of its conversation, so no builder here drafts one. A
@@ -384,19 +385,12 @@ export function blockWords(name: string): string {
  * draws a stored text as plain words draws, since its marks are markup and no word of it (R21),
  * and a mark after a sentence's end (`today.**`) would hide that end from `firstLineOf`.
  *
- * They are the words of the text's reading (`storedReading`) - the text parsed by CommonMark
- * with GFM less its autolink literals and with front matter, its lists and quotes held to the
- * server's nesting bound, as the page's markdown engine parses it short of that engine's own
- * extensions, in the shape of the server's reading - taken by the walk that takes the words of
- * the server's reading (`wordsOf`). They are so what the server's reading holds for every text
- * that holds none of three things: a container directive (a typed block such as `:::ask`), which
- * the engine's own extensions read and which reads here as its literal fence lines and content;
- * a Proof mark span (`<span data-proof=…>`), which they read too and which reads here as HTML
- * around its text; and a bare address holding markup - a `*` pair inside a bare URL, say - whose
- * characters the server's reading keeps as written and which reads here as that markup, since
- * this parse leaves autolink literals out. An escape is the character it escapes (`1\.` is `1.`),
- * a code span's content reads as written, a link reads as its words and an autolink in angle
- * brackets as its address. An image, an HTML comment or tag, a table's pipes
+ * They are the words of the text's reading (`storedReading`), taken by the walk that takes the
+ * words of the server's reading (`wordsOf`), so they are what the server's reading holds for
+ * every text that holds none of three things: a container directive, a Proof mark span and a
+ * bare address holding markup (`STORED_TEXT_PARSE`). An escape is the character it escapes
+ * (`1\.` is `1.`), a code span's content reads as written, a link reads as its words and an
+ * autolink in angle brackets as its address. An image, an HTML comment or tag, a table's pipes
  * and rule, a thematic break and the markers of a heading, a quote and a list are no word, and
  * each block's words stand apart from the next block's. Every character the author wrote as a
  * word, a private-use one included, reads as written. White space collapses to single spaces.
@@ -421,10 +415,9 @@ export function plainWords(markdown: string, holder?: object): string {
 
 /** The words of a stored markdown text as `plainWords` reads them, with no address written
  *  short: a bare address and an autolink's stay as written. A caller that names each reference
- *  itself reads these, since a short form leaves it no address to name. `holder` is what holds
- *  the text, as `plainWords` takes it. */
-export function plainWordsRaw(markdown: string, holder?: object): string {
-  return wordsOf(storedReading(markdown, holder)).replace(/\s+/gu, " ").trim();
+ *  itself reads these, since a short form leaves it no address to name. */
+export function plainWordsRaw(markdown: string): string {
+  return wordsOf(storedReading(markdown)).replace(/\s+/gu, " ").trim();
 }
 
 /**

@@ -1,38 +1,10 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
 )
-
-// observedTreeNode is one node of a display tree as observedTreeWords walks it: its own text, or
-// the nodes it holds.
-type observedTreeNode struct {
-	Text    string             `json:"text"`
-	Content []observedTreeNode `json:"content"`
-}
-
-// observedTreeWords is every text run of a display tree, in document order, joined as written:
-// the words a reader is shown, with no mark's markup among them.
-func observedTreeWords(t *testing.T, tree json.RawMessage) string {
-	t.Helper()
-	var root observedTreeNode
-	if err := json.Unmarshal(tree, &root); err != nil {
-		t.Fatalf("decode the display tree %s: %v", tree, err)
-	}
-	var words strings.Builder
-	var walk func(node observedTreeNode)
-	walk = func(node observedTreeNode) {
-		words.WriteString(node.Text)
-		for _, child := range node.Content {
-			walk(child)
-		}
-	}
-	walk(root)
-	return words.String()
-}
 
 // A result's observed text is markdown, and the results read answers the tree a reader is shown
 // of it as `observed_tree` under `Dispatch-Trees: 1`, as it answers a check's `text_tree`, so the
@@ -56,7 +28,7 @@ func TestTheResultsReadCarriesEachResultsObservedTree(t *testing.T) {
 	target := "/api/v1/issues/" + issue.Key + "/results"
 	const path = "checks.0.results.0.observed_tree"
 	tree := treeAt(t, handler, target, path)
-	if got, want := observedTreeWords(t, tree), "Ran go test: pass."; got != want {
+	if got, want := treeText(t, tree), "Ran go test: pass."; got != want {
 		t.Errorf("%s reads %q, want the observed text's words without its marks, %q", path, got, want)
 	}
 	for _, markup := range []string{"**", "`"} {

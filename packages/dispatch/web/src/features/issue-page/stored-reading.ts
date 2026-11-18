@@ -1,9 +1,15 @@
 import { boundBlockNesting } from "@legion/proof-editor/block-nesting";
 import { fromMarkdown, type Options } from "mdast-util-from-markdown";
 import { frontmatterFromMarkdown } from "mdast-util-frontmatter";
-import { gfmFromMarkdown } from "mdast-util-gfm";
+import { gfmFootnoteFromMarkdown } from "mdast-util-gfm-footnote";
+import { gfmStrikethroughFromMarkdown } from "mdast-util-gfm-strikethrough";
+import { gfmTableFromMarkdown } from "mdast-util-gfm-table";
+import { gfmTaskListItemFromMarkdown } from "mdast-util-gfm-task-list-item";
 import { frontmatter } from "micromark-extension-frontmatter";
-import { gfm } from "micromark-extension-gfm";
+import { gfmFootnote } from "micromark-extension-gfm-footnote";
+import { gfmStrikethrough } from "micromark-extension-gfm-strikethrough";
+import { gfmTable } from "micromark-extension-gfm-table";
+import { gfmTaskListItem } from "micromark-extension-gfm-task-list-item";
 
 import type { DisplayTree } from "../../api/types";
 
@@ -27,41 +33,30 @@ type Parsed = ParsedRoot["children"][number];
 type ParsedRow = Extract<Parsed, { type: "tableRow" }>;
 
 /**
- * The mdast halves of GFM's syntax (`gfmFromMarkdown`) less autolink literals': that one is the
- * only one holding `transforms`, its search for bare addresses over every text node. The release
- * the parse is built on returns five, autolink literals' first; the check below throws where a
- * later release reshapes them, so that what the parse reads cannot change without a word.
- */
-const GFM_FROM_MARKDOWN = gfmFromMarkdown().filter((extension) => !("transforms" in extension));
-if (
-  GFM_FROM_MARKDOWN.length !== 4 ||
-  GFM_FROM_MARKDOWN.some((extension) => "literalAutolink" in (extension.enter ?? {}))
-) {
-  throw new Error(
-    "mdast-util-gfm's gfmFromMarkdown() changed shape: the stored-text parse " +
-      "(stored-reading.ts) can no longer leave out autolink literals by dropping the one " +
-      "extension holding transforms. Read the new release and change how it is left out."
-  );
-}
-
-/**
  * The parse a stored text is read with: CommonMark with GFM's tables, strikethrough with one
  * tilde or two, task boxes and footnotes, and YAML front matter, a `---` fenced block a text opens
  * with, its lists and quotes nesting within the document service's bound (`boundBlockNesting`).
  * It is the base of the parse the page's markdown engine reads a body with, since remark-parse,
  * remark-gfm and remark-frontmatter are these extensions over `mdast-util-from-markdown`, less
- * GFM's autolink literals. Those are left out, both halves, because a bare URL, `www.` address or
- * email reads as the same words whether it is linked or not, while that extension was the parse's
- * largest single cost as measured. micromark's tokenizer refuses a construct an extension's
- * `disable.null` names (`micromark/lib/create-tokenizer.js`), and these are the three names
- * `micromark-extension-gfm-autolink-literal` gives its constructs; the mdast half is left out of
- * `GFM_FROM_MARKDOWN`. The words differ where a bare address holds markup, since the
- * extension reads an address as written before emphasis, code or links form, so every character
- * inside it is the address's own: here a `*`, `_` or `~` pair inside a bare URL reads as a mark
- * rather than as the URL's own characters, and so does a `_` pair in an email's name, and a code
- * span's backticks, a link's brackets and target, a backslash escape and a character reference
- * inside a bare URL read as that markup. The server's reading, which reads bare addresses as the
- * engine does (`pmdoc/linkify.go`), then keeps those characters as written.
+ * GFM's autolink literals. GFM is built here from its constructs' own extensions, in the order
+ * and with the options `micromark-extension-gfm`'s `gfm()` and `mdast-util-gfm`'s
+ * `gfmFromMarkdown()` combine them in, with autolink literals' two halves left out of both lists.
+ * Left out rather than disabled by name: micromark breaks its text at every character a construct
+ * is listed for whose `previous` allows it (`micromark/lib/initialize/text.js`) and only then
+ * refuses a disabled one (`micromark/lib/create-tokenizer.js`), and the email construct is listed
+ * for every ASCII letter and digit and allowed after any character but those, `+`, `-`, `.`, `_`
+ * and `/`, so a disabled extension still costs a turn at the start of nearly every word, while
+ * one that is not in the list costs nothing.
+ *
+ * Autolink literals are left out because a bare URL, `www.` address or email reads as the same
+ * words whether it is linked or not, while that extension was the parse's largest single cost as
+ * measured. The words differ where a bare address holds markup, since the extension reads an
+ * address as written before emphasis, code or links form, so every character inside it is the
+ * address's own: here a `*`, `_` or `~` pair inside a bare URL reads as a mark rather than as the
+ * URL's own characters, and so does a `_` pair in an email's name, and a code span's backticks, a
+ * link's brackets and target, a backslash escape and a character reference inside a bare URL read
+ * as that markup. The server's reading, which reads bare addresses as the engine does
+ * (`pmdoc/linkify.go`), then keeps those characters as written.
  *
  * The engine's other extensions on top of that base are not applied here; among them, a container
  * directive (a typed block such as `:::ask`) reads as its literal fence lines and the content
@@ -70,11 +65,19 @@ if (
  */
 const STORED_TEXT_PARSE: Options = {
   extensions: [
-    gfm(),
-    { disable: { null: ["wwwAutolink", "protocolAutolink", "emailAutolink"] } },
+    gfmFootnote(),
+    gfmStrikethrough(),
+    gfmTable(),
+    gfmTaskListItem(),
     frontmatter(["yaml"]),
   ],
-  mdastExtensions: [...GFM_FROM_MARKDOWN, frontmatterFromMarkdown(["yaml"])],
+  mdastExtensions: [
+    gfmFootnoteFromMarkdown(),
+    gfmStrikethroughFromMarkdown(),
+    gfmTableFromMarkdown(),
+    gfmTaskListItemFromMarkdown(),
+    frontmatterFromMarkdown(["yaml"]),
+  ],
 };
 
 /** One remembered reading (`readings`): the reading, and how many registrations (`releases`) of
@@ -169,10 +172,13 @@ const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
  * one: `withShortAddresses` writes an address into a copy of the nodes it changes.
  */
 export function storedReading(markdown: string, holder?: object): DisplayTree {
+  // A holder asking again for the text it last asked for is answered first, before even the
+  // plain path's test: that is every redraw of a node whose text holds markup. A plain text is
+  // never held, so it passes this and takes the plain path.
+  const own = holder === undefined ? undefined : held.get(holder);
+  if (own?.markdown === markdown) return own.reading;
   if (isPlainText(markdown)) return plainReading(markdown);
   if (holder === undefined) return readings.get(markdown)?.reading ?? parsedReading(markdown);
-  const own = held.get(holder);
-  if (own?.markdown === markdown) return own.reading;
   let entry = readings.get(markdown);
   if (entry === undefined) {
     entry = { holders: 0, reading: parsedReading(markdown) };

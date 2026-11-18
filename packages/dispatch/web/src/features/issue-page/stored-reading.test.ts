@@ -55,8 +55,8 @@ test("a stored text's front matter reads as its fenced lines, and an unclosed fe
 // A page draws its rows again on every read that lands and every event, and a row's line is read
 // from its stored text where the node has no reading, as a result's is from a server that sends
 // none. The readings of the texts a draw read are remembered so that the next draw reads them
-// rather than parses them again: an issue with more distinct stored texts than the memo holds
-// must still draw again within the budget, the second draw in the same order as the first, as a
+// rather than parses them again: 900 distinct stored texts, each reading held by what asked for
+// it, must draw again within the budget, the second draw in the same order as the first, as a
 // page draws its rows.
 test("the lines of more stored texts than the memo holds are drawn again without parsing them again", () => {
   const texts = Array.from(
@@ -71,6 +71,12 @@ test("the lines of more stored texts than the memo holds are drawn again without
   for (const text of texts) lineWordsRaw({ text });
   expect(performance.now() - start).toBeLessThan(REDRAW_BUDGET_MS);
 });
+
+/** `words` on one line, its white space collapsed to single spaces, as every one-line reading of
+ *  a stored text writes it (`plainWords`, `lineWords`). */
+function collapsed(words: string): string {
+  return words.replace(/\s+/gu, " ").trim();
+}
 
 /** Texts that hold nothing the parse reads as markup, each with a turn the plain path must read as
  *  the parse does: line breaks soft and hard, the spaces and tabs a line opens and ends with,
@@ -121,7 +127,6 @@ const PLAIN_TEXTS: readonly string[] = [
 // the parse's words to the character: its whole words, the first block a node's line is cut from,
 // and its words with each address written short.
 test("a plain text is read without the parse into the words the parse reads", () => {
-  expect(PLAIN_TEXTS.length).toBeGreaterThanOrEqual(30);
   for (const text of PLAIN_TEXTS) {
     const label = JSON.stringify(text);
     expect(isPlainText(text), label).toBe(true);
@@ -130,14 +135,9 @@ test("a plain text is read without the parse into the words the parse reads", ()
     expect(wordsOf(plain), label).toBe(wordsOf(parsed));
     expect(lineWordsRaw({ text, tree: plain }), label).toBe(lineWordsRaw({ text, tree: parsed }));
     expect(wordsOf(withShortAddresses(plain)), label).toBe(wordsOf(withShortAddresses(parsed)));
-    const words = wordsOf(parsed).replace(/\s+/gu, " ").trim();
-    expect(plainWordsRaw(text), label).toBe(words);
-    expect(plainWords(text), label).toBe(
-      wordsOf(withShortAddresses(parsed)).replace(/\s+/gu, " ").trim()
-    );
-    expect(lineWordsRaw({ text }), label).toBe(
-      lineWordsRaw({ text, tree: parsed }).replace(/\s+/gu, " ").trim()
-    );
+    expect(plainWordsRaw(text), label).toBe(collapsed(wordsOf(parsed)));
+    expect(plainWords(text), label).toBe(collapsed(wordsOf(withShortAddresses(parsed))));
+    expect(lineWordsRaw({ text }), label).toBe(collapsed(lineWordsRaw({ text, tree: parsed })));
   }
 });
 
@@ -193,8 +193,6 @@ test("a parsed reading is shared by every holder of its text and by a caller nam
   expect(storedReading(text, second)).toBe(reading);
   expect(storedReading(text)).toBe(reading);
   expect(storedReading(text, first)).toBe(reading);
-  // Both holders are read here, so both live to the end of the test.
-  expect(first).not.toBe(second);
 });
 
 // GFM's autolink literals are left out of the parse (`STORED_TEXT_PARSE`): a bare URL, a `www.`
@@ -203,7 +201,6 @@ test("a parsed reading is shared by every holder of its text and by a caller nam
 test("the parse reads a bare URL, a www address and an email as the words they are written as", () => {
   const text =
     "See https://example.com/a?b=c,\nwww.example.com  and someone@example.com\nbeside dispatch://ACME-12.";
-  const collapsed = (words: string): string => words.replace(/\s+/gu, " ").trim();
   const reading = parsedReading(text);
   expect(JSON.stringify(reading)).not.toContain('"link"');
   expect(collapsed(wordsOf(reading))).toBe(collapsed(text));

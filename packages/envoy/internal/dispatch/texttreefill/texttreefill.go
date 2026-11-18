@@ -12,7 +12,7 @@
 // pass adds is that no reader has to be the first to open a text for its tree to exist.
 //
 // It is a package of its own for the reason texttrees is: the texts it reads back belong to api
-// (comments, messages, broadcasts, asks and reviews), to docs (document versions) and to
+// (comments, messages, broadcasts, asks, reviews and results), to docs (document versions) and to
 // architecture (component prose), and no one of those three can import the other two. It reads
 // the rows directly, which is also the only way to reach the stored texts no API list answers -
 // a broadcast's body and a direct message's are two of them. It imports docs for one constant,
@@ -77,8 +77,8 @@ var fillBatch = 1000
 // comments and messages (api/comment_create.go, api/messages.go), broadcasts
 // (api/broadcasts.go), asks - the question, each option's label and description, the text of the
 // answer and the reason of the resolution (api/asks.go, api/ask_transitions.go) - document
-// versions (docs/ledger.go), review reasons (api/reviews.go) and component prose
-// (architecture/importer.go).
+// versions (docs/ledger.go), review reasons (api/reviews.go), a result's observed text
+// (api/results.go) and component prose (architecture/importer.go).
 const (
 	kindComment   = "comment"
 	kindMessage   = "message"
@@ -86,6 +86,7 @@ const (
 	kindAsk       = "ask"
 	kindVersion   = "version"
 	kindReview    = "review"
+	kindResult    = "result"
 	kindComponent = "component"
 )
 
@@ -119,6 +120,8 @@ const storedTexts = `
 		select created_at, '` + kindReview + `', '', id::text from artifact_reviews
 		 where reason is not null and reason <> ''
 		union all
+		select created_at, '` + kindResult + `', '', id::text from check_results where observed <> ''
+		union all
 		select snapshot.imported_at, '` + kindComponent + `', component.project_key, component.id
 		  from components component
 		  join architecture_snapshots snapshot on snapshot.id = component.snapshot_id
@@ -128,12 +131,12 @@ const storedTexts = `
 
 // headOfKind is the moment each of the newest fillBatch stored texts of one kind written before
 // the cursor was written. The moment is all it answers: the keys of the rows a batch takes come
-// from wholeBatch, so a key read here would be a key read twice and seven batches of them sorted
+// from wholeBatch, so a key read here would be a key read twice and eight batches of them sorted
 // for nothing. One statement a kind rather than one over the union above, for two reasons: a
 // kind's newest-first key is its own - the reviews' is docs.ReviewOrder, the order their events
 // committed, because artifact_reviews.created_at is its transaction's start and its id is random
 // (api's TestEveryReviewReadOrdersByReviewOrder holds every read of that table in the module to
-// it) - and each statement then sorts one table's rows rather than a seven-way union's.
+// it) - and each statement then sorts one table's rows rather than an eight-way union's.
 //
 // What the heads decide is only where to cut. The batch itself is wholeBatch, every stored text
 // in the range the cut opens, so a kind whose head is ordered by something other than time
@@ -153,6 +156,8 @@ var headOfKind = map[string]string{
 	kindReview: `select created_at from artifact_reviews
 		 where reason is not null and reason <> '' and created_at < $1
 		 order by ` + docs.ReviewOrder + ` limit $2`,
+	kindResult: `select created_at from check_results
+		 where observed <> '' and created_at < $1 order by created_at desc limit $2`,
 	kindComponent: `select snapshot.imported_at
 		  from components component
 		  join architecture_snapshots snapshot on snapshot.id = component.snapshot_id
@@ -445,6 +450,8 @@ func textsOfKind(ctx context.Context, fill *store.Pool, kind string, owners, ids
 		return textColumn(ctx, fill, kind, `select markdown from artifact_versions where id = any($1::uuid[])`, ids)
 	case kindReview:
 		return textColumn(ctx, fill, kind, `select reason from artifact_reviews where id = any($1::uuid[])`, ids)
+	case kindResult:
+		return textColumn(ctx, fill, kind, `select observed from check_results where id = any($1::uuid[])`, ids)
 	case kindComponent:
 		return textColumn(ctx, fill, kind, `
 			select prose from components

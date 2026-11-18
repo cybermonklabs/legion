@@ -429,29 +429,22 @@ export function nodeWords(node: TreeNode): string {
 /**
  * The words a node's one line is cut from (R1's first-line rule, `firstLineOf`): the words of
  * the first top-level block of its reading that holds any, a heading or a paragraph, and where
- * the node has no reading the same of its stored text's reading (`storedReading`): the text
- * parsed by CommonMark with GFM less its autolink literals and with front matter, its lists and
- * quotes held to the server's nesting bound, as the page's markdown engine parses it short of
- * that engine's own extensions, in the shape of the server's reading. A heading so ends at its
- * own line and its marker is no word of it, so `## # 1 rule` reads `# 1 rule`, and a list that
- * follows a paragraph with no blank line ends that paragraph, so the paragraph alone is the first
- * block. A block that holds no words - a horizontal rule, a paragraph that is only an image or a
- * piece of HTML - is passed over, or the line would be empty while the node has words. A
- * decision's reading opens with its own `##` heading, and `wordsOf` joins a heading and the
- * paragraph after it with one space, so a line cut from the whole reading ran the heading into
- * its body: "Keep it Keep the model pure.".
+ * the node has no reading the same of its stored text's reading (`storedReading`), in the shape
+ * of the server's reading. A heading so ends at its own line and its marker is no word of it, so
+ * `## # 1 rule` reads `# 1 rule`, and a list that follows a paragraph with no blank line ends
+ * that paragraph, so the paragraph alone is the first block. A block that holds no words - a
+ * horizontal rule, a paragraph that is only an image or a piece of HTML - is passed over, or the
+ * line would be empty while the node has words. A decision's reading opens with its own `##`
+ * heading, and `wordsOf` joins a heading and the paragraph after it with one space, so a line cut
+ * from the whole reading ran the heading into its body: "Keep it Keep the model pure.".
  *
  * A stored text is markdown, and its marks are no word of it, so its first block reads as that
  * parse holds it: a plan task stored as `**1\. Stand the harness up.** Run it.` reads
  * `1. Stand the harness up. Run it.`, whose label `firstLineOf` reads as no sentence end, and
  * whose sentence end is no longer hidden behind the `**` that followed it. Those are the words
  * the server's reading holds for every text that holds none of three things: a container
- * directive (a typed block such as `:::ask`), which the engine's own extensions read and which
- * reads here as its literal fence lines and content; a Proof mark span (`<span data-proof=…>`),
- * which they read too and which reads here as HTML around its text; and a bare address holding
- * markup - a `*` pair inside a bare URL, say - whose characters the server's reading keeps as
- * written and which reads here as that markup, since this parse leaves autolink literals out.
- * Its white space - a code block's line feeds among it - collapses to single spaces.
+ * directive, a Proof mark span and a bare address holding markup (`STORED_TEXT_PARSE`). Its
+ * white space - a code block's line feeds among it - collapses to single spaces.
  *
  * A bare `dispatch://` address in these words reads as its target's short form, as a link to it
  * draws it (`addressesAsShortForms`): the server's reading keeps one as a plain
