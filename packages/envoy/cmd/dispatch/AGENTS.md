@@ -508,6 +508,14 @@ write identity errors with `identity.WriteError`.
   revoke at the pool (`oidc.CodeFlow.Revoke`), then compare-and-clear;
   `SignIn` retires the plain-text token it replaces through the same
   `retire`. A sealed value is never sent to the pool.
+- `DISPATCH_IDENTITY=iap` is for a Dispatch behind Google Cloud's
+  Identity-Aware Proxy; how it works is in the README's
+  [Identity](README.md#identity) section. Keep these true: a person is named
+  only from the `X-Goog-IAP-JWT-Assertion` that `oidc.IAPVerifier` verified,
+  never from IAP's unsigned headers; only the domain rule admits; and an
+  assertion is `identity.ErrCredentialExpired`, which a socket's heartbeat
+  rotates on and nothing admits on, only when IAP's keys verify it for this
+  audience and its person is admitted. Any other refusal is `ErrNoIdentity`.
 - `DISPATCH_IDENTITY=header:<Header-Name>` is for tests and local harnesses
   only, never for a production Dispatch deployment. It accepts the named
   header's value lowercased and records it in `people`; it requires
