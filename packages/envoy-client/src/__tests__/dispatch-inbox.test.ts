@@ -366,6 +366,25 @@ describe("dispatch inbox", () => {
     ).toBe(true);
   });
 
+  // dispatch://INFRA-3921 R1: the Inbox gives an expired request no control to approve or deny
+  // it, and the web Inbox links an expired row nowhere (CredentialRequestsSection's
+  // ExpiredRowLines). The command is a reader of that same list, so an expired secret request's
+  // line names no broker page to decide it on, while a pending one's still does.
+  test("an expired secret request's line names no page where it could be decided, and a pending one's still does", async () => {
+    const { code, stdout, stderr } = await runInbox();
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    const lines = stdout.trimEnd().split("\n");
+    const expired = lines.find((line) => line.includes("stripe/key"));
+    const pending = lines.find((line) => line.includes("github/token"));
+    expect(expired).toBe(
+      "- agent_secret · stripe/key · 2026-11-01T08:00:00Z · expired 2026-11-01T08:30:00Z · session request=ses-7, enrollment=-"
+    );
+    expect(stdout).not.toContain("https://broker.theorem.dev/approve/rec-3");
+    expect(pending?.endsWith(" · https://broker.theorem.dev/approve/rec-1")).toBe(true);
+  });
+
   // The two reads a scope can refuse. GET /api/v1/whoami needs none — it answers every caller
   // its own scopes — so a refusal from it is one the server cannot give and no test fakes.
   test("a scope refusal from either scoped read exits 1 naming the code and the scope", async () => {
