@@ -98,7 +98,7 @@ func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTh
 	}
 	copied := createProjectDocument(t, handler, "COPY", "Copy", "Kept\n\n"+block)
 	// The copy settles as a copy of the source's ask, and no document owes a settlement once it has.
-	awaitCopyShows(t, ctx, database, copied.ID, `state="open" copied_from="`+ask+`"`)
+	awaitCopyShows(t, ctx, handler, database, copied.ID, `state="open" copied_from="`+ask+`"`)
 
 	// Each hold is an advisory lock the test takes, which a trigger makes one statement wait for: the
 	// upload's version insert, after its document write and before its event, and the answer's write
@@ -179,7 +179,7 @@ func TestAnUploadOfACopyAndAnAnswerToItsSourceBothTakeTheCopysPendingRowBeforeTh
 	if upload.response.Code != http.StatusCreated || answer.response.Code != http.StatusOK {
 		t.Fatalf("upload: %s\nanswer: %s\nwant 201 and 200; the server logged:\n%s", upload, answer, logs.Lines("API handler failed"))
 	}
-	awaitCopyShows(t, ctx, database, copied.ID, `state="answered" answered_by="alice"`)
+	awaitCopyShows(t, ctx, handler, database, copied.ID, `state="answered" answered_by="alice"`)
 }
 
 // pendingRequest is a request a test runs on a goroutine of its own.
@@ -234,25 +234,22 @@ func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, ne
 	}
 }
 
-// awaitCopyShows waits for the latest version of copy to hold want, with no document owing a
-// settlement.
-func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, copy, want string) {
+// awaitCopyShows waits for the text of copy as an agent reads it, which renders each ask block's
+// state from the store (docs.TextWithAnswers), to hold want, with no document owing a settlement.
+func awaitCopyShows(t *testing.T, ctx context.Context, handler http.Handler, database *store.Store, copy, want string) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		var markdown string
 		var pending int
-		if err := database.Pool.QueryRow(ctx, `
-			select (select markdown from artifact_versions where artifact_id = $1 order by number desc limit 1),
-				(select count(*) from doc_settlements_pending)
-		`, copy).Scan(&markdown, &pending); err != nil {
-			t.Fatalf("read the copy's latest version: %v", err)
+		if err := database.Pool.QueryRow(ctx, `select count(*) from doc_settlements_pending`).Scan(&pending); err != nil {
+			t.Fatalf("count the owed settlements: %v", err)
 		}
-		if strings.Contains(markdown, want) && pending == 0 {
+		text, _ := documentTexts(t, handler, copy)
+		if strings.Contains(text, want) && pending == 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the copy's latest version never held %s with nothing owed (%d owed):\n%s", want, pending, markdown)
+			t.Fatalf("the copy's text never held %s with nothing owed (%d owed):\n%s", want, pending, text)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

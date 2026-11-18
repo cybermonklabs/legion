@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+    A decision is a node of the issue's own spec. An agent records a decision as a `decision` block in the spec's `## Decisions` part, with `shaped`, `from_ask`, `uncertainty` and `replaced`; its reading of a person's answered ask is a `reading` block inside that ask. The block schema is version 5, and a document written at it is unreadable to the release before, so a rollback is safe only until the first such write.
+    A person's answer is held once, on the ask's node: it writes no version, and no document holds it. While a process of the release before still serves, settlement keeps the answer in step in the block for that release's pages, within what one upload may hold.
+    `GET /api/v1/issues/{key}/decisions` answers `entries`, one per question ask and per decision node, read from the store; its `decisions` and `document` members answer from the store for one release.
+    Keep acts on an agent's `decision` block of any document of the issue, as two appends on its node.
+    An approval carries across a version whose only change is readings, the removal of the server-owned ask attributes, or the decisions step's own restore and conversion.
+    An agent's write that drops or retypes a person's answered ask block is refused 409 `ANSWERED_ASK_KEPT`. A new `decisions.md` (upload, create or rename) is refused 409 `DECISIONS_ARE_NODES`. A write to a retired document is refused 409 `DOCUMENT_RETIRED`.
+    The decisions step restores every answered ask whose block left its spec, converts every `decisions.md` section into a node, a reading or a dropped section, and retires the document; `envoy-dispatch restore-answered-asks` and `convert-decisions` run it by hand, and `/healthz` answers `decisions_step_owed`. A moved block's old address resolves through `moved_to`.
+    The gated-steps write takes `decisions` and stores the list without it.
+time: 2026-11-17T17:19:47.000000000Z
+custom:
+    Issue: pr4173

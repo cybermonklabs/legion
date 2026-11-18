@@ -553,16 +553,20 @@ func refusedWithAdvice(answer response) bool {
 		strings.Contains(string(answer.body), "shorten the change, or split the document")
 }
 
-// An ask's text and its answer are written into its block, so they grow a document as an edit
-// does, and are held to what one upload may hold on a real Dispatch process as an edit is: edits of
-// the asks of one document, each giving an option a 31,500-character description, are taken until
-// one would leave the document's markdown past 1 MiB, which is refused with 413 CAP_EXCEEDED, and
-// so is every one after it; answers of 31,500 characters to them are all taken, each the document
-// has no room for kept on its ask and left out of its block. Either way the document stays within
-// the cap, still reads, and a one-word edit on a server that has not loaded it holds at most the
-// bound. The 900 KB description this test grew a document with before is refused outright now,
-// for the 32,000 characters an ask's question and options may hold together (INFRA-370), so the
-// growth is written here in texts that bound holds.
+// An ask's text is written into its block, so it grows a document as an edit does, and is held to
+// what one upload may hold on a real Dispatch process as an edit is. Its answer is held on the
+// ask's node alone (dispatch://INFRA-1150 R3) and written into its block only while a process of
+// another build serves, whose pages read it there (docs' rollWindowAskAttributes), so the answer
+// route runs with one registered (registerOtherBuild), and the bound must hold there as it holds
+// for the release before: edits of the asks of one document, each giving an option a
+// 31,500-character description, are taken until one would leave the document's markdown past
+// 1 MiB, which is refused with 413 CAP_EXCEEDED, and so is every one after it; answers of 31,500
+// characters to them are all taken, each the document has no room for kept on its ask and left
+// out of its block. Either way the document stays within the cap, still reads, and a one-word edit
+// on a server that has not loaded it holds at most the bound. The 900 KB description this test
+// grew a document with before is refused outright now, for the 32,000 characters an ask's
+// question and options may hold together (INFRA-370), so the growth is written here in texts that
+// bound holds.
 func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T) {
 	memory := newMemoryHarness(t)
 	// Forty writes of 31,500 characters are 1.26 MB, so the document meets the 1 MiB cap partway
@@ -580,9 +584,11 @@ func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testin
 		// refuses says the route refuses the write the document has no room for, rather than
 		// taking it without the text.
 		refuses bool
+		// rollWindow says the route writes into the block only while another build serves.
+		rollWindow bool
 	}{
-		{"PATCH /api/v1/asks/{id}", http.MethodPatch, "", map[string]any{"options": []map[string]string{{"label": "A", "description": prose}}}, true},
-		{"POST /api/v1/asks/{id}/answer", http.MethodPost, "/answer", map[string]any{"text": prose, "expected_edited_at": nil}, false},
+		{"PATCH /api/v1/asks/{id}", http.MethodPatch, "", map[string]any{"options": []map[string]string{{"label": "A", "description": prose}}}, true, false},
+		{"POST /api/v1/asks/{id}/answer", http.MethodPost, "/answer", map[string]any{"text": prose, "expected_edited_at": nil}, false, true},
 	} {
 		t.Run(route.name, func(t *testing.T) {
 			body, err := json.Marshal(route.body)
@@ -590,6 +596,9 @@ func TestAskEditsAndAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testin
 				t.Fatalf("encode the write: %v", err)
 			}
 			server := memory.start(t)
+			if route.rollWindow {
+				registerOtherBuild(t, context.Background(), memory.database.Pool.Config().ConnString(), earlierBuildStamp, "")
+			}
 			issue := server.createIssue(t, "Ask growth by "+route.name, spec.String())
 			refused := false
 			for index, askID := range server.blockAsks(t, issue.Key, asks) {
@@ -680,9 +689,11 @@ func TestAnAsksTextIsWeighedBeforeItIsRendered(t *testing.T) {
 	}
 }
 
-// An answer is stored on its ask as well as in its block, and settlement writes it back into a block
-// that returns to the document, so returning blocks cannot grow a document past what one upload may
-// hold on a real Dispatch process either: forty answers of 32,000 characters, the most an answer
+// An answer is held on its ask's node (dispatch://INFRA-1150 R3), and while a process of another
+// build serves, whose pages read it from the block, settlement writes it back into a block that
+// returns to the document (docs' rollWindowAskAttributes), so this test registers one
+// (registerOtherBuild) and returning blocks cannot grow a document past what one upload may hold
+// on a real Dispatch process there either: forty answers of 32,000 characters, the most an answer
 // may hold (INFRA-370), each taken against a document their deleted blocks had left small, then all
 // forty blocks returned in one edit, leave the document within 1 MiB, the edit and its settlement
 // hold at most the bound, and so does each cold read of the document. An answer of 900,000
@@ -711,6 +722,7 @@ func TestReturnedAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T
 		t.Fatalf("encode the answer past the bound: %v", err)
 	}
 	server := memory.start(t)
+	registerOtherBuild(t, context.Background(), memory.database.Pool.Config().ConnString(), earlierBuildStamp, "")
 	issue := server.createIssue(t, "Returned answers", spec.String())
 	askIDs := server.blockAsks(t, issue.Key, asks)
 	refusal := server.send(t, http.MethodPost, "/api/v1/asks/"+askIDs[0]+"/answer", "application/json", bytes.NewReader(tooLong), http.Header{"X-Dispatch-User": {"alice"}})

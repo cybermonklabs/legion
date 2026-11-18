@@ -9,6 +9,7 @@ import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
   artifact,
+  artifactRecordHandler,
   createQueryClient,
   documentSurfaceHandlers,
   flushLoadFailure,
@@ -118,6 +119,9 @@ test("ProofDocument removes locally saved edits only when its artifact is gone",
 
 test("ProofDocument keeps locally saved edits when another 404 blocks admission", async () => {
   const document = { ...artifact, id: "artifact-404-keeps-edits" };
+  // The document is there, so its record reads, which names the fragment the page binds; only its
+  // text read is answered 404, by something other than Dispatch's artifact routes.
+  answerRequests(artifactRecordHandler((id) => (id === document.id ? document : undefined)));
   const stored = await openPendingEdits(document.id, 1);
   if (stored === undefined) {
     throw new Error("fake-indexeddb refused to open");

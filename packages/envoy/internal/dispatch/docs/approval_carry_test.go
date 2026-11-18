@@ -2,7 +2,7 @@ package docs
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -18,9 +19,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// decisionBlockFixture reads one of the decision-block fixtures the browser's line-based cut and
-// this cut share (packages/contracts/fixtures/decision-blocks), and checks it is written as
-// pmdoc.Render writes it, so a stored version of it reads back byte for byte.
+// decisionBlockFixture reads one of the decision-block fixtures the browser's line-based cut uses
+// (packages/contracts/fixtures/decision-blocks), and checks it is written as pmdoc.Render writes
+// it, so a stored version of it reads back byte for byte.
 func decisionBlockFixture(t *testing.T, name string) string {
 	t.Helper()
 	content, err := os.ReadFile("../../../../contracts/fixtures/decision-blocks/" + name)
@@ -40,132 +41,6 @@ func decisionBlockFixture(t *testing.T, name string) string {
 		t.Fatalf("fixture %s is not written as pmdoc.Render writes it; rendered:\n%s", name, rendered)
 	}
 	return markdown
-}
-
-// cutDecisionBlocks is CutDecisionBlocks failing t on an error.
-func cutDecisionBlocks(t *testing.T, markdown string) string {
-	t.Helper()
-	cut, err := CutDecisionBlocks(markdown)
-	if err != nil {
-		t.Fatalf("cut decision blocks: %v", err)
-	}
-	return cut
-}
-
-// A re-answered block and a new answered block are the whole difference between the approved
-// fixture and the answered one, so the two cut to the same text; a changed paragraph does not.
-func TestCutDecisionBlocksEqualsAcrossAnswersAndDiffersOnAParagraph(t *testing.T) {
-	approved := cutDecisionBlocks(t, decisionBlockFixture(t, "approved.md"))
-	answered := cutDecisionBlocks(t, decisionBlockFixture(t, "answered.md"))
-	paragraphChanged := cutDecisionBlocks(t, decisionBlockFixture(t, "paragraph-changed.md"))
-	if approved != answered {
-		t.Fatalf("cut(approved) != cut(answered):\n%s\n----\n%s", approved, answered)
-	}
-	if approved == paragraphChanged {
-		t.Fatalf("cut(approved) == cut(paragraph-changed), want a changed paragraph to show:\n%s", approved)
-	}
-	if !strings.Contains(paragraphChanged, "The service ships behind a flag and a canary.") {
-		t.Fatalf("cut(paragraph-changed) lost the changed paragraph:\n%s", paragraphChanged)
-	}
-}
-
-// A decision block written as an example inside a code fence is code, which the parser keeps as
-// text: the cut leaves it in place and takes out only the real block, and an edit inside the
-// example changes the cut text. The browser's line-based cut (`decision-blocks.test.ts`) reads
-// the same fixture.
-func TestCutDecisionBlocksKeepsADecisionBlockWrittenInsideACodeFence(t *testing.T) {
-	fenced := decisionBlockFixture(t, "fenced-example.md")
-	cut := cutDecisionBlocks(t, fenced)
-	for _, kept := range []string{"```markdown\n:::ask{urgency=\"high\" multiple=\"false\"}\nWhich region goes first?", "- West: The busy one.\n:::\n```"} {
-		if !strings.Contains(cut, kept) {
-			t.Fatalf("cut lost the fenced example %q:\n%s", kept, cut)
-		}
-	}
-	for _, gone := range []string{"How many regions take the first wave?", "#rollout"} {
-		if strings.Contains(cut, gone) {
-			t.Fatalf("cut kept the real block (%q):\n%s", gone, cut)
-		}
-	}
-	edited := cutDecisionBlocks(t, strings.Replace(fenced, "Which region goes first?", "Which region goes last?", 1))
-	if edited == cut || !strings.Contains(edited, "Which region goes last?") {
-		t.Fatalf("an edit inside the fenced example did not change the cut:\n%s", edited)
-	}
-}
-
-// The cut leaves out every ask block wherever it stands - at the top level, in a blockquote, in a
-// list item, inside a callout - and keeps the container that held it.
-func TestCutDecisionBlocksLeavesOutEveryAskBlockAndKeepsItsContainer(t *testing.T) {
-	cut := cutDecisionBlocks(t, decisionBlockFixture(t, "answered.md"))
-	if strings.Contains(cut, ":::ask") || strings.Contains(cut, "ask{") {
-		t.Fatalf("cut holds an ask block:\n%s", cut)
-	}
-	for _, kept := range []string{
-		"# Rollout plan\n",
-		"The service ships behind a flag.\n",
-		"## Decisions\n",
-		"> The platform team asked for a rollback path.\n",
-		"- Announce the dates.\n- Pick the regions.\n",
-		":::callout{#budget-note kind=\"note\" title=\"Open question\"}\nThe budget is not settled.\n:::\n",
-		"The last paragraph closes the plan.\n",
-	} {
-		if !strings.Contains(cut, kept) {
-			t.Fatalf("cut lost %q:\n%s", kept, cut)
-		}
-	}
-	for _, gone := range []string{"How many regions", "rollback path?", "Which regions go first?", "Who pays", "second wave follow?"} {
-		if strings.Contains(cut, gone) {
-			t.Fatalf("cut kept a block's text %q:\n%s", gone, cut)
-		}
-	}
-}
-
-// A document with no ask block cuts to its own rendering, and one that is nothing but ask blocks
-// cuts to nothing; a container holding only a block is kept, holding an empty paragraph.
-func TestCutDecisionBlocksOfADocumentWithoutBlocksIsItsRendering(t *testing.T) {
-	plain := "# Title\n\nA paragraph.\n\n> A quote.\n\n- One.\n- Two.\n"
-	tree, err := pmdoc.Parse(plain)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rendered, err := pmdoc.Render(tree)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cut := cutDecisionBlocks(t, plain); cut != rendered {
-		t.Fatalf("cut(plain) = %q, want its own rendering %q", cut, rendered)
-	}
-	if cut := cutDecisionBlocks(t, ":::ask{#only urgency=\"med\" multiple=\"false\"}\nOnly?\n:::\n"); cut != "" {
-		t.Fatalf("cut(a document that is one block) = %q, want nothing", cut)
-	}
-	quoted := cutDecisionBlocks(t, "Intro.\n\n> :::ask{#quoted urgency=\"med\" multiple=\"false\"}\n> Quoted?\n> :::\n\nAfter.\n")
-	if !strings.HasPrefix(quoted, "Intro.\n\n>") || !strings.HasSuffix(quoted, "\n\nAfter.\n") || strings.Contains(quoted, "Quoted?") {
-		t.Fatalf("cut(a quote holding one block) = %q, want the quote kept empty", quoted)
-	}
-}
-
-// answerers names each person who answered a block of the version once, by canonical login, in
-// sorted order, from the rows of its blocks: one answerer under two spellings is one, two people
-// are two, and a version whose blocks are all open or resolved names nobody.
-func TestAnswerersNamesEachAnswererOfTheVersionOnce(t *testing.T) {
-	at := time.Date(2026, 10, 2, 10, 0, 0, 0, time.UTC)
-	answeredBy := func(by string, at time.Time) model.Ask {
-		return model.Ask{State: "answered", Answer: &model.AskAnswer{User: by, At: at}}
-	}
-	twoAnswerers := map[string]model.Ask{
-		"one":   answeredBy("Bob", at),
-		"two":   answeredBy("alice", at.Add(time.Minute)),
-		"three": answeredBy(" Alice ", at.Add(2*time.Minute)),
-		"four":  {State: "open"},
-	}
-	if got := answerers(twoAnswerers); !reflect.DeepEqual(got, []string{"alice", "bob"}) {
-		t.Fatalf("answerers(two people, one under two spellings) = %q, want alice and bob, sorted", got)
-	}
-	if got := answerers(map[string]model.Ask{"one": {State: "open"}, "two": {State: "resolved"}}); got != nil {
-		t.Fatalf("answerers(open and resolved) = %q, want nobody", got)
-	}
-	if got := answerers(nil); got != nil {
-		t.Fatalf("answerers(no blocks) = %q, want nobody", got)
-	}
 }
 
 // askNodeOf is the one ask node of the block markdown holds.
@@ -189,15 +64,18 @@ func withAttr(node *pmdoc.Node, name string, value any) *pmdoc.Node {
 	return node
 }
 
-// The blocks the pure tests of the carry's row test read: own, a decided block as settlement
-// writes it from its row (ownDecided; ownWithheld without the answer settlement withholds for
-// room), and open, the block of an open row.
+// The blocks the pure tests of the carry's node test read: own, a decided block as the roll window
+// writes it from its row (ownDecided), and open, the block of an open row; ownBare and openBare are
+// the same blocks as a version written once the fleet is one build holds them, with none of the
+// server-owned attributes.
 const (
 	ownAnswered   = `:::ask{#own urgency="low" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-02T10:00:00.123456Z"`
 	ownDecided    = ownAnswered + ` selected="[&#x22;East&#x22;]" answer="The quiet one first."}` + "\n"
 	ownWithheld   = ownAnswered + "}\n"
+	ownBare       = `:::ask{#own urgency="low" multiple="false"}` + "\n"
 	ownBody       = "Which region goes first?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"
 	openDirective = `:::ask{#open urgency="med" multiple="false" state="open"}` + "\n"
+	openBare      = `:::ask{#open urgency="med" multiple="false"}` + "\n"
 	openBody      = "How many regions take the first wave?\n:::\n"
 )
 
@@ -207,133 +85,131 @@ func ownAndOpenRows() map[string]model.Ask {
 	text := "The quiet one first."
 	return map[string]model.Ask{
 		"own": {
-			State: "answered", Urgency: "low", Question: "Which region goes first?",
+			ID: "own-ask", State: "answered", Urgency: "low", Question: "Which region goes first?",
 			Options: []model.AskOption{{Label: "East", Description: "The quiet one."}, {Label: "West", Description: "The busy one."}},
 			Answer:  &model.AskAnswer{User: "alice", Selected: []string{"East"}, Text: &text, At: time.Date(2026, 10, 2, 10, 0, 0, 123456000, time.UTC)},
 		},
-		"open": {State: "open", Urgency: "med", Question: "How many regions take the first wave?", Options: []model.AskOption{}},
+		"open": {ID: "open-ask", State: "open", Urgency: "med", Question: "How many regions take the first wave?", Options: []model.AskOption{}},
 	}
 }
 
-// The version just written is trusted for nothing: each block of N travels as its row, and the
-// block itself must be as settlement's own writer leaves it from the row - the one test the
-// approved version's blocks are held to as well (blockAsSettlementLeavesIt). A node no row of
-// this document backs - forged on the socket, or not yet indexed - refuses the carry outright; so
-// does a node whose server attributes the writer would change - a copy, one settlement could not
-// read, a state, answerer, time, selection or answer other than the row's, with or without the
-// answer - and the block of a decided row that asks other wording than the row was decided on or
-// that settlement cannot read. A block holding the row's answer, and one without it, as
-// settlement leaves a withheld answer, are both as the row has it. An open row's body is free.
-func TestRowBackedBlocksReadRowsAndRefuseAForgedACopiedAndAnInvalidNode(t *testing.T) {
+// A block of the version just written agrees with its node, the row that projects it, when it
+// shows no answer state other than the row's: none at all, as every block of a version written
+// once the fleet is one build, or what the roll window keeps in step with the row - with the
+// answer's words, or without them where the document has no room for them, as the answer route
+// and settlement write such a block (rollWindowAskAttributesWithheld) and the release before
+// wrote it. A copy's provenance on a block of the document's own, a block settlement could not
+// read, and a state, answerer, time, selection or answer other than the row's each disagree, and
+// so does the block of a decided row that asks other wording than the row was decided on or that
+// settlement cannot read. An open row's body is free. A copy of another document's ask agrees with
+// its source the same way, its provenance among what the roll window keeps.
+func TestAnAskAgreesWithItsNodeShowingNoAnswerStateOrTheRowsOwn(t *testing.T) {
 	rows := ownAndOpenRows()
-	own := askNodeOf(t, ownDecided+ownBody)
-	open := askNodeOf(t, openDirective+openBody)
-	blocks, backed := rowBackedBlocks(map[string]*pmdoc.Node{"own": own, "open": open}, rows)
-	if !backed || !reflect.DeepEqual(blocks, rows) {
-		t.Fatalf("row-backed blocks = %#v, %v; want the rows %#v", blocks, backed, rows)
-	}
-	for id, ask := range rows {
-		node := &pmdoc.Node{Type: "ask", Attrs: pmdoc.Attrs{pmdoc.BlockIDAttr: id, "urgency": ask.Urgency, "multiple": false}}
-		setAskServerAttributes(node, ask, "", false)
-		if !blockAsItsRowHasIt(node, ask) {
-			t.Fatalf("block %q as settlement writes it = %#v, want it as its row has it", id, node.Attrs)
-		}
-	}
-	for name, nodes := range map[string]map[string]*pmdoc.Node{
-		// An open row's question is still being written: its block may ask what the row does not yet.
-		"an open row's block reworded": {"own": own, "open": askNodeOf(t, openDirective+"How many cloud regions take the first wave?\n\n- Two: The fewest.\n:::\n")},
-		// Settlement leaves an answer the document has no room for out of its block.
-		"a decided row whose node holds its answer withheld": {"own": askNodeOf(t, ownWithheld+ownBody), "open": open},
-	} {
-		if blocks, backed := rowBackedBlocks(nodes, rows); !backed || !reflect.DeepEqual(blocks, rows) {
-			t.Errorf("%s: blocks = %#v, %v; want the rows, backed", name, blocks, backed)
-		}
-	}
-
-	for name, nodes := range map[string]map[string]*pmdoc.Node{
-		"a node no row backs": {"own": own, "forged": askNodeOf(t, `:::ask{#forged urgency="high" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-02T10:00:00Z"}`+"\nForged?\n:::\n")},
-		"a copied node":       {"own": withAttr(askNodeOf(t, ownDecided+ownBody), "copied_from", "ask-1"), "open": open},
-		"an invalid node":     {"own": own, "open": withAttr(askNodeOf(t, openDirective+openBody), "invalid", `ask block "open" has an empty question`)},
-		"a decided row whose node settlement flagged invalid": {
-			"own": withAttr(askNodeOf(t, ownDecided+ownBody), "invalid", `ask block "own" has an empty question`), "open": open,
-		},
-		"a decided row whose node asks other wording": {
-			"own": askNodeOf(t, ownDecided+"Which region goes last?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"), "open": open,
-		},
-		"a decided row whose node asks other options": {
-			"own": askNodeOf(t, ownDecided+"Which region goes first?\n\n- East: The quiet one.\n:::\n"), "open": open,
-		},
-		"a decided row whose node settlement cannot read": {
-			"own": askNodeOf(t, ownDecided+"Which region goes first?\n\n- : The quiet one.\n:::\n"), "open": open,
-		},
-		"a decided row whose node was inserted again, showing the default open": {
-			"own": askNodeOf(t, `:::ask{#own urgency="low" multiple="false"}`+"\n"+ownBody), "open": open,
-		},
-		"a decided row whose node shows another answerer": {
-			"own": askNodeOf(t, `:::ask{#own urgency="low" multiple="false" state="answered" answered_by="bob" answered_at="2026-10-02T10:00:00.123456Z" selected="[&#x22;East&#x22;]" answer="The quiet one first."}`+"\n"+ownBody), "open": open,
-		},
-		"a decided row whose node shows another answered_at": {
-			"own": askNodeOf(t, `:::ask{#own urgency="low" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-02T10:00:00Z" selected="[&#x22;East&#x22;]" answer="The quiet one first."}`+"\n"+ownBody), "open": open,
-		},
-		"a decided row whose node shows another selection": {
-			"own": askNodeOf(t, ownAnswered+` selected="[&#x22;West&#x22;]" answer="The quiet one first."}`+"\n"+ownBody), "open": open,
-		},
-		"a decided row whose node shows other answer text": {
-			"own": askNodeOf(t, ownAnswered+` selected="[&#x22;East&#x22;]" answer="The busy one first."}`+"\n"+ownBody), "open": open,
-		},
-		"a decided row whose node shows the selection without the text": {
-			"own": askNodeOf(t, ownAnswered+` selected="[&#x22;East&#x22;]"}`+"\n"+ownBody), "open": open,
-		},
-		"a decided row whose node shows the text without the selection": {
-			"own": askNodeOf(t, ownAnswered+` answer="The quiet one first."}`+"\n"+ownBody), "open": open,
-		},
-		"an open row whose node shows answered": {
-			"own": own, "open": askNodeOf(t, `:::ask{#open urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-02T10:00:00Z"}`+"\n"+openBody),
-		},
-		"an open row whose node shows a selection": {
-			"own": own, "open": askNodeOf(t, `:::ask{#open urgency="med" multiple="false" state="open" selected="[&#x22;Two&#x22;]"}`+"\n"+openBody),
-		},
-	} {
-		if blocks, backed := rowBackedBlocks(nodes, rows); backed || blocks != nil {
-			t.Errorf("%s: row-backed blocks = %#v, %v; want the carry refused", name, blocks, backed)
-		}
-	}
-	if blocks, backed := rowBackedBlocks(nil, rows); !backed || len(blocks) != 0 {
-		t.Fatalf("no nodes: blocks = %#v, %v; want none, backed", blocks, backed)
-	}
-}
-
-// The version he approved is held to the rows of N's blocks by the test N's own blocks pass: a
-// stored block that is as its row has it - a decided block as settlement wrote it, with or
-// without the answer it withholds for room, or the block of a row still open - is held as its
-// row; one that shows a selection the row never had, asks other wording than the row was decided
-// on, or shows open where the row has since been answered is not; nor is a block under an id no
-// row of N backs. A version holding no block holds none.
-func TestAnApprovedVersionsBlocksAreHeldAsTheirRows(t *testing.T) {
-	rows := ownAndOpenRows()
-	held := heldAsItsRow(map[string]*pmdoc.Node{"own": askNodeOf(t, ownDecided+ownBody), "open": askNodeOf(t, openDirective+openBody)}, rows)
-	if want := map[string]bool{"own": true, "open": true}; !reflect.DeepEqual(held, want) {
-		t.Fatalf("blocks held as their rows = %#v, want %#v", held, want)
-	}
 	for name, test := range map[string]struct {
-		id   string
-		node *pmdoc.Node
-		held bool
+		id     string
+		node   *pmdoc.Node
+		agrees bool
 	}{
-		"a decided block as settlement wrote it":                {"own", askNodeOf(t, ownDecided+ownBody), true},
-		"a decided block with its answer withheld":              {"own", askNodeOf(t, ownWithheld+ownBody), true},
-		"the block of a row still open":                         {"open", askNodeOf(t, openDirective+openBody), true},
-		"a decided block showing a selection the row never had": {"own", askNodeOf(t, ownAnswered+` selected="[&#x22;West&#x22;]" answer="The quiet one first."}`+"\n"+ownBody), false},
-		"a decided block asking other wording":                  {"own", askNodeOf(t, ownDecided+"Which region goes last?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"), false},
-		"an open block whose row has since been answered":       {"own", askNodeOf(t, `:::ask{#own urgency="low" multiple="false" state="open"}`+"\n"+ownBody), false},
-		"a block under an id no row of the new version backs":   {"gone", askNodeOf(t, `:::ask{#gone urgency="low" multiple="false" state="open"}`+"\nWhich region is gone?\n:::\n"), false},
+		"a decided block with none of the attributes":         {"own", askNodeOf(t, ownBare+ownBody), true},
+		"an open block with none of the attributes":           {"open", askNodeOf(t, openBare+openBody), true},
+		"a decided block as the roll window keeps it in step": {"own", askNodeOf(t, ownDecided+ownBody), true},
+		"an open block as the roll window keeps it in step":   {"open", askNodeOf(t, openDirective+openBody), true},
+		// The document had no room for the answer's words: the block says who answered and when.
+		"a decided block with its answer left out for want of room": {"own", askNodeOf(t, ownWithheld+ownBody), true},
+		// An open row's question is still being written: its block may ask what the row does not yet.
+		"an open row's block reworded": {"open", askNodeOf(t, openBare+"How many cloud regions take the first wave?\n\n- Two: The fewest.\n:::\n"), true},
+
+		"a copied node":                     {"own", withAttr(askNodeOf(t, ownDecided+ownBody), "copied_from", "ask-1"), false},
+		"a node settlement could not read":  {"open", withAttr(askNodeOf(t, openBare+openBody), "invalid", `ask block "open" has an empty question`), false},
+		"a decided node flagged invalid":    {"own", withAttr(askNodeOf(t, ownBare+ownBody), "invalid", `ask block "own" has an empty question`), false},
+		"a decided node asking other words": {"own", askNodeOf(t, ownBare+"Which region goes last?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n"), false},
+		"a decided node asking other options": {
+			"own", askNodeOf(t, ownBare+"Which region goes first?\n\n- East: The quiet one.\n:::\n"), false,
+		},
+		"a decided node settlement cannot read": {"own", askNodeOf(t, ownBare+"Which region goes first?\n\n- : The quiet one.\n:::\n"), false},
+		"a decided node showing open":           {"own", askNodeOf(t, `:::ask{#own urgency="low" multiple="false" state="open"}`+"\n"+ownBody), false},
+		"a decided node showing another answerer": {
+			"own", askNodeOf(t, `:::ask{#own urgency="low" multiple="false" state="answered" answered_by="bob" answered_at="2026-10-02T10:00:00.123456Z" selected="[&#x22;East&#x22;]" answer="The quiet one first."}`+"\n"+ownBody), false,
+		},
+		"a decided node showing another answered_at": {
+			"own", askNodeOf(t, `:::ask{#own urgency="low" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-02T10:00:00Z" selected="[&#x22;East&#x22;]" answer="The quiet one first."}`+"\n"+ownBody), false,
+		},
+		"a decided node with its answer left out showing another answerer": {
+			"own", askNodeOf(t, `:::ask{#own urgency="low" multiple="false" state="answered" answered_by="bob" answered_at="2026-10-02T10:00:00.123456Z"}`+"\n"+ownBody), false,
+		},
+		"a decided node showing its selection without its words": {"own", askNodeOf(t, ownAnswered+` selected="[&#x22;East&#x22;]"}`+"\n"+ownBody), false},
+		"a decided node showing another selection":               {"own", askNodeOf(t, ownAnswered+` selected="[&#x22;West&#x22;]" answer="The quiet one first."}`+"\n"+ownBody), false},
+		"a decided node showing other answer text":               {"own", askNodeOf(t, ownAnswered+` selected="[&#x22;East&#x22;]" answer="The busy one first."}`+"\n"+ownBody), false},
+		"an open node showing answered":                          {"open", askNodeOf(t, `:::ask{#open urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-02T10:00:00Z"}`+"\n"+openBody), false},
+		"an open node showing a selection":                       {"open", askNodeOf(t, `:::ask{#open urgency="med" multiple="false" state="open" selected="[&#x22;Two&#x22;]"}`+"\n"+openBody), false},
+		"an open node showing a forged answerer alone":           {"open", askNodeOf(t, `:::ask{#open urgency="med" multiple="false" answered_by="mallory"}`+"\n"+openBody), false},
 	} {
-		if held := heldAsItsRow(map[string]*pmdoc.Node{test.id: test.node}, rows); !reflect.DeepEqual(held, map[string]bool{test.id: test.held}) {
-			t.Errorf("%s: held as its row = %#v, want %q %v", name, held, test.id, test.held)
+		if agrees := askAgreesWithItsNode(test.node, rows[test.id]); agrees != test.agrees {
+			t.Errorf("%s: agrees with its node = %v, want %v (attributes %#v)", name, agrees, test.agrees, test.node.Attrs)
 		}
 	}
-	if held := heldAsItsRow(nil, rows); len(held) != 0 {
-		t.Fatalf("no blocks: held as their rows = %#v, want none", held)
+
+	// A copy of own on another document, as the roll window writes it from own's row, its
+	// provenance after who answered and when; copyWords is the answer's words it holds beside them.
+	const source = "dispatch://TEST-1/artifact/source-md"
+	copyOf := ownAnswered + ` copied_from="own-ask" copied_from_document="` + source + `"`
+	const copyWords = ` selected="[&#x22;East&#x22;]" answer="The quiet one first."`
+	for name, test := range map[string]struct {
+		node   *pmdoc.Node
+		agrees bool
+	}{
+		"a copy with none of the attributes":                   {askNodeOf(t, ownBare+ownBody), true},
+		"a copy as the roll window keeps it in step":           {askNodeOf(t, copyOf+copyWords+"}\n"+ownBody), true},
+		"a copy with its answer left out for want of room":     {askNodeOf(t, copyOf+"}\n"+ownBody), true},
+		"a copy showing another answerer, its answer left out": {askNodeOf(t, strings.Replace(copyOf, `answered_by="alice"`, `answered_by="bob"`, 1)+"}\n"+ownBody), false},
+		"a copy naming no source, its answer left out":         {askNodeOf(t, ownWithheld+ownBody), false},
+		"a copy showing its selection without its words":       {askNodeOf(t, copyOf+` selected="[&#x22;East&#x22;]"}`+"\n"+ownBody), false},
+		"a copy settlement could not read":                     {withAttr(askNodeOf(t, copyOf+"}\n"+ownBody), "invalid", `ask block "own" has an empty question`), false},
+	} {
+		if agrees := copyAgreesWithItsSource(test.node, copiedSource{ask: rows["own"], document: source}); agrees != test.agrees {
+			t.Errorf("%s: agrees with its source = %v, want %v (attributes %#v)", name, agrees, test.agrees, test.node.Attrs)
+		}
+	}
+}
+
+// withoutAskServerAttributes takes the eight off every ask block wherever it stands - at the top
+// level, in a blockquote - and leaves every other node of the tree its own, so a tree without them
+// is answered as it is, with nothing taken, and the tree it was given is not changed.
+func TestWithoutAskServerAttributesTakesTheEightOffEveryAskBlock(t *testing.T) {
+	quoted := "> " + strings.ReplaceAll(strings.TrimSuffix(openDirective+openBody, "\n"), "\n", "\n> ") + "\n"
+	tree, err := pmdoc.Parse("Context.\n\n" + ownDecided + ownBody + "\n" + quoted)
+	if err != nil {
+		t.Fatalf("parse the document: %v", err)
+	}
+	own := firstAsk(tree)
+	own.Attrs["invalid"] = "a reason no rendering writes"
+	stripped, took := withoutAskServerAttributes(tree)
+	if !took {
+		t.Fatal("taking the attributes off a tree whose ask blocks hold them took nothing")
+	}
+	asks := 0
+	pmdoc.Walk(stripped, func(node *pmdoc.Node) bool {
+		if node.Type == "ask" {
+			asks++
+			for _, name := range askServerAttributeNames {
+				if value, held := node.Attrs[name]; held {
+					t.Errorf("ask block %v still holds %s=%v", node.Attrs[pmdoc.BlockIDAttr], name, value)
+				}
+			}
+		}
+		return true
+	})
+	if asks != 2 {
+		t.Fatalf("the stripped tree holds %d ask blocks, want both", asks)
+	}
+	if _, held := own.Attrs["state"]; !held {
+		t.Fatal("taking the attributes off changed the tree it was given")
+	}
+	if again, took := withoutAskServerAttributes(stripped); took || again != stripped {
+		t.Fatalf("a tree holding none of the attributes was taken through as a copy, took %v; want itself, nothing taken", took)
+	}
+	if stripped.Children[0] != tree.Children[0] {
+		t.Fatal("the paragraph beside the ask blocks was copied, want the tree's own node")
 	}
 }
 
@@ -375,86 +251,129 @@ func TestAskNodesOfTheCarriedVersionReadEveryBlockOnceAndRefuseARepeatedID(t *te
 	}
 }
 
-// The rule over the rows alone: N carries H's approval of A when the two cut to the same text,
-// every block of N that A did not hold as its row has it (heldAsItsRow) is H's answer given after
-// his approval, at least one block is such, and every block of A still stands. A block A held
-// other than its row has it is a change of N's whoever made it: it carries when H answered it
-// again since his approval, and nothing carries otherwise.
-func TestCarryVerdictOverTheBlocksOfTheApprovedAndTheNewVersion(t *testing.T) {
-	approvedAt := time.Date(2026, 10, 2, 12, 0, 0, 0, time.UTC)
-	answered := func(by string, at time.Time) model.Ask {
-		return model.Ask{State: "answered", Answer: &model.AskAnswer{User: by, At: at}}
+// The rule over the two versions: N carries the approval of A when, with the server-owned
+// attributes taken off every ask block of each, the two render byte for byte the same, something
+// was taken off one of them, A's stored text is what this build renders A to, every ask of N
+// agrees with its node, and every block id of A still stands. The attributes dropped, or kept in
+// step with an answer given since, carry; a word of prose, an ask's question, a block added or a
+// block removed beside them do not; nor does a version that differs from A in nothing a case takes
+// out, nor one whose ask disagrees with its node, nor one A's stored bytes are not this build's
+// rendering of.
+func TestCarryVerdictOverTheApprovedAndTheNewVersion(t *testing.T) {
+	const prose = "# Rollout\n\nThe service ships behind a flag.\n\n"
+	approvedText := prose + ownDecided + ownBody + "\n" + openDirective + openBody
+	parse := func(markdown string) *pmdoc.Node {
+		t.Helper()
+		tree, err := pmdoc.ParseRendering(markdown)
+		if err != nil {
+			t.Fatalf("parse %q: %v", markdown, err)
+		}
+		return tree
 	}
-	before, after, later := approvedAt.Add(-time.Hour), approvedAt.Add(time.Minute), approvedAt.Add(2*time.Minute)
-	open, resolved := model.Ask{State: "open"}, model.Ask{State: "resolved"}
-	const text = "Context\n"
+	if rendered, err := pmdoc.Render(parse(approvedText)); err != nil || rendered != approvedText {
+		t.Fatalf("the approved fixture renders %q (%v), want itself: the verdict compares stored bytes", rendered, err)
+	}
+	answeredOpen := `:::ask{#open urgency="med" multiple="false" state="answered" answered_by="bob" answered_at="2026-10-03T10:00:00Z" selected="[]" answer="Two."}` + "\n"
 	for _, test := range []struct {
-		name  string
-		input carryInput
-		carry bool
+		name     string
+		approved string
+		version  string
+		agrees   bool
+		carry    bool
 	}{
-		{"his answer to a block added since his approval", carryInput{
-			login: "alice", blocks: map[string]model.Ask{"wave": answered("alice", after)}, approvedCut: text, cut: text,
-		}, true},
-		{"his answer to a block the approved version held open", carryInput{
-			login: "alice", approved: map[string]bool{"wave": false}, blocks: map[string]model.Ask{"wave": answered("alice", after)}, approvedCut: text, cut: text,
-		}, true},
-		{"his changed answer to a block he answered before his approval", carryInput{
-			login: "alice", approved: map[string]bool{"wave": false}, blocks: map[string]model.Ask{"wave": answered("alice", after)}, approvedCut: text, cut: text,
-		}, true},
-		{"another's answer he approved, unchanged, beside his own", carryInput{
-			login: "alice", approved: map[string]bool{"wave": true},
-			blocks: map[string]model.Ask{"wave": answered("bob", before), "region": answered("Alice", after)}, approvedCut: text, cut: text,
-		}, true},
-		{"another's answer since his approval to a block it held open", carryInput{
-			login: "alice", approved: map[string]bool{"wave": false},
-			blocks: map[string]model.Ask{"wave": answered("bob", after), "region": answered("alice", later)}, approvedCut: text, cut: text,
-		}, false},
-		{"a block he approved resolved since", carryInput{
-			login: "alice", approved: map[string]bool{"wave": false},
-			blocks: map[string]model.Ask{"wave": resolved, "region": answered("alice", after)}, approvedCut: text, cut: text,
-		}, false},
-		{"a block he approved removed", carryInput{
-			login: "alice", approved: map[string]bool{"wave": false, "region": false},
-			blocks: map[string]model.Ask{"wave": answered("alice", after)}, approvedCut: text, cut: text,
-		}, false},
-		{"a block added since left open", carryInput{
-			login: "alice", blocks: map[string]model.Ask{"wave": answered("alice", after), "region": open}, approvedCut: text, cut: text,
-		}, false},
-		{"a block added since answered by someone else", carryInput{
-			login: "alice", blocks: map[string]model.Ask{"wave": answered("alice", after), "region": answered("bob", later)}, approvedCut: text, cut: text,
-		}, false},
-		{"an edit outside the blocks", carryInput{
-			login: "alice", blocks: map[string]model.Ask{"wave": answered("alice", after)}, approvedCut: text, cut: "Context changed.\n",
-		}, false},
-		{"nothing of his changed: every block as the approved version held it", carryInput{
-			login: "alice", approved: map[string]bool{"wave": true, "region": true},
-			blocks: map[string]model.Ask{"wave": answered("alice", before), "region": answered("bob", before)}, approvedCut: text, cut: text,
-		}, false},
-		{"a block he answered before his approval, removed since and restored as it was", carryInput{
-			login: "alice", approved: map[string]bool{"wave": true},
-			blocks: map[string]model.Ask{"wave": answered("alice", before)}, approvedCut: text, cut: text,
-		}, false},
-		{"a block the approved version did not hold, back with an answer he gave before his approval", carryInput{
-			login: "alice", blocks: map[string]model.Ask{"wave": answered("alice", before)}, approvedCut: text, cut: text,
-		}, false},
-		{"a restored block answered before his approval beside his answer since", carryInput{
-			login: "alice", blocks: map[string]model.Ask{"wave": answered("alice", before), "region": answered("alice", after)}, approvedCut: text, cut: text,
-		}, false},
-		{"his answer at the approval's own instant", carryInput{
-			login: "alice", blocks: map[string]model.Ask{"wave": answered("alice", approvedAt)}, approvedCut: text, cut: text,
-		}, false},
-		{"a block he approved whose stored block is not as its row has it, answered before his approval", carryInput{
-			login: "alice", approved: map[string]bool{"wave": false}, blocks: map[string]model.Ask{"wave": answered("alice", before)}, approvedCut: text, cut: text,
-		}, false},
-		{"a block he approved whose stored block is not as its row has it, which he answered again since his approval", carryInput{
-			login: "alice", approved: map[string]bool{"wave": false}, blocks: map[string]model.Ask{"wave": answered("alice", after)}, approvedCut: text, cut: text,
-		}, true},
-		{"no block on either side", carryInput{login: "alice", approvedCut: text, cut: text}, false},
+		{"the attributes dropped, every other byte the same", approvedText, prose + ownBare + ownBody + "\n" + openBare + openBody, true, true},
+		{"the attributes kept in step with an answer given since", approvedText, prose + ownDecided + ownBody + "\n" + answeredOpen + openBody, true, true},
+		{"one word of prose changed beside the removal", approvedText, strings.Replace(prose, "a flag", "a switch", 1) + ownBare + ownBody + "\n" + openBare + openBody, true, false},
+		{"an ask's question changed beside the removal", approvedText, prose + ownBare + ownBody + "\n" + openBare + "How many regions take the second wave?\n:::\n", true, false},
+		{"a block added beside the removal", approvedText, prose + ownBare + ownBody + "\n" + openBare + openBody + "\nA new paragraph.\n", true, false},
+		{"a block the approved version held removed", approvedText, prose + ownBare + ownBody, true, false},
+		{"nothing a case takes out: neither version holds the attributes", prose + ownBare + ownBody + "\n" + openBare + openBody, prose + ownBare + ownBody + "\n" + openBare + openBody, true, false},
+		{"an ask that disagrees with its node", approvedText, prose + ownBare + ownBody + "\n" + openBare + openBody, false, false},
+		{"approved bytes this build does not render so", strings.Replace(approvedText, "# Rollout\n\n", "Rollout\n=======\n\n", 1), prose + ownBare + ownBody + "\n" + openBare + openBody, true, false},
 	} {
-		test.input.approvedAt = approvedAt
-		if got := carryVerdict(test.input); got != test.carry {
-			t.Errorf("%s: carry = %v, want %v", test.name, got, test.carry)
+		change, carried, err := carryVerdict(carryInput{approved: parse(test.approved), approvedText: test.approved, version: parse(test.version), agrees: test.agrees})
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if carried != test.carry {
+			t.Errorf("%s: carry = %v, want %v", test.name, carried, test.carry)
+		}
+		if want := attributeRemovalCase.change + carriedReasonEnd; carried && change != want {
+			t.Errorf("%s: the carried change reads %q, want %q", test.name, change, want)
+		}
+	}
+}
+
+// The reading case (dispatch://INFRA-1150 R2) over the two versions: N carries the approval of A
+// when the two differ only in the readings their decisions and their answered asks close with -
+// one added, edited or removed - and the case composes with R10's, so one version that drops the
+// server-owned attributes and adds a reading carries, naming both changes. A case names only what
+// changed: readings both versions hold unchanged beside the attributes dropped carry by R10's
+// case alone, named alone, and with nothing else changed they are the restore's to carry
+// (restoresApprovedText), not a case's. A reading in an ask whose ask holds no answer, a
+// decision's own words changed beside a reading, and a reading retyped into a decision carry
+// nothing.
+func TestCarryVerdictCarriesTheReadingsOfDecisionsAndAnsweredAsks(t *testing.T) {
+	const prose = "# Rollout\n\nThe service ships behind a flag.\n\n"
+	decision := func(words string, closing ...string) string {
+		if len(closing) == 0 {
+			return `:::decision{#d1 replaced="false"}` + "\n" + words + "\n:::\n"
+		}
+		return `::::decision{#d1 replaced="false"}` + "\n" + words + "\n\n" + strings.Join(closing, "\n") + "::::\n"
+	}
+	reading := func(id, text string) string { return ":::reading{#" + id + "}\n" + text + "\n:::\n" }
+	const shipped = "We ship on Friday."
+	readOnce := reading("r1", "The agent reads it as Friday.")
+	readAgain := reading("r1", "The agent reads it as Friday morning.")
+	retyped := `:::decision{#r1 replaced="false"}` + "\nThe agent reads it as Friday.\n:::\n"
+	ownWithReading := `::::ask{#own urgency="low" multiple="false"}` + "\n" + strings.TrimSuffix(ownBody, ":::\n") + "\n" +
+		reading("r3", "The agent reads it as East.") + "::::\n"
+	// ownWithReadingDecided is ownWithReading as the roll window keeps it in step with own's row.
+	ownWithReadingDecided := ":" + ownDecided + strings.TrimPrefix(ownWithReading, `::::ask{#own urgency="low" multiple="false"}`+"\n")
+	answered := map[string]bool{"own": true}
+	parse := func(markdown string) *pmdoc.Node {
+		t.Helper()
+		tree, err := pmdoc.ParseRendering(markdown)
+		if err != nil {
+			t.Fatalf("parse %q: %v", markdown, err)
+		}
+		return tree
+	}
+	readings := readingCase.change + carriedReasonEnd
+	attributes := attributeRemovalCase.change + carriedReasonEnd
+	both := readingCase.change + ", and " + attributeRemovalCase.change + carriedReasonEnd
+	for _, test := range []struct {
+		name              string
+		approved, version string
+		answered          map[string]bool
+		change            string
+	}{
+		{"a reading added under a decision", prose + decision(shipped), prose + decision(shipped, readOnce), nil, readings},
+		{"a reading's text edited", prose + decision(shipped, readOnce), prose + decision(shipped, readAgain), nil, readings},
+		{"a reading removed", prose + decision(shipped, readOnce), prose + decision(shipped), nil, readings},
+		{"a second reading beside the first", prose + decision(shipped, readOnce), prose + decision(shipped, readOnce, reading("r2", "The agent reads it as this week.")), nil, readings},
+		{"a reading added inside an answered ask", prose + ownBare + ownBody, prose + ownWithReading, answered, readings},
+		{"a reading inside an ask that holds no answer", prose + ownBare + ownBody, prose + ownWithReading, nil, ""},
+		{"a decision's own words changed beside a reading", prose + decision(shipped, readOnce), prose + decision("We ship on Monday.", readAgain), nil, ""},
+		{"a reading retyped into a decision", prose + decision(shipped, readOnce), prose + decision(shipped, retyped), nil, ""},
+		{"prose changed beside a reading", prose + decision(shipped), strings.Replace(prose, "a flag", "a switch", 1) + decision(shipped, readOnce), nil, ""},
+		{"the attributes dropped and a reading added in one version", prose + decision(shipped) + "\n" + ownDecided + ownBody,
+			prose + decision(shipped, readOnce) + "\n" + ownBare + ownBody, nil, both},
+		{"the attributes dropped beside readings that stand unchanged", prose + decision(shipped, readOnce) + "\n" + ownDecided + ownBody,
+			prose + decision(shipped, readOnce) + "\n" + ownBare + ownBody, nil, attributes},
+		{"the attributes dropped beside a reading in an answered ask that stands unchanged", prose + ownWithReadingDecided,
+			prose + ownWithReading, answered, attributes},
+		{"readings that stand unchanged and nothing else", prose + decision(shipped, readOnce), prose + decision(shipped, readOnce), nil, ""},
+	} {
+		if rendered, err := pmdoc.Render(parse(test.approved)); err != nil || rendered != test.approved {
+			t.Fatalf("%s: the approved version renders %q (%v), want itself: the verdict compares stored bytes", test.name, rendered, err)
+		}
+		change, carried, err := carryVerdict(carryInput{approved: parse(test.approved), approvedText: test.approved, version: parse(test.version), agrees: true, answered: test.answered})
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if carried != (test.change != "") || change != test.change {
+			t.Errorf("%s: carry = %v with the change %q, want carry %v with %q", test.name, carried, change, test.change != "", test.change)
 		}
 	}
 }
@@ -564,13 +483,13 @@ func storedVersionMarkdown(t *testing.T, database *store.Store, artifactID strin
 	return markdown
 }
 
-// An agent on the document socket writes an ask block in the attributes only settlement writes:
+// An agent on the document socket writes an ask block in the attributes only the server writes:
 // answered, by alice, who approved version 1. Its question is empty, so settlement cannot read it
 // and writes no row for it; it flags the block invalid in the live tree (the renderer writes no
-// `invalid` into markdown) and versions it with the forged attributes still on it. The carry
-// reads the rows and not the block: a node no row of this document backs refuses it, and alice's
-// approval stays at version 1. A forged block settlement can read is no door: it is indexed as the
-// room's own writer's and its row's `open` is written back over the forgery.
+// `invalid` into markdown), and since the fleet is one build - no other build is registered - it
+// takes the forged attributes off the block, so version 2 holds none of the seven a version can
+// store and the live tree holds none of them either. The carry reads the rows and not the block:
+// a node no row of this document backs refuses it, and alice's approval stays at version 1.
 func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "Context\n")
@@ -582,11 +501,17 @@ func TestAForgedAnsweredBlockOnTheSocketCarriesNoApproval(t *testing.T) {
 	editLiveTree(t, service, artifactID, forgedAnsweredAsk("forged", "alice", &pmdoc.Node{Type: "paragraph", Attrs: pmdoc.Attrs{}}))
 	waitForDocumentVersion(t, database, artifactID, 2)
 	markdown := storedVersionMarkdown(t, database, artifactID, 2)
-	if !strings.Contains(markdown, `:::ask{#forged urgency="high" multiple="false" state="answered" answered_by="alice" answered_at="`) {
-		t.Fatalf("version 2 = %q, want the forged block with its forged attributes kept", markdown)
+	if !strings.Contains(markdown, `:::ask{#forged urgency="high" multiple="false"}`) {
+		t.Fatalf("version 2 = %q, want the forged block with none of its forged attributes", markdown)
 	}
-	if invalid, _ := firstAsk(liveTree(t, service, artifactID)).Attrs["invalid"].(string); !strings.Contains(invalid, "empty question") {
+	forged := firstAsk(liveTree(t, service, artifactID))
+	if invalid, _ := forged.Attrs["invalid"].(string); !strings.Contains(invalid, "empty question") {
 		t.Fatalf("forged block invalid = %q, want settlement to have flagged its empty question", invalid)
+	}
+	for _, name := range storedAskAttributes() {
+		if value, held := forged.Attrs[name]; held {
+			t.Errorf("the forged block keeps %s=%v in the live tree, want none of the seven on a fleet of one build", name, value)
+		}
 	}
 	var rows int
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from asks where block_artifact_id = $1 and block_id = 'forged'`, artifactID).Scan(&rows); err != nil {
@@ -620,24 +545,16 @@ func joined(t *testing.T, service *Service, op func(ctx context.Context, tx pgx.
 }
 
 // answerBlockAs writes login's answer to the block ask blockID of artifactID as the answer route
-// does: the row's state and answer, and the block's attributes through the service's own live
-// attribute write, in one joined transaction.
+// writes it (settleAskAs): on the ask's node and its row, and, while another build serves
+// (serveTwoBuilds), into the block in step with them; on a fleet of one build no byte of the
+// document holds it.
 func answerBlockAs(t *testing.T, service *Service, artifactID, blockID, login string, selected []string) {
 	t.Helper()
+	person := model.Actor{Kind: "user", ID: login}
 	at := time.Now().UTC()
-	answer := model.AskAnswer{User: login, Selected: selected, At: at}
-	encoded, err := json.Marshal(answer)
-	if err != nil {
-		t.Fatal(err)
-	}
-	joined(t, service, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `update asks set state = 'answered', answer = $3 where block_artifact_id = $1 and block_id = $2`, artifactID, blockID, encoded); err != nil {
-			return err
-		}
-		return service.SetBlockAttributes(ctx, artifactID, blockID, map[string]any{
-			"state": "answered", "answered_by": login, "answered_at": at.Format(time.RFC3339Nano), "selected": selected, "answer": nil,
-		}, model.Actor{Kind: "user", ID: login})
-	})
+	change := asks.Answered(model.AskAnswer{User: login, Selected: selected, At: at})
+	change.Who, change.At = person, at
+	settleAskAs(t, service, artifactID, blockID, blockAskOn(t, service, artifactID, blockID).ID, person, change)
 }
 
 // regionSpec is the one-block document the repeated-block-id carry tests decide and then repeat:
@@ -684,10 +601,14 @@ func appendSecondRegionAsk(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
 // A version named from the live tree while it holds two ask nodes under one decided block id - a
 // second node a document-socket peer wrote with the id of the block the human answered - carries
 // nothing: one node per id is the first thing the carry holds a version to, before any node is
-// read. The same version without the repeat carries, so the repeat alone is what refuses.
+// read. The same version without the repeat carries, so the repeat alone is what refuses. Another
+// build serves (serveTwoBuilds), so the answer is written into the block and the version without
+// the repeat differs from the approved one in the block's server-owned attributes alone, which
+// R10's case carries.
 func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 	run := func(t *testing.T, repeat bool) (reviews, approvals int) {
 		database, service, artifactID := seededRegionDocument(t, 20*time.Millisecond)
+		serveTwoBuilds(t, database)
 		approveStoredVersion(t, database, artifactID, 1, "alice")
 
 		answerBlockAs(t, service, artifactID, "region", "alice", []string{"East"})
@@ -701,9 +622,449 @@ func TestAVersionHoldingARepeatedBlockIDCarriesNothing(t *testing.T) {
 		return carriedReviews(t, database, artifactID)
 	}
 	if reviews, approvals := run(t, false); reviews != 2 || approvals != 1 {
-		t.Fatalf("without the repeat: reviews = %d, artifact.approved events = %d; want her answer to carry her approval", reviews, approvals)
+		t.Fatalf("without the repeat: reviews = %d, artifact.approved events = %d; want the version holding her answer to carry her approval", reviews, approvals)
 	}
 	if reviews, approvals := run(t, true); reviews != 1 || approvals != 0 {
 		t.Fatalf("with the repeat: reviews = %d, artifact.approved events = %d; want alice's approval of version 1 alone and no event", reviews, approvals)
+	}
+}
+
+// On a fleet of one build, a version a write takes without settling the document first - a named
+// version, and the version an agent's edit takes at once - stores none of the seven attributes a
+// version can store, though the live tree still holds what the release before wrote into an ask
+// block: here state="open" on an ask bob has answered since, which the answer leaves in place,
+// since on one build it changes no byte of the document (dispatch://INFRA-1150 R3). The named
+// version differs from the one alice approved, which the release before's settlement wrote with
+// that state, in those attributes alone, and every ask of it agrees with its node, so her approval
+// is carried to it by the case that compares the two without them (attributeRemovalCase, R10).
+// Stored with the stale state, the version's block disagreed with its answered ask and carried
+// nothing.
+func TestOnOneBuildAVersionTakenBeforeSettlementStoresNoAskAttributeAndCarriesTheApproval(t *testing.T) {
+	const spec = "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
+	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
+	for _, write := range []struct {
+		name    string
+		version func(ctx context.Context, service *Service, artifactID string) error
+		carries bool
+	}{
+		{"a named version", func(ctx context.Context, service *Service, artifactID string) error {
+			_, err := service.NamedVersion(ctx, artifactID, "Named by the agent", agent)
+			return err
+		}, true},
+		{"an edit's version", func(ctx context.Context, service *Service, artifactID string) error {
+			if _, err := service.ApplyOps(ctx, artifactID, []model.EditOp{{Op: "replace", Find: "Context", With: "Context, edited"}}, agent, nil); err != nil {
+				return err
+			}
+			_, err := service.SnapshotVersion(ctx, artifactID, agent)
+			return err
+		}, false},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			service, artifactID := newTestService(t)
+			service.settle = time.Hour
+			// The release before serves beside this build while the ask opens, and its settlement
+			// writes the ask's state into the block, as this build's does for it.
+			serveTwoBuilds(t, service.store)
+			seedServiceText(t, service, artifactID, spec)
+			settleCurrentGeneration(t, service, artifactID)
+			approved := latestVersionMarkdown(t, service, artifactID)
+			if !strings.Contains(approved, `#ask-1 urgency="med" multiple="false" state="open"}`) {
+				t.Fatalf("the version written while the release before serves = %q, want the ask's block holding its open state", approved)
+			}
+			var number int
+			if err := service.store.Pool.QueryRow(context.Background(), `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&number); err != nil {
+				t.Fatal(err)
+			}
+			approveStoredVersion(t, service.store, artifactID, number, "alice")
+
+			// The release before's last process leaves: the fleet is one build.
+			if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes where schema_version < $1`, pmdoc.SchemaVersion()); err != nil {
+				t.Fatalf("remove the release before's process: %v", err)
+			}
+			bob := model.Actor{Kind: "user", ID: "bob"}
+			at := time.Now().UTC()
+			change := asks.Answered(model.AskAnswer{User: "bob", Selected: []string{"Yes"}, At: at})
+			change.Who, change.At = bob, at
+			settleAskAs(t, service, artifactID, "ask-1", blockAskOn(t, service, artifactID, "ask-1").ID, bob, change)
+			if state := firstAsk(liveTree(t, service, artifactID)).Attrs["state"]; state != "open" {
+				t.Fatalf("the live block after bob's answer holds state %v, want the release before's open state still there", state)
+			}
+
+			if err := joinedWrite(service, func(ctx context.Context) error { return write.version(ctx, service, artifactID) }); err != nil {
+				t.Fatalf("write the version: %v", err)
+			}
+			var written int
+			if err := service.store.Pool.QueryRow(context.Background(), `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&written); err != nil {
+				t.Fatal(err)
+			}
+			if written != number+1 {
+				t.Fatalf("the latest version is %d after the write, want the one it wrote, %d", written, number+1)
+			}
+			version := latestVersionMarkdown(t, service, artifactID)
+			for _, name := range storedAskAttributes() {
+				if strings.Contains(version, " "+name+`="`) {
+					t.Fatalf("the version taken before settlement = %q, want no %s attribute on a fleet of one build", version, name)
+				}
+			}
+			if !write.carries {
+				return
+			}
+			if reviews, approvals := carriedReviews(t, service.store, artifactID); reviews != 2 || approvals != 1 {
+				t.Fatalf("reviews = %d, artifact.approved events = %d; want alice's approval carried to the named version", reviews, approvals)
+			}
+			var reason string
+			if err := service.store.Pool.QueryRow(context.Background(), `
+				select coalesce(reason, '') from artifact_reviews where artifact_id = $1 and version = $2 and state = 'approved'
+			`, artifactID, number+1).Scan(&reason); err != nil {
+				t.Fatalf("read the carried review: %v", err)
+			}
+			if !strings.Contains(reason, attributeRemovalCase.change) {
+				t.Fatalf("the carried review's reason = %q, want the server-owned ask attributes' case %q", reason, attributeRemovalCase.change)
+			}
+		})
+	}
+}
+
+// A carried approval is carried again by the next version it holds, and that carry's review names
+// the version the person approved, not the carried version between: alice approves the version
+// the release before's settlement wrote with the ask's open state; once the fleet is one build and
+// bob has answered, a named version drops the state and carries her approval (the server-owned
+// attributes' case), and a reading added under bob's answer carries it again (the reading case).
+// Each carry's reason opens with alice's own version, the one she approved (approvalOrigin), as
+// the Legion daemon's intake reads a carry by that opening (intake.CarriedApprovalReasonPrefix).
+func TestACarryOfACarriedApprovalNamesTheVersionThePersonApproved(t *testing.T) {
+	const spec = "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
+	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	serveTwoBuilds(t, service.store)
+	seedServiceText(t, service, artifactID, spec)
+	settleCurrentGeneration(t, service, artifactID)
+	latest := func() int {
+		t.Helper()
+		var number int
+		if err := service.store.Pool.QueryRow(context.Background(), `select max(number) from artifact_versions where artifact_id = $1`, artifactID).Scan(&number); err != nil {
+			t.Fatal(err)
+		}
+		return number
+	}
+	approved := latest()
+	approveStoredVersion(t, service.store, artifactID, approved, "alice")
+	if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes where schema_version < $1`, pmdoc.SchemaVersion()); err != nil {
+		t.Fatalf("remove the release before's process: %v", err)
+	}
+	bob := model.Actor{Kind: "user", ID: "bob"}
+	at := time.Now().UTC()
+	change := asks.Answered(model.AskAnswer{User: "bob", Selected: []string{"Yes"}, At: at})
+	change.Who, change.At = bob, at
+	settleAskAs(t, service, artifactID, "ask-1", blockAskOn(t, service, artifactID, "ask-1").ID, bob, change)
+	named := func(summary string) {
+		t.Helper()
+		if err := joinedWrite(service, func(ctx context.Context) error {
+			_, err := service.NamedVersion(ctx, artifactID, summary, agent)
+			return err
+		}); err != nil {
+			t.Fatalf("name %q: %v", summary, err)
+		}
+	}
+	carriedReason := func(number int) string {
+		t.Helper()
+		var reason string
+		if err := service.store.Pool.QueryRow(context.Background(), `
+			select coalesce(reason, '') from artifact_reviews where artifact_id = $1 and version = $2 and state = 'approved'
+		`, artifactID, number).Scan(&reason); err != nil {
+			t.Fatalf("read the review carried to version %d: %v", number, err)
+		}
+		return reason
+	}
+	want := fmt.Sprintf(carriedReasonPrefix, approved)
+
+	named("The state dropped")
+	dropped := latest()
+	if reason := carriedReason(dropped); reason != want+attributeRemovalCase.change+carriedReasonEnd {
+		t.Fatalf("the review carried to version %d reads %q, want %q", dropped, reason, want+attributeRemovalCase.change+carriedReasonEnd)
+	}
+	withReading, err := pmdoc.Parse("::::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n\n:::reading{#ask-1-r1}\nThe agent reads it as now.\n:::\n::::\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	editLiveTree(t, service, artifactID, func(tree *pmdoc.Node) *pmdoc.Node {
+		ask := firstAsk(tree)
+		answer := withReading.Children[0]
+		ask.Children = append(ask.Children, answer.Children[len(answer.Children)-1])
+		return tree
+	})
+	named("A reading under bob's answer")
+	read := latest()
+	if read != dropped+1 {
+		t.Fatalf("the latest version is %d after the reading, want %d", read, dropped+1)
+	}
+	if reason := carriedReason(read); reason != want+readingCase.change+carriedReasonEnd {
+		t.Fatalf("the review carried to version %d, over the carry to version %d, reads %q, want %q: it names the version alice approved", read, dropped, reason, want+readingCase.change+carriedReasonEnd)
+	}
+}
+
+// attributeRemovalReason is the reason R10's case records when it alone carried the approval of
+// version from: the opening cmd/dispatch's TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes
+// reads (carriedReasonPrefix), then that case's change and carriedReasonEnd, spelled out byte for
+// byte as the api package's attributeRemovalSentence spells it.
+func attributeRemovalReason(from int) string {
+	return fmt.Sprintf("Carried forward from the approval of version %d: the server-owned attributes of its ask blocks, which hold no answer, were the whole change since it.", from)
+}
+
+// approvedReasonAt is the reason of the approval of version number of artifactID.
+func approvedReasonAt(t *testing.T, service *Service, artifactID string, number int) string {
+	t.Helper()
+	var reason string
+	if err := service.store.Pool.QueryRow(context.Background(), `
+		select coalesce(reason, '') from artifact_reviews where artifact_id = $1 and version = $2 and state = 'approved'
+	`, artifactID, number).Scan(&reason); err != nil {
+		t.Fatalf("read the approval of version %d: %v", number, err)
+	}
+	return reason
+}
+
+// askOpeningLine is the opening line of the ask block blockID in markdown, "" where it holds none.
+func askOpeningLine(markdown, blockID string) string {
+	for line := range strings.SplitSeq(markdown, "\n") {
+		if strings.HasPrefix(strings.TrimLeft(line, ":"), "ask{#"+blockID+" ") {
+			return line
+		}
+	}
+	return ""
+}
+
+// While another build serves, the answer route and settlement write an answer's words into its
+// block only where the document has room for them; a block without room says who answered and
+// when, as the release before wrote such a block (rollWindowAskAttributesWithheld), and agrees
+// with its node. Alice approves the version the release before's settlement wrote of a document
+// some hundred bytes short of what one upload may hold, the ask's block holding its open state;
+// bob answers in 4,000 characters of words, which the document has no room for, so his answer is
+// written into the block without them, and the version settlement writes of it differs from the
+// one alice approved in the block's server-owned attributes alone. That version carries her
+// approval by R10's case, which its reason names alone, and the ask keeps bob's words whole. Read
+// against the write with the words alone, the block disagreed with its node, and bob's answer
+// superseded her approval.
+func TestAnAnswerLeftOutOfItsBlockForWantOfRoomCarriesTheApproval(t *testing.T) {
+	const ask = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
+	// The prose leaves the document 1,000 bytes short of the cap: room for the block's state,
+	// answerer and time, and none for bob's words.
+	prose := strings.TrimSpace(strings.Repeat("word ", (pmdoc.MaxDocumentBytes-1000)/len("word ")))
+	words := strings.TrimSpace(strings.Repeat("words ", 4000/len("words ")))
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	serveTwoBuilds(t, service.store)
+	seedServiceText(t, service, artifactID, prose+"\n\n"+ask)
+	settleCurrentGeneration(t, service, artifactID)
+	approved := latestVersionNumber(t, service, artifactID)
+	if line := askOpeningLine(latestVersionMarkdown(t, service, artifactID), "ask-1"); line != `:::ask{#ask-1 urgency="med" multiple="false" state="open"}` {
+		t.Fatalf("the version written while the release before serves holds the block %q, want it holding its open state", line)
+	}
+	approveStoredVersion(t, service.store, artifactID, approved, "alice")
+
+	bob := model.Actor{Kind: "user", ID: "bob"}
+	at := time.Now().UTC()
+	change := asks.Answered(model.AskAnswer{User: "bob", Selected: []string{"Yes"}, Text: &words, At: at})
+	change.Who, change.At = bob, at
+	settleAskAs(t, service, artifactID, "ask-1", blockAskOn(t, service, artifactID, "ask-1").ID, bob, change)
+	settleCurrentGeneration(t, service, artifactID)
+
+	written := latestVersionNumber(t, service, artifactID)
+	if written != approved+1 {
+		t.Fatalf("the latest version is %d after bob's answer settled, want the one version settlement wrote of it, %d", written, approved+1)
+	}
+	version := latestVersionMarkdown(t, service, artifactID)
+	if len(version) > pmdoc.MaxDocumentBytes {
+		t.Fatalf("the version settlement wrote of bob's answer is %d bytes, past the %d one upload may hold", len(version), pmdoc.MaxDocumentBytes)
+	}
+	if line := askOpeningLine(version, "ask-1"); !strings.HasPrefix(line, `:::ask{#ask-1 urgency="med" multiple="false" state="answered" answered_by="bob" answered_at="`) ||
+		strings.Contains(line, "selected=") || strings.Contains(line, "answer=") {
+		t.Fatalf("the version settlement wrote of bob's answer holds the block %q, want who answered and when, without the words the document has no room for", line)
+	}
+	if kept := blockAskOn(t, service, artifactID, "ask-1"); kept.Answer == nil || kept.Answer.Text == nil || *kept.Answer.Text != words {
+		t.Fatalf("the ask after bob's answer = %#v, want it holding his words whole", kept.Answer)
+	}
+	if reviews, approvals := carriedReviews(t, service.store, artifactID); reviews != 2 || approvals != 1 {
+		t.Fatalf("reviews = %d, artifact.approved events = %d; want alice's approval carried to version %d", reviews, approvals, written)
+	}
+	if reason := approvedReasonAt(t, service, artifactID, written); reason != attributeRemovalReason(approved) {
+		t.Fatalf("the review carried to version %d reads %q, want %q", written, reason, attributeRemovalReason(approved))
+	}
+}
+
+// A carry names each case the two versions differ by, and none they do not: alice approves the
+// version the release before's settlement wrote of a spec whose decision closes with a reading, its
+// ask's block holding the open state; once the fleet is one build, a named version drops that
+// state and leaves the reading as it was. Both versions hold the reading, which the reading case
+// takes out of each, but they differ in the server-owned attributes alone, so the review carried
+// to the named version records R10's reason and no other, byte for byte. Named after every case
+// that took something out of either version, the reason said the readings had changed too.
+func TestACarryOverReadingsThatStandUnchangedNamesTheAttributeRemovalAlone(t *testing.T) {
+	const reading = ":::reading{#r1}\nThe agent reads it as Friday.\n:::\n"
+	const spec = "Context\n\n::::decision{#d1}\nWe ship on Friday.\n\n" + reading + "::::\n\n" +
+		":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	serveTwoBuilds(t, service.store)
+	seedServiceText(t, service, artifactID, spec)
+	settleCurrentGeneration(t, service, artifactID)
+	approved := latestVersionNumber(t, service, artifactID)
+	if markdown := latestVersionMarkdown(t, service, artifactID); !strings.Contains(markdown, reading) ||
+		askOpeningLine(markdown, "ask-1") != `:::ask{#ask-1 urgency="med" multiple="false" state="open"}` {
+		t.Fatalf("the version written while the release before serves = %q, want the decision's reading and the ask's block holding its open state", markdown)
+	}
+	approveStoredVersion(t, service.store, artifactID, approved, "alice")
+
+	// The release before's last process leaves: the fleet is one build.
+	if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes where schema_version < $1`, pmdoc.SchemaVersion()); err != nil {
+		t.Fatalf("remove the release before's process: %v", err)
+	}
+	if err := joinedWrite(service, func(ctx context.Context) error {
+		_, err := service.NamedVersion(ctx, artifactID, "Named by the agent", model.Actor{Kind: "session", ID: "session-0123456789abcdef"})
+		return err
+	}); err != nil {
+		t.Fatalf("name a version: %v", err)
+	}
+	named := latestVersionNumber(t, service, artifactID)
+	if named != approved+1 {
+		t.Fatalf("the latest version is %d after the named version, want %d", named, approved+1)
+	}
+	if markdown := latestVersionMarkdown(t, service, artifactID); !strings.Contains(markdown, reading) ||
+		askOpeningLine(markdown, "ask-1") != `:::ask{#ask-1 urgency="med" multiple="false"}` {
+		t.Fatalf("the named version = %q, want the decision's reading as it was and the ask's block holding none of the server-owned attributes", markdown)
+	}
+	if reviews, approvals := carriedReviews(t, service.store, artifactID); reviews != 2 || approvals != 1 {
+		t.Fatalf("reviews = %d, artifact.approved events = %d; want alice's approval carried to the named version", reviews, approvals)
+	}
+	if reason := approvedReasonAt(t, service, artifactID, named); reason != attributeRemovalReason(approved) {
+		t.Fatalf("the review carried to version %d reads %q, want %q: its readings stand as they were", named, reason, attributeRemovalReason(approved))
+	}
+}
+
+// carrySpec is a one-ask document whose block the release before's settlement writes its open
+// state into.
+const carrySpec = "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
+
+// approvedBeforeOneBuild seeds carrySpec into a new document while the release before serves
+// beside this build, settles it, records alice's approval of the version settlement wrote - its
+// block holding the ask's open state - with reason ("" for none), and then has the release
+// before's last process leave, so the fleet is one build and the next version drops the state. It
+// answers the service, the document and the version alice approved.
+func approvedBeforeOneBuild(t *testing.T, reason string) (*Service, string, int) {
+	t.Helper()
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	serveTwoBuilds(t, service.store)
+	seedServiceText(t, service, artifactID, carrySpec)
+	settleCurrentGeneration(t, service, artifactID)
+	approved := latestVersionNumber(t, service, artifactID)
+	if line := askOpeningLine(latestVersionMarkdown(t, service, artifactID), "ask-1"); line != `:::ask{#ask-1 urgency="med" multiple="false" state="open"}` {
+		t.Fatalf("the version written while the release before serves holds the block %q, want it holding its open state", line)
+	}
+	if _, err := service.store.Pool.Exec(context.Background(), `
+		insert into artifact_reviews (artifact_id, version, state, actor, reason)
+		values ($1, $2, 'approved', '{"kind":"user","id":"alice"}', nullif($3, ''))
+	`, artifactID, approved, reason); err != nil {
+		t.Fatalf("approve version %d as alice: %v", approved, err)
+	}
+	if _, err := service.store.Pool.Exec(context.Background(), `delete from server_processes where schema_version < $1`, pmdoc.SchemaVersion()); err != nil {
+		t.Fatalf("remove the release before's process: %v", err)
+	}
+	return service, artifactID, approved
+}
+
+// namedVersionByTheAgent names the live document as a version, as the agent's session, and
+// answers the version it wrote.
+func namedVersionByTheAgent(t *testing.T, service *Service, artifactID, summary string) int {
+	t.Helper()
+	if err := joinedWrite(service, func(ctx context.Context) error {
+		_, err := service.NamedVersion(ctx, artifactID, summary, model.Actor{Kind: "session", ID: "session-0123456789abcdef"})
+		return err
+	}); err != nil {
+		t.Fatalf("name %q: %v", summary, err)
+	}
+	return latestVersionNumber(t, service, artifactID)
+}
+
+// A carry names the version the approval it carries stands for only where that approval is itself
+// a carry in the shape Dispatch writes one (approvalOrigin): a reason in the carried opening,
+// naming a version before its own at which the same person approved the document. Alice approves
+// a version with a reason of her own that opens as a carried reason does, naming a version past
+// any the document holds, a version before hers that nobody approved, or one only bob approved;
+// the next version, which drops the ask's open state, carries her approval naming the version she
+// approved, not the one her words name.
+func TestACarriedReasonAPersonWroteNamesNoVersionTheyDidNotApprove(t *testing.T) {
+	for _, test := range []struct {
+		name, reason string
+		// bob is the version bob approved before alice, 0 for none.
+		bob int
+	}{
+		{"a version past any the document holds", "Carried forward from the approval of version 99: as I read it.", 0},
+		{"a version before hers that nobody approved", "Carried forward from the approval of version 1: as I read it.", 0},
+		{"a version before hers that only bob approved", "Carried forward from the approval of version 1: as I read it.", 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service, artifactID, approved := approvedBeforeOneBuild(t, test.reason)
+			if test.bob > 0 {
+				approveStoredVersion(t, service.store, artifactID, test.bob, "bob")
+				// Bob's approval is older than alice's, whose approval is the newest review.
+				if _, err := service.store.Pool.Exec(context.Background(), `
+					update artifact_reviews set created_at = created_at - interval '1 hour' where artifact_id = $1 and version = $2
+				`, artifactID, test.bob); err != nil {
+					t.Fatalf("age bob's approval: %v", err)
+				}
+			}
+			named := namedVersionByTheAgent(t, service, artifactID, "The state dropped")
+			if named != approved+1 {
+				t.Fatalf("the latest version is %d after the named version, want %d", named, approved+1)
+			}
+			if reason := approvedReasonAt(t, service, artifactID, named); reason != attributeRemovalReason(approved) {
+				t.Fatalf("the review carried to version %d over alice's approval of version %d, whose reason reads %q, reads %q; want %q",
+					named, approved, test.reason, reason, attributeRemovalReason(approved))
+			}
+		})
+	}
+}
+
+// A version restoring the text of a version an approval was carried to says so: alice approves
+// version A, written while the release before serves; once the fleet is one build a named version
+// D drops the ask's open state and carries her approval; an edit of the prose supersedes it; and
+// the edit undone restores D's text byte for byte, not A's. The approval carried to the restoring
+// version names the version alice approved and the version whose text it holds, D, which her
+// approval was carried to; said to hold A's text, the reason was false.
+func TestARestoreOfACarriedVersionNamesTheVersionWhoseTextItHolds(t *testing.T) {
+	service, artifactID, approved := approvedBeforeOneBuild(t, "")
+	dropped := namedVersionByTheAgent(t, service, artifactID, "The state dropped")
+	if reason := approvedReasonAt(t, service, artifactID, dropped); reason != attributeRemovalReason(approved) {
+		t.Fatalf("the review carried to version %d reads %q, want %q", dropped, reason, attributeRemovalReason(approved))
+	}
+	droppedText := latestVersionMarkdown(t, service, artifactID)
+	agent := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
+	edit := func(find, with string) int {
+		t.Helper()
+		if err := joinedWrite(service, func(ctx context.Context) error {
+			if _, err := service.ApplyOps(ctx, artifactID, []model.EditOp{{Op: "replace", Find: find, With: with}}, agent, nil); err != nil {
+				return err
+			}
+			_, err := service.SnapshotVersion(ctx, artifactID, agent)
+			return err
+		}); err != nil {
+			t.Fatalf("replace %q with %q: %v", find, with, err)
+		}
+		return latestVersionNumber(t, service, artifactID)
+	}
+	if edited := edit("Context", "Context, edited"); edited != dropped+1 {
+		t.Fatalf("the latest version is %d after the edit, want %d", edited, dropped+1)
+	}
+	restored := edit("Context, edited", "Context")
+	if restored != dropped+2 {
+		t.Fatalf("the latest version is %d after the edit was undone, want %d", restored, dropped+2)
+	}
+	if text := latestVersionMarkdown(t, service, artifactID); text != droppedText {
+		t.Fatalf("version %d reads %q, want version %d's text %q byte for byte", restored, text, dropped, droppedText)
+	}
+	want := fmt.Sprintf("Carried forward from the approval of version %d: this version's text is version %d's, unchanged, which that approval was carried to.", approved, dropped)
+	if reason := approvedReasonAt(t, service, artifactID, restored); reason != want {
+		t.Fatalf("the review carried to version %d reads %q, want %q", restored, reason, want)
 	}
 }

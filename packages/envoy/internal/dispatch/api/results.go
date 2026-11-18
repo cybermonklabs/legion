@@ -228,6 +228,16 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, check.Attributes.When))
 		return
 	}
+	// A passing before_merge result states the negative control that would have caught its
+	// failure: the deliberately broken input and the refusal seen. A pass of an after_merge or
+	// default_branch check and any fail may leave it empty, and a row stored with an empty one
+	// before this rule reads back as it was stored. It is judged after the closed-issue refusal,
+	// so a closed issue answers ISSUE_CLOSED whatever the result states.
+	if input.Verdict == "pass" && check.Attributes.When == docs.CheckWhenBeforeMerge && strings.TrimSpace(input.NegativeControl) == "" {
+		writeError(w, codeNegativeControlRequired, http.StatusBadRequest,
+			fmt.Sprintf("negative_control is required: a pass of %s, a before_merge check, states the negative control that would have caught its failure (the deliberately broken input and the refusal seen)", check.BlockID))
+		return
+	}
 	if err := s.refuseResultScreenshots(r.Context(), tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -448,12 +458,12 @@ func (s *server) requireIssueExists(ctx context.Context, key string) error {
 
 // verificationDocument is one issue's Verification document and whether it has one. slug, when
 // it is not "", holds the answer to the document filed under it, which is how a canonical block
-// reference names one. A row whose role is null answers to its slug alone: a document the
-// release before this one created during the rolling deploy carries no role until the next
-// version written under its row repairs it (documentRole), and the slug is meanwhile the only
-// thing that says what the document is. Every reader of an issue's Verification document in
-// this package goes through here — the results routes, the check resolver and the approval
-// request's second document.
+// reference names one. A markdown document whose role is null answers to its slug alone: a
+// document the release before this one created during the rolling deploy carries no role until
+// the next version written under its row repairs it (documentRole), and the slug is meanwhile the
+// only thing that says what the document is. A file or an image never does (documentPlays). Every
+// reader of an issue's Verification document in this package goes through here — the results
+// routes, the check resolver and the approval request's second document.
 func (s *server) verificationDocument(ctx context.Context, q queryer, issueKey, slug string) (model.Artifact, bool, error) {
 	artifact, err := scanArtifact(q.QueryRow(ctx, `
 		select `+artifactColumns+` from artifacts
@@ -717,6 +727,15 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 	}
 	markdown, err := s.deps.Docs.Text(ctx, artifactID)
 	return markdown, nil, err
+}
+
+// sliceMarkdown is markdown[from:to] held to the string's own bounds: a block range the document
+// read gives lies inside it, and a range that does not answers "" rather than panicking.
+func sliceMarkdown(markdown string, from, to int) string {
+	if from < 0 || to > len(markdown) || from > to {
+		return ""
+	}
+	return markdown[from:to]
 }
 
 // checkBlocksIn is every `check` block of one document, in document order, with its attributes

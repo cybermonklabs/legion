@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -26,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -51,8 +53,9 @@ const (
 )
 
 // artifactColumns is the canonical artifact column list scanArtifact reads. role is read through
-// coalesce because model.Artifact carries it as "" when the document plays no role.
-const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at`
+// coalesce because model.Artifact carries it as "" when the document plays no role, and retired_at
+// as whether it is set (model.Artifact.Retired).
+const artifactColumns = `id::text, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, coalesce(role, ''), created_by, created_at, retired_at is not null`
 
 func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
@@ -399,32 +402,36 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 }
 
 // writeDocumentVersion stores the document-version row uploads write directly, returning the same
-// decoded version the route returns to its caller. Uploads keep this separate from
-// docs.writeVersionTx because they own their artifact event and approval move. stamp is what the
-// markdown was rendered from (docs.Ledger.RenderStampOf), stored with the head this transaction's
-// own write left, so a text read of a document still standing there serves the stored markdown
-// rather than rendering the document again.
-func writeDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string, stamp docs.RenderStamp) (model.Version, error) {
+// decoded version the route returns to its caller, and what the row returned beside itself of its
+// document for the version's node (graphstore.VersionOwnerColumns), which the caller writes once
+// the version's block index has written its block nodes (docs.WriteVersionNode). Uploads keep this
+// separate from docs.writeVersionTx because they own their artifact event and approval move. stamp
+// is what the markdown was rendered from (docs.Ledger.RenderStampOf), stored with the head this
+// transaction's own write left, so a text read of a document still standing there serves the
+// stored markdown rather than rendering the document again.
+func writeDocumentVersion(ctx context.Context, tx pgx.Tx, artifactID string, number int, markdown string, authors []model.Actor, summary *string, stamp docs.RenderStamp) (model.Version, graphstore.VersionOwner, error) {
 	encodedAuthors, err := json.Marshal(authors)
 	if err != nil {
-		return model.Version{}, fmt.Errorf("encode document version authors: %w", err)
+		return model.Version{}, graphstore.VersionOwner{}, fmt.Errorf("encode document version authors: %w", err)
 	}
 	var version model.Version
 	var authorsRaw []byte
+	var owner graphstore.VersionOwner
 	if err := tx.QueryRow(ctx, docs.RenderStampHead+`
 		insert into artifact_versions as v (artifact_id, number, markdown, authors, named, summary, doc_update_version, `+docs.RenderStampColumns+`)
 		values ($1, $2, $3, $4, $5, $6, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
 			`+docs.RenderStampValues+`, $7, $8)
-		returning number, named, summary, authors, created_at, `+model.VersionSize+`
+		returning number, named, summary, authors, created_at, `+model.VersionSize+`, `+graphstore.VersionOwnerColumns("v.artifact_id")+`
 	`, artifactID, number, markdown, encodedAuthors, summary != nil, summary, stamp.Token, stamp.Renderer).Scan(
-		&version.Number, &version.Named, &version.Summary, &authorsRaw, &version.CreatedAt, &version.Size,
+		append([]any{&version.Number, &version.Named, &version.Summary, &authorsRaw, &version.CreatedAt, &version.Size},
+			owner.Targets()...)...,
 	); err != nil {
-		return model.Version{}, fmt.Errorf("write document version: %w", err)
+		return model.Version{}, graphstore.VersionOwner{}, fmt.Errorf("write document version: %w", err)
 	}
 	if err := json.Unmarshal(authorsRaw, &version.Authors); err != nil {
-		return model.Version{}, fmt.Errorf("decode document version authors: %w", err)
+		return model.Version{}, graphstore.VersionOwner{}, fmt.Errorf("decode document version authors: %w", err)
 	}
-	return version, nil
+	return version, owner, nil
 }
 
 // recordDocumentTaskProgress records the task count of the document a write just stored.
@@ -436,6 +443,39 @@ func recordDocumentTaskProgress(ctx context.Context, tx pgx.Tx, artifactID strin
 		return docs.RecordTaskProgress(ctx, tx, artifactID, readBack)
 	}
 	return docs.RecordTaskProgressMarkdown(ctx, tx, artifactID, markdown)
+}
+
+// statedVersionBytes states, on the node an image's or a file's row names, the bytes a later
+// version of it holds (graphstore.ArtifactBytes), held for the event the upload appends
+// (graphstore.Caused), so the node's current values are its newest version's (R16 of
+// dispatch://INFRA-1253). A row an older build wrote names no node and states nothing here: the
+// backfill gives it its node and its newest version's bytes in the transaction that names the node
+// on the row (graphcensus' writeObjectBatch). The read takes the row FOR SHARE, which conflicts
+// with the backfill's lock of the row, so the two cannot both miss this version: either the
+// backfill named the node first and this read waits for it, sees the node and states these bytes
+// after the backfill's, or this upload holds the row first, the backfill waits for it to commit,
+// and then reads this version as the row's newest.
+func statedVersionBytes(ctx context.Context, tx pgx.Tx, artifactID, mime string, size int, digest string, who model.Actor) (graphstore.Uncaused, error) {
+	var address *string
+	if err := tx.QueryRow(ctx, `select node_address from artifacts where id = $1 for share`, artifactID).Scan(&address); err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("read the node artifact %s names: %w", artifactID, err)
+	}
+	if address == nil {
+		return graphstore.Uncaused{}, nil
+	}
+	return graphstore.WriteUncaused(ctx, tx, nil,
+		graphstore.ArtifactBytes(nil, *address, mime, int64(size), digest, who, time.Now().UTC()))
+}
+
+// personScoped reports whether a bearer's document write is the person's own, its credential
+// holding the person scope, so the write's context is marked as theirs (docs.WithPersonScope): an
+// agent's write may not drop or retype an answered ask's block (docs.ErrAnsweredAskKept), and a
+// person's may. A browser's actor is the person already, so only a bearer's credential is read,
+// whose recorded actor, the session it names, cannot say. It is read before the write's
+// transaction opens: resolving a personal token reads the pool, which a request holding the
+// transaction's connection may not (store.Pool's guard).
+func (s *server) personScoped(r *http.Request, actor model.Actor) bool {
+	return actor.Kind != "user" && s.callerHoldsScope(r, model.ScopePerson)
 }
 
 func (s *server) storeArtifact(
@@ -453,6 +493,7 @@ func (s *server) storeArtifact(
 	if !s.putUploadedFile(w, r, kind, sha, input, target) {
 		return
 	}
+	personScoped := kind == "doc" && s.personScoped(r, actor)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -492,10 +533,25 @@ func (s *server) storeArtifact(
 	}
 	var artifact model.Artifact
 	var created bool
+	// The node of a document this upload creates: written before its row, in the project of the
+	// issue or the project that owns it, or between the parties of the conversation that does,
+	// and stated under the event the upload appends, or at the sentinel where its owner records
+	// none (agentArtifactTarget.ownsEvents). It states beside it the facts the row projects: its
+	// part_of the issue that owns it, and an image's or a file's bytes (R16 of
+	// dispatch://INFRA-1253); a project's document and a conversation's file hang under no issue.
+	// The row names the node in the same transaction. A ref_key past the store's address bound is
+	// no node of it (graphstore.AddressFits), as every writer of the store leaves such an address
+	// out, and its row names none. An image's or a file's later version states its bytes on the
+	// node its row names (statedVersionBytes).
+	var documentNode graphstore.Uncaused
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = true
 		if refusal := newArtifactNameRefusal(input.name); refusal != nil {
+			s.writeHandlerError(w, refusal)
+			return
+		}
+		if refusal := decisionsAreNodes(target, input.name); refusal != nil {
 			s.writeHandlerError(w, refusal)
 			return
 		}
@@ -521,17 +577,45 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		var nodeKind, nodeAddress *string
+		if refKey := graphstore.ArtifactRefKey(deref(target.IssueKey), deref(project), deref(session), slug); graphstore.AddressFits(refKey) {
+			at := time.Now().UTC()
+			var facts []graphstore.Tuple
+			if target.IssueKey != nil {
+				facts = append(facts, graphstore.ArtifactPartOf(refKey, *target.IssueKey, actor, at))
+			}
+			if kind != "doc" {
+				facts = graphstore.ArtifactBytes(facts, refKey, input.contentType, int64(len(input.content)), sha, actor, at)
+			}
+			// The document is the node this create makes (graphstore.Created).
+			node := graphstore.Created(graphstore.ArtifactNode(refKey, deref(project), deref(session), actor, at))
+			documentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, facts)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			storeKind := graphstore.KindArtifact
+			nodeKind, nodeAddress = &storeKind, &refKey
+		}
 		artifact, err = scanArtifact(tx.QueryRow(r.Context(), `
-			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by)
-			values ($1, $2, $3, $4, $5, $6, false, $7, $8)
+			insert into artifacts (issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, node_kind, node_address)
+			values ($1, $2, $3, $4, $5, $6, false, $7, $8, $9, $10)
 			returning `+artifactColumns,
-			target.IssueKey, project, session, slug, input.name, kind, role, actorJSON))
+			target.IssueKey, project, session, slug, input.name, kind, role, actorJSON, nodeKind, nodeAddress))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	} else if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	} else if artifact.Retired {
+		// A retired decisions document is refused as a new one is: decisions are nodes now.
+		refusal := decisionsAreNodes(target, input.name)
+		if refusal == nil {
+			refusal = documentRetiredRefusal(artifact)
+		}
+		s.writeHandlerError(w, refusal)
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
@@ -583,12 +667,19 @@ func (s *server) storeArtifact(
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	if personScoped {
+		documentCtx = docs.WithPersonScope(documentCtx)
+	}
 	var documentMarkdown string
 	// documentReadBack is the rendering this write stored, read back by its own parse (docs'
 	// Ledger.ReadBackOf), which the task count and the advice's blocks read in place of parsing
 	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
 	var documentReadBack *pmdoc.Node
 	var documentChanges model.ReferenceChanges
+	// indexedBlocks is what the block index stated in the node and tuple store, which waits for
+	// the event this upload appends below: that event is the cause every node and tuple of the
+	// pass carries, and no tuple may be updated once appended.
+	var indexedBlocks graphstore.Uncaused
 	var movedEvents []model.Event
 	if kind == "doc" {
 		if created {
@@ -600,7 +691,8 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		version, err = writeDocumentVersion(r.Context(), tx, artifact.ID, nextNumber, documentMarkdown, []model.Actor{actor}, documentSummary, ledger.RenderStampOf(artifact.ID, documentMarkdown))
+		var owner graphstore.VersionOwner
+		version, owner, err = writeDocumentVersion(r.Context(), tx, artifact.ID, nextNumber, documentMarkdown, []model.Actor{actor}, documentSummary, ledger.RenderStampOf(artifact.ID, documentMarkdown))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -617,11 +709,19 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		documentChanges, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
+		documentChanges, indexedBlocks, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The version's node, after its block index's block nodes, held for the event below with
+		// the document's own node (docs.WriteVersionNode).
+		versionNode, err := docs.WriteVersionNode(r.Context(), tx, owner, version.Number, actor, version.CreatedAt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		documentNode = graphstore.Joined(documentNode, versionNode)
 	} else {
 		authors, err := encodeJSON([]model.Actor{actor})
 		if err != nil {
@@ -640,14 +740,24 @@ func (s *server) storeArtifact(
 				content = nil
 			}
 		}
+		// A later version moves the node's bytes to its own, held for the event this upload
+		// appends below; a version this upload creates the document with was stated with the node.
+		if !created {
+			documentNode, err = statedVersionBytes(r.Context(), tx, artifact.ID, input.contentType, size, sha, actor)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
 		var versionAuthors []byte
+		var owner graphstore.VersionOwner
 		if err := tx.QueryRow(r.Context(), `
-			insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors, named, summary)
+			insert into artifact_versions as v (artifact_id, number, content, mime, size, sha256, authors, named, summary)
 			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-			returning number, named, summary, authors, created_at, size, mime, sha256
+			returning number, named, summary, authors, created_at, size, mime, sha256, `+graphstore.VersionOwnerColumns("v.artifact_id")+`
 		`, artifact.ID, nextNumber, content, input.contentType, size, sha, authors, input.summary != "", summaryValue).Scan(
-			&version.Number, &version.Named, &version.Summary, &versionAuthors, &version.CreatedAt,
-			&version.Size, &version.MIME, &version.SHA256,
+			append([]any{&version.Number, &version.Named, &version.Summary, &versionAuthors, &version.CreatedAt,
+				&version.Size, &version.MIME, &version.SHA256}, owner.Targets()...)...,
 		); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -656,6 +766,14 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The version's node, held for the event below with the facts its bytes stated
+		// (docs.WriteVersionNode).
+		versionNode, err := docs.WriteVersionNode(r.Context(), tx, owner, version.Number, actor, version.CreatedAt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		documentNode = graphstore.Joined(documentNode, versionNode)
 	}
 	var diff *string
 	if !created && kind == "doc" {
@@ -670,10 +788,12 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		// It carries the document's newest approval when its text is the approved text again and
-		// its decision blocks are as their rows have them, as every version the document service
-		// writes does (docs.carryApproval): an exact undo uploaded is the approved document.
-		carried, err := docs.CarryRestoredApproval(
+		// It carries the document's newest approval as every version the document service writes
+		// does (docs.carryApproval): when its text is the approved text again, or when every
+		// difference from it is a carry case - the readings of its decisions and answered asks, and
+		// the server-owned ask attributes an upload drops - and its ask blocks agree with
+		// their nodes.
+		carried, err := docs.CarryUploadedApproval(
 			r.Context(), tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		)
 		if err != nil {
@@ -697,6 +817,9 @@ func (s *server) storeArtifact(
 		payload = artifactCreatedEventPayload(artifact, documentChanges)
 	}
 	published := movedEvents
+	// The cause the block index's facts carry: the event this upload appends, or the sentinel
+	// where its owner records none of its own (an agent's workspace document).
+	blockCause := graphstore.NoEvent
 	if target.ownsEvents() {
 		event, err := s.appendEvent(r.Context(), tx, ownerForArtifact(artifact).event(eventType, actor, payload))
 		if err != nil {
@@ -709,7 +832,16 @@ func (s *server) storeArtifact(
 				return
 			}
 		}
+		blockCause = event.ID
 		published = append(published, event)
+	}
+	if err := graphstore.Caused(r.Context(), tx, indexedBlocks, blockCause); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, documentNode, blockCause); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// The approval this upload's own version superseded, read in its transaction as the edit
 	// route reads it: an upload to an existing document always writes a version, so a
@@ -856,18 +988,16 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 }
 
 // artifactTextBody is the markdown and the token the three text routes answer, with the blocks
-// beside them for a request that asked for them with ?blocks=true. The three come from one
-// rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot leave
-// a listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
-// that asked for none, which pays for none of that rendering.
+// beside them for a request that asked for them with ?blocks=true. Each ask block carries its
+// ask's answer state and answer, rendered on read from the ask (docs.TextWithAnswers), since the
+// stored bytes hold none of it. The three come from one rendering of one tree, so a write by
+// another session cannot leave a listing's byte ranges indexing markdown they were not computed
+// over; nil blocks for a request that asked for none, which pays for none of that rendering.
 func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
-	if r.URL.Query().Get("blocks") != "true" {
-		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifactID)
+	withBlocks := r.URL.Query().Get("blocks") == "true"
+	markdown, token, blocks, err := s.deps.Docs.TextWithAnswers(r.Context(), artifactID, withBlocks)
+	if err != nil || !withBlocks {
 		return markdown, token, nil, err
-	}
-	markdown, token, blocks, err := s.deps.Docs.TextWithTokenAndBlocks(r.Context(), artifactID)
-	if err != nil {
-		return "", "", nil, err
 	}
 	if err := s.describeBlocks(r.Context(), artifactID, blocks); err != nil {
 		return "", "", nil, err
@@ -1092,7 +1222,9 @@ func deref(value *string) string {
 
 // commitArtifactVersionEvent appends the artifact.version event of a version the transaction wrote
 // and stamps the document's new mention edges with it (refs.Stamp), after the append so stamping
-// never touches sequence allocation.
+// never touches sequence allocation. It then appends what that version's block index stated in
+// the node and tuple store (written.Blocks), which waited for this event: the pass ran before
+// the event existed, and no tuple may be updated once it is appended.
 func (s *server) commitArtifactVersionEvent(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1111,6 +1243,9 @@ func (s *server) commitArtifactVersionEvent(
 		return model.Event{}, err
 	}
 	if err := refs.Stamp(ctx, tx, "artifact", artifactID, event.ID); err != nil {
+		return model.Event{}, err
+	}
+	if err := graphstore.Caused(ctx, tx, written.Blocks, event.ID); err != nil {
 		return model.Event{}, err
 	}
 	return event, nil
@@ -1234,6 +1369,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	personScoped := s.personScoped(r, actor)
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1243,8 +1379,12 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
 		return
 	}
+	if artifact.Retired {
+		s.writeHandlerError(w, documentRetiredRefusal(artifact))
+		return
+	}
 	// release ends the conditional edit gate once: right after the commit, which is all a later
-	// conditional edit of this document waits on, so the checks of this edit's new decision blocks
+	// conditional edit of this document waits on, so the checks of this edit's new ask blocks
 	// never hold it; on every earlier return, here.
 	release := func() {}
 	if input.Precondition != nil {
@@ -1270,6 +1410,9 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	if personScoped {
+		documentCtx = docs.WithPersonScope(documentCtx)
+	}
 	edit, err := s.deps.Docs.ApplyOps(documentCtx, artifact.ID, input.Ops, actor, input.Precondition)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1419,10 +1562,11 @@ func participantsOrEmpty(participants []model.Actor) []model.Actor {
 // issueArtifactsStatement lists an issue's artifacts, $1 the issue key, in the order every
 // reader of the issue shows them; collectArtifacts reads its rows. The issue read queues it in
 // a batch with its other reads (getIssue), so the statement and the scan live apart from the
-// sequential loader that every other route calls.
+// sequential loader that every other route calls. A retired document is in no list of its
+// issue's documents (docs.RetireDocument), and its own address and id still read it.
 const issueArtifactsStatement = `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 order by created_at, id
+		from artifacts where issue_key = $1 and retired_at is null order by created_at, id
 	`
 
 func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) ([]model.Artifact, error) {
@@ -1598,17 +1742,21 @@ func isArtifactNotFound(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.code == "ARTIFACT_NOT_FOUND"
 }
 
+// loadDocumentReferences lists the documents of target, an issue or a project, in the order
+// their owner's reads show them: the list a document reference by filename is matched in, and the
+// one its refusal hints from. A retired document is in no such list, though its slug still reads
+// it (resolveDocumentReference).
 func (s *server) loadDocumentReferences(ctx context.Context, q queryer, target artifactTarget) ([]model.Artifact, error) {
 	query := `
 		select ` + artifactColumns + `
-		from artifacts where issue_key = $1 and kind = 'doc' order by created_at, id`
+		from artifacts where issue_key = $1 and kind = 'doc' and retired_at is null order by created_at, id`
 	value := target.Project
 	if target.IssueKey != nil {
 		value = *target.IssueKey
 	} else {
 		query = `
 			select ` + artifactColumns + `
-			from artifacts where project_key = $1 and issue_key is null and kind = 'doc' order by created_at, id`
+			from artifacts where project_key = $1 and issue_key is null and kind = 'doc' and retired_at is null order by created_at, id`
 	}
 	rows, err := q.Query(ctx, query, value)
 	if err != nil {
@@ -1855,7 +2003,7 @@ func scanArtifact(row pgx.Row) (model.Artifact, error) {
 	var createdBy []byte
 	if err := row.Scan(
 		&artifact.ID, &artifact.IssueKey, &project, &artifact.SessionID, &artifact.RefKey, &artifact.Slug,
-		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt,
+		&artifact.Name, &artifact.Kind, &artifact.Primary, &artifact.Role, &createdBy, &artifact.CreatedAt, &artifact.Retired,
 	); err != nil {
 		return model.Artifact{}, err
 	}
@@ -2053,13 +2201,12 @@ func artifactSlug(name string) string {
 // spellings are written. Everything that asks what part a document plays is built from it —
 // documentRole, which writes the role on a new row, the SQL predicates that hold a row to a role
 // (documentRolePredicate), documentPlays, which asks the same of a row already read, and
-// documentRoleOf, which names the part one row plays.
+// documentRoleOf, which names the part one row plays. The `decisions` role is gone from every
+// write (dispatch://INFRA-1150 R11): a decisions document is found through decisions_documents(),
+// and a new one is refused (decisionsAreNodes).
 var roleSlugs = map[string]string{
-	model.ArtifactRoleVerification: "verification-md",
-	model.ArtifactRolePlan:         "plan-md",
-	// The Decisions view already spells the decisions document's slug, which a reference to it
-	// names, so the role takes that constant rather than a second copy of the same word.
-	model.ArtifactRoleDecisions: decisionsDocumentSlug,
+	model.ArtifactRoleVerification: model.ArtifactSlugVerification,
+	model.ArtifactRolePlan:         model.ArtifactSlugPlan,
 }
 
 // documentRole is the role a document takes when its row is created: an issue's markdown
@@ -2083,25 +2230,29 @@ func documentRole(target artifactTarget, kind, slug string) *string {
 }
 
 // documentPlays reports whether an artifact already read plays role: it carries that role, or it
-// is an issue's document that carries none and its slug is the role's, for a row a rolling deploy
-// left with no role because the build that created it did not know the column. A role belongs to
-// an issue's documents alone - documentRole gives none to any other, and the constraint
-// artifacts_role_is_an_issue_document (migration 20261102110000_artifact_document_roles) holds the
-// column to them - so a project document whose slug is a role's, a project's plan.md, plays no
-// role and is a plain document. It is documentRolePredicate's answer about one row, so every
-// reader — the queries that find a document by its role and the routes that judge the document in
-// hand — agrees about the same row.
+// is an issue's markdown document that carries none and its slug is the role's, for a row a rolling
+// deploy left with no role because the build that created it did not know the column. A role
+// belongs to an issue's markdown documents alone - documentRole gives none to any other, and the
+// constraint artifacts_role_is_an_issue_document (migration 20261102110000_artifact_document_roles)
+// holds the column to them - so a project document whose slug is a role's, a project's plan.md,
+// plays no role and is a plain document, and neither does a file or a picture uploaded under a
+// role's name, a file plan.md whose bytes are not markdown. A retired document plays none either:
+// its retirement cleared its role (docs.RetireDocument), and its slug, which stays, gives it none
+// back. It is documentRolePredicate's answer about one row, so every reader — the queries that find
+// a document by its role and the routes that judge the document in hand — agrees about the same
+// row.
 func documentPlays(artifact model.Artifact, role string) bool {
-	return artifact.Role == role || (artifact.Role == "" && artifact.IssueKey != nil && artifact.Slug == roleSlugs[role])
+	return artifact.Role == role ||
+		(artifact.Role == "" && !artifact.Retired && artifact.IssueKey != nil && artifact.Kind == "doc" && artifact.Slug == roleSlugs[role])
 }
 
 // documentRoleOf is the part a document plays: the role of roleSlugs that documentPlays answers
 // true for, asked of the row as every other reader asks it. A row plays at most one of them - a
-// row that carries a role carries one of them, and an issue's row that carries none falls back to
-// its slug, which the map pairs with a single role - so the order this walks the map in cannot
-// change the answer. Asking documentPlays rather than reading artifacts.role is what gives a row
-// whose role column is still null the role its slug decides, which is the state a rolling deploy
-// leaves behind. A document that plays none of them answers "", which omits the field of a
+// row that carries a role carries one of them, and an issue's doc row that carries none falls
+// back to its slug, which the map pairs with a single role - so the order this walks the map in
+// cannot change the answer. Asking documentPlays rather than reading artifacts.role is what gives
+// a row whose role column is still null the role its slug decides, which is the state a rolling
+// deploy leaves behind. A document that plays none of them answers "", which omits the field of a
 // report that carries it (movedApprovalDocument).
 func documentRoleOf(artifact model.Artifact) string {
 	for role := range roleSlugs {
@@ -2122,27 +2273,53 @@ func isSpecDocument(artifact model.Artifact) bool {
 }
 
 // documentRolePredicate holds the artifacts row of the table aliased `alias` to the issue's
-// document of one role: the role itself, or, for an issue's row a rolling deploy left with no
-// role, the slug a document of that name carries. A project document never plays a role
-// (documentPlays), whatever its slug. `alias` is empty where the query names no alias.
+// document of one role: the role itself, or, for an issue's markdown document a rolling deploy left
+// with no role, the slug a document of that name carries, unless the document is retired, whose
+// slug plays no role. A project document, a file and a picture never play a role (documentPlays),
+// whatever their slug. `alias` is empty where the query names no alias.
 func documentRolePredicate(alias, role string) string {
 	if alias != "" {
 		alias += "."
 	}
-	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `issue_key is not null and ` +
-		alias + `slug = '` + roleSlugs[role] + `'))`
+	return `(` + alias + `role = '` + role + `' or (` + alias + `role is null and ` + alias + `retired_at is null and ` +
+		alias + `issue_key is not null and ` + alias + `kind = 'doc' and ` + alias + `slug = '` + roleSlugs[role] + `'))`
 }
 
 // verificationRolePredicate is documentRolePredicate for the Verification document of a query
 // that names no alias, since the queries that hold a row to it are written as string literals.
 var verificationRolePredicate = documentRolePredicate("", model.ArtifactRoleVerification)
 
-// aliasedVerificationRole, aliasedPlanRole and aliasedDecisionsRole are the same predicate for a
-// query whose artifacts table is aliased `a`: the issue read, the coverage read and the check
-// resolver all join it that way.
+// aliasedVerificationRole and aliasedPlanRole are the same predicate for a query whose artifacts
+// table is aliased `a`: the issue read, the coverage read and the check resolver all join it that
+// way.
 var aliasedVerificationRole = documentRolePredicate("a", model.ArtifactRoleVerification)
 var aliasedPlanRole = documentRolePredicate("a", model.ArtifactRolePlan)
-var aliasedDecisionsRole = documentRolePredicate("a", model.ArtifactRoleDecisions)
+
+// decisionsAreNodes is the 409 refusing an upload or a create named name, on an issue, whose slug
+// is the slug of a decisions document (dispatch://INFRA-1150 R11, ruling D12): a decision is a
+// `decision` block of the spec, and a document of that name would be stored where nothing reads
+// it. The refusal stays: a route keeps a thing it stops taking declared and refuses it by name.
+// It reads the name and not the issue, so a document of any other name is taken. An upload that
+// finds an issue's decisions document that still stands is that document's next version, which
+// the decisions step converts, and is never refused.
+func decisionsAreNodes(target artifactTarget, name string) error {
+	if target.IssueKey == nil || artifactSlug(name) != refs.RetiredDecisionsSlug {
+		return nil
+	}
+	return errorf(http.StatusConflict, codeDecisionsAreNodes,
+		"%q names a decisions document, and decisions are nodes now: write each decision as a `decision` block in the `## Decisions` part of the issue's spec (dispatch://%s/spec), with shaped, from_ask and uncertainty as it needs",
+		name, *target.IssueKey)
+}
+
+// documentRetiredRefusal is the 409 refusing a write of new text to artifact, a retired document
+// (docs.RetireDocument): an upload or a create under its name or slug, and an edit by its id or
+// its slug. The document is in no list of its issue's or its project's documents, so text written
+// into it would be stored where no reader looks for it. Its versions stay readable.
+func documentRetiredRefusal(artifact model.Artifact) error {
+	return errorf(http.StatusConflict, "DOCUMENT_RETIRED",
+		"%s (%s, %s) was retired: it takes no new text and is in no list of its documents, though its versions stay readable at /api/v1/artifacts/%s/versions; write a document of another name",
+		artifact.Name, artifact.Slug, artifact.ID, artifact.ID)
+}
 
 // artifactKindMismatch is the 400 refusing an upload under name, of kind, as the next version of
 // artifact, the one the name or slug finds, whose kind is another.
@@ -2285,6 +2462,68 @@ func (s *server) nextArtifactSlug(ctx context.Context, q queryer, target artifac
 			return candidate, nil
 		}
 	}
+}
+
+// issueTreeName is the name an issue's tree artifact is created under, from which its slug is
+// taken (nextArtifactSlug): `tree`, or `tree-2` and so on where a document of the issue holds it.
+const issueTreeName = "tree"
+
+// createIssueTree creates, in tx, the tree artifact of the issue key in project
+// (dispatch://INFRA-1253 R5, D3 and D14 of its plan): an artifacts row of kind tree, whose Yjs
+// document is the issue's room, with a slug of its own among the issue's documents
+// (nextArtifactSlug); its node (graphstore.ArtifactNode) with its part_of to the issue
+// (graphstore.ArtifactPartOf), written before the row that names it; and the issue's issue_trees
+// row, which holds the issue to one tree; and the tree's version 1, empty, with its version node,
+// as an empty document's create writes its version 1 (writeDocumentVersion,
+// docs.WriteVersionNode), so a settlement of the room always finds the tree's latest version. It
+// answers the artifact's id and what the node writes stated, which the caller causes under the
+// event it appends (graphstore.Caused). The caller holds the issue's row and creates the tree
+// once: an issue_trees row standing for the issue already is refused by that row's key, and the
+// transaction with it. An issue born converted and an issue the conversion converts take their
+// tree here (createIssue, and the conversion command). Each document_rooms row naming the tree -
+// the conversion's, a document's joining the room later - is written under that same issue row,
+// held to the writing transaction's commit, and announced in it (docs.AnnounceDocumentRooms says
+// why a room's settlement depends on that).
+func (s *server) createIssueTree(ctx context.Context, tx pgx.Tx, key, project string, actor model.Actor, at time.Time) (string, graphstore.Uncaused, error) {
+	slug, err := s.nextArtifactSlug(ctx, tx, artifactTarget{IssueKey: &key}, issueTreeName)
+	if err != nil {
+		return "", graphstore.Uncaused{}, fmt.Errorf("take the issue tree's slug: %w", err)
+	}
+	actorJSON, err := encodeJSON(actor)
+	if err != nil {
+		return "", graphstore.Uncaused{}, err
+	}
+	refKey := graphstore.ArtifactRefKey(key, project, "", slug)
+	node := graphstore.ArtifactNode(refKey, project, "", actor, at)
+	node.Changed = true
+	written, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{node},
+		[]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, key, actor, at)})
+	if err != nil {
+		return "", graphstore.Uncaused{}, fmt.Errorf("write the issue tree's node: %w", err)
+	}
+	var id string
+	if err := tx.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+		values ($1, $2, $3, $4, 'tree', false, $5, $6, $7)
+		returning id::text
+	`, key, project, slug, issueTreeName, actorJSON, graphstore.KindArtifact, refKey).Scan(&id); err != nil {
+		return "", graphstore.Uncaused{}, fmt.Errorf("create the issue tree: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `insert into issue_trees (issue_key, artifact_id) values ($1, $2)`, key, id); err != nil {
+		return "", graphstore.Uncaused{}, fmt.Errorf("record the issue's tree: %w", err)
+	}
+	version, owner, err := writeDocumentVersion(ctx, tx, id, 1, "", []model.Actor{actor}, nil, docs.RenderStamp{})
+	if err != nil {
+		return "", graphstore.Uncaused{}, fmt.Errorf("write the issue tree's first version: %w", err)
+	}
+	if err := recordDocumentTaskProgress(ctx, tx, id, nil, ""); err != nil {
+		return "", graphstore.Uncaused{}, err
+	}
+	versionNode, err := docs.WriteVersionNode(ctx, tx, owner, version.Number, actor, version.CreatedAt)
+	if err != nil {
+		return "", graphstore.Uncaused{}, err
+	}
+	return id, graphstore.Joined(written, versionNode), nil
 }
 
 // quiesceDocuments closes every live document on every process, flushing each through the store,

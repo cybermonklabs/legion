@@ -27,6 +27,9 @@ export function schemaCreatable(schema: BlockSchema): number {
       for (const choice of attribute.choices ?? []) {
         count(attribute.choice_versions?.[choice]);
       }
+      for (const item of attribute.items ?? []) {
+        count(attribute.item_versions?.[item]);
+      }
     }
   }
   return creatable;

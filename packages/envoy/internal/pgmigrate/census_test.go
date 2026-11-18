@@ -75,6 +75,37 @@ func TestTouchedTablesReadsVerticalTabAsSpace(t *testing.T) {
 	}
 }
 
+// Statements reads a migration as TouchedTables reads it. A statement inside a comment is no
+// statement, a string literal and a function's body are emptied, so a table the body names is
+// named by no statement, and a DO block's body is read as statements of its own. A semicolon
+// inside a literal, a function's body or a quoted name ends no statement.
+func TestStatementsReadsAMigrationAsTouchedTablesReadsIt(t *testing.T) {
+	sql := "-- drop table commented_out;\n" +
+		"create function f() returns void language sql as $fn$ select 1 from artifact_versions; $fn$;\n" +
+		"insert into notes (body) values ('a; b');\n" +
+		"do $$ begin update things set kind = 'x'; delete from \"odd;name\"; end $$;\n" +
+		"alter table things /* a comment */ add column x text"
+	want := []string{
+		"create function f() returns void language sql as ''",
+		"insert into notes (body) values ('')",
+		"do begin update things set kind = ''",
+		`delete from "odd;name"`,
+		"end",
+		"alter table things add column x text",
+	}
+	if got := Statements(sql); !slices.Equal(got, want) {
+		t.Errorf("Statements = %q, want %q", got, want)
+	}
+	var touched []string
+	for _, statement := range want {
+		touched = append(touched, TouchedTables(statement)...)
+	}
+	slices.Sort(touched)
+	if got := TouchedTables(sql); !slices.Equal(got, slices.Compact(touched)) {
+		t.Errorf("TouchedTables of the migration = %v, and of its statements one by one %v: the two readings differ", got, touched)
+	}
+}
+
 // CensusTables does not need the foreign-key catalog for a migration that writes no row, so a
 // pure DDL migration stays readable when its caller cannot query that catalog.
 func TestCensusTablesSkipsForeignKeysForAMigrationThatDoesNotWriteRows(t *testing.T) {

@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -70,26 +72,28 @@ func ScanAsk(row pgx.Row, extra ...any) (model.Ask, error) {
 }
 
 // WriteAskResolution closes an open ask the caller has locked as retracted, resolved or
-// declined: it records the kind, the person's reason and who closed it on the row, and returns
-// the ask as it now stands. A decline (model.AskResolutionDeclined) is the one kind that carries
-// words of Dispatch's own, so this function writes model.DeclineDispatchWords under that kind and
-// leaves DispatchWords empty under every other: no caller can put the words elsewhere. It is the
-// one place that says what resolving an ask stores; each caller writes a block ask's own state
-// and appends the ask.resolved event its path owns.
-func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor) (model.Ask, error) {
+// declined: it records the kind, the person's reason and who closed it, and returns the ask as it
+// now stands. A decline (model.AskResolutionDeclined) is the one kind that carries words of
+// Dispatch's own, so this function writes model.DeclineDispatchWords under that kind and leaves
+// DispatchWords empty under every other: no caller can put the words elsewhere. It is the one
+// place that says what resolving an ask stores; each caller writes a block ask's own state and
+// appends the ask.resolved event its path owns.
+//
+// The resolution is written through the one writer of an ask's answer state (asks.Settle): on the
+// ask's node, then on the row. What it states on the node waits in held for the ask.resolved
+// event the caller appends after it, which the caller hands to graphstore.Caused.
+func WriteAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reason string, actor model.Actor, held *graphstore.Uncaused) (model.Ask, error) {
 	resolution := model.AskResolution{Kind: kind, Reason: reason, Actor: actor, At: time.Now().UTC()}
 	if kind == model.AskResolutionDeclined {
 		resolution.DispatchWords = model.DeclineDispatchWords
 	}
-	encoded, err := json.Marshal(resolution)
+	change := asks.Resolved(resolution)
+	change.Who, change.At, change.Held = actor, resolution.At, held
+	settled, err := asks.Settle(ctx, tx, ask.ID, change)
 	if err != nil {
-		return model.Ask{}, fmt.Errorf("encode ask resolution: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `update asks set state = 'resolved', resolution = $2 where id = $1`, ask.ID, encoded); err != nil {
 		return model.Ask{}, fmt.Errorf("write ask resolution: %w", err)
 	}
-	ask.State = "resolved"
-	ask.Resolution = &resolution
+	ask.State, ask.Answer, ask.Resolution = settled.State, settled.Answer, settled.Resolution
 	return ask, nil
 }
 

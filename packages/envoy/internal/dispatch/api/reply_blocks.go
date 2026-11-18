@@ -36,18 +36,18 @@ type namedBlock struct {
 // has one) and the item row; an item an older build wrote, or wrote after its last index, is
 // indexed first, in the caller's transaction (refs.IndexItemIfOwed), so the block named is one
 // of the item's current body. A block the item does not hold now answers 400 with code, naming
-// field and the block. The live write of this request is the reply, which its own route stamps;
-// the item indexed here is the parent, whose text an earlier write already carried an event for,
-// so a block mention this records takes the source_seq of the parent's own refs row for its
-// target at the item's first indexing and none after it (refs.indexItemBlocks), and either way it
-// is no new fact of this request.
+// field and the block, and so does one who, the reply's writer, may not see. The live write of
+// this request is the reply, which its own route stamps; the item indexed here is the parent,
+// whose text an earlier write already carried an event for, so a block mention this records
+// takes the source_seq of the parent's own refs row for its target at the item's first indexing
+// and none after it (refs.indexItemBlocks), and either way it is no new fact of this request.
 func (s *server) replyBlockOf(
-	ctx context.Context, tx pgx.Tx, kind refs.ItemKind, itemID, blockID, field, code string,
+	ctx context.Context, tx pgx.Tx, who model.Actor, kind refs.ItemKind, itemID, blockID, field, code string,
 ) (*namedBlock, error) {
 	if _, err := refs.IndexItemIfOwed(ctx, tx, kind, itemID, s.deps.ServerURL); err != nil {
 		return nil, err
 	}
-	node, excerpt, found, err := refs.CurrentItemBlock(ctx, tx, kind, itemID, blockID)
+	node, excerpt, found, err := refs.CurrentItemBlock(ctx, tx, who, kind, itemID, blockID)
 	if err != nil {
 		return nil, err
 	}
@@ -75,10 +75,11 @@ func lockReplyParentMessage(ctx context.Context, tx pgx.Tx, id string) error {
 }
 
 // hydrateCommentReplyBlocks sets each comment's ReplyBlock, the block of its parent it answers
-// (null when it names none), in one query per kind of item the named blocks belong to: a reply
-// under an ask names a part of that ask, every other reply a block of the comment it answers
-// (replyBlockOwner), so a page of either costs one query and a page of both two.
-func hydrateCommentReplyBlocks(ctx context.Context, q queryer, comments ...*model.Comment) error {
+// (null when it names none, or names one who may not see), in one query per kind of item the
+// named blocks belong to: a reply under an ask names a part of that ask, every other reply a
+// block of the comment it answers (replyBlockOwner), so a page of either costs one query and a
+// page of both two.
+func hydrateCommentReplyBlocks(ctx context.Context, q queryer, who model.Actor, comments ...*model.Comment) error {
 	ids := map[refs.ItemKind][]string{}
 	for _, comment := range comments {
 		if comment.RepliesToBlock != nil {
@@ -88,7 +89,7 @@ func hydrateCommentReplyBlocks(ctx context.Context, q queryer, comments ...*mode
 	}
 	blocks := make(map[string]*model.ReplyBlock, len(ids))
 	for owner, owned := range ids {
-		found, err := refs.ReplyBlocks(ctx, q, owner, owned)
+		found, err := refs.ReplyBlocks(ctx, q, who, owner, owned)
 		if err != nil {
 			return err
 		}
@@ -101,16 +102,16 @@ func hydrateCommentReplyBlocks(ctx context.Context, q queryer, comments ...*mode
 }
 
 // hydrateMessageReplyBlocks sets each message's ReplyBlock, the block of the message it answers
-// (null when it names none), in one query over every message that names one (RepliesToBlock),
-// however many there are, and none when no message does.
-func hydrateMessageReplyBlocks(ctx context.Context, q queryer, messages ...*model.Message) error {
+// (null when it names none, or names one who may not see), in one query over every message that
+// names one (RepliesToBlock), however many there are, and none when no message does.
+func hydrateMessageReplyBlocks(ctx context.Context, q queryer, who model.Actor, messages ...*model.Message) error {
 	ids := make([]string, 0, len(messages))
 	for _, message := range messages {
 		if message.RepliesToBlock != nil {
 			ids = append(ids, message.ID)
 		}
 	}
-	blocks, err := refs.ReplyBlocks(ctx, q, refs.ItemMessage, ids)
+	blocks, err := refs.ReplyBlocks(ctx, q, who, refs.ItemMessage, ids)
 	if err != nil {
 		return err
 	}
@@ -121,8 +122,9 @@ func hydrateMessageReplyBlocks(ctx context.Context, q queryer, messages ...*mode
 }
 
 // hydrateThreadReplyBlocks sets ReplyBlock on every message of the threads roots head: each root
-// (a message read by id may be a reply itself) and each reply chains holds under it, in one query.
-func hydrateThreadReplyBlocks(ctx context.Context, q queryer, roots []model.Message, chains map[string][]model.Message) error {
+// (a message read by id may be a reply itself) and each reply chains holds under it, in one
+// query, for who.
+func hydrateThreadReplyBlocks(ctx context.Context, q queryer, who model.Actor, roots []model.Message, chains map[string][]model.Message) error {
 	messages := make([]*model.Message, 0, len(roots))
 	for index := range roots {
 		messages = append(messages, &roots[index])
@@ -131,5 +133,5 @@ func hydrateThreadReplyBlocks(ctx context.Context, q queryer, roots []model.Mess
 			messages = append(messages, &chain[reply])
 		}
 	}
-	return hydrateMessageReplyBlocks(ctx, q, messages...)
+	return hydrateMessageReplyBlocks(ctx, q, who, messages...)
 }

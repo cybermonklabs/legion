@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -103,7 +104,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	comment.ResolvedBy = nil
 	comment.ResolvedAt = nil
 	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -215,13 +216,17 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The edit reads back whether the comment's row names its node (comments.node_kind): a
+	// comment left out of the store (commentStored's unprojected), or one a process of the
+	// release before wrote and the backfill has not stated yet, has none for a run to name.
 	var editedAt time.Time
+	var stored bool
 	if err := tx.QueryRow(r.Context(), `
 		update comments
 		set body = $2, edited_at = now()
 		where id = $1
-		returning edited_at
-	`, comment.ID, input.Body).Scan(&editedAt); err != nil {
+		returning edited_at, node_kind is not null
+	`, comment.ID, input.Body).Scan(&editedAt, &stored); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -238,7 +243,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -249,6 +254,34 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, replies, projectionKind), actor); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// An edit of a comment's words made for a run (graphstore.WithRun, which withinGoingRun puts
+	// on a request naming its run) names the comment as changed by that run where it changed them
+	// (dispatch://INFRA-1950/spec#b-r-interaction) and the comment is a node of the store. Nothing
+	// else this route writes reaches the comment's node, so under a run it writes that node as the
+	// create and the backfill write it (graphstore.CommentFacts' node): in the project, or between
+	// the parties, of what it belongs to (graphstore.ScopeOf), made by its author at its
+	// created_at, and marked changed. Its relations stand as they were stated and are stated
+	// again by nobody. The node restates the comment, so the node keeps the state, the
+	// visibility, the made_at and the made_by the store holds and moves nothing else. The
+	// changed_by_run is this edit's, dated at its edited_at and signed by its writer
+	// (graphstore.Node's ChangedAt and ChangedBy). It is the last node row this transaction
+	// takes, after the comment's row and its document, and what it states waits for
+	// comment.edited (graphstore.Caused), as an issue's own field write does (patchIssue). A
+	// write made for no run writes no node and sends no statement more than it did.
+	var commentNode graphstore.Uncaused
+	if graphstore.MadeForRun(r.Context()) && stored && previousBody != comment.Body {
+		project, parties, err := graphstore.ScopeOf(r.Context(), tx, comment.IssueKey, comment.ArtifactID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		node, _ := graphstore.CommentFacts(nil, comment.ID, comment.Author, comment.CreatedAt, graphstore.NoEvent, "", "", project, parties)
+		node.Changed, node.ChangedAt, node.ChangedBy = true, editedAt, actor
+		if commentNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{node}, nil); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -264,6 +297,10 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		payload,
 	))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, commentNode, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -428,7 +465,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		comment.ResolvedAt = timestampPtr(&resolvedAt)
 	}
 	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

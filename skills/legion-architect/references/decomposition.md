@@ -166,7 +166,7 @@ If you are the child's architect:
   comment on your issue names that version.
 - On `changes requested`, write a new version that answers each reason, and tell the architect
   above again.
-- A decision only a person can make is never a decision block in your spec. Send it to the
+- A decision only a person can make is never an ask block in your spec. Send it to the
   architect above you with `envoy_publish`. That architect sends it up the same way, and the
   root architect asks it on the root (`skill://legion-architect`, "Every turn").
 

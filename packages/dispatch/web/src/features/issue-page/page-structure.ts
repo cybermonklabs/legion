@@ -151,6 +151,9 @@ export const KEY_REPORTS = freeze({
   no_decision: "No decision is recorded behind this row.",
   /** The edit key, on a node whose text no document of this issue holds. */
   no_text: "This row has no text to put the caret in.",
+  nothing_under: "Nothing is under this row.",
+  parent_zoomed: "The tree is already zoomed to this row's parent.",
+  editor_closed: "This row's editor could not open.",
   /** The key that zooms back out, with the whole issue already drawn. */
   whole_tree: "The tree is already showing the whole issue.",
 } as const);

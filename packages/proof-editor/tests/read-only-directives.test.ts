@@ -409,7 +409,7 @@ test("read-only draws a directive inside a mark span inside a refused directive 
   ]);
 });
 
-test("read-only reads a kept typed block's server attributes at their schema defaults", async () => {
+test("read-only reads a kept typed block without any of its server attributes", async () => {
   const doc = await readOnlyServerParse(
     ':::ask{#a1 urgency="high" state="answered" answered_by="sami" ' +
       'answered_at="2026-01-01T00:00:00Z" selected=\'["A"]\' answer="done" invalid="x" ' +
@@ -419,7 +419,8 @@ test("read-only reads a kept typed block's server attributes at their schema def
   const ask = doc.child(0);
   expect(ask.attrs.blockId).toBe("a1");
   expect(ask.attrs.urgency).toBe("high");
-  expect(ask.attrs.state).toBe("open");
+  // A server attribute has no default in the editor's schema, so a forged one is read as absent.
+  expect(ask.attrs.state).toBeUndefined();
   const server = Object.entries(
     serverBlockSchema.types.find((type) => type.name === "ask")?.attributes ?? {}
   ).filter(([, attribute]) => attribute.server);
@@ -434,8 +435,8 @@ test("read-only reads a kept typed block's server attributes at their schema def
     "copied_from",
     "copied_from_document",
   ]);
-  for (const [name, attribute] of server) {
-    expect([name, ask.attrs[name]]).toEqual([name, attribute.default]);
+  for (const [name] of server) {
+    expect([name, ask.attrs[name]]).toEqual([name, undefined]);
   }
 });
 

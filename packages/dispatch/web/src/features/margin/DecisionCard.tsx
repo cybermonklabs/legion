@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
+import type { DecisionEntry } from "../../api/types";
 import {
   card,
   decisionUnsureBorder,
@@ -17,8 +18,20 @@ import { buildReferencePath, parseDispatchReference } from "../refs/routes";
 import { regionOrigin } from "./ThreadList";
 import type { DecisionMarginItem, MarkPlacement } from "./useMarginItems";
 
+/** The name a card gives an entry: an ask's question, else the first line of a decision's own
+ *  words, past the line that opens its block. */
+export function entryHeading(decision: DecisionEntry): string {
+  if (decision.question !== null) return decision.question;
+  return (
+    decision.text
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line !== "" && !line.startsWith(":::")) ?? ""
+  );
+}
+
 /** One decision beside a spec block it shaped: whose decision it is, whether its maker was
- *  unsure, its heading as a link to it in `decisions.md`, and the head of its text. Selecting the
+ *  unsure, its name as a link to the node that holds it, and the head of its text. Selecting the
  *  card lights up the block, as selecting an anchored comment lights up its text. */
 export function DecisionCard({
   hovered = false,
@@ -34,14 +47,16 @@ export function DecisionCard({
   const { decision } = item;
   const route = parseDispatchReference(decision.ref);
   const active = selected || hovered;
+  const heading = entryHeading(decision);
+  const unsure = decision.uncertainty === "high";
   return (
     <article
       aria-current={selected ? "true" : undefined}
-      aria-label={`Decision: ${decision.heading}`}
+      aria-label={`Decision: ${heading}`}
       className={`rounded-xl border p-3 text-sm shadow-sm ${
         active ? `${selectedCardBorder} ${selectedCardBg}` : card
-      } ${decision.unsure ? `border-l-4 ${decisionUnsureBorder}` : ""}`}
-      data-decision-unsure={decision.unsure ? "true" : undefined}
+      } ${unsure ? `border-l-4 ${decisionUnsureBorder}` : ""}`}
+      data-decision-unsure={unsure ? "true" : undefined}
       data-margin-item={item.id}
       onClick={(event) => {
         if (event.target instanceof Element && event.target.closest("a, button") !== null) {
@@ -59,17 +74,15 @@ export function DecisionCard({
       }}
     >
       <p className={`flex flex-wrap gap-x-2 text-xs ${textMutedOnSelectedCard}`}>
-        <span>{decision.kind === "person" ? "A person's decision" : "Agent's decision"}</span>
-        {decision.unsure ? (
-          <span className={`font-semibold ${decisionUnsureText}`}>Unsure</span>
-        ) : null}
+        <span>{decision.kind === "agent" ? "Agent's decision" : "A person's decision"}</span>
+        {unsure ? <span className={`font-semibold ${decisionUnsureText}`}>Unsure</span> : null}
       </p>
       <h3 className={`mt-1 font-medium ${textPrimaryOnSurface}`}>
         {route === undefined ? (
-          decision.heading
+          heading
         ) : (
           <Link className={`${linkText} ${linkHoverText}`} to={buildReferencePath(route)}>
-            {decision.heading}
+            {heading}
           </Link>
         )}
       </h3>

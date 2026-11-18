@@ -420,6 +420,13 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
+	// beforeCommentCommit runs on a comment write's own request, once the comment, its node and
+	// every event it appended are written and before its transaction commits, with those events;
+	// its error stands in for the commit failing, so the route answers it and rolls the write
+	// back. Only a test sets it: it is how a case holds a write open after its events are
+	// appended, to read whether any of them reaches a subscriber before the commit, and how it
+	// ends one in a rollback.
+	beforeCommentCommit func(ctx context.Context, events []model.Event) error
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -826,6 +833,11 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		handler = s.refuseUploadToAClosedIssue(handler)
 	}
 	if route.Method != http.MethodGet {
+		// A write made for a run of the command bar: the one reader of its header, inside the
+		// checks below, so a caller they refuse is told that first, and outside the keyed
+		// layer and the upload's spool, so a run it refuses claims no key and costs no body
+		// (withinGoingRun).
+		handler = s.withinGoingRun(handler)
 		// Outside the keyed layer and the upload's spool, so a write to another project's
 		// object, into another session's own rows, or by a credential that names no person
 		// claims no idempotency key and costs no body (withinProjectScope,
@@ -1219,10 +1231,33 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
 		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
-		// brokerTokenActor set, since the credential, not the body, named this session.
+		// brokerTokenActor set, with or without an owner, since the credential, not the body,
+		// named this session.
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
+		}
+		// The credential itself proved this session, and for a token the broker scoped to a
+		// person it proved whose session it is too (brokerTokenActor sets Owner from the token
+		// and never from a body). That pair is what R14 calls "a session the server itself
+		// proved theirs", and the store ties the two with an alias_of tuple on the next write
+		// (graphstore.aliases). The act names the session the credential proved, exactly as
+		// actingPerson names the agent that acted for a person, and is SessionProven for the same
+		// reason actingPerson's is: the credential, not the request, named that session. The
+		// actor's kind and id are left as they were, so every stored author, every event and
+		// every reader keeps the shape it has.
+		//
+		// A session named in a request body earns none of this: the branch below, which every
+		// credential that proves no session of its own takes, records the session the caller
+		// asked for, no act and no Proven mark, because an actor that merely claims a session
+		// proves nothing about whose it is (R14).
+		if actor.Owner != nil && *actor.Owner != "" && authenticated.Credential != nil &&
+			authenticated.Credential.Session == authenticated.ID {
+			actor.Act = &model.ActorAct{
+				Session:       authenticated.ID,
+				SessionProven: true,
+				Scopes:        authenticated.Credential.Scopes,
+			}
 		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
 		return actor, nil
@@ -1240,7 +1275,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// No Credential: this actor is one a handler records and compares, and a stored actor
 		// was decoded from JSON, which carries none (model.Actor.Recorded). A layer that needs
 		// the request's own credential reads it from optionalActor (callerHoldsScope).
-		// Not Proven: the body named this session and the credential proved none.
+		// Not Proven, whatever the body says: the body named this session and the credential
+		// proved none.
 	}, nil
 }
 
@@ -1542,7 +1578,7 @@ func countExceededError(code, field string, count, limit int) *apiError {
 // blockBoundError is what a route answers an itemblocks.Check with: nil where the body broke no
 // rule, else the refusal the typed error words, under the code that rule is refused by. A bound
 // broken (itemblocks.CapExceeded names the block, itemblocks.CountExceeded the count) carries
-// CAP_EXCEEDED, the code every cap refusal carries; a body holding a decision block
+// CAP_EXCEEDED, the code every cap refusal carries; a body holding an ask block
 // (itemblocks.DecisionBlock) carries DECISION_BLOCK_IN_BODY, since what it is refused for is
 // what it holds rather than how long it is. Every route that checks a body calls this one
 // helper, so a route added later cannot word the same refusal differently.

@@ -9,10 +9,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -96,14 +98,6 @@ func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, erro
 	return managed, nil
 }
 
-func normalizeIssueBlockers(targets []string) ([]string, error) {
-	if len(targets) > contracts.MaxIssueBlockers {
-		return nil, countExceededError("BLOCKED_BY_INPUT", "blocked_by", len(targets), contracts.MaxIssueBlockers)
-	}
-	slices.Sort(targets)
-	return slices.Compact(targets), nil
-}
-
 // lockProjectIssueDependencies serializes blocker and parent changes before any row or rank
 // lock. The two-key namespace is separate from Dispatch's one-key rank, document and event locks.
 // It is the one statement of a project's dependency lock: lockIssueDependencyWrite takes each
@@ -156,14 +150,14 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-// lockIssueDependencyWrite takes every lock a blocker or parent write needs, in the one order
+// lockIssueDependencyWrite takes every lock a wait or parent write needs, in the one order
 // every such write takes them: the project lock of the issue's own project and of each project a
 // target of this write belongs to, each through lockProjectIssueDependencies in
 // docs.ProjectsInLockOrder's order (ascending lock id, then key), and then the deployment-wide
 // dependency lock (lockDeploymentIssueDependencies). The number, rank and row locks follow, as
-// they did before. project is the issue's own project, targets are its blocked_by targets, and
-// caller is the one project the request's credential may write, empty for a credential that
-// names none.
+// they did before. project is the issue's own project, waits the issues it waits on, as the
+// request named them (empty for a parent write alone), and caller is the one project the
+// request's credential may write, empty for a credential that names none.
 //
 // The project locks are taken in lock id order, not key order, because the lock id is what
 // Postgres waits on: two key sets whose keys collide in hashtext would, in key order, take the
@@ -176,21 +170,21 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // are taken: the projects it names are locked on top of the issue's own, and the deployment lock
 // is taken exclusively whatever it said. Reading a target's project unlocked is sound because no
 // route moves an issue between projects (project_scope.go's file doc), and a key created between
-// that read and the lock is still refused by writeBlockedBy's own read inside the transaction.
+// that read and the lock is still refused by writeIssueNeeds' own read inside the transaction.
 //
 // A caller whose credential names one project is refused a target outside it here, before any
 // lock is taken: the pre-handler check reads the project of the object the path names and no key
 // of the body (project_scope.go), so this is the first point at which a target's project is
 // known, and a caller that may not write at all would otherwise take the deployment-wide lock
-// first. writeBlockedBy refuses it again under the locks, which is the authoritative refusal;
-// both word it through refuseBlockedByOutsideCallerProject.
-func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, targets []string) error {
-	foreign, err := foreignTargets(ctx, tx, project, targets)
+// first. writeIssueNeeds refuses it again under the locks, which is the authoritative refusal;
+// both word it through refuseWaitOutsideCallerProject.
+func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller string, waits issueWaits) error {
+	foreign, err := foreignTargets(ctx, tx, project, waits.targets)
 	if err != nil {
 		return err
 	}
 	if caller != "" && len(foreign) > 0 {
-		return refuseBlockedByOutsideCallerProject(caller, foreign[0].key, foreign[0].project)
+		return refuseWaitOutsideCallerProject(waits.member, caller, foreign[0].key, foreign[0].project)
 	}
 	projects := make([]string, 0, len(foreign)+1)
 	projects = append(projects, project)
@@ -209,13 +203,13 @@ func lockIssueDependencyWrite(ctx context.Context, tx pgx.Tx, project, caller st
 	return lockDeploymentIssueDependencies(ctx, tx)
 }
 
-// foreignTarget is a blocked_by target of a project other than the issue's own, and the project
-// it belongs to.
+// foreignTarget is a wait's target of a project other than the issue's own, and the project it
+// belongs to.
 type foreignTarget struct{ key, project string }
 
 // foreignTargets is every target belonging to a project other than project, in key order, which
-// is the order writeBlockedBy reads its targets in, so a scoped caller is refused the same target
-// by both. A target with no row is left out: writeBlockedBy's own read refuses it inside the
+// is the order writeIssueNeeds reads its targets in, so a scoped caller is refused the same target
+// by both. A target with no row is left out: writeIssueNeeds' own read refuses it inside the
 // transaction, which is where an unknown key is answered.
 func foreignTargets(ctx context.Context, q queryer, project string, targets []string) ([]foreignTarget, error) {
 	if len(targets) == 0 {
@@ -233,14 +227,14 @@ func foreignTargets(ctx context.Context, q queryer, project string, targets []st
 	})
 }
 
-// refuseBlockedByOutsideCallerProject is what a caller whose credential names one project is
-// answered for a blocked_by target outside it. Two steps of the same write refuse it — the lock
-// step before any lock is taken, and writeBlockedBy under the locks — so the wording lives here
-// once and the two cannot drift.
-func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
+// refuseWaitOutsideCallerProject is what a caller whose credential names one project is answered
+// for a wait's target outside it, naming the member the request named its waits by. Two steps of
+// the same write refuse it — the lock step before any lock is taken, and writeIssueNeeds under the
+// locks — so the wording lives here once and the two cannot drift.
+func refuseWaitOutsideCallerProject(member, caller, target, targetProject string) error {
 	return errorf(http.StatusForbidden, codeProjectScope,
-		"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
-		caller, target, targetProject)
+		"this request's credential may write project %s; %s issue %s belongs to project %s",
+		caller, member, target, targetProject)
 }
 
 // lockIssueRows locks key and the rows in others `for no key update` in one key order, the order
@@ -407,8 +401,8 @@ func refuseParentTooDeep(ctx context.Context, tx pgx.Tx, child, parent string) e
 		"moving %s under %s would put the deepest issue under it %s below its root; an issue sits at most %d links below its root", child, parent, depth, parentDepthCap)
 }
 
-// waitNode is one half of an issue in the dependency graph. An issue starts after its blocked_by
-// targets are done and after its parent starts; it is done after it starts and after its children
+// waitNode is one half of an issue in the dependency graph. An issue starts after the issues it
+// needs are done and after its parent starts; it is done after it starts and after its children
 // are done. Splitting the two halves lets sibling dependencies stand while still refusing a child
 // that waits on its parent, or a parent that waits on its descendant.
 type waitNode struct {
@@ -426,49 +420,122 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 	return assertNoWaitPath(ctx, tx, []waitNode{{key: parent}}, waitNode{key: child})
 }
 
-// writeBlockedBy validates and replaces the normalized target list. A target may be an issue of
-// another project: an issue that waits on work tracked elsewhere has to be able to record that
-// wait, and the walk below is what refuses a ring, between projects as inside one.
+// writeIssueNeeds validates the issues issue waits on and writes the set waits names: the
+// issue_links rows that project it, each naming the issue's node, and the needs tuples the write
+// appends and retracts, which it answers, held for the issue's own event to cause
+// (stateIssueRelations). It writes no row it keeps and states nothing the store holds already: a
+// target the issue waits on now and still names is left as it stands, a target it no longer names
+// loses its row and has its tuple retracted, dated at, and a new target gains both, its row dated
+// at the time its tuple carries. A row a process of the release before wrote, naming no node, is
+// named on its node where the set keeps it, its tuple dated at the row's own created_at, as the
+// backfill of those rows dates it (graphcensus' backfillIssueLinks), so graph_edges answers it as
+// it did. A target may be an issue of another project: an issue that waits on work tracked
+// elsewhere has to be able to record that wait, and the walk below is what refuses a ring, between
+// projects as inside one.
 //
 // caller is the one project the request's credential may write, empty for a credential that
 // names none (callerProject). A target outside it is refused here, under the locks, which is the
 // authoritative refusal: lockIssueDependencyWrite refuses the same caller before any lock is
-// taken, and both word it through refuseBlockedByOutsideCallerProject.
-func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue, project, caller string, targets []string) error {
-	if slices.Contains(targets, issue) {
-		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
+// taken, and both word it through refuseWaitOutsideCallerProject. Every other refusal takes the
+// code of the member the request named its waits by (issueWaits).
+func writeIssueNeeds(ctx context.Context, tx pgx.Tx, issue, project, caller string, waits issueWaits, at time.Time) ([]graphstore.Tuple, error) {
+	if slices.Contains(waits.targets, issue) {
+		return nil, errorf(http.StatusBadRequest, waits.code, "%s names %s itself: an issue cannot wait on itself", waits.member, issue)
 	}
-	for _, target := range targets {
+	for _, target := range waits.targets {
 		var targetProject string
 		err := tx.QueryRow(ctx, `select project_key from issues where key = $1`, target).Scan(&targetProject)
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "blocked_by issue %s not found", target)
+			return nil, errorf(http.StatusBadRequest, waits.code, "%s issue %s not found", waits.member, target)
 		}
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if targetProject != project && caller != "" {
-			return refuseBlockedByOutsideCallerProject(caller, target, targetProject)
+			return nil, refuseWaitOutsideCallerProject(waits.member, caller, target, targetProject)
 		}
 	}
-	from := make([]waitNode, len(targets))
-	for index, target := range targets {
+	from := make([]waitNode, len(waits.targets))
+	for index, target := range waits.targets {
 		from[index] = waitNode{key: target, done: true}
 	}
 	if err := assertNoWaitPath(ctx, tx, from, waitNode{key: issue}); err != nil {
-		return err
+		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `delete from issue_links where issue_key = $1 and kind = 'blocked_by'`, issue); err != nil {
-		return err
+	held, err := graphstore.CurrentOut(ctx, tx, graphstore.KindIssue, issue, []string{graphstore.TupleNeeds})
+	if err != nil {
+		return nil, err
 	}
-	if len(targets) == 0 {
+	waiting := map[string]bool{}
+	for _, tuple := range held {
+		if tuple.ToKind == graphstore.KindIssue {
+			waiting[tuple.ToID] = true
+		}
+	}
+	// Each row the issue holds now, by its target: whether it names its node and when it was
+	// written.
+	rows, err := tx.Query(ctx, `
+		select target_key, node_kind is not null, created_at from issue_links
+		where issue_key = $1 and kind = 'blocked_by'
+	`, issue)
+	if err != nil {
+		return nil, err
+	}
+	type storedLink struct {
+		marked    bool
+		createdAt time.Time
+	}
+	stored := map[string]storedLink{}
+	var target string
+	var link storedLink
+	if _, err := pgx.ForEachRow(rows, []any{&target, &link.marked, &link.createdAt}, func() error {
+		stored[target] = link
 		return nil
+	}); err != nil {
+		return nil, err
 	}
-	_, err := tx.Exec(ctx, `
-		insert into issue_links (issue_key, kind, target_key)
-		select $1, 'blocked_by', target_key from unnest($2::text[]) as target_key
-	`, issue, targets)
-	return err
+	var tuples []graphstore.Tuple
+	var inserted, marked []string
+	for _, target := range waits.targets {
+		row, standing := stored[target]
+		switch {
+		case !standing:
+			inserted = append(inserted, target)
+			row.createdAt = at
+		case !row.marked:
+			marked = append(marked, target)
+		}
+		if !waiting[target] {
+			tuples = append(tuples, graphstore.IssueNeeds(issue, target, true, model.Actor{}, row.createdAt))
+		}
+	}
+	for _, tuple := range held {
+		if tuple.ToKind == graphstore.KindIssue && !slices.Contains(waits.targets, tuple.ToID) {
+			tuples = append(tuples, graphstore.IssueNeeds(issue, tuple.ToID, false, model.Actor{}, at))
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		delete from issue_links where issue_key = $1 and kind = 'blocked_by' and not (target_key = any(coalesce($2::text[], '{}')))
+	`, issue, waits.targets); err != nil {
+		return nil, err
+	}
+	if len(marked) > 0 {
+		if _, err := tx.Exec(ctx, `
+			update issue_links set node_kind = $3, node_address = issue_key
+			where issue_key = $1 and kind = 'blocked_by' and target_key = any($2::text[])
+		`, issue, marked, graphstore.KindIssue); err != nil {
+			return nil, err
+		}
+	}
+	if len(inserted) > 0 {
+		if _, err := tx.Exec(ctx, `
+			insert into issue_links (issue_key, kind, target_key, created_at, node_kind, node_address)
+			select $1, 'blocked_by', target_key, $3, $4, $1 from unnest($2::text[]) as target_key
+		`, issue, inserted, at, graphstore.KindIssue); err != nil {
+			return nil, err
+		}
+	}
+	return tuples, nil
 }
 
 // assertNoWaitPath refuses a wait whose head reaches its tail, stopping at parentDepthCap.

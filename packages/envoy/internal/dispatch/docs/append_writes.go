@@ -13,10 +13,22 @@ import (
 )
 
 // appendUpdateTxClass appends one update inside tx under the gate: a run of one
-// (appendUpdatesTx), with no credit and no flush gating it. The version returned is the one it
-// stored; a run of one is stored whole or refused.
-func (p *PgVersioned) appendUpdateTxClass(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool, kind appendKind) (persistence.Version, error) {
-	version, _, err := p.appendUpdatesTx(ctx, tx, room, []BrowserUpdate{{Update: update, ContentChanged: contentChanged}}, kind, nil, false)
+// (appendUpdatesTx), with no credit and no flush gating it, to artifactID's own room. It resolves
+// the room artifactID's document is edited in and locks it, in one statement (lockArtifactRoom),
+// and refuses the update (ErrRoomMoved) where that room is another: the update was built on
+// artifactID's own Yjs document, which is no fragment of the issue room the document moved into, so
+// stored there it would land in the room's own fragment. A write to an issue room addresses the
+// room by its tree artifact's own id. The version returned is the one it stored; a run of one is
+// stored whole or refused.
+func (p *PgVersioned) appendUpdateTxClass(ctx context.Context, tx pgx.Tx, artifactID string, update []byte, contentChanged bool, kind appendKind) (persistence.Version, error) {
+	room, err := lockArtifactRoom(ctx, tx, artifactID)
+	if err != nil {
+		return 0, err
+	}
+	if err := refuseMovedRoom(artifactID, &room); err != nil {
+		return 0, err
+	}
+	version, _, err := p.appendUpdatesTx(ctx, tx, artifactID, []BrowserUpdate{{Update: update, ContentChanged: contentChanged}}, kind, nil)
 	return version, err
 }
 
@@ -45,23 +57,18 @@ func (p *PgVersioned) appendUpdateTxClass(ctx context.Context, tx pgx.Tx, room s
 // unmarked, for its own call to meet the gate again, which refuses it and closes the room for its
 // issue.
 func (p *PgVersioned) AppendRoomUpdatesTx(ctx context.Context, tx pgx.Tx, room string, flush *RoomFlush, updates []BrowserUpdate) (persistence.Version, int, error) {
-	return p.appendUpdatesTx(ctx, tx, room, updates, appendBrowser, flush, true)
+	return p.appendUpdatesTx(ctx, tx, room, updates, appendBrowser, flush)
 }
 
-// appendUpdatesTx appends updates inside tx under the gate, at consecutive versions from the head
-// it reads: the document's advisory lock where the caller holds none (roomLocked), the gate's read
-// (readAppendGate), a crashed prune's recovery where one stands, the gate's verdict (gateAppend)
-// and the append's writes (appendWrites), each statement run in tx in turn. It answers the first
-// version the run stored and how many of the run it stored, which the gate's prefix rule can
-// leave short of the run it was handed.
-func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room string, updates []BrowserUpdate, kind appendKind, flush *RoomFlush, roomLocked bool) (persistence.Version, int, error) {
+// appendUpdatesTx appends updates inside tx, which holds the room's advisory lock, under the gate,
+// at consecutive versions from the head it reads: the gate's read (readAppendGate), a crashed
+// prune's recovery where one stands, the gate's verdict (refuseMovedRoom, gateAppend) and the
+// append's writes (appendWrites), each statement run in tx in turn. It answers the first version
+// the run stored and how many of the run it stored, which the gate's prefix rule can leave short
+// of the run it was handed.
+func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room string, updates []BrowserUpdate, kind appendKind, flush *RoomFlush) (persistence.Version, int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, 0, err
-	}
-	if !roomLocked {
-		if err := lockDocumentRoom(ctx, tx, room); err != nil {
-			return 0, 0, err
-		}
 	}
 	// One read answers the gate's three questions and carries the prune checkpoint with it: a
 	// crashed prune's recovery (recoverPruneTx) runs only where a checkpoint stands, and the gate
@@ -77,6 +84,9 @@ func (p *PgVersioned) appendUpdatesTx(ctx context.Context, tx pgx.Tx, room strin
 		if read, err = readAppendGate(ctx, tx, room); err != nil {
 			return 0, 0, err
 		}
+	}
+	if err := refuseMovedRoom(room, read.movedTo); err != nil {
+		return 0, 0, err
 	}
 	through, gated := appendingThrough(ctx, room, flush)
 	head, admitted := read.latest, len(updates)
@@ -193,15 +203,17 @@ func (p *PgVersioned) appendWrites(ctx context.Context, room string, head int64,
 	for index, appended := range updates {
 		version := head + int64(index) + 1
 		versions[index], contents[index], classes[index] = version, appended.Update, appended.ContentChanged
-		updateAuthors, updateActor, include := appended.Credit.take()
+		updateAuthors, updateActor, include, documents := appended.Credit.take()
 		// An edit credited to authors names its latest edit source, none included when no one
 		// peer made it, and does to the latest person sender what latestPersonOf says; an update
 		// no one is credited with keeps the row's.
 		if include && (len(updateAuthors) > 0 || updateActor != nil) {
 			owed.credit(updateActor, anyPerson(updateAuthors))
 		}
+		// An issue room's update writes its authors under each document whose fragment it
+		// changed, whose versions alone list them (pendingAuthorsIn).
 		if include {
-			authors = append(authors, pendingAuthorsAt(updateAuthors, persistence.Version(version))...)
+			authors = append(authors, pendingAuthorsIn(updateAuthors, persistence.Version(version), documents)...)
 		}
 		// The ask block authors of the whole run go in one statement, earliest update first:
 		// the statement writes each block once (on conflict do nothing), so the earliest update

@@ -1,0 +1,25 @@
+-- 20261115051200_server_build_announcements_tuple_kinds.up.sql
+--
+-- INFRA-1149: each build the fleet announces says which relation kinds it writes as tuples of the
+-- node and tuple store, so the release that deletes an old arm of `graph_edges` can read whether
+-- the release a rollback would reach answers that arm's kinds from the store too.
+--
+--   tuple_kinds   the relation kinds the announced build writes as tuples, the list
+--                 `graph_edges`' tuple arm renders (migration 20261109215947): a block's
+--                 `in_document` and `mentions`, the pointer kinds the installed block schema
+--                 declares, and a comment's `anchored_to` and `owned_by`. The announcer writes it
+--                 from `refs.TupleKinds` (internal/dispatch/startup, Deps.TupleKinds), and only for
+--                 the commit its own process serves, so a row never names one build's commit with
+--                 another's kinds. Null for a row a build of the release before this one inserted,
+--                 which names only `commit`: that build writes no relation as a tuple, and null
+--                 is what keeps the deleting release from taking an arm the rollback target still
+--                 answers.
+--
+-- A plain nullable add with no default is a catalog change that rewrites no row, so it holds
+-- server_build_announcements (one row per announced build) ACCESS EXCLUSIVE for milliseconds.
+-- The release before this one inserts naming `commit` alone and reads only `commit`, `seq`,
+-- `announced_at` and `published_at`, so the two roll side by side (cmd/dispatch/README.md,
+-- "Database migrations"), and a row it inserts during a roll or after a rollback lists no kinds,
+-- which is true of it. Rolling back past this migration is an image rollback alone; the column
+-- left behind is read by nothing.
+alter table server_build_announcements add column tuple_kinds text[];

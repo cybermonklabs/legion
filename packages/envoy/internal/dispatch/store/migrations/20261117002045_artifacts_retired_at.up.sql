@@ -1,0 +1,18 @@
+-- 20261117002045_artifacts_retired_at.up.sql — when a document was retired.
+--
+-- A retired document leaves every list of its issue's or its project's documents and plays no
+-- role, while its row, its versions, its reviews, its comments, its block texts and its slug stay,
+-- so its address and its versions stay readable and a citation of it stays valid
+-- (dispatch://INFRA-1150 R11). docs.RetireDocument is the one writer of the column: it sets it,
+-- clears the document's role, states the document's node gone and appends document.retired, in
+-- one transaction. retired_at is null for every document that stands.
+--
+-- Rolling deploy. The column is nullable with no default, so the ALTER is a catalog change that
+-- rewrites no row, and every stored row reads null: no document is retired by this migration. The
+-- release before this one names no retired_at, so it lists a retired document as it lists any
+-- other, for as long as it serves beside this one; its inserts leave the column null. Rolling back
+-- past this migration is an image rollback alone; the column left behind is read by nothing that
+-- release runs.
+--
+-- The ALTER takes ACCESS EXCLUSIVE on artifacts for the catalog write alone.
+alter table artifacts add column retired_at timestamptz;

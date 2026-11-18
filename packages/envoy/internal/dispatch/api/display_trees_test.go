@@ -167,8 +167,8 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	// are rows of the schema reading alone - the trees they carry need an architecture source
 	// and a stored reference this issue has neither of - and they are the two rows that were
 	// found naming the model (INFRA-635). A decision's text is a row of the schema reading too:
-	// its live reading is the decisions view's own test, which has a decisions.md to read
-	// (decisions_test.go).
+	// its live reading is the old decisions member's own test, which reads a decision node
+	// (TestTheOldDecisionsMembersAnswerFromTheStore, decisions_test.go).
 	node, _ := readOpenAPITree(t)
 	document, _ := node.(map[string]any)
 	for _, test := range []struct{ name, pattern, target, textPath, treePath string }{

@@ -1,0 +1,110 @@
+import type { ReactNode } from "react";
+
+import { GLYPH_NAMES } from "./page-words";
+
+/** The shape of a question that is closed, whichever way it was closed. */
+const ASK_CLOSED = "M3 3 l10 10 M13 3 l-10 10";
+
+/**
+ * The shape the page draws beside a node's type and beside its state (R21):
+ * an inline `<svg>` carrying its `GLYPH_TOKENS` token in `data-glyph` and its own accessible
+ * name from `GLYPH_NAMES`, drawn beside the word rather than in place of it, so a type and a
+ * state are told apart by a word and a shape and never by colour alone.
+ *
+ * Every shape is one `path` in a 16 by 16 box. No two tokens draw the same one, with the one
+ * exception the words make safe: the four ways an ask is closed - declined, retracted,
+ * withdrawn, and plainly resolved - are one closed shape under four tokens, because a reader
+ * sees a shut question in all four and reads which it is in the word beside it. Each token
+ * still carries its own accessible name (`GLYPH_NAMES`), so a declined ask never announces
+ * itself as a resolved one.
+ *
+ * An author's shape says which kind of author made the node, so two authors of different kinds
+ * never share one (R9): a person is a head and shoulders, an agent a framed head with an
+ * antenna, and an author the model holds none of a question mark; the name beside each says
+ * who (`AgentText.author`, never an id), or that nobody was recorded.
+ */
+const GLYPH_PATHS: Readonly<Record<string, string>> = {
+  /** The types: one outline each. */
+  ask: "M8 1 L15 8 L8 15 L1 8 Z",
+  callout: "M2 3 h12 v8 h-5 l-3 4 v-4 h-4 Z",
+  check: "M2 8 l4 5 l8 -11",
+  "child-issue": "M3 2 v8 a3 3 0 0 0 3 3 h7 M10 10 l3 3 l-3 3",
+  comment: "M2 3 h12 v8 h-7 l-5 4 Z",
+  /** A constraint, two upright bars; a finding, a small diamond; a lens, a ring with a short
+   *  handle; a risk, a triangle. */
+  constraint: "M5 2 v12 M11 2 v12",
+  criterion: "M8 2 a6 6 0 1 0 0.01 0 Z M8 6 a2 2 0 1 0 0.01 0 Z",
+  decision: "M8 1 L15 5 v6 L8 15 L1 11 V5 Z",
+  document: "M3 1 h7 l3 3 v11 h-10 Z",
+  finding: "M8 4 L12 8 L8 12 L4 8 Z",
+  handoff: "M1 8 h10 M8 4 l4 4 l-4 4 M14 2 v12",
+  image: "M2 3 h12 v10 h-12 Z M2 11 l4 -4 l3 3 l2 -2 l3 3",
+  issue: "M8 1 a7 7 0 1 0 0.01 0 Z",
+  lens: "M7 2 a5 5 0 1 0 0.01 0 Z M10.5 10.5 l4 4",
+  message: "M1 4 h14 v8 h-14 Z M1 4 l7 5 l7 -5",
+  "plan-task": "M2 2 h12 v12 h-12 Z M5 8 h6",
+  reading: "M1 8 q7 -7 14 0 q-7 7 -14 0 Z M8 6.5 a1.5 1.5 0 1 0 0.01 0 Z",
+  requirement: "M3 1 h10 v14 l-5 -4 l-5 4 Z",
+  result: "M8 2 l2 4 l4 1 l-3 3 l1 4 l-4 -2 l-4 2 l1 -4 l-3 -3 l4 -1 Z",
+  risk: "M8 2 L15 14 H1 Z",
+  /** Who wrote the node, one shape per kind of author, drawn beside the author's name. */
+  "author-agent": "M3 5 h10 v9 h-10 Z M8 5 v-3 M6 9 v1 M10 9 v1",
+  "author-person": "M8 1.5 a2.5 2.5 0 1 0 0.01 0 Z M3 15 v-2 a5 4 0 0 1 10 0 v2 Z",
+  "author-unknown": "M5 6 a3 3 0 1 1 3 3 v2 M8 13.5 v1",
+  /** An ask's two open states, and the one shape of a question that is closed. */
+  "ask-answered": "M2 9 l4 4 l8 -10",
+  "ask-open": "M8 2 a6 6 0 1 0 0.01 0 Z M8 6 v3 M8 11.5 v0.5",
+  "ask-declined": ASK_CLOSED,
+  "ask-resolved": ASK_CLOSED,
+  "ask-retracted": ASK_CLOSED,
+  "ask-withdrawn": ASK_CLOSED,
+  /** A check's seven states. The retracted one is the passed tick struck through, because a
+   *  retracted check is a pass taken back; the unreadable one is an empty frame, because the
+   *  page has nothing of its own to draw there. */
+  "check-failed": "M4 4 l8 8 M12 4 l-8 8",
+  "check-no-result": "M2 8 h12",
+  "check-older": "M8 2 a6 6 0 1 0 0.01 0 Z M8 5 v3 l2 2",
+  "check-passed": "M2 9 l4 4 l8 -10",
+  "check-retracted": "M3 9 l3 3 l7 -9 M2 14 l12 -12",
+  "check-unmarked": "M8 2 a6 6 0 1 0 0.01 0 Z M5 8 h6",
+  "check-unreadable": "M2 3 h12 v10 h-12 Z M2 13 l12 -10",
+  /** A decision's states: replaced is struck under, waiting for review is an eye, kept is a
+   *  tick inside the decision's own outline, and a decision the reader asked to change is that
+   *  outline with a pen across it. */
+  "decision-change-requested": "M8 1 L15 5 v6 L8 15 L1 11 V5 Z M5 11 l6 -6 M9.5 4.5 l2 2",
+  "decision-kept": "M8 1 L15 5 v6 L8 15 L1 11 V5 Z M5 8 l2 2 l4 -4",
+  "decision-replaced": "M2 11 h12 M4 4 l8 4 l-8 4 Z",
+  "decision-waiting-review": "M1 8 a7 4 0 0 0 14 0 a7 4 0 0 0 -14 0 Z M8 6 v4",
+  /** A row's marks (`ROW_MARK_WORDS`), each beside its word: a proposal is a circle left open,
+   *  an overtaken row a line struck through, and a row only its author reads a closed lock. */
+  "mark-only-you": "M3 7 h10 v7 h-10 Z M5 7 v-2 a3 3 0 0 1 6 0 v2 M8 10 v1.5",
+  "mark-overtaken": "M2 8 h12 M5 13 l6 -10",
+  "mark-proposed": "M8 2 a6 6 0 1 0 6 6",
+  /** How a statement stands at the commit the page names, in the Verification filter and at the
+   *  right of its row in the Spec filter (R17): the statement's own pennant with the mark of how
+   *  it stands inside it, so no two of the three share a shape and none is told apart by colour
+   *  alone; and the pennant struck through for a statement no check serves (R10). */
+  "statement-no-check": "M3 1 h10 v14 l-5 -4 l-5 4 Z M1 14 l14 -12",
+  "statement-met": "M3 1 h10 v14 l-5 -4 l-5 4 Z M5.5 6 l2 2 l3.5 -4",
+  "statement-not-met": "M3 1 h10 v14 l-5 -4 l-5 4 Z M6 5 l4 4 M10 5 l-4 4",
+  "statement-unknown":
+    "M3 1 h10 v14 l-5 -4 l-5 4 Z M6.5 5.6 a1.6 1.6 0 1 1 1.6 1.7 v0.9 M8.1 10.6 v0.7",
+};
+
+/** One shape, by its token: `svg[data-glyph]` with the accessible name the token carries. */
+export function NodeGlyph({ className, token }: { className?: string; token: string }): ReactNode {
+  return (
+    <svg
+      aria-label={GLYPH_NAMES[token]}
+      className={className ?? "h-4 w-4 shrink-0"}
+      data-glyph={token}
+      fill="none"
+      role="img"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      viewBox="0 0 16 16"
+    >
+      <path d={GLYPH_PATHS[token] ?? "M2 8 h12"} />
+    </svg>
+  );
+}

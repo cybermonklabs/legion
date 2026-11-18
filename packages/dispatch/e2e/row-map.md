@@ -250,6 +250,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/going-key-forms.e2e.ts` | each form of a key is resolved by the server, and the row reads the rows it answers |
 | `e2e/going-new-issue.e2e.ts` | the bar creates an issue and the row re-reads what the server stored, its messages and its results |
 | `e2e/going-operators.e2e.ts` | each operator form and each chip narrows a list the server answers |
+| `e2e/graph-store.e2e.ts` | both rows read the node and tuple store back through the server's own reads over a real database: one applies a supertag migration under an open editor and reads the version the live document room admits after it, and the other reads one person's page, whose rows are the authored_by and delivered_to tuples the server wrote as those comments were posted and delivered |
 | `e2e/handoffs.e2e.ts` | needs the live frame |
 | `e2e/heavy-bodies.e2e.ts` | its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other |
 | `e2e/heavy-streamed-turn.e2e.ts` | a long turn streaming over the live relay |
@@ -269,8 +270,21 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-threads.e2e.ts` | the drawer's own bar is read after a navigation cancels the first agents read, which a recording answers with the cancelled entry |
 | `e2e/inbox-view.e2e.ts` | a priority write must arrive live |
 | `e2e/inbox.e2e.ts` | writes a reply and re-reads the thread; live event feed; lands in the document's live room |
+| `e2e/issue-page-d.e2e.ts` | each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue |
+| `e2e/issue-page-g-view.e2e.ts` | its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on |
+| `e2e/issue-page-g.e2e.ts` | the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on |
+| `e2e/issue-page-i.e2e.ts` | the server's reads fold the outline; read marks and typed words persist |
+| `e2e/issue-page-j.e2e.ts` | the Spec view reads the server's stored decisions, ties and results |
+| `e2e/issue-page-k.e2e.ts` | the view orders the plan's blocks and needs the server stored |
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
+| `e2e/issue-page-p.e2e.ts` | each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval |
+| `e2e/issue-page-q.e2e.ts` | the server's decisions read sorts the view; a sent Change is re-read |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
+| `e2e/issue-page-t.e2e.ts` | the rows draw the tree read and its views the server answers for each seeded issue, count the reads the page sends it, and write a status and a reply whose refresh is the server's tree read |
+| `e2e/issue-page-u.e2e.ts` | the server's decision nodes, their review state and the comment under each, read through the tree and its views |
+| `e2e/issue-page-v.e2e.ts` | the rows record and withdraw results and file a child through the server, and the view draws its coverage and results reads |
+| `e2e/issue-page-w.e2e.ts` | lenses, risks and constraints are written through the server's routes and drawn from its tree read |
+| `e2e/issue-page-x.e2e.ts` | a write the server settles changes what the outline draws; another reader's page holds what the read answers it |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |
 | `e2e/issues-table.e2e.ts` | every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload |
 | `e2e/judged-grant.e2e.ts` | the two grants it reads are written into the fake broker and the page is asserted against what the server lists back |

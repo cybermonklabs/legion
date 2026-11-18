@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -254,8 +255,12 @@ func TestANewEmptyDocumentIsANodeOfItsIssue(t *testing.T) {
 	}
 
 	// The two rows differ in what the documents hold and in nothing else. Each row is read as
-	// JSON without the columns that name it (its id, slug, name, reference key and time) and
-	// without the content: a version's markdown and the search vector built from it.
+	// JSON without the columns that name it (its id, slug, name, reference key, node address
+	// and time) and without the content: a version's markdown and the search vector built from
+	// it. node_address is the address of the document's own node in the store, `<issue
+	// key>/<slug>`, so it names the row as the slug does, and the loop after the compare holds
+	// it to its own document; node_kind names no row, both rows naming an artifact node, so it
+	// is compared with the rest.
 	//
 	// Two of the render stamp's four columns carry two facts at once
 	// (20261103085452_artifact_versions_render_stamp.up.sql). Their values name the write and
@@ -275,7 +280,7 @@ func TestANewEmptyDocumentIsANodeOfItsIssue(t *testing.T) {
 		}
 		return row
 	}
-	const artifactRow = `select (to_jsonb(a) - 'id' - 'slug' - 'name' - 'ref_key' - 'created_at')::text from artifacts a where a.id = $1`
+	const artifactRow = `select (to_jsonb(a) - 'id' - 'slug' - 'name' - 'ref_key' - 'node_address' - 'created_at')::text from artifacts a where a.id = $1`
 	const versionRow = `select ((to_jsonb(v) - 'id' - 'artifact_id' - 'created_at' - 'markdown' - 'search')
 		|| jsonb_build_object(
 			'doc_update_row', case when v.doc_update_row is null then 'null' else 'set' end,
@@ -289,6 +294,27 @@ func TestANewEmptyDocumentIsANodeOfItsIssue(t *testing.T) {
 		upload := rowOf(row.what, row.query, uploaded.Artifact.ID)
 		if made != upload {
 			t.Fatalf("the %s row of the document made with no content is\n%s\nand of the uploaded document\n%s", row.what, made, upload)
+		}
+	}
+
+	for _, document := range []struct {
+		what, id, slug string
+	}{
+		{what: "the document made with no content", id: empty.Artifact.ID, slug: empty.Artifact.Slug},
+		{what: "the uploaded document", id: uploaded.Artifact.ID, slug: uploaded.Artifact.Slug},
+	} {
+		var nodeKind, nodeAddress *string
+		var held bool
+		if err := database.Pool.QueryRow(ctx, `
+			select a.node_kind, a.node_address,
+			       exists (select 1 from graph_nodes n where n.kind = $2 and n.id = a.node_address)
+			from artifacts a where a.id = $1
+		`, document.id, graphstore.KindArtifact).Scan(&nodeKind, &nodeAddress, &held); err != nil {
+			t.Fatalf("read the node the row of %s names: %v", document.what, err)
+		}
+		if address := issue.Key + "/" + document.slug; deref(nodeKind) != graphstore.KindArtifact || deref(nodeAddress) != address || !held {
+			t.Fatalf("the row of %s names node %q/%q (held in the store: %t), want the %s node %s, its issue's key and its slug, which the store holds",
+				document.what, deref(nodeKind), deref(nodeAddress), held, graphstore.KindArtifact, address)
 		}
 	}
 

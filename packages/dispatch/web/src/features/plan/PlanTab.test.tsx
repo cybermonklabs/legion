@@ -140,6 +140,53 @@ test("a task that serves and needs nothing says so", async () => {
   expect(task.getByTestId("plan-task-needs").textContent).toBe("Needsnone");
 });
 
+// A plan task's `needs` names an issue under the plan's issue beside the plan tasks it waits on
+// (`items: ["issue"]` in the block schema), and the tab reads the value under those items: the
+// issue and the plan task both show, where a reader that declared no items would refuse the whole
+// value and show neither.
+test("a plan task that needs an issue shows it beside the task it needs", async () => {
+  const { getArtifactBlocks, getReferences, view } = renderTab(plan(), [
+    {
+      attributes: [
+        {
+          kind: "block[]",
+          name: "needs",
+          value: "dispatch://CORE-1/artifact/plan-md#b-t0 dispatch://CORE-2",
+        },
+      ],
+      from: 0,
+      id: "t1",
+      references: { asks: 0, comments: 0 },
+      to: 4,
+      token: "sha256:t1",
+      type: "plan_task",
+    },
+  ]);
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
+    documents: [],
+    key,
+    project: "CORE",
+    status: "in_progress",
+    title: "Build the child's part.",
+  }));
+  restore = () => {
+    getArtifactBlocks.mockRestore();
+    getReferences.mockRestore();
+    getIssueSummary.mockRestore();
+    view.unmount();
+  };
+
+  const task = within(await screen.findByTestId("plan-task"));
+  const needs = within(task.getByTestId("plan-task-needs"));
+  expect((await needs.findByRole("link", { name: "Add the routes." })).getAttribute("href")).toBe(
+    "/issues/CORE-1/artifacts/plan-md#b-t0"
+  );
+  expect(needs.getAllByRole("link").map((link) => link.getAttribute("href"))).toContain(
+    "/issues/CORE-2"
+  );
+  expect(task.getByTestId("plan-task-needs").textContent).not.toContain("none");
+});
+
 // A plan is approved by its plan review, never by a person, and the chip beside it says so.
 test("the plan review's approval shows on the tab", async () => {
   const { getArtifactBlocks, getReferences, view } = renderTab(

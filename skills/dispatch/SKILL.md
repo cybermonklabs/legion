@@ -27,7 +27,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 :::
 ```
 
-- A decision block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
+- An ask block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
 - Never repeat an open ask in a message.
 - Change an open ask's block with `dispatch edit-ask` (ask id) or `doc-edit`'s `replace` or `move` (block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
 - Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` (a progress note) needs it. An approval request a newer version moved needs `request-approval` again.

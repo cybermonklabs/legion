@@ -12,8 +12,9 @@ import type {
   Artifact,
   AskRead,
   Comment,
-  Decision,
+  DecisionEntry,
   DecisionKeep,
+  DecisionLink,
   DisplayTree,
   IssueAskRow,
   IssueDecisions,
@@ -31,93 +32,117 @@ const artifacts = [
     id: documentId,
     issue_key: "CORE-1",
     kind: "doc",
-    name: "decisions.md",
+    name: "notes.md",
     primary: false,
     project: "",
-    slug: "decisions-md",
+    slug: "notes-md",
   },
 ] as unknown as Artifact[];
 
-function decision(fields: Partial<Decision> & Pick<Decision, "block_id" | "heading" | "text">) {
+/** An entry of the Decisions read: by default an agent's decision under block `block` of
+ *  notes.md, whose node holds it. */
+function entry(
+  fields: Partial<DecisionEntry> & Pick<DecisionEntry, "text"> & { block: string }
+): DecisionEntry {
+  const { block, ...entryFields } = fields;
   return {
-    asks: [],
+    answer: null,
+    answer_state: null,
+    answered_at: null,
+    answered_by: null,
     changed_at: "2026-11-01T00:00:00Z",
     changed_version: 3,
+    decided_by: { id: "session-1", kind: "session" },
+    declined: false,
+    declined_note: null,
+    document: {
+      artifact_id: documentId,
+      block: `CORE-1/notes-md#${block}`,
+      block_id: block,
+      ref: "dispatch://CORE-1/artifact/notes-md",
+    },
     kept: null,
+    kept_by: null,
+    kept_text_sum: null,
     kind: "agent",
-    links: [],
-    ref: `dispatch://CORE-1/artifact/decisions-md#b-${fields.block_id}`,
+    multiple: null,
+    node: { id: `CORE-1/notes-md#${block}`, kind: "block" },
+    options: null,
+    question: null,
+    readings: [],
+    ref: `dispatch://CORE-1/artifact/notes-md#b-${block}`,
     replaced: false,
-    text_sha256: `sum-${fields.block_id}`,
-    unsure: false,
-    waiting_review: false,
+    resolution: null,
+    selected: null,
+    shaped: [],
+    text_sha256: `sum-${block}`,
     // The panel draws the reading Go made of the decision's text and splits nothing itself, so
     // a decision a test invents carries the reading the page's own engine makes of that text
     // (`__tests__/display-trees`). `warmMarkdownRenderer` must have resolved first, which is
     // why every view below is built inside its test rather than beside it.
     text_tree: displayTree(fields.text),
-    ...fields,
-  } as Decision;
+    uncertainty: null,
+    uncertainty_reason: null,
+    urgency: null,
+    waiting_review: false,
+    ...entryFields,
+  };
+}
+
+function shapedLink(blockId: string, stale: boolean): DecisionLink {
+  return {
+    created_at: "2026-11-01T00:00:00Z",
+    created_version: 1,
+    from_block: "store",
+    stale,
+    to: graphNode({
+      block_id: blockId,
+      id: `CORE-1/spec#${blockId}`,
+      kind: "block",
+      text: blockId === "p1" ? "Notices are stored." : "Old rows expire.",
+    }),
+  };
 }
 
 function issueView(): IssueDecisions {
-  const table = decision({
-    block_id: "store",
-    heading: "Store notices in a table",
-    links: [
-      {
-        created_at: "2026-11-01T00:00:00Z",
-        created_version: 1,
-        from_block: "store-why",
-        stale: false,
-        to: graphNode({
-          block_id: "p1",
-          id: "CORE-1/spec#p1",
-          kind: "block",
-          text: "Notices are stored.",
-        }),
-      },
-      {
-        created_at: "2026-11-01T00:00:00Z",
-        created_version: 1,
-        from_block: "store-why",
-        stale: true,
-        to: graphNode({
-          block_id: "p 2",
-          id: "CORE-1/spec#p 2",
-          kind: "block",
-          text: "Old rows expire.",
-        }),
-      },
-    ],
+  const table = entry({
+    block: "store",
+    shaped: [shapedLink("p1", false), shapedLink("p 2", true)],
     text: "## Store notices in a table\n\nA table keeps them queryable.\n\nUnsure: the index may be slow.",
-    unsure: true,
+    uncertainty: "high",
     waiting_review: true,
   });
-  const named = decision({
-    asks: [askId],
-    block_id: "name",
-    heading: "Name them notices",
+  // A person's decision is the answered ask itself: its node holds it.
+  const named = entry({
+    answer: "The person chose the name.",
+    answer_state: "answered",
+    answered_at: "2026-11-01T00:00:00Z",
+    answered_by: "bob",
+    block: "name",
     kind: "person",
-    text: "## Name them notices\n\nThe person chose the name.",
+    node: { id: askId, kind: "ask" },
+    question: "Name them notices",
+    ref: `dispatch://CORE-1/ask/${askId}`,
+    selected: [],
+    text: "Name them notices",
+    text_tree: undefined,
   });
-  const file = decision({
-    block_id: "file",
-    heading: "Keep them in a file",
+  const file = entry({
+    block: "file",
     replaced: true,
     text: "### Keep them in a file\n\nA file was simpler.",
   });
-  return {
-    decisions: [table, named, file],
-    document: "dispatch://CORE-1/artifact/decisions-md",
-    open_questions: [
-      {
-        block_id: "q1",
-        id: questionId,
-        question: "Which index should the table carry?",
-      } as unknown as IssueAskRow,
-    ],
-  };
+  const open = entry({
+    answer_state: "open",
+    block: "q1",
+    kind: "person",
+    node: { id: questionId, kind: "ask" },
+    question: "Which index should the table carry?",
+    ref: `dispatch://CORE-1/ask/${questionId}`,
+    text: "Which index should the table carry?",
+    text_tree: undefined,
+  });
+  return { decisions: [], document: null, entries: [open, table, named, file], open_questions: [] };
 }
 
 beforeAll(async () => {
@@ -158,7 +183,8 @@ test("the panel sorts the view into its four lists, in order", async () => {
     const question = within(list("Open questions")).getByRole("link", {
       name: "Which index should the table carry?",
     });
-    expect(question).toHaveAttribute("href", "/issues/CORE-1/spec#b-q1");
+    // Each entry links the node that holds it: an open question its ask.
+    expect(question).toHaveAttribute("href", `/issues/CORE-1/asks/${questionId}`);
 
     const waiting = list("Waiting for your review");
     expect(within(waiting).getByText("Store notices in a table")).toBeDefined();
@@ -171,11 +197,16 @@ test("the panel sorts the view into its four lists, in order", async () => {
         "the index may be slow."
       )
     );
-    // Each link opens the spec at the block it shaped, its id written as `encodeBlockId` writes it.
+    // The name links the node that holds the decision, and each link of what it shaped opens the
+    // spec at that block, its id written as `encodeBlockId` writes it.
     const shaped = within(waiting)
       .getAllByRole("link")
       .map((link) => link.getAttribute("href"));
-    expect(shaped).toEqual(["/issues/CORE-1/spec#b-p1", "/issues/CORE-1/spec#b-p%202"]);
+    expect(shaped).toEqual([
+      "/issues/CORE-1/artifacts/notes-md#b-store",
+      "/issues/CORE-1/spec#b-p1",
+      "/issues/CORE-1/spec#b-p%202",
+    ]);
 
     const mine = list("Your decisions");
     expect(within(mine).getByText("Name them notices")).toBeDefined();
@@ -220,7 +251,7 @@ test("Keep records the decision and moves it from Waiting for your review to You
   }
 });
 
-test("Change opens the comment composer on decisions.md, quoting the decision's first paragraph, and posts it as the issue's comment", async () => {
+test("Change opens the comment composer on notes.md, quoting the decision's first paragraph, and posts it as the issue's comment", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
   const comment = spyOn(api, "createComment").mockResolvedValue({} as Comment);
@@ -253,12 +284,11 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
 
 /** The view one decision of its own makes: it waits for review, so the row draws its Keep and
  *  Change beside the blocks of its text. */
-function waitingView(
-  fields: Partial<Decision> & Pick<Decision, "heading" | "text">
-): IssueDecisions {
+function waitingView(fields: Partial<DecisionEntry> & Pick<DecisionEntry, "text">): IssueDecisions {
   return {
-    decisions: [decision({ block_id: "only", waiting_review: true, ...fields })],
-    document: "dispatch://CORE-1/artifact/decisions-md",
+    decisions: [],
+    document: null,
+    entries: [entry({ block: "only", waiting_review: true, ...fields })],
     open_questions: [],
   };
 }
@@ -285,7 +315,6 @@ async function quoteOf(view: IssueDecisions): Promise<string> {
 test("the quote of a first block that is a list holds one space between its items", async () => {
   const quote = await quoteOf(
     waitingView({
-      heading: "Name them notices",
       text: "## Name them notices\n\n- **alpha**\n- beta\n\nThat is the whole of it.",
     })
   );
@@ -297,7 +326,6 @@ test("the quote of a first block that is a list holds one space between its item
 test("the quote of a first block with a hard break holds one space between its lines", async () => {
   const quote = await quoteOf(
     waitingView({
-      heading: "Wrap the lines",
       text: "## Wrap the lines\n\nline one  \nline two\n\nThat is the whole of it.",
     })
   );
@@ -312,7 +340,6 @@ test("the quote of a first block with a hard break holds one space between its l
 test("a decision's references are read from its own markdown, not from the words of a block", async () => {
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
     waitingView({
-      heading: "Read the keys",
       text: `## Read the keys\n\nIt answers [the earlier ask](dispatch://CORE-1/ask/${askId}), and a \`CORE-9\`-style key names the issue it shaped.`,
     })
   );
@@ -351,7 +378,6 @@ test("a decision whose answer carried no reading is still drawn, quoted and mark
   const user = userEvent.setup();
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
     waitingView({
-      heading: "Keep a log",
       text: "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.",
       text_tree: undefined,
     })
@@ -379,7 +405,6 @@ test("a decision whose answer carried no reading is still drawn, quoted and mark
 test("a block of an answer with no reading cites its own markdown, not the decision's", async () => {
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
     waitingView({
-      heading: "Name the region",
       text: "## Name the region\n\nIt answers #q2.\n\nWrite \\#q2 for the literal.",
       text_tree: undefined,
     })
@@ -463,7 +488,7 @@ function refusedTree(text: string): DisplayTree {
 test("a block whose tree the engine refuses shows its own text alone", async () => {
   const text = "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.";
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
-    waitingView({ heading: "Keep a log", text, text_tree: refusedTree(text) })
+    waitingView({ text, text_tree: refusedTree(text) })
   );
   // The engine reports every tree it refuses, one report per block drawn.
   const logged = quietConsoleError();
@@ -497,7 +522,6 @@ test("a block whose tree the engine refuses shows its own text alone", async () 
 test("only a plain paragraph that starts Unsure: takes the accent", async () => {
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
     waitingView({
-      heading: "Where the doubt is",
       text: [
         "## Where the doubt is",
         "Unsure: the index may be slow.",

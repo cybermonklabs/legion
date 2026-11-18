@@ -40,6 +40,11 @@ type roomInstance struct {
 	// ends the token takes them back (residentLoad). Set once, where the instance is kept
 	// (keepInstance).
 	resident *residentLoad
+	// layout is the room's layout (roomLayout) as its load read it, which every read and write of
+	// the room's whole tree reads its fragments by (settlement, the block-id stamp). A room whose
+	// layout changes is closed, and its next load reads the new one (documentRoomsMoved). Set once,
+	// where the instance is kept.
+	layout roomLayout
 
 	// issueCloseStarted is taken by the first refusal of this instance's updates the gate made
 	// because the document's issue is closed - the room's own append of one, or a settlement's
@@ -200,14 +205,15 @@ func (s *Service) tookResidentVersion(room string, version persistence.Version) 
 // goes with the document from here, as the listing does: until then took still reaches this
 // instance through it, which is what ygo's loading window needs it for. counted is the token of
 // the load the instance stands for, which its updates' bytes count against (classifyDrained); it
-// is set before the instance is listed, so every reader of a listed instance reads it too.
+// is set before the instance is listed, so every reader of a listed instance reads it too, and so
+// is layout, the room's layout as that load read it.
 //
 // It also schedules one catch-up of the instance (roomCatchUps.schedule), which waits for ygo to
 // publish it once this load hook returns (roomCatchUps.takeLoading): a load reads the store with
 // no lock, so another process's append can commit between that read and the moment this room is
 // resident, and its notification can be decided while the room is still loading, when there is no
 // room to catch up. Without this the room would be born behind with nothing left to come for it.
-func (s *Service) keepInstance(room string, live *crdt.Doc, counted *residentLoad) *roomInstance {
+func (s *Service) keepInstance(room string, live *crdt.Doc, counted *residentLoad, layout roomLayout) *roomInstance {
 	value, ok := s.roomLoads.Load(room)
 	if !ok {
 		// A room ygo loaded without reading the store through this service's persistence stands
@@ -217,6 +223,7 @@ func (s *Service) keepInstance(room string, live *crdt.Doc, counted *residentLoa
 	load := value.(*roomLoad)
 	instance := load.start()
 	instance.resident = counted
+	instance.layout = layout
 	listResident(&s.instances, live, instance)
 	// The cleanup holds the service weakly because runtime.AddCleanup keeps a cleanup's closure
 	// alive for as long as the object it is attached to, and the service reaches every resident
@@ -247,6 +254,15 @@ func (s *Service) keepInstance(room string, live *crdt.Doc, counted *residentLoa
 func (s *Service) instanceOf(live *crdt.Doc) *roomInstance {
 	if listed, ok := s.instances.Load(weak.Make(live)); ok {
 		return listed.(*roomInstance)
+	}
+	return nil
+}
+
+// layoutOf is the layout of live's room as its load read it (roomInstance.layout), empty for a
+// document no room load listed, which renders its own fragment alone.
+func (s *Service) layoutOf(live *crdt.Doc) roomLayout {
+	if instance := s.instanceOf(live); instance != nil {
+		return instance.layout
 	}
 	return nil
 }

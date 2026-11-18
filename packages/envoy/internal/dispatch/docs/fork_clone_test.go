@@ -208,7 +208,7 @@ func TestAClonedForkAndItsReplicaAreIndependent(t *testing.T) {
 	}
 	log := live.OpenUpdateLog()
 	defer log.Close()
-	replica := service.keepReplica(live, log, nil)
+	replica := service.keepReplica(live, log, nil, nil)
 	// A commit of its own gives the replica the room's state to follow before the fork is read,
 	// so the fork clones the replica the update observer keeps rather than the copy a first read
 	// of a replica holding none starts it from (renderedReplica.atPoint).
@@ -281,7 +281,7 @@ func TestEveryForkLeavesTheWriteAuthoringUnderItsForksClientID(t *testing.T) {
 	}
 	log := live.OpenUpdateLog()
 	defer log.Close()
-	replica := service.keepReplica(live, log, nil)
+	replica := service.keepReplica(live, log, nil, nil)
 	// A commit of its own gives the replica the room's state to follow before the fork is read,
 	// so the fork clones the replica the update observer keeps rather than the copy a first read
 	// of a replica holding none starts it from (renderedReplica.atPoint).

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -18,7 +19,7 @@ import (
 type API interface {
 	SeedText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
 	ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error)
-	IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, error)
+	IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, graphstore.Uncaused, error)
 	RebuildDocument(ctx context.Context, artifactID string, markdown *string, actor model.Actor) (RebuildReport, VersionResult, error)
 	InjectSchemaInvalidForTest(ctx context.Context, artifactID string) error
 	InjectUnknownElementForTest(ctx context.Context, artifactID string) error
@@ -35,8 +36,10 @@ type API interface {
 	FollowClosedIssueVersions(ctx context.Context, issueKey string) ([]model.Event, error)
 	AcquireConditionalEdit(ctx context.Context, artifactID string) (func(), error)
 	ApplyOps(ctx context.Context, artifactID string, ops []model.EditOp, actor model.Actor, precondition *model.EditPrecondition) (EditOutcome, error)
-	SetBlockAttributes(ctx context.Context, artifactID, blockID string, attributes map[string]any, actor model.Actor) error
+	KeepAskBlockInStep(ctx context.Context, ask model.Ask, actor model.Actor) error
 	SetAskBlockText(ctx context.Context, artifactID, blockID string, edit AskBlockEdit, actor model.Actor) (AskBlockText, error)
+	TextWithAnswers(ctx context.Context, artifactID string, withBlocks bool) (string, string, []model.ArtifactBlock, error)
+	DecisionHeading(ctx context.Context, q graphstore.Queryer, artifactID, blockID string) (HeadingDecision, bool, error)
 	ScheduleSettlement(artifactID string)
 	SettleCopiesOf(ctx context.Context, ask model.Ask) error
 	MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error)
@@ -59,10 +62,16 @@ type API interface {
 // batched backlink counts it changed. Wrote is false when the operation recorded nothing:
 // SnapshotVersion found the live document already matched the newest version, or RebuildDocument
 // restored the latest version or was given its markdown.
+//
+// Blocks is what the version's block index stated in the node and tuple store. The index runs
+// before the event that records the version exists, and no tuple may be updated afterwards, so
+// the facts travel here and the caller appends them under that event, in the same transaction
+// (graphstore.Caused).
 type VersionResult struct {
 	Version model.Version
 	Wrote   bool
 	Changes model.ReferenceChanges
+	Blocks  graphstore.Uncaused
 }
 
 // EditOutcome is what one batch of document edit operations did. Changed compares the document's

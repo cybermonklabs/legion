@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { graphNode } from "../../__tests__/graph-fixture";
 import type {
   ArtifactBlock,
-  Decision,
+  DecisionEntry,
   DecisionLink,
   GraphReferences,
   IssueDecisions,
@@ -12,6 +12,7 @@ import {
   changedSinceRead,
   readLineText,
   STALE_BLOCK_TITLE,
+  shapedNodeChanged,
   specBlockMarks,
   specBlockParts,
   staleSpecBlocks,
@@ -28,48 +29,112 @@ function block(id: string, type: string, from: number): ArtifactBlock {
   };
 }
 
-function link(to: string, stale: boolean): DecisionLink {
+/** A `shaped` link to block `to` of the spec: its tuple written by event 10, and the block's text
+ *  last changed by the event `changed` names, after the tie where it is the greater. */
+function link(to: string, changed: number, document = "CORE-1/spec"): DecisionLink {
   return {
     created_at: "2026-10-01T00:00:00Z",
     created_version: 1,
-    from_block: "d-para",
-    stale,
-    to: graphNode({ block_id: to, id: `CORE-1/spec#${to}`, kind: "block" }),
+    event: 10,
+    from_block: "d-1",
+    stale: changed > 10,
+    text_changed_event: changed,
+    to: graphNode({ block_id: to, id: `${document}#${to}`, kind: "block" }),
   };
 }
 
-function decision(blockId: string, links: DecisionLink[], replaced = false): Decision {
+function entry(blockId: string, shaped: DecisionLink[], replaced = false): DecisionEntry {
   return {
-    asks: [],
-    block_id: blockId,
+    answer: null,
+    answer_state: null,
+    answered_at: null,
+    answered_by: null,
     changed_at: "2026-10-02T00:00:00Z",
     changed_version: 2,
-    heading: `Decision ${blockId}`,
+    decided_by: { id: "session-1", kind: "session" },
+    declined: false,
+    declined_note: null,
+    document: {
+      artifact_id: "choices-id",
+      block: `CORE-1/choices-md#${blockId}`,
+      block_id: blockId,
+      ref: "dispatch://CORE-1/artifact/choices-md",
+    },
     kept: null,
+    kept_by: null,
+    kept_text_sum: null,
     kind: "agent",
-    links,
-    ref: `dispatch://CORE-1/artifact/decisions-md#b-${blockId}`,
+    multiple: null,
+    node: { id: `CORE-1/choices-md#${blockId}`, kind: "block" },
+    options: null,
+    question: null,
+    readings: [],
+    ref: `dispatch://CORE-1/artifact/choices-md#b-${blockId}`,
     replaced,
-    text: "We decided.",
+    resolution: null,
+    selected: null,
+    shaped,
+    text: ":::decision{#d}\nWe decided.\n:::\n",
     text_sha256: `sum-${blockId}`,
-    unsure: false,
+    uncertainty: null,
+    uncertainty_reason: null,
+    urgency: null,
     waiting_review: true,
   };
 }
 
 const decisions: IssueDecisions = {
-  decisions: [
-    decision("d-1", [link("p-plan", true), link("p-scope", false)]),
-    decision("d-2", [link("p-plan", true), link("p-rollout", true)], true),
+  decisions: [],
+  document: null,
+  entries: [
+    entry("d-1", [link("p-plan", 12), link("p-scope", 8)]),
+    entry(
+      "d-2",
+      [link("p-plan", 12), link("p-rollout", 11), link("p-notes", 13, "CORE-1/notes-md")],
+      true
+    ),
   ],
-  document: "dispatch://CORE-1/artifact/decisions-md",
   open_questions: [],
 };
 
-test("every spec block a stale link names is stale, each once, in the order the view names them", () => {
-  expect(staleSpecBlocks(decisions)).toEqual(["p-plan", "p-rollout"]);
-  expect(staleSpecBlocks(undefined)).toEqual([]);
-  expect(staleSpecBlocks({ ...decisions, decisions: [], document: null })).toEqual([]);
+test("every spec block whose text changed after a decision tied it is stale, each once, in the order the read names them", () => {
+  expect(staleSpecBlocks(decisions, "CORE-1/spec")).toEqual(["p-plan", "p-rollout"]);
+  expect(staleSpecBlocks(decisions)).toEqual(["p-plan", "p-rollout", "p-notes"]);
+  expect(staleSpecBlocks(undefined, "CORE-1/spec")).toEqual([]);
+  expect(staleSpecBlocks({ ...decisions, entries: [] }, "CORE-1/spec")).toEqual([]);
+});
+
+test("an open and a declined ask mark nothing stale, and an answered one does", () => {
+  const ask = (id: string, state: string, to: string, declined = false): DecisionEntry => ({
+    ...entry(id, [link(to, 12)]),
+    answer_state: state,
+    declined,
+    kind: declined ? "declined" : "person",
+    node: { id, kind: "ask" },
+    question: `Question ${id}?`,
+    ref: `dispatch://CORE-1/ask/${id}`,
+    waiting_review: false,
+  });
+  const asks: IssueDecisions = {
+    ...decisions,
+    entries: [
+      ask("open-ask", "open", "p-open"),
+      ask("declined-ask", "resolved", "p-declined", true),
+      ask("answered-ask", "answered", "p-answered"),
+    ],
+  };
+  expect(staleSpecBlocks(asks, "CORE-1/spec")).toEqual(["p-answered"]);
+});
+
+test("a shaped node changed after the tie when its text's event is later than the tuple's", () => {
+  expect(shapedNodeChanged(link("p", 11))).toBe(true);
+  expect(shapedNodeChanged(link("p", 10))).toBe(false);
+  expect(shapedNodeChanged({ ...link("p", 9), stale: true })).toBe(false);
+  // Where the store holds no event for one of the two, the server's comparison by its clock says it.
+  expect(shapedNodeChanged({ ...link("p", 9), event: undefined, stale: true })).toBe(true);
+  expect(shapedNodeChanged({ ...link("p", 12), text_changed_event: undefined, stale: false })).toBe(
+    false
+  );
 });
 
 const references: GraphReferences = {

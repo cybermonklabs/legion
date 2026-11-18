@@ -1249,8 +1249,8 @@ nobody has said they will make. An open ask or `opened_since` never suppresses t
 Only a reply whose first word is WAITING, and which does not also name PROCEEDING (a model echoing
 the choice rather than making it), produces the one hidden `dispatch-ask-reminder` steer with
 `triggerTurn`: it says the agent is waiting on a human for something no open ask covers, and tells
-it to open one now: a decision block in the document the wait concerns (`dispatch doc-edit` with an
-ask block), or `dispatch ask` for a to-do only a human can do, naming exactly what it needs and from
+it to open one now: an ask block in the document the wait concerns (`dispatch doc-edit`), or
+`dispatch ask` for a to-do only a human can do, naming exactly what it needs and from
 whom. It never offers `dispatch request-approval`: an approval request is for a settled spec, not a
 way to wait on a human. The parse is case-sensitive and first-word-only because a false
 WAITING is the expensive error — its steer tells an agent to page a human with a question it does
@@ -1273,8 +1273,8 @@ its verdict. A failure is logged once per session (`logger.warn`), never notifie
 The check is owed and spent like the host's todo reminder rather than once per period: the arming
 turn owes one, running it spends it whatever came back, the agent opening the ask itself spends it
 too (`dispatch ask`, `dispatch request-approval`, a `dispatch issue` or `dispatch artifact` whose
-result counts a decision block in the stored document (`advice.decision_blocks`), or a
-`dispatch doc-edit` whose result counts a decision block the edit added
+result counts an ask block in the stored document (`advice.decision_blocks`), or a
+`dispatch doc-edit` whose result counts an ask block the edit added
 (`advice.decision_blocks_added`): `opensAsk` in `src/opens-ask.ts`), and the agent's next real
 work — a successful `tool_result` that ran anything but `dispatch` commands — owes another. The
 extension learns what a `dispatch` command did from the CLI's ledger (`results.jsonl` in the

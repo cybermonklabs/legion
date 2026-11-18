@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -134,9 +136,10 @@ type messageRecovery struct {
 }
 
 // recoveredMessage is the message a keyed write committed, read once sendHeldMessageOn has put a
-// targeted one on its way, with its deliveries as they stand and the block it answers. It is read
-// from the database before the listener is, so a repeat never fails because the listener is down.
-func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (model.Message, error) {
+// targeted one on its way, with its deliveries as they stand and the block it answers, read for
+// who, the writer the repeat answers. It is read from the database before the listener is, so a
+// repeat never fails because the listener is down.
+func (s *server) recoveredMessage(ctx context.Context, who model.Actor, point messageRecovery) (model.Message, error) {
 	message, err := s.loadMessage(ctx, s.deps.Store.Pool, "", point.MessageID)
 	if err != nil {
 		return model.Message{}, err
@@ -144,7 +147,7 @@ func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (m
 	// loadMessage scans the row alone, so a reply that names a block carries only its node id:
 	// without this the repeat of a keyed reply answers reply_block null where the first answered
 	// the block.
-	if err := hydrateMessageReplyBlocks(ctx, s.deps.Store.Pool, &message); err != nil {
+	if err := hydrateMessageReplyBlocks(ctx, s.deps.Store.Pool, who, &message); err != nil {
 		return model.Message{}, err
 	}
 	if message.Target != nil {
@@ -164,7 +167,11 @@ func (s *server) recoveredMessage(ctx context.Context, point messageRecovery) (m
 // message as GET /api/v1/agents/{session_id}/messages reads it (recoveredMessage), under the send's
 // own 201.
 func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, point messageRecovery, _ []byte) {
-	message, err := s.recoveredMessage(r.Context(), point)
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.recoveredMessage(r.Context(), who, point)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -176,7 +183,11 @@ func (s *server) replayAgentMessage(w http.ResponseWriter, r *http.Request, poin
 // message as it stands (recoveredMessage), a targeted one's owed delivery made first, in the first
 // answer's shape - its advice kept - under the post's own 201.
 func (s *server) replayIssueMessage(w http.ResponseWriter, r *http.Request, point messageRecovery, stored []byte) {
-	message, err := s.recoveredMessage(r.Context(), point)
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	message, err := s.recoveredMessage(r.Context(), who, point)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -248,6 +259,48 @@ func (s *server) owedMessageAttempts(ctx context.Context, messageIDs []string) (
 	return owed, rows.Err()
 }
 
+// writeMessageNode writes the node of message id, which a request is about to store, before its
+// row (graphstore.MessageNode), and answers the write held for the event that records the
+// message. A message on an issue is in that issue's project. A message on none is between its
+// thread's parties (graphstore.ThreadParties): those of the root it answers, read up in_reply_to as
+// messageThreadCTE walks it, or, for a message that answers nothing, its own author and target.
+func writeMessageNode(
+	ctx context.Context, tx pgx.Tx, id string, issueKey, inReplyTo *string, author model.Actor, target *string,
+) (graphstore.Uncaused, error) {
+	var project string
+	var parties []string
+	switch {
+	case issueKey != nil:
+		var err error
+		if project, _, err = graphstore.ScopeOf(ctx, tx, issueKey, nil); err != nil {
+			return graphstore.Uncaused{}, err
+		}
+	case inReplyTo != nil:
+		var rootAuthor []byte
+		var rootTarget *string
+		if err := tx.QueryRow(ctx, messageThreadCTE+`
+			select m.author, m.target from messages m join thread t on t.id = m.id
+			where t.in_reply_to is null
+		`, *inReplyTo).Scan(&rootAuthor, &rootTarget); err != nil {
+			return graphstore.Uncaused{}, fmt.Errorf("read the thread root of a reply to message %s: %w", *inReplyTo, err)
+		}
+		var root model.Actor
+		if err := json.Unmarshal(rootAuthor, &root); err != nil {
+			return graphstore.Uncaused{}, fmt.Errorf("decode the author of the thread root of message %s: %w", *inReplyTo, err)
+		}
+		parties = graphstore.ThreadParties(root, rootTarget)
+	default:
+		parties = graphstore.ThreadParties(author, target)
+	}
+	// The message is the node this write makes (graphstore.Created).
+	created := graphstore.Created(graphstore.MessageNode(id, project, parties, author, time.Now().UTC()))
+	written, err := graphstore.WriteUncaused(ctx, tx, []graphstore.Node{created}, nil)
+	if err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("write the node of message %s: %w", id, err)
+	}
+	return written, nil
+}
+
 // createStoredMessage writes one message in a single transaction, with it the keyed request's
 // recovery point (bindRequestKeyRecovery), so a repeat under the key is answered with this message
 // however this request ends, then sends a targeted message's first attempt. connectedOnly is the
@@ -284,7 +337,7 @@ func (s *server) createStoredMessage(
 		if err := lockReplyParentMessage(ctx, tx, parent.ID); err != nil {
 			return model.Message{}, nil, err
 		}
-		if block, err = s.replyBlockOf(ctx, tx, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
+		if block, err = s.replyBlockOf(ctx, tx, actor, refs.ItemMessage, parent.ID, *input.InReplyToBlock, "in_reply_to_block", "INVALID_MESSAGE"); err != nil {
 			return model.Message{}, nil, err
 		}
 		parent.ReplyBody = messageReplyPreview(block.excerpt)
@@ -319,11 +372,18 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
+	// The message's node goes in before its row, in its issue's project or between its thread's
+	// parties; what that write states waits for the event below (graphstore.Caused).
+	messageID := uuid.NewString()
+	messageNode, err := writeMessageNode(ctx, tx, messageID, issueKey, input.InReplyTo, actor, input.Target)
+	if err != nil {
+		return model.Message{}, nil, err
+	}
 	message, err := scanMessage(tx.QueryRow(ctx, `
-		insert into messages (issue_key, author, body, target, in_reply_to, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6)
+		insert into messages (id, issue_key, author, body, target, in_reply_to, replies_to_block)
+		values ($1, $2, $3, $4, $5, $6, $7)
 		returning `+messageColumns+`
-	`, issueKey, author, input.Body, input.Target, input.InReplyTo, block.nodeID()))
+	`, messageID, issueKey, author, input.Body, input.Target, input.InReplyTo, block.nodeID()))
 	if err != nil {
 		return model.Message{}, nil, err
 	}
@@ -334,7 +394,7 @@ func (s *server) createStoredMessage(
 		return model.Message{}, nil, err
 	}
 	if block != nil {
-		if err := hydrateMessageReplyBlocks(ctx, tx, &message); err != nil {
+		if err := hydrateMessageReplyBlocks(ctx, tx, actor, &message); err != nil {
 			return model.Message{}, nil, err
 		}
 	}
@@ -359,6 +419,9 @@ func (s *server) createStoredMessage(
 		if err := refs.Stamp(ctx, tx, "message", message.ID, event.ID); err != nil {
 			return model.Message{}, nil, err
 		}
+	}
+	if err := graphstore.Caused(ctx, tx, messageNode, event.ID); err != nil {
+		return model.Message{}, nil, err
 	}
 	// A targeted message's attempt 1 is written here, in the transaction that stores the
 	// message, unclaimed and naming no session yet, as writeBroadcast opens each recipient's: a
@@ -734,7 +797,11 @@ func (s *server) getMessage(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "message") {
 		return
 	}
-	read, err := s.readMessage(r.Context(), r.PathValue("key"), r.PathValue("id"), wantsDisplayTrees(r))
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
+	read, err := s.readMessage(r.Context(), who, r.PathValue("key"), r.PathValue("id"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -767,7 +834,7 @@ func (s *server) getMessageThread(w http.ResponseWriter, r *http.Request) {
 // message by its id alone (the conversation, the message's blocks) asks it. ok is false once it
 // has written the refusal.
 func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (messageRead, bool) {
-	_, _, err := s.optionalActor(r)
+	actor, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return messageRead{}, false
@@ -782,14 +849,14 @@ func (s *server) readableMessageThread(w http.ResponseWriter, r *http.Request) (
 		s.writeHandlerError(w, err)
 		return messageRead{}, false
 	}
-	read, err := s.readMessage(r.Context(), "", rootID, wantsDisplayTrees(r))
+	read, err := s.readMessage(r.Context(), actor.Recorded(), "", rootID, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return messageRead{}, false
 	}
 	// A direct conversation is the person's own, so a credential of theirs reads it whole and
 	// names no session in it, as their browser does. The scope is the request's credential's;
-	// this read records no actor, so there is nothing else to resolve.
+	// this rule records no actor, so there is nothing else to resolve.
 	if !s.callerHoldsScope(r, model.ScopePerson) && read.Message.IssueKey == nil {
 		session := strings.TrimSpace(r.URL.Query().Get("session"))
 		if session == "" {
@@ -821,13 +888,13 @@ func (read messageRead) hasSession(session string) bool {
 }
 
 // readMessage is one message, on issueKey when it is not empty, with its deliveries and every
-// message transitively replying to it.
-func (s *server) readMessage(ctx context.Context, issueKey, id string, trees bool) (messageRead, error) {
+// message transitively replying to it, read for who.
+func (s *server) readMessage(ctx context.Context, who model.Actor, issueKey, id string, trees bool) (messageRead, error) {
 	message, err := s.loadMessage(ctx, s.deps.Store.Pool, issueKey, id)
 	if err != nil {
 		return messageRead{}, err
 	}
-	reads, err := s.hydrateMessageThreads(ctx, []model.Message{message}, trees)
+	reads, err := s.hydrateMessageThreads(ctx, who, []model.Message{message}, trees)
 	if err != nil {
 		return messageRead{}, err
 	}
@@ -835,13 +902,13 @@ func (s *server) readMessage(ctx context.Context, issueKey, id string, trees boo
 }
 
 // hydrateMessageThreads is each root as a thread: its own deliveries, every message transitively
-// replying to it, and the block each of those messages answers. Each side table is read once over
-// every root, never once per root, so a list of threads costs the same three queries one does.
-// trees is whether the caller asked for the display trees (wantsDisplayTrees).
+// replying to it, and the block each of those messages answers, read for who. Each side table is
+// read once over every root, never once per root, so a list of threads costs the same three
+// queries one does. trees is whether the caller asked for the display trees (wantsDisplayTrees).
 //
 // Every read of a message passes here, so this is where a message's trees are taken from the
 // table and what the table did not hold is stored back (displayTreeReader).
-func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Message, trees bool) ([]messageRead, error) {
+func (s *server) hydrateMessageThreads(ctx context.Context, who model.Actor, roots []model.Message, trees bool) ([]messageRead, error) {
 	rootIDs := make([]string, len(roots))
 	for index, root := range roots {
 		rootIDs[index] = root.ID
@@ -854,7 +921,7 @@ func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Messag
 	if err != nil {
 		return nil, err
 	}
-	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, roots, replies); err != nil {
+	if err := hydrateThreadReplyBlocks(ctx, s.deps.Store.Pool, who, roots, replies); err != nil {
 		return nil, err
 	}
 	reader := s.readDisplayTrees(ctx, trees)
@@ -887,7 +954,8 @@ var listIssueRootMessagesQuery = `
 // conversation held there. A targeted message is an ordinary root and is listed like any
 // other.
 func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), listIssueRootMessagesQuery, r.PathValue("key"))
@@ -910,7 +978,7 @@ func (s *server) listIssueMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
+	result, err := s.hydrateMessageThreads(r.Context(), who, roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1006,7 +1074,7 @@ func (s *server) listAgentMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows.Close()
-	result, err := s.hydrateMessageThreads(r.Context(), roots, wantsDisplayTrees(r))
+	result, err := s.hydrateMessageThreads(r.Context(), actor, roots, wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

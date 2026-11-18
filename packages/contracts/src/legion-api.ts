@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
+import { DESIGN_GATE_STEPS, DISPATCH_KEY_PATTERN, LEGION_ROLES } from "./legion-roles";
 
 /**
  * The Legion daemon's HTTP API, as its readers see it.
@@ -426,9 +426,9 @@ const legionGateView = z.object({
 });
 
 /** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
- * root issue: `decisions` its decisions document, `criteria` its Verification document, `spec`
- * its primary document. */
-const legionDesignStep = z.enum(GATED_STEPS);
+ * root issue: `criteria` its Verification document, `spec` its primary document. The `decisions`
+ * step is gone, behind the `DaemonAPIVersion` bump: decisions are nodes of the spec. */
+const legionDesignStep = z.enum(DESIGN_GATE_STEPS);
 
 /** `api.GatedStepView` — one step of the deployment's design gate as one issue stands in it
  * (contract 55). `artifactId` and `currentVersion` are the document its architect registered for

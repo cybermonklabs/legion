@@ -12,7 +12,7 @@ import { ApiError, api } from "../../api/client";
 import type {
   Artifact,
   Comment,
-  Decision,
+  DecisionEntry,
   DecisionLink,
   DispatchEvent,
   IssueDecisions,
@@ -735,56 +735,129 @@ test("a failed action carries the API's reason, and a refusal of what it writes 
   }
 });
 
-function decisionLink(fromBlock: string, to: string): DecisionLink {
+function decisionLink(fromBlock: string, to: string, document = "CORE-1/spec"): DecisionLink {
   return {
     created_at: "2026-10-01T00:00:00Z",
     created_version: 1,
     from_block: fromBlock,
     stale: false,
-    to: graphNode({ block_id: to, id: `CORE-1/spec#${to}`, kind: "block" }),
+    to: graphNode({ block_id: to, id: `${document}#${to}`, kind: "block" }),
   };
 }
 
+/** An agent's decision of `document` under block `blockId`, an entry of the Decisions read. */
 function decisionOf(
   blockId: string,
-  links: DecisionLink[],
-  { replaced = false, unsure = false }: { replaced?: boolean; unsure?: boolean } = {}
-): Decision {
+  shaped: DecisionLink[],
+  {
+    document = "choices-md",
+    replaced = false,
+    unsure = false,
+  }: { document?: string; replaced?: boolean; unsure?: boolean } = {}
+): DecisionEntry {
   return {
-    asks: [],
-    block_id: blockId,
+    answer: null,
+    answer_state: null,
+    answered_at: null,
+    answered_by: null,
     changed_at: "2026-10-02T00:00:00Z",
     changed_version: 2,
-    heading: `Decision ${blockId}`,
+    decided_by: { id: "session-1", kind: "session" },
+    declined: false,
+    declined_note: null,
+    document: {
+      artifact_id: `${document}-id`,
+      block: `CORE-1/${document}#${blockId}`,
+      block_id: blockId,
+      ref: `dispatch://CORE-1/artifact/${document}`,
+    },
     kept: null,
+    kept_by: null,
+    kept_text_sum: null,
     kind: "agent",
-    links,
-    ref: `dispatch://CORE-1/artifact/decisions-md#b-${blockId}`,
+    multiple: null,
+    node: { id: `CORE-1/${document}#${blockId}`, kind: "block" },
+    options: null,
+    question: null,
+    readings: [],
+    ref: `dispatch://CORE-1/artifact/${document}#b-${blockId}`,
     replaced,
-    text: "We decided.",
+    resolution: null,
+    selected: null,
+    shaped,
+    text: `:::decision{#${blockId}}\nWe decided.\n:::\n`,
     text_sha256: `sum-${blockId}`,
-    unsure,
+    uncertainty: unsure ? "high" : null,
+    uncertainty_reason: null,
+    urgency: null,
     waiting_review: true,
   };
 }
 
 const issueDecisions: IssueDecisions = {
-  decisions: [
-    // One decision that links two spec blocks, one of them from two of its own blocks.
+  decisions: [],
+  document: null,
+  entries: [
+    // One decision that shaped two spec blocks, and a block of another document beside the spec.
     decisionOf("d-1", [
       decisionLink("d-1", "p-a"),
-      decisionLink("d-1-para", "p-b"),
-      decisionLink("d-1-list", "p-b"),
+      decisionLink("d-1", "p-b"),
+      decisionLink("d-1", "n-1", "CORE-1/notes-md"),
     ]),
     decisionOf("d-2", [decisionLink("d-2", "p-b")], { unsure: true }),
+    // A decision of another document under the same block id: an item of its own.
+    decisionOf("d-2", [decisionLink("d-2", "p-b")], { document: "notes-md" }),
     // A replaced decision shaped nothing the spec says now.
     decisionOf("d-3", [decisionLink("d-3", "p-a")], { replaced: true }),
     // A spec block the document has not placed yet: after every placed one.
     decisionOf("d-4", [decisionLink("d-4", "p-c")]),
   ],
-  document: "dispatch://CORE-1/artifact/decisions-md",
   open_questions: [],
 };
+
+/** An ask of the spec in answer state `state` that shaped the spec block `to`: an entry of the
+ *  Decisions read held by the ask's own node, declined where `declined` says so. */
+function askOf(id: string, state: string, to: string, declined = false): DecisionEntry {
+  const answered = state === "answered";
+  return {
+    ...decisionOf(id, [decisionLink(id, to)]),
+    answer: answered ? "Yes." : null,
+    answer_state: state,
+    answered_at: answered ? "2026-10-02T00:00:00Z" : null,
+    answered_by: answered ? "bob" : null,
+    declined,
+    declined_note: declined ? "Not mine to choose." : null,
+    kind: declined ? "declined" : "person",
+    node: { id, kind: "ask" },
+    question: `Question ${id}?`,
+    ref: `dispatch://CORE-1/ask/${id}`,
+    selected: answered ? [] : null,
+    waiting_review: false,
+  };
+}
+
+test("an open and a declined ask are no decision beside the spec, and an answered one is", async () => {
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
+    ...issueDecisions,
+    entries: [
+      askOf("open-ask", "open", "p-a"),
+      askOf("declined-ask", "resolved", "p-b", true),
+      askOf("answered-ask", "answered", "p-a"),
+    ],
+  });
+  const view = renderDecisionItems(artifact);
+  try {
+    await waitFor(() =>
+      expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
+        decisions: [["p-a", "answered-ask", false]],
+        items: ["decision:answered-ask:CORE-1/spec#p-a"],
+      })
+    );
+  } finally {
+    view.unmount();
+    getIssueDecisions.mockRestore();
+  }
+});
 
 function DecisionItems({ document }: { document: Artifact }) {
   const { decisions, items } = useMarginItems(
@@ -805,8 +878,8 @@ function DecisionItems({ document }: { document: Artifact }) {
     JSON.stringify({
       decisions: decisions.map((item) => [
         item.blockId,
-        item.decision.block_id,
-        item.decision.unsure,
+        item.decision.node.id,
+        item.decision.uncertainty === "high",
       ]),
       items: items.map(marginItemId),
     })
@@ -841,12 +914,19 @@ test("each decision is a margin item beside every spec block it links, in the sp
     await waitFor(() =>
       expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
         decisions: [
-          ["p-b", "d-1", false],
-          ["p-b", "d-2", true],
-          ["p-a", "d-1", false],
-          ["p-c", "d-4", false],
+          ["p-b", "CORE-1/choices-md#d-1", false],
+          ["p-b", "CORE-1/choices-md#d-2", true],
+          ["p-b", "CORE-1/notes-md#d-2", false],
+          ["p-a", "CORE-1/choices-md#d-1", false],
+          ["p-c", "CORE-1/choices-md#d-4", false],
         ],
-        items: ["decision:d-1:p-b", "decision:d-2:p-b", "decision:d-1:p-a", "decision:d-4:p-c"],
+        items: [
+          "decision:CORE-1/choices-md#d-1:CORE-1/spec#p-b",
+          "decision:CORE-1/choices-md#d-2:CORE-1/spec#p-b",
+          "decision:CORE-1/notes-md#d-2:CORE-1/spec#p-b",
+          "decision:CORE-1/choices-md#d-1:CORE-1/spec#p-a",
+          "decision:CORE-1/choices-md#d-4:CORE-1/spec#p-c",
+        ],
       })
     );
     expect(getIssueDecisions).toHaveBeenCalledWith("CORE-1");

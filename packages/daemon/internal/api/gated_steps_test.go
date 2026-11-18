@@ -31,9 +31,6 @@ func TestGatedStepsAnswerEachConfiguredStepsOwnState(t *testing.T) {
 	// at, which is below the version Dispatch now holds, so the step waits on a person again.
 	specAnswered := specChanges
 	specAnswered.LatestVersion = 3
-	approvedAtOne := 1
-	decisionsApproved := gateRow(record.DesignStepDecisions, "9a8fd348-55d5-4d72-a793-3cd037f75f13", 1)
-	decisionsApproved.ApprovedVersion = &approvedAtOne
 
 	for _, tc := range []struct {
 		name  string
@@ -42,29 +39,37 @@ func TestGatedStepsAnswerEachConfiguredStepsOwnState(t *testing.T) {
 		want  []GatedStepView
 	}{
 		{
-			name:  "an approved step, a step whose reviewer asked for changes, and a row of a step the deployment does not gate",
-			steps: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec},
+			name:  "a step whose reviewer asked for changes, and a row of a step the deployment does not gate",
+			steps: []record.DesignStep{record.DesignStepSpec},
 			gates: map[record.DesignStep]record.DesignGate{
-				record.DesignStepDecisions: decisionsApproved,
-				record.DesignStepCriteria:  criteriaApproved,
-				record.DesignStepSpec:      specChanges,
+				record.DesignStepCriteria: criteriaApproved,
+				record.DesignStepSpec:     specChanges,
 			},
 			want: []GatedStepView{
-				{Step: record.DesignStepCriteria, ArtifactID: criteriaApproved.ArtifactID, CurrentVersion: 4, ApprovedVersion: &approvedAtFour, Status: GatedStepApproved},
 				{Step: record.DesignStepSpec, ArtifactID: specChanges.ArtifactID, CurrentVersion: 2, Status: GatedStepChangesRequested, ChangesReason: "name the rollback path"},
 			},
 		},
 		{
-			name:  "a step whose approval is a version behind, a step whose changes request a newer version answered, and a step nobody registered",
-			steps: []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec},
+			name:  "an approved step, and a step whose changes request a newer version answered",
+			steps: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec},
 			gates: map[record.DesignStep]record.DesignGate{
-				record.DesignStepCriteria: criteriaBehind,
+				record.DesignStepCriteria: criteriaApproved,
 				record.DesignStepSpec:     specAnswered,
 			},
 			want: []GatedStepView{
-				{Step: record.DesignStepDecisions, Status: GatedStepUnregistered},
-				{Step: record.DesignStepCriteria, ArtifactID: criteriaBehind.ArtifactID, CurrentVersion: 5, ApprovedVersion: &approvedBelowLatest, Status: GatedStepWaiting},
+				{Step: record.DesignStepCriteria, ArtifactID: criteriaApproved.ArtifactID, CurrentVersion: 4, ApprovedVersion: &approvedAtFour, Status: GatedStepApproved},
 				{Step: record.DesignStepSpec, ArtifactID: specAnswered.ArtifactID, CurrentVersion: 3, Status: GatedStepWaiting},
+			},
+		},
+		{
+			name:  "a step whose approval is a version behind, and a step nobody registered",
+			steps: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec},
+			gates: map[record.DesignStep]record.DesignGate{
+				record.DesignStepCriteria: criteriaBehind,
+			},
+			want: []GatedStepView{
+				{Step: record.DesignStepCriteria, ArtifactID: criteriaBehind.ArtifactID, CurrentVersion: 5, ApprovedVersion: &approvedBelowLatest, Status: GatedStepWaiting},
+				{Step: record.DesignStepSpec, Status: GatedStepUnregistered},
 			},
 		},
 		{

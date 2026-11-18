@@ -25,7 +25,7 @@ func commentMarkRecord(comment model.Comment, replies []model.Comment, suggestio
 	record := docs.MarkRecord{
 		Kind:      "comment",
 		By:        docs.ActorRef(comment.Author),
-		CreatedAt: timestampValue(comment.CreatedAt),
+		CreatedAt: docs.MarkTime(comment.CreatedAt),
 		Text:      comment.Body,
 		Resolved:  comment.Resolved,
 		Replies:   make([]docs.MarkReply, 0, len(replies)),
@@ -34,7 +34,7 @@ func commentMarkRecord(comment model.Comment, replies []model.Comment, suggestio
 		record.Replies = append(record.Replies, docs.MarkReply{
 			By:   docs.ActorRef(reply.Author),
 			Text: reply.Body,
-			At:   timestampValue(reply.CreatedAt),
+			At:   docs.MarkTime(reply.CreatedAt),
 		})
 	}
 	if comment.Suggestion != nil {
@@ -76,9 +76,10 @@ type commentWriteResponse struct {
 // in the reference graph — an empty ReferenceChanges on a transition that writes no body — so a
 // producer whose comment text can cite something cannot append an event that stays silent. It
 // reads the block the comment answers (reply_block) as the transaction sees it into comment
-// itself, so a route that answers with the comment answers that block too.
+// itself, so a route that answers with the comment answers that block too. The payload reaches
+// every subscriber, so the block is read as everyReader.
 func (s *server) commentEventPayload(ctx context.Context, tx pgx.Tx, comment *model.Comment, artifactName string, thread commentEventThread, changes model.ReferenceChanges) (model.CommentEventPayload, error) {
-	if err := hydrateCommentReplyBlocks(ctx, tx, comment); err != nil {
+	if err := hydrateCommentReplyBlocks(ctx, tx, everyReader, comment); err != nil {
 		return model.CommentEventPayload{}, fmt.Errorf("load the block comment %s answers: %w", comment.ID, err)
 	}
 	payload := model.CommentEventPayload{

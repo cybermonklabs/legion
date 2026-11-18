@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -309,6 +310,7 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 		Kind: "ask", ID: ask.ID, IssueKey: &legionKey, Project: "LEGION", Ref: askRef,
 		MadeBy: []model.Actor{ask.Author}, MadeAt: &ask.CreatedAt, ChangedBy: []model.Actor{ask.Author}, ChangedAt: &ask.CreatedAt,
 		Parent: &model.NodeParent{Kind: "issue", ID: legion.Key, Ref: "dispatch://" + legion.Key},
+		State:  graphstore.StateLive, Visibility: graphstore.VisibilityProject,
 	}); !reflect.DeepEqual(incoming.Node, want) {
 		t.Fatalf("queried node = %#v; want %#v", incoming.Node, want)
 	}
@@ -324,6 +326,7 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 		Kind: "block", ID: "message/" + message.ID + "#b1", BlockID: "b1", IssueKey: &acmeKey, Project: "ACME", Ref: messageRef + "#b-b1",
 		MadeBy: []model.Actor{message.Author}, MadeAt: &message.CreatedAt, ChangedBy: []model.Actor{message.Author}, ChangedAt: &message.CreatedAt,
 		Parent: &model.NodeParent{Kind: "message", ID: message.ID, Ref: messageRef},
+		State:  graphstore.StateLive, Visibility: graphstore.VisibilityProject,
 	}
 	if edge.Kind != "mentions" || edge.Direction != "in" || !reflect.DeepEqual(edge.Node, wantNode) {
 		t.Fatalf("backlink edge = %#v; want mentions in from %#v", edge, wantNode)

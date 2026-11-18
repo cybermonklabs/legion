@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -53,15 +54,19 @@ const deferBlockIndexBlocks = 2000
 // from applyLive's render only when the two agree. A document of more blocks than a write indexes
 // in its own request leaves them to the block-index reconciliation (deferBlockIndexBlocks). It
 // refuses a context that was not joined.
-func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, error) {
+//
+// Its second result is what the block index stated in the node and tuple store, which the
+// caller appends under the event it goes on to record for this version
+// (graphstore.Caused), in this same transaction.
+func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string, version int, markdown string) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	tx, joined := txFromContext(ctx)
 	if !joined {
-		return model.ReferenceChanges{}, errUnjoined
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, errUnjoined
 	}
 	var versionAt time.Time
 	if err := tx.QueryRow(ctx, `select created_at from artifact_versions where artifact_id = $1 and number = $2`,
 		artifactID, version).Scan(&versionAt); err != nil {
-		return model.ReferenceChanges{}, fmt.Errorf("read version %d of %s: %w", version, artifactID, err)
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, fmt.Errorf("read version %d of %s: %w", version, artifactID, err)
 	}
 	rendered := ledgerFrom(ctx).writtenRendering(artifactID)
 	if rendered.tree != nil && rendered.markdown != markdown {
@@ -73,76 +78,154 @@ func (s *Service) IndexDocumentReferences(ctx context.Context, artifactID string
 	// 0122's trigger marked the document owed a block index (document_block_versions.version
 	// null) when the version's row was inserted, and nothing here settles that mark, so the
 	// block-index reconciliation (RunBlockIndexReconciliation) indexes the blocks and the
-	// mentions they hold out of the request.
+	// mentions they hold out of the request. The typed-node pass still runs here, so a decision
+	// is a node, with its ties and their rows, in the transaction that accepts it, whatever the
+	// size of its document (indexDeferredVersion).
 	if blocks := len(rendered.offsets); rendered.tree != nil && blocks > deferBlockIndexBlocks {
 		slog.Info("dispatch: a document version left its blocks to the block-index reconciliation: it holds more blocks than a write indexes in its own request",
 			"artifact", artifactID, "version", version, "blocks", blocks, "bound", deferBlockIndexBlocks)
-		rendered = renderedTree{}
+		return s.indexDeferredVersion(ctx, tx, artifactID, version, versionAt, markdown, rendered)
 	}
-	return s.indexDocument(ctx, tx, artifactID, version, versionAt, markdown, rendered)
+	return s.indexDocument(ctx, tx, artifactID, refs.OneVersion(artifactID, version, versionAt), markdown, rendered, nil)
 }
 
-// indexDocument indexes one document version, written at versionAt, in its writer's transaction,
-// which holds the document's owner row, from the render the version's markdown came from:
-// indexRenderedVersion with rendered's blocks. The blocks are rendered.offsets; GET …/blocks lists
-// one block per offset of the same renderer (renderedBlocks), so both list one set of blocks. A
-// version with no rendering - an upload whose replacement changed nothing, which writes no tree,
-// or one whose blocks the write deferred (deferBlockIndexBlocks) - is indexUnrenderedVersion,
-// which indexes no blocks: migration 0122's trigger left the document owed when the version's row
-// was inserted, for the block-index reconciliation, which reads the document itself.
-func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, error) {
+// indexDeferredVersion indexes one document version whose blocks its write leaves to the
+// block-index reconciliation (deferBlockIndexBlocks), written at versionAt, in a transaction
+// holding the document's owner row: its references, as indexUnrenderedVersion indexes them, and
+// its decisions, readings and ask blocks through the typed-node pass on its own
+// (refs.IndexDecisionNodes), which writes those nodes, their values and their ties' rows from
+// rendered, the tree the write left. The targets those ties moved are counted with the
+// references'. What the pass stated is answered for the caller's event, as the block index's is.
+func (s *Service) indexDeferredVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, rendered renderedTree) (model.ReferenceChanges, graphstore.Uncaused, error) {
+	blocks := offsetBlocks(rendered.offsets, rendered.documents)
+	facts, err := refs.DecisionFacts(ctx, tx, artifactID, refs.OneVersion(artifactID, version, versionAt), blocks, rendered.tree, blockPointers(blocks, rendered.tree),
+		typedSources(ctx, tx, artifactID, rendered.tree, nil))
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	moved, write, err := refs.IndexDecisionNodes(ctx, tx, artifactID, facts, false)
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
+	reader := refs.NewReader(ctx, tx, "artifact", artifactID, s.serverURL)
+	changes, err := replaceVersionRefs(ctx, tx, artifactID, version, versionAt, reader.Mentions(markdown), moved, nil)
+	return changes, write, err
+}
+
+// indexDocument indexes one document version, or one issue room at the version of each of its
+// documents (refs.Versions), in its writer's transaction, which holds the document's owner row,
+// from the render the version's markdown came from: indexRenderedVersion with rendered's blocks.
+// The blocks are rendered.offsets; GET …/blocks lists one block per offset of the same renderer
+// (renderedBlocks), so both list one set of blocks. A version with no rendering - an upload whose
+// replacement changed nothing, which writes no tree, or one whose blocks the write deferred
+// (deferBlockIndexBlocks) - is indexUnrenderedVersion, which indexes no blocks: migration 0122's
+// trigger left the document owed when the version's row was inserted, for the block-index
+// reconciliation, which reads the document itself. settled is the authors a settlement read of
+// the blocks it settles (typedSources), nil for any other write.
+func (s *Service) indexDocument(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, rendered renderedTree, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if rendered.tree == nil {
-		return s.indexUnrenderedVersion(ctx, tx, artifactID, version, versionAt, markdown)
+		_, newest := versions.Newest(artifactID)
+		changes, err := s.indexUnrenderedVersion(ctx, tx, artifactID, versions[artifactID].Number, newest.At, markdown)
+		return changes, graphstore.Uncaused{}, err
 	}
-	return s.indexRenderedVersion(ctx, tx, artifactID, version, versionAt, markdown, offsetBlocks(rendered.offsets), rendered.tree)
+	return s.indexRenderedVersion(ctx, tx, artifactID, versions, markdown, offsetBlocks(rendered.offsets, rendered.documents), rendered.tree, settled)
 }
 
-// offsetBlocks is the blocks a render's offsets name, as the block index takes them.
-func offsetBlocks(offsets []pmdoc.BlockOffset) []model.ArtifactBlock {
+// offsetBlocks is the blocks a render's offsets name, as the block index takes them, each carrying
+// the document documents names for it where the render is an issue room's (renderedTree's
+// documents).
+func offsetBlocks(offsets []pmdoc.BlockOffset, documents map[string]string) []model.ArtifactBlock {
 	blocks := make([]model.ArtifactBlock, len(offsets))
 	for index, offset := range offsets {
-		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To}
+		blocks[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To, Document: documents[offset.ID]}
 	}
 	return blocks
 }
 
-// indexRenderedVersion indexes one document version, written at versionAt, in a transaction
+// indexRenderedVersion indexes one document version, or one issue room under its tree artifact at
+// the version of each of its documents (versions, refs.IndexBlocks), in a transaction
 // holding the document's owner row: its references, the excerpt of each mention, and its blocks
 // with the links each holds (refs.IndexBlocks), all from one reading of markdown over that
 // transaction (refs.Reader.Mentions), so the document's own edges, its blocks' and their
 // excerpts read the bare keys, `#id`s and short ids it writes alike. blocks index into
 // markdown, the render they came from; tree, when the caller holds it, is the tree markdown
-// was rendered from, and nil otherwise. The event the caller appends names the counted targets
-// the document's references and their excerpts, its blocks and its blocks' links moved
-// (refs.ReplaceDocumentCounted), since a node is counted once for each block citing it.
-func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, version int, versionAt time.Time, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) (model.ReferenceChanges, error) {
+// was rendered from, and nil otherwise, for which markdown is read back once (versionTree). The
+// event the caller appends names the counted targets the document's references and their
+// excerpts, its blocks and its blocks' links moved (refs.ReplaceDocumentCounted), since a node is
+// counted once for each block citing it.
+//
+// The typed-node pass runs beside the block index, over the facts both take (refs.DecisionFacts):
+// the index writes every block's node, part_of and block_refs row, those of the decisions,
+// readings and ask blocks among them, and the pass then writes the typed nodes' values and their
+// authors (refs.IndexDecisionNodes). A pass that lost the revision fence to a newer version
+// writes neither, since what it would state is what that version already stated. settled is the
+// authors a settlement read of the blocks it settles, nil for any other caller (typedSources).
+//
+// Its second result is what the pass states in the node and tuple store, which the caller
+// appends under that same event (graphstore.Caused): the pass writes the block nodes
+// itself, because the foreign key on the projection rows needs them, and holds its tuples back
+// because on the request path the event does not exist yet.
+//
+// The typed nodes' facts take the version of each block's own document, as the blocks' do. The
+// document's own references - artifactID's, an issue room's tree artifact's, which belong to no
+// one document of the room - take artifactID's own version and its time: for an issue room whose
+// tree holds no version yet, no number and the newest time the pass covers.
+func (s *Service) indexRenderedVersion(ctx context.Context, tx pgx.Tx, artifactID string, versions refs.Versions, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node, settled *askBlockSources) (model.ReferenceChanges, graphstore.Uncaused, error) {
+	own, held := versions[artifactID]
+	if !held {
+		_, newest := versions.Newest(artifactID)
+		own = refs.Version{At: newest.At}
+	}
 	located := refs.NewReader(ctx, tx, "artifact", artifactID, s.serverURL).Mentions(markdown)
+	tree = versionTree(artifactID, markdown, blocks, tree)
+	pointers := blockPointers(blocks, tree)
+	facts, err := refs.DecisionFacts(ctx, tx, artifactID, versions, blocks, tree, pointers, typedSources(ctx, tx, artifactID, tree, settled))
+	if err != nil {
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+	}
 	// The blocks are indexed before the document's own references are reconciled: a first
 	// indexing dates a block's mention from the document's refs row for its target, which a
 	// surviving target already holds and a new one gets with this same time.
-	moved, err := refs.IndexBlocks(ctx, tx, artifactID, version, versionAt, markdown, blocks, located, blockPointers(artifactID, markdown, blocks, tree))
+	moved, won, write, err := refs.IndexBlocks(ctx, tx, artifactID, versions, markdown, blocks, located, pointers, facts)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	return replaceVersionRefs(ctx, tx, artifactID, version, versionAt, located, moved, refs.MentionExcerpts(markdown, blocks, located))
+	if won {
+		_, typed, err := refs.IndexDecisionNodes(ctx, tx, artifactID, facts, true)
+		if err != nil {
+			return model.ReferenceChanges{}, graphstore.Uncaused{}, err
+		}
+		write.Nodes = append(write.Nodes, typed.Nodes...)
+		write.Tuples = append(write.Tuples, typed.Tuples...)
+	}
+	changes, err := replaceVersionRefs(ctx, tx, artifactID, own.Number, own.At, located, moved, refs.MentionExcerpts(markdown, blocks, located))
+	return changes, write, err
 }
 
-// blockPointers is each `block[]` value of the version (pmdoc.BlockPointers) as the block index
-// writes it: none when the schema declares no `block[]` attribute or the version has no blocks;
-// otherwise those of tree, or, with no tree, of markdown read back. A version whose markdown does
-// not read back is indexed with no pointers, as one the server cannot read is with no blocks.
-func blockPointers(artifactID, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) []refs.Pointer {
-	if len(blocks) == 0 || !pmdoc.HasLinkKinds() {
+// versionTree is the tree a version's markdown was rendered from: tree, when its caller holds it,
+// and otherwise markdown read back, which only a version holding blocks whose pointers or typed
+// nodes the index writes needs (refs.HoldsTypedBlocks). A version whose markdown does not read
+// back is indexed with no pointers and no typed facts, as one the server cannot read is with no
+// blocks.
+func versionTree(artifactID, markdown string, blocks []model.ArtifactBlock, tree *pmdoc.Node) *pmdoc.Node {
+	if tree != nil || len(blocks) == 0 || (!pmdoc.HasLinkKinds() && !refs.HoldsTypedBlocks(blocks)) {
+		return tree
+	}
+	read, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		slog.Warn("dispatch: a document version's block pointers and typed nodes are not indexed: its markdown does not read back",
+			"artifact", artifactID, "error", err)
 		return nil
 	}
-	if tree == nil {
-		read, err := pmdoc.ParseRendering(markdown)
-		if err != nil {
-			slog.Warn("dispatch: a document version's block pointers are not indexed: its markdown does not read back",
-				"artifact", artifactID, "error", err)
-			return nil
-		}
-		tree = read
+	return read
+}
+
+// blockPointers is each `block[]` value of tree (pmdoc.BlockPointers) as the block index writes
+// it: none when the schema declares no `block[]` attribute, the version has no blocks, or no tree
+// was read.
+func blockPointers(blocks []model.ArtifactBlock, tree *pmdoc.Node) []refs.Pointer {
+	if len(blocks) == 0 || tree == nil || !pmdoc.HasLinkKinds() {
+		return nil
 	}
 	found := pmdoc.BlockPointers(tree)
 	pointers := make([]refs.Pointer, len(found))

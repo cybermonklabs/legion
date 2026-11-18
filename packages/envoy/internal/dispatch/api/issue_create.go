@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -50,10 +51,19 @@ type createIssueInput struct {
 	// Project and Title are not required of a caller: a create that names an external
 	// owner/repo#n takes the project from that repository's mapping and the title from the
 	// external issue (:92-127, :169-170), and only a create that names neither is refused.
-	Project   string   `json:"project"`
-	Title     string   `json:"title"`
-	Parent    *string  `json:"parent"`
+	Project string  `json:"project"`
+	Title   string  `json:"title"`
+	Parent  *string `json:"parent"`
+	// Needs is the issues the new issue waits on, and BlockedBy the same list under the spelling
+	// a client of the release before sends; a body naming both names the same issues in each
+	// (resolveIssueWaits).
+	Needs     []string `json:"needs"`
 	BlockedBy []string `json:"blocked_by"`
+	// DuplicateOf is the key of an issue of the project the new issue repeats, and FiledFrom the
+	// canonical reference of the public ask, comment or message of the project it was filed out
+	// of, each a string or null (resolveDuplicateOf, resolveFiledFrom).
+	DuplicateOf json.RawMessage `json:"duplicate_of"`
+	FiledFrom   json.RawMessage `json:"filed_from"`
 	// Advances is the priorities the new issue advances, a list of priority ids. A create
 	// carries the whole list and no revision, and is never refused for it: the issue holds no
 	// relation yet, so there is no read to be answering (refuseAdvancesRevision).
@@ -82,7 +92,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	blockers, err := normalizeIssueBlockers(input.BlockedBy)
+	waits, _, err := resolveIssueWaits(optionalList(input.Needs), optionalList(input.BlockedBy))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -145,8 +155,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// respondWithExistingExternalIssue would also record a related-check outcome on. Nothing
 	// is written before this point.
 	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step and writeBlockedBy below read it again, since a
-	// blocked_by target's project is no part of this address.
+	// exists today; the dependency lock step and writeIssueNeeds below read it again, since a
+	// wait's target's project is no part of this address.
 	callerProject, scoped := s.callerProject(r)
 	if scoped && callerProject != input.Project {
 		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
@@ -303,12 +313,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	// A create with blockers can close a wait cycle, and a create with a parent adds a link the
+	// A create with waits can close a wait cycle, and a create with a parent adds a link the
 	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the number
 	// or the rank (lockIssueDependencyWrite). A new issue with neither takes none. Only the
-	// blockers can name another project, since a parent is of the issue's own project.
-	if len(blockers) > 0 || parentKey != "" {
-		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, blockers); err != nil {
+	// waits can name another project, since a parent is of the issue's own project.
+	if len(waits.targets) > 0 || parentKey != "" {
+		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, callerProject, waits); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -333,6 +343,18 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+	}
+	// The new issue's duplicate_of and filed_from are read against the store before anything is
+	// written, so a refused one leaves no issue. The new issue holds no key yet, so none names it.
+	duplicateOf, _, err := resolveDuplicateOf(r.Context(), tx, "", input.Project, input.DuplicateOf)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	filedFrom, _, err := resolveFiledFrom(r.Context(), tx, input.Project, input.FiledFrom)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	var number int
 	var projectDefaultAssignee string
@@ -376,16 +398,56 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	issueRank := rank.Between(lastRank, "")
 
-	if _, err := tx.Exec(r.Context(), `
-		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-	`, key, input.Project, number, input.Title, parent, actorJSON, labels, priority, issueRank, assignee, repo); err != nil {
+	// The issue's node and its spec's node go in before the two rows, in one write that takes
+	// them in the store's order, each in the issue's project, with the spec's part_of the issue
+	// (R16 of dispatch://INFRA-1253); what that write states waits for the issue.created event
+	// below (graphstore.Caused). Each row names its node in the same transaction. Both are nodes
+	// this write creates (graphstore.Created). The item filed_from names is stated before them
+	// where the store holds no node of it (stateFiledFromNode).
+	if err := stateFiledFromNode(r.Context(), tx, filedFrom); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := writeBlockedBy(r.Context(), tx, key, input.Project, callerProject, blockers); err != nil {
+	createdAt := time.Now().UTC()
+	specRefKey := graphstore.ArtifactRefKey(key, input.Project, "", "spec")
+	issueNode := graphstore.Created(graphstore.IssueNode(key, input.Project, actor, createdAt))
+	specNode := graphstore.Created(graphstore.ArtifactNode(specRefKey, input.Project, "", actor, createdAt))
+	issueNodes, err := graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{issueNode, specNode},
+		[]graphstore.Tuple{graphstore.ArtifactPartOf(specRefKey, key, actor, createdAt)})
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	var issueCreatedAt time.Time
+	if err := tx.QueryRow(r.Context(), `
+		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo, node_kind, node_address)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $1)
+		returning created_at
+	`, key, input.Project, number, input.Title, parent, actorJSON, labels, priority, issueRank, assignee, repo, graphstore.KindIssue).Scan(&issueCreatedAt); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The relations the new issue states, each caused by issue.created below
+	// (stateIssueRelations): its child_of, dated at its row's created_at, which the arm over the
+	// rows that name no node dates the same edge by, its waits, whose rows are written here, and
+	// its duplicate_of and filed_from.
+	var relations issueRelationFacts
+	if parentKey != "" {
+		relations.claim(key, graphstore.TupleChildOf, graphstore.KindIssue, parentKey, issueCreatedAt)
+	}
+	if len(waits.targets) > 0 {
+		needs, err := writeIssueNeeds(r.Context(), tx, key, input.Project, callerProject, waits, issueCreatedAt)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		relations.tuples = append(relations.tuples, needs...)
+	}
+	if duplicateOf != nil {
+		relations.claim(key, graphstore.TupleDuplicateOf, graphstore.KindIssue, *duplicateOf, issueCreatedAt)
+	}
+	if filedFrom != nil {
+		relations.claim(key, graphstore.TupleFiledFrom, filedFrom.kind, filedFrom.id, issueCreatedAt)
 	}
 	// The new issue holds no relation, so every id it names is stated and none is retracted.
 	if len(advances) > 0 {
@@ -424,10 +486,10 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 
 	var artifactID string
 	if err := tx.QueryRow(r.Context(), `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ($1, $2, 'spec', 'spec.md', 'doc', true, $3)
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, node_kind, node_address)
+		values ($1, $2, 'spec', 'spec.md', 'doc', true, $3, $4, $5)
 		returning id::text
-	`, key, input.Project, actorJSON).Scan(&artifactID); err != nil {
+	`, key, input.Project, actorJSON, graphstore.KindArtifact, specRefKey).Scan(&artifactID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -452,11 +514,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// from (docs.Ledger.RenderStampOf): a text read of a document still standing there serves the
 	// stored markdown rather than rendering the document again.
 	stamp := ledger.RenderStampOf(artifactID, markdown)
-	if _, err := tx.Exec(r.Context(), docs.RenderStampHead+`
+	var specCreated time.Time
+	if err := tx.QueryRow(r.Context(), docs.RenderStampHead+`
 		insert into artifact_versions (artifact_id, number, markdown, authors, doc_update_version, `+docs.RenderStampColumns+`)
 		values ($1, 1, $2, $3, coalesce((select max(version) from doc_updates where artifact_id = $1), 0),
 			`+docs.RenderStampValues+`, $4, $5)
-	`, artifactID, markdown, authors, stamp.Token, stamp.Renderer); err != nil {
+		returning created_at
+	`, artifactID, markdown, authors, stamp.Token, stamp.Renderer).Scan(&specCreated); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -473,18 +537,35 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	specChanges, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, 1, markdown)
+	specChanges, specBlocks, err := s.deps.Docs.IndexDocumentReferences(documentCtx, artifactID, 1, markdown)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The spec's first version is the projection of its version node, written after the spec's
+	// block nodes and caused by the issue's own event with them (docs.WriteVersionNode). The spec's
+	// node was written above as a document's.
+	specVersion, err := docs.WriteVersionNode(r.Context(), tx, graphstore.VersionOwner{RefKey: specRefKey, Project: input.Project},
+		1, actor, specCreated)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	specBlocks = graphstore.Joined(specBlocks, specVersion)
 	issue, err := s.loadIssue(r.Context(), tx, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	issue.LastSeq++
-	// A new issue's blocked_by edges move each blocker's count, beside what its spec cites.
+	// The issue's duplicate_of and filed_from are tuples its event causes, appended after that
+	// event (stateIssueRelations), so the read above holds neither yet: the payload and the answer
+	// carry what the write states.
+	issue.DuplicateOf = duplicateOf
+	if filedFrom != nil {
+		issue.FiledFrom = &filedFrom.ref
+	}
+	// A new issue's waits move each target's count, beside what its spec cites.
 	blockerChanges, err := issueEdgeChanges(r.Context(), tx, unsetIssue, issue, false)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -503,6 +584,20 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := refs.Stamp(r.Context(), tx, "artifact", artifactID, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the spec's block index stated waits for the issue's own event: it is the cause every
+	// node and tuple of that pass carries (graphstore.Caused).
+	if err := graphstore.Caused(r.Context(), tx, specBlocks, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, issueNodes, event.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := stateIssueRelations(r.Context(), tx, relations, actor, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

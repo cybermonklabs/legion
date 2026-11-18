@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -52,9 +53,13 @@ const referencesSinceWait = time.Second
 // structural edges. Cross-project by design: no project filter. A block reference names a
 // block node carrying its whole current text; one pinned to a version of its document, or a
 // revision of its ask's parts or of its comment, also reads the block as that version or revision
-// recorded it (blockReferenceNode, itemBlockReferenceNode). A ?kind= this build does not emit - a
-// newer build's, during a release - has no edges here, and the answer lists it in unknown_kinds
-// rather than refusing the read.
+// recorded it (blockReferenceNode, itemBlockReferenceNode). A finding of a lens
+// (`dispatch://lens/<uuid>#b-<id>`) is the registry's lens_block node, read as a lens, a risk or a
+// constraint is (refs.Node). A document's address that moved to a lens - the pre-mortem
+// conversion retires a document and moves its address to the lens it writes in its place - answers
+// that lens (movedDocumentNode), as a moved block's old address answers the block it moved to. A
+// ?kind= this build does not emit - a newer build's, during a release - has no edges here, and the
+// answer lists it in unknown_kinds rather than refusing the read.
 //
 // A since read keeps only mentions whose event is at or below the safe horizon
 // (events.Horizon), at or below which every event is final. A poller passes the highest
@@ -72,21 +77,22 @@ const referencesSinceWait = time.Second
 // nothing else: a whole id is read whatever owner the reference names, as this route has always
 // read one (refs.loadAskNodes filters on the id alone). That asymmetry is deliberate. A whole id
 // already names one row, so an owner that disagrees with it says nothing this read needs; a
-// prefix names a row only within some set, and the set the reference itself names is the one its
-// writer meant and the only one that can be answered without guessing.
+// prefix names a row only within some set, and the set the reference itself names is the one
+// its writer meant and the only one that can be answered without guessing.
 func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
-	_, human, err := s.optionalActor(r)
+	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
+	who := actor.Recorded()
 	query, ref, unknownKinds, err := parseReferencesQuery(r, s.deps.ServerURL)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	if query.Direction == "in" {
-		resolved, ok := s.wholeReference(w, r, ref, refs.Viewer{Human: human})
+		resolved, ok := s.wholeReference(w, r, ref, who, refs.Viewer{Human: human})
 		if !ok {
 			return
 		}
@@ -95,11 +101,14 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		query.Kind, query.ID = target.Kind, target.ID
 	}
 	var node model.GraphNode
-	if ref.Kind == "block" {
+	// A finding of a lens is a block of no document and of no item: no version or revision of one
+	// is on record and no reference pins one (text.ParseRef reads none), so it is read at its
+	// address as any node of the registry is, through its own kind's predicate.
+	if ref.Kind == "block" && query.Kind != graphstore.KindLensBlock {
 		if ref.Item != "" {
-			node, err = s.itemBlockReferenceNode(r.Context(), query, ref)
+			node, err = s.itemBlockReferenceNode(r.Context(), who, query, ref)
 		} else {
-			node, err = s.blockReferenceNode(r.Context(), query, ref)
+			node, err = s.blockReferenceNode(r.Context(), who, query, ref)
 		}
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -126,10 +135,18 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var found bool
-		node, found, err = refs.Node(r.Context(), s.deps.Store.Pool, query.Kind, query.ID, query.Direction == "in")
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
+		if query.Direction == "in" && ref.Kind == "artifact" {
+			if node, found, err = s.movedDocumentNode(r.Context(), who, query.ID); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
+		if !found {
+			node, found, err = refs.Node(r.Context(), s.deps.Store.Pool, who, query.Kind, query.ID, query.Direction == "in")
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
 		}
 		if !found {
 			s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "no %s at %s", query.Kind, query.ID))
@@ -148,14 +165,15 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			}
 			query.Through = &safe
 		}
-		edges, err = refs.Edges(r.Context(), s.deps.Store.Pool, query)
+		edges, err = refs.Edges(r.Context(), s.deps.Store.Pool, who, query)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
+	answerIssueWaitsAsNeeds(edges)
 	if query.Direction == "in" {
-		if err := s.documentMentionExcerpts(r.Context(), query, edges); err != nil {
+		if err := s.documentMentionExcerpts(r.Context(), who, query, edges); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -168,8 +186,9 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 }
 
 // wholeReference is ref with its item id, or its block id, written whole where the request
-// wrote it short: the one item of the owner the reference names that carries the prefix. ok is
-// false once it has written the answer itself, the 409 of a prefix two items or more carry.
+// wrote it short: the one item of the owner the reference names that carries the prefix, among
+// the items who may see. ok is false once it has written the answer itself, the 409 of a prefix
+// two items or more carry.
 //
 // Which owner, and so which set the prefix names one of, is read from the reference by the one
 // rule the index-time resolver reads it by (refs.PrefixScope): an ask's, a comment's or a
@@ -179,14 +198,14 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 // a comment or a message, whose blocks are numbered (`b2`) and are no id a prefix shortens. A
 // prefix nothing carries is left as written too, and the read answers the 404 it always did for
 // a node it has no edge of.
-func (s *server) wholeReference(w http.ResponseWriter, r *http.Request, ref text.Ref, viewer refs.Viewer) (text.Ref, bool) {
+func (s *server) wholeReference(w http.ResponseWriter, r *http.Request, ref text.Ref, who model.Actor, viewer refs.Viewer) (text.Ref, bool) {
 	block := ref.Kind == "block" && ref.Item == ""
 	kind, scope, written, ok := refs.PrefixScope(text.Prefix{Ref: ref, Block: block})
 	if !ok || !text.IsIDPrefix(written) {
 		return ref, true
 	}
 	// A prefix nothing carries is "" and no error, which this route leaves as written.
-	whole, err := s.wholeID(r.Context(), kind, scope, written, viewer)
+	whole, err := s.wholeID(r.Context(), kind, scope, written, who, viewer)
 	if err != nil {
 		s.writeIDPrefixError(w, err)
 		return ref, false
@@ -239,11 +258,12 @@ var questionSourceKinds = []string{"artifact", "ask", "comment", "message"}
 // (refs.ScopeOf, canonicalUUID), which is the one place it is canonicalized, so this route
 // hands on what it was given and `urn:uuid:<uuid>` answers as the canonical id answers.
 func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
-	_, human, err := s.optionalActor(r)
+	actor, human, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
+	who := actor.Recorded()
 	kind := strings.TrimSpace(r.URL.Query().Get("kind"))
 	if !slices.Contains(questionSourceKinds, kind) {
 		s.writeHandlerError(w, errorf(http.StatusBadRequest, "INVALID_KIND",
@@ -258,7 +278,7 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 	if text.IsIDPrefix(id) {
 		// A prefix nothing carries is left as written, and the read below answers this route's
 		// own 404 for a source whose text belongs to no document.
-		whole, err := s.wholeID(r.Context(), kind, refs.Scope{}, id, refs.Viewer{Human: human})
+		whole, err := s.wholeID(r.Context(), kind, refs.Scope{}, id, who, refs.Viewer{Human: human})
 		if err != nil {
 			s.writeIDPrefixError(w, err)
 			return
@@ -267,7 +287,7 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 			id = whole
 		}
 	}
-	document, err := refs.ScopeOf(r.Context(), s.deps.Store.Pool, kind, id)
+	document, err := refs.ScopeOf(r.Context(), s.deps.Store.Pool, who, kind, id)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -277,7 +297,7 @@ func (s *server) getReferenceQuestions(w http.ResponseWriter, r *http.Request) {
 			"the text of %s %s belongs to no document", kind, id))
 		return
 	}
-	questions, err := refs.QuestionMap(r.Context(), s.deps.Store.Pool, document)
+	questions, err := refs.QuestionMap(r.Context(), s.deps.Store.Pool, who, document)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -315,30 +335,32 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 }
 
 // blockReferenceNode is the block node ref names (query addresses it), with its whole current
-// text. A block no current version of its document holds answers 404, unless ref is pinned to a
-// version N that held it: the node then carries what N recorded (model.BlockPin), "unchanged"
+// text. A block no current version of its document holds is the block its moved_to tuples reach
+// (movedBlockNode), and answers 404 where they reach none, unless ref is pinned to a version N
+// that held it: the node then carries what N recorded (model.BlockPin), "unchanged"
 // or "changed" by comparing the current text with N's, or "removed" with the version that deleted
 // it, as a node with no text or changed version whose facts are a removed block's
 // (refs.RemovedBlockNode); a pin to a current block carries the current block's facts. A pin to
 // a version the document lacks, to one whose blocks are not on record (an older build wrote it and
-// none indexed it) or to one that did not hold the block answers 404, each saying which.
-func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref text.Ref) (model.GraphNode, error) {
+// none indexed it) or to one that did not hold the block answers 404, each saying which. A block
+// who may not see answers, pinned or not, what an address nobody holds answers (refs/visibility.go).
+func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
-	document, found, err := refs.Node(ctx, pool, "artifact", documentKey, true)
+	document, found, err := s.documentAtAddress(ctx, who, documentKey)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
 	if !found {
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", documentKey)
 	}
-	node, current, err := refs.Node(ctx, pool, "block", query.ID, true)
+	node, current, err := refs.Node(ctx, pool, who, "block", query.ID, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
 	if ref.Pin == 0 {
 		if !current {
-			return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
+			return s.movedBlockNode(ctx, who, query.ID, ref, document)
 		}
 		node.Text, err = refs.CurrentBlockText(ctx, pool, document.ID, ref.Block)
 		return node, err
@@ -347,6 +369,19 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 	if err != nil {
 		return model.GraphNode{}, err
 	}
+	// refs.Node answers a block reserved for another author exactly as it answers one no current
+	// version holds, so such a block reaches the branch below as removed, and BlockTextAt reads a
+	// version's record of it for nobody in particular. Whether who may see it is the block's own
+	// predicate's to say (refs.VisibleKind, the one every read of a block binds): a block who may
+	// not see answers what an address nobody holds answers, the 404 of a version that did not
+	// hold it, and its text, its removal and its existence stay unsaid.
+	hidden := false
+	if !current && at.Text != nil {
+		if err := pool.QueryRow(ctx, `select not `+refs.VisibleKind("block", "$1", "$2"),
+			query.ID, refs.VisibilityArg(who)).Scan(&hidden); err != nil {
+			return model.GraphNode{}, fmt.Errorf("read whether the reader may see block %s: %w", query.ID, err)
+		}
+	}
 	switch {
 	case !at.Exists:
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no version %d of %s", ref.Pin, document.Ref)
@@ -354,7 +389,7 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "version %d of %s has no record of its blocks; no version of it has one yet", ref.Pin, document.Ref)
 	case !at.Indexed:
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "version %d of %s has no record of its blocks; the earliest is version %d", ref.Pin, document.Ref, at.Earliest)
-	case at.Text == nil:
+	case at.Text == nil, hidden:
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s at version %d", ref.Block, document.Ref, ref.Pin)
 	}
 	blockRef := refs.BlockRef(document.Ref, ref.Block)
@@ -379,6 +414,69 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 	return node, nil
 }
 
+// movedBlockNode is the block an address no current version holds moved to (dispatch://INFRA-1150
+// R8): the block the address's moved_to tuples reach (graphstore.MovedTo), named by its own
+// address and carrying its whole current text, so a citation written before the block moved reads
+// the block where it stands now. Where no move reaches a block, and where who may not see the
+// block one reaches, it answers the 404 of a block no current version holds, naming the address
+// asked, so a move says nothing of a block the reader may not see. The edges the read lists beside
+// it are those at the address asked: the citations of that address.
+func (s *server) movedBlockNode(ctx context.Context, who model.Actor, address string, ref text.Ref, document model.GraphNode) (model.GraphNode, error) {
+	pool := s.deps.Store.Pool
+	noBlock := errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s", ref.Block, document.Ref)
+	reached, moved, err := graphstore.MovedTo(ctx, pool, address)
+	if err != nil {
+		return model.GraphNode{}, err
+	}
+	if !moved {
+		return model.GraphNode{}, noBlock
+	}
+	node, found, err := refs.Node(ctx, pool, who, refs.BlockNodeKind, reached, true)
+	if err != nil {
+		return model.GraphNode{}, err
+	}
+	if !found || node.Parent == nil {
+		return model.GraphNode{}, noBlock
+	}
+	node.Text, err = refs.CurrentBlockText(ctx, pool, node.Parent.ID, node.BlockID)
+	return node, err
+}
+
+// movedDocumentNode is the lens the address of the document stored at refKey moved to: the lens
+// the pre-mortem conversion wrote in the place of the document it retired (api.ConvertPremortem),
+// which the moved_to from the document's address reaches (graphstore.MovedTo). It is answered as a
+// moved block's old address answers the block it reached (movedBlockNode): the node the move
+// reaches, named by its own address, and the edges the read lists beside it are those at the
+// address asked, the citations of the document. found is false where the address moved to no lens
+// that stands, and where who may not see the lens, and the read then answers the address as it
+// would with no move - the document, or a retired document's issue (refs.loadArtifactNodes) - so
+// a move says nothing of a lens the reader may not see.
+func (s *server) movedDocumentNode(ctx context.Context, who model.Actor, refKey string) (model.GraphNode, bool, error) {
+	pool := s.deps.Store.Pool
+	lens, moved, err := graphstore.MovedTo(ctx, pool, refKey)
+	if err != nil || !moved {
+		return model.GraphNode{}, false, err
+	}
+	return refs.Node(ctx, pool, who, graphstore.KindLens, lens, true)
+}
+
+// documentAtAddress is the document stored at refKey, as a read of its blocks needs it: the node
+// refs.Node answers for the address, or, where the address is a retired document's, which refs
+// answers as the document's issue (refs.loadArtifactNodes), the document itself, read by its uuid,
+// since a retired document's blocks and versions stay readable.
+func (s *server) documentAtAddress(ctx context.Context, who model.Actor, refKey string) (model.GraphNode, bool, error) {
+	pool := s.deps.Store.Pool
+	document, found, err := refs.Node(ctx, pool, who, graphstore.KindArtifact, refKey, true)
+	if err != nil || !found || document.Kind == graphstore.KindArtifact {
+		return document, found, err
+	}
+	var id string
+	if err := pool.QueryRow(ctx, `select id::text from artifacts where ref_key = $1`, refKey).Scan(&id); err != nil {
+		return model.GraphNode{}, false, fmt.Errorf("read the retired document at %s: %w", refKey, err)
+	}
+	return refs.Node(ctx, pool, who, graphstore.KindArtifact, id, false)
+}
+
 // itemBlockReferenceNode is the block node ref, a part of an ask or a block of a comment or a
 // message, names (query addresses it), with its whole current text (refs.CurrentItemBlockText). A
 // block no current revision of its item holds answers 404, as a document's does, unless ref is
@@ -389,18 +487,18 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 // (refs.RemovedItemBlockNode). A pin past the item's current revision, or to one that did not
 // hold the block, answers 404, each saying which. A message never changes, so no reference pins
 // a message's block (parseReferencesQuery refuses one).
-func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, ref text.Ref) (model.GraphNode, error) {
+func (s *server) itemBlockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	kind := refs.ItemKind(ref.Item)
 	noun := itemBlockNoun(ref.Item)
-	item, found, err := refs.Node(ctx, pool, ref.Item, ref.ID, true)
+	item, found, err := refs.Node(ctx, pool, who, ref.Item, ref.ID, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
 	if !found {
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no %s %s", ref.Item, ref.ID)
 	}
-	node, current, err := refs.Node(ctx, pool, query.Kind, query.ID, true)
+	node, current, err := refs.Node(ctx, pool, who, query.Kind, query.ID, true)
 	if err != nil {
 		return model.GraphNode{}, err
 	}
@@ -427,7 +525,7 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, r
 	}
 	pin := &model.BlockPin{Version: ref.Pin, Ref: refs.BlockRef(item.Ref, ref.Block) + "@v" + strconv.Itoa(ref.Pin), Text: *at.Text}
 	if !current {
-		removed, held, err := refs.RemovedItemBlockNode(ctx, pool, kind, query.ID, at.RemovedRevision)
+		removed, held, err := refs.RemovedItemBlockNode(ctx, pool, who, kind, query.ID, at.RemovedRevision)
 		if err != nil {
 			return model.GraphNode{}, err
 		}
@@ -482,7 +580,7 @@ func parseRequestRef(raw, serverURL string) (text.Ref, error) {
 	if pinsAMessageBlock(raw, serverURL) {
 		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
 	}
-	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, component, interaction, lens, lens finding, risk, constraint, or lens kind", raw)
 }
 
 // parseReferencesQuery turns ?to=|?from=, ?kind=, and ?since= into an edge query addressed the
@@ -519,7 +617,16 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 				continue
 			}
 			query.Kinds = append(query.Kinds, kind)
+			// An issue's wait on an issue is blocked_by in graph_edges through this release, the
+			// kind a process of the release before reads it by, and needs in this read's answer
+			// (answerIssueWaitsAsNeeds), so needs reads that edge as well as a plan node's needs,
+			// and blocked_by reads it too (R10 of dispatch://INFRA-1253).
+			if kind == model.EdgeKindNeeds {
+				query.Kinds = append(query.Kinds, blockedByMember)
+			}
 		}
+		slices.Sort(query.Kinds)
+		query.Kinds = slices.Compact(query.Kinds)
 	}
 	// An ask's inbound `replies_to` edges are its own clarification thread, which every ask
 	// surface renders inline, and its parts are each part_of it: "what references this ask" means
@@ -546,6 +653,18 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	return query, ref, unknownKinds, nil
 }
 
+// answerIssueWaitsAsNeeds names each edge of an issue's wait on an issue needs, the one relation an
+// issue and a plan node wait by (R10 of dispatch://INFRA-1253): graph_edges names it blocked_by in
+// both its arms through this release, which a process of the release before reads, and this
+// build's references read answers it as the store states it.
+func answerIssueWaitsAsNeeds(edges []model.GraphEdge) {
+	for index := range edges {
+		if edges[index].Kind == blockedByMember {
+			edges[index].Kind = model.EdgeKindNeeds
+		}
+	}
+}
+
 // documentMentionExcerpts replaces the excerpt of every mention written by a document with the
 // excerpt stored when the mention was indexed (refs.RecordExcerpts): the block holding the mention,
 // its id a #b-<id> jump target, and its markdown. The route reads no document: a mention whose
@@ -553,8 +672,9 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 // the document's name. The reconciliation serves the next stored block only after it records a
 // non-null excerpt_version. During the deploy that ships migration 0092, a stale excerpt whose
 // version is still set is served until the reconciliation marks it owed (refs.StoredExcerpts).
-func (s *server) documentMentionExcerpts(ctx context.Context, query refs.Query, edges []model.GraphEdge) error {
-	stored, err := refs.StoredExcerpts(ctx, s.deps.Store.Pool, query.Kind, query.ID)
+// The excerpts are read for who, so one whose document or block who may not see is none.
+func (s *server) documentMentionExcerpts(ctx context.Context, who model.Actor, query refs.Query, edges []model.GraphEdge) error {
+	stored, err := refs.StoredExcerpts(ctx, s.deps.Store.Pool, who, query.Kind, query.ID)
 	if err != nil {
 		return err
 	}
@@ -574,7 +694,8 @@ func (s *server) documentMentionExcerpts(ctx context.Context, query refs.Query, 
 // artifact.versions holding only its latest version, under its own ETag; absent, empty or all is
 // the full answer. A repeated versions is refused rather than read by its first value.
 func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	versionsValues := r.URL.Query()["versions"]
@@ -598,7 +719,7 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	closure, truncated, err := refs.Closure(r.Context(), s.deps.Store.Pool, issue.Key)
+	closure, truncated, err := refs.Closure(r.Context(), s.deps.Store.Pool, who, issue.Key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -621,6 +742,8 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		}
 		members = append(members, model.ReferenceMember{
 			Artifact: *artifact,
+			Kind:     closureMember.Kind,
+			Address:  closureMember.Address,
 			Depth:    closureMember.Depth,
 			Via:      closureMember.Via,
 		})
@@ -635,7 +758,8 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
 	artifact, err := s.loadArtifact(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
@@ -643,12 +767,12 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	outgoing, err := refs.Outgoing(r.Context(), s.deps.Store.Pool, artifact.ID)
+	outgoing, err := refs.Outgoing(r.Context(), s.deps.Store.Pool, who, artifact.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, artifact.RefKey)
+	referencedBy, err := refs.ReferencedBy(r.Context(), s.deps.Store.Pool, who, artifact.RefKey)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -658,7 +782,8 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 
 // referencesETag hashes what an issue references answer depends on. The trimmed answer
 // (latestOnly) hashes one more line naming its variant, so the full and trimmed answers of one
-// issue never share an ETag; the full answer hashes no such line.
+// issue never share an ETag; the full answer hashes no such line. Each member's line names its
+// address, which a document's conversion into a lens moves with no new version of it.
 func referencesETag(lastSeq int, members []model.ReferenceMember, truncated, latestOnly bool) string {
 	hash := sha256.New()
 	_, _ = fmt.Fprintf(hash, "%d\n%t\n", lastSeq, truncated)
@@ -666,7 +791,7 @@ func referencesETag(lastSeq int, members []model.ReferenceMember, truncated, lat
 		_, _ = io.WriteString(hash, "versions=latest\n")
 	}
 	for _, member := range members {
-		_, _ = fmt.Fprintf(hash, "%s@%d\n", member.Artifact.ID, member.Artifact.Versions[len(member.Artifact.Versions)-1].Number)
+		_, _ = fmt.Fprintf(hash, "%s@%d %s\n", member.Artifact.ID, member.Artifact.Versions[len(member.Artifact.Versions)-1].Number, member.Address)
 	}
 	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
 }

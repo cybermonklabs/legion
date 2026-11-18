@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -100,20 +101,29 @@ func TestEveryApprovalReadNamesTheApprovedBytes(t *testing.T) {
 	t.Fatal("no artifact.changes_requested event")
 }
 
-// A carry pins its destination bytes, not the source approval's bytes.
+// A carry pins its destination bytes, not the source approval's bytes. The carry here is R10's
+// attribute case while two builds serve: the answer is written into the block for the release
+// before's pages (docs' rollWindowAskAttributes), so the version it settles into differs from the
+// approved one in the block's server-owned attributes alone, and its bytes are not the approved
+// version's.
 func TestACarriedApprovalPinsTheVersionItCarriesTo(t *testing.T) {
-	handler := approvalCarryHandler(t)
-	issue := createInteractionIssue(t, handler, "CARR", "Carry bytes", "Context\n")
+	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	registerTwoBuilds(t, database)
+	issue := createInteractionIssue(t, handler, "CARR", "Carry bytes", "Context\n\n"+waveAsk)
 	id := issue.PrimaryArtifactID
-	reviewDocument(t, handler, id, "alice", "approved", "")
-	h1 := contentHash(versionMarkdown(t, handler, id, 1))
-	asks := insertDecisionBlocks(t, handler, issue.Key, id, waveAsk, 2, map[string]string{"wave": "How many regions take the first wave?"})
+	asks := indexedDecisionBlocks(t, handler, issue.Key, id, map[string]string{"wave": "How many regions take the first wave?"})
+	awaitDocumentText(t, handler, id, "the block written in step with its open ask",
+		contains(`:::ask{#wave urgency="med" multiple="false" state="open"}`), nil)
+	awaitSettled(t, database, id)
+	approved := latestVersion(t, database, id).Number
+	approveVersion(t, handler, id, "alice", approved)
+	h1 := contentHash(versionMarkdown(t, handler, id, approved))
 	answerDecisionBlock(t, handler, asks["wave"], "alice", []string{"Two"}, "Two regions first.", nil)
-	waitForArtifactVersion(t, handler, id, 3)
-	requireCarriedReview(t, handler, id, 3, 1, nil)
-	h3 := contentHash(versionMarkdown(t, handler, id, 3))
+	waitForArtifactVersion(t, handler, id, approved+1)
+	requireReviewCarriedWith(t, handler, id, approved+1, approved, attributeRemovalSentence(approved), nil)
+	h2 := contentHash(versionMarkdown(t, handler, id, approved+1))
 	reviews := contentReviews(t, handler, id)
-	if h3 == h1 || len(reviews) != 2 || reviews[0].ContentSHA256 == nil || *reviews[0].ContentSHA256 != h3 || reviews[0].ContentSHA256Source == nil || *reviews[0].ContentSHA256Source != "insert" {
-		t.Fatalf("carried reviews = %#v; hashes %s / %s", reviews, h1, h3)
+	if h2 == h1 || len(reviews) != 2 || reviews[0].ContentSHA256 == nil || *reviews[0].ContentSHA256 != h2 || reviews[0].ContentSHA256Source == nil || *reviews[0].ContentSHA256Source != "insert" {
+		t.Fatalf("carried reviews = %#v; hashes %s / %s", reviews, h1, h2)
 	}
 }

@@ -5,7 +5,7 @@ Read this when an architect of a tree sends you a matter, when a `held` wake car
 pod. Three matters come to you from an architect: a child that looks independent of its tree,
 capacity (an architect says its tree cannot run what it needs under the slots it has), and a
 conflict between trees. An issue-design decision is not one of them: a root's architect writes
-it as a decision block and opens its own finding asks, and a child's own architect sends it to
+it as an ask block and opens its own finding asks, and a child's own architect sends it to
 the architect above it, so that the root's architect asks it on the root. Send a design decision
 back to the architect that sent it with `envoy_publish` to its role, because it is not yours to
 make.

@@ -47,9 +47,10 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterAReopen(t *testi
 // process restart between the close and the reopen, where the old service's room state is
 // unavailable. The restarted service's resumption settles the document on the closed issue, unless
 // the old service's shutdown drain already did: either way the block gets no ask, the version
-// shows it resolved, and doc_ask_block_authors keeps its author (reconcileAskBlocks). The reopen
-// marks the document owed (MarkReopenOwedAskDocuments), and the resumption after it opens the
-// block's ask, credited to that recorded author.
+// holds it with no state, as a fleet of one build saves every ask block (dispatch://INFRA-1150
+// R10), and doc_ask_block_authors keeps its author (reconcileAskBlocks). The reopen marks the
+// document owed (MarkReopenOwedAskDocuments), and the resumption after it opens the block's ask,
+// credited to that recorded author.
 func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour // the issue closes before the edit's own settlement runs
@@ -78,9 +79,9 @@ func TestAnAskWrittenJustBeforeItsIssueClosedKeepsItsAuthorAfterRestartAndReopen
 	if asks := asksOn(t, restarted, artifactID); asks != 0 {
 		t.Fatalf("the closed issue's settlement left %d asks on the document, want none while the issue is closed", asks)
 	}
-	const resolved = `#closing-ask urgency="med" multiple="false" state="resolved"`
-	if _, markdown, _ := latestDocumentVersion(t, restarted.store, artifactID); !strings.Contains(markdown, resolved) {
-		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the block saved resolved: %s", markdown, resolved)
+	const saved = `:::ask{#closing-ask urgency="med" multiple="false"}` + "\n"
+	if _, markdown, _ := latestDocumentVersion(t, restarted.store, artifactID); !strings.Contains(markdown, saved) {
+		t.Fatalf("the closed issue's settlement left the latest version reading:\n%s\nwant the block saved with no state: %s", markdown, saved)
 	}
 	if recorded := recordedAskAuthors(t, restarted.store, artifactID); recorded["closing-ask"] != actor {
 		t.Fatalf("doc_ask_block_authors after the closed issue's settlement = %+v, want closing-ask recorded as %+v", recorded, actor)

@@ -24,9 +24,15 @@ import (
 // `alignment`, whose default is "left" where both readers write null for a column the markdown
 // does not align.
 //
-// A typed block has no entry here, and none of its declared defaults is left out of a display
-// tree: the paragraph at displayNodeAttrs says why that is what this build ships, and
-// dispatch://INFRA-3404 is the change that reads them from the manifest instead.
+// A typed block is not in this table, and the encoding writes every attribute such a block holds.
+// Its defaults are its own schema's, which the store can install over the built one while the
+// process runs (Install), and a stored tree is keyed by its text, its mode and DisplayTreeVersion,
+// never by a schema (texttrees): a default left out under one schema would be filled back under
+// whichever schema the reader holds when that tree is served. Written whole, a typed block reads
+// the same under every schema. Leaving those defaults out would change every tree that holds a
+// typed block, testdata/display.json's among them, and so raise DisplayTreeVersion; the change
+// that would read them from the manifest instead (dispatch://INFRA-3404) has to answer a schema
+// installed while the process runs first.
 var displayNodeDefaults = map[string]Attrs{
 	// heading: `id` is the slug milkdown's own generator would write and both readers leave
 	// empty; `level` is 1 for a heading nothing says the level of.
@@ -53,26 +59,12 @@ var displayMarkDefaults = map[string]Attrs{
 	"link": {"title": nil},
 }
 
-// A typed block's declared attribute defaults are NOT left out of a display tree, and that is
-// what this build ships rather than an oversight here. The encoding was written to leave them
-// out - displayNodeAttrs below still reads displayNodeDefaults for every other node - but main's
-// own map was built in a package variable's initializer from a schema its init filled afterwards,
-// and Go runs every variable initializer before any init, so the map was empty and the encoding
-// left nothing out. Every display tree Dispatch has stored carries its typed defaults, and
-// testdata/display.json records that.
-//
-// This merge keeps that encoding byte for byte: omitting the defaults is a different encoding of
-// every stored tree, which belongs with a raise of DisplayTreeVersion and the fill that backfills
-// it (texttreefill), not with a forward merge. dispatch://INFRA-3404 carries the fix, and until
-// it lands a typed block takes the same path as any other node, through displayNodeDefaults,
-// which holds no entry for one.
-
-// toDisplayJSON is node as a reader is sent it: its own JSON shape with every attribute the
-// browser's schema would supply left out, and nothing written where that leaves an empty object
-// or an empty array (jsonNode's omitempty). The children are sized once rather than appended to,
-// since a display tree is encoded whole and often.
+// toDisplayJSON is node as a reader is sent it: its own JSON shape with every attribute that
+// stands at the default the two tables above declare for it left out, and nothing written where
+// that leaves an empty object or an empty array (jsonNode's omitempty). The children are sized
+// once rather than appended to, since a display tree is encoded whole and often.
 func (n *Node) toDisplayJSON() *jsonNode {
-	j := &jsonNode{Type: n.Type, Attrs: displayNodeAttrs(n.Type, n.Attrs), Text: n.Text}
+	j := &jsonNode{Type: n.Type, Attrs: withoutDefaults(n.Attrs, displayNodeDefaults[n.Type]), Text: n.Text}
 	if len(n.Marks) > 0 {
 		j.Marks = make([]jsonMark, len(n.Marks))
 		for index, mark := range n.Marks {
@@ -86,13 +78,6 @@ func (n *Node) toDisplayJSON() *jsonNode {
 		}
 	}
 	return j
-}
-
-// displayNodeAttrs is attrs as the display encoding writes them for a node of this type: every
-// node's defaults are displayNodeDefaults', and a typed block has no entry there, so none of its
-// attributes is left out (the paragraph above says why, and dispatch://INFRA-3404 changes it).
-func displayNodeAttrs(nodeType string, attrs Attrs) Attrs {
-	return withoutDefaults(attrs, displayNodeDefaults[nodeType])
 }
 
 // withoutDefaults is attrs with every attribute standing at its declared default left out, or
@@ -129,8 +114,8 @@ func withoutDefaults(attrs, defaults Attrs) Attrs {
 
 // atDisplayDefault reports whether value is the attribute default def. A number is compared as a
 // number, since one attribute reaches this both as the int a parse wrote and as the float64 a
-// JSON round trip left; anything that is neither string, bool nor number is compared by its
-// encoding, so a `string[]` default written `[]` matches an empty list of either Go type.
+// JSON round trip left. The two tables declare no default that is not null, a string, a bool or a
+// number, so any other default matches nothing and its attribute is written.
 func atDisplayDefault(value, def any) bool {
 	switch want := def.(type) {
 	case nil:
@@ -145,15 +130,7 @@ func atDisplayDefault(value, def any) bool {
 		got, ok := displayNumber(value)
 		return ok && got == want
 	}
-	if value == nil {
-		return false
-	}
-	gotJSON, err := json.Marshal(value)
-	if err != nil {
-		return false
-	}
-	wantJSON, err := json.Marshal(def)
-	return err == nil && string(gotJSON) == string(wantJSON)
+	return false
 }
 
 // displayNumber is value as a number, and whether it is one: an attribute reaches the encoding

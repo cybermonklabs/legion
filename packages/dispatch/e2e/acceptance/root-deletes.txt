@@ -1,0 +1,21 @@
+# What dispatch://INFRA-1150 keeps for one release, for the root's own pull request to delete
+# (the plan's "For the root to delete"; the implement handoff copies this list under that heading).
+#
+# One line for each kept thing: its id, a tab, the thing, a tab, and what holds it - the condition
+# the root's architect reads before deleting it, and the tests that hold it now. Every place in the
+# repository that serves a kept thing carries one comment `kept for one release: <id>`, the id the
+# last thing on its line, in Go, SQL, TypeScript and YAML alike, on the line that serves it or the
+# line above it. .github/scripts/check-kept-for-one-release.sh (ci.yaml's lint job) fails on a
+# comment whose id this file does not list and on a listed id no comment names, and
+# e2e/acceptance/decisions-gone.sh reads this file for the literal sweep's admitted lines.
+asks-arms	The `anchored_to` and `owned_by` arms of graph_edges over `asks`, the `followed_by` arm over `ask_followers`, and the tuple arm's three joins to those rows	The census's class of unmarked asks and ask_followers rows reads zero (c-census)
+catch-up	The decisions step's catch-up of the ask events a process of another build appended (ruling E1)	Code that runs only while a process of the release before is live; the root's build does not hold it (R11)
+roll-window-attributes	rollWindowAskAttributes, which keeps an ask block's server-owned attributes in step while two builds serve	It writes nothing once processes.Live shows one build; the root's build does not hold it (R11)
+check-narrowings	artifacts_role_check, the check on projects.gated_steps and the check on design_gates.step, each still admitting `decisions`, and every read that takes a stored `decisions` value as those checks admit it	No row holds `decisions` (a census of each); TestNoReadReachesTheDecisionsDocument, TestTheGatedStepsWriteTakesTheDecisionsStepAndStoresTheListWithoutIt
+compat-objects	decisions_artifact_id, the Decisions read's `document` and `decisions` members, model.Decision and model.DecisionLink	No page or client reads them (T12's search); TestNoReadReachesTheDecisionsDocument, TestTheOldDecisionsMembersAnswerFromTheStore
+contract-read-side	The read side of DocumentRoleSchema and of ProjectSchema.gated_steps (GATED_STEPS) holding `decisions`	No server answers `decisions`
+steps-write-admits	The gated-steps write admitting `decisions`, and the design-gates write admitting and dropping it	No page and no daemon of the release before is served; TestTheGatedStepsWriteTakesTheDecisionsStepAndStoresTheListWithoutIt, TestADesignGateRowOfTheDecisionsStepIsIgnored
+heading-keep	Keep on a heading of an unconverted decisions document	decisions_documents() answers no document; TestAHeadingOfAStandingDecisionsDocumentIsKeptUntilItIsRetired, TestNoReadReachesTheDecisionsDocument
+decisions-documents-fn	The SQL function decisions_documents(boolean)	decisions_documents() answers no document
+design-gate-rows	The design_gates rows of the step `decisions`, in Dispatch and in the daemon, and the daemon's readmitted_approvals rows of that step, which every read leaves out	No row holds `decisions`; TestADesignGateRowOfTheDecisionsStepIsIgnored, TestADecisionsGateRowIsIgnored
+decisions-step	The decisions step (its phases 1 and 3) and /healthz's decisions_step_owed	decisions_step_owed reads zero in production, which the root's architect reads before the root's pull request merges (H3); TestNoReadReachesTheDecisionsDocument

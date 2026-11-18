@@ -7,19 +7,28 @@ export type GraphNode = GraphReferences["node"];
  * A graph node with the fields the server writes on every one of them, and whatever the caller
  * names on top. Dispatch answers `made_at`, `made_by`, `changed_at` and `changed_by` with null on
  * a node nothing has made or changed - every node but a block of a document with a recorded
- * authorship - and `parent`/`parent_version` with null on a node that is not part of another.
+ * authorship - `parent`/`parent_version` with null on a node that is not part of another, and
+ * `state` and `visibility` as the store holds them, `live` and `project` for every node nothing
+ * has marked otherwise.
  */
 export function graphNode(fields: Partial<GraphNode> & Pick<GraphNode, "id" | "kind">): GraphNode {
   return { ...graphNodeFields(), ...fields };
 }
 
 /**
- * The same six fields on their own, for a fixture that builds the rest of its node inline:
+ * The same eight fields on their own, for a fixture that builds the rest of its node inline:
  * spread this first and let the fixture's own fields win.
  */
 export function graphNodeFields(): Pick<
   GraphNode,
-  "changed_at" | "changed_by" | "made_at" | "made_by" | "parent" | "parent_version"
+  | "changed_at"
+  | "changed_by"
+  | "made_at"
+  | "made_by"
+  | "parent"
+  | "parent_version"
+  | "state"
+  | "visibility"
 > {
   return {
     changed_at: null,
@@ -28,5 +37,7 @@ export function graphNodeFields(): Pick<
     made_by: null,
     parent: null,
     parent_version: null,
+    state: "live",
+    visibility: "project",
   };
 }

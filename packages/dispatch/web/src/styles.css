@@ -303,6 +303,68 @@ html:has([data-issue-page]) {
   font-family: var(--font-sans);
 }
 
+/* What a scroll brings into view on the new issue page stands below everything that stays at the
+   top of the screen above its rows (decision 113 of the parts). The page scrolls the document,
+   so the padding is on `html`. `--issue-identity-height` is the band the header publishes
+   (`identity-block.ts`): its identity block from 761 px up, and at 760 px and below the view row,
+   where the header scrolls away. `--issue-view-row-height` is the view row's own height while it
+   stays, at 760 px and below, and 0 px above (`slots/view-row.tsx`), so the row is counted on a
+   page that draws no header too. At 760 px and below, on a page with a header, both name the
+   same row, so the padding is the larger of the two rather than their sum: at every width, it is
+   the height of what stays. */
+html:has([data-issue-page]) {
+  scroll-padding-top: max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px));
+}
+
+/* A control inside the view row takes a top scroll margin of minus the row's height while the row
+   stays, so a focus that enters the row never scrolls the page (decision 113). The row stands
+   in the band the padding above keeps clear, so without it a focus there - Escape or a choice in
+   the view menu, the Outline sheet giving the focus back, Tab - scrolls the page up to bring
+   the control below the band, and the row, which stays, does not move. `[data-filter-row]` is
+   the row's own box (`identity-block.ts`'s `FILTER_ROW_ATTRIBUTE`), which only the new page
+   draws, so the rule needs no `:has()` scope; the Outline sheet is drawn in the body, outside
+   it. Its subject names the controls rather than every element: a universal subject under an
+   `html:has()` ancestor made each change of the page recalculate the style of the whole
+   document (decision 176). Where the row scrolls away, above 760 px, the height is 0 px and so
+   is the margin. */
+[data-filter-row] :is(a[href], button, input, select, textarea, [tabindex]) {
+  scroll-margin-top: calc(-1 * var(--issue-view-row-height, 0px));
+}
+
+/* Each control inside the header's identity block takes a top scroll margin of minus the whole
+   padding above, at every width, and at 760 px and below so does each control of the header, so a
+   focus that enters one while it is on the screen never scrolls the page. From
+   761 px up the block stays at the top of the screen and is the band the padding keeps clear, so
+   without the margin a focus there - Shift+Tab from the properties line under it, or Tab from one
+   control of the block to the next - scrolls the page up to bring the control below the band, and
+   the block, which stays, does not move. At 760 px and below (`identity-block.ts`'s
+   `HEADER_SCROLLS_QUERY`) the whole header scrolls away, and the view row sticks only once the
+   header is above the screen, so nothing that stays ever covers a header control: one lying in
+   the band at the top would scroll the page for nothing. From 761 px up the properties line,
+   outside the block, keeps no margin, so a focus on one of its controls that lies under the stuck
+   block still scrolls it out from under the block. `[data-identity-block]` is the block that
+   `features/issue-page/IssueHeader.tsx` draws, and only the new page draws it, so its rule needs
+   no scope; today's issue page draws `[data-issue-header]` too, so the header's rule names the
+   new page's outermost element, `[data-issue-page]`, as an ancestor, with no `:has()`. Their
+   subjects name the controls rather than every element, as the view row's rule above does: a
+   universal subject under an `html:has()` ancestor made each change of the page recalculate the
+   style of the whole document. */
+[data-identity-block] :is(a[href], button, input, select, textarea, [tabindex]) {
+  scroll-margin-top: calc(
+    -1 *
+    max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px))
+  );
+}
+
+@media (max-width: 760px) {
+  [data-issue-page] [data-issue-header] :is(a[href], button, input, select, textarea, [tabindex]) {
+    scroll-margin-top: calc(
+      -1 *
+      max(var(--issue-identity-height, 0px), var(--issue-view-row-height, 0px))
+    );
+  }
+}
+
 /* Compact layouts reserve vertical space for the fixed review sheet. Keep controls touch-sized
    through tablet widths so the sheet remains directly operable. */
 @media (max-width: 1279px) {
@@ -311,11 +373,33 @@ html:has([data-issue-page]) {
   textarea {
     font-size: 1rem;
   }
+  /* The new issue page's header draws its status and its title's editor in its own type at
+     every width, as the prototype does: the status at 12 px, sized to its value, so the header
+     at 390 px holds to eight lines and 250 px, nine lines and 280 px while an approval request
+     waits, and the title's editor at the heading's own size, which it must match so ending an
+     edit moves nothing. This file's rules are in no cascade layer and Tailwind's are, so
+     `revert-layer` gives back the size the control's own classes set. A menu or a dialog a
+     header control opens keeps the 1rem floor above, so a phone does not zoom into its fields.
+     The rule takes no `html:has()` scope, because under one each change of the page recalculated
+     the style of every control of the page (decision 176); its `[data-issue-page]` ancestor
+     keeps it to the new page. */
+  [data-issue-page]
+    [data-issue-header]
+    :is(select, textarea):not([role="menu"] *):not([role="dialog"] *) {
+    font-size: revert-layer;
+  }
 }
 
 @media (max-width: 1279px) {
   html {
     scroll-padding-bottom: 5rem;
+  }
+  /* The padding keeps what a scroll brings into view clear of the review sheet at the foot of
+     the screen. The new issue page has no such sheet: its panel is Details, which opens over the
+     page (R14), so nothing covers the foot there, and a landing centred on
+     a passage is centred on the screen rather than 80 px above it. */
+  html:has([data-issue-page]) {
+    scroll-padding-bottom: 0;
   }
   button,
   a:not(.prose a):not(.dispatch-inline-link),
@@ -324,6 +408,32 @@ html:has([data-issue-page]) {
   textarea {
     min-width: 44px;
     min-height: 44px;
+  }
+
+  /* The new issue page's view row, `[data-filter-row]`, is one line of 35 px at every width
+     (the architect's ruling 5), so its controls take WCAG
+     2.2's 24 px target (2.5.8) rather than the floor above. A menu or a dialog the row opens
+     keeps the floor. Only the new page draws the row (`identity-block.ts`'s
+     `FILTER_ROW_ATTRIBUTE`), so the rule takes no `html:has()` scope: under one, each row the
+     page added recalculated the style of every button and link of the page (decision 176). */
+  [data-filter-row] :is(button, a, input, select):not([role="menu"] *):not([role="dialog"] *) {
+    min-width: 24px;
+    min-height: 24px;
+  }
+
+  /* The new issue page's header, `[data-issue-header]`, draws its controls at the prototype's
+     size: each at least 24 by 24 px, or spaced so that a 24 px circle on it meets no other
+     target (WCAG 2.2's 2.5.8), because the header at 390 px is held to eight lines and 250 px,
+     nine lines and 280 px while an approval request waits. `revert-layer` takes the floor above
+     off and gives back the size the control's own classes set. A menu or a dialog a header
+     control opens keeps the 44 px floor. The rule takes no `html:has()` scope, because under one
+     each change of the page recalculated the style of every control of the page (decision 176);
+     its `[data-issue-page]` ancestor keeps it to the new page. */
+  [data-issue-page]
+    [data-issue-header]
+    :is(button, a, select, textarea):not([role="menu"] *):not([role="dialog"] *) {
+    min-width: revert-layer;
+    min-height: revert-layer;
   }
 
   button,
@@ -379,6 +489,44 @@ html:has([data-issue-page]) {
   label:has(input[type="checkbox"]),
   label:has(input[type="radio"]) {
     min-height: 44px;
+  }
+}
+
+/* Below 1280 px a row of the new issue page takes none of the 44 px floor above on its fold
+   control and its inline controls (part G, R1; the floor itself stays as
+   it is on every other page and control). A node's bullet is its fold control, the prototype's
+   18 by 24 px `.bul`, and 24 by 24 px at 760 px and below (`NODE_ROW_LAYOUT.foldControl`):
+   nothing else in its row is a target beside it, so a 24 px circle on it meets no other target
+   (WCAG 2.2's 2.5.8), and a 44 px box would push every row's words off their one left edge. A
+   row's `dispatch-inline-link` controls ("more", Reply, Copy reference, Keep open) and the
+   links in its words stand in a line of text, keep its line box and take the 6 px of padding
+   above, which reaches 24 px at 12 px. An open question's option is such a control too and
+   takes none of the floor, but it is no part of a line of text: it lays out its dot and its
+   words side by side on their first baseline (`pageRowOption`'s `flex items-baseline`), which
+   the floor's `inline-flex` and `center` above, in no layer, would outrank, so it is given them
+   back here. `[data-node-row]` and `[data-node-words]` are drawn only by the new page
+   (`NodeRow.tsx`, `CutWords.tsx`), so the rules take no `html:has()` scope: under one, each row
+   the page added recalculated the style of every button and link of the page. A
+   link's `[href]` keeps it above the floor's `a:not(.prose a):not(.dispatch-inline-link)`,
+   which a link outside a `.prose` text matches, as the scope did. */
+@media (max-width: 1279px) {
+  [data-node-row] button:is([data-node-bullet], .dispatch-inline-link),
+  [data-node-words] a[data-row-reference][href] {
+    min-width: 0;
+    min-height: 0;
+  }
+
+  [data-node-row] button.dispatch-inline-link:not([data-pick-option]) {
+    display: inline-block;
+  }
+
+  [data-node-row] button[data-pick-option] {
+    display: flex;
+    align-items: baseline;
+  }
+
+  [data-node-words] a[data-row-reference][href] {
+    display: inline;
   }
 }
 
@@ -663,6 +811,17 @@ html:has([data-issue-page]) {
   }
 }
 
+/* A node's words in the issue page's outline (part G, R1) stand flush in
+   their row: the first block of them takes no margin above it and the last none below. The
+   spacing between their blocks is set further down, beside `.dispatch-markdown`'s own rules. */
+[data-node-words] .dispatch-markdown > :first-child {
+  margin-top: 0;
+}
+
+[data-node-words] .dispatch-markdown > :last-child {
+  margin-bottom: 0;
+}
+
 /* A decision block is a card inside prose. Its first/last child would otherwise carry the
    prose paragraph margins into the card (a 20px gap under a 12px header). The repeated attribute
    selector lifts these rules to (0,5,0): a decision inside a reply drawn in another decision's
@@ -821,6 +980,103 @@ html:has([data-issue-page]) {
 .dispatch-markdown :where(h1, h2, h3, h4, h5, h6) {
   font-size: inherit;
   font-weight: 600;
+}
+
+/* A node's words in the issue page's outline (part G, R1, the prototype's
+   `.body`): they take the row's 15 px on 24 px lines, and its paragraphs, lists, quotes and code
+   stand 6 px apart and a heading 6 px under what precedes it, rather than at the spacing
+   `prose` gives a whole document. */
+[data-node-words] .dispatch-markdown :where(p, ul, ol, pre, blockquote, table) {
+  margin: 0 0 6px;
+}
+
+[data-node-words] .dispatch-markdown :where(ul, ol) {
+  padding-left: 22px;
+}
+
+[data-node-words] .dispatch-markdown :where(li) {
+  margin: 0 0 2px;
+}
+
+[data-node-words] .dispatch-markdown :where(h1, h2, h3, h4, h5, h6) {
+  margin: 6px 0 2px;
+  line-height: inherit;
+}
+
+/* A link in a node's words is the words' own ink, underlined in the bullets' grey 3 px under the
+   text (the prototype's `.body a`), never the app's link blue: the underline says it is a link,
+   and the page's colours are its palette's (part G's R4, ruling 5). */
+[data-node-words] .dispatch-markdown {
+  --tw-prose-links: currentColor;
+}
+
+[data-node-words] .dispatch-markdown a {
+  font-weight: inherit;
+  text-decoration-color: var(--color-page-bullet);
+  text-underline-offset: 3px;
+}
+
+/* A block or a document a node's words cite is a chip in place, named as a tie's chip is
+   (`RowText.tsx`'s `chipName`, part G's R4): 12 px, in the row's muted grey, as the chips at the
+   end of the words are drawn. */
+[data-node-words] a[data-row-chip] {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-page-muted);
+  white-space: nowrap;
+}
+
+/* A picture in a node's words is 84 px tall, cut from its top, at least 110 px wide, with its
+   caption on its foot, as the prototype's `.thumb` draws one; a press opens it whole
+   (`DispatchPicture`'s lightbox). The caption is the one its reference carries (part G's R4). */
+[data-node-words] [data-dispatch-picture]:has(img) {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  vertical-align: top;
+  border: 1px solid var(--color-page-line);
+  border-radius: 6px;
+}
+
+[data-node-words] [data-dispatch-picture] img {
+  display: block;
+  width: auto;
+  min-width: 110px;
+  max-width: 100%;
+  height: 84px;
+  object-fit: cover;
+  object-position: top center;
+  border: 0;
+  border-radius: 0;
+}
+
+[data-node-words] [data-dispatch-picture]:has(img):not([data-picture-caption=""])::after {
+  content: attr(data-picture-caption);
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  overflow: hidden;
+  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-page-muted);
+  background: color-mix(in srgb, var(--color-page-paper) 92%, transparent);
+  border-top: 1px solid var(--color-page-line);
+}
+
+/* A node's ties stand at the end of its words, on their line (the prototype's `.trail` inside
+   its `.body`, ruling 5): the words' own box, and the last paragraph of a drawn text, flow
+   inline, so the trail follows the last word (`NodeRow.tsx`). */
+[data-node-words]:has(> [data-node-trail]) > [data-author-text],
+[data-node-words]:has(> [data-node-trail]) > [data-author-text] > .dispatch-markdown,
+[data-node-words]:has(> [data-node-trail])
+  > [data-author-text]
+  > .dispatch-markdown
+  > p:last-child {
+  display: inline;
 }
 
 /* A `MarkdownPreview` sits inside a control (a link, a search option, a card's toggle), so its

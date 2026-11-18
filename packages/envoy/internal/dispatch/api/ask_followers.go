@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -166,11 +168,20 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	}
 	eventType := "ask.follower_added"
 	var changed bool
+	// What the change states on the ask's node, held for the event that records it, below: the
+	// follower's node and the followed_by the follow states, or the retraction the unfollow does.
+	var held graphstore.Uncaused
 	if follow {
-		changed, err = asks.Follow(r.Context(), tx, askID, sessionID)
+		// The follower is a node of the store from this write on, made before the event that
+		// records the follow exists and moved onto it below.
+		var followed asks.Followed
+		followed, err = asks.Follow(r.Context(), tx, askID, sessionID, actor, time.Now(), graphstore.NoEvent)
+		changed, held = followed.Added, followed.Uncaused
 	} else {
 		eventType = "ask.follower_removed"
-		changed, err = asks.Unfollow(r.Context(), tx, askID, sessionID)
+		var unfollowed asks.Unfollowed
+		unfollowed, err = asks.Unfollow(r.Context(), tx, askID, sessionID, actor, time.Now().UTC())
+		changed, held = unfollowed.Removed, unfollowed.Uncaused
 	}
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -188,6 +199,10 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		AskID: askID, SessionID: sessionID, By: actor,
 	}))
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := graphstore.Caused(r.Context(), tx, held, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

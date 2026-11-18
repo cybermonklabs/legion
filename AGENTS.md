@@ -1057,7 +1057,7 @@ issue-update`.
 A person's `legion` label on an unrecorded root in `triage` is queued by the daemon: the daemon writes the root's `todo` through its outbox (a `dispatch_status` row marked a person's handover), and no agent's write admits it.
 A session's label on such a root wakes the controller with `triage`, and the daemon writes nothing for it.
 A person's approval of the primary document of a parked (`backlog` or `icebox`) labelled root with no parent and no live tree is queued by the daemon the same way, which re-admits a root that ran before as a new generation.
-A carried approval (the review Dispatch writes in the person's name, with a reason that begins `Carried forward from the approval of version`, when their answer to a decision block was the whole change since the version they approved, a later version's text is the text they approved, or a later version's text is that text with the questions a reopen opened again) queues nothing.
+A carried approval (the review Dispatch writes in the person's name, with a reason that begins `Carried forward from the approval of version`, when a later version's text is the text they approved, or when that version differs from it only in what Dispatch carries an approval over: the readings of its decisions and answered asks, the server-owned attributes of its ask blocks, the ask blocks and `## Decisions` heading the decisions step's restore writes, or the `decision` blocks, readings and `shaped` pointers that step's conversion writes) queues nothing.
 Each such write holds only while the status it answered and the label still stand when it is delivered.
 A recorded root a person moved back to `triage` is never queued again.
 The controller starts no other work on its own:
@@ -1186,7 +1186,7 @@ for a wait on the gate that open gate is the backstop of the act that opened it:
 A wait on the gate when the operator empties `gates.design` is decided on the next admission pass, since with no step gated no approval request is with the person:
 it moves to a tree question still with the person, or is answered, and the architect resumes to register its spec, which opens the gate.
 A close of an item of the wait — a tree question, or an approval request of the closed gate's document
-— by anyone who is not a person — Dispatch's settlement retracting it once its decision block has left the spec, or a session closing it
+— by anyone who is not a person — Dispatch's settlement retracting it once its ask block has left the spec, or a session closing it
 — moves the wait to what is still with the person, and ends it only when nothing is;
 so does a session's reply that hands the last item still with the person back to the agent's turn.
 A session's answer or resolution of any other ask, and a person's act Dispatch recorded before the wait began, which the architect read before it handed the turn back, answer nothing.
@@ -1216,7 +1216,7 @@ A boot releases the ones parked before, one release for each issue of its listin
 The boot's pass makes no operator test of its own, so it queues a row for such a tree too, and the executor ends that row when it runs, on the reading current then.
 A person's spec decision on it (an approval, a changes request, or an approval carried to a child's new tree) that the daemon could not deliver to its architect, and a person's answer, resolution or reply on an ask of its issues (one that gives the turn to the agent, or one under a closed ask), goes to the controller as `parked-decision`, once per decision.
 One approval is not relayed: a person's approval of the primary document of a parked root that carries the `legion` label, keeps no Dispatch parent and whose tree is not live is that person's handover, which the daemon queues itself (`todo`, logged `admission: queued a person's handover` with `source=approval`), whoever parked the root, and no `parked-decision` is sent for it.
-A carried approval, the review Dispatch writes in the person's name with a reason that begins `Carried forward from the approval of version` (when their answer to a decision block was the whole change since the version they approved, when a later version's text is the text of the version they approved, or when a later version's text is that text with the questions a reopen opened again), is no such handover and is relayed as any other approval.
+A carried approval, the review Dispatch writes in the person's name with a reason that begins `Carried forward from the approval of version` (in the cases **Handover** lists), is no such handover and is relayed as any other approval.
 The daemon keeps the newest decision per Dispatch reference, under the issue it was decided on, never under a root: the tree that owes the person an answer is the tree that issue stands in now, so a child a linger hands to Legion, a parked child a person's todo orphans, a grandchild handed over beside its parent and a queued root admission adopts into a live tree each take what was decided on them with them, in any order, with nothing to move.
 That tree's next architect start names each one: admission's start task, or the catch-up of a later launch (a `legion claims retry` relaunch), with both spec versions when the approved one is no longer the current one.
 Each kept decision is claimed by the one start or catch-up that names it, in the transaction that queues it, and a start whose task the architect's claim queues leaves it to that delivery, which holds it until the turn that takes the task starts: the write recording that confirmation is what tells it, and a published catch-up tells what it named itself.
@@ -1238,13 +1238,15 @@ The walk also sets the root of the controller's own hold back to `todo` when its
 The machinery's notices to a stopped tree (a child's status or close, a dead worker) stay dropped.
 
 **Gate:** the design gate is the list of steps `gates.design` names in `legion.yaml`, each step one document of the root issue a human approves at a version in Dispatch:
-`decisions` the issue's decisions document, `criteria` its Verification document, `spec` its primary document.
+`criteria` its Verification document, `spec` its primary document.
+A list naming `decisions` is refused at load: that step is gone, since decisions are nodes of the spec, which the `spec` step holds.
 The default is the single step `spec`, which the word `root-issues` also means, and the empty list, which the word `off` also means, gates nothing.
 The daemon keeps one gate record per step, and every configured step holds the tree's work, the merger's start and the start of a released child until a person approves that step's document.
-Once the spec's decision blocks are settled and the human has agreed to every point in it, the architect requests the approval with `dispatch request-approval` and a summary of what the human is approving, and registers the step, the document id and the version with the daemon, and the daemon opens that step on the `artifact.approved` event for that document at its current version
+Once the spec's ask blocks are settled and the human has agreed to every point in it, the architect requests the approval with `dispatch request-approval` and a summary of what the human is approving, and registers the step, the document id and the version with the daemon, and the daemon opens that step on the `artifact.approved` event for that document at its current version
 — or at registration itself, when Dispatch already shows the human approved that version before the architect registered (the daemon reads the approval; it never writes one).
 One request with `--include-verification` covers the spec and the Verification document, so it opens the `criteria` and the `spec` step together, each registered on its own document.
-A later version of a step's document closes that step until someone approves the new version, which Dispatch does in the human's own name when the version is his answer to a decision block and that answer is the whole change since the version he approved (it records an `approved` review pinned to the new version and emits `artifact.approved`, and the step reopens on that event), and a `changes_requested` review closes it with the reviewer's reason.
+A later version of a step's document closes that step until someone approves the new version, and a `changes_requested` review closes it with the reviewer's reason.
+A person's answer to an ask block writes no version, so it neither closes a step nor approves one.
 
 register_gate takes the step the document is for, and refuses a call that names none where the deployment gates more than one step (`GATE_STEP_REQUIRED`, 400), a step the deployment does not gate (`GATE_STEP_NOT_CONFIGURED`, 409) and a document that is not that step's document of that issue (`GATE_STEP_DOCUMENT_MISMATCH`, 409).
 It reads the issue's Dispatch event sequence, then the document's approval, and refuses a version above the latest one Dispatch shows (`VERSION_NOT_IN_DISPATCH`), since no person's review could open a gate on a version Dispatch never wrote;

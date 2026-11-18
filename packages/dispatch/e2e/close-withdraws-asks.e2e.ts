@@ -5,6 +5,7 @@ import {
   createProject,
   editArtifact,
   getArtifact,
+  getArtifactText,
   getArtifactVersion,
   getIssue,
   patchIssue,
@@ -31,8 +32,16 @@ const PROBE = { intervals: [50, 50, 100, 200, 500] };
 const decisionBlock =
   ':::ask{#decision urgency="high" multiple="false" state="open"}\nShip now?\n\n- Ship: Release it\n- Hold: Wait for review\n:::\n';
 
-/** The decision block as a saved version holds it once the close's withdrawal is in it. */
+/** The decision block as every stored version holds it: the first write took the seed's `state`
+ *  off it, since an ask's state lives on the ask alone (dispatch://INFRA-1150 R3, R10). */
+const storedDecision = ':::ask{#decision urgency="high" multiple="false"}\n';
+
+/** The decision block as the text routes render it once the close has withdrawn its ask: they
+ *  render each ask's state from the ask on read. */
 const resolvedDecision = ':::ask{#decision urgency="high" multiple="false" state="resolved"';
+
+/** The decision block as the text routes render it once the reopen has brought its ask back. */
+const openDecision = ':::ask{#decision urgency="high" multiple="false" state="open"';
 
 /** The number of the newest version the document has saved. */
 async function newestVersion(artifactId: string): Promise<number> {
@@ -157,9 +166,9 @@ async function expectWithdrawn(
 }
 
 // SLOW(>=2s): two pages of the issue, one of them the document editor with its own socket, then a
-// close, the version history, the closed issue's settlement, a reopen and a reload.
-// @pr: Create through answer to close: the Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings them back.
-test("a person's Close withdraws the issue's asks, an earlier version keeps its open block, and Reopen brings the asks back @pr", async ({
+// close, the version history, the closed issue's settlement window, a reopen and a reload.
+// @pr: Create through answer to close: the Close withdraws the issue's asks and writes no byte of the document, and Reopen brings them back.
+test("a person's Close withdraws the issue's asks and writes no byte of the document, and Reopen brings the asks back @pr", async ({
   browser,
 }) => {
   const seeded = await seedIssue("CLOSE");
@@ -171,12 +180,18 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     const before = await newestVersion(seeded.artifactId);
     await page.getByRole("button", { name: "Close issue" }).click();
     await expectWithdrawn(opened, seeded, "alice");
+    expect(await newestVersion(seeded.artifactId)).toBe(before);
 
-    // That version, opened from the history, still shows the decision as it was then, open, and
-    // nothing of the withdrawal, whatever the closed issue's settlement has saved since.
-    expect((await getArtifactVersion(seeded.artifactId, before)).markdown).toContain(
-      ':::ask{#decision urgency="high" multiple="false" state="open"'
-    );
+    // That version's stored text holds the decision as it was written, with none of the
+    // server-owned attributes: an ask's state lives on the ask alone, and on a fleet of one build
+    // a close's withdrawal changes no byte of a document (dispatch://INFRA-1150 R3, R10).
+    const savedMarkdown = (await getArtifactVersion(seeded.artifactId, before)).markdown;
+    expect(savedMarkdown).toContain(storedDecision);
+    expect(savedMarkdown).not.toContain("state=");
+    // Opened from the history, it shows that text read-only: the question, its options and who
+    // asked, with nothing to answer. Its card reads the decision's state from the server's read of
+    // the ask, which the close resolved, and draws no record of the withdrawal: only the closed
+    // issue's own document shows who withdrew it.
     await page.getByRole("combobox", { name: "Version" }).selectOption(String(before));
     const saved = page
       .getByRole("region", { name: `Document version ${before}` })
@@ -184,9 +199,10 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     await expect(saved).toContainText("Ship now?");
     await expect(saved.locator('ul[aria-label="Options"] li')).toHaveCount(2);
     await expect(saved.locator("[data-dispatch-ask-asked]")).toBeVisible();
+    await expect(saved.getByRole("radio")).toHaveCount(0);
     await expect(saved.getByTestId("ask-resolution-badge")).toHaveCount(0);
     await expect(saved).not.toContainText("Withdrawn");
-    await expect(saved).not.toContainText("Resolved");
+    await expect(saved.getByText("Resolved", { exact: true })).toBeVisible();
     await page.getByRole("combobox", { name: "Version" }).selectOption("");
 
     // The close dropped the document's socket, and its reconnect is admitted read-only while the
@@ -199,31 +215,22 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
     await expect(page.getByText("Reload to edit.")).toHaveCount(0);
-    // The close's block writes left the document owing a settlement, and a closed issue's
-    // document settles as an open one's does: the version it saves shows the withdrawn decision's
-    // block resolved. The room's load for the reconnect above arms that settlement if nothing
-    // armed it sooner, and it runs 250 ms later (`DISPATCH_TEST_SETTLE_DELAY`,
-    // `e2e/run-server.sh`), well inside the poll's deadline; the resumption would reach the
-    // document only a minute or more after the close (`settlementResumeAge` and
-    // `SettlementResumeInterval`, `packages/envoy/internal/dispatch/docs/resume.go`). The version
-    // is read before the Reopen, whose block writes put the block back to open.
+    // The room's load for the reconnect above arms a settlement of the closed issue's document,
+    // which runs 250 ms later (`DISPATCH_TEST_SETTLE_DELAY`, `e2e/run-server.sh`) and saves a
+    // version only where the document's bytes changed. The close changed none, so it saves none;
+    // the text routes render the decision's state from its ask on read, so an agent reading the
+    // document reads the decision resolved.
     await expect
-      .poll(async () => {
-        const newest = await newestVersion(seeded.artifactId);
-        if (newest <= before) return `no version after version ${before}`;
-        const { markdown } = await getArtifactVersion(seeded.artifactId, newest);
-        return markdown.includes(resolvedDecision)
-          ? "the decision saved resolved"
-          : `version ${newest} reads:\n${markdown}`;
-      }, PROBE)
-      .toBe("the decision saved resolved");
+      .poll(async () => (await getArtifactText(seeded.artifactId)).markdown, PROBE)
+      .toContain(resolvedDecision);
+    expect(await newestVersion(seeded.artifactId)).toBe(before);
     await page.getByRole("button", { name: "Reopen" }).click();
     await expect(page.getByRole("button", { name: "Close issue" })).toBeVisible();
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (3)");
-    // The reopen wrote the block back to open, so the record is gone at once, and it dropped the
-    // document's socket again, so its reconnect, a draw of its own, is admitted writable: the row
-    // waits for the page that settles, editable, with the block hosting the open, answerable card,
-    // and no reload.
+    // The reopen brought the ask back on the server, which the card reads, so the record is gone
+    // at once, and it dropped the document's socket again, so its reconnect, a draw of its own, is
+    // admitted writable: the row waits for the page that settles, editable, with the block
+    // hosting the open, answerable card, and no reload.
     await expect(decision.getByTestId("ask-resolution-badge")).toHaveCount(0);
     await expect(decision).not.toContainText("Withdrawn");
     await reconnectedSockets(page, sockets, 3);
@@ -242,6 +249,10 @@ test("a person's Close withdraws the issue's asks, an earlier version keeps its 
     await reconnectedSockets(page, sockets, 4);
     await expect(connectedDot(page)).toHaveText("connected");
     await expectOpenDecision(decision);
+    // Neither the close nor the reopen, nor the settlements their rooms' loads ran, saved a
+    // version: the text routes read the decision open again from its ask.
+    expect((await getArtifactText(seeded.artifactId)).markdown).toContain(openDecision);
+    expect(await newestVersion(seeded.artifactId)).toBe(before);
   } finally {
     await page.context().close();
   }

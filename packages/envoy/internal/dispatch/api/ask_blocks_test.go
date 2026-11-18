@@ -513,6 +513,28 @@ func awaitDocumentText(t *testing.T, handler http.Handler, document, what string
 	}
 }
 
+// awaitTextShows polls document's text as an agent reads it (GET /api/v1/artifacts/{id}/text,
+// which renders each ask block's answer state and answer from the store on read,
+// docs.TextWithAnswers) until it holds, and answers that text; it fails the test after ten
+// seconds, or at once when the text shows refused (nil refuses nothing). A person's answer is held
+// on the ask's node alone (dispatch://INFRA-1150 R3), so no stored version of a document written
+// on a fleet of one build shows it: the text routes are where a test reads it on the block.
+func awaitTextShows(t *testing.T, handler http.Handler, document, what string, holds, refused func(string) bool) string {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		text, _ := documentTexts(t, handler, document)
+		if refused != nil && refused(text) {
+			t.Fatalf("the document's text showed what it must not while waiting for %s:\n%s", what, text)
+		}
+		if holds(text) {
+			return text
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the document's text never showed %s:\n%s", what, text)
+		}
+	}
+}
+
 // contains is a predicate holding of text that contains every one of parts.
 func contains(parts ...string) func(string) bool {
 	return func(text string) bool {
@@ -525,9 +547,11 @@ func contains(parts ...string) func(string) bool {
 	}
 }
 
-// An answer to a copy's source, or its resolution, made after the copy settled reaches the copy a
-// settlement later, in its live text and in its latest version, which is what the decision card and
-// dispatch request-approval's refusal read: the routes settle the copies of the ask they close.
+// An answer to a copy's source, or its resolution, made after the copy settled reaches the copy's
+// text as an agent reads it, which renders the source's answer state and answer on the copy's
+// block from the store (docs.TextWithAnswers): a person's answer is held on the ask's node alone
+// (dispatch://INFRA-1150 R3), so no stored version of the copy holds it. The routes settle the
+// copies of the ask they close, so the copy owes nothing after them and holds no ask of its own.
 func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
 	var documentService *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
@@ -556,7 +580,7 @@ func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
 	copied := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact.ID
-	awaitDocumentText(t, handler, copied, "its open sources", contains(
+	awaitTextShows(t, handler, copied, "its open sources", contains(
 		`#later-answered urgency="med" multiple="false" state="open" copied_from="`+asks["later-answered"]+`"`,
 		`#later-resolved urgency="med" multiple="false" state="open" copied_from="`+asks["later-resolved"]+`"`,
 	), nil)
@@ -571,11 +595,14 @@ func TestAnsweringOrResolvingACopysSourceSettlesTheCopy(t *testing.T) {
 	}, "alice"); resolved.Code != http.StatusOK {
 		t.Fatalf("resolve the source: status=%d body=%s", resolved.Code, resolved.Body.String())
 	}
-	awaitDocumentText(t, handler, copied, "its sources' answer and resolution", contains(
+	awaitTextShows(t, handler, copied, "its sources' answer and resolution", contains(
 		`:::ask{#later-answered urgency="med" multiple="false" state="answered" answered_by="alice" `,
 		`selected="[&#x22;Yes&#x22;]" answer="From the record." copied_from="`+asks["later-answered"]+`"`,
 		`:::ask{#later-resolved urgency="med" multiple="false" state="resolved" copied_from="`+asks["later-resolved"]+`"`,
 	), nil)
+	awaitSettled(t, database, copied)
+	_, version := documentTexts(t, handler, copied)
+	requireNoAnswerAttributes(t, "the copy's latest version", version)
 	var onCopy, pending int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select (select count(*) from asks where block_artifact_id = $1),
@@ -617,7 +644,7 @@ func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T
 	copied := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, uploaded).Artifact.ID
-	awaitDocumentText(t, handler, copied, "its open source",
+	awaitTextShows(t, handler, copied, "its open source",
 		contains(`#ship urgency="med" multiple="false" state="open" copied_from="`+source+`"`), nil)
 
 	reworded := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/asks/"+source, map[string]any{
@@ -633,7 +660,7 @@ func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T
 	}, "alice"); answered.Code != http.StatusOK {
 		t.Fatalf("answer the reworded source: status=%d body=%s", answered.Code, answered.Body.String())
 	}
-	awaitDocumentText(t, handler, copied, "its own ask",
+	awaitTextShows(t, handler, copied, "its own ask",
 		contains(`:::ask{#ship urgency="med" multiple="false" state="open"}`+"\nShip on Monday?"), contains(`state="answered"`))
 	var onCopy []string
 	for _, ask := range decodeBody[[]model.Ask](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/asks", nil, "alice")) {
@@ -685,6 +712,8 @@ func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t
 		t.Fatalf("upload the reworded spec: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
 	awaitDocumentText(t, handler, issue.PrimaryArtifactID, "the decided wording written back",
+		contains("Ship on Monday?", "- Yes: Monday."), nil)
+	awaitTextShows(t, handler, issue.PrimaryArtifactID, "the answer on the decided wording",
 		contains(`state="answered" answered_by="alice"`, "Ship on Monday?", "- Yes: Monday."), nil)
 	ask := decodeBody[struct {
 		Ask model.Ask `json:"ask"`
@@ -702,7 +731,7 @@ func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t
 	record := decodeBody[struct {
 		Artifact model.Artifact `json:"artifact"`
 	}](t, copied).Artifact.ID
-	awaitDocumentText(t, handler, record, "its own ask",
+	awaitTextShows(t, handler, record, "its own ask",
 		contains(`:::ask{#ship urgency="med" multiple="false" state="open"}`+"\nShip on Tuesday?"), contains(`state="answered"`))
 }
 

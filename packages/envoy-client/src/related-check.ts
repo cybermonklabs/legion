@@ -88,7 +88,7 @@ export function relatedCheckLines(
 }
 
 /**
- * A document edit's lines about the decision blocks it added: `Decision block <id>:`
+ * A document edit's lines about the ask blocks it added: `Ask block <id>:`
  * and that block's check form, in document order, each searched by its own question. A server
  * predating the checks only counts the new blocks, so the edit gets one not-made line for all of
  * them, searched by `context.text`. An edit that added none, or a server predating even the
@@ -104,18 +104,18 @@ export function decisionBlockLines(
       const added = advice?.decision_blocks_added ?? 0;
       if (added === 0) return [];
       return [
-        `${added} new decision ${added === 1 ? "block" : "blocks"}:`,
+        `${added} new ask ${added === 1 ? "block" : "blocks"}:`,
         notMadeLine("the server sent no check result", context),
       ];
     }
     return checks.flatMap((check) => [
-      `Decision block ${check.block_id}:`,
+      `Ask block ${check.block_id}:`,
       ...relatedCheckLines(check.suggestions, { ...context, text: check.question ?? "" }),
     ]);
   } catch (error) {
     return [
       notMadeLine(
-        `this client could not read the decision blocks' checks (${messageFor(error)})`,
+        `this client could not read the ask blocks' checks (${messageFor(error)})`,
         context
       ),
     ];

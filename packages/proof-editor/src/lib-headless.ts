@@ -99,9 +99,9 @@ export interface HeadlessProofOptions {
    *  directive refusals listed at `parseMarkdown`, which the pmdoc fixture generators rely on to
    *  refuse what the document service refuses, and draws a typed block whose content breaks its
    *  content rule as its literal lines through `remarkUnfitTypedBlocks` rather than dropping it.
-   *  In both modes an ask's content check (a built node's, not a parse's) accepts what the
-   *  document service accepts (`relaxAskContentCheck`). A general read-only mode, so later
-   *  read-only rules hang on it too. */
+   *  In both modes the content check (a built node's, not a parse's) of an ask and of a decision
+   *  accepts what the document service accepts (`relaxAskContentCheck`). A general read-only
+   *  mode, so later read-only rules hang on it too. */
   readOnly?: boolean;
 }
 
@@ -152,7 +152,8 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
   const nodes = Object.fromEntries(ctx.get(nodesCtx) as never);
   const marks = Object.fromEntries(ctx.get(marksCtx) as never);
   const schema = new Schema({ nodes, marks });
-  // An ask a live document holds off its content rule is built, not refused (./ask-content.ts).
+  // An ask or a decision a live document holds off its content rule is built, not refused
+  // (./ask-content.ts).
   relaxAskContentCheck(schema);
 
   // Match the browser editor's GFM features (tables, task lists, strikethrough,

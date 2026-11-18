@@ -1,0 +1,387 @@
+package graphstore
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+)
+
+// The kinds of the objects Dispatch holds that a project or a conversation owns, as the graph
+// addresses each (refs' nodeRegistry). These are the one spelling of them: every writer of one of
+// these nodes, and every read that names its kind, takes it from here. A comment's is KindComment
+// (comment.go), which is its supertag too.
+const (
+	KindIssue    = "issue"
+	KindArtifact = "artifact"
+	KindAsk      = "ask"
+	KindMessage  = "message"
+)
+
+// The supertag each of those kinds' nodes carries, from the closed list the store seeds
+// (20261109051232_graph_supertags.up.sql). An artifact is a document whatever it holds: a spec, a
+// plan, a file a conversation was sent.
+const (
+	SupertagIssue    = "issue"
+	SupertagDocument = "document"
+	SupertagAsk      = "ask"
+	SupertagMessage  = "message"
+)
+
+// PartyPerson and PartySession are the two kinds of party a node no project owns is between: a
+// person, by the login every node of theirs is keyed by (model.CanonicalLogin), and a session, by
+// its id. Each is written `<kind>:<id>`, the kind being the store's own node kind of that party, so
+// a party names the node it is.
+func PartyPerson(login string) string { return KindPerson + ":" + model.CanonicalLogin(login) }
+
+func PartySession(id string) string { return KindSession + ":" + id }
+
+// IssueNode is an issue's node as its create writes it: project-visible, live, in its project, and
+// with no cause yet, since the issue's node is written before its row and its event after both
+// (Caused gives it the event).
+func IssueNode(key, project string, who model.Actor, at time.Time) Node {
+	return objectNode(KindIssue, key, SupertagIssue, project, nil, who, at)
+}
+
+// ArtifactNode is a document's node, addressed by its ref_key (ArtifactRefKey), as its upload
+// writes it. A document of an issue or a project is in that project; an agent conversation's
+// document is in none, and is between the parties of that conversation, its session. Every write
+// of it states beside it the facts its row projects: the part_of to its issue where an issue owns
+// it (ArtifactPartOf), and the bytes of an image or a file (ArtifactBytes).
+func ArtifactNode(refKey, project, session string, who model.Actor, at time.Time) Node {
+	var parties []string
+	if session != "" {
+		parties = []string{PartySession(session)}
+	}
+	return objectNode(KindArtifact, refKey, SupertagDocument, project, parties, who, at)
+}
+
+// ArtifactPartOf is the fact that hangs a document under the issue that owns it: the part_of tuple
+// from the document's node, addressed by its ref_key, to the issue's node, which
+// artifacts.issue_key projects (R16 of dispatch://INFRA-1253). Every write of the node of an
+// issue's document states it beside that node, and a document no issue owns - a project's, or a
+// file of an agent's conversation - states none. It carries who wrote it and when; its cause is
+// Caused's to fill, or the sentinel where no event recorded the write.
+func ArtifactPartOf(refKey, issueKey string, who model.Actor, at time.Time) Tuple {
+	return Tuple{
+		FromKind: KindArtifact, FromID: refKey, Kind: TuplePartOf,
+		ToKind: KindIssue, ToID: issueKey,
+		At: at, Who: who, SourceEvent: NoEvent, Asserted: true,
+	}
+}
+
+// The attributes the node of an image or a file carries of the bytes its newest version holds,
+// each named as the artifact_versions column that holds it: the media type the bytes are stored
+// and served under, how many bytes there are, in decimal, and their sha256, in lower-case hex. A
+// markdown document carries none of them, since its body is its blocks.
+const (
+	AttributeMIME   = "mime"
+	AttributeSize   = "size"
+	AttributeSHA256 = "sha256"
+)
+
+// ArtifactBytes is what the node of an image or a file states of the bytes one version of it holds
+// (R16): their mime, their size and their sha256, each a value of the node, since none of them
+// points at anything. Each version states them again, so the node's current values are its newest
+// version's. They are appended to tuples, so a writer stating a batch of documents grows one
+// slice. Their cause is Caused's to fill, or the sentinel where no event recorded the write.
+func ArtifactBytes(tuples []Tuple, refKey, mime string, size int64, sha256 string, who model.Actor, at time.Time) []Tuple {
+	for _, value := range [...]struct{ attribute, value string }{
+		{AttributeMIME, mime}, {AttributeSize, strconv.FormatInt(size, 10)}, {AttributeSHA256, sha256},
+	} {
+		tuples = append(tuples, Tuple{
+			FromKind: KindArtifact, FromID: refKey, Kind: value.attribute,
+			ToKind: KindValue, ToID: value.value,
+			At: at, Who: who, SourceEvent: NoEvent, Asserted: true,
+		})
+	}
+	return tuples
+}
+
+// KindVersion is what this store calls one version of a document: one accepted write of it, which
+// its artifact_versions row projects (R16 of dispatch://INFRA-1253). A version's address is its
+// document's ref_key, `@v` and its number (VersionID).
+const KindVersion = "version"
+
+// The supertags a version and a query carry (the root's R21 list): a version of a document is a
+// document version, and a version of a query node is a query version; a document that a query
+// replaces becomes a query node (QueryNode). `document version` is seeded with the closed list
+// (20261109051232); `query` and `query version` are this child's
+// (20261116121500_issue_tree_query_supertags).
+const (
+	SupertagDocumentVersion = "document version"
+	SupertagQuery           = "query"
+	SupertagQueryVersion    = "query version"
+)
+
+// The attributes a version node and a query node carry, each a value of the node, since none
+// points at anything: a version's number and the time its row was written, each named as the
+// artifact_versions column that holds it; a query's name, the supertags it takes, and the node its
+// walk starts at. The last is `subtree` and not `from`, because no attribute of that name stands
+// among the store's type nodes (R2).
+const (
+	AttributeNumber    = "number"
+	AttributeCreatedAt = "created_at"
+	AttributeQuery     = "query"
+	AttributeTakes     = "takes"
+	AttributeSubtree   = "subtree"
+)
+
+// The four queries of an issue (R8): each is a query node, a view of the issue's one tree.
+const (
+	QuerySpec         = "spec"
+	QueryVerification = "verification"
+	QueryPlan         = "plan"
+	QueryDecisions    = "decisions"
+)
+
+// queryTakes is the supertags each query takes out of the issue's tree, in the order its
+// definition names them: the spec its memo callout, its criteria and its requirements; the
+// verification its checks and their results; the plan its plan nodes; and the decisions the asks,
+// the decisions and the readings under an agent's decision (dispatch://INFRA-1150's supertags).
+var queryTakes = map[string][]string{
+	QuerySpec:         {"callout", "criterion", "requirement"},
+	QueryVerification: {"check", "result"},
+	QueryPlan:         {"plan_task"},
+	QueryDecisions:    {"ask", "decision", "reading"},
+}
+
+// QueryTakes is the supertags the query named query takes, nil for a name that is no query.
+func QueryTakes(query string) []string { return slices.Clone(queryTakes[query]) }
+
+// QueryNode is the node of a document a query replaces, addressed by its ref_key as the document's
+// node is (ArtifactRefKey), in the issue's project: supertag `query`, and as values the query's
+// name, the supertags it takes (QueryTakes) and the node its walk starts at, `issue:<KEY>`, the
+// root of the issue's tree (R1, R8). The issue is read off refKey, `<issue key>/<slug>`, since a
+// query node is always an issue's and no issue key holds a `/`. The values ride on the node's
+// Attributes, which its row projects, and AttributeFacts states them as the tuples they are, so a
+// writer writes the node with AttributeFacts(nil, node). No column of its artifacts row holds a
+// role (R8).
+//
+// A document's node becomes a query node through Write, whose node move rewrites a stored node's
+// supertag and attributes, never through WriteArms, whose node arm moves nothing on a node already
+// there.
+func QueryNode(refKey, project, query string, who model.Actor, at time.Time) Node {
+	issue, _, _ := strings.Cut(refKey, "/")
+	node := objectNode(KindArtifact, refKey, SupertagQuery, project, nil, who, at)
+	node.Attributes = map[string]any{
+		AttributeQuery:   query,
+		AttributeTakes:   QueryTakes(query),
+		AttributeSubtree: KindIssue + ":" + issue,
+	}
+	return node
+}
+
+// VersionID is the address of a document's version node: the document's ref_key, `@v` and the
+// version's number, which no ref_key holds since a slug holds no `@`.
+func VersionID(refKey string, number int) string { return refKey + "@v" + strconv.Itoa(number) }
+
+// VersionOwner is what a version's node takes of its document (VersionFacts): the document's
+// address, its project or its conversation's session, and whether the document's node is a query
+// node, which makes its versions query versions.
+type VersionOwner struct {
+	RefKey, Project, Session string
+	Query                    bool
+}
+
+// VersionOwnerColumns is the select list that reads VersionOwner of the document the SQL
+// expression artifactID names, in the order Targets scans it. A version's insert returns it beside
+// the row, so its writer reads what the version's node needs in the statement that writes the
+// version and in no round trip of its own.
+func VersionOwnerColumns(artifactID string) string {
+	owner := func(column string) string {
+		return `(select ` + column + ` from artifacts owner where owner.id = ` + artifactID + `)`
+	}
+	return owner("owner.ref_key") + ", " + owner("coalesce(owner.project_key, '')") + ", " +
+		owner("coalesce(owner.session_id, '')") + `, exists (
+			select 1 from artifacts owner
+			join graph_nodes n on n.kind = '` + KindArtifact + `' and n.id = owner.ref_key
+			where owner.id = ` + artifactID + ` and n.supertag = '` + SupertagQuery + `')`
+}
+
+// Targets are the scan targets of VersionOwnerColumns, in its order.
+func (o *VersionOwner) Targets() []any { return []any{&o.RefKey, &o.Project, &o.Session, &o.Query} }
+
+// VersionFacts is what this store holds of one version of a document (R16): its node, addressed by
+// VersionID, supertag `document version`, or `query version` where its document is a query node,
+// in its document's project or between its conversation's parties, made by who at at, the time its
+// row was written; and, appended to tuples, its part_of its document's node and its number and its
+// time as values (AttributeFacts). A version is a fact of the write that stored it, which owns it
+// whole; the node restates the version (Node.Restates) all the same, so a write of it again keeps
+// a state a later write gave it. ok is false where the version's address is past the store's
+// bound, of which nothing is stated. The cause is Caused's to fill, or the sentinel where no event
+// recorded the write.
+func VersionFacts(tuples []Tuple, owner VersionOwner, number int, who model.Actor, at time.Time) (node Node, facts []Tuple, ok bool) {
+	id := VersionID(owner.RefKey, number)
+	if !AddressFits(id) {
+		return Node{}, tuples, false
+	}
+	supertag := SupertagDocumentVersion
+	if owner.Query {
+		supertag = SupertagQueryVersion
+	}
+	var parties []string
+	if owner.Session != "" {
+		parties = []string{PartySession(owner.Session)}
+	}
+	node = objectNode(KindVersion, id, supertag, owner.Project, parties, who, at)
+	node.Attributes = map[string]any{
+		AttributeNumber:    number,
+		AttributeCreatedAt: at.UTC().Format(time.RFC3339Nano),
+	}
+	tuples = append(tuples, Tuple{
+		FromKind: KindVersion, FromID: id, Kind: TuplePartOf,
+		ToKind: KindArtifact, ToID: owner.RefKey,
+		At: at, Who: who, SourceEvent: NoEvent, Asserted: true,
+	})
+	return node, AttributeFacts(tuples, node), true
+}
+
+// AttributeFacts appends to tuples each attribute node carries, in name order, as the value tuple
+// it is: its name the tuple's kind, and its value as text, a string as itself and any other value
+// as its JSON, as every type node's values are written (20261109051232). A node row's attributes
+// column is the projection of these tuples, so a writer that gives a node attributes states them
+// with it. Each carries the node's own time, writer and cause. A value that has no JSON states no
+// tuple here, and the write of the node carrying it refuses it (nodeParams), so neither lands.
+func AttributeFacts(tuples []Tuple, node Node) []Tuple {
+	for _, name := range slices.Sorted(maps.Keys(node.Attributes)) {
+		value, isText := node.Attributes[name].(string)
+		if !isText {
+			encoded, err := json.Marshal(node.Attributes[name])
+			if err != nil {
+				continue
+			}
+			value = string(encoded)
+		}
+		tuples = append(tuples, Tuple{
+			FromKind: node.Kind, FromID: node.ID, Kind: name,
+			ToKind: KindValue, ToID: value,
+			At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
+		})
+	}
+	return tuples
+}
+
+// Joined is several writes held for one cause as one write held for it: Caused moves the nodes of
+// each and appends the facts of each under that cause, in the order given. A writer whose caller
+// causes one write it answers adds its own to it here.
+func Joined(writes ...Uncaused) Uncaused {
+	var joined Uncaused
+	for _, write := range writes {
+		joined.Nodes = append(joined.Nodes, write.Nodes...)
+		joined.Tuples = append(joined.Tuples, write.Tuples...)
+	}
+	return joined
+}
+
+// AskNode is an ask's node, addressed by the ask's id, in the project of the issue or the document
+// it is asked on, or between the parties of the conversation whose file it is asked on (ScopeOf).
+func AskNode(id, project string, parties []string, who model.Actor, at time.Time) Node {
+	return objectNode(KindAsk, id, SupertagAsk, project, parties, who, at)
+}
+
+// MessageNode is a message's node, addressed by the message's id. A message on an issue is in that
+// issue's project; one on none is between parties, the person and the session of its thread.
+func MessageNode(id, project string, parties []string, who model.Actor, at time.Time) Node {
+	return objectNode(KindMessage, id, SupertagMessage, project, parties, who, at)
+}
+
+// objectNode is the node of an issue, a document, an ask or a message as the write that stores it
+// states it. Each of those writers - a create, an upload, the seed, the backfill of the nodes an
+// older build wrote without a project (internal/dispatch/graphcensus) - writes the node for its
+// address, its project and its parties, and owns neither its state nor its visibility, which a
+// later write may mark (a proposed issue, say). So the node restates the object (Node.Restates):
+// one written again keeps what the store holds of both, unless it was gone, when it comes back
+// live.
+func objectNode(kind, id, supertag, project string, parties []string, who model.Actor, at time.Time) Node {
+	return Node{
+		Kind: kind, ID: id, Supertag: supertag,
+		Visibility: VisibilityProject, State: StateLive,
+		Project: project, Parties: parties,
+		MadeAt: at, MadeBy: who, SourceEvent: NoEvent,
+		Restates: true,
+	}
+}
+
+// Created is node marked as the node its write creates (Node's Changed), as a create states each
+// node it makes: a create made for a run names the node it makes as changed by that run.
+func Created(node Node) Node {
+	node.Changed = true
+	return node
+}
+
+// ArtifactRefKey is the address an artifacts row takes, exactly as the artifacts_ref_key trigger
+// computes it (0071_agent_artifacts.up.sql): `<issue key>/<slug>` for an issue's document,
+// `<project key>/<slug>` for a project's, and `agent/<session id>/<slug>` for a conversation's. A
+// document's node is written before its row, so its writer reads the address here rather than off
+// the row it has not written yet; TestArtifactRefKeyIsTheTriggers holds the two together. An empty
+// key is the null the trigger's coalesce passes over.
+func ArtifactRefKey(issueKey, projectKey, session, slug string) string {
+	switch {
+	case issueKey != "":
+		return issueKey + "/" + slug
+	case projectKey != "":
+		return projectKey + "/" + slug
+	default:
+		return "agent/" + session + "/" + slug
+	}
+}
+
+// PartiesValue is the value the `parties` attribute of a node between parties carries: its parties
+// sorted, each once, and joined by one space, which is what graph_nodes.parties is split back from.
+// No party is ever written with a space in it: a login and a session id hold none. Nil parties are
+// the empty value, which no write states.
+func PartiesValue(parties []string) string {
+	if len(parties) == 0 {
+		return ""
+	}
+	sorted := slices.Clone(parties)
+	slices.Sort(sorted)
+	return strings.Join(slices.Compact(sorted), " ")
+}
+
+// ScopeOf is the project, or for a thing no project owns the parties, of an ask or a comment that
+// belongs to an issue or a document: the issue's project where it names an issue, else the
+// document's project, else, for a file an agent's conversation owns, that conversation's session
+// (ArtifactNode). It reads one row of issues or artifacts in the caller's transaction. Neither
+// named, or neither found, answers nothing, which a writer then states nothing of.
+func ScopeOf(ctx context.Context, q Queryer, issueKey, artifactID *string) (project string, parties []string, err error) {
+	var projectKey, session *string
+	if err := q.QueryRow(ctx, `
+		select coalesce((select project_key from issues where key = $1), a.project_key), a.session_id
+		from (select 1) as one
+		left join artifacts a on a.id = $2::uuid
+	`, issueKey, artifactID).Scan(&projectKey, &session); err != nil {
+		return "", nil, fmt.Errorf("read the project of what an item belongs to: %w", err)
+	}
+	switch {
+	case projectKey != nil:
+		return *projectKey, nil, nil
+	case session != nil:
+		return "", []string{PartySession(*session)}, nil
+	}
+	return "", nil, nil
+}
+
+// ThreadParties is the parties a message on no issue is between, read off its thread's root: who
+// wrote the root (AuthorOf: a person by their login, or a session) and where the root was sent,
+// its target route as the messages row stores it (`session:<id>`), which names a node of this
+// store as a party does. A direct message, a broadcast copy and every reply in such a thread take
+// the parties of the root they join, so a thread is one set of parties whoever wrote each message
+// of it.
+func ThreadParties(rootAuthor model.Actor, rootTarget *string) []string {
+	var parties []string
+	if kind, id, ok := AuthorOf(rootAuthor); ok {
+		parties = append(parties, kind+":"+id)
+	}
+	if rootTarget != nil && *rootTarget != "" {
+		parties = append(parties, *rootTarget)
+	}
+	return parties
+}

@@ -16,7 +16,7 @@ import type { ComposerAnchor } from "../features/conversation/composer-model";
 import { type DocumentToolbar, ProofDocument } from "../features/doc/ProofDocument";
 import { DocumentRuntime } from "../features/doc/runtime";
 import { MarginProvider, useMargin } from "../features/margin/margin-context";
-import type { MarkPlacement } from "../features/margin/useMarginItems";
+import type { MarginOwner, MarkPlacement } from "../features/margin/useMarginItems";
 import { RefPreviewHost } from "../features/refs/RefPreview";
 import { type FakeDocumentRuntime, fakeDocumentRuntime } from "./document-runtime";
 
@@ -58,6 +58,7 @@ export function decisionsAndReadMarkHandlers(): RequestHandler[] {
       Response.json({
         decisions: [],
         document: null,
+        entries: [],
         open_questions: [],
       } satisfies IssueDecisions)
     ),
@@ -153,6 +154,7 @@ export function renderProofDocument({
   isClosed = false,
   onAskAnswered,
   onUnavailable,
+  owner = { key: "CORE-1", kind: "issue" },
   queryClient = createQueryClient(),
   showDiff = false,
   surface,
@@ -164,6 +166,8 @@ export function renderProofDocument({
   isClosed?: boolean;
   onAskAnswered?(askId: string): void;
   onUnavailable?(reason: string): void;
+  /** The document's owner: the issue CORE-1 unless given, or a project for a project document. */
+  owner?: MarginOwner;
   queryClient?: QueryClient;
   showDiff?: boolean;
   surface?: "page" | "pane";
@@ -224,7 +228,7 @@ export function renderProofDocument({
               onAskAnswered={onAskAnswered}
               onToolbarChange={onToolbarChange}
               onUnavailable={onUnavailable}
-              owner={{ key: "CORE-1", kind: "issue" }}
+              owner={owner}
               onVersionChange={onVersionChange}
               showDiff={next.showDiff ?? showDiff}
               surface={surface}

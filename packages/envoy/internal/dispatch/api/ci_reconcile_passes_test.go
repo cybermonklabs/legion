@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -55,16 +56,18 @@ func endedCIPass(t *testing.T, database *store.Store, instance string, startedAg
 	return id
 }
 
-// seedServerProcess writes the registry row processes.Register writes, with a heartbeat of the
-// given age, and answers the instance id.
+// seedServerProcess writes the registry row processes.Register writes for a process of this
+// build, its schema numbers among them, with a heartbeat of the given age, and answers the
+// instance id. A row without the schema numbers reads as a build that predates the fleet columns,
+// which the document service reads as another build (docs' anotherBuildServes).
 func seedServerProcess(t *testing.T, database *store.Store, heartbeatAge time.Duration) string {
 	t.Helper()
 	var instance string
 	if err := database.Pool.QueryRow(context.Background(), `
-		insert into server_processes (instance, heartbeat_at)
-		values (gen_random_uuid(), now() - make_interval(secs => $1))
+		insert into server_processes (instance, heartbeat_at, schema_version, schema_creatable)
+		values (gen_random_uuid(), now() - make_interval(secs => $1), $2, $3)
 		returning instance::text
-	`, heartbeatAge.Seconds()).Scan(&instance); err != nil {
+	`, heartbeatAge.Seconds(), pmdoc.SchemaVersion(), pmdoc.SchemaCreatable()).Scan(&instance); err != nil {
 		t.Fatalf("seed a server process: %v", err)
 	}
 	return instance

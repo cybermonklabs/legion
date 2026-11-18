@@ -170,9 +170,11 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	actor := model.Actor{
 		Kind: "session",
 		ID:   caller.Session,
-		// The broker proved this session, so the credential already names the agent behind the
-		// request and no request body has to name it, and the actor is Proven. A read-only token
-		// is marked as one, which is all refuseReadOnlyToken reads.
+		// The broker proved this session, with or without a person behind it, so the credential
+		// already names the agent behind the request and no request body has to name it, and the
+		// actor is Proven: on the credential that acts and on every actor recorded from it
+		// (bearerSessionActor), so the one author rule tells it from a session a body named. A
+		// read-only token is marked as one, which is all refuseReadOnlyToken reads.
 		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly},
 		Proven:     true,
 	}

@@ -523,8 +523,11 @@ func TestAWriteIsProvenOnlyWhereTheCredentialProvedItsSession(t *testing.T) {
 }
 
 // requireSessionProven fails t unless actor is the broker's test session, carries the proven
-// mark exactly when want says the credential proved it, and names no act: a session's own write
-// is no person's, so no session_proven a body sent can ride on it.
+// mark exactly when want says the credential proved it, and names an act only where the
+// credential proved the session for its person: the broker-issued token names a person
+// (brokerTestPerson), so bearerSessionActor records the session it proved as the actor's act,
+// proven (R14). A session a body named under any other credential names no act, so no
+// session_proven a body sent can ride on it.
 func requireSessionProven(t *testing.T, what string, actor model.Actor, want bool) {
 	t.Helper()
 	if actor.Kind != "session" || actor.ID != brokerTestSession {
@@ -533,7 +536,11 @@ func requireSessionProven(t *testing.T, what string, actor model.Actor, want boo
 	if actor.Proven != want {
 		t.Fatalf("%s proven = %t, want %t", what, actor.Proven, want)
 	}
-	if actor.Act != nil {
+	switch {
+	case want && (actor.Act == nil || actor.Act.Session != brokerTestSession || !actor.Act.SessionProven ||
+		actor.Act.TokenID != "" || actor.Act.TokenName != ""):
+		t.Fatalf("%s act = %+v, want the session %s alone, proven", what, actor.Act, brokerTestSession)
+	case !want && actor.Act != nil:
 		t.Fatalf("%s act = %+v, want none", what, *actor.Act)
 	}
 }

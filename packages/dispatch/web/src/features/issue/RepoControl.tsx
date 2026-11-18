@@ -3,10 +3,17 @@ import { type ReactNode, useId, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
+import { usePageWords, useTooltips } from "../../components/tooltips";
 import {
   dangerText,
+  focusBorder,
   focusVisibleRing,
   inputClasses,
+  pageFailedText,
+  pageHairBorder,
+  pageInkText,
+  pageMutedText,
+  pagePaperBg,
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
@@ -35,6 +42,28 @@ const ownerRepo = new RegExp(`^(?:${ownerRepoPattern})$`);
 /** What the box says about a value GitHub could hold no repository at. The server says the same
  *  thing in its own words for anything that reaches it. */
 const NOT_OWNER_NAME = "Write the repository as owner/name.";
+
+/** What clearing the issue's own repository does: the clear control's `title`, and inside
+ *  `NoTooltips`, where no control carries a `title`, that control's description. */
+const CLEAR_EXPLAINS = "Clear it, and the issue inherits a repository again";
+
+/** Inside `NoTooltips`, the new issue page's colours for the box and its clear control: the box
+ *  as `AskCard`'s answer box draws them - the page's hairline rule, its paper and its ink, the
+ *  repository the issue inherits (the placeholder) in the quiet grey, and `main`'s focus rule,
+ *  the application's one focus indicator - and the clear control, drawn on the box's paper, in
+ *  the muted grey that turns ink under the pointer. */
+const ON_PAGE = {
+  box: `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`,
+  clear: `${pageMutedText} hover:text-page-ink`,
+} as const;
+
+/** The name the repository box answers to, in its words on every page: the property it sets
+ *  and the issue it is on, so a voice user saying what they read reaches it (WCAG 2.5.3). The
+ *  new issue page's add menu reaches this box by this name rather than drawing a second one,
+ *  so a word changed here changes both sides at once. */
+export function repoControlName(issueKey: string): string {
+  return `Repository of ${issueKey}`;
+}
 
 /**
  * The issue's repository in the details rail: `Repository:` and one combobox, labelled
@@ -65,20 +94,44 @@ const NOT_OWNER_NAME = "Write the repository as owner/name.";
  * once while the issue resolves to no repository at all, which is the issue most likely to be
  * given one. A read that fails costs the suggestions and nothing else: the failure and a Retry
  * show beside the box, which takes a typed repository as ever.
+ *
+ * Inside `NoTooltips` (`components/tooltips.tsx`, the new issue page) the same box says that
+ * page's words with their marks and carries no `title`. `Repository:` is the page's label, and
+ * `inRow` draws the control as the value of a row of Details, which draws the label, so the
+ * control draws none of its own. The description says the page's words around the repository,
+ * which is the issue's value, and the page's "inherited or the project's default" is drawn beside
+ * the box too, hidden from assistive technology because the description already says it. The
+ * clear control's `title` is its description there (`aria-describedby`), so its name stays
+ * `Clear the repository of <KEY>` and a reader still hears that the issue then inherits a
+ * repository. The refusal keeps its words, which the page's list has none for; a failed read or
+ * write shows `QueryError` as on every page. Each colour is the page's: the box is the page's
+ * field, the repository the issue inherits (its placeholder) in the quiet grey; the clear control
+ * is the muted grey that turns ink under the pointer; a refusal is the failed red; and the line is
+ * the ink in a row of Details and the muted grey elsewhere. Nothing there keeps its width: the
+ * line wraps, and the box, at most `main`'s 200 px, narrows to its line. The box is drawn whether
+ * or not a repository resolves, so a row of Details with none shows the empty box, its
+ * placeholder and a description saying `No repository`, and no word of its own such as "None".
  */
 export function RepoControl({
   disabled = false,
+  inRow = false,
   issueKey,
   project,
   repo,
   resolvedRepo,
 }: {
   disabled?: boolean;
+  /** Whether the control is the value of a row of the new issue page's Details. It acts inside
+   *  `NoTooltips` alone. */
+  inRow?: boolean;
   issueKey: string;
   project: string;
   repo: string | null;
   resolvedRepo: string | null;
 }): ReactNode {
+  const tooltips = useTooltips();
+  const page = usePageWords();
+  const inDetails = page !== null && inRow;
   const [wanted, setWanted] = useState(false);
   /** What the reader has typed since the box was last written, left or restored; null while the
    *  box shows the issue's own repository. */
@@ -93,6 +146,9 @@ export function RepoControl({
   const want = () => setWanted(true);
   const descriptionId = useId();
   const suggestionsId = useId();
+  // Inside `NoTooltips` the clear control's description, named after the box's own so that the
+  // control asks React for no id `main` does not.
+  const clearDescriptionId = `${descriptionId}clear`;
   const write = useIssueRepo(issueKey);
   const mapped = (mappings.data ?? [])
     .filter((mapping) => mapping.project === project)
@@ -104,6 +160,22 @@ export function RepoControl({
       : repo === null
         ? `${resolvedRepo}, inherited or the project's default`
         : resolvedRepo;
+  // Inside `NoTooltips` the repository is the issue's value, and the words around it are the
+  // page's own.
+  const shownDescription =
+    page === null ? (
+      description
+    ) : resolvedRepo === null ? (
+      page.CONTROL_LABELS.no_repository
+    ) : (
+      <>
+        <span {...page.authorText}>{resolvedRepo}</span>
+        {repo === null ? `, ${page.CONTROL_LABELS.repository_inherited}` : null}
+      </>
+    );
+  // Inside `NoTooltips` the line is the ink in a row of Details (the prototype's `.frow .fv`) and
+  // the muted grey elsewhere (its `#hdr-props`).
+  const lineText = page === null ? textSecondaryOnSurface : inDetails ? pageInkText : pageMutedText;
   const restore = () => {
     setDraft(null);
     setRefused(false);
@@ -128,18 +200,26 @@ export function RepoControl({
     }
   };
   return (
-    <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-      <span className="font-medium">Repository:</span>
+    <div
+      className={`flex ${page === null ? "shrink-0" : "min-w-0 max-w-full flex-wrap"} items-center gap-2 text-sm ${lineText}`}
+    >
+      {inDetails ? null : (
+        <span className="font-medium" {...page?.pageChrome}>
+          {`${page?.PROPERTY_LABELS.repository ?? "Repository"}:`}
+        </span>
+      )}
       {/* `relative` is load-bearing: the description is `sr-only`, which is absolutely
           positioned, and with no positioned ancestor it is laid out against the page and makes it
           as wide as its own text at a phone width. */}
-      <span className="relative inline-flex shrink-0 items-center">
+      <span
+        className={`relative inline-flex ${page === null ? "shrink-0" : "w-[200px] min-w-0 max-w-full"} items-center`}
+      >
         <input
           aria-describedby={descriptionId}
           aria-invalid={refused || undefined}
-          aria-label={`Repository of ${issueKey}`}
+          aria-label={repoControlName(issueKey)}
           autoComplete="off"
-          className={`min-h-11 w-[200px] rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? "pr-1.5" : "pr-8"} ${inputClasses(false)} ${focusVisibleRing}`}
+          className={`min-h-11 ${page === null ? "w-[200px]" : "w-full min-w-0"} rounded-sm border py-0.5 pl-1.5 font-mono text-xs outline-none focus-visible:ring-2 disabled:opacity-50 md:min-h-7 ${repo === null ? "pr-1.5" : "pr-8"} ${page === null ? inputClasses(false) : ON_PAGE.box} ${focusVisibleRing}`}
           disabled={disabled}
           list={suggestionsId}
           onBlur={commit}
@@ -170,8 +250,9 @@ export function RepoControl({
         />
         {repo === null ? null : (
           <button
+            aria-describedby={page === null ? undefined : clearDescriptionId}
             aria-label={`Clear the repository of ${issueKey}`}
-            className={`absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
+            className={`absolute inset-y-0 right-0 inline-flex w-8 items-center justify-center rounded-sm text-base outline-none focus-visible:ring-2 disabled:opacity-50 ${page === null ? textSecondaryHoverToPrimary : ON_PAGE.clear} ${focusVisibleRing}`}
             disabled={disabled}
             onClick={() => {
               restore();
@@ -181,7 +262,7 @@ export function RepoControl({
             // when it is left, so the press would write a repository the reader is throwing
             // away and the click after it would write the clear: two writes for one action.
             onMouseDown={(event) => event.preventDefault()}
-            title="Clear it, and the issue inherits a repository again"
+            title={tooltips ? CLEAR_EXPLAINS : undefined}
             type="button"
           >
             <span aria-hidden="true">×</span>
@@ -192,12 +273,29 @@ export function RepoControl({
             <option key={candidate} value={candidate} />
           ))}
         </datalist>
-        <span className="sr-only" id={descriptionId}>
-          {description}
+        <span className="sr-only" id={descriptionId} {...page?.pageChrome}>
+          {shownDescription}
         </span>
+        {page === null || repo === null ? null : (
+          <span className="sr-only" id={clearDescriptionId} {...page.pageChrome}>
+            {CLEAR_EXPLAINS}
+          </span>
+        )}
       </span>
+      {/* Inside `NoTooltips`, why the repository shown may not be the issue's own, in words beside
+          the box. Hidden from assistive technology because the box's own description says the
+          same thing, and nothing is said twice. */}
+      {page === null || resolvedRepo === null || repo !== null ? null : (
+        <span aria-hidden="true" className="text-xs" {...page.pageChrome}>
+          {page.CONTROL_LABELS.repository_inherited}
+        </span>
+      )}
       {refused ? (
-        <p className={dangerText} role="alert">
+        <p
+          className={page === null ? dangerText : pageFailedText}
+          role="alert"
+          {...page?.pageChrome}
+        >
           {NOT_OWNER_NAME}
         </p>
       ) : null}

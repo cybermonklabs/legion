@@ -7,7 +7,7 @@ import { ApprovalSteps } from "./ApprovalSteps";
 import type { StepEntry } from "./gated-steps";
 
 const SPEC_ID = "artifact-spec";
-const DECISIONS_ID = "artifact-decisions";
+const VERIFICATION_ID = "artifact-verification";
 
 function doc(id: string, name: string, approval?: ArtifactApproval): Artifact {
   return {
@@ -31,11 +31,11 @@ function specEntry(approval?: ArtifactApproval): StepEntry {
   return { document: doc(SPEC_ID, "spec.md", approval), label: "Spec", step: "spec" };
 }
 
-function decisionsEntry(approval?: ArtifactApproval): StepEntry {
+function verificationEntry(approval?: ArtifactApproval): StepEntry {
   return {
-    document: doc(DECISIONS_ID, "decisions.md", approval),
-    label: "Decisions",
-    step: "decisions",
+    document: doc(VERIFICATION_ID, "verification.md", approval),
+    label: "Verification",
+    step: "criteria",
   };
 }
 
@@ -53,9 +53,8 @@ function stepItem(view: { container: HTMLElement }, step: string): HTMLElement {
 
 test("lists one named item per entry, in the entries' order, under one Approvals list", () => {
   const view = renderSteps([
-    decisionsEntry({ latest_version: 1, state: "awaiting" }),
-    { document: undefined, label: "Verification", step: "criteria" },
     specEntry({ latest_version: 2, state: "approved", version: 2 }),
+    verificationEntry({ latest_version: 1, state: "awaiting" }),
   ]);
   try {
     const list = screen.getByRole("list", { name: "Approvals" });
@@ -63,16 +62,15 @@ test("lists one named item per entry, in the entries' order, under one Approvals
     const steps = [...view.container.querySelectorAll("[data-approval-step]")].map(
       (item) => (item as HTMLElement).dataset.approvalStep
     );
-    expect(steps).toEqual(["decisions", "criteria", "spec"]);
+    expect(steps).toEqual(["spec", "criteria"]);
     expect(
       within(list)
         .getAllByRole("listitem")
         .map((item) => item.textContent)
     ).toEqual([
-      "DecisionsAwaiting approval",
-      "VerificationNot requested",
       // The primary document keeps the header's actions; an approved document offers only one.
       "SpecApproved v2Request changes",
+      "VerificationAwaiting approval",
     ]);
   } finally {
     view.unmount();
@@ -88,9 +86,9 @@ test("each approval state reads as that step's state", () => {
     [{ latest_version: 2, state: "changes_requested", version: 2 }, "Changes requested"],
   ];
   for (const [approval, label] of cases) {
-    const view = renderSteps([decisionsEntry(approval)]);
+    const view = renderSteps([verificationEntry(approval)]);
     try {
-      expect(within(stepItem(view, "decisions")).getByText(label)).not.toBeNull();
+      expect(within(stepItem(view, "criteria")).getByText(label)).not.toBeNull();
     } finally {
       view.unmount();
     }
@@ -114,16 +112,16 @@ test("a step with no document and a document with no approval both read Not requ
 
 test("the primary document's entry carries the actions and no other entry does", () => {
   const view = renderSteps([
-    decisionsEntry({ latest_version: 1, state: "awaiting" }),
+    verificationEntry({ latest_version: 1, state: "awaiting" }),
     specEntry({ latest_version: 1, state: "awaiting" }),
   ]);
   try {
     const spec = within(stepItem(view, "spec"));
     expect(spec.getByRole("button", { name: "Approve" })).not.toBeNull();
     expect(spec.getByRole("button", { name: "Request changes" })).not.toBeNull();
-    const decisions = within(stepItem(view, "decisions"));
-    expect(decisions.queryByRole("button", { name: "Approve" })).toBeNull();
-    expect(decisions.queryByRole("button", { name: "Request changes" })).toBeNull();
+    const verification = within(stepItem(view, "criteria"));
+    expect(verification.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(verification.queryByRole("button", { name: "Request changes" })).toBeNull();
     // One Approve and one Request changes in the header, as before the list.
     expect(screen.getAllByRole("button", { name: "Approve" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Request changes" })).toHaveLength(1);
@@ -148,7 +146,7 @@ test("a draft primary document reads `Not requested` and carries no actions", ()
 
 test("a changes-requested step says who sent it back, on which version, and why", () => {
   const view = renderSteps([
-    decisionsEntry({
+    verificationEntry({
       by: { id: "alice", kind: "user" },
       latest_version: 3,
       reason: "Name the rollback step.",
@@ -158,9 +156,9 @@ test("a changes-requested step says who sent it back, on which version, and why"
     specEntry({ latest_version: 1, state: "awaiting" }),
   ]);
   try {
-    const line = view.container.querySelector('[data-approval-step-reason="decisions"]');
+    const line = view.container.querySelector('[data-approval-step-reason="criteria"]');
     expect(line?.textContent).toBe(
-      "Decisions: alice requested changes on v2 · Name the rollback step."
+      "Verification: alice requested changes on v2 · Name the rollback step."
     );
     // The whole reason is readable on a phone: no tooltip standing in for clipped text.
     expect(line?.getAttribute("title")).toBeNull();
@@ -173,7 +171,7 @@ test("a changes-requested step says who sent it back, on which version, and why"
 
 test("a reason line leaves out an absent reason and an absent reviewer", () => {
   const view = renderSteps([
-    decisionsEntry({
+    verificationEntry({
       by: { id: "alice", kind: "user" },
       latest_version: 2,
       state: "changes_requested",
@@ -188,8 +186,8 @@ test("a reason line leaves out an absent reason and an absent reviewer", () => {
   ]);
   try {
     expect(
-      view.container.querySelector('[data-approval-step-reason="decisions"]')?.textContent
-    ).toBe("Decisions: alice requested changes on v2");
+      view.container.querySelector('[data-approval-step-reason="criteria"]')?.textContent
+    ).toBe("Verification: alice requested changes on v2");
     expect(view.container.querySelector('[data-approval-step-reason="spec"]')?.textContent).toBe(
       "Spec: Changes requested on v4 · Split the rollout."
     );
