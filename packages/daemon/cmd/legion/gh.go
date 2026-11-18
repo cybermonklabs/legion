@@ -51,6 +51,12 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // (sharedCheckVisibilityRead), the exact `gh api rate_limit` (ghRateLimitRead) and `gh auth
 // git-credential`.
 //
+// ghTargetOf reads each command from gh's own help, which gh prints the same way until its
+// binary, its configuration, its extensions or the variables it prints under change: runGh keeps
+// each help it reads under the role's state directory and reads it from gh again only after such
+// a change (ghHelpKeep). The visibility reads named above and the rate-limit read are exact argv
+// and read no help at all.
+//
 // Before gh is handed anything, the leak guard reads the call (leakguard.GhCall): a call it
 // refuses, and one whose checks could not be made to run, are refused here, exit 2, with the
 // guard's own message, and gh never runs. A call that writes nothing, by the rule ghWritesNothing
@@ -145,27 +151,50 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	}
 	rateLimitRead := ghRateLimitRead(args)
 	visibilityRead, isVisibilityRead := ghVisibilityRead(args, env)
-	// The guard's own visibility read under the caller's GH_TOKEN or GITHUB_TOKEN runs with that
-	// token (ghVisibilityRead says why). So it does not go through ghTargetOf, which refuses
-	// every call under either. Its argv is exact, so the resolver has nothing of it to read.
-	callerTokenRead := isVisibilityRead && ghCallerToken(env) != ""
+	// What the call targets, and the gh directory it runs with, chosen here once for every call.
+	// The two exact reads go through no ghTargetOf, and so read no gh help: the resolver has
+	// nothing of their argv to read.
 	var target ghTarget
-	if rateLimitRead || callerTokenRead {
+	switch {
+	case rateLimitRead:
+		// It names no repository, and runs with GH_CONFIG_DIR.
 		target.command = "api"
-	} else {
+	case isVisibilityRead:
+		// The guard's own request. Its enclosing user call records the source of that request, so
+		// logging it again would count one wrapped call twice.
+		logCall = false
+		target.command = "api"
+		// Its token is that of the repository PUBLIC_LEAK_CHECK_VISIBILITY_READ names, which
+		// ghVisibilityRead matched to the read's exact argv, routed by the one rule
+		// (ghConfigDirFor): a configured rename serves the repository from the `to` owner's
+		// directory, and the `from` owner's token cannot read it. The GraphQL read names its
+		// repository only in variables, so the variable is where its owner and name are read.
+		// Its argv names the host, `--hostname github.com`, so no GH_HOST sends it elsewhere.
+		//
+		// Under the caller's GH_TOKEN or GITHUB_TOKEN it keeps GH_CONFIG_DIR and is routed by
+		// nothing, because gh sends that token in place of any directory's: the bundle may hold
+		// no directory for the read's repository at all, and this routing would then refuse a
+		// read the caller's token can make, which is the second reason #4219 gives for running
+		// these reads under it (ghVisibilityRead).
+		if ghCallerToken(env) == "" {
+			target.owner, target.repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
+			target.dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo)
+		}
+	default:
 		// Every repository the command names is routed through the bundle's own pick, and the
 		// command refused where they route to two directories (selectors.dir), before the guard
-		// reads anything of it.
+		// reads anything of it. gh's help of each command on the way is read once per gh binary
+		// and kept for the calls after (ghHelpKeep).
 		ownersDir := env["LEGION_GH_OWNERS_DIR"]
-		target, err = ghTargetOf(args, env, func(path []string) (string, error) { return readGhHelp(beforeGh, gh, path) }, readGitRemotes,
+		target, err = ghTargetOf(args, env, newGhHelpKeep(beforeGh, gh, env).read, readGitRemotes,
 			func(owner, name string) (string, error) { return ghConfigDirFor(ownersDir, owner, name) })
 		if status, ok := signalled(beforeGh); ok {
 			return status
 		}
-		if err != nil {
-			fmt.Fprintf(stderr, "legion gh: %v\n", err)
-			return 2
-		}
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "legion gh: %v\n", err)
+		return 2
 	}
 	commandPath = target.command
 	if target.owner != "" && target.repo != "" {
@@ -212,26 +241,8 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	case ghRateLimitCall:
 		// This read has no repository or body for the guard to inspect.
 	case ghVisibilityCall:
-		// This process is the guard's own request. Its enclosing user call records the source of
-		// that request, so logging it again would count one wrapped call twice.
-		logCall = false
-		// Its token is the repository's, which ghVisibilityRead matched to the read's exact argv.
-		// The GraphQL read names that repository only in variables, read above as an owner alone,
-		// so the directory this process resolved from the argv is that owner's. Route it by the
-		// repository instead: a configured rename serves the repository from the `to` owner's
-		// directory, and the `from` owner's token cannot read it (ghConfigDirFor, INFRA-2543).
-		//
-		// Under the caller's token it keeps GH_CONFIG_DIR and is routed by nothing, because gh
-		// sends that token in place of any directory's: the bundle may hold no directory for the
-		// read's repository at all, and this routing would then refuse a read the caller's token
-		// can make, which is the second reason #4219 gives for running these reads under it.
-		if !callerTokenRead {
-			target.owner, target.repo = strings.ToLower(visibilityRead.Owner()), visibilityRead.Name()
-			if target.dir, err = ghConfigDirFor(env["LEGION_GH_OWNERS_DIR"], target.owner, target.repo); err != nil {
-				fmt.Fprintf(stderr, "legion gh: %v\n", err)
-				return 2
-			}
-		}
+		// This read is the guard's own, which the switch above routed: checking it would call
+		// the guard again.
 	case ghReadCall, ghGuardedCall:
 		guard := leakguard.New(leakguard.Options{
 			OnVisibility: func(source leakguard.VisibilitySource) {
@@ -259,10 +270,10 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 		}
 	}
 	dir := env["GH_CONFIG_DIR"]
-	// Every mode runs with the directory the command's repositories route to: ghTargetOf chose
-	// it by the one rule (ghConfigDirFor) and refused a command whose repositories route to two,
-	// and the visibility arm above re-chose it for the repository its own variable names. No mode
-	// picks a directory any other way.
+	// Every mode runs with the directory chosen once above: by ghTargetOf, through the one rule
+	// (ghConfigDirFor), refusing a command whose repositories route to two, and for the guard's
+	// visibility read by that rule for the repository its variable names. No mode picks a
+	// directory any other way.
 	if target.dir != "" {
 		dir = target.dir
 	}
@@ -345,14 +356,7 @@ func appendGhCallLog(env map[string]string, repo, commandPath, visibility string
 		return
 	}
 	dir := filepath.Join(state, "legion-gh")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		return
-	}
-	info, err := os.Stat(dir)
-	if err != nil || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+	if !ghStateDir(dir, os.Getuid()) {
 		return
 	}
 	lock, err := os.OpenFile(filepath.Join(dir, "calls.log.lock"), os.O_CREATE|os.O_RDWR, 0o600)
@@ -416,23 +420,7 @@ func trimGhCallLog(path string) {
 	if cut := bytes.IndexByte(kept, '\n'); cut >= 0 {
 		kept = kept[cut+1:]
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".calls-")
-	if err != nil {
-		return
-	}
-	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return
-	}
-	if _, err := tmp.Write(kept); err != nil {
-		tmp.Close()
-		return
-	}
-	if err := tmp.Close(); err != nil {
-		return
-	}
-	_ = os.Rename(tmp.Name(), path)
+	ghReplaceFile(path, ".calls-", kept)
 }
 
 // ghVisibilityRead is the repository argv reads, and whether argv is one of the guard's own two
@@ -446,6 +434,10 @@ func trimGhCallLog(path string) {
 // that name must parse as a repository GitHub could serve, so a variable someone else set lets
 // through one read of one repository and nothing else. The shared check's own read, the same
 // argv without `--include`, is not one of them (sharedCheckVisibilityRead).
+//
+// runGh reads no gh help for these reads: their argv is exact, and their directory is the one the
+// repository the variable names routes to (ghConfigDirFor), or GH_CONFIG_DIR under a caller's
+// token.
 //
 // A caller's GH_TOKEN or GITHUB_TOKEN, which refuses every other call that reads the command
 // (ghTargetOf), does not refuse these reads. runGh runs them with that token, which gh sends in
@@ -1056,12 +1048,14 @@ func refuseLegionGhAsRealGh(gh string) error {
 var ghHelpTimeout = 30 * time.Second
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
-// gh's own), refused when gh answers it with an error. gh runs in a process group of its own,
-// which is stopped whole when the read outlives ghHelpTimeout or ctx ends (procgroup.Configure):
-// a stop that killed gh alone would leave whatever gh started running, reparented and unwaited
-// for. That group is not the terminal's, so none of the terminal's signals reach it, and ctx is
-// how they do: runGh's, which main cancels on a SIGINT or a SIGTERM and hangupCancels on a SIGHUP.
-// It runs under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh` is refused there.
+// gh's own), refused when gh answers it with an error. runGh reads it through ghHelpKeep, which
+// keeps what gh printed for the calls after, and never a read that ctx ended. gh runs in a
+// process group of its own, which is stopped whole when the read outlives ghHelpTimeout or ctx
+// ends (procgroup.Configure): a stop that killed gh alone would leave whatever gh started running,
+// reparented and unwaited for. That group is not the terminal's, so none of the terminal's signals
+// reach it, and ctx is how they do: runGh's, which main cancels on a SIGINT or a SIGTERM and
+// hangupCancels on a SIGHUP. It runs under leakguard.RunByRealGhVar, so a gh that leads back to
+// `legion gh` is refused there.
 func readGhHelp(ctx context.Context, gh string, path []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, ghHelpTimeout)
 	defer cancel()

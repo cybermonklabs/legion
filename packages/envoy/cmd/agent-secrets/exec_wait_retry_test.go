@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // flakyRequestID is the request flakyBroker leaves pending, and flakyValue the value its grant
@@ -195,6 +196,11 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 				if !strings.Contains(stderr, want) {
 					t.Errorf("stderr = %q, want it to carry %q", stderr, want)
 				}
+			}
+			// The broker's address is clean, so every line naming a failed read prints the call
+			// it made, whatever wait that read asked the broker to hold it for.
+			if strings.Contains(stderr, redact.NotPrinted) {
+				t.Errorf("stderr = %q: a read of a clean broker address prints its call", stderr)
 			}
 			if row.exit == exitPending && strings.Contains(stderr, "is still waiting for approval") {
 				t.Errorf("stderr = %q: a wait that ran out on failed polls says it read the request pending", stderr)

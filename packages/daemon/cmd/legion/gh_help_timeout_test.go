@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -71,6 +73,11 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 // to the group, a pane that closes, is caught until gh would start (hangupCancels) and stops the
 // held work's group the same way, and `legion gh` ends with 129.
 //
+// Every row runs with the role's state directory set, so `legion gh` keeps the helps gh prints
+// (ghHelpKeep). The help read's stand-in prints gh's whole help before it holds the read, and the
+// read the signal stopped leaves no copy: a stopped read is an error, whatever gh printed before
+// the stop, so it is never kept and no later call is answered with it.
+//
 // On main the help read shared `legion gh`'s own process group, so the group's signal reached the
 // stand-in itself: a SIGINT ended it and `legion gh` refused the command with a help error, exit 2,
 // and a SIGHUP ended both. The guard's children already ran in groups of their own: a SIGINT
@@ -96,11 +103,15 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 		// gh and check are the stand-in gh and the stand-in shared check, given the file the
 		// holding one records its pid in and its sleep.
 		gh, check func(pidFile, seconds string) string
+		// keepsNothing is whether the one help the call reads is the one held, so that no copy may
+		// be kept.
+		keepsNothing bool
 	}{
 		{
-			name: "the help read", seconds: "297", check: passes,
+			name: "the help read", seconds: "297", check: passes, keepsNothing: true,
 			gh: func(pidFile, seconds string) string {
-				return "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n" + holdsStandIn(pidFile, seconds) + "fi\nexit 0\n"
+				return "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  cat '" + filepath.Join(help, "gh.txt") + "'\n" +
+					holdsStandIn(pidFile, seconds) + "fi\nexit 0\n"
 			},
 		},
 		{
@@ -108,8 +119,8 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 			gh: func(string, string) string { return ghStandInPrefix(help) + "exit 0\n" },
 		},
 		{
-			// The stand-in gh answers the resolver's help reads, of the outer `legion gh` and of
-			// the one the guard's read goes back through, and holds the read itself.
+			// The stand-in gh answers the outer `legion gh`'s help reads, and holds the guard's
+			// read, which reads no help of its own.
 			name: "the guard's visibility read", seconds: "295", check: passes,
 			gh: func(pidFile, seconds string) string {
 				return ghStandInHelp(help) +
@@ -131,11 +142,20 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 				if err := os.WriteFile(stub, []byte(held.gh(pidFile, held.seconds)), 0o700); err != nil {
 					t.Fatal(err)
 				}
+				state := t.TempDir()
 				command := legionGhCommand(t, t.TempDir(), map[string]string{
 					"LEGION_GH_PATH": stub, "GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root,
 					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), held.check(pidFile, held.seconds)),
+					"XDG_STATE_HOME":    state,
 				}, "pr", "create", "-R", "acme/widgets", "--title", "a title", "--body", "a body")
 				signalWhileHeld(t, command, "legion gh", pidFile, held.seconds, held.name, tc.signal)
+				kept, err := os.ReadDir(filepath.Join(state, "legion-gh", "help"))
+				if err != nil && !errors.Is(err, fs.ErrNotExist) {
+					t.Fatal(err)
+				}
+				if held.keepsNothing && len(kept) > 0 {
+					t.Errorf("legion gh kept %d help copies after a %s stopped its only help read; want none", len(kept), tc.name)
+				}
 			})
 		}
 	}

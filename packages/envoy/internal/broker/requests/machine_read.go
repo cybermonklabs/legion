@@ -744,10 +744,12 @@ func (m *Machine) Get(ctx context.Context, id string) (Request, error) {
 	return r, rows.Err()
 }
 
-func (m *Machine) OwnerOf(ctx context.Context, requestID string) (string, error) {
-	var owner string
-	err := m.Store.Pool.QueryRow(ctx, `select enrollment_id from requests where id=$1`, requestID).Scan(&owner)
-	return owner, err
+// OwnerAndState reads the enrollment that owns request id and its state, in one statement on the
+// requests row alone: what GET /v1/requests/{id} checks before it answers, and what its held read
+// reads again at each step while the request is pending. A request with no row is pgx.ErrNoRows.
+func (m *Machine) OwnerAndState(ctx context.Context, requestID string) (owner, state string, err error) {
+	err = m.Store.Pool.QueryRow(ctx, `select enrollment_id, state from requests where id=$1`, requestID).Scan(&owner, &state)
+	return owner, state, err
 }
 
 // SessionID answers a request row's own optional session_id — an override supplied in the
@@ -771,7 +773,7 @@ func (m *Machine) SessionID(ctx context.Context, id string) (string, error) {
 }
 
 // Grant is a live grant's public summary, for GET /v1/enrollments/self. It follows the same query
-// pattern as OwnerOf and enrollment above.
+// pattern as OwnerAndState and enrollment above.
 type Grant struct {
 	// The grant's id, which the values and revoke routes take.
 	ID string `json:"grant_id"`
