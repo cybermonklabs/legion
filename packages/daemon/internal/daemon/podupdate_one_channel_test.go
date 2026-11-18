@@ -3,10 +3,13 @@ package daemon
 // The update round's ask reaches each role on one channel: the sweep publishes it once per claim
 // per round, as a role-message outbox row (record.UpdateAsk) to that claim's own Envoy topic, and
 // no claim is queued or sent a task for the round (dispatch://INFRA-2981 R1, verification's
-// c-one-channel). These cases drive the pod-update rig of podupdate_test.go.
+// c-one-channel). "Once" counts the asks that reached a session: the row marks its claim asked
+// when its publish reached a session, and an ask whose topic had no live holder is asked again
+// (podupdate_undelivered_ask_test.go). These cases drive the pod-update rig of podupdate_test.go.
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -16,10 +19,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// asks is every update-ask row the sweep enqueued, decoded, oldest first, each on the rig's issue.
+// asks is every update-ask row the sweep enqueued, decoded, oldest first, each on the rig's issue:
+// the rows the outbox holds now and every row the rig's lane has finished and deleted since
+// (runLane), which this read kept the first time it saw them.
 func (r *podUpdateRig) asks() []record.UpdateAsk {
 	r.t.Helper()
-	var asks []record.UpdateAsk
 	for _, row := range r.rows(record.OutboxKindUpdateAsk) {
 		if row.Issue != podUpdateIssue {
 			r.t.Fatalf("update ask %d is on %s, want %s", row.ID, row.Issue, podUpdateIssue)
@@ -28,7 +32,16 @@ func (r *podUpdateRig) asks() []record.UpdateAsk {
 		if err := json.Unmarshal(row.Payload, &ask); err != nil {
 			r.t.Fatalf("decode update ask %d: %v", row.ID, err)
 		}
-		asks = append(asks, ask)
+		r.asked[row.ID] = ask
+	}
+	ids := make([]int64, 0, len(r.asked))
+	for id := range r.asked {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+	asks := make([]record.UpdateAsk, len(ids))
+	for i, id := range ids {
+		asks[i] = r.asked[id]
 	}
 	return asks
 }
@@ -44,12 +57,13 @@ func (r *podUpdateRig) prompts() map[claim.Role]int {
 }
 
 // One pod round, over the five kinds of claim a pod holds: a role in a turn, an idle role, the
-// issue's architect, a failed claim and a claim that has left the round's pod. Over ten sweeps
-// each asked claim gets exactly one update-ask row, the architect's included, each naming its own
-// role, the round, the pod and the round's one text: the reasons the round opened with and the
-// moment it ends, its opening plus pod_update_grace_minutes. The failed claim and the claim that
-// left the pod are asked nothing, although each records the round with no publish mark. No claim
-// is sent a prompt for the round: the machine queues no task.
+// issue's architect, a failed claim and a claim that has left the round's pod. Over ten sweeps,
+// the role-message lane running after each, each asked claim gets exactly one update-ask row, the
+// architect's included, each naming its own role, the round, the pod and the round's one text:
+// the reasons the round opened with and the moment it ends, its opening plus
+// pod_update_grace_minutes. Each row reaches its role's topic once and marks its claim asked. The
+// failed claim and the claim that left the pod are asked nothing, although each records the round
+// with no publish mark. No claim is sent a prompt for the round: the machine queues no task.
 //
 // The negative controls are the ones c-one-channel names. A task queued beside the publish is a
 // prompt on a role's connection. A publish at every sweep is ten rows a role, not one.
@@ -72,6 +86,7 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 			rig.clock.advance(time.Minute)
 		}
 		rig.tick()
+		rig.runLane()
 		if sweep == 0 {
 			for _, role := range asked {
 				rig.awaitRound(role, podUpdateRound)
@@ -93,6 +108,15 @@ func TestPodUpdateAsksEachRoleOnceOnItsOwnTopicOverTenSweeps(t *testing.T) {
 		}
 		if c := rig.claimOf(role); c.UpdateRound != podUpdateRound || c.UpdateTaskedAt == nil {
 			t.Errorf("the %s = round %q asked at %v, want the round recorded and the ask marked", role, c.UpdateRound, c.UpdateTaskedAt)
+		}
+	}
+	delivered := map[string]int{}
+	for _, publish := range rig.listener.delivered {
+		delivered[publish.topic]++
+	}
+	for _, role := range asked {
+		if n := delivered[rig.roleTopic(role)]; n != 1 {
+			t.Errorf("the %s's topic was delivered %d asks, want one", role, n)
 		}
 	}
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleReviewer} {

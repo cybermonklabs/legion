@@ -1492,7 +1492,7 @@ func abandonedTask(c Claim, last bool) string {
 	sentence := fmt.Sprintf("The session this claim ran before this one, %s, was abandoned where it stood: %s. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
 		"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
-		"tell your architect what you found.",
+		"tell the architect your Legion addressing line names what you found, unless that is you or it names none.",
 		c.Abandoned.Session, strconv.Quote(c.Abandoned.Why), read)
 	if last {
 		sentence += " Then continue the task."

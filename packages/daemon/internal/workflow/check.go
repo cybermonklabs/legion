@@ -352,7 +352,7 @@ func (e *Engine) nameWake(ctx context.Context, tx pgx.Tx, check *record.Producti
 }
 
 // closeCheck closes the check with outcome (markCheckClosed) and ends the checking role's part in it:
-// its claim is closed (issue_close: retired, its session dropped), and the issue's Sandbox is
+// its claim is closed (issue_close: retired, its session kept), and the issue's Sandbox is
 // suspended and deleted with the pod it ran in, whether the issue is a child whose tree runs on or
 // a root, or a child, of a lingering tree whose close would delete it anyway. A tree lingering past
 // its deadline waited for this check (lingerExpired): once no check of the tree is open its close

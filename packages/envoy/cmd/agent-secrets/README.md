@@ -27,11 +27,25 @@ none names the broker's host but two: a broker that could not be reached, named 
 stale address reads as one, and a pending secret request, whose line names the page on the broker
 where its approver decides it, the `approve_url` the broker's own answer carries. The secret
 forms below, which call the store itself, name the account or project they read and write. No
-output of `agent-secrets`,
-`agent-secrets-helper` or `agent-secrets-devrelay` prints a credential the broker's URL carries:
-the URL prints only when it is provably a plain http(s) URL (no user info, query, fragment,
+printed form of the broker's URL, and no refusal or error that `agent-secrets`,
+`agent-secrets-helper` or `agent-secrets-devrelay` prints or logs, holds a credential that URL
+carries: the URL prints only when it is provably a plain http(s) URL (no user info, query, fragment,
 escape or control byte), and as `(not printed: the value carries a credential or is not a plain
-http(s) URL)` otherwise. People and launchers use its other forms to log a machine in
+http(s) URL)` otherwise. Beside a URL that does not print, a refusal the broker answers prints its
+status and `(not printed: the broker's address is not clean)` (an OAuth refusal - a trade, a
+machine login's device authorization, or its refresh - prints `the broker answered HTTP <n>`,
+with no marker), and none of its words, its answer id or its
+code, which whoever answers at that URL could fill with the credential it carries. A
+code prints there only where it is one the program matched against its own list: `renew`'s exit
+on a terminal refusal, and the helper's log of a refusal it acts on; the helper's log of a
+sign-in the broker refused names its code as that marker. What these programs print or log of an
+answer they accept is as it came, whatever the URL; among those outputs, `--json` writes a 2xx
+body verbatim, `machine login` prints the `user_code` and `verification_uri` the broker answered,
+`machine login-status` prints that `user_code`, a pending secret request's line names the
+`approve_url` above, and the helper's log lines name the `credential_id` of the machine login the
+broker issued. People and
+launchers use its other forms to log a
+machine in
 (`agent-secrets machine
 login`), register an agent session (`agent-secrets register --exec -- <agent>`), and inspect a
 session's grants (`agent-secrets self`). People and agents manage the agent secrets themselves with
@@ -53,10 +67,17 @@ store may be left holding and the command that clears or checks it. From their o
 machine
 that runs the helper, people list and end their own machines' logins and their live grants with
 `agent-secrets machine list|revoke` and `agent-secrets grant list|revoke`, under that machine's
-login; a service's login is revoked on Dispatch's machine-login page. The helper refuses these
-forms to a process inside a registered session's process tree (`IN_SESSION`), so an agent's own
-commands cannot act as its operator. The check covers that tree only: a process a session sends
-out of it (`( cmd & )`, `setsid -f`, a tmux server it started) passes, and the same user can stop
+login; a service's login is revoked on Dispatch's machine-login page. The helper refuses `machine
+list|revoke` and `grant list` to a process inside a registered session's process tree
+(`IN_SESSION`), so an agent's own commands cannot act as its operator. `grant revoke <grant_id>`
+run inside a session is the session's own revoke instead, which `agent-secrets revoke` makes too:
+it signs as the broker identity the session's use command takes, and the broker ends only a grant
+of that identity's enrollment and refuses any other (`NOT_YOURS`), which stays its holder's, its
+operator's or its approver's to end. Processes that sign as one enrollment share its grants: each
+session of a person who ran `agent-secrets login` on the machine signs as that sign-in's one
+enrollment, and processes that share one key dir sign as its enrollment, so each can end the
+others' grants. The machine-command check covers that tree only: a process a
+session sends out of it (`( cmd & )`, `setsid -f`, a tmux server it started) passes, and the same user can stop
 the helper anyway. Such a process can list and revoke its operator's own machine logins, never a
 service's machine login, and its operator's grants, which include grants the operator approved on
 any session. `agent-secrets enroll --helper` is open to any process of the user, so such a process
@@ -64,39 +85,37 @@ can also enroll a box and read the operator's agent secrets. `agent-secrets --he
 form, and each form answers `-h`.
 
 Before the broker spends a stored value, it removes that value's trailing line endings under one
-rule, and the secret's `shape` tag says how to read the value. `shape: token` is a one-line
-credential, an API key or a bearer token: the whole trailing run of carriage returns and line
-feeds goes, unless the value is nothing but line endings, which stays as it is. `shape: document`
-is a value whose every byte is part of it, a PEM key for one, and nothing goes. A secret with no
-tag is read by the broker's own reading of the value: that run goes only where the rest of the
-value is not empty and holds no carriage return and no line feed, so a PEM document keeps the
-line feed that ends it.
+rule, which reads the value itself and no tag at all: the whole trailing run of carriage returns
+and line feeds goes only where what is left is not empty and holds no carriage return and no line
+feed, so a one-line API key or bearer token loses the ending an editor or a shell left behind,
+a PEM document keeps the line feed that ends it, and a value that is nothing but line endings
+stays as it is.
 
 The rule reaches the stored value alone, in both of the broker's reads of the store: the value a
 session is handed, and the input a minter reads. A token a minter makes is never changed. The
 broker writes one line at INFO for each value it changed, `broker: a stored value's trailing line
-ending was removed name=<NAME>`, which carries the secret's name and no part of any value. An
-owner whose value the rule reads wrongly answers that line with one retag: `agent-secrets secret
-retag <NAME> --shape document`.
+ending was removed name=<NAME>`, which carries the secret's name and no part of any value.
 
-`agent-secrets secret create --shape token|document` writes the tag, `secret retag --shape
-token|document|none` changes it or removes it, `secret show` prints it as a `shape:` line, and
-`secret list` prints it as a `SHAPE` column. `secret create` and `secret set` read the value they
+`secret create` and `secret set` read the value they
 store by this same rule, so a value stored through this client and a value stored by any other
-writer are spent alike. `secret set` reads the secret's own kind and shape tags first, so a
-document's owner stores a document. Where the rule changes nothing, the client still removes one
+writer are spent alike. Where the rule changes nothing, the client still removes one
 final line feed, which it has always done, so `echo` and a file that ends in a newline store the
 value without one.
 
-A kind secret's value is checked before it is written, by the decoder the broker's minter for that
-kind reads it with: `secret create --kind` checks the value it stores, `secret set` checks it under
-the kind tag the secret holds, and `secret retag` checks the value the secret holds when it
-changes the kind, or the shape of a secret that keeps a kind. A value that minter could not mint
+A type secret's value is checked before it is written, by the decoder the broker's minter for that
+type reads it with: `secret create --type` checks the value it stores, `secret set` checks it under
+the type tag the secret holds, and `secret retag` checks the value the secret holds when it
+changes the type. A value that minter could not mint
 from is refused with the minter's reason, exit 2, and nothing is written. The retag reads the
 value for that check and never prints it. A sign-in the store refuses that read still writes the
 tags, and the retag says on standard error that the value was not checked and names the
-permission the read needs. The broker reads every kind secret's value with the same decoder and
-refuses a secret whose value it refuses as `value-malformed`.
+permission the read needs. The broker reads every type secret's value with the same decoder and
+refuses a secret whose value it refuses as `value-malformed`. A write after which the secret holds
+a type needs a broker that reads the `type` tag, one whose `GET /v1/settings` answers
+`secret_type_tag: true`: against an earlier broker, which reads no `type` tag and from
+legion-envoy-v16.0.0 on would serve the secret's stored key as its value, it exits 1 before it
+writes anything, naming the release to move the broker to. After the write, `create`, `set` and
+`retag` each exit 1 when the reread names another type than the secret holds.
 
 On a machine that runs agents directly, `agent-secrets-helper` (`../agent-secrets-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in
@@ -159,7 +178,10 @@ session, 1 otherwise) and asks nothing of the network. `agent-secrets identity -
 chain without registering anything and prints the source a command would use — `key-dir: <dir>`,
 `sign-in: <person>`, `helper: <socket>`, `machine: the cached enrollment in <dir>`, or `machine:`
 and the identity it would trade — then `helper: <socket>` whenever the helper answered and is not
-that source; with none, stdout is empty, the refusal above is on stderr, and it exits 1.
+that source; with none, stdout is empty, the refusal above is on stderr, and it exits 1. A
+`helper: <socket>` line ends with the release the running helper reports for itself,
+`(agent-secrets-helper <release>)`; a helper from before that report answers `unknown op version`,
+and the line ends `(a helper from before this release; its binary is /proc/<pid>/exe)` instead.
 
 A Kubernetes pod an operator launches by hand needs no credential a person installs and no machine
 login a person approves: it logs in and enrols itself with the projected ServiceAccount token its
@@ -291,6 +313,18 @@ start each agent as a machine session, so the helper signs for it:
 agent-secrets register --wait 10 --exec -- <agent command>
 ```
 
+A session whose launcher learns its omp session id only after the agent starts (omp opens its
+transcript seconds in) registers unnamed with `--exec` and then runs `agent-secrets register
+--session-id <id>` again from inside the session, so the session keeps one broker identity across a
+restart of the helper or the machine. Run without `--exec`, `register` never makes its own process
+the session's root, since that process ends with the command: inside a registered session (one
+started with `--exec`, for `omp` or any other command) it names that session, and otherwise it
+attaches the session to the launcher (`omp`) above it. It prints `enrolled` only once the helper
+answers a session rooted above it. With neither a session nor an `omp` launcher above it, or
+against a helper from before this (one that would pin the ended command), it refuses with exit 1
+and says to relaunch the session under `register --exec -- omp …`, rather than print `enrolled`
+for an identity nothing can use; upgrade the helper before the client.
+
 A Kubernetes pod or a Google Cloud VM does not use the helper or a person's approval: the Legion
 daemon enrolls its pods with their service-account tokens, and a VM enrolls itself (above). The
 docs site's [Log a machine in](https://cybermonklabs.github.io/legion/broker/guides/log-a-machine-in/)
@@ -338,6 +372,11 @@ agent-secrets-helper sessions
 
 `machine list` shows your machines' logins, `grant list` the live grants of your sessions and
 those you approved, and `agent-secrets-helper sessions` the sessions this machine's helper holds.
+`grant revoke` ends a grant: from your own shell it is the operator's revoke of any of these
+grants, and from inside a session it ends a grant given to the broker identity (enrollment) the
+session signs as; a grant of another enrollment is refused `was given to another broker identity
+(enrollment)`. Every session of yours that signs as your `agent-secrets login` shares that one
+enrollment, and so its grants.
 
 Owners manage the secrets themselves, with no helper, under the credential of the first source
 the command finds: on AWS, the AWS SDK's own order, in the broker's account (access keys in

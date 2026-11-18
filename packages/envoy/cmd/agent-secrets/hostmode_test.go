@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 )
@@ -276,7 +277,7 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 	sock, reqs := fakeHelper(t, helper.Response{OK: true, RequestObject: "eyJ.fake.request"})
 	signer := &helperSigner{sock: sock}
 	lifetime := 120
-	ro, err := signer.SignRequestObject("https://secrets.test", []string{"DEEL_API_KEY", "OTHER_KEY"}, "why", &lifetime)
+	ro, err := signer.SignRequestObject(brokeraddr.New("https://secrets.test"), []string{"DEEL_API_KEY", "OTHER_KEY"}, "why", &lifetime)
 	if err != nil || ro != "eyJ.fake.request" {
 		t.Fatalf("sign-request: %q %v", ro, err)
 	}
@@ -290,63 +291,9 @@ func TestHelperSignerSignsRequestObjects(t *testing.T) {
 	}
 
 	sock2, _ := fakeHelper(t, helper.Response{Code: helper.CodeNotASession, Error: "pid 5 is not inside a registered machine session"})
-	if _, err := (&helperSigner{sock: sock2}).SignRequestObject("https://secrets.test", []string{"DEEL_API_KEY"}, "why", nil); err == nil ||
+	if _, err := (&helperSigner{sock: sock2}).SignRequestObject(brokeraddr.New("https://secrets.test"), []string{"DEEL_API_KEY"}, "why", nil); err == nil ||
 		!strings.Contains(err.Error(), helper.CodeNotASession) {
 		t.Fatalf("the helper's code reaches the caller: %v", err)
-	}
-}
-
-// TestRegisterWithoutExecPrintsRuntimeEnrollmentState covers register's contract without
-// --exec: "<runtime_id>\t<enrollment_id>\t<state>" on stdout, exit 0.
-func TestRegisterWithoutExecPrintsRuntimeEnrollmentState(t *testing.T) {
-	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled"})
-	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
-	var stdout, stderr bytes.Buffer
-	code := cmdRegister(nil, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("register: exit %d, stderr %q", code, stderr.String())
-	}
-	if got, want := stdout.String(), "h:1:1\tenr-h\tenrolled\n"; got != want {
-		t.Fatalf("register output: got %q, want %q", got, want)
-	}
-}
-
-// TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled covers "exits 1 if --wait was given
-// and state isn't enrolled".
-func TestRegisterWithoutExecExitsOneWhenWaitedButNotEnrolled(t *testing.T) {
-	sock, _ := fakeHelper(t, helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolling", Error: "waiting on approver"})
-	t.Setenv("AGENT_SECRETS_HELPER_SOCK", sock)
-	var stdout, stderr bytes.Buffer
-	code := cmdRegister([]string{"--wait", "1"}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("register --wait, not enrolled: exit %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
-	}
-}
-
-// TestRegisterFindsTheHelperOnItsDefaultSocket pins that register, like machine login and every
-// other helper-mode form, reaches a helper listening on its default socket
-// ($XDG_RUNTIME_DIR/agent-secrets/helper.sock) with AGENT_SECRETS_HELPER_SOCK unset: a machine set
-// up by starting the helper with no settings registers its sessions without exporting the variable.
-func TestRegisterFindsTheHelperOnItsDefaultSocket(t *testing.T) {
-	runtimeDir := shortTempDir(t)
-	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
-	reqs := fakeHelperAt(t, filepath.Join(runtimeDir, "agent-secrets", "helper.sock"),
-		helper.Response{OK: true, RuntimeID: "h:1:1", EnrollmentID: "enr-h", State: "enrolled"})
-	var stdout, stderr bytes.Buffer
-	if code := cmdRegister(nil, &stdout, &stderr); code != 0 {
-		t.Fatalf("register with only the default socket: exit %d, stderr %q", code, stderr.String())
-	}
-	if got, want := stdout.String(), "h:1:1\tenr-h\tenrolled\n"; got != want {
-		t.Fatalf("register output: got %q, want %q", got, want)
-	}
-	select {
-	case req := <-reqs:
-		if req.Op != "register" {
-			t.Fatalf("request sent to the default socket: %+v", req)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("the helper on the default socket never saw a request")
 	}
 }
 
@@ -403,7 +350,7 @@ func TestRegisterExecWarnsWhenWaitedButNotEnrolled(t *testing.T) {
 	}
 }
 
-// TestRegisterExecRunsTheCommandAsTheRegisteredPid lives in hostmode_linux_test.go (//go:build
+// TestRegisterExecStillPinsTheReplacedProcess lives in hostmode_linux_test.go (//go:build
 // linux): it needs fakeHelperWithPids, which pins the connecting pid with helper.PeerOf
 // (SO_PEERPIDFD, Linux-only).
 

@@ -98,19 +98,6 @@ func (s *statementTracer) matching(fragments ...string) []tracedStatement {
 	return found
 }
 
-// matchingAny returns the statements recorded so far whose SQL holds any of fragments, each once.
-func (s *statementTracer) matchingAny(fragments ...string) []tracedStatement {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var found []tracedStatement
-	for _, statement := range s.statements {
-		if slices.ContainsFunc(fragments, func(fragment string) bool { return strings.Contains(statement.sql, fragment) }) {
-			found = append(found, statement)
-		}
-	}
-	return found
-}
-
 // tracedStore opens a store on database's database whose every statement tracer sees: one that
 // records them (statementTracer), or one that holds one of them up (heldRelease).
 func tracedStore(t *testing.T, database *store.Store, tracer pgx.QueryTracer) *store.Store {
@@ -340,6 +327,382 @@ func holdsBackARoleHolderWhoseForwardIsNotAcknowledged(t *testing.T) {
 	}
 }
 
+// Session S holds issue T-1's route and follows T-1's topic family, so its relay hands it its own
+// subject and T-1's topic family together, in stream order, and it drops a second copy of an event
+// by its id: S takes T-1's events in the order sessionOrderRig.views reads them. Event 1 is an
+// agent's message, which goes to the topic family alone, and the stream refuses its topic publish
+// (no responders), so it backs off; event 2 is a person's message, which goes to the topic family
+// and to S's own subject. S takes them in issue order, event 1 first, because event 2 reaches S's
+// subject only once event 1 has reached the topic family: when event 2 is written while event 1
+// waits out its back-off, and when both are due in one batch, where event 1's topic send is in
+// flight beside it. The control sends both events to S's own subject, which refuses event 1 first,
+// and S takes them in order there with or without the hold, which shows the rig reads S's view in
+// stream order.
+func TestASessionTakesAnOwnersEventsInOrderThroughAFailedTopicPublish(t *testing.T) {
+	t.Run("a later event written while the first backs off", func(t *testing.T) {
+		takesTheOwnersEventsInOrderThroughATopicFailure(t, false)
+	})
+	t.Run("both events due in one batch", func(t *testing.T) {
+		takesTheOwnersEventsInOrderThroughATopicFailure(t, true)
+	})
+	t.Run("control both events on the session subject", keepsTheOrderOnTheSessionsOwnSubject)
+}
+
+// sessionOrderRig is an outbox's stream with a reader of it, the stream's configuration as it
+// started, which refuse narrows and captureAgain puts back, and issue T-1, whose route is S.
+type sessionOrderRig struct {
+	client    *bus.Client
+	reader    *natsgo.Conn
+	js        natsgo.JetStreamContext
+	capturing natsgo.StreamConfig
+	database  *store.Store
+	broker    *events.Broker
+}
+
+func newSessionOrderRig(t *testing.T) sessionOrderRig {
+	t.Helper()
+	_, url := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{url})
+	if err != nil {
+		t.Fatalf("connect the outbox's client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	reader := testnats.Connect(t, url)
+	js, err := reader.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	info, err := js.StreamInfo(bus.Stream)
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	database := storetest.Open(t)
+	route := "session:S"
+	seedIssue(t, database, "T-1", &route)
+	return sessionOrderRig{client: client, reader: reader, js: js, capturing: info.Config, database: database, broker: events.NewBroker()}
+}
+
+// refuse has the stream capture no subject under prefix, so NATS answers a publish there with no
+// responders.
+func (r sessionOrderRig) refuse(t *testing.T, prefix string) {
+	t.Helper()
+	narrowed := r.capturing
+	narrowed.Subjects = slices.DeleteFunc(slices.Clone(r.capturing.Subjects), func(subject string) bool {
+		return strings.HasPrefix(subject, prefix)
+	})
+	if len(narrowed.Subjects) == len(r.capturing.Subjects) {
+		t.Fatalf("no stream subject is under %q: %v", prefix, r.capturing.Subjects)
+	}
+	if _, err := r.js.UpdateStream(&narrowed); err != nil {
+		t.Fatalf("stop the stream capturing %s: %v", prefix, err)
+	}
+}
+
+func (r sessionOrderRig) captureAgain(t *testing.T) {
+	t.Helper()
+	capturing := r.capturing
+	if _, err := r.js.UpdateStream(&capturing); err != nil {
+		t.Fatalf("let the stream capture every subject again: %v", err)
+	}
+}
+
+func (r sessionOrderRig) write(t *testing.T, actor model.Actor, body string) model.Event {
+	t.Helper()
+	return appendEvent(t, r.database, r.broker, model.Event{
+		IssueKey: new("T-1"), Type: "message.created", Actor: actor,
+		Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: body},
+	})
+}
+
+// settled reports whether a batch has written what event id came to: a hold-back or a back-off
+// sets its next attempt, and a publish its published_at.
+func (r sessionOrderRig) settled(t *testing.T, id int64) bool {
+	t.Helper()
+	var settled bool
+	if err := r.database.Pool.QueryRow(context.Background(),
+		`select next_attempt_at is not null or published_at is not null from events where id = $1`, id).Scan(&settled); err != nil {
+		t.Fatalf("read event %d: %v", id, err)
+	}
+	return settled
+}
+
+// views is, in stream order, the event ids on each of session's subjects - its own and T-1's topic
+// family - and session's view of them: both together, a repeated event id dropped.
+func (r sessionOrderRig) views(t *testing.T, session string) (bySubject map[string][]int64, view []int64) {
+	t.Helper()
+	bySubject = map[string][]int64{}
+	seen := map[int64]bool{}
+	for _, message := range streamMessages(t, r.reader) {
+		if !strings.HasPrefix(message.Subject, "notifications.dispatch.issue.T-1.") && message.Subject != session {
+			continue
+		}
+		id := envelopeEventID(t, message.Data)
+		bySubject[message.Subject] = append(bySubject[message.Subject], id)
+		if !seen[id] {
+			seen[id] = true
+			view = append(view, id)
+		}
+	}
+	return bySubject, view
+}
+
+// takesTheOwnersEventsInOrderThroughATopicFailure is the case. The stream refuses the topic family
+// until a batch has settled the second event, so that batch makes or holds the second event's send
+// to S while the first event's topic send has not gone. oneBatch writes both events before the
+// outbox starts, so its first batch reads both due and the first event's topic send is in flight
+// beside the second event's. Otherwise the second is written once the first backed off, with the
+// outbox stopped while the first is set not due for an hour, so no retry of it writes a sooner
+// back-off and the batch that reads the second finds the first not due. Then, with the outbox
+// stopped again, both are made due and the stream captures every subject, and an outbox started
+// afresh publishes both in its first scan.
+func takesTheOwnersEventsInOrderThroughATopicFailure(t *testing.T, oneBatch bool) {
+	rig := newSessionOrderRig(t)
+	rig.refuse(t, dispatchTopicPrefix)
+	agent, person := model.Actor{Kind: "session", ID: "agent-other"}, model.Actor{Kind: "user", ID: "alice"}
+	first := rig.write(t, agent, "first, by an agent")
+	var second model.Event
+	if oneBatch {
+		second = rig.write(t, person, "second, by a person")
+	}
+	stop := runOutbox(t, rig.database, rig.client, rig.broker)
+	defer func() { stop() }()
+	if !oneBatch {
+		waitFor(t, 60*time.Second, "the first event backed off for the topic family", func() bool {
+			_, attempts := publishedDestinations(t, rig.database, first.ID)
+			return attempts > 0
+		})
+		stop()
+		if _, err := rig.database.Pool.Exec(context.Background(),
+			`update events set next_attempt_at = now() + interval '1 hour' where id = $1`, first.ID); err != nil {
+			t.Fatalf("hold the first event not due: %v", err)
+		}
+		second = rig.write(t, person, "second, by a person")
+		stop = runOutbox(t, rig.database, rig.client, rig.broker)
+	}
+	waitFor(t, 60*time.Second, "a batch settled the second event while the topic family was refused", func() bool {
+		return rig.settled(t, second.ID)
+	})
+	stop()
+	if _, err := rig.database.Pool.Exec(context.Background(),
+		`update events set next_attempt_at = null where id = any($1)`, []int64{first.ID, second.ID}); err != nil {
+		t.Fatalf("make both events due: %v", err)
+	}
+	rig.captureAgain(t)
+	stop = runOutbox(t, rig.database, rig.client, rig.broker)
+	waitFor(t, 120*time.Second, "both events published", func() bool {
+		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
+	})
+
+	topic := "notifications.dispatch.issue.T-1.message.created"
+	session := contracts.LegacyAgentSubject("S")
+	firstTo, firstAttempts := publishedDestinations(t, rig.database, first.ID)
+	secondTo, secondAttempts := publishedDestinations(t, rig.database, second.ID)
+	bySubject, view := rig.views(t, session)
+	want := []int64{first.ID, second.ID}
+	t.Logf("event %d went to %v after %d attempts; event %d went to %v after %d attempts", first.ID, firstTo, firstAttempts, second.ID, secondTo, secondAttempts)
+	t.Logf("the stream by subject: %v; S takes T-1's events as %v, want %v", bySubject, view, want)
+	if !slices.Equal(firstTo, []string{topic}) {
+		t.Fatalf("the first event went to %v, want the topic family alone", firstTo)
+	}
+	if !slices.Contains(secondTo, session) || !slices.Contains(secondTo, topic) {
+		t.Fatalf("the second event went to %v, want the topic family and S's own subject %s", secondTo, session)
+	}
+	if !slices.Equal(bySubject[topic], want) {
+		t.Errorf("the topic family holds %v, want %v", bySubject[topic], want)
+	}
+	if !slices.Equal(bySubject[session], []int64{second.ID}) {
+		t.Errorf("S's subject holds %v, want only the second event %d", bySubject[session], second.ID)
+	}
+	if !slices.Equal(view, want) {
+		t.Errorf("S takes T-1's events as %v, want %v: the second event reached S's subject before the first reached the topic family", view, want)
+	}
+}
+
+// keepsTheOrderOnTheSessionsOwnSubject is the control: both events go to S's own subject, which
+// refuses the first, and the second waits behind it on that key.
+func keepsTheOrderOnTheSessionsOwnSubject(t *testing.T) {
+	rig := newSessionOrderRig(t)
+	rig.refuse(t, contracts.AgentTopicPrefix)
+	person := model.Actor{Kind: "user", ID: "alice"}
+	first := rig.write(t, person, "first, by a person")
+	stop := runOutbox(t, rig.database, rig.client, rig.broker)
+	defer stop()
+	waitFor(t, 60*time.Second, "the first event backed off for S's subject", func() bool {
+		_, attempts := publishedDestinations(t, rig.database, first.ID)
+		return attempts > 0
+	})
+	rig.captureAgain(t)
+	second := rig.write(t, person, "second, by a person")
+	waitFor(t, 120*time.Second, "both events published", func() bool {
+		return publishedAt(t, rig.database, first.ID) != nil && publishedAt(t, rig.database, second.ID) != nil
+	})
+
+	session := contracts.LegacyAgentSubject("S")
+	bySubject, view := rig.views(t, session)
+	want := []int64{first.ID, second.ID}
+	t.Logf("the stream by subject: %v; S takes T-1's events as %v, want %v", bySubject, view, want)
+	if !slices.Equal(bySubject[session], want) {
+		t.Errorf("S's subject holds %v, want %v", bySubject[session], want)
+	}
+	if !slices.Equal(view, want) {
+		t.Errorf("S takes T-1's events as %v, want %v", view, want)
+	}
+}
+
+// In one batch, an owner's send to a session is held back behind the owner's earlier topic send
+// that failed (chainSend.after), whichever route makes it: the issue's session route, its
+// claimant, or a role route's forward to the role's holder. The earlier events are agents'
+// messages, which go to the topic family alone, and the last a person's, which goes to the topic
+// family and to the session, all due in one scan's batch. The first event's topic send fails, so
+// the last event's send to the session is never made: the first event backs off, and every later
+// one is blocked behind it, with no attempt of its own and a next attempt, rather than sent or
+// released. Once the topic family takes sends again, the retry reaches the session only after every
+// earlier event reached the topic family. The last event's own two copies may go either way round:
+// the order asked for is that each session takes an event once, a second copy dropped by its
+// dedupe key, and takes one issue's events in order, so the session takes that event once
+// whichever copy comes first and drops the other. Every copy the outbox sends of one event carries
+// the event's event_id (dispatch-<event id>), which a host's dedupe (createDeliveryDedupe in
+// envoy-client) drops a repeat by whatever its key. Its dedupe key names its event
+// (contracts.DedupeKeyNamesTheUpstreamEvent) but is not always that one: it is dispatch-<event id>
+// here, on the topic copy and on the session's, and on a role forward that key behind the forward
+// prefix, while a new comment's copy for a session whose mention of it failed carries that
+// mention's key (destinations.addSession), as do the forwards resolveRoleHolders keys by a
+// holder's own mention. The last row has two earlier events, so the session send waits on the
+// second's topic send, which the first's failure held back and which was never made.
+func TestASendToASessionIsHeldBackBehindAFailedTopicSendOfItsBatch(t *testing.T) {
+	const topic = "notifications.dispatch.issue.T-1.message.created"
+	agent, person := model.Actor{Kind: "session", ID: "agent-other"}, model.Actor{Kind: "user", ID: "alice"}
+	for _, tc := range []struct {
+		name  string
+		route *string
+		claim *model.Actor
+		// copyTopic is the topic the publisher records the session's copy under: its agent
+		// subject, or the role's topic for a forward to the role's holder.
+		copyTopic string
+		earlier   int
+	}{
+		{name: "the issue's session route", route: new("session:S"), copyTopic: contracts.LegacyAgentSubject("S"), earlier: 1},
+		{name: "the issue's claimant", claim: &model.Actor{Kind: "session", ID: "S"}, copyTopic: contracts.LegacyAgentSubject("S"), earlier: 1},
+		{name: "a role's holder by its forward", route: new("role:reviewer"), copyTopic: roleTopic, earlier: 1},
+		{name: "behind a topic send that was held back itself", route: new("session:S"), copyTopic: contracts.LegacyAgentSubject("S"), earlier: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := store.WithTransactionTracking(context.Background())
+			database := storetest.Open(t)
+			broker := events.NewBroker()
+			seedIssue(t, database, "T-1", tc.route)
+			if tc.claim != nil {
+				claimIssue(t, database, "T-1", *tc.claim)
+			}
+			write := func(actor model.Actor, body string) model.Event {
+				return appendEvent(t, database, broker, model.Event{
+					IssueKey: new("T-1"), Type: "message.created", Actor: actor,
+					Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: body},
+				})
+			}
+			var written []model.Event
+			for index := range tc.earlier {
+				written = append(written, write(agent, fmt.Sprintf("earlier %d, by an agent", index+1)))
+			}
+			written = append(written, write(person, "last, by a person"))
+			publisher := &recordingPublisher{failTopic: topic}
+			outbox := holding(t, withHeldRoles(Deps{Store: database, Publisher: publisher}))
+			outbox.scan(ctx, unfenced{})
+
+			if got := topicsOf(publisher.all()); len(got) != 0 {
+				t.Fatalf("the batch sent %v while the first event's topic send failed, want nothing: the last event's copy for the session went before the first event reached the topic family", got)
+			}
+			ids := make([]int64, 0, len(written))
+			for index, event := range written {
+				ids = append(ids, event.ID)
+				want := 0
+				if index == 0 {
+					want = 1
+				}
+				if attempts, due := nextAttempt(t, database, event.ID); attempts != want || due == nil {
+					t.Fatalf("event %d has %d attempts and next attempt %v, want %d and a next attempt: the first event backs off and each later one waits behind it, none released",
+						event.ID, attempts, due, want)
+				}
+			}
+
+			publisher.setFailTopic("")
+			if _, err := database.Pool.Exec(ctx, `update events set next_attempt_at = null where id = any($1)`, ids); err != nil {
+				t.Fatalf("make the retry due: %v", err)
+			}
+			outbox.scan(ctx, unfenced{})
+			// The last event's own topic send and its session copy may go either way round: the
+			// copies of one event have no order among themselves (planChains), and the session drops
+			// whichever comes second as a repeat, which the checks after this one hold.
+			earlier := slices.Repeat([]string{topic}, len(written)-1)
+			want := append(slices.Clone(earlier), topic, tc.copyTopic)
+			alsoWant := append(slices.Clone(earlier), tc.copyTopic, topic)
+			sent := publisher.all()
+			if got := topicsOf(sent); !slices.Equal(got, want) && !slices.Equal(got, alsoWant) {
+				t.Fatalf("the retry sent %v, want %v or %v: the session's copy only once every earlier event reached the topic family", got, want, alsoWant)
+			}
+			last := sent[len(sent)-2:]
+			if last[0].EventID != last[1].EventID || last[0].EventID != fmt.Sprintf("dispatch-%d", written[len(written)-1].ID) {
+				t.Fatalf("the last event's two copies carry event ids %q and %q, want both dispatch-%d: a host drops a second copy by it",
+					last[0].EventID, last[1].EventID, written[len(written)-1].ID)
+			}
+			for _, copied := range last {
+				if !contracts.DedupeKeyNamesTheUpstreamEvent(copied) {
+					t.Fatalf("the copy to %s carries dedupe key %q from source %q, which names no event: a host would not drop a second copy by it",
+						copied.Topic, copied.DedupeKey, copied.Source)
+				}
+			}
+			if tc.copyTopic != roleTopic && last[0].DedupeKey != last[1].DedupeKey {
+				t.Fatalf("the last event's two copies carry dedupe keys %q and %q, want one key", last[0].DedupeKey, last[1].DedupeKey)
+			}
+			for _, event := range written {
+				if publishedAt(t, database, event.ID) == nil {
+					t.Fatalf("event %d is not published after the retry", event.ID)
+				}
+			}
+		})
+	}
+}
+
+// In one batch, an owner's send to a session waits for the answer to the owner's earlier topic
+// send, rather than going beside it (chainSend.after). Event 1 goes to the topic family alone and
+// event 2 to the topic family and to S's own subject, both due in one batch: the batch sends event
+// 1's topic send alone, and holds event 2's topic send behind it on the topic family's chain and
+// event 2's send to S until NATS answers it. Once it does, both go.
+func TestASendToASessionWaitsForTheAnswerToAnEarlierTopicSendOfItsBatch(t *testing.T) {
+	database := storetest.Open(t)
+	broker := events.NewBroker()
+	route := "session:S"
+	seedIssue(t, database, "T-1", &route)
+	write := func(actor model.Actor, body string) model.Event {
+		return appendEvent(t, database, broker, model.Event{
+			IssueKey: new("T-1"), Type: "message.created", Actor: actor,
+			Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: body},
+		})
+	}
+	first := write(model.Actor{Kind: "session", ID: "agent-other"}, "first, by an agent")
+	second := write(model.Actor{Kind: "user", ID: "alice"}, "second, by a person")
+	publisher := &heldPublisher{}
+	stop := run(t, database, publisher, broker)
+	defer stop()
+
+	topic := "notifications.dispatch.issue.T-1.message.created"
+	session := contracts.LegacyAgentSubject("S")
+	waitFor(t, 5*time.Second, "the first event's topic sent", func() bool { return len(publisher.sent()) > 0 })
+	time.Sleep(200 * time.Millisecond)
+	if got := publisher.sent(); !slices.Equal(got, []string{topic}) {
+		t.Fatalf("sent %v before any answer, want only the first event's topic send: the second event's copy for S went while that send had no answer", got)
+	}
+	publisher.accept(0, 1)
+	waitFor(t, 5*time.Second, "the second event's sends, once the first's topic send was answered", func() bool { return len(publisher.sent()) == 3 })
+	if got := publisher.sent()[1:]; !slices.Contains(got, topic) || !slices.Contains(got, session) {
+		t.Fatalf("sent %v once the first event's topic send was answered, want the second event's to the topic family and to %s", got, session)
+	}
+	publisher.accept(1, 3)
+	waitFor(t, 5*time.Second, "both events marked published", func() bool {
+		return publishedAt(t, database, first.ID) != nil && publishedAt(t, database, second.ID) != nil
+	})
+}
+
 // shiftedClock moves database's clock an hour ahead of the pod's, as a database host whose clock
 // disagrees with the pod's has it, and returns a store whose connections read it: every now() they
 // call answers an hour later than the pod's clock.
@@ -481,27 +844,53 @@ func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
 	})
 }
 
+// countingQueryer is loadLookups' queryer counting every statement it is handed, whatever its SQL,
+// and keeping each statement's SQL.
+type countingQueryer struct {
+	queryer
+	statements int
+	sql        map[string]struct{}
+}
+
+func (c *countingQueryer) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	c.statements++
+	if c.sql == nil {
+		c.sql = map[string]struct{}{}
+	}
+	c.sql[sql] = struct{}{}
+	return c.queryer.Query(ctx, sql, args...)
+}
+
 // A batch of events of every kind whose destinations need a lookup - replies to comments that
 // mention their thread's author, resolutions of those threads, ask answers, replies to messages,
 // comments on documents and a person's settled edits of documents, on an issue a session holds the
 // claim of, and comments on an issue nobody routes or claims, whose primary document a session
-// wrote - reads their followers, authors, comment recipients and mention deliveries in at most
-// seven statements, one per kind, and publishes every one of them. The kinds are the ask
-// followers, the thread root authors a resolution reads, the message authors, the document
-// authors, the mention deliveries a new comment whose mentions resolved to a session reads
-// (loadMentionDeliveries), and #2366's two: the sessions of the threads the replies are in
-// (loadCommentRecipients) and the sessions of the unclaimed issues' primary documents
-// (loadPrimaryDocumentAuthors). The claimant costs no statement: the batch's own read carries the
-// issue's claim (readBatch). A document's writers are one kind, whether a comment on it or an edit
-// of it asks for them, so the edits add no statement.
-func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostSevenStatements(t *testing.T) {
+// wrote - runs eight lookup statements, one per kind and two for the mention read, and publishes
+// every one of them. The statements are the ask followers, the thread root authors a resolution
+// reads, the message authors, the document authors, the mention deliveries a new comment whose
+// mentions resolved to a session reads and the comment_fallback_copies rows that already own a
+// destination of one (loadMentionDeliveries, its two statements), and #2366's two: the sessions of
+// the threads the replies are in (loadCommentRecipients) and the sessions of the unclaimed issues'
+// primary documents (loadPrimaryDocumentAuthors). The claimant costs no statement: the batch's own
+// read carries the issue's claim (readBatch). A document's writers are one kind, whether a comment
+// on it or an edit of it asks for them, so the edits add no statement. The statements are counted
+// twice. Once where loadLookups hands each one to its queryer, for the batch the scan reads, so
+// that count is of every statement one call of loadLookups runs, whatever its SQL: one more, or a
+// kind the batch stops reading, fails it. And once among every statement a real scan of that
+// batch runs (tracedStore), counting each whose SQL is one of the statements loadLookups ran,
+// the comment_fallback_copies read among them: a scan that read the lookups more than once - per
+// event, per owner, or once again - fails it. The second issue's events ask a kind the first's
+// ask too (a reply to a message on it), so a read per owner runs that kind's statement twice.
+func TestABatchThatAsksEveryLookupKindRunsEightLookupStatements(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
 	claimIssue(t, database, "T-1", model.Actor{Kind: "session", ID: "claimant"})
 	seedSecondIssue(t, database, "T-2")
 	seedSpec(t, database, "T-2", model.Actor{Kind: "session", ID: "primary-author"})
-	const each = batchSize / 7
+	// Seven events of each index and the one reply on the second issue below: at most batchSize, so
+	// one batch reads them all whatever batchSize is.
+	const each = (batchSize - 1) / 7
 	var seeded []model.Event
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	for index := range each {
@@ -554,10 +943,60 @@ func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostS
 			Payload: map[string]any{"id": uuid.NewString(), "body": "On the second issue"},
 		}))
 	}
+	// A reply on the second issue to a message there: the message authors are a kind the first
+	// issue's events ask too, so a scan that read the lookups once per owner would run it twice.
+	otherMessage := seedMessage(t, database, "T-2", model.Actor{Kind: "session", ID: "other-sender"}, "Status?", nil)
+	seeded = append(seeded, appendEvent(t, database, broker, model.Event{
+		IssueKey: new("T-2"), Type: "message.created", Actor: alice,
+		Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-2"), Body: "Fine", InReplyTo: &otherMessage},
+	}))
+
+	// The batch the scan is about to read, read the same way, with its lookups run through a
+	// queryer that counts them (resolveDestinations): the scan's own statements are many more than
+	// its lookups, and no reading of their SQL tells a lookup from the rest.
+	ctx := context.Background()
+	reading := Deps{Store: database}
+	reading.lanes = newLanes(func() {})
+	pending, stopped, _, err := readBatch(ctx, reading)
+	if err != nil || stopped {
+		t.Fatalf("read the batch: stopped %v, %v", stopped, err)
+	}
+	if len(pending) != len(seeded) {
+		t.Fatalf("the batch read %d events, want all %d", len(pending), len(seeded))
+	}
+	want := newWanted()
+	for _, read := range pending {
+		item, err := envelope(read.event, read.slug)
+		if err != nil {
+			t.Fatalf("build event %d's envelope: %v", read.event.ID, err)
+		}
+		_, _, _ = eventDestinations(ctx, reading, &batchEvent{pendingEvent: read, item: item}, want)
+	}
+	counted := &countingQueryer{queryer: database.Pool}
+	if _, err := loadLookups(ctx, counted, want); err != nil {
+		t.Fatalf("read the batch's lookups: %v", err)
+	}
+	if counted.statements != 8 {
+		t.Fatalf("the batch of %d events ran %d lookup statements, want 8: one per kind and two for the mention read (loadLookups)", len(seeded), counted.statements)
+	}
+	t.Logf("the batch of %d events ran %d lookup statements", len(seeded), counted.statements)
 
 	tracer := &statementTracer{}
 	publisher := &recordingPublisher{}
-	holding(t, Deps{Store: tracedStore(t, database, tracer), Publisher: publisher}).scan(context.Background(), unfenced{})
+	holding(t, Deps{Store: tracedStore(t, database, tracer), Publisher: publisher}).scan(ctx, unfenced{})
+	scanned := 0
+	for _, statement := range tracer.matching() {
+		if _, ok := counted.sql[statement.sql]; ok {
+			scanned++
+		}
+	}
+	if _, ok := counted.sql[mentionFallbackHoldsQuery]; !ok {
+		t.Fatalf("loadLookups ran no read of comment_fallback_copies (mentionFallbackHoldsQuery), so the scan's count below cannot see it")
+	}
+	if scanned != 8 {
+		t.Fatalf("the scan of the batch ran %d lookup statements, want 8: it reads the batch's lookups once (resolveDestinations, loadLookups)", scanned)
+	}
+	t.Logf("the scan of the batch ran %d lookup statements", scanned)
 
 	for _, event := range seeded {
 		if publishedAt(t, database, event.ID) == nil {
@@ -576,23 +1015,19 @@ func TestTheBatchResolvesFollowersAuthorsRecipientsAndMentionDeliveriesInAtMostS
 	// Each comment reply whose mention failed reaches its thread's author, each resolution its
 	// thread root's author, each ask answer its two followers, each message reply its parent's
 	// sender, each person's edit the edited document's author, and each comment on the unclaimed
-	// issue its spec's author; and every reply, resolution, answer, message and comment on the
-	// claimed issue - a person's - reaches the claimant, which an edit, no claimant event, does
-	// not. Each comment on a document of the claimed issue reaches that document's author no
+	// issue its spec's author, and the one reply on it its parent's sender; and every reply,
+	// resolution, answer, message and comment on the claimed issue - a person's - reaches the
+	// claimant, which an edit, no claimant event, does not. Each comment on a document of the
+	// claimed issue reaches that document's author no
 	// more: on an issue a session claims, the credits of a document are no second reason to
 	// deliver what the claimant already hears on its own topic (addAuthorRoutes). The read of
-	// those credits is made all the same, so the statement count below is unchanged.
+	// those credits is made all the same, so the statement count above is unchanged.
 	if want := each * 5; claimant != want {
 		t.Fatalf("the batch reached the claimant %d times, want %d", claimant, want)
 	}
-	if want := each/2 + each*6 + each*5; agents != want {
+	if want := each/2 + each*6 + each*5 + 1; agents != want {
 		t.Fatalf("the batch reached %d sessions' own subjects, want %d", agents, want)
 	}
-	lookups := tracer.matchingAny("ask_followers", "from comments", "from messages", "artifact_versions", "from comment_deliveries", "is_primary")
-	if len(lookups) > 7 {
-		t.Fatalf("the batch of %d events ran %d follower, author, recipient and mention delivery lookups, want at most 7", len(seeded), len(lookups))
-	}
-	t.Logf("the batch of %d events ran %d follower, author, recipient and mention delivery lookups", len(seeded), len(lookups))
 }
 
 // One row no recipient read can take, among a batch's many ids of that read, fails only the event

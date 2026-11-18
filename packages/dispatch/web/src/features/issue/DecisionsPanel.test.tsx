@@ -4,6 +4,7 @@ import { cleanup, render, screen, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { quietConsoleError } from "../../__tests__/act-warnings";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
@@ -465,7 +466,7 @@ test("a block whose tree the engine refuses shows its own text alone", async () 
     waitingView({ heading: "Keep a log", text, text_tree: refusedTree(text) })
   );
   // The engine reports every tree it refuses, one report per block drawn.
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   try {
     renderPanel();
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });

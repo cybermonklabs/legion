@@ -58,15 +58,16 @@ This form sends an empty value, and the API answers as if you had sent no creden
 ```sh
 # wrong
 agent-secrets LEGION_SLACK_BOT_TOKEN -- \
-  curl -sS -H "Authorization: Bearer $LEGION_SLACK_BOT_TOKEN" https://slack.com/api/auth.test
+  sh -c "printf 'Authorization: Bearer %s' \"$LEGION_SLACK_BOT_TOKEN\" | curl -sS -H @- https://slack.com/api/auth.test"
 ```
 
-Your own shell expands `$LEGION_SLACK_BOT_TOKEN` before `agent-secrets` runs, and in your shell that
-name is empty. Slack then answers `{"ok":false,"error":"not_authed"}`. What the client hands over — the value, or the placeholder of
-a secret behind the airlock — exists only in the environment of the command the client starts, so
-that command must read it itself. Put the command in single quotes, inside
-`sh -c`, where the quotes keep the expansion for the child, and give `curl` the header on standard
-input (`-H @-`), so the value is in no command's arguments:
+Your own shell expands `$LEGION_SLACK_BOT_TOKEN` inside the double quotes before `agent-secrets`
+runs, and in your shell that name is empty. Slack then answers `{"ok":false,"error":"not_authed"}`.
+What the client hands over — the value, or the placeholder of a secret behind the airlock — exists
+only in the environment of the command the client starts, so that command must read it itself.
+Put the command in single quotes, inside `sh -c`, where the quotes keep the expansion for the
+child, and give `curl` the header on standard input (`-H @-`), so the value is in no command's
+arguments:
 
 ```sh
 # right
@@ -150,13 +151,14 @@ Your transcript keeps everything a command prints.
   ```
 
 - Take a credential out of a JSON value inside the command, and pass it on there without
-  printing it. `jq -e` exits 1 when the path holds nothing, so the command stops rather than
-  sending an empty credential:
+  printing it, with the header on curl's standard input so it is in no command's arguments.
+  `jq -e` exits 1 when the path holds nothing, so the command stops rather than sending an empty
+  credential:
 
   ```sh
   agent-secrets NAME --reason '…' -- sh -c '
     token=$(printf %s "$NAME" | jq -er ".path.to.token" 2>/dev/null) || { echo "no token at .path.to.token" >&2; exit 1; }
-    curl -sS -H "Authorization: Bearer $token" https://api.example.com/'
+    printf "Authorization: Bearer %s" "$token" | curl -sS -H @- https://api.example.com/'
   ```
 
   For a GitHub App secret, `--github-owner <account> --github-token` hands the command that one
@@ -188,8 +190,13 @@ Without the grant line the status is the client's own:
   source with why it had nothing.
 - **2** — a usage error: no `AGENT_SECRETS_URL`, no `--`, no `NAME`, or a flag value the client
   refuses.
-- **75** — the request still waits for a person. The message names who decides it, where, and the
-  `agent-secrets status <request_id>` that reads it.
+- **75** — the request still waits for a person when `--wait` runs out. The message names who
+  decides it, where, and the `agent-secrets status <request_id>` that reads it. A status poll
+  that did not reach the broker (a reset, a timeout, a 502 or 503) does not end the wait: stderr
+  says once that the command keeps waiting, and polling goes on. If the wait runs out while polls
+  still fail, the exit is 75 too, and the message names the last failure; `agent-secrets status
+  <request_id>` says whether the request was decided, and running the same command again (the same
+  names and `--ttl`, from the same session) collects a grant it already has, asking no one again.
 - **77** — the request was denied. The approver denied it, the policy refused a name (a
   service's secret, or one whose requesters list does not name this session), or the request
   named a secret a person must approve and carried no reason, which the detail reads
@@ -231,6 +238,11 @@ never denies. Every other request waits for that person, as it does now.
   1 otherwise, and it asks the broker nothing. `agent-secrets identity --source` prints the source
   the client would take its broker identity from (`key-dir`, `sign-in`, `helper` or `machine`).
   `agent-secrets self` prints this session's live grants.
+- `agent-secrets grant revoke <grant_id>` ends a grant given to this session's broker identity,
+  from inside the session, before its lifetime runs out. The broker checks the enrollment, not the
+  session: a grant of another enrollment is refused `was given to another broker identity
+  (enrollment)`, and every session of a person who ran `agent-secrets login` on this machine signs
+  as that sign-in's one enrollment, so each of them can end the others' grants.
 
 ## Where a name comes from, and how you may use it
 

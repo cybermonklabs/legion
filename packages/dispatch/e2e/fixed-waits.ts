@@ -60,10 +60,11 @@
  * checker is needed for that, so the scan parses files and builds no program; which files it
  * parses, and why a file it skips can hold no wait, is in `waitsOfFiles`.
  *
- * What it does NOT read: `Bun.sleep`, which `e2e/fake-envoy.ts` and `e2e/local-instance.ts` use
- * for a fixture's configured delay and a dev server's shutdown, neither of them a row's wait;
- * and a page clock jumped forward, which spends no time at all. A pass here is a claim about the
- * two spellings above and about nothing else.
+ * What it does NOT read: `Bun.sleep`, which `e2e/fake-envoy.ts` and `e2e/fake-github.ts` use
+ * for a fixture's configured delay, neither of them a row's wait; and a page clock jumped
+ * forward, which spends no time at all. The PostgreSQL wait of `e2e/local-instance.ts` is
+ * `awaitPostgres` of `e2e/local-instance-support.ts`, whose pause between reads is a `sleep` this
+ * rule reads. A pass here is a claim about the two spellings above and about nothing else.
  *
  * `suiteFiles` and `waitsOfFiles` read the file system and everything else here is pure over its
  * arguments: no environment, no network, no database and no server, so any process may call it.
@@ -183,7 +184,7 @@ function isFixedWait(call: ts.CallExpression, names: WaitNames): boolean {
 
 /** The statement a call stands in: the ancestor whose own parent holds a list of statements. A
  *  reason is written above that statement's first line, which is the call's own line whenever the
- *  wait is a statement of its own and some earlier line otherwise. */
+ *  call is a statement of its own and some earlier line otherwise. */
 function statementOf(call: ts.CallExpression): ts.Node {
   let node: ts.Node = call;
   while (
@@ -259,6 +260,17 @@ export function reasonEndingAbove(
   return reason.join(" ").trim();
 }
 
+/** The reason that stands above `call`: the comments before its statement, read by
+ *  `reasonEndingAbove` against the line the call's first token stands on. It is exported because
+ *  `e2e/zero-wait-probes.ts` reads a probe's reason by this measure. */
+export function reasonAboveCall(call: ts.CallExpression): string {
+  const sourceFile = call.getSourceFile();
+  const line = sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile)).line;
+  const text = sourceFile.getFullText();
+  const ranges = ts.getLeadingCommentRanges(text, statementOf(call).getFullStart()) ?? [];
+  return reasonEndingAbove(sourceFile, ranges, line);
+}
+
 /** Every fixed wait the given files hold, each reported under the path it was named by:
  *  `suiteFiles`' path relative to `directory`.
  *
@@ -286,13 +298,11 @@ export function waitsOfFiles(directory: string, files: readonly string[]): Fixed
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && isFixedWait(node, names)) {
         const callLine = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line;
-        // The reason stands above the call's statement, and is read against the call's own line.
-        const ranges = ts.getLeadingCommentRanges(text, statementOf(node).getFullStart()) ?? [];
         waits.push({
           file,
           line: callLine + 1,
           call: node.getText(sourceFile),
-          reason: reasonEndingAbove(sourceFile, ranges, callLine),
+          reason: reasonAboveCall(node),
         });
       }
       ts.forEachChild(node, visit);

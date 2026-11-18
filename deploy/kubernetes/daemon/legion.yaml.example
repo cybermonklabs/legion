@@ -93,8 +93,10 @@ projects:
   #   commit_issue_trailer_repos: [acme/widgets] # optional: the repositories whose commits carry
   #                                    # their issue key, as the Dispatch: <KEY> trailer the pane's
   #                                    # jj appends, so a squash landing the branch carries the key.
-  #                                    # Each must be one Dispatch maps to this project; a pane of
-  #                                    # any other repository stamps nothing
+  #                                    # Boot warns about a name Dispatch's mapping for this
+  #                                    # project does not hold, which catches a typo, and the pane
+  #                                    # stamps all the same; a pane of any other repository
+  #                                    # stamps nothing
   #   memory:                          # optional: what each tree this project opens runs with. The
   #                                    # block is the experiment named memory (experiments below),
   #                                    # so write the block or experiments.memory, never both; the
@@ -366,6 +368,29 @@ runtime:
     #                                  # 80Gi over 6Gi of disk; controller 1 and 4Gi, 10Gi over 1Gi. On GKE
     #                                  # Autopilot, which caps a pod's ephemeral storage at 10Gi, set
     #                                  # issue: { ephemeral_storage: 10Gi, ephemeral_storage_request: 10Gi }
+    # sandbox:                         # optional: the sandbox the project's issue pods run in.
+    #   type: gvisor                   # gvisor or microvm. gvisor is the default.
+    #   canary_issues: [WIDGETS-12]    # issues whose pods run in the other sandbox, for a canary.
+    #                                  # Each is an exact issue key, named once. The default is [].
+    #   microvm:                       # where a microVM pod runs.
+    #     compute_class: example-microvm # the ComputeClass whose nodes run the microVM pods.
+    #                                  # Required while type is microvm or canary_issues names an
+    #                                  # issue.
+    #     storage_class: example-microvm-disk # the class of a microVM pod's workspace volume.
+    #                                  # The default is storage_class above.
+    #     metadata:                    # optional: a microVM pod's launcher serves the metadata
+    #                                  # server's paths inside the pod. The pod then gets its
+    #                                  # Google credential without the node's own address.
+    #       workload_pool: example-project.svc.id.goog # the cluster's Workload Identity pool.
+    #       identity_provider: https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster
+    #                                  # the cluster's identity provider.
+    #                                  # That launcher sets GCE_METADATA_HOST and GCE_METADATA_IP to
+    #                                  # the endpoint's address, so pod.env must not set them.
+    #                                  # A microvm block does nothing while no issue pod runs in a
+    #                                  # microVM. The controller's pod, the repository cache pods
+    #                                  # and the image probe always run in gVisor. While an issue
+    #                                  # pod runs in a microVM, scheduling must not name
+    #                                  # sandbox.gke.io/runtime: the RuntimeClass places the pod.
     # repository_cache:                # each mapped repository's cache pod, which every issue pod's feed is
     #   volume: 20Gi                   # filled from before GitHub is asked for the rest: the cache's own volume,
     #   refresh_minutes: 10            # holding a bare clone; how often it fetches GitHub; how long it outlives

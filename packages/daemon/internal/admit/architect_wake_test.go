@@ -672,13 +672,15 @@ func TestTheTookNothingArchitectWakeCountsFromTheEntrysFirstQueueing(t *testing.
 // lane that died mid-run leaves on the row until the outbox's sweep runs the row again, holds
 // nothing, as the store's own due predicate reads it (record.QueuedSupervise.Running). A queued
 // start is the daemon's own next move: the outbox's start of a failed or a retired claim
-// relaunches it on its kept session, and a controller woken now would take `fresh_session`, which
-// discards that session. Every re-admission of a closed tree makes this shape: the linger's end
-// retires the architect's claim, and the promotion queues the architect's start in the same pass
-// that reads the arms. A start in its run against the claim is still the next move: the outbox
-// records the start on the claim (claims.last_start_row) before it relaunches the claim, so a pass
-// that reads the record in that moment reads the claim failed or retired beside the start that is
-// relaunching it, whatever an earlier run of that start that waited added to its attempts.
+// relaunches it, on its kept session, or a new one once supervise's Machine.forgetSession has
+// dropped that (an architect's start asks for no new session), and a controller woken now would
+// take `fresh_session`, which discards that session. Every re-admission of a closed tree makes this
+// shape: the linger's end retires the architect's claim, and the promotion queues the architect's
+// start in the same pass that reads the arms. A start in its run against the claim is still the
+// next move: the outbox records the start on the claim (claims.last_start_row) before it
+// relaunches the claim, so a pass that reads the record in that moment reads the claim failed or
+// retired beside the start that is relaunching it, whatever an earlier run of that start that
+// waited added to its attempts.
 //
 // workflow.Stranded is asked here too, of the claims the store holds for the very fixture the
 // pass then reads, and the two readings answer different questions. Stranded asks whether nothing

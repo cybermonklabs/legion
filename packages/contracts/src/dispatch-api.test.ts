@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type { BlockTypeSchema } from "./block-schema.generated";
 import {
   type Actor,
+  ActorActSchema,
+  ActorSchema,
   type Agent,
   type Anchor,
   type AnchorInput,
@@ -247,6 +249,41 @@ test("preserves labels on an issue update event payload", () => {
 test("preserves a coarse priority on an issue update event payload", () => {
   expect(IssueEventPayloadSchema.parse({ priority: 0 })).toEqual({ priority: 0 });
   expect(IssueEventPayloadSchema.parse({ priority: null })).toEqual({ priority: null });
+});
+
+test("reads the proven mark of an actor and of its act's session, only as true", () => {
+  const session = {
+    kind: "session",
+    id: "ses_1",
+    owner: "alice@example.com",
+    proven: true,
+  } satisfies Actor;
+  expect<Actor>(ActorSchema.parse(session)).toEqual(session);
+  const person = {
+    kind: "user",
+    id: "alice@example.com",
+    act: { session: "ses_1", session_proven: true, scopes: ["person"] },
+    proven: true,
+  } satisfies Actor;
+  expect<Actor>(ActorSchema.parse(person)).toEqual(person);
+  // A claimed actor, and every actor written before the mark, carries none.
+  expect(ActorSchema.parse({ kind: "session", id: "ses_2" })).toEqual({
+    kind: "session",
+    id: "ses_2",
+  });
+  expect(ActorActSchema.parse({ session: "ses_2", token_id: "tok_1" })).toEqual({
+    session: "ses_2",
+    token_id: "tok_1",
+  });
+  // The server writes the mark only where it holds, so false is no reading of it, and the
+  // server-owned writer carries none.
+  expect(ActorSchema.safeParse({ kind: "session", id: "ses_2", proven: false }).success).toBe(
+    false
+  );
+  expect(ActorActSchema.safeParse({ session: "ses_2", session_proven: false }).success).toBe(false);
+  expect(
+    ActorSchema.safeParse({ kind: "system", id: "architecture-importer", proven: true }).success
+  ).toBe(false);
 });
 
 test("keeps what an issue write changed, its ancestors and its thread logins, and accepts an event without them", () => {

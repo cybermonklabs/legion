@@ -132,11 +132,11 @@ const (
 func (r *rig) useGitHubAppGrant() {
 	conn := testConnection()
 	conn.Names = map[string]requests.AirlockGrantName{
-		workerName: {Kind: "github-app", Slots: map[string]string{githubAcmeSlot: workerPlaceholder, githubZedSlot: githubZedHolder}},
+		workerName: {Type: "github-app", Slots: map[string]string{githubAcmeSlot: workerPlaceholder, githubZedSlot: githubZedHolder}},
 	}
 	r.grants.setConnection(workerPlaceholder, conn)
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		workerName: {Kind: "github-app", Slots: map[string]string{githubAcmeSlot: githubAcmeToken, githubZedSlot: githubZedToken}},
+		workerName: {Type: "github-app", Slots: map[string]string{githubAcmeSlot: githubAcmeToken, githubZedSlot: githubZedToken}},
 	})
 }
 
@@ -145,7 +145,7 @@ func (r *rig) useGitHubAppGrant() {
 // grant still holds acme's placeholder, as a release made before the installation went does.
 func (r *rig) removeAcmeInstallation() {
 	r.grants.setValues(testGrantID, map[string]requests.AirlockSecret{
-		workerName: {Kind: "github-app", Slots: map[string]string{githubZedSlot: githubZedToken}},
+		workerName: {Type: "github-app", Slots: map[string]string{githubZedSlot: githubZedToken}},
 	})
 	r.proxy.DropName(workerName)
 }
@@ -303,7 +303,7 @@ func (f *fakeGrants) AirlockAccessPlaceholder(_ context.Context, grantID, name, 
 		slots := maps.Clone(held.Slots)
 		slots[slot] = placeholder
 		names := maps.Clone(conn.Names)
-		names[name] = requests.AirlockGrantName{Slots: slots, Kind: held.Kind}
+		names[name] = requests.AirlockGrantName{Slots: slots, Type: held.Type}
 		conn.Names = names
 		f.connections[password] = conn
 	}
