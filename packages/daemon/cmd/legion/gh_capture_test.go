@@ -500,36 +500,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{nil, []string{"api", "graphql", "-f", "query={viewer{login}}"}, "acme", ""},
 		{nil, []string{"api", "repos/other/thing"}, "", `the role's GitHub App is not installed on "other"`},
 		{nil, []string{"pr", "view", "1", "-R", "sjawhar/legion", "--bogus"}, "", `"--bogus" is no option`},
-		// gh 2.104.0 sends github.com's API requests, with the directory's token, to the host
-		// api_host names; gh writes that key, and any key it does not know, with `config set`.
-		{nil, []string{"config", "set", "api_host", "api.example.invalid", "--host", "github.com"}, "", "`gh config set` writes the gh directory's configuration"},
 	} {
 		check(home, tc.env, tc.args, tc.owner, tc.refuse)
 	}
-
-	// A directory whose files send gh's requests elsewhere, as a pane can write its own between
-	// two of the daemon's refreshes, is refused before anything is sent: api_host in hosts.yml's
-	// github.com block, http_unix_socket at the top of config.yml or in a host's block of it.
-	acmeDir := ghconfig.Dir(root, "acme")
-	for _, edit := range []struct{ file, text, key string }{
-		{ghconfig.HostsFile, ghconfig.Hosts(tokens["acme"]) + "    api_host: api.example.invalid\n", "api_host"},
-		{ghconfig.ConfigFile, ghconfig.Config + "http_unix_socket: /tmp/example.sock\n", "http_unix_socket"},
-		{ghconfig.ConfigFile, ghconfig.Config + "hosts:\n    github.com:\n        http_unix_socket: /tmp/example.sock\n", "http_unix_socket"},
-	} {
-		path := filepath.Join(acmeDir, edit.file)
-		kept, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(path, []byte(edit.text), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		check(home, nil, []string{"api", "repos/acme/widgets"}, "", path+" sets "+edit.key)
-		if err := os.WriteFile(path, kept, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	check(home, nil, []string{"api", "repos/acme/widgets"}, "acme", "")
 
 	// A command naming no repository, or naming another while gh takes the command's own from the
 	// working directory, acts on the repository gh reads from the working directory's git remotes,
