@@ -315,6 +315,11 @@ func tlsCertificateError(detail string) bool {
 		"x509:",
 		"failed to verify certificate",
 		"net::err_cert",
+		// GNU wget says "ERROR: The certificate of '<host>' …" for every certificate refusal.
+		"error: the certificate of",
+		// git's https transport, through libcurl's GnuTLS build: "server verification failed:
+		// certificate signer not trusted".
+		"server verification failed",
 	} {
 		if strings.Contains(lower, marker) {
 			return true
@@ -345,37 +350,60 @@ func tlsCommandClientSpec(name string, timeout time.Duration, program string, ar
 	}
 }
 
-// tlsOptionalClientSpec is the spec of a tlsOptionalClient, named for its program. command gives
-// one site's arguments and the environment it adds, with the client's state under stateDir
-// (newTLSStateDir); readStdout is the command client's.
-func tlsOptionalClientSpec(program string, timeout time.Duration, applicationSeen func(string) bool, readStdout bool, command func(site tlsSite, stateDir string) (args, extraEnv []string)) tlsClientSpec {
+// tlsStateClientSpec is the spec of a floor client named for its program. command gives one site's
+// arguments and the environment it adds, with the client's state under stateDir (newTLSStateDir);
+// readStdout is the command client's.
+func tlsStateClientSpec(program string, timeout time.Duration, applicationSeen func(string) bool, readStdout bool, command func(site tlsSite, stateDir string) (args, extraEnv []string)) tlsClientSpec {
 	return tlsClientSpec{
 		name: program, timeout: timeout,
 		build: func(_ string, env []string, workDir, stateDir string, timeout time.Duration) tlsClient {
-			return tlsOptionalClient{program: program, tlsCommandClient: tlsCommandClient{
+			return tlsCommandClient{
 				clientName: program, env: env, workDir: workDir, timeout: timeout, applicationSeen: applicationSeen, readStdout: readStdout,
 				command: func(site tlsSite) (string, []string, []string) {
 					args, extraEnv := command(site, stateDir)
 					return program, args, extraEnv
 				},
-			}}
+			}
 		},
 	}
 }
 
-// tlsProbeSignIn is the dummy OAuth value gcloud and bq sign in with, from the state directory's
-// tlsAccessTokenFile and, for bq, its --oauth_access_token flag: the probe needs their TLS
-// handshake, never an authorized call. Its name holds no "token", so the public leak check does
-// not read the literal as a credential.
+// tlsOptionalClientSpec is tlsStateClientSpec's spec for a tlsOptionalClient, which is absent
+// where its program is not on PATH.
+func tlsOptionalClientSpec(program string, timeout time.Duration, applicationSeen func(string) bool, readStdout bool, command func(site tlsSite, stateDir string) (args, extraEnv []string)) tlsClientSpec {
+	spec := tlsStateClientSpec(program, timeout, applicationSeen, readStdout, command)
+	build := spec.build
+	spec.build = func(invocation string, env []string, workDir, stateDir string, timeout time.Duration) tlsClient {
+		// tlsStateClientSpec builds a tlsCommandClient.
+		return tlsOptionalClient{program: program, tlsCommandClient: build(invocation, env, workDir, stateDir, timeout).(tlsCommandClient)}
+	}
+	return spec
+}
+
+// inTLSStateDir runs spec's client in the probe's state directory instead of the probe's working
+// directory, for a program that reads files of its working directory: go reads the go.mod of that
+// directory or of the nearest directory above it.
+func inTLSStateDir(spec tlsClientSpec) tlsClientSpec {
+	build := spec.build
+	spec.build = func(invocation string, env []string, _, stateDir string, timeout time.Duration) tlsClient {
+		return build(invocation, env, stateDir, stateDir, timeout)
+	}
+	return spec
+}
+
+// tlsProbeSignIn is the dummy credential gcloud, bq and kubectl sign in with: gcloud and bq from
+// the state directory's tlsAccessTokenFile and, for bq, its --oauth_access_token flag, and kubectl
+// from its --token flag. The probe needs their TLS handshake, never an authorized call. Its name
+// holds no "token", so the public leak check does not read the literal as a credential.
 const (
 	tlsProbeSignIn     = "legion-tls-probe"
 	tlsAccessTokenFile = "access-token"
 )
 
-// newTLSStateDir makes the directory gcloud, bq, az and mise keep their state in during the TLS
-// probe, so none of it lands in the runtime user's home (the image build's final step requires
-// that), and writes into it the access-token file gcloud and bq sign in with. remove deletes the
-// directory with everything the clients wrote there.
+// newTLSStateDir makes the directory the TLS probe's gcloud, bq, az, mise, go and kubectl keep
+// their state in (go also runs there), so none of it lands in the runtime user's home (the image
+// build's final step requires that), and writes into it the access-token file gcloud and bq sign
+// in with. remove deletes the directory with everything the clients wrote there.
 func newTLSStateDir() (dir string, remove func(), err error) {
 	dir, err = os.MkdirTemp("", "legion-tls-probe-")
 	if err != nil {
@@ -413,20 +441,48 @@ func googleCloudTLSEnvironment(stateDir, client string) []string {
 // its fakes derive their client names and timeout bounds from this list, so neither can silently
 // fall out of tests.
 //
-// gcloud, bq, az and mise are probed where they are on PATH and reported absent otherwise
-// (tlsOptionalClient). They are outside the floor every deployment's image is held to: an image
-// built on another base may not carry them, or may carry this image's /usr/local/bin links to them
+// wget, git, go and kubectl are floor clients, held to the chains on every image. wget, go and
+// kubectl are on the toolchain row of the floor every deployment's image is held to
+// (packages/daemon/internal/capabilities/image.go); git is on no row, but the image probe's jj
+// check runs `jj git clone`, which needs a git. wget and git matter because they link GnuTLS, a TLS
+// library no other client here uses: GNU wget directly, and git through its https transport,
+// git-remote-https, which links libcurl's GnuTLS build where curl links OpenSSL. go and kubectl are
+// here because each reaches a URL a role names and verifies it through Go's crypto/x509 system
+// roots, the path gh takes: `go install <module>@<version>` and `go get` with GOPROXY=direct fetch
+// `https://<host>/<path>?go-get=1` from the module path's host, and `kubectl apply -f https://…`
+// and `kubectl --server` reach the host the role gives.
+//
+// gcloud, bq, az, mise and socat are probed where they are on PATH and reported absent otherwise
+// (tlsOptionalClient). None is on the floor, so an image built on another base may not carry it.
+// Such an image may also carry this image's /usr/local/bin links to gcloud, bq, az and mise
 // without the /opt trees those links point into, as LINUX's worker-lean, which copies
-// /usr/local/bin onto Ubuntu, may. Where one is on PATH, it must refuse both chains and reach the
-// control, as every other client must. mise is here because its http: backend downloads from any
-// URL a role names, with its own HTTP client verifying against the system roots.
+// /usr/local/bin onto Ubuntu, may; socat lives in /usr/bin, which worker-lean does not copy.
+// Where one is on PATH, it must refuse both chains and reach the control, as every other client
+// must. mise is here because its http: backend downloads from any URL a role names, with its own
+// HTTP client verifying against the system roots, and socat because its OPENSSL: address verifies
+// its peer against OpenSSL's default store.
 //
 // Deliberately not here: busybox's wget and ssl_client applets, which do no certificate
 // validation at all (busybox's own help says "TLS certificate validation not implemented"), and
 // which the image makes reachable only through the busybox binary, as `busybox wget`: Debian's
 // busybox package installs no applet links, so the image's `wget` is GNU wget, the one the
-// capability check's toolchain row requires on PATH. And gsutil, which the image does not put on
-// PATH: it stays inside /opt/google-cloud-sdk/bin.
+// capability check's toolchain row requires on PATH, and an applet that became that `wget` would
+// accept the compromised chains and fail the probe. gsutil, which the image does not put on PATH:
+// it stays inside /opt/google-cloud-sdk/bin. psql (PostgreSQL 18.6's client, on the toolchain
+// row), which cannot reach a certificate verdict at an HTTPS site: its TLS starts after Postgres's
+// SSLRequest, which the sites answer as HTTP ("received invalid response to SSL negotiation" at the
+// emSign site and at example.com), and its direct mode (sslnegotiation=direct) needs the postgresql
+// ALPN protocol, which the emSign site refuses before any certificate check ("SSL error: unexpected
+// eof while reading") and example.com does not negotiate ("direct SSL connection was established
+// without ALPN protocol negotiation extension"). Its default sslmode=prefer verifies no
+// certificate, and its verify-ca and verify-full modes read ~/.postgresql/root.crt unless a role
+// names sslrootcert=system, which is OpenSSL's default store, the store curl, python3 and socat are
+// probed through. And openssl's CLI (OpenSSL 3.5.7, /usr/bin/openssl): `openssl s_client`
+// completes the handshake whatever its verification says and exits 0 (against the emSign site it
+// printed "Verify return code: 20 (unable to get local issuer certificate)" and exited 0), so it
+// refuses nothing a probe could read, and with -verify_return_error it reads OpenSSL's default
+// store, the one curl, python3 and socat are probed through. psql and openssl were measured on
+// 2026-11-18.
 var workerTLSClients = []tlsClientSpec{
 	tlsCommandClientSpec("node", tlsDefaultProbeTimeout, "node", func(tlsSite) []string { return []string{"--input-type=module", "--eval", tlsFetchProgram} }, nil),
 	tlsCommandClientSpec("bun", tlsDefaultProbeTimeout, "bun", func(tlsSite) []string { return []string{"--eval", tlsFetchProgram} }, nil),
@@ -453,6 +509,49 @@ var workerTLSClients = []tlsClientSpec{
 		return []string{"-c", "import os, urllib.request; urllib.request.urlopen(os.environ['LEGION_TLS_URL']).read(1)"}
 	}, nil),
 	tlsCommandClientSpec("gh", tlsDefaultProbeTimeout, "/usr/local/bin/gh", func(site tlsSite) []string { return []string{"api", site.url} }, ghResponseSeen, "GH_TOKEN=legion-tls-probe"),
+	// --no-hsts keeps wget from writing ~/.wget-hsts into the runtime user's home. wget exits 0 on
+	// the control's page, so, as curl, it needs no response marker.
+	tlsCommandClientSpec("wget", tlsDefaultProbeTimeout, "wget", func(site tlsSite) []string {
+		return []string{"--no-verbose", "--no-hsts", "--tries=1", "--output-document=/dev/null", site.url}
+	}, nil),
+	// The PATH's git: in a pod, the /opt/legion/bin/git wrapper, which hands ls-remote to
+	// /usr/bin/git unchanged. GIT_TERMINAL_PROMPT=0 keeps it from waiting on a credential prompt.
+	// No site is a git repository, so git fails ls-remote at the control too, after the handshake;
+	// gitResponseSeen reads that answer.
+	tlsCommandClientSpec("git", tlsDefaultProbeTimeout, "git", func(site tlsSite) []string { return []string{"ls-remote", site.url} }, gitResponseSeen, "GIT_TERMINAL_PROMPT=0"),
+	// go's fetch of a module path at the site's host, the fetch `go install` and `go get` make with
+	// GOPROXY=direct. Every path go writes is under the state directory, and it runs there, so no
+	// go.mod of the probe's working directory is read; GOTOOLCHAIN=local keeps it from downloading
+	// a toolchain. goResponseSeen reads the status of the page the site served.
+	inTLSStateDir(tlsStateClientSpec("go", tlsDefaultProbeTimeout, goResponseSeen, false, func(site tlsSite, stateDir string) ([]string, []string) {
+		home := filepath.Join(stateDir, "go")
+		return []string{"mod", "download", tlsSiteURL(site).Hostname() + "/legion-tls-probe@latest"}, []string{
+			"HOME=" + home,
+			"XDG_CONFIG_HOME=" + filepath.Join(home, "config"),
+			"GOPATH=" + filepath.Join(home, "path"),
+			"GOMODCACHE=" + filepath.Join(home, "mod"),
+			"GOCACHE=" + filepath.Join(home, "cache"),
+			"GOPROXY=direct",
+			"GOTOOLCHAIN=local",
+			"GOFLAGS=",
+			"GOWORK=off",
+		}
+	})),
+	// kubectl at the site as its API server. Without a credential kubectl asks for a user name
+	// before it connects at all, so it signs in with the dummy token. KUBERNETES_SERVICE_HOST and
+	// KUBERNETES_SERVICE_PORT are empty so client-go never takes the in-cluster configuration,
+	// which would send the pod's service-account token to a test site; KUBECONFIG names a file
+	// that does not exist, which kubectl reads as empty. kubectl exits 0 on the control's page, so,
+	// as curl, it needs no response marker.
+	tlsStateClientSpec("kubectl", tlsDefaultProbeTimeout, nil, false, func(site tlsSite, stateDir string) ([]string, []string) {
+		home := filepath.Join(stateDir, "kubectl")
+		return []string{"--server=" + site.url, "--token=" + tlsProbeSignIn, "get", "--raw", "/"}, []string{
+			"HOME=" + home,
+			"KUBECONFIG=" + filepath.Join(home, "config"),
+			"KUBERNETES_SERVICE_HOST=",
+			"KUBERNETES_SERVICE_PORT=",
+		}
+	}),
 	// gcloud's compute call, with the compute endpoint at the site. `gcloud storage` is not the
 	// form because it retried for 35-41 s before it answered.
 	tlsOptionalClientSpec("gcloud", tlsDefaultProbeTimeout, gcloudResponseSeen, false, func(site tlsSite, stateDir string) ([]string, []string) {
@@ -489,6 +588,17 @@ var workerTLSClients = []tlsClientSpec{
 			"MISE_VERBOSE=1",
 		}
 	}),
+	// socat's OPENSSL: address at the site's host and port. Its stdin is the probe's /dev/null, so
+	// it completes the handshake, sends nothing and exits. It exits 0 on the control, so, as curl,
+	// it needs no response marker, and it keeps no state.
+	tlsOptionalClientSpec("socat", tlsDefaultProbeTimeout, nil, false, func(site tlsSite, _ string) ([]string, []string) {
+		address := tlsSiteURL(site)
+		port := address.Port()
+		if port == "" {
+			port = "443"
+		}
+		return []string{"-u", "-", "OPENSSL:" + address.Hostname() + ":" + port}, nil
+	}),
 	{
 		name: "chromium", timeout: tlsChromiumProbeTimeout,
 		build: func(_ string, env []string, workDir, _ string, timeout time.Duration) tlsClient {
@@ -515,14 +625,19 @@ var workerTLSClients = []tlsClientSpec{
 // this rule also leaves unresolvable, so behind one every load fails as unavailable, never as a
 // refusal.
 func chromiumTLSArgs(site tlsSite) []string {
-	// Every tlsSites URL is an absolute https URL, which url.Parse reads without error.
+	return []string{"--headless", "--no-sandbox", "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE " + tlsSiteURL(site).Hostname(), "--dump-dom", site.url}
+}
+
+// tlsSiteURL is site's URL, parsed. Every tlsSites URL is an absolute https URL, which url.Parse
+// reads without error.
+func tlsSiteURL(site tlsSite) *url.URL {
 	parsed, _ := url.Parse(site.url)
-	return []string{"--headless", "--no-sandbox", "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE " + parsed.Hostname(), "--dump-dom", site.url}
+	return parsed
 }
 
 // imageTLSClients returns the image's TLS-capable programs. The gh wrapper manages worker tokens,
 // so the probe runs the real gh binary it wraps; no probe uses an operator token. stateDir is where
-// the optional clients keep their state (newTLSStateDir).
+// the clients that keep state keep it, and where go runs (newTLSStateDir).
 func imageTLSClients(invocation string, env []string, workDir, stateDir string) []tlsClient {
 	clients := make([]tlsClient, 0, len(workerTLSClients))
 	for _, spec := range workerTLSClients {
@@ -584,4 +699,22 @@ var miseHTTPStatus = regexp.MustCompile(`\bGET \S+ [1-5][0-9][0-9]\b`)
 
 func miseResponseSeen(detail string) bool {
 	return miseHTTPStatus.MatchString(detail)
+}
+
+// gitRepositoryNotFound is how git's ls-remote names a site that answered but serves no
+// repository ("fatal: repository 'https://example.com/' not found"); a refused chain is "unable to
+// access" the URL instead.
+var gitRepositoryNotFound = regexp.MustCompile(`repository '\S+' not found`)
+
+func gitResponseSeen(detail string) bool {
+	return gitRepositoryNotFound.MatchString(detail)
+}
+
+// goGetStatus is the status go names for the page a site served at its go-get=1 fetch
+// ("reading https://example.com/legion-tls-probe?go-get=1: 404 Not Found"); a fetch that failed
+// names the URL in quotes and then its error.
+var goGetStatus = regexp.MustCompile(`go-get=1: [1-5][0-9][0-9]\b`)
+
+func goResponseSeen(detail string) bool {
+	return goGetStatus.MatchString(detail)
 }

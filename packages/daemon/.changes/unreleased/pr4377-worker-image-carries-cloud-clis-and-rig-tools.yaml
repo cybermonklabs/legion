@@ -8,9 +8,11 @@ body: |-
     WebKit on Debian 13. A build step launches the locked Playwright's WebKit, so a Playwright bump
     whose WebKit needs a library the image lacks fails the image build. `legion probe-image` holds
     `gcloud`, `bq`, `az` and `mise` to the compromised emSign and AAA chains where each is on
-    `PATH`, and reports it `absent` where it is not. Because the image sets `USER`,
-    `runtime.kubernetes.pod.env` may no longer set it: `legion start`, `--check-config` and the
-    daemon's boot refuse a configuration that does, whatever digest it pins.
+    `PATH`, and reports it `absent` where it is not. It also holds GNU `wget`, `git`, `go` and
+    `kubectl` to the chains on every image, and `socat` where it is on `PATH`. Because the image
+    sets `USER`, `runtime.kubernetes.pod.env` may no longer set it: `legion start`,
+    `--check-config` and the daemon's boot refuse a configuration that does, whatever digest it
+    pins.
 time: 2026-11-18T03:35:00Z
 custom:
     Issue: pr4377

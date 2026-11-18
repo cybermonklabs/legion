@@ -124,7 +124,8 @@ It carries:
 - `busybox` from Debian trixie's archive, `/usr/bin/busybox` alone:
   the `broker/` tests of theorem-labs/agent-infra run their scripts under `busybox sh`, and without it they fail with "busybox is not on PATH".
   The package installs no applet links, so `wget` and `sh` stay GNU wget and dash, and a role runs an applet as `busybox <applet>`.
-  Its `wget` and `ssl_client` applets check no TLS certificate, so no applet may become the image's `wget`, and the TLS probe holds no busybox client ([Image size and pull time](#image-size-and-pull-time));
+  Its `wget` and `ssl_client` applets check no TLS certificate, so no applet may become the image's `wget`, and the TLS probe holds no busybox client.
+  The TLS probe's `wget` client holds GNU wget to the compromised chains, so an applet that became `wget` would fail the probe ([Image size and pull time](#image-size-and-pull-time));
 
 - `tmux` from Debian trixie's archive, at `/usr/bin/tmux`:
   the skill-scenario rig's panes need it, and without it in the image a role builds one from source after every pod replacement;
@@ -433,8 +434,8 @@ From Sandbox creation through the probe container starting, the daemon allows a 
 Once it observes the probe container running, it starts the command phase for the attempt budget and gives `probe-image` a relative command budget 60 s shorter, leaving the command's deadline to report before the daemon collects its exit and log.
 Pod scheduling and image pull consume the startup phase, so the worst-case boot wait is the 300 s startup bound plus the attempt budget.
 Each TLS client has a bound of its own: 20 s for most, 60 s for `bq`, whose refusal of a chain tries its request three times, sleeping 2 and 4 s between the tries, and whose every call starts three Python interpreters, and 90 s for Chromium's cold start (`packages/daemon/cmd/legion/tls_probe.go`).
-The probe holds `gcloud`, `bq`, `az` and `mise` to the compromised chains only where each is on `PATH`.
-Where one is not, the probe reports it `absent` and fails nothing for it, because those four are outside the floor every deployment's image is held to.
+The probe holds `gcloud`, `bq`, `az`, `mise` and `socat` to the compromised chains only where each is on `PATH`.
+Where one is not, the probe reports it `absent` and fails nothing for it, because those five are outside the floor every deployment's image is held to.
 A command stopped by the aggregate budget is unavailable with `probe deadline`, so the image probe fails closed naming its client and site.
 The boot log names a derived bound when it applies, and so does `legion start --check-config`.
 Oh My Pi's boot after it fits the registration deadline, `worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals` (360 s by default).
