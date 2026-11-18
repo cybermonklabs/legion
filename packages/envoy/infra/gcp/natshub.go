@@ -182,6 +182,11 @@ type HubListenerArgs struct {
 	// <hostname>.<tailnetDnsName>, which the hub always serves. Each entry is rendered as written,
 	// since the listener normalizes what it reads.
 	AllowedHosts []string `pulumi:"allowedHosts,optional"`
+	// The limit on the messages each agent session sends through this listener: how many a
+	// minute, from 1 to 60000, and how many at once, at least 1 and only with a rate. Unset, there
+	// is no limit, and a rate with no burst takes the rate as its burst.
+	SenderMessagesPerMinute *int `pulumi:"senderMessagesPerMinute,optional"`
+	SenderMessageBurst      *int `pulumi:"senderMessageBurst,optional"`
 	// AgentSecretsUrl, agentSecretsAudience and publicUrl turn on this listener's broker check
 	// together, as agentSecretsUrl and agentSecretsAudience turn on Dispatch's relay: the
 	// secrets broker a caller's broker access token is introspected at
@@ -351,7 +356,8 @@ func newSettings(args *NatsHubArgs) (settings, error) {
 // refusal names listener.agentSecretsUrl, listener.agentSecretsAudience or listener.publicUrl.
 // The listener refuses a partial set when it boots, which the group would answer by recreating
 // the VM that cannot start, so the hub refuses one at preview, naming the input left out; a hub
-// that sets none renders none of the three.
+// that sets none renders none of the three. Its sender limit is core's rule too
+// (core.CheckSenderLimit), naming listener.senderMessagesPerMinute or listener.senderMessageBurst.
 func resolveListener(args *NatsHubArgs) (*listener, error) {
 	l := args.Listener
 	if l == nil {
@@ -376,14 +382,20 @@ func resolveListener(args *NatsHubArgs) (*listener, error) {
 	if err := core.CheckBroker("listener.", l.AgentSecretsUrl, l.AgentSecretsAudience, l.PublicUrl); err != nil {
 		return nil, err
 	}
+	rate, burst, err := core.CheckSenderLimit("listener.", l.SenderMessagesPerMinute, l.SenderMessageBurst)
+	if err != nil {
+		return nil, err
+	}
 	env, err := core.ListenerConfig{
-		MachineID:            args.Hostname,
-		Port:                 core.DefaultListenerPort,
-		ListenHost:           "127.0.0.1",
-		AllowedHosts:         append([]string{core.TailnetHostName(args.Hostname, args.TailnetDnsName)}, l.AllowedHosts...),
-		AgentSecretsURL:      l.AgentSecretsUrl,
-		AgentSecretsAudience: l.AgentSecretsAudience,
-		PublicURL:            l.PublicUrl,
+		MachineID:               args.Hostname,
+		Port:                    core.DefaultListenerPort,
+		ListenHost:              "127.0.0.1",
+		AllowedHosts:            append([]string{core.TailnetHostName(args.Hostname, args.TailnetDnsName)}, l.AllowedHosts...),
+		SenderMessagesPerMinute: rate,
+		SenderMessageBurst:      burst,
+		AgentSecretsURL:         l.AgentSecretsUrl,
+		AgentSecretsAudience:    l.AgentSecretsAudience,
+		PublicURL:               l.PublicUrl,
 	}.Env([]string{localNATS})
 	if err != nil {
 		return nil, err

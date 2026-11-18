@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    The stall backstop's owner notice now names the newest stall of a claim. When the store
+    refused a notice, the next sweep tried it again. If the store refused that try too, the sweep
+    put the older notice back over a newer one the claim's machine had owed in the meantime, so
+    the owner was told the older stall and never the last one. The sweep now puts a refused notice
+    back only when the claim owes no other.
+time: 2026-11-17T10:18:12Z
+custom:
+    Issue: pr4297

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/leasetime"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/buildversion"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -173,7 +174,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		if req.SessionID != nil {
 			sessionID = *req.SessionID
 		}
-		resp = s.register(ctx, peer, pid, sessionID, wait)
+		resp = s.register(ctx, peer, pid, sessionID, req.Attach, req.RootPID, wait)
 	case "sign":
 		// sign and unregister keep peer's pidfd open through Registry.Root's ancestry walk too,
 		// for the same pid-reuse reason register does (see register's doc comment below); each
@@ -225,6 +226,12 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		resp = s.brokerCall(ctx, conn, req.Op, func(ctx context.Context) Response {
 			return s.unenrollSessionKey(ctx, req.EnrollmentID)
 		})
+	case "version":
+		// version names the release THIS process was built as (buildversion), so a client can
+		// say which helper it is talking to even after a pin move has put the next release's
+		// binary on disk while this process still serves the socket. It needs no peer, no broker
+		// and no registry.
+		resp = Response{OK: true, Version: buildversion.String()}
 	default:
 		resp = Response{Code: CodeBadRequest, Error: "unknown op " + req.Op}
 	}
@@ -362,6 +369,15 @@ const sessionAlreadyNamedMsg = "this process is in session %s, which cannot beco
 // a launcher its session has a broker identity that nothing live holds.
 const sessionGoneMsg = "the session this process was in ended before this register could answer for it; run: agent-secrets register"
 
+// noLauncherMsg is the refusal (NOT_A_SESSION) a register run without --exec gets from a process
+// in no session that named no launcher above it: its own process ends with the command, so a
+// session rooted there would be nobody's.
+const noLauncherMsg = "pid %d is in no registered session and no session launcher (omp) is an ancestor of it, so a session registered for it would end with this command; relaunch the session under agent-secrets register --exec -- omp …"
+
+// coversMsg is the refusal (BAD_REQUEST) a register gets for a root that a live session's root
+// descends from (Registry.AdmitRoot): a session rooted there would hold that session's processes.
+const coversMsg = "pid %d is above the live session rooted at pid %d, so a session rooted at it would hold that session's processes too; register from inside that session, or relaunch this one under agent-secrets register --exec -- omp …"
+
 // register makes pid a session root — unless pid is already inside a session, whose reply it
 // then gets — generating the key and starting enrollment in the background. Registry.Root and
 // Registry.AdmitRoot both walk /proc ancestry from pid while peer's pidfd stays open; the kernel
@@ -369,6 +385,8 @@ const sessionGoneMsg = "the session this process was in ended before this regist
 // trusted only once peer.PID() is re-read here and still names pid — otherwise this answers
 // CodeUnidentified instead of adopting or handing back a session for a peer that no longer is
 // who it was.
+//
+// attach and rootPID are what a register run without --exec sends (Request.Attach and RootPID).
 //
 // sessionID is the omp session id the launcher names, or "" for a session with none. With one,
 // the runtime id is `session-<sessionID>` rather than `<host>:<pid>:<start ticks>`, and the
@@ -386,7 +404,7 @@ const sessionGoneMsg = "the session this process was in ended before this regist
 // never publishes a session another request or a Save beside it could see. An identity taken
 // by a registration that then fails is an identity nothing can ever reclaim, and a session
 // published before it is certain is one a restart could re-pin for a stranger.
-func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID string, wait time.Duration) Response {
+func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID string, attach bool, rootPID int, wait time.Duration) Response {
 	if existing := s.Registry.Root(pid); existing != nil {
 		if peer.PID() != pid {
 			peer.Close()
@@ -397,6 +415,29 @@ func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID st
 			return resp
 		}
 		return s.registerReply(existing, wait)
+	}
+	// With no session for the caller yet and a launcher named, the session's root is that
+	// launcher, not the caller: the caller runs `agent-secrets register --session-id` and
+	// exits, so a session rooted at it would end with the command, and the identity would be
+	// nobody's. OpenAncestor pins the launcher — a live, strict
+	// ancestor of this login's that is an `omp` — and the caller's own peer is done with. A
+	// caller that attaches with no launcher named is refused for the same reason. With
+	// neither (`--exec`, and every client from before the fields) the caller's pid is the root,
+	// as before: `--exec` replaces the caller with the agent, so the pid pinned is the one the
+	// session runs as.
+	caller := pid
+	switch {
+	case rootPID != 0:
+		root, err := OpenAncestor(peer, rootPID)
+		peer.Close()
+		if err != nil {
+			s.Log.Warn("register refused: the root it named is not one this caller may name", "caller_pid", caller, "root_pid", rootPID, "error", err)
+			return Response{Code: CodeBadRequest, Error: err.Error()}
+		}
+		peer, pid = root, rootPID
+	case attach:
+		peer.Close()
+		return Response{Code: CodeNotASession, Error: fmt.Sprintf(noLauncherMsg, caller)}
 	}
 	ticks, err := StartTicks(pid)
 	if err != nil {
@@ -436,6 +477,10 @@ func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID st
 	case adm.Held:
 		peer.Close()
 		return Response{Code: CodeBadRequest, Error: fmt.Sprintf(sessionHeldMsg, sessionID, adm.Session.PID)}
+	case adm.Covers:
+		peer.Close()
+		s.Log.Warn("register refused: the root it named is above a live session", "caller_pid", caller, "root_pid", pid, "session_pid", adm.Session.PID)
+		return Response{Code: CodeBadRequest, Error: fmt.Sprintf(coversMsg, pid, adm.Session.PID)}
 	case adm.Unidentified:
 		peer.Close()
 		return Response{Code: CodeUnidentified, Error: "the peer no longer matches the identified pid"}
@@ -459,9 +504,9 @@ func (s *Server) register(ctx context.Context, peer *Peer, pid int, sessionID st
 		s.goRevoke(ctx, id)
 	}
 	if adm.Took {
-		s.Log.Info("session registered, taking back the identity it had before", "pid", pid, "runtime_id", sess.RuntimeID(), "session_id", sessionID, "enrollment_id", adm.Record.EnrollmentID)
+		s.Log.Info("session registered, taking back the identity it had before", "pid", pid, "caller_pid", caller, "runtime_id", sess.RuntimeID(), "session_id", sessionID, "enrollment_id", adm.Record.EnrollmentID)
 	} else {
-		s.Log.Info("session registered", "pid", pid, "runtime_id", sess.RuntimeID())
+		s.Log.Info("session registered", "pid", pid, "caller_pid", caller, "runtime_id", sess.RuntimeID())
 	}
 	return s.registerReply(sess, wait)
 }
@@ -647,7 +692,7 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 		return Response{Code: CodeNotASession, Error: sessionGoneMsg}
 	}
 	st := sess.snapshot()
-	resp := Response{OK: true, EnrollmentID: st.EnrollmentID, RuntimeID: sess.RuntimeID(), Operator: s.Broker.Operator(), State: st.State, Error: st.LastError}
+	resp := Response{OK: true, EnrollmentID: st.EnrollmentID, RuntimeID: sess.RuntimeID(), RootPID: sess.PID, Operator: s.Broker.Operator(), State: st.State, Error: st.LastError}
 	// While the helper holds no launcher credential every reply that is not enrolled carries
 	// NO_CREDENTIAL: an enroll reaches the broker for nobody until a human logs it in, so the
 	// launcher is told that rather than left with an id it cannot use. It does not say the
@@ -753,7 +798,7 @@ func (s *Server) signRequest(peer *Peer, pid int, names []string, reason string,
 	for i, name := range names {
 		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
 	}
-	compact, err := record.Sign(sess.identity().Key, s.Broker.URL, details, reason, "", lifetimeSeconds, time.Now())
+	compact, err := record.Sign(sess.identity().Key, s.Broker.URL.Raw(), details, reason, "", lifetimeSeconds, time.Now())
 	if err != nil {
 		return Response{Code: CodeSign, Error: err.Error()}
 	}
@@ -780,10 +825,9 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 		peer.Close()
 		return Response{Code: CodeBadRequest, Error: "sign-launcher needs method and url"}
 	}
-	if !operatorRoute(s.Broker.URL, method, url) {
+	if !operatorRoute(s.Broker.URL.Raw(), method, url) {
 		peer.Close()
-		b := redact.URL(s.Broker.URL)
-		return Response{Code: CodeBadRequest, Error: fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; not %[2]s %[3]s", b, method, redact.URL(url))}
+		return Response{Code: CodeBadRequest, Error: fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; not %[2]s %[3]s", s.Broker.URL, method, redact.URL(url))}
 	}
 	sess, unknown := s.Registry.RootOrUnknown(pid)
 	if sess != nil {
@@ -1446,13 +1490,15 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 // a skewed clock's PROOF_INVALID above all, which a corrected clock mends — says nothing about
 // the row, and reading one as the end of an enrollment costs a session every pending request
 // and grant that enrollment carries. renewLoop and confirmInherited draw the line in the same
-// place, so a renewal and a confirmation cannot disagree about what ended an enrollment.
+// place, so a renewal and a confirmation cannot disagree about what ended an enrollment. The
+// fallback reads the broker's words as they came (BrokerError.says), so it holds beside an address
+// whose refusals do not print them.
 func enrollmentNotLive(err error) (string, bool) {
 	var be *BrokerError
 	if !errors.As(err, &be) {
 		return "", false
 	}
-	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && strings.Contains(be.Message, "not live")) {
+	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && be.says("not live")) {
 		return be.Code, true
 	}
 	return be.Code, false

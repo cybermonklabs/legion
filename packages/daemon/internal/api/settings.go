@@ -191,6 +191,36 @@ type KubernetesSettings struct {
 	// credential, and a role reads it to know when a process of its own may be ended under it, so
 	// every pod may read it.
 	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
+	// Sandbox is the settled `runtime.kubernetes.sandbox`: the sandbox of the project's issue
+	// pods, the issues whose pods run in the other one, and where a microVM pod runs. Every
+	// member is a word, an issue key, a class name, or the cluster's Workload Identity pool and
+	// identity provider, which name the cluster and grant nothing, so no member is a credential.
+	Sandbox SandboxSettings `json:"sandbox"`
+}
+
+// SandboxSettings is the settled `runtime.kubernetes.sandbox`: `type` is gvisor when the file
+// names none, `canary_issues` is `[]` when it names none, and `microvm` is absent when the file
+// names no such block.
+type SandboxSettings struct {
+	Type         string           `json:"type"`
+	CanaryIssues []string         `json:"canary_issues"`
+	MicroVM      *MicroVMSettings `json:"microvm,omitempty"`
+}
+
+// MicroVMSettings is `runtime.kubernetes.sandbox.microvm`: the ComputeClass of the microVM pods'
+// nodes, absent in a block no issue pod uses that names none; their workspace volume's class,
+// `runtime.kubernetes.storage_class` when the block names none; and the metadata endpoint's two
+// members, absent while the block names none.
+type MicroVMSettings struct {
+	ComputeClass string            `json:"compute_class,omitempty"`
+	StorageClass string            `json:"storage_class"`
+	Metadata     *MetadataSettings `json:"metadata,omitempty"`
+}
+
+// MetadataSettings is `runtime.kubernetes.sandbox.microvm.metadata`.
+type MetadataSettings struct {
+	WorkloadPool     string `json:"workload_pool"`
+	IdentityProvider string `json:"identity_provider"`
 }
 
 // IdleReleaseSettings is the settled `runtime.kubernetes.idle_release`. Zero `idle_minutes` is
@@ -275,8 +305,8 @@ type PluginsSettings struct {
 	PiEnvoy  string `json:"pi_envoy"`
 }
 
-// ProjectSettings is one `projects.<KEY>` entry; its repositories are Dispatch's mapping, which
-// the state's `repositories` shows, never this file's.
+// ProjectSettings is one `projects.<KEY>` entry. Dispatch holds the project's repository mapping,
+// which the state's `repositories` shows, and this file holds none of it.
 type ProjectSettings struct {
 	SlackChannels []string       `json:"slack_channels"`
 	Memory        MemorySettings `json:"memory"`
@@ -622,6 +652,10 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			IdleMinutes:     block.IdleRelease.IdleMinutes,
 			BackstopMinutes: block.IdleRelease.BackstopMinutes,
 		},
+		Sandbox: SandboxSettings{
+			Type:         string(block.Sandbox.Type),
+			CanaryIssues: stringsOf(block.Sandbox.CanaryIssues),
+		},
 		MemoryGuard: MemoryGuardSettings{IssuePods: MemoryGuardPodSettings{
 			Enabled:              block.MemoryGuard.IssuePods.Enabled,
 			ActPercent:           block.MemoryGuard.IssuePods.ActPercent,
@@ -639,6 +673,12 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 	}
 	if plugins := block.Plugins; plugins != nil {
 		settings.Plugins = &PluginsSettings{PiLegion: pluginSourceOf(plugins.PiLegion), PiEnvoy: pluginSourceOf(plugins.PiEnvoy)}
+	}
+	if microVM := block.Sandbox.MicroVM; microVM != nil {
+		settings.Sandbox.MicroVM = &MicroVMSettings{ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass}
+		if metadata := microVM.Metadata; metadata != nil {
+			settings.Sandbox.MicroVM.Metadata = &MetadataSettings{WorkloadPool: metadata.WorkloadPool, IdentityProvider: metadata.IdentityProvider}
+		}
 	}
 	return settings
 }

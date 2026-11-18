@@ -273,8 +273,13 @@ func (f *answersFixture) issuePlace(t *testing.T, item model.SessionAnswer, segm
 	}
 }
 
-// answersAlice is alice, the person every test writes as, as an item's author.
+// answersAlice is alice, the person every test writes as, as an answer item's author: the list
+// builds that author from the answer's login and act alone, which carry no Proven mark.
 var answersAlice = model.Actor{Kind: "user", ID: "alice"}
+
+// answersAliceProven is alice as the author of an item the list reads from a stored actor - a
+// comment, a message or a decline - which keeps the Proven mark her cookie gave the write.
+var answersAliceProven = model.Actor{Kind: "user", ID: "alice", Proven: true}
 
 func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
 	f := newAnswersFixture(t)
@@ -337,7 +342,7 @@ func TestSessionAnswersListsAPersonsReplyOnTheSessionsAsk(t *testing.T) {
 	if item.Kind != model.SessionAnswerKindComment || item.Relation != model.SessionAnswerRelationRepliedOnYourAsk || item.ID != reply {
 		t.Fatalf("item = %+v, want the reply %s on the session's ask", item, reply)
 	}
-	if item.Author != answersAlice || item.Text != "Which pool size do you need?" {
+	if item.Author != answersAliceProven || item.Text != "Which pool size do you need?" {
 		t.Fatalf("item words = %+v", item)
 	}
 	if item.Ask == nil || item.Ask.ID != askID || item.Ask.Question != "Which database backs the queue?" {
@@ -416,7 +421,7 @@ func TestSessionAnswersListsAPersonsReplyInAThreadOnADocumentTheSessionWrote(t *
 	}
 	item := listed.Items[0]
 	if item.ID != reply || item.Kind != model.SessionAnswerKindComment || item.Relation != model.SessionAnswerRelationRepliedInCommentThread ||
-		item.Author != answersAlice || item.Text != "Then Monday." || item.Ask != nil {
+		item.Author != answersAliceProven || item.Text != "Then Monday." || item.Ask != nil {
 		t.Fatalf("newest item = %+v, want alice's reply %s in the thread", item, reply)
 	}
 	if item.Owner == nil || item.Owner.Document == nil || item.Owner.Issue != nil ||
@@ -476,7 +481,7 @@ func TestSessionAnswersListsATargetedMessage(t *testing.T) {
 		t.Fatalf("answers = %+v, want the issue message then the direct one", listed)
 	}
 	for _, item := range listed.Items {
-		if item.Kind != model.SessionAnswerKindMessage || item.Relation != model.SessionAnswerRelationSentYouMessage || item.Author != answersAlice {
+		if item.Kind != model.SessionAnswerKindMessage || item.Relation != model.SessionAnswerRelationSentYouMessage || item.Author != answersAliceProven {
 			t.Fatalf("item = %+v, want a message alice sent the session", item)
 		}
 	}
@@ -837,7 +842,7 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 	if item.Kind != model.SessionAnswerKindDeclined || item.Relation != model.SessionAnswerRelationDeclinedYourAsk || item.ID != askID {
 		t.Fatalf("item = %+v, want the decline of ask %s under a kind and a relation of its own", item, askID)
 	}
-	if item.Author != answersAlice || item.Text != note || item.DispatchWords != model.DeclineDispatchWords {
+	if item.Author != answersAliceProven || item.Text != note || item.DispatchWords != model.DeclineDispatchWords {
 		t.Fatalf("item words = %+v, want alice's note and Dispatch's sentences apart", item)
 	}
 	// Nobody chose an option, so the item carries none: a reader drawing an answer's options under

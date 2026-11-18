@@ -594,6 +594,7 @@ test("j, k and the arrows step through thread rows, o opens them, y copies only 
     await page.locator("body").focus();
     test.skip(!hasReadingPane(page), "the selection the keys move is the reading column's");
     const rows = page.locator("[data-inbox-row]");
+    // The count above waited for all three rows, so the order read here is the whole list.
     const order = await rows.evaluateAll((nodes) =>
       nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
     );
@@ -706,6 +707,7 @@ test("l moves the focus into the reading pane, the keyboard scrolls the document
     const body = inboxPane(page).getByRole("region", { name: "Question body" });
     await expect(body).toHaveCount(1);
     await expect(body).toBeFocused();
+    // The waits above found the region drawn and focused, so the handle taken is of that region.
     const drawn = await body.elementHandle();
     if (drawn === null) {
       throw new Error("the pane drew no Question body region");

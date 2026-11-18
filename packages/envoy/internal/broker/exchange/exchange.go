@@ -93,9 +93,10 @@ const MaxSessionBytes = 200
 var accountPattern = regexp.MustCompile(`^system:serviceaccount:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // repositoryPattern is a GitHub repository as its token's `repository` claim names it,
-// <owner>/<name>: the owner up to 39 characters of letters, digits and hyphens, the name up to
-// 100 of letters, digits, hyphens, underscores and dots.
-var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
+// <owner>/<name>: the owner a letter or digit, then up to 38 letters, digits, hyphens and
+// underscores, since a managed user's login ends in `_<shortcode>` (`mona-cat_octo`); the name up
+// to 100 of letters, digits, hyphens, underscores and dots.
+var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
 
 // googleAccountPattern is a Google service account's email address as a Google identity token
 // carries it in its `email` claim: lowercase, since that is the one spelling a token holds. It is
@@ -1181,7 +1182,7 @@ func PersonPrincipal(person string) string { return "person:" + person }
 // (plan E's t-e-54). It is never a name's holder: a pod's session name is
 // held under its account alone, the principal its own token exchange claims the name under, so
 // the pod's enrollment and its trade never refuse each other. No account or principal kind holds
-// a space, so no two pairs spell one string. The broker's migration 0033_pod_carry_launcher
+// a space, so no two pairs spell one string. The broker's migration 0034_pod_carry_launcher
 // writes the same spelling in SQL.
 func PodLaunchPrincipal(account, launcher string) string {
 	return AccountPrincipal(account) + " launched-by " + launcher

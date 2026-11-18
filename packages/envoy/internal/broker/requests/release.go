@@ -125,11 +125,11 @@ type releasedName struct {
 	// session holds is filled with those slots' placeholders. airlockSplitOf always answers a
 	// map, so a nil one is what says the airlock does not hold this name back (behindAirlock).
 	split airlockSplit
-	// expires is when a minted value stops working, zero for a stored one, and kind the policy
-	// kind that says what the slots are. The proxy holds both beside the values: the first is
+	// expires is when a minted value stops working, zero for a stored one, and type the policy
+	// type that says what the slots are. The proxy holds both beside the values: the first is
 	// what it mints again before, the second what says how to spend them.
-	expires time.Time
-	kind    string
+	expires    time.Time
+	secretType string
 }
 
 // behindAirlock reports whether the airlock's rules hold this name back, which is what says
@@ -140,7 +140,7 @@ func (r releasedName) behindAirlock() bool { return r.split.values != nil }
 // airlock alone — in the grant's own name order, and takes the split of each name the airlock
 // holds back. Once every value is read, each stored one is checked against the policy as it
 // stands then (recheckStoredSources), so a retag that lands during the reads never releases
-// what the secret stores once it is a kind.
+// what the secret stores once it is a type.
 func (m *Machine) readRelease(ctx context.Context, grantID string, checked grantRelease, want releaseRead) ([]releasedName, error) {
 	read := make([]releasedName, 0, len(checked.granted))
 	for _, g := range checked.granted {
@@ -153,9 +153,9 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		if err != nil {
 			return nil, err
 		}
-		released := releasedName{name: g.name, value: minted.Value, expires: minted.Expires, kind: served.Kind()}
+		released := releasedName{name: g.name, value: minted.Value, expires: minted.Expires, secretType: served.Type()}
 		if entry != nil {
-			if released.split, err = airlockSplitOf(entry.Kind, released.kind, minted.Value); err != nil {
+			if released.split, err = airlockSplitOf(entry.Kind, released.secretType, minted.Value); err != nil {
 				return nil, fmt.Errorf("release %s behind the airlock: %w", g.name, err)
 			}
 		}

@@ -411,7 +411,7 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
 	}
 	for _, ask := range asks {
-		requireWithdrawn(t, f.handler, issue.Key, ask, model.Actor{Kind: "user", ID: "alice"})
+		requireWithdrawn(t, f.handler, issue.Key, ask, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	}
 	reopener := repairActor("session-reopener")
 	reopenWithoutRestoring(t, f, issue.Key, "in_progress", reopener)

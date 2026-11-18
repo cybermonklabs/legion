@@ -211,6 +211,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	// Last of all, once the socket has let go of everything it held on the room's record: the
+	// settlement its browser's departure ran (settleLastPeer) may have loaded a room of its own,
+	// which is retired if nothing has taken it up (retireSettlementRoom).
+	defer s.retireSettlementRoom(room)
 	// The socket's admission lives on a request context of its own: the answer to the Hocuspocus
 	// token this socket sends is that admission and no other's (authorizeSchemaVersion), since two
 	// sockets of one room can present one token, and cancelling that context with errSchemaRevoked
@@ -474,7 +478,8 @@ func (s *Service) authorizeSchemaVersion(ctx context.Context, room, token string
 // requestActor is the person a document connection is: the identity service's answer, and nothing
 // else. The socket once took the shared agent token too, with the session named in a header the
 // caller wrote; that was a second, weaker door into Dispatch, and only the browser - a same-origin
-// cookie - ever connected through it (INFRA-264).
+// cookie - ever connected through it (INFRA-264). The cookie proved the login, so the person is
+// Proven, as the API's cookie caller is.
 func (s *Service) requestActor(r *http.Request) (model.Actor, error) {
 	if s.identity == nil {
 		return model.Actor{}, errors.New("document identity required")
@@ -484,5 +489,5 @@ func (s *Service) requestActor(r *http.Request) (model.Actor, error) {
 		return model.Actor{}, err
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
-	return model.Actor{Kind: "user", ID: login}, nil
+	return model.Actor{Kind: "user", ID: login, Proven: true}, nil
 }

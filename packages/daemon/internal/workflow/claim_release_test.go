@@ -32,7 +32,8 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 	// A root's park acts on its whole tree: six suspends and an IssueSuspend for each of its two
 	// members, and the one row that closes the linger.
 	parkedTree := map[string]int{"supervise": 12, "issue_suspend": 2, "linger_close": 1}
-	// A child's park ends the child alone, and tells the tree's architect which child left.
+	// A child's park ends the child alone, and tells the architect above it (here the tree's) which
+	// child left.
 	parkedChild := map[string]int{"supervise": 6, "issue_suspend": 1, "notice": 1}
 	for _, tc := range []struct {
 		name string
@@ -229,9 +230,10 @@ func claimReleases(t *testing.T, pool *pgxpool.Pool) []string {
 	return issues
 }
 
-// queuedKinds counts every queued row by kind, with no start passed over: in this package every
-// start carries a task — a phase worker's is one row and carries it (StartOrOwe) — and the
-// task-less starts admission brings back are written in internal/admit, never here.
+// queuedKinds counts every queued row by kind, with no start passed over. In this package a phase
+// worker's start is one row and carries its task (StartOrOwe); a child's own architect's plain
+// start carries none (gateOpened, reviveArchitect), and the task-less starts admission brings back
+// are written in internal/admit, never here.
 func queuedKinds(t *testing.T, pool *pgxpool.Pool) map[string]int {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select kind from outbox`)

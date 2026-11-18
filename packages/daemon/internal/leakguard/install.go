@@ -212,6 +212,10 @@ type ServedInstall struct {
 	Body []byte
 	// Log receives the install's one line where it replaced what Dir held. Nil logs nothing.
 	Log func(format string, args ...any)
+	// Start starts the install's one run of the check (verifyServed), and is required: the pod's
+	// launcher passes the starter that holds the run out of its PID 1 reaper, and any other caller
+	// procgroup.NoReaper (procgroup.Starter says why there is no default).
+	Start procgroup.Starter
 }
 
 func (in ServedInstall) logf(format string, args ...any) {
@@ -243,6 +247,9 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 	if in.Dir == "" {
 		return errors.New("the pod's launcher named no directory to install the check into")
 	}
+	if in.Start == nil {
+		return errors.New("the pod's launcher named no starter for the check's run")
+	}
 	dir := in.Dir
 	ctx, cancel := context.WithTimeout(ctx, installBound)
 	defer cancel()
@@ -268,7 +275,7 @@ func InstallServed(ctx context.Context, in ServedInstall) error {
 	if err := os.WriteFile(filepath.Join(staging, tagFile), []byte(in.Tag+"\n"), 0o644); err != nil {
 		return fmt.Errorf("the installed tag could not be recorded: %w", err)
 	}
-	if err := verifyServed(ctx, filepath.Join(staging, checkName), parent); err != nil {
+	if err := verifyServed(ctx, in.Start, filepath.Join(staging, checkName), parent); err != nil {
 		return err
 	}
 	// 0700 is what MkdirTemp makes. The roles of a pod run as one user, so the mode decides
@@ -362,7 +369,8 @@ func writeMember(path string, content io.Reader, mode os.FileMode) error {
 }
 
 // verifyServed runs the freshly unpacked check once, before anything may use it, in the one shape
-// that costs nothing and reads nothing of anyone's: `public-leak-check.sh --help`.
+// that costs nothing and reads nothing of anyone's: `public-leak-check.sh --help`. start starts
+// that run (ServedInstall.Start).
 //
 // It runs with a clean environment: PATH from this process's own, and HOME and TMPDIR set to the
 // install's parent, which is also its working directory, and nothing else. The run is not in a
@@ -378,14 +386,14 @@ func writeMember(path string, content io.Reader, mode os.FileMode) error {
 // /usr/bin/python3 will not start. So an install that cannot name its own shapes is a failed
 // install, and a check that answers nothing at all is the same failure: this pod would otherwise
 // run with a PUBLIC_LEAK_CHECK that refuses every write it is asked about.
-func verifyServed(ctx context.Context, check, parent string) error {
+func verifyServed(ctx context.Context, start procgroup.Starter, check, parent string) error {
 	cmd := exec.CommandContext(ctx, check, "--help")
 	procgroup.Configure(cmd)
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + parent, "TMPDIR=" + parent}
 	cmd.Dir = parent
 	var printed strings.Builder
 	cmd.Stdout, cmd.Stderr = &printed, &printed
-	if err := procgroup.Err(cmd.Run()); err != nil {
+	if err := procgroup.Err(procgroup.Run(cmd, start)); err != nil {
 		return fmt.Errorf("the served check could not be run: %w", err)
 	}
 	if err := ctx.Err(); err != nil {

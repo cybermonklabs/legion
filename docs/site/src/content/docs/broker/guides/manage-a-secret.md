@@ -7,7 +7,7 @@ sidebar:
 
 An agent secret is a secret in the broker's own store - AWS Secrets Manager or GCP Secret
 Manager, whichever the broker's deployment uses - under the broker's namespace, encrypted with
-its key, and tagged with owner, tier, optional kind and optional max grant
+its key, and tagged with owner, tier, optional type and optional max grant
 ([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)).
 `agent-secrets secret` manages them. It reads and writes the store itself, under whatever cloud
 credential its environment gives it, so that cloud's own IAM decides what it may do; the broker
@@ -165,7 +165,7 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   labels, so they never collide with a label someone else applies.
 - **`--tier agent`** lets the owner's own sessions use it without asking, and **`--tier human`**
   sends every use to a person for approval. Both flags are required.
-- **`--kind`** is optional. Use `github-app` for a GitHub App key, `google-login` for an
+- **`--type`** is optional. Use `github-app` for a GitHub App key, `google-login` for an
   authorized-user Google login, and `google-service-account` for one Google service account the
   broker mints an access token as, whose stored value names that account:
   `{"service_account": "<id>@<project>.iam.gserviceaccount.com"}`. That last one is an
@@ -174,10 +174,15 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   secret's name in `BROKER_SERVICE_ACCOUNT_SECRETS`, and a secret the deployment has bound to
   nothing releases no token at all, however good its value. Ask whoever runs your deployment to
   create it and bind it.
-  Use `none`, or omit the flag, for a stored secret. A kind also
-  writes `mint-service-account: kind-secret`, which makes an earlier broker refuse the secret
-  rather than serve its stored key.
-- **`--github-owners`** is required with `--kind github-app`, and refused with any other kind. It
+  Use `none`, or omit the flag, for a stored secret. A type needs a broker that reads the `type`
+  tag: against an earlier one, whose settings name no `secret_type_tag`, `create --type`, `set`
+  on a type secret and a retag that leaves a type exit 1 before they write anything, naming the
+  release to move the broker to, since such a broker would serve the secret's stored key as its
+  value. A type also writes `mint-service-account: type-secret`, which only the brokers from
+  legion-envoy-v13.19.0 to the release before v16.0.0 read, and refuse; it stops no later broker
+  from before the `type` tag. So once a secret carries a type, the first release that reads
+  `type` is the broker's rollback floor: a rollback past it serves the secret's stored key.
+- **`--github-owners`** is required with `--type github-app`, and refused with any other type. It
   lists the GitHub accounts the broker mints installation tokens for, separated by spaces, so the
   shell quotes it: `--github-owners "acme-org ada"`. A comma is refused before anything is written.
 - **`--requesters`** is optional. It lists who may ask for this secret at all — people by their
@@ -195,32 +200,23 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   before anything is written. Whether an entry naming a service is one your deployment registers
   is the broker's to say
   ([what the broker answers after a write](#what-the-broker-answers-after-a-write)).
-- **`--scopes`** is optional, and read with `--kind google-service-account` alone; with any other
-  kind it is refused before anything is written. It lists the OAuth scopes the minted token
+- **`--scopes`** is optional, and read with `--type google-service-account` alone; with any other
+  type it is refused before anything is written. It lists the OAuth scopes the minted token
   carries, each the part of a Google scope after `https://www.googleapis.com/auth/`, separated by
   spaces, so the shell quotes it: `--scopes "cloud-platform bigquery"`. Without it the token
   carries `cloud-platform` alone. The short names keep the list inside an AWS tag value's 256
   characters. A comma, a whole scope URL, a capital letter, and a scope named twice are each
   refused before anything is written.
 - **`--admin true`** is optional. It marks a secret whose grant is an administrator's, which the
-  broker cannot read off the kind: an admin console password and a personal API key are both
+  broker cannot read off the type: an admin console password and a personal API key are both
   stored strings. Such a secret is `--tier human`, names its `--requesters`, and takes a
   `--max-grant` of an hour or less, so a person approves every release, only someone it names may
   ask, and the grant is short enough to review while it is live. A person approves every release
   of one even where a deployment runs a model judge: the judge refuses an administrator's
   secret, so no airlock rules entry can move one of its requests off the person who approves it
   ([The model judge](/legion/broker/concepts/#the-model-judge)). Any value but `true` is refused.
-- **`--shape`** is optional. It says what the stored value is, so the broker knows what it may do
-  to that value before it spends it. **`--shape token`** is a one-line credential, an API key or a
-  bearer token: the broker removes the whole trailing run of carriage returns and line feeds
-  before it hands the value over, unless the value is nothing but line endings, which it leaves as
-  it is. **`--shape document`** is a value whose every byte is part of it, a PEM key or a JSON
-  file: the broker removes nothing. A secret with no tag is read by the broker's own reading of
-  the value: that trailing run goes only where the rest of the value is not empty and holds no
-  carriage return and no line feed, so a PEM document keeps the line feed that ends it. Any word
-  but `token` and `document` is refused before anything is written.
 - **`--max-grant`** is optional, except with `--admin true` and with
-  `--kind google-service-account`, where each needs it, of an hour or less. It is the longest
+  `--type google-service-account`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.
   It must be a duration of at least one second.
 - **`--default-grant session`** is optional. A request with no `--ttl` for secrets that all carry it
@@ -236,31 +232,29 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   often adds one there, as a copy out of a web page's table does. It then says to enter the value
   again without the byte, or, where the byte is part of the value, names the pipe command. Anywhere
   else the CLI reads standard input to its end. The CLI then reads what it stores by the same rule
-  the broker spends a value under, the secret's `--shape` above: a token loses its whole trailing
-  run of carriage returns and line feeds, a document loses nothing, and a value whose secret
-  carries no shape tag loses that run only where the rest of it is not empty and holds no carriage
-  return and no line feed. Where that rule removes nothing, one final line feed goes, so `echo`
+  the broker spends a value under: the whole trailing run of carriage returns and line feeds goes
+  only where what is left is not empty and holds no carriage return and no line feed, so a
+  one-line credential loses the ending a shell or an editor left behind and a PEM document keeps
+  the one that ends it. Where that rule removes nothing, one final line feed goes, so `echo`
   and a file that ends in a newline store the value without one. `secret set` reads the secret's
-  own kind and shape tags first, so a document's owner stores a document. Empty values and
+  own type tag first, so it checks the value as that type's minter will. Empty values and
   invalid UTF-8 are refused (exit 2) and write nothing. A space is never trimmed: a value that
   starts or ends with one, typed or piped, is stored as given, and the command then prints one
   line on standard error saying the value starts or ends with a space and was stored as given.
   That line names the secret and never the value. A space inside the value prints nothing.
-- **The value of a kind.** `create --kind` checks the value as the broker's minter for that kind
-  reads it, before it writes, and `set` does the same under the kind tag the secret holds. A value
+- **The value of a type.** `create --type` checks the value as the broker's minter for that type
+  reads it, before it writes, and `set` does the same under the type tag the secret holds. A value
   that minter could not mint from is refused (exit 2) with the minter's own reason, such as
   `GitHub App secret needs an app_id and private_key`, and nothing is written. The broker reads
-  every kind secret's value with the same decoder, so when a value stored some other way, such as
+  every type secret's value with the same decoder, so when a value stored some other way, such as
   with `gcloud` or the AWS console, is one the decoder refuses, the broker refuses the secret as
   `value-malformed` ([the value read](/legion/broker/operate/#the-value-read)). `set` on a secret
-  whose kind tag names no kind the broker mints is refused before it asks for the value.
+  whose type tag names no type the broker mints is refused before it asks for the value.
 
-**Keeping a value's final line ending.** Tag the secret `--shape document`, and the broker removes
-nothing from its value. The CLI still removes one final line feed wherever the rule removes
-nothing, which covers a document and a value holding a line ending inside it, so pipe one more line
-ending than the value needs. For a value the rule trims, a one-line credential under
-`--shape token` or under no shape tag at all, no number of piped endings survives, so
-`--shape document` is the only way to keep one.
+**Keeping a value's final line ending.** The rule removes nothing from a value that holds a line
+ending inside it, a PEM key or a JSON file for one; the CLI still removes one final line feed
+there, so pipe one more line ending than the value needs. For a one-line value the rule trims, no
+number of piped endings survives.
 
 The CLI checks your sign-in before it asks for the value, so a refused sign-in never has you type a
 secret for nothing. On GCP it then makes the secret, on the broker's key, with its tags and no
@@ -500,10 +494,10 @@ lists the calls each form makes.
 ```console
 $ agent-secrets secret list
 agent-secrets secret list: using the AWS profile ada (AWS_PROFILE): arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/ada@example.com
-NAME               OWNER            TIER   KIND          SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -      -          -              yes    -        -
-DEMO_GITHUB_APP    ada@example.com  agent  github-app    -      -          -              yes    -        -
-DEMO_LOGIN         ada@example.com  human  google-login  -      1h         -              yes    -        -
+NAME               OWNER            TIER   TYPE          MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED  EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  agent  -             -          -              yes    -        -
+DEMO_GITHUB_APP    ada@example.com  agent  github-app    -          -              yes    -        -
+DEMO_LOGIN         ada@example.com  human  google-login  1h         -              yes    -        -
 Every row is a secret in AWS Secrets Manager account 111122223333 in us-east-1.
 ```
 
@@ -521,12 +515,11 @@ store: AWS Secrets Manager account 111122223333 in us-east-1
 secret_name: example/agent-secrets/demo-deploy-token
 owner: ada@example.com
 tier: agent
-kind: -
+type: -
 github_owners: -
 requesters: -
 scopes: -
 admin: -
-shape: -
 max_grant: -
 default_grant: -
 created: 2026-10-06T20:31:08Z
@@ -547,12 +540,12 @@ broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 
 ```
 
 `set` reads the value as `create` does: one line at a prompt with echo off, or all of standard
-input, which is how a value of more than one line goes in. On a kind secret it checks the value
-under the secret's kind and shape tags before it writes. The broker never keeps a value; it reads
+input, which is how a value of more than one line goes in. On a type secret it checks the value
+under the secret's type tag before it writes. The broker never keeps a value; it reads
 it from Secrets Manager each time a session reads a grant, so the next read of a live grant gets
 the new one.
 
-## Change its owner, tier, kind, requesters or max grant
+## Change its owner, tier, type, requesters or max grant
 
 ```console
 $ agent-secrets secret retag DEMO_DEPLOY_TOKEN --tier human
@@ -561,22 +554,21 @@ retagged DEMO_DEPLOY_TOKEN in AWS Secrets Manager account 111122223333 in us-eas
 broker: serving DEMO_DEPLOY_TOKEN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-Name `--owner`, `--tier`, `--kind`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--shape`, `--max-grant`, `--default-grant` or a combination. A retag that
+Name `--owner`, `--tier`, `--type`, `--github-owners`, `--requesters`, `--scopes`, `--admin`, `--max-grant`, `--default-grant` or a combination. A retag that
 sets tags reads the owner and tier tags the secret holds and sends both in one request. On AWS,
 this lets an IAM condition inspect both tags. Every other tag or annotation stays as it is. For a
 secret missing an owner or tier tag, name that tag too.
 
-`--kind none` removes the kind tag and the `mint-service-account` tag written with it,
+`--type none` removes the type tag, the old `kind` tag and the `mint-service-account` tag written with it,
 `--github-owners none` removes the GitHub owners, `--requesters none` removes the list of who may
 ask, `--scopes none` removes the scopes, so the token carries `cloud-platform` alone again,
-`--admin none` removes the administrator's mark, `--shape none` removes the shape, so the broker
-reads the value for itself again, `--max-grant none` removes the max grant, and
+`--admin none` removes the administrator's mark, `--max-grant none` removes the max grant, and
 `--default-grant none` removes the opt-out. A
 removal is a retag of its own: it changes no other tag, so the cloud refusing it leaves the secret
 as it was. A retag that names `none` beside another change is refused before it writes anything.
 So is a retag that would leave a `github-app` secret without `--github-owners`, as the broker would
-then refuse to serve it, one that names `--github-owners` on a secret of another kind, one that
-names `--scopes` on a secret of another kind, and one that would leave an `admin` or
+then refuse to serve it, one that names `--github-owners` on a secret of another type, one that
+names `--scopes` on a secret of another type, and one that would leave an `admin` or
 `google-service-account` secret without a `--max-grant` of an hour or less.
 Run the removal and the other change as two retags:
 
@@ -587,8 +579,8 @@ retagged DEMO_LOGIN in AWS Secrets Manager account 111122223333 in us-east-1 (re
 broker: serving DEMO_LOGIN from AWS Secrets Manager account 111122223333 in us-east-1
 ```
 
-A retag that changes the kind, or the shape of a secret that keeps a kind, first reads the value
-the secret holds and checks it as that kind's minter will read it once the tags are written. It
+A retag that changes the type first reads the value
+the secret holds and checks it as that type's minter will read it once the tags are written. It
 never prints the value. A value the minter could not mint from refuses the retag (exit 2), and
 nothing is written. A read the store refuses your sign-in does not stop the retag: it writes the
 tags and prints one line on standard error that says the value was not checked and names the
@@ -596,24 +588,28 @@ permission the read needs. The broker then reads the value with its own access, 
 secret as `value-malformed` when its minter could not mint from it. Any other failed read refuses
 the retag and writes nothing, and a secret with no value is one: it has no value to read.
 
-To make a stored secret a kind, retag it first, and store the App key or the Google login with
+To make a stored secret a type, retag it first, and store the App key or the Google login with
 `secret set` only once the broker reads the new tags. Where your sign-in may read the secret's
-value, that retag is refused while the value is not yet of that kind, and so is one of a secret
-with no value: create the kind secret under a new name instead, as below. Where your sign-in may
+value, that retag is refused while the value is not yet of that type, and so is one of a secret
+with no value: create the type secret under a new name instead, as below. Where your sign-in may
 not read the value, the retag writes the tags, and the broker refuses the secret as
-`value-malformed` until `set` stores a value of that kind. The retag then exits 1 on
+`value-malformed` until `set` stores a value of that type. The retag then exits 1 on
 `reason=value-malformed`, which says the broker reads the new tags. A secret with no value is
-refused `no-current-value` whichever kind tag the broker reads (`pending-value` in the ten minutes
+refused `no-current-value` whichever type tag the broker reads (`pending-value` in the ten minutes
 after `secret create` made it), so there the retag exits 1 on that reason, which says nothing of the tags:
 `set` is the next step, since it
-checks the value under the kind the retag wrote, and its reread prints
-`broker: serving NAME (kind <kind>)` once the broker reads the new tags. A reread can read the tags
+checks the value under the type the retag wrote, and its reread prints
+`broker: serving NAME (type <type>)` once the broker reads the new tags. A reread can read the tags
 stale (Secret Manager's metadata can lag a write by hours), and while the broker still serves the
 secret as stored, a grant of it releases its stored value raw. So a retag whose reread answers
-another kind than the one it wrote exits 1: the broker still sees the old tags. Run the retag
-again, and store no value until the broker serves the secret as that kind
-(`broker: serving NAME (kind <kind>)`) or refuses it as `value-malformed`. A release that finds
-the secret retagged while it reads the store releases nothing and ends that grant.
+another type than the one it wrote exits 1: the broker still sees the old tags. Run the retag
+again, and store no value until the broker serves the secret as that type
+(`broker: serving NAME (type <type>)`) or refuses it as `value-malformed`. A `create` or `set`
+whose reread answers another type than the secret holds exits 1 the same way, with the value
+already stored: it names the `secret retag NAME --type <type>` that asks the broker to read the
+tags again, and until that retag exits 0 a broker serving the secret as stored releases its value
+raw. A release that finds the secret retagged while it reads the store releases nothing and ends
+that grant.
 
 Exit 0 is the answer of the one broker process that served the reread, not of every process. That
 process tells the others over Postgres and they reread within seconds, so exit 0 is the usual case
@@ -631,7 +627,7 @@ them name the secret:
 A process left behind serves the secret as stored, and a grant of it there releases the stored
 value raw.
 
-**The way to avoid the question is not to convert.** Create the secret with its kind from the
+**The way to avoid the question is not to convert.** Create the secret with its type from the
 start, under a name no agent holds a grant on, and store the App key or the Google login there.
 A name that was never served as an ordinary secret has no grant that can release a raw value, so
 none of what follows applies to it. Converting a name agents already hold grants on is what opens
@@ -646,12 +642,12 @@ Where you must convert, before you store an App key or a Google login:
   retag wrote the tags without checking the value, exit 1 on `reason=value-malformed` alone. That
   says **the answering process** has the new tags: its reread reads the one secret directly
   (`DescribeSecret`, `GetSecret`) rather than through a listing, and the retag exits 1 unless the
-  kind it reads back is the one it wrote. On Secrets Manager that read answers a write at once;
+  type it reads back is the one it wrote. On Secrets Manager that read answers a write at once;
   on Secret Manager a single read is eventually consistent like the listing, which is why a retag
   there can need running more than once. A secret with no value answers `reason=no-current-value`
   (`reason=pending-value` in the ten minutes after `secret create` made it) whichever tags a process reads, so
   no retag of it says this. For such a secret, `secret set` is
-  the next step, and the line its own reread prints, `broker: serving NAME (kind <kind>)`, says
+  the next step, and the line its own reread prints, `broker: serving NAME (type <type>)`, says
   the answering process has the new tags.
 - **It says nothing about the peers, and no log line will.** A peer's reread reads the one name
   too, so on Secret Manager it can succeed while still reading the old tags: the broker warns
@@ -672,10 +668,10 @@ serves the secret as stored.
 
 A retag checks the tags it read. On GCP it writes against that read, so a retag another person
 wrote in between refuses it, with `another write changed the secret after this retag read it`,
-and nothing is written. AWS has no such check, so retag secrets there one writer at a time: a retag
-reads the tags back after its write, and when another writer's change left a kind without the
-GitHub owners it needs, it puts back the tags it read, which undoes that writer's change too, and
-exits 1 naming the race.
+and nothing is written. AWS has no such check: a retag there
+reads the tags back after its write, and when another writer's change left a type without the
+GitHub owners it needs, it says so and puts nothing back, naming the tags it read, the tags it
+found and the retag that sets the secret right, and exits 1. Both writes stand.
 
 You can retag your own secret, to `--owner shared` too. Once a secret is shared, its owner and
 tier are an administrator's to change: on AWS, by the IAM condition above; on GCP, because a
@@ -720,11 +716,10 @@ that moment is both), and the **earliest** it can be purged:
 ```console
 $ agent-secrets secret list
 agent-secrets secret list: using the AWS profile ada (AWS_PROFILE): arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/ada@example.com
-NAME               OWNER            TIER   KIND  SHAPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
-DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -      -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
-DEMO_EMPTY_KEY     ada@example.com  human  -     -      -          -              yes    -                     -
-DEMO_SHARED_KEY    shared           human  -     -      -          -              yes    -                     -
-EARLIEST_PURGE is the deletion plus Secrets Manager's 7-day minimum recovery window: restore works at least until then; the window the delete chose may be longer.
+NAME               OWNER            TIER   TYPE  MAX_GRANT  DEFAULT_GRANT  VALUE  DELETED               EARLIEST_PURGE
+DEMO_DEPLOY_TOKEN  ada@example.com  human  -     -          -              yes    2026-10-06T20:22:33Z  2026-10-13T20:22:33Z
+DEMO_EMPTY_KEY     ada@example.com  human  -     -          -              yes    -                     -
+DEMO_SHARED_KEY    shared           human  -     -          -              yes    -                     -
 ```
 
 `EARLIEST_PURGE` is the deletion plus 7 days, Secrets Manager's shortest recovery window: Secrets
@@ -751,7 +746,7 @@ and prints its answer on a line of its own, naming the store the secret is in:
 | Line | What it means |
 | --- | --- |
 | `broker: serving NAME from <store>` | The broker serves the secret as just written, as a stored secret. |
-| `broker: serving NAME from <store> (kind <kind>)` | The broker serves the secret as that kind: it mints from the stored value and never returns it. |
+| `broker: serving NAME from <store> (type <type>)` | The broker serves the secret as that type: it mints from the stored value and never returns it. |
 | `broker: NAME is deleted in <store> (restorable until <date>)` | After a delete: the broker no longer serves it. |
 | `broker: refusing NAME from <store> (reason=<reason>)` | The broker leaves the secret out: `absent` (it found no such secret, or one scheduled for deletion), `pending-value` (a secret `secret create` made and has not yet filled, which carries its `agent-secrets-create` label, holds no version and was made less than ten minutes ago: the broker waits for its value rather than refuses it), or one of the refusals [Operating the broker](/legion/broker/operate/#health-and-logs) lists, such as `no-current-value`. |
 

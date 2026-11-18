@@ -1,0 +1,2 @@
+kind: Changed
+body: 'The `agent-secrets` skill gives `curl` no bearer token as an argument, in its wrong example either: that example now expands the variable in your own shell inside a double-quoted `sh -c`, and every example, the one that takes a token out of a JSON value too, sends the header on standard input (`curl -H @-`).'

@@ -64,10 +64,7 @@ func Validate(t Tree, o Options) []Problem {
 	for _, cycle := range findLoops(v.edges) {
 		v.problem(v.first[cycle[0]], cycle[0], "loop: "+loopDetail(cycle))
 	}
-	slices.SortFunc(v.problems, func(a, b Problem) int {
-		return cmp.Or(cmp.Compare(a.Pos.File, b.Pos.File), cmp.Compare(a.Pos.Line, b.Pos.Line), cmp.Compare(a.Node, b.Node),
-			cmp.Compare(a.Rule, b.Rule), cmp.Compare(a.Detail, b.Detail))
-	})
+	SortProblems(v.problems)
 	return v.problems
 }
 

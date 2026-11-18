@@ -590,10 +590,13 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 		"issue", s.issue, "launcher", s.token, "sequence", report.ID, "release", report.Release)
 }
 
-// memoryKilled hands the daemon one process the pod's memory guard ended with SIGKILL, as
-// the launcher reported it on the connection of the role whose process it was
+// memoryKilled hands the daemon one process of a role that was stopped because the pod was out
+// of memory, by the pod's memory guard or, in a microVM pod, by the pod's own kernel, as the
+// launcher reported it on the connection of the role whose process it was
 // (shimwire.LauncherMemoryKill). The launcher sends it unasked, and only on a connection whose
-// acknowledgement carried guard settings, which is a daemon that knows the frame.
+// acknowledgement carried guard settings (a gVisor pod's launcher) or KernelKills (a microVM
+// pod's), which is a daemon that knows the frame and its cause. The report goes on whole, its
+// cause included, which chooses the note the role is told (workflow's memoryGuardKill).
 //
 // The issue, the role and the pod the kill is credited to are the session's own, as the hello's
 // authentication bound them (launcherCredential), and never anything the frame says: a launcher
