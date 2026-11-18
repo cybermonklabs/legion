@@ -102,7 +102,7 @@ It carries:
   The daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
   What a role sees when a write is refused is a command that wrote nothing and one of two lines on standard error:
   `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write; or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
-  `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and git stops the push on any of them but the first.
+  `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
 - `socat` from Debian trixie's archive, at `/usr/bin/socat`:
