@@ -5,11 +5,10 @@ import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
-import { modSocketPath } from "../hooks/mod-protocol"
 import { waitFor } from "./channel-session-harness"
 import { startFakeMod } from "./fake-mod"
 import { FakeNatsServer } from "./fake-nats-server"
-import { modSocketScratch } from "./mod-socket-scratch"
+import { modSocketScratch, sessionModSocket } from "./mod-socket-scratch"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -96,8 +95,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     expect(advertised.length).toBeGreaterThan(0)
     for (const modes of advertised) expect(modes).toEqual([])
 
-    const socketPath = modSocketPath("ses_mcp", { XDG_RUNTIME_DIR: stateDirectory })
-    if (socketPath === undefined) throw new Error("the session names no mod socket")
+    const socketPath = sessionModSocket("ses_mcp", { XDG_RUNTIME_DIR: stateDirectory })
     const mod = await startFakeMod(socketPath, { sessionId: "ses_mcp" })
     try {
       // The mod's hello makes the session register again, with what it can take now.
@@ -190,8 +188,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
     )
     expect(advertised.at(-1)).toEqual([])
 
-    const socketPath = modSocketPath("ses_quiet", { XDG_RUNTIME_DIR: stateDirectory })
-    if (socketPath === undefined) throw new Error("the session names no mod socket")
+    const socketPath = sessionModSocket("ses_quiet", { XDG_RUNTIME_DIR: stateDirectory })
     await waitFor(
       () =>
         stat(socketPath).then(

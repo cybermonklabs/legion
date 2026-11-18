@@ -18,8 +18,8 @@ const SESSION = "0c3b6f6e-0000-4000-8000-000000000001"
 /** What `sessionId`'s socket is called under its base: the private directory and the name the
  *  id hashes to, read off a resolution rather than hashed a second time here. */
 function under(sessionId: string): string {
-  const path = modSocketPath(sessionId, { XDG_RUNTIME_DIR: "/scratch" })
-  if (path === undefined) throw new Error(`${sessionId} names no socket`)
+  const { path, refusal } = resolveModSocketPath(sessionId, { XDG_RUNTIME_DIR: "/scratch" })
+  if (path === undefined) throw new Error(`${sessionId} names no socket: ${refusal}`)
   return path.slice("/scratch".length)
 }
 

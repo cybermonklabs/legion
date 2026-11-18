@@ -10,9 +10,9 @@ import {
 import { type StallProxy, startStallProxy } from "@legion/envoy-client/test/stall-proxy"
 import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
 import type { Subprocess } from "bun"
-import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
+import type { ModCallArguments } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
-import { modSocketScratch } from "./mod-socket-scratch"
+import { modSocketScratch, sessionModSocket } from "./mod-socket-scratch"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -79,8 +79,7 @@ async function startChannelServer(
     stdout: "pipe",
     stderr: "pipe",
   })
-  const socketPath = modSocketPath(sessionID, { XDG_RUNTIME_DIR: home })
-  if (socketPath === undefined) throw new Error("the session names no mod socket")
+  const socketPath = sessionModSocket(sessionID, { XDG_RUNTIME_DIR: home })
   // Every delivery reaches the model as the mod's own write - the row of a turn running, or the
   // prompt of a new turn while the session is idle, which this one is throughout (`show` in
   // `../src/mod-session`) - so the mod is this test's view of what the session was shown.

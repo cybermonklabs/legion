@@ -19,7 +19,7 @@ import {
 } from "../hooks/mod-protocol"
 import { type ModLink, startModLink } from "../src/mod-link"
 import { type ModSession, modSession } from "../src/mod-session"
-import { modSocketScratch } from "./mod-socket-scratch"
+import { modSocketScratch, sessionModSocket } from "./mod-socket-scratch"
 
 const scratch: string[] = []
 const links: ModLink[] = []
@@ -164,8 +164,7 @@ test("binds the path the mod computes, answers the liveness marker, and keeps th
 
 test("refuses a socket directory another user could use, rather than binding in it", async () => {
   const dir = await directory()
-  const path = modSocketPath("open", { XDG_RUNTIME_DIR: dir })
-  if (path === undefined) throw new Error("the session names no mod socket")
+  const path = sessionModSocket("open", { XDG_RUNTIME_DIR: dir })
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   await chmod(dirname(path), 0o755)
   await expect(startModLink({ sessionId: "open", env: { XDG_RUNTIME_DIR: dir } })).rejects.toThrow(
@@ -176,8 +175,7 @@ test("refuses a socket directory another user could use, rather than binding in 
 
 test("takes over a socket a dead server left behind", async () => {
   const dir = await directory()
-  const path = modSocketPath("s2", { XDG_RUNTIME_DIR: dir })
-  if (path === undefined) throw new Error("the session names no mod socket")
+  const path = sessionModSocket("s2", { XDG_RUNTIME_DIR: dir })
   await mkdir(dirname(path), { recursive: true, mode: 0o700 })
   await staleSocket(path)
   expect((await stat(path)).isSocket()).toBe(true)

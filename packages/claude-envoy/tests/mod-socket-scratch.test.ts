@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { restoreEnvironment } from "@legion/test-fixtures/environment"
 import { resolveModSocketPath } from "../hooks/mod-protocol"
-import { modSocketScratch } from "./mod-socket-scratch"
+import { modSocketScratch, sessionModSocket } from "./mod-socket-scratch"
 
 // modSocketScratch (tests/mod-socket-scratch.ts) under the TMPDIR lengths a machine has: CI's /tmp,
 // a dev box's 45-byte TMPDIR, and a 119-byte one. Every TMPDIR here is a directory of this file's own
@@ -82,4 +82,22 @@ test("under a TMPDIR the socket fits under, the directory is under that TMPDIR a
   expect(dir.startsWith(`${tmp}/${PREFIX}`)).toBe(true)
   expect(resolveModSocketPath(SESSION, { XDG_RUNTIME_DIR: dir }).refusal).toBeUndefined()
   expect(notes).toEqual([])
+})
+
+// The tests that read a session's socket (envoy-channel-stall, envoy-channel-mcp, mod-link) throw
+// through sessionModSocket when there is none. Its error carries the reason resolveModSocketPath
+// gives, so a base past the 100-byte limit reads as that and not as a bare "names no mod socket".
+test("a session whose socket path passes the limit fails with the reason", () => {
+  const tooDeep = join(root, "d".repeat(100 - root.length))
+  expect(() => sessionModSocket(SESSION, { XDG_RUNTIME_DIR: tooDeep })).toThrow(
+    `the session names no mod socket: every private base makes a socket path longer than 100 bytes (${tooDeep}/`,
+  )
+  expect(() => sessionModSocket(SESSION, {})).toThrow(
+    "the session names no mod socket: none of XDG_RUNTIME_DIR",
+  )
+  // A base it fits under answers the path the resolver gives, which the server binds.
+  const fits = join(root, "f")
+  const resolved = resolveModSocketPath(SESSION, { XDG_RUNTIME_DIR: fits }).path
+  expect(resolved?.startsWith(`${fits}/claude-envoy/ce-`)).toBe(true)
+  expect(sessionModSocket(SESSION, { XDG_RUNTIME_DIR: fits })).toBe(resolved ?? "no path")
 })

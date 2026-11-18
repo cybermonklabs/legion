@@ -22,3 +22,20 @@ export async function modSocketScratch(prefix: string): Promise<string> {
   )
   return mkdtemp(join(root, prefix))
 }
+
+/**
+ * The socket path `sessionId` gets under `env`, as the server and the mod resolve it. A session
+ * with none fails the test, and the error says why: the `refusal` `resolveModSocketPath` gives,
+ * such as the path that went past `MOD_SOCKET_PATH_MAX_BYTES`. A bare "names no mod socket" left a
+ * long `TMPDIR` to be guessed at.
+ */
+export function sessionModSocket(
+  sessionId: string,
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  const resolution = resolveModSocketPath(sessionId, env)
+  if (resolution.path === undefined) {
+    throw new Error(`the session names no mod socket: ${resolution.refusal}`)
+  }
+  return resolution.path
+}
