@@ -81,8 +81,10 @@ type Config struct {
 	// SessionDatabase is the Cloud SQL database every generation keeps its Oh My Pi session in,
 	// which the launcher proxies to (internal/sessionproxy) as the pod itself, or as the service
 	// account the database names (ImpersonateServiceAccount), which the pod impersonates with its
-	// own credentials. The zero value is every other session store: no proxy, and the child's
-	// session storage is whatever its environment names.
+	// own credentials, or, with a writer audience (WriterAudience), with the writer token under
+	// the roles directory (SessionWriterDirName). With a writer audience the proxy also admits
+	// only the launcher and the generation's agent (sessionPeer). The zero value is every other
+	// session store: no proxy, and the child's session storage is whatever its environment names.
 	SessionDatabase ompsessions.Database
 	// SessionDialer builds that proxy's upstream dialer for signer, which names the service
 	// account that SessionDatabase names, or no account for the pod itself
@@ -414,16 +416,39 @@ func (c Config) validate() error {
 // in it and the login together are what opens it, so a generation started without one of them would
 // proxy to nothing. A service account to impersonate names a database too, so with it each of the
 // three is required: startSession, which skips only the zero value, would otherwise hand the proxy
-// an account and no instance, and every generation would fail. Naming none of the four is the
-// other stores, which need no proxy.
+// an account and no instance, and every generation would fail. A writer audience names a database
+// too, and needs the account as well, because the writer token signs in only by impersonating it.
+// Naming none of the five is the other stores, which need no proxy.
+//
+// A writer audience is refused, too, in a form other than ompsessions.ValidWriterAudience's, and in
+// the single-role form. That form runs its agent in the container's own namespaces, where the
+// writer token under the container's filesystem would be in the agent's view. Only the roles-dir
+// form hides it, behind the cover role-init puts over the roles directory (SessionWriterDirName).
 func (c Config) validateSessionDatabase() error {
 	if c.SessionDatabase == (ompsessions.Database{}) {
 		return nil
 	}
-	return namedInPart("the session database",
+	if err := namedInPart("the session database",
 		namedFlag{"--session-instance", c.SessionDatabase.Instance},
 		namedFlag{"--session-database", c.SessionDatabase.Name},
-		namedFlag{"--session-user", c.SessionDatabase.User})
+		namedFlag{"--session-user", c.SessionDatabase.User}); err != nil {
+		return err
+	}
+	audience := c.SessionDatabase.WriterAudience
+	switch {
+	case audience == "":
+		return nil
+	case c.SessionDatabase.ImpersonateServiceAccount == "":
+		return errors.New("launcher: --session-writer-audience needs --session-impersonate-service-account:" +
+			" the writer token signs in to Cloud SQL only by impersonating that service account")
+	case !ompsessions.ValidWriterAudience(audience):
+		return fmt.Errorf("launcher: --session-writer-audience %q is not a workload identity provider's full resource name,"+
+			" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>", audience)
+	case c.RolesDir == "":
+		return errors.New("launcher: --session-writer-audience needs the roles-dir form (--roles-dir):" +
+			" the single-role form runs its agent in the container's own namespaces, where the writer token would be in the agent's view")
+	}
+	return nil
 }
 
 // validateMetadata refuses the metadata endpoint anywhere but in a microVM issue pod's container,
@@ -679,7 +704,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	if err != nil {
 		return refuse(err)
 	}
-	proxy, clientURL, err := m.startSession(ctx, command.Generation, dir)
+	proxy, clientURL, err := m.startSession(ctx, command, env, dir)
 	var keeper *claudeKeeper
 	// abandon refuses a start that made the generation's directory, undoing what it made first.
 	abandon := func(cause error) shimwire.LauncherStartResult {
@@ -1079,16 +1104,42 @@ func writeCredential(path, content string) error {
 // back there), so the URL the agent reads names the socket where the agent finds it. The role's
 // processes run as the launcher's own user, so the socket is theirs to connect to.
 //
+// With a writer audience, the proxy impersonates the database's service account with the writer
+// token at <roles-dir>/session-writer/token (SessionWriterDirName), and admits only the launcher and
+// the generation's agent (sessionPeer). The token's path goes to the proxy alone, never into the
+// generation's environment or a file. The generation is refused before anything is written where
+// Yama lets a role's process trace the agent (requireTraceScope), or where no process could be
+// known as the agent (newSessionPeer): command names the agent's executable, and env, the
+// generation's environment, says whether the start is a Claude Code one.
+//
 // ctx bounds the proxy's start, so a start still in progress when the container is told to stop is
 // abandoned, and its proof dial is bounded besides by proofTimeout, so an instance that never
 // answers is refused while the daemon still waits for the answer. A started proxy ignores ctx: it
 // serves until the generation's own end closes it (wait), which lets it serve the child through its
 // stop grace after ctx has ended.
-func (m *manager) startSession(ctx context.Context, generation uint64, dir string) (*sessionproxy.Proxy, string, error) {
-	if m.cfg.SessionDatabase == (ompsessions.Database{}) {
+func (m *manager) startSession(ctx context.Context, command shimwire.LauncherStart, env []string, dir string) (*sessionproxy.Proxy, string, error) {
+	database := m.cfg.SessionDatabase
+	if database == (ompsessions.Database{}) {
 		return nil, "", nil
 	}
-	local := ompsessions.Endpoint{SocketDir: dir, Database: m.cfg.SessionDatabase.Name, User: m.cfg.SessionDatabase.User}
+	generation := command.Generation
+	config := sessionproxy.Config{
+		Instance: database.Instance, ImpersonateServiceAccount: database.ImpersonateServiceAccount, NewDialer: m.cfg.SessionDialer,
+		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
+	}
+	if database.WriterAudience != "" {
+		if err := requireTraceScope(); err != nil {
+			return nil, "", fmt.Errorf("generation %d: %v", generation, err)
+		}
+		peer, err := newSessionPeer(m, command, env)
+		if err != nil {
+			return nil, "", fmt.Errorf("generation %d: %v", generation, err)
+		}
+		config.WriterAudience = database.WriterAudience
+		config.WriterTokenFile = filepath.Join(m.cfg.RolesDir, SessionWriterDirName, SessionWriterTokenFile)
+		config.Admit = peer.admit
+	}
+	local := ompsessions.Endpoint{SocketDir: dir, Database: database.Name, User: database.User}
 	agent := local
 	if m.namespaced {
 		agent.SocketDir = generationDir(filepath.Join(roleFixedRoot, RolePrivateDir), generation)
@@ -1096,11 +1147,8 @@ func (m *manager) startSession(ctx context.Context, generation uint64, dir strin
 	if err := writeCredential(filepath.Join(dir, ompsessions.DSNFileName), agent.AgentURL()); err != nil {
 		return nil, "", fmt.Errorf("write the session database URL for generation %d: %v", generation, err)
 	}
-	proxy, err := sessionproxy.Start(ctx, sessionproxy.Config{
-		Socket: local.Socket(), Instance: m.cfg.SessionDatabase.Instance,
-		ImpersonateServiceAccount: m.cfg.SessionDatabase.ImpersonateServiceAccount, NewDialer: m.cfg.SessionDialer,
-		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
-	})
+	config.Socket = local.Socket()
+	proxy, err := sessionproxy.Start(ctx, config)
 	if err != nil {
 		return nil, "", fmt.Errorf("the session database proxy for generation %d: %v", generation, err)
 	}

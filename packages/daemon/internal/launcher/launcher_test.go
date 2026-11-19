@@ -1286,6 +1286,53 @@ func TestAPartlyNamedSessionDatabaseIsRefusedBeforeTheLauncherStarts(t *testing.
 	}
 }
 
+// A writer audience is refused before the launcher does anything at all, each time with its
+// reason: named without the service account, which the writer token signs in only by
+// impersonating; in a form that is no workload identity provider's full resource name; and in
+// the single-role form, whose agent runs in the container's own namespaces, where the token would
+// be in its view. Named whole in the roles-dir form, it is accepted.
+func TestAWriterAudienceIsRefusedWithoutItsAccountInAnotherFormOrInTheSingleRoleForm(t *testing.T) {
+	noAccount := writerDatabase
+	noAccount.ImpersonateServiceAccount = ""
+	otherForm := writerDatabase
+	otherForm.WriterAudience = "projects/123456789012/locations/global/workloadIdentityPools/example-pool/providers/example-provider"
+	singleRole := Config{
+		Connect: "tcp://127.0.0.1:1", Token: "launcher-token", Sandbox: "legion-legion-legion-208",
+		Role: "tester", PodUID: "pod-1", PrivateDir: t.TempDir(),
+	}
+	rolesDir := Config{
+		Connect: "tcp://127.0.0.1:1", Sandbox: "legion-legion-legion-208", PodUID: "pod-1", RolesDir: t.TempDir(), Roles: []string{"tester"},
+	}
+	with := func(cfg Config, database ompsessions.Database) Config {
+		cfg.SessionDatabase = database
+		return cfg
+	}
+	for name, tc := range map[string]struct {
+		cfg  Config
+		want string
+	}{
+		"the audience alone": {with(rolesDir, ompsessions.Database{WriterAudience: testWriterAudience}),
+			"launcher: the session database is named in part: no --session-instance, no --session-database, no --session-user"},
+		"no service account": {with(rolesDir, noAccount),
+			"launcher: --session-writer-audience needs --session-impersonate-service-account: the writer token signs in to Cloud SQL only by impersonating that service account"},
+		"another form": {with(rolesDir, otherForm),
+			`launcher: --session-writer-audience "` + otherForm.WriterAudience + `" is not a workload identity provider's full resource name, //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>`},
+		"the single-role form": {with(singleRole, writerDatabase),
+			"launcher: --session-writer-audience needs the roles-dir form (--roles-dir): the single-role form runs its agent in the container's own namespaces, where the writer token would be in the agent's view"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// The connect address is one nothing listens on: a refused configuration must answer
+			// before the launcher dials anything.
+			if err := Run(context.Background(), tc.cfg); err == nil || err.Error() != tc.want {
+				t.Fatalf("Run = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if err := with(rolesDir, writerDatabase).validate(); err != nil {
+		t.Fatalf("the roles-dir form with the whole writer audience is refused: %v", err)
+	}
+}
+
 // The child of a generation with a session database finds its socket already bound: the proxy is
 // up, and has proven one connection to the instance, before anything the agent runs can ask Oh My
 // Pi for its session (INFRA-271).
