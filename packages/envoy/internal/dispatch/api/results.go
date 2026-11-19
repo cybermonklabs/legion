@@ -6,13 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -46,7 +51,8 @@ const (
 )
 
 // checkResultReadingRunes is how much of the role's reading the pull-request body line carries,
-// and how much of the check's own words the line of a derived result carries (ciVerdictLine).
+// and how much of the check's own words the line of a derived result carries (ciVerdictLine),
+// each counted on what lineWords keeps of the text.
 const checkResultReadingRunes = 80
 
 // checkResultColumns is the column list every check_results read scans, in scanCheckResult's
@@ -113,6 +119,24 @@ type checkResultRecorded struct {
 	Result model.CheckResult `json:"result"`
 }
 
+// checkResultDryRun is the body POST /api/v1/issues/{key}/results/dry-run answers.
+type checkResultDryRun struct {
+	Line string `json:"line"`
+}
+
+// resultRequest is a result's body as the record and its dry run have judged it before anything
+// is written (readResultRequest): the input and its actor, the issue it is recorded on, the check
+// it names, the one repository the check's issue resolves to, and the rule the pull-request body
+// line keeps words by.
+type resultRequest struct {
+	issueKey string
+	input    checkResultInput
+	actor    model.Actor
+	check    resolvedCheck
+	repo     *string
+	words    lineWords
+}
+
 // POST /api/v1/issues/{key}/results  (any authenticated actor)
 //
 // Records one result against one check. {key} is the recording issue, which need not be the
@@ -121,24 +145,76 @@ type checkResultRecorded struct {
 // a pull request of the check's own issue (comparisonReader). The answer carries the stored
 // row and the pull-request body line it implies, so every writer writes one grammar.
 func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
-	var input checkResultInput
-	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	request, ok := s.readResultRequest(w, r)
 	if !ok {
 		return
 	}
-	if err := input.refusal(); err != nil {
+	// The reading resolveCheck made is the block's only while the version and digest the index
+	// holds for it have not moved since, which the locked half re-reads and judges; the one
+	// re-read a moved pair needs runs there too, with every lock given back.
+	written, err := s.recordResultWithFreshWords(r.Context(), request.issueKey, request.check, request.input, request.actor)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// The read-through runs before the event: the Verification tab refetches on
+	// result.recorded, and no later event refreshes it, so a tab that read the results before
+	// the pull request row landed would show this result standing at no basis until something
+	// else happened.
+	s.readThroughPullRequests(r.Context(), request.check.IssueKey, written.result.CommitSHA, request.repo)
+	s.publish(r.Context(), written.event)
+	s.storeDisplayTrees(r.Context(), written.result.ID, written.result.Observed)
+	WriteJSON(w, http.StatusCreated, checkResultRecorded{
+		// The check as the transaction that wrote the row saw it, which after a redo is not the
+		// one resolveCheck read: the line names the `when` the result was judged by.
+		Line:   checkResultLine(written.check, written.result, request.words),
+		Result: written.result,
+	})
+}
+
+// POST /api/v1/issues/{key}/results/dry-run  (any authenticated actor)
+//
+// The record's dry run: it takes the record's body, makes every refusal the record makes before
+// it opens its transaction (readResultRequest), and answers the pull-request body line the record
+// would answer, writing nothing. The refusals the record makes under its locks - a closed issue,
+// a screenshot of another issue, a check a document version rewords at every attempt - are the
+// record's alone. It is a path of its own, not a flag on the record's, because a release that
+// does not serve it answers a path it does not know 404, where it would drop a flag it does not
+// know and record the result.
+func (s *server) dryRunCheckResult(w http.ResponseWriter, r *http.Request) {
+	request, ok := s.readResultRequest(w, r)
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusOK, checkResultDryRun{Line: checkResultLine(request.check, model.CheckResult{
+		Role: request.input.Role, Observed: request.input.Observed,
+		CommitSHA: request.input.Commit, Verdict: request.input.Verdict,
+	}, request.words)})
+}
+
+// readResultRequest decodes a result's body and judges it as far as the record goes before it
+// opens its transaction, for the record and its dry run alike. A refusal is written to w and
+// answers false.
+func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resultRequest, bool) {
+	refused := func(err error) (resultRequest, bool) {
+		s.writeHandlerError(w, err)
+		return resultRequest{}, false
+	}
+	var input checkResultInput
+	if err := decodeJSON(r, &input); err != nil {
+		return refused(err)
+	}
+	actor, ok := s.requireActor(w, r, input.Actor)
+	if !ok {
+		return resultRequest{}, false
+	}
+	if err := input.refusal(); err != nil {
+		return refused(err)
 	}
 	issueKey := r.PathValue("key")
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return refused(err)
 	}
 
 	// The check is resolved before the transaction opens. Resolving it folds the live
@@ -151,14 +227,12 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// below.
 	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return refused(err)
 	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,
 	// so no GitHub read is spent on it.
 	if err := refuseCheckProvedByCI(r.Context(), pool, check); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return refused(err)
 	}
 
 	// The one repository the check's issue resolves to, read once for the two callers below:
@@ -198,31 +272,17 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// two issues' owner locks costs. Nothing is written before it, so a refusal leaves no row and
 	// no event behind.
 	if err := s.refuseUnknownCommit(r.Context(), checkRepo, input.Commit); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return refused(err)
 	}
 
-	// The reading resolveCheck made is the block's only while the version and digest the index
-	// holds for it have not moved since, which the locked half re-reads and judges; the one
-	// re-read a moved pair needs runs there too, with every lock given back.
-	written, err := s.recordResultWithFreshWords(r.Context(), issueKey, check, input, actor)
+	// The project keys the line drops issue keys by are read before the transaction too, so a
+	// read that fails refuses the record with nothing written: read after the commit, it would
+	// lose the answer to a write that landed.
+	words, err := s.readLineWords(r.Context(), pool)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return refused(err)
 	}
-	// The read-through runs before the event: the Verification tab refetches on
-	// result.recorded, and no later event refreshes it, so a tab that read the results before
-	// the pull request row landed would show this result standing at no basis until something
-	// else happened.
-	s.readThroughPullRequests(r.Context(), check.IssueKey, written.result.CommitSHA, checkRepo)
-	s.publish(r.Context(), written.event)
-	s.storeDisplayTrees(r.Context(), written.result.ID, written.result.Observed)
-	WriteJSON(w, http.StatusCreated, checkResultRecorded{
-		// The check as the transaction that wrote the row saw it, which after a redo is not the
-		// one resolveCheck read: the line names the `when` the result was judged by.
-		Line:   checkResultLine(written.check, written.result),
-		Result: written.result,
-	})
+	return resultRequest{issueKey: issueKey, input: input, actor: actor, check: check, repo: checkRepo, words: words}, true
 }
 
 // checkContended is the code of a results write whose check a document version moved at every
@@ -931,9 +991,12 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 }
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
-// blanks, with the text of a link and every dispatch:// reference dropped, so the pull-request
-// body line the result implies carries no link and no Dispatch host. blockContent is the same
-// block with both kept.
+// blanks, with the text of a link and every word holding `://` (holdsLink) dropped. Dispatch reads
+// the markdown as GFM does, so a bare `www.` address is link text and is dropped too, while a host
+// written with neither a scheme nor `www.`, such as `example.com/logs`, stays
+// (TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt). It is a check's or a requirement's
+// `text`, and the line of a check CI proves keeps a check's words by lineWords (ciVerdictLine).
+// blockContent is the same block with both kept.
 func blockWords(node *pmdoc.Node) string {
 	var words []string
 	pmdoc.Walk(node, func(child *pmdoc.Node) bool {
@@ -946,7 +1009,7 @@ func blockWords(node *pmdoc.Node) string {
 			}
 		}
 		for _, word := range strings.Fields(child.Text) {
-			if strings.Contains(word, "://") {
+			if holdsLink(word) {
 				continue
 			}
 			words = append(words, word)
@@ -954,6 +1017,173 @@ func blockWords(node *pmdoc.Node) string {
 		return true
 	})
 	return strings.Join(words, " ")
+}
+
+// holdsLink reports whether a word holds `://`, which a dispatch:// reference and every URL written
+// with a scheme and a host carry; a link written another way, such as GitHub's `www.` autolink,
+// holds none. blockWords and lineWords drop such a word by this one rule.
+func holdsLink(word string) bool {
+	return strings.Contains(word, "://")
+}
+
+// lineWords is the rule a pull-request body line keeps the words of a text by: the reading a
+// recorded result's line carries (checkResultLine) and the check's words a CI result's line
+// carries (ciVerdictLine). The line is written into a pull request unchanged, and a pull request
+// can be public, so it keeps only a plain word (plainWord), and drops every word that holds `://`
+// (holdsLink), a private host (privateHost, tailnetHost), this Dispatch's own host, or an issue key
+// of a project this Dispatch holds. No line is stored: each is written when the record, its dry run
+// or the results read answers it, by the projects Dispatch holds then.
+type lineWords struct {
+	// issueKey matches a word holding an issue key of a project this Dispatch holds; nil when it
+	// holds no project (lineWordsFor).
+	issueKey *regexp.Regexp
+	// host is the host name of this Dispatch's own URL in lower case, so a link to it written
+	// without its scheme is dropped too; "" when the configured URL names no host (none is
+	// configured, or it does not parse).
+	host string
+	// punctuation is the punctuation a plain word may hold: plainPunctuation, which lineWordsFor
+	// sets, and which a test widens by one rune to show its property can fail.
+	punctuation string
+}
+
+// plainPunctuation is the punctuation a word of a pull-request body line may hold besides visible
+// letters and digits (plainWord).
+// Runes: . , ; : ! ? ' " - ( ) /
+// The line drops whole every word that holds any other rune: every other ASCII punctuation mark
+// and symbol (`*`, `_` and `~` for emphasis and strikethrough, where `_X_` at a word's edge hides
+// where a key ends; the backtick; `<` and `>` for HTML tags and comments; `[` and `]` for links;
+// `\` for escapes; `&` for character references; `$` for math; `@` and `#` for mentions and
+// references; and the rest), every Unicode punctuation mark and symbol (dashes and quotation marks
+// among them), every combining mark, every number that is no decimal digit (superscripts,
+// fractions, Roman numerals), every default-ignorable code point (the zero-width space, variation
+// selectors and the Hangul filler letters among them), every control code point that is no white
+// space (white space ends a word), and every private-use and unassigned code point. Many of these
+// can split, join, hide or forge a key or a host once GitHub renders the line, which one word read
+// alone cannot see; rather than list which, the rule allows these few runes and nothing else, which
+// closes that class.
+// Three look-alikes pass by design: a letter or digit of another script that looks like a Latin
+// letter or digit, such as Cyrillic `А` in `АСМЕ-12`; a letter that looks like the key's `-`, such
+// as the prolonged sound mark `ー` in `ACMEー12`; and GitHub's `:name:` emoji shortcodes, such as
+// `:one:`, a picture that can look like a digit. None is made of the characters of a key.
+// Excluding the letters and digits of other scripts would break international text, and excluding
+// `:` would drop from the line every word of ordinary prose that ends in `:`.
+// The cost is that a word such as `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b` or `it’s` leaves the
+// line, while the record keeps the whole reading.
+const plainPunctuation = `.,;:!?'"-()/`
+
+// plainWord reports whether every rune of word is a visible letter, a digit or one of
+// punctuation. A letter that is a default-ignorable code point, such as the Hangul fillers
+// U+115F, U+1160, U+3164 and U+FFA0, which render as nothing, is no plain letter: it could sit
+// inside a key unseen.
+func plainWord(word, punctuation string) bool {
+	for _, r := range word {
+		letter := unicode.IsLetter(r) &&
+			!unicode.In(r, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector, unicode.Cf)
+		if !letter && !unicode.IsDigit(r) && !strings.ContainsRune(punctuation, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// privateHost and tailnetHost are the two host rules of .github/scripts/check-private-names.sh,
+// read in any case as that script reads them: a host below `.internal.`, and a Tailscale MagicDNS
+// host, a DNS label then `.ts.net` with no ASCII letter or digit after it. privateHost also takes
+// a host that ends in `.internal` with no ASCII letter or digit after it (a full stop, a
+// parenthesis or a hyphen included). Both read case-insensitively, so the Kelvin sign U+212A and
+// the long s U+017F, which fold to `k` and `s`, count as letters after a host too, while `é` does
+// not. privateHost's trailing `.internal` is what the script does not refuse: the script guards the
+// whole repository, where names such as metadata.google.internal and host.docker.internal are
+// well known and not private, while the line is pasted into public text with no reader in
+// between, so it is stricter on purpose. The line drops every word holding one, written without a
+// scheme too, and the script's reserved example hosts with them, since no line needs such a host.
+var (
+	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal([^[:alnum:]]|$)`)
+	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
+)
+
+// readLineWords is lineWords for every project q reads and for this Dispatch's own URL.
+func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error) {
+	rows, err := q.Query(ctx, `select key from projects`)
+	if err != nil {
+		return lineWords{}, err
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return lineWords{}, err
+	}
+	return lineWordsFor(keys, s.deps.ServerURL), nil
+}
+
+// lineWordsFor is lineWords for the projects keys names and the Dispatch at serverURL. A word
+// holds an issue key where one of those keys stands in it, in any case, at the word's start or
+// after a character that is neither a letter nor a digit, followed by `-` and a number that ends
+// there: at the word's end, or before a character that is neither a letter, a digit, nor a `.`
+// that a digit follows. So `ACME-12's`, `(ACME-12)`, `fix/acme-12-lines` and
+// `legion-acme-acme-12-tester` hold ACME-12, and the lower case is caught because branch names and
+// role tokens spell a key so. `UTF-8`, `SHA-256`, `x86-64` and `TEST-1` hold no key while no
+// project bears that name, and `kernel-6.8` holds none even where a project KERNEL exists, since a
+// number running on into a decimal part is a version. A shape alone, such as [A-Z]+-[0-9]+, would
+// drop UTF-8 and SHA-256 too, which is why the keys are the projects Dispatch holds.
+func lineWordsFor(keys []string, serverURL string) lineWords {
+	words := lineWords{punctuation: plainPunctuation}
+	if parsed, err := url.Parse(serverURL); err == nil {
+		words.host = strings.ToLower(parsed.Hostname())
+	}
+	if len(keys) == 0 {
+		return words
+	}
+	quoted := make([]string, len(keys))
+	for index, key := range keys {
+		quoted[index] = regexp.QuoteMeta(key)
+	}
+	words.issueKey = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:` + strings.Join(quoted, "|") +
+		`)-[0-9]+(?:$|[^\p{L}\p{N}.]|\.(?:$|[^0-9]))`)
+	return words
+}
+
+// drops reports whether the line leaves word out: when it is not a plain word (plainWord), or
+// when the word as written, or as NFKC reads it (fullwidth and mathematical letters as their
+// plain forms), holds what the line never carries.
+func (w lineWords) drops(word string) bool {
+	return !plainWord(word, w.punctuation) || w.holds(word) || w.holds(norm.NFKC.String(word))
+}
+
+// holds reports whether word holds `://`, a private host, this Dispatch's own host or an issue
+// key of a project this Dispatch holds.
+func (w lineWords) holds(word string) bool {
+	return holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
+		(w.host != "" && strings.Contains(strings.ToLower(word), w.host)) ||
+		(w.issueKey != nil && w.issueKey.MatchString(word))
+}
+
+// keep is text's words joined by single blanks, less every word the line drops.
+func (w lineWords) keep(text string) string {
+	return w.keepThrough(text, math.MaxInt)
+}
+
+// keepThrough is keep stopped once what it has kept is longer than budget runes. cut reads no more
+// of a text than that (text.HeadWords reads its first budget runes and whether there are more), so
+// a word past that point can change no line, and judging it would cost work that grows with the
+// text and changes nothing.
+func (w lineWords) keepThrough(text string, budget int) string {
+	var kept strings.Builder
+	runes := 0
+	for word := range strings.FieldsSeq(text) {
+		if runes > budget {
+			break
+		}
+		if w.drops(word) {
+			continue
+		}
+		if kept.Len() > 0 {
+			kept.WriteByte(' ')
+			runes++
+		}
+		kept.WriteString(word)
+		runes += utf8.RuneCountInString(word)
+	}
+	return kept.String()
 }
 
 // blockContent is a typed block's own content as markdown: what stands between its opening line
@@ -981,33 +1211,49 @@ func blockContent(node *pmdoc.Node) string {
 }
 
 // checkResultLine is the pull-request body line one recorded result implies. Dispatch writes it
-// rather than each caller, so every writer writes one grammar; it carries no link to Dispatch
-// and no Dispatch host.
+// rather than each caller, so every writer writes one grammar. Its reading carries no word
+// holding `://` (holdsLink), no private or Dispatch host, no word that is not plain but for the
+// ellipsis that marks a cut, and no word holding an issue key of a project Dispatch holds as
+// lineWordsFor reads one (lineWords). A public host written as `www.` and a domain, which GitHub
+// renders as a link, is kept, and the check's block id and the role are printed as written.
 //
 // The tail is the reading the role recorded (Observed) and not the check's own words, which
 // every reader of the pull request can read on the issue and which a pass and a fail would
-// carry alike: the line's whole purpose is to say what was seen. A reading longer than the
-// budget is cut at a word boundary and marked with an ellipsis, so a reader can tell a cut
-// line from a short one; a result with no reading says so, since a line that simply stopped
-// after the role would read as a reading nobody recorded.
-func checkResultLine(check resolvedCheck, result model.CheckResult) string {
+// carry alike: the line's whole purpose is to say what was seen. What words keeps of a reading
+// is cut, when it is longer than the budget, and marked with an ellipsis, so a reader can tell a
+// cut line from a short one; the cut falls at a word boundary where the budget's first runes hold
+// one (cut). A result with no reading says so, since a line that simply stopped after the role
+// would read as a reading nobody recorded, and a reading of which nothing is left after the cut
+// says that, whether words kept nothing of it or the cut's second judging dropped what it kept.
+func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWords) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, recorded by %s.",
 		check.BlockID, check.Attributes.When, result.Verdict, result.CommitSHA, result.Role)
-	reading := strings.Join(strings.Fields(result.Observed), " ")
-	if reading == "" {
+	if strings.TrimSpace(result.Observed) == "" {
 		return line + " The role recorded no reading."
 	}
-	return line + " " + cutWords(reading)
+	tail := words.cut(words.keepThrough(result.Observed, checkResultReadingRunes))
+	if tail == "" {
+		return line + " The reading holds only words this line leaves out."
+	}
+	return line + " " + tail
 }
 
-// cutWords is s cut at a word boundary to checkResultReadingRunes, with an ellipsis where it was
-// cut, so a reader can tell a cut line from a short one (text.HeadWords).
-func cutWords(s string) string {
-	head, cut := text.HeadWords(s, checkResultReadingRunes)
-	if cut {
-		head += "…"
+// cut is kept, the words w kept of a text, cut at a word boundary to checkResultReadingRunes with
+// an ellipsis where it was cut, so a reader can tell a cut line from a short one
+// (text.HeadWords). HeadWords cuts inside a word when the budget's first runes hold no blank, and
+// what it keeps of that word can hold a key the whole word did not (`ACME-12xyz` cut to
+// `ACME-12`), so a cut text is kept by w once more. cut is empty when nothing is left: when kept
+// is, or when w keeps nothing of the cut text, so a caller decides that nothing is left from what
+// cut answers and never prints a bare ellipsis.
+func (w lineWords) cut(kept string) string {
+	head, cut := text.HeadWords(kept, checkResultReadingRunes)
+	if !cut {
+		return head
 	}
-	return head
+	if head = w.keep(head); head == "" {
+		return ""
+	}
+	return head + "…"
 }
 
 // sessionOf is the session a result was recorded by, empty for a person's.

@@ -57,15 +57,16 @@ fi
 mkdir -p "$evidence/logs" "$evidence/transcripts"
 # Every line of the run also goes to $evidence/transcript.log (lib/transcript.sh), so the driver and
 # its cleanup, which closes the proof's pull requests, never fail on a write whoever is reading. The
-# evidence is under $work by default, and the sweeps in services-stopped and cleanup SIGKILL every
-# process whose command line names $work (run_processes, lib/rig.sh), so the tee gets the transcript
-# as fd 8, never by path. The tee keeps the copy it forked with, and the driver closes its own so
-# nothing it starts inherits it. The lib is this script's own, not ACCEPT_ROOT's.
-exec 8>>"$evidence/transcript.log"
+# lib is this script's own, not ACCEPT_ROOT's.
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$(dirname "$0")/lib/transcript.sh"
-transcript_to /dev/fd/8
-exec 8>&-
+transcript_to "$evidence/transcript.log"
+# Every program the run execs from here on carries its mark, and the sweeps in services-stopped and
+# cleanup end what carries it and nothing else (marked_processes, lib/process-tree.sh); a fork of
+# this shell that execs nothing, such as the pane_watcher or the instructor, carries none and is
+# stopped by its pid (run_marks' comment there). The transcript's tee, started above, carries none,
+# so it outlives the sweeps and writes the run's last line.
+export LEGION_E2E_RUN=$work
 ok=
 check=setup
 TZ=UTC printf -v check_started '%(%FT%TZ)T' -1 # when the current check began (lib/model-gateway-unserved.sh)
@@ -134,7 +135,7 @@ collect_transcripts() {
 }
 
 cleanup() {
-  local status=$? p
+  local status=$?
   set +e
   # Teardown is best effort, and errexit off does not turn the ERR trap off: a command that fails
   # here is a warning about the teardown, never a check's FAIL line, and the run's exit status is
@@ -164,7 +165,9 @@ cleanup() {
   stop_pid "$daemon_keeper_pid"
   stop_pid "${instructor_pid:-}"
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  # A lib older than lib/process-tree.sh has no sweep; require_process_tree then failed the run
+  # before it started anything, so there is nothing to sweep.
+  ! declare -F stop_marked_processes >/dev/null || stop_marked_processes "$work" || true
   collect_transcripts
   rm -rf "$work/model-gateway-cache" || true
   github_cleanup
@@ -303,7 +306,7 @@ start_daemon() {
   await_start daemon "$daemon_pid" 180 "the Go daemon to answer /healthz" \
     curl -fsS --max-time 5 "http://127.0.0.1:$port_daemon/healthz"
 }
-stop_daemon() { kill -TERM "$daemon_pid" 2>/dev/null || true; stop_pid "$daemon_pid"; daemon_pid=; }
+stop_daemon() { stop_pid "$daemon_pid"; daemon_pid=; }
 
 claim_session_file() {
   local issue=$1 role=$2
@@ -314,27 +317,28 @@ claim_session_file() {
 claim_session_text() { local f; f=$(claim_session_file "$1" "$2") || return 1; cat -- "$f"; }
 workspace_jj() { local issue=$1; shift; jj -R "$state/workspaces/$repo/${issue,,}" "$@"; }
 
-omp_descendant() {
-  local queue=("$1") pid children
-  while [ "${#queue[@]}" -gt 0 ]; do
-    pid=${queue[0]}
-    queue=("${queue[@]:1}")
-    if [ "$(basename "$(tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | sed -n 1p)")" = omp ]; then
-      printf '%s\n' "$pid"
-      return 0
-    fi
-    children=$(cat /proc/"$pid"/task/*/children 2>/dev/null || true)
-    for child in $children; do queue+=("$child"); done
-  done
-  return 1
-}
+# omp_descendant PANE_PID prints the pane's Oh My Pi: the one process below the pane's own process,
+# the pid the claim's locator recorded, that runs the Oh My Pi the daemon launches ($omp_exe) by the
+# kernel's record (launched, lib/process-tree.sh), whatever name it was called by. No argv[0] is
+# read: a wrapper or an argv[0] of another name cannot stand in for it or hide it.
+omp_descendant() { launched "$1" "$omp_exe"; }
+# claim_pane_pid ISSUE ROLE prints the process the role's pane was launched as, out of the claim's
+# locator: the incarnation `<pid>:<start ticks>`, and only while that pid is still the process that
+# started then (incarnation_pid, lib/process-tree.sh), never a pid the kernel has since given to
+# another.
 claim_pane_pid() {
-  daemon_state | jq -er --arg issue "$1" --arg role "$2" \
-    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation | split(":")[0]'
+  local inc
+  inc=$(daemon_state | jq -er --arg issue "$1" --arg role "$2" \
+    '(if $role == "architect" then .issues[$issue].architect else .issues[$issue].workers[$role].claim end).locator.incarnation') || return 1
+  incarnation_pid "$inc"
 }
-pane_value() { tr '\0' '\n' <"/proc/$1/environ" | sed -n "s/^$2=//p"; }
+# endpoint_mismatch OMP_PID prints the first rig endpoint the OMP process does not carry, the
+# ANTHROPIC_API_KEY it must not carry, or that its environment could not be read, and succeeds; it
+# fails, printing nothing, only when every endpoint is the rig's and the key's absence holds on
+# env_has's status 1 (lib/process-tree.sh). An environment that could not be read, at either read,
+# is a mismatch and never a clean one.
 endpoint_mismatch() {
-  local omp=$1 name want got
+  local omp=$1 name want got status
   for name in DISPATCH_URL DISPATCH_TOKEN_FILE ENVOY_URL ENVOY_NATS_URL; do
     case "$name" in
       DISPATCH_URL) want="http://127.0.0.1:$port_dispatch" ;;
@@ -342,11 +346,41 @@ endpoint_mismatch() {
       ENVOY_URL) want="http://127.0.0.1:$port_listener" ;;
       ENVOY_NATS_URL) want="nats://127.0.0.1:$port_nats" ;;
     esac
-    got=$(pane_value "$omp" "$name")
+    status=0
+    got=$(env_of "$omp" "$name") || status=$?
+    if [ "$status" != 0 ]; then printf 'an environment that could not be read (env_of status %s)\n' "$status"; return 0; fi
     if [ "$got" != "$want" ]; then printf '%s=%s, want %s\n' "$name" "${got:-<unset>}" "$want"; return 0; fi
   done
-  if grep -qz '^ANTHROPIC_API_KEY=' "/proc/$omp/environ" 2>/dev/null; then printf 'ANTHROPIC_API_KEY set, want unset\n'; return 0; fi
-  return 1
+  status=0
+  env_has "$omp" ANTHROPIC_API_KEY || status=$?
+  case $status in
+    0) printf 'ANTHROPIC_API_KEY set, want unset\n' ;;
+    1) return 1 ;;
+    *) printf 'an environment that could not be read (env_has status %s)\n' "$status" ;;
+  esac
+  return 0
+}
+# carries_no_grant OMP_PID succeeds when the Oh My Pi's environment names neither LEGION_GRANT_FILE
+# nor LEGION_GRANT, and otherwise prints the first it names, or that the environment could not be
+# read, and fails: an absence holds only on env_has's status 1 (lib/process-tree.sh), never on a read
+# that failed or on a pipe whose reader stopped early.
+carries_no_grant() {
+  local name status
+  for name in LEGION_GRANT_FILE LEGION_GRANT; do
+    status=0
+    env_has "$1" "$name" || status=$?
+    case $status in
+      1) ;;
+      0)
+        printf 'still carries %s\n' "$name"
+        return 1
+        ;;
+      *)
+        printf 'has an environment that could not be read (env_has status %s)\n' "$status"
+        return 1
+        ;;
+    esac
+  done
 }
 assert_claim_endpoints() {
   local issue=$1 role=$2 pane_pid omp mismatch
@@ -355,14 +389,15 @@ assert_claim_endpoints() {
   if mismatch=$(endpoint_mismatch "$omp"); then fail "ABORT: $role pane on $issue (OMP pid $omp) has $mismatch"; fi
 }
 pane_watcher() {
-  local claims inc issue role omp mismatch
+  local claims inc issue role pane omp mismatch
   trap - EXIT ERR
   set +e
   while :; do
     if claims=$("$work/legion" claims list --json --config "$work/legion.yaml" --operator-token-file "$work/operator-token" 2>/dev/null); then
       while IFS=$'\t' read -r inc issue role; do
         grep -qF "$inc " "$evidence/pane-endpoints-checked.txt" 2>/dev/null && continue
-        omp=$(omp_descendant "${inc%%:*}") || continue
+        pane=$(incarnation_pid "$inc") || continue
+        omp=$(omp_descendant "$pane") || continue
         if mismatch=$(endpoint_mismatch "$omp"); then
           printf '%s pane on %s (incarnation %s, OMP pid %s) has %s\n' "$role" "$issue" "$inc" "$omp" "$mismatch" >"$evidence/pane-endpoint-violation.txt"
           TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
@@ -559,6 +594,22 @@ until_true_quiet() {
   return 1
 }
 
+# require_process_tree fails, naming each function it lacks and ACCEPT_ROOT, when the lib sourced
+# from ACCEPT_ROOT has no lib/process-tree.sh: this run finds its panes' Oh My Pi and sweeps its
+# processes with that file's functions (omp_program, launched, incarnation_pid, env_of, env_has and
+# stop_marked_processes), and a lib from before it passed every other guard and then died on the
+# first call with "command not found", behind a FAIL line with no reason, its cleanup sweeping
+# nothing. It runs before the run starts anything, so there is nothing to sweep.
+require_process_tree() {
+  local name
+  local -a missing=()
+  for name in omp_program launched incarnation_pid env_of env_has stop_marked_processes; do
+    declare -F "$name" >/dev/null || missing+=("$name")
+  done
+  [ "${#missing[@]}" = 0 ] ||
+    fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates lib/process-tree.sh and has no ${missing[*]}: point ACCEPT_ROOT at a checkout that has it"
+}
+
 begin prerequisites
 for tool in go psql jq curl python3 tmux bun mise secrets agent-secrets gh jj hawk-token; do command -v "$tool" >/dev/null || fail "$tool is required"; done
 # Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
@@ -581,6 +632,7 @@ read_app_logins
 # The services serve on held ports (start_held, keep_port), which ACCEPT_ROOT's lib/rig.sh and its
 # binaries must both provide.
 declare -F start_held >/dev/null || fail "ACCEPT_ROOT's scripts/e2e/lib/rig.sh ($root) predates start_held: point ACCEPT_ROOT at a checkout that has it"
+require_process_tree
 real_gh=$(mise which gh) || fail "mise has no gh"
 # The real tmux comes after the real gh on the daemon's PATH: the tmux runtime runs tmux with the
 # pane allow-list alone, where a shimmed tmux, run from a directory under the operator's real
@@ -654,6 +706,9 @@ envoy_manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --packag
 manifest=$(bash "$root/scripts/e2e/lib/install-plugin-profile.sh" --package pi-legion --profile "$profile" --home "$omp_home" --dest "$work/pi-legion")
 pin=$(<"$root/.omp-pin")
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+# The program every pane's Oh My Pi runs: the daemon starts from this environment, so
+# LEGION_OMP_PATH outranks the invocation when it is set (omp_program, lib/process-tree.sh).
+omp_exe=$(omp_program "$pin") || fail "the Oh My Pi the daemon would run for $pin is not one the kernel runs: $omp_exe"
 cat >"$work/instructions.md" <<'EOF'
 # Acceptance proof instructions
 
@@ -675,6 +730,7 @@ start_daemon
 note "project $project, profile $profile, plugins $(jq -r '.name + "@" + .version' "$envoy_manifest") and $(jq -r '.name + "@" + .version' "$manifest"), ports NATS $port_nats Dispatch $port_dispatch daemon $port_daemon listener $port_listener"
 pane_watcher &
 watcher_pid=$!
+record_start "$watcher_pid" || true
 production_baseline
 note "production Dispatch audit baseline: event ${prod_baseline}"
 pass
@@ -758,6 +814,7 @@ for issue in "$root1" "$root2" "$root3"; do wait_for_architect "$issue"; done
 printf '%s\n' "$root1" "$root2" "$root3" "$child" >"$work/instructor-issues"
 instructor &
 instructor_pid=$!
+record_start "$instructor_pid" || true
 note "the instructor watches $root1 $root2 $root3 $child"
 pass
 
@@ -1059,11 +1116,9 @@ begin merger-pane-mints-no-grant
 # pane environment names no grant, its gh reads the role's files under GH_CONFIG_DIR, and no bash
 # command the merger has run invokes `legion`.
 merger_omp=$(omp_descendant "$(claim_pane_pid "$root1" merger)") || fail "$root1's merger pane has no OMP process"
-for absent in LEGION_GRANT_FILE LEGION_GRANT; do
-  ! tr '\0' '\n' <"/proc/$merger_omp/environ" | grep -q "^$absent=" || fail "$root1's merger pane still carries $absent"
-done
-merger_gh_dir=$(pane_value "$merger_omp" GH_CONFIG_DIR)
-[[ $merger_gh_dir == *-merger-gh/* && $(pane_value "$merger_omp" LEGION_GH_OWNERS_DIR) == "${merger_gh_dir%/*}" ]] ||
+why=$(carries_no_grant "$merger_omp") || fail "$root1's merger pane $why"
+merger_gh_dir=$(env_of "$merger_omp" GH_CONFIG_DIR)
+[[ $merger_gh_dir == *-merger-gh/* && $(env_of "$merger_omp" LEGION_GH_OWNERS_DIR) == "${merger_gh_dir%/*}" ]] ||
   fail "$root1's merger pane carries GH_CONFIG_DIR=$merger_gh_dir, want an owner's directory of its claim's gh bundle (LEGION_GH_OWNERS_DIR)"
 f=$(claim_session_file "$root1" merger)
 # A bash command invokes `legion` when a word of it is legion or ends in /legion (never a word that
@@ -1156,8 +1211,10 @@ stop_pid "$bridge_pid"; bridge_pid=
 stop_pid "${instructor_pid:-}"; instructor_pid=
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 stop_pid "$nats_pid"; nats_pid=
-for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
-[ -z "$(run_processes)" ] || fail "a proof process remains"
+stop_marked_processes "$work" || fail "the run's processes could not be read for their SIGKILL"
+# An unread /proc is no empty run (run_processes exits 2 for it).
+remaining=$(run_processes) || fail "the run's processes could not be read, so whether one remains is not known"
+[ -z "$remaining" ] || fail "a proof process remains: ${remaining//$'\n'/ }"
 pass
 
 begin model-turns-through-the-gateway

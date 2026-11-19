@@ -1086,6 +1086,12 @@ export function getAgentStates(options: ApiOptions = {}) {
   return get("/api/v1/me/agents/state", {}, options);
 }
 
+/** `PUT /api/v1/me/documents/{id}/read`: records `version` as the caller's last read version of the
+ *  document, the write the Spec tab makes when it shows that version (`useSpecMarks`). */
+export function putDocumentRead(id: string, version: number, options: ApiOptions = {}) {
+  return put("/api/v1/me/documents/{id}/read", { body: { version }, params: { id } }, options);
+}
+
 export function putIssueState(
   key: string,
   input: Body<"/api/v1/me/issues/{key}/state", "put">,

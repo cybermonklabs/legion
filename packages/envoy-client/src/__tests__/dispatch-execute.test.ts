@@ -7985,6 +7985,84 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // A Dispatch older than a result's dry run answers its path no route. The dry run says so and
+  // never falls back to the record's own path: an older build would drop what it does not know
+  // and record the result there.
+  test("a dispatch_result dry run that Dispatch answers no route records nothing and says why", async () => {
+    const asked: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      asked.push(`${init?.method ?? "GET"} ${pathname}`);
+      return response(
+        {
+          code: "NOT_FOUND",
+          error: `no route for ${init?.method ?? "GET"} ${pathname}`,
+          hint: "GET /api/v1 lists every route",
+        },
+        404
+      );
+    };
+
+    await expect(
+      executeDispatchTool({
+        tool: "dispatch_result",
+        args: {
+          issue: "DSP-42",
+          check: "k1",
+          role: "implementer",
+          verdict: "pass",
+          commit: "1".repeat(40),
+        },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        sessionId: "session-one",
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+        dryRun: true,
+        // The route no build answers is asked again before the message: no real wait.
+        sleep: async () => {},
+      })
+    ).rejects.toThrow(
+      "answered no route for POST /api/v1/issues/DSP-42/results/dry-run each time the dry run was sent: this build is older than a result's dry run, so it cannot show the pull-request body line before the record. Nothing was recorded."
+    );
+    expect(asked.length).toBeGreaterThan(0);
+    expect(
+      asked.filter((request) => request !== "POST /api/v1/issues/DSP-42/results/dry-run")
+    ).toEqual([]);
+  });
+
+  // Only a call whose dry run Dispatch answers is run as one: any other command, a retraction
+  // among them, would make its write.
+  test("executeDispatchTool refuses a dry run of a call whose dry run asks Dispatch nothing", async () => {
+    const asked: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      asked.push(new URL(String(url)).pathname);
+      return response({}, 500);
+    };
+    for (const [tool, args] of [
+      ["dispatch_message", { issue: "DSP-42", body: "hi" }],
+      ["dispatch_result", { retract: "res-2", reason: "The run was wrong." }],
+    ] as const) {
+      await expect(
+        executeDispatchTool({
+          tool,
+          args,
+          cwd: "/workspace",
+          host: "omp",
+          config,
+          env: {},
+          sessionId: "session-one",
+          exec: repoExec("owner/repo"),
+          fetchImpl: fetchImpl as typeof fetch,
+          dryRun: true,
+        })
+      ).rejects.toThrow(`dispatch ${tool}'s dry run asks Dispatch nothing`);
+    }
+    expect(asked).toEqual([]);
+  });
+
   // One check with the three shapes a reader must tell apart: a result that stands at the head
   // the check compared with, a result retracted after it was recorded, and a result at a commit
   // that head is not. Every result prints, in the order the API served them, because the gate is
