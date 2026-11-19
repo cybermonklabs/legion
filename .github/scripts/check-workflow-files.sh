@@ -225,8 +225,8 @@ for path in targets:
             f"{path} is {size:,} bytes, above GitHub's own cap of {GITHUB_CAP:,} bytes (500 KB): "
             f"GitHub starts no run at all for a workflow file this size, and signals it only as a "
             f"run with no jobs in it. It is above this check's limit of {LIMIT:,} bytes as well. "
-            f"Move filter data, inline shell and prose into files of their own that a job reads, "
-            f"as {RULE} says.",
+            f"Move the filter data into .github/ci-filters.yaml, each longer shell body into a script "
+            f"under .github/scripts/ and each derivation into the workflow's notes file, as {RULE} says.",
         )
     elif size > LIMIT:
         problem(
@@ -234,8 +234,9 @@ for path in targets:
             f"{path} is {size:,} bytes, above this check's limit of {LIMIT:,} bytes. GitHub starts "
             f"no run at all for a workflow file above its own cap of {GITHUB_CAP:,} bytes (500 "
             f"KB), and signals it only as a run with no jobs in it, so this limit keeps every file "
-            f"far enough below the cap that no edit crosses it unseen. Move filter data, inline "
-            f"shell and prose into files of their own that a job reads, as {RULE} says.",
+            f"far enough below the cap that no edit crosses it unseen. Move the filter data into "
+            f".github/ci-filters.yaml, each longer shell body into a script under .github/scripts/ "
+            f"and each derivation into the workflow's notes file, as {RULE} says.",
         )
 
     node, error = composed(path)

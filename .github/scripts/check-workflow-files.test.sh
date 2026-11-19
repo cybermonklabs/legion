@@ -110,7 +110,7 @@ check "names the file and its bytes" \
   "$(contains "$out" '^::error file=.github/workflows/ci.yaml::.github/workflows/ci.yaml is 64,001 bytes, above this check.s limit of 64,000 bytes')"
 check "names GitHub's cap too" "$(contains "$out" 'its own cap of 500,000 bytes (500 KB)')"
 check "names the file the rule is in" \
-  "$(contains "$out" 'that a job reads, as \.github/ci-notes/README\.md says\.$')"
+  "$(contains "$out" 'into the workflow.s notes file, as \.github/ci-notes/README\.md says\.$')"
 check "counts the problem" \
   "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 
@@ -125,7 +125,7 @@ check "names GitHub's cap and what it does to the run" \
 check "says it is above this check's limit as well" \
   "$(contains "$out" "above this check's limit of 64,000 bytes as well")"
 check "names the file the rule is in" \
-  "$(contains "$out" 'that a job reads, as \.github/ci-notes/README\.md says\.$')"
+  "$(contains "$out" 'into the workflow.s notes file, as \.github/ci-notes/README\.md says\.$')"
 check "the file both refusals name exists" \
   "$(is "$([ -f "$script_dir/../ci-notes/README.md" ] && echo true || echo false)" true)"
 check "reports it once, not twice" "$(is "$(errors "$out")" 1)"
@@ -388,7 +388,7 @@ check "names the .yml file" \
 check "says nothing of the README beside the workflows" \
   "$(is "$(contains "$out" 'workflows/README\.md')" false)"
 check "names .github/ci-notes/README.md, where the rule is" \
-  "$(contains "$out" '^::error file=.github/workflows/ci.yml::.* as \.github/ci-notes/README\.md says\.$')"
+  "$(contains "$out" '^::error file=.github/workflows/ci.yml::.* into the workflow.s notes file, as \.github/ci-notes/README\.md says\.$')"
 check "read one file" \
   "$(contains "$out" '^1 problem(s) across the 1 workflow file(s) under .github/workflows$')"
 

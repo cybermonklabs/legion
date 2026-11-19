@@ -1168,7 +1168,7 @@ not a run at all. A retried row contributes each attempt it passed, which is one
 
 ## What the verdict step fails on
 
-The verdict, which the three readings ("Reading one, the rows", "Reading two, the flake rate" and "Reading three, the leg exits with no failed row") do not give: they report, and this fails. Two
+The verdict, which the four readings ("Reading one, the rows", "Reading two, the flake rate", "Reading three, the leg exits with no failed row" and "Reading four, the row durations") do not give: they report, and this fails. Two
 of the job's three failures are here - an upstream job that neither succeeded nor was
 skipped, the binaries job among them, and a failed row in the merged report - and the
 third, a missing blob, is in reading one, where it is found.

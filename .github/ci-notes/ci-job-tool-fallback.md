@@ -102,7 +102,7 @@ twelve seconds late, so a bound is a ceiling and not a stopwatch.
 
 ## Why the merge base is checked out
 
-The merge base, for the negative control the steps `base-crane` to `base-pulumi` run: a second tree of this same repository,
+The merge base, for the negative control the seven `base-*` steps run: a second tree of this same repository,
 whose seven installs that control drives with nowhere left to go.
 .github/ci-notes/ci-job-tool-fallback.md#the-negative-control-and-why-it-does-not-expire
 says what keeps this checkout here.
@@ -289,7 +289,7 @@ and installs nothing at all.
 ## Which seam sends uv's control to a dead port
 
 uv's second source is PyPI, which .github/scripts/ci-tools.sh reads through
-CI_TOOLS_URL_BASE and not through either seam the other controls set (CI_TOOLS_GHCR_BASE, CI_TOOLS_NPM_BASE), so that is the one this control
+CI_TOOLS_URL_BASE and not through either seam the controls before it set (CI_TOOLS_GHCR_BASE, CI_TOOLS_NPM_BASE), so that is the one this control
 sends to a dead port.
 
 ## The docker provider plugin's control, and why it does not expire

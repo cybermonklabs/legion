@@ -58,7 +58,7 @@ block at all (text_checks, and every filter naming no Go file). A block
 belongs to the filter whose list holds it and never to a group an anchor shares, since
 two filters that share an anchor need not run the same tests. worker_image is the one
 filter keeping such a pattern by hand, because this check computes no read set for it:
-its judge is the image check below, and the worker image's context holds
+its judge is the image check, .github/scripts/check-image-trigger-paths.sh, and the worker image's context holds
 packages/daemon's test files while the .dockerignore drops packages/envoy's. A filter
 without a `!` pattern means what it would under the default, `some` (any pattern
 matches), where a `!` pattern would match every file outside it.
@@ -70,7 +70,7 @@ they do name, ci_router, is on the glob itself, which leaves their lists flat.
 The first keys are no job's gate: each is a group many filters share, written once and named by
 every filter that needs it through its anchor, which dorny/paths-filter flattens into the list
 that names it. The gate filters follow, one per `changes` output. ci_router carries two
-anchors, one on each scalar, because the image check reads the two filters that gate an image
+anchors, one on each scalar, because the image check, .github/scripts/check-image-trigger-paths.sh, reads the two filters that gate an image
 build as flat lists of globs: every filter that names ci.yaml names this file beside it.
 
 A comment block of three lines or more that stood beside a filter is in
@@ -186,7 +186,7 @@ job: dropping it would make each job's `if:` test a second output of changes, wh
 .github/scripts/ci_filter_coverage.py refuses (a job's `if:` tests exactly one), and
 an output written as a disjunction instead would select exactly what this pattern
 selects. The anchor is on the glob rather than on the list, since envoy_smoke and
-worker_image name it too and the image check above reads those two as flat lists.
+worker_image name it too and the image check, .github/scripts/check-image-trigger-paths.sh, reads those two as flat lists.
 
 ## daemon_envoy_deps: The airlock's rules, its decision and its header swap
 
