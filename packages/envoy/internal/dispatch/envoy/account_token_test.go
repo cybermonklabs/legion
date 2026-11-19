@@ -1,16 +1,21 @@
 package envoy
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -176,7 +181,9 @@ func TestASendTheListenerKeptForTheRoleIsReadAsKept(t *testing.T) {
 // deploy rolls the listener and the app at once, a new app pod can reach an old listener pod, which
 // refuses the account token 401 before its route runs. A client that holds the shared token too
 // makes that call once more on it, with no role mark, which the old listener takes, so no window
-// of the roll answers every send 401. A client holding no shared token reports the 401 as before.
+// of the roll answers every send 401, and writes one WARN line saying so. The control is a client
+// holding no shared token: it makes no second call, writes no such line, and reports the 401 as
+// before.
 func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnTheSharedToken(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "listener-account-token")
 	account := accountToken(t, "system:serviceaccount:dispatch:example-dispatch", time.Now().Add(time.Hour))
@@ -202,8 +209,21 @@ func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnTheSharedToken(t *
 	}))
 	defer listener.Close()
 	input := SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"}
+	const retryLine = "dispatch: the Envoy listener refused Dispatch's account token, so the call is made again on the shared token and carries no role mark"
+	warnings := func(logs *bytes.Buffer) int {
+		count := 0
+		for line := range strings.SplitSeq(strings.TrimSpace(logs.String()), "\n") {
+			var record map[string]any
+			if json.Unmarshal([]byte(line), &record) == nil && record["level"] == "WARN" && record["msg"] == retryLine {
+				count++
+			}
+		}
+		return count
+	}
 
-	if _, err := New(listener.URL, WithToken("shared"), WithAccountTokenFile(path)).Send(context.Background(), input); err != nil {
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	if _, err := New(listener.URL, WithToken("shared"), WithAccountTokenFile(path), WithLogger(logger)).Send(context.Background(), input); err != nil {
 		t.Fatalf("a send an old listener refuses on the account token, with the shared token held: %v", err)
 	}
 	mu.Lock()
@@ -213,12 +233,64 @@ func TestACallTheListenerRefusesOnTheAccountTokenIsMadeAgainOnTheSharedToken(t *
 	if len(got) != 2 || got[0].authorization != "Bearer "+account || got[0].role != "reviewer" || got[1].authorization != "Bearer shared" || got[1].role != nil {
 		t.Fatalf("the listener was called %+v, want the account token with the role mark, then the shared token with none", got)
 	}
-	if _, err := New(listener.URL, WithAccountTokenFile(path)).Send(context.Background(), input); err == nil || !strings.Contains(err.Error(), "unauthorized") {
-		t.Fatalf("a send refused on the account token with no shared token held = %v, want the listener's 401", err)
+	if n := warnings(&logs); n != 1 {
+		t.Fatalf("the client wrote %d WARN lines %q for one call made again on the shared token, want one:\n%s", n, retryLine, logs.String())
+	}
+
+	var controlLogs bytes.Buffer
+	controlLogger := slog.New(slog.NewJSONHandler(&controlLogs, nil))
+	if _, err := New(listener.URL, WithAccountTokenFile(path), WithLogger(controlLogger)).Send(context.Background(), input); err == nil || !strings.Contains(err.Error(), "unauthorized") {
+		t.Fatalf("control: a send refused on the account token with no shared token held = %v, want the listener's 401", err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if len(calls) != 1 {
-		t.Fatalf("the client with no shared token called %d times, want one", len(calls))
+		t.Fatalf("control: the client with no shared token called %d times, want one", len(calls))
+	}
+	if n := warnings(&controlLogs); n != 0 {
+		t.Fatalf("control: the client with no shared token wrote %d WARN lines %q, want none", n, retryLine)
+	}
+}
+
+// writeFailingTransport answers the first round trip 401, as a listener refusing the account token
+// does, and fails every later one before it writes anything, with a timeout: a retry on the shared
+// token that never reached the listener.
+type writeFailingTransport struct {
+	calls atomic.Int32
+}
+
+func (f *writeFailingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	if f.calls.Add(1) == 1 {
+		if trace := httptrace.ContextClientTrace(r.Context()); trace != nil && trace.WroteRequest != nil {
+			trace.WroteRequest(httptrace.WroteRequestInfo{})
+		}
+		return &http.Response{StatusCode: http.StatusUnauthorized, Body: io.NopCloser(strings.NewReader(`{"error":"unauthorized"}`)), Header: http.Header{}, Request: r}, nil
+	}
+	return nil, context.DeadlineExceeded
+}
+
+// A send whose account-token call the listener refused 401 and whose retry on the shared token
+// timed out before it was written never reached a route: the 401 came from the listener's
+// authentication. It is the plain unreachable failure, not a receipt timeout, which would say the
+// message may already be published. The control is a send whose one call was written and then
+// timed out: that one is the receipt timeout.
+func TestARetryOnTheSharedTokenThatWasNeverWrittenIsNoReceiptTimeout(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "listener-account-token")
+	writeAccountToken(t, path, accountToken(t, "system:serviceaccount:dispatch:example-dispatch", time.Now().Add(time.Hour)))
+	input := SendInput{TargetSession: "s1", Message: "m", IdempotencyKey: "k", Role: "reviewer"}
+
+	client := New("http://listener.invalid", WithToken("shared"), WithAccountTokenFile(path), WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	transport := &writeFailingTransport{}
+	client.httpClient.Transport = transport
+	_, err := client.Send(context.Background(), input)
+	if transport.calls.Load() != 2 {
+		t.Fatalf("the client made %d round trips, want the refused one and its retry", transport.calls.Load())
+	}
+	if err == nil || errors.Is(err, ErrReceiptTimeout) || !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("a retry that was never written = %v, want ErrUnreachable and not ErrReceiptTimeout", err)
+	}
+
+	if control := sendTransportError(context.DeadlineExceeded, true); !errors.Is(control, ErrReceiptTimeout) {
+		t.Fatalf("control: a written send that timed out = %v, want ErrReceiptTimeout", control)
 	}
 }

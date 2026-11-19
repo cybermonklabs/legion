@@ -590,6 +590,47 @@ func TestADispatchMessageForARoleReachesTheSessionThatTakesTheRole(t *testing.T)
 			t.Fatalf("the holder received %d copies, the first marked %q; want one copy with no role mark", len(frames), roleOf(frames))
 		}
 	})
+
+	t.Run("(8) Dispatch resolved holder A and R's claim is gone before the send arrives: it is kept for R, answered 202 kept, and R's wake is reported", func(t *testing.T) {
+		const role = "route-released"
+		holder := rig.register(t, "ses_route_released_a", "Holder A")
+		rig.claim(t, holder.id, role)
+		wakesCtx, stopWakes := context.WithCancel(context.Background())
+		t.Cleanup(stopWakes)
+		rig.cold.wakes = newWakeReporter(wakesCtx, rig.cold.client)
+		t.Cleanup(func() { rig.cold.wakes = nil })
+		wakes, err := rig.cold.client.Conn.SubscribeSync(bus.LegionWakeTopic)
+		if err != nil {
+			t.Fatalf("subscribe to the wake reports: %v", err)
+		}
+		t.Cleanup(func() { _ = wakes.Unsubscribe() })
+		claims, err := rig.warm.client.JS().KeyValue(bus.RoleClaimBucket)
+		if err != nil {
+			t.Fatalf("open the role bucket: %v", err)
+		}
+		// The reaper's delete of a released pod's claim, between Dispatch's lookup and its send.
+		released := make(chan error, 1)
+		rig.sends.beforeNextSend(func() { released <- claims.Delete(role) })
+		before := len(rig.sends.answered())
+
+		message := dispatchRoleMessage(t, rig.dispatch, key, role, "Released message")
+		if err := <-released; err != nil {
+			t.Fatalf("delete role %s's claim: %v", role, err)
+		}
+		answers := rig.sends.answered()[before:]
+		var answer struct {
+			Kept      bool  `json:"kept"`
+			KeptUntil int64 `json:"kept_until"`
+		}
+		if len(answers) != 1 || json.Unmarshal([]byte(answers[0].body), &answer) != nil ||
+			answers[0].status != http.StatusAccepted || !answer.Kept || answer.KeptUntil == 0 {
+			t.Fatalf("the listener answered the send %+v, want one 202 kept for role %s", answers, role)
+		}
+		if got := message.Deliveries[0]; got.State != "sent" || got.SessionID != holder.id {
+			t.Fatalf("the attempt = %+v, want sent, naming %s, the holder Dispatch resolved", got, holder.id)
+		}
+		awaitWake(t, wakes, wakeKindRole, role)
+	})
 }
 
 // roleOf is the role mark of the first of frames, "" when there is none.

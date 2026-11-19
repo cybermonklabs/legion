@@ -54,17 +54,24 @@ type keptSendResponse struct {
 // target the send names, for the role's next live holder, with the keep the publish route's role
 // send takes (keepForNextHolder), which also hands the role's kept lane to whoever holds the role
 // now: a live holder that took the role while the send was on its way receives it at once. It
-// answers keptSendResponse's 202, with the copy the lane holds as the record's envelope. A copy
-// the keep stored costs its sender one, and one the lane already held inside its hour costs
-// nothing (senderCharge). A keep that stored nothing is the bus-unavailable 503, which the sender
-// retries under the same key, and the lane stores that message once (bus.KeptMsgID).
+// raises the role's wake report first, as the publish route's send to a role with no live holder
+// does (roleSend.noHolder): a role released with its pod is brought back only by the wake, and the
+// daemons decide what a wake of a role whose holder is live means. It answers keptSendResponse's
+// 202, with the copy the lane holds as the record's envelope. The wake costs the sender one, and so
+// does a copy the keep stored; one the lane already held inside its hour costs nothing
+// (senderCharge). A keep that stored nothing is the bus-unavailable 503, which the sender retries
+// under the same key, and the lane stores that message once (bus.KeptMsgID).
 func keepRoleSend(w http.ResponseWriter, d *listenerDeps, record *requestRecord, charge *senderCharge, item *contracts.Envelope, target, holder string, expectsReply json.RawMessage) {
+	reportRoleWake(d, d.delivery.logger, item.Role)
+	charge.woke()
 	kept, ok := keepForNextHolder(*d.delivery, item.Role, *item)
 	if !ok {
 		record.refuseBusUnavailable(w, fmt.Errorf("the kept lane of role %s did not store the message", item.Role))
 		return
 	}
-	if !kept.repeat {
+	if kept.repeat {
+		charge.forgive()
+	} else {
 		charge.stored()
 	}
 	*item = kept.item

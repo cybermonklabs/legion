@@ -1352,17 +1352,21 @@ func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 }
 
 // isOutboxCopy reports whether item is a copy Dispatch's outbox kept on a role's kept lane rather
-// than one the listener kept: its source is dispatch and its dedupe key does not begin with
-// publishDedupePrefix. The outbox keeps a role-routed event under the key it published it under,
-// dispatch-<id> or a mention's key (internal/dispatch/outbox), and the publish route refuses a
-// dedupe key chosen for an envelope with source dispatch and makes one under publishDedupePrefix
-// for it (publishHandler, api.go), so a copy the route kept never reads as the outbox's, whatever
-// source it names. The rule reads the copies an earlier outbox wrote as well, since it needs no
-// mark the outbox would have to write. An outbox copy gets no dead letter, since the person or
-// session behind a Dispatch event sent no Envoy message, and it wakes no role from the sweep
-// (keptLaneWakesItsRole), as an outbox keep raises no wake report either.
+// than one the listener kept: its source is dispatch, its dedupe key does not begin with
+// publishDedupePrefix, and it carries no role mark. The outbox keeps a role-routed event under the
+// key it published it under, dispatch-<id> or a mention's key (internal/dispatch/outbox), and the
+// publish route refuses a dedupe key chosen for an envelope with source dispatch and makes one
+// under publishDedupePrefix for it (publishHandler, api.go), so a copy the route kept never reads
+// as the outbox's, whatever source it names. A send Dispatch's API made for a route to a role
+// carries the role's mark (contracts.Envelope.Role), which the outbox never writes: the send route
+// kept it (keepRoleSend), or a takeover copied it from its holder's subject, and Dispatch recorded
+// the send as made, so the listener alone answers for it. The rule reads the copies an earlier
+// outbox wrote as well, since it needs no mark the outbox would have to write. An outbox copy gets
+// no dead letter, since the person or session behind a Dispatch event sent no Envoy message, and it
+// wakes no role from the sweep (keptLaneWakesItsRole), as an outbox keep raises no wake report
+// either.
 func isOutboxCopy(item contracts.Envelope) bool {
-	return item.Source == "dispatch" && !strings.HasPrefix(item.DedupeKey, publishDedupePrefix)
+	return item.Source == "dispatch" && item.Role == "" && !strings.HasPrefix(item.DedupeKey, publishDedupePrefix)
 }
 
 // keptCopyKeptBy is who kept item, as the kept_by label and attribute name it: keptByDispatchOutbox

@@ -706,7 +706,12 @@ func (r *Registry) SetRole(sessionID, machineID, role string, soft bool, superse
 // refuses this one rather than being overwritten by it. A nil IfClaimRevision claims as before.
 func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest) (Interest, error) {
 	roleTopic := contracts.RoleTopicPrefix + req.Role
-	oldClaim, err := r.RoleClaim(ctx, req.Role)
+	// The claim's own work runs under tries, which ends a reserve before ctx does, so the rollback
+	// of a claim that wrote nothing still has that reserve of ctx's budget (claimCleanupContext):
+	// a claim whose tries ran to their end is answered inside ctx's deadline, rollback included.
+	tries, cancelTries := claimTriesContext(ctx)
+	defer cancelTries()
+	oldClaim, err := r.RoleClaim(tries, req.Role)
 	if err != nil {
 		return Interest{}, err
 	}
@@ -727,7 +732,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		return Interest{}, &ErrRoleHeld{Role: req.Role, Holder: oldSessionID}
 	}
 
-	item, err := r.UpsertWithin(ctx, Interest{SessionID: req.SessionID, MachineID: req.MachineID}, []string{roleTopic})
+	item, err := r.UpsertWithin(tries, Interest{SessionID: req.SessionID, MachineID: req.MachineID}, []string{roleTopic})
 	if err != nil {
 		return Interest{}, err
 	}
@@ -742,7 +747,7 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		// written: the listener publishes the takeover record of the holder it names there, so
 		// every claim that lands has its record first (RoleClaimRequest.BeforeTry).
 		if req.BeforeTry != nil {
-			if hookErr := req.BeforeTry(ctx, oldClaim); hookErr != nil {
+			if hookErr := req.BeforeTry(tries, oldClaim); hookErr != nil {
 				r.rollBackClaimTopic(ctx, req, roleTopic)
 				return Interest{}, hookErr
 			}
@@ -775,13 +780,13 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 		//
 		// An outright claim has no refusal at all, so a conflict - another claim landed, or a
 		// renewal or a release wrote the record, between this try's read and its write - is read
-		// again and written again, each try with its own BeforeTry, until ctx ends, and the last
-		// write still wins. One conditional write lands per revision, so N claimants of one role
-		// take N rounds, each a read and a write of a few milliseconds, well inside the claim
-		// route's budget. A claim that meets a conflict at every try until ctx ends writes
+		// again and written again, each try with its own BeforeTry, until its tries end, and the
+		// last write still wins. One conditional write lands per revision, so N claimants of one
+		// role take N rounds, each a read and a write of a few milliseconds, well inside the claim
+		// route's budget. A claim that meets a conflict at every try until its tries end writes
 		// nothing and is ErrRoleClaimContended, which its client meets as a 503 to retry.
 		var answered bool
-		revision, answered, err = bus.Bounded(ctx, func() (uint64, error) {
+		revision, answered, err = bus.Bounded(tries, func() (uint64, error) {
 			if oldClaim.Revision == 0 {
 				return roles.Create(req.Role, data)
 			}
@@ -794,26 +799,26 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 			break
 		}
 		if answered && !req.Soft && req.IfClaimRevision == nil && errors.Is(err, nats.ErrKeyExists) {
-			if ctx.Err() != nil {
+			if tries.Err() != nil {
 				r.rollBackClaimTopic(ctx, req, roleTopic)
 				return Interest{}, fmt.Errorf("%w: role %s: %w", ErrRoleClaimContended, req.Role, err)
 			}
-			next, readErr := r.RoleClaim(ctx, req.Role)
+			next, readErr := r.RoleClaim(tries, req.Role)
 			if readErr == nil {
 				oldClaim = next
 				continue
 			}
-			if ctx.Err() != nil {
+			if tries.Err() != nil {
 				r.rollBackClaimTopic(ctx, req, roleTopic)
 				return Interest{}, fmt.Errorf("%w: role %s: %w", ErrRoleClaimContended, req.Role, err)
 			}
 			err = errors.Join(err, readErr)
 		}
-		// The claim's context can have ended in the write it abandoned, or before that write
-		// started: the read that decides the rollback and the rollback itself still run, under
-		// claimCleanupWindow, as rollBackClaimTopic's do. Every branch below returns, so the
-		// cleanup context is the loop's last.
-		cleanup, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), claimCleanupWindow)
+		// The claim's tries can have ended in the write they abandoned, or before that write
+		// started: the read that decides the rollback and the rollback itself still run, in the
+		// reserve of ctx's budget (claimCleanupContext), as rollBackClaimTopic's do. Every branch
+		// below returns, so the cleanup context is the loop's last.
+		cleanup, cancelCleanup := claimCleanupContext(ctx)
 		defer cancelCleanup()
 		current, holderErr := r.RoleClaim(cleanup, req.Role)
 		holder := current.HolderSessionID
@@ -877,9 +882,10 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	// A claim of another process of this session that wrote nothing can have taken the topic back
 	// off the record between this claim's merge of it and its write: its rollback decides on a read
 	// of the claim made before that write landed (restoreClaimTopic). The topic is merged again,
-	// which writes nothing while the record carries it; a merge that fails is logged and changes
-	// nothing the claim answers, since the claim record, which every role route reads, stands.
-	ensureCtx, cancelEnsure := context.WithTimeout(context.WithoutCancel(ctx), claimCleanupWindow)
+	// in the reserve of ctx's budget, which writes nothing while the record carries it; a merge that
+	// fails is logged and changes nothing the claim answers, since the claim record, which every
+	// role route reads, stands.
+	ensureCtx, cancelEnsure := claimCleanupContext(ctx)
 	if ensured, ensureErr := r.UpsertWithin(ensureCtx, Interest{SessionID: req.SessionID, MachineID: req.MachineID}, []string{roleTopic}); ensureErr == nil {
 		item = ensured
 	} else {
@@ -920,19 +926,46 @@ func (r *Registry) SetRoleWithPrevious(ctx context.Context, req RoleClaimRequest
 	return item, nil
 }
 
-// claimCleanupWindow bounds the rollback of a claim that wrote nothing (rollBackClaimTopic), which
-// runs whether or not the claim's own context has ended.
+// claimCleanupWindow is the reserve of a claim's budget its tries leave to the work after them -
+// the rollback of a claim that wrote nothing, and the merge of the topic after a claim that landed
+// (claimTriesContext, claimCleanupContext) - and the window that work runs in when the claim's
+// context has no deadline.
 const claimCleanupWindow = time.Second
+
+// claimTriesContext is the context a claim's own reads, merge, hooks and writes run under: ctx
+// ending claimCleanupWindow before ctx's deadline, or a third of the time left when that is less,
+// so the work after the tries (claimCleanupContext) still has ctx's budget left. A ctx with no
+// deadline is used as it is.
+func claimTriesContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	reserve := min(claimCleanupWindow, time.Until(deadline)/3)
+	return context.WithDeadline(ctx, deadline.Add(-reserve))
+}
+
+// claimCleanupContext is the context the work after a claim's tries runs under: ctx's own deadline,
+// whether or not ctx was cancelled first, since a claim whose caller went away still owes its
+// rollback, and claimCleanupWindow when ctx has no deadline. So a claim is answered inside ctx's
+// deadline, rollback included, however its tries ended.
+func claimCleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(ctx)
+	if deadline, ok := ctx.Deadline(); ok {
+		return context.WithDeadline(detached, deadline)
+	}
+	return context.WithTimeout(detached, claimCleanupWindow)
+}
 
 // rollBackClaimTopic takes the role's lane topic back off the claimant's interest record, for a
 // claim that wrote nothing because its BeforeTry refused a try or every try met a conflict until
-// its context ended: unless the claim record that stands names the claimant's session, whose
-// record then keeps the topic of the role it holds, as SetRoleWithPrevious's own rollback rule
-// reads. It runs under claimCleanupWindow of its own, since a claim whose context ended still owes
-// it, and a rollback that fails is logged at WARN and changes nothing the claim answers: a topic
-// it leaves gives nobody the role.
+// its tries ended: unless the claim record that stands names the claimant's session, whose record
+// then keeps the topic of the role it holds, as SetRoleWithPrevious's own rollback rule reads. It
+// runs in the reserve of ctx's budget (claimCleanupContext), since a claim whose tries ended still
+// owes it, and a rollback that fails is logged at WARN and changes nothing the claim answers: a
+// topic it leaves gives nobody the role.
 func (r *Registry) rollBackClaimTopic(ctx context.Context, req RoleClaimRequest, roleTopic string) {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimCleanupWindow)
+	cleanup, cancel := claimCleanupContext(ctx)
 	defer cancel()
 	if current, err := r.RoleClaim(cleanup, req.Role); err == nil && current.HolderSessionID == req.SessionID {
 		return

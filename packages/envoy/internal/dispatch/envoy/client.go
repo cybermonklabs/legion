@@ -275,6 +275,9 @@ type Client struct {
 	// listener's audience (WithAccountTokenFile), read at every call; empty presents apiToken.
 	accountTokenFile string
 	httpClient       *http.Client
+	// logger takes the line a call made again on the shared token writes (do); slog.Default()
+	// unless WithLogger names another.
+	logger *slog.Logger
 }
 
 // defaultTimeout is the window every listener call gets. A send that misses it is
@@ -308,6 +311,11 @@ func WithAccountTokenFile(path string) Option {
 	return func(c *Client) { c.accountTokenFile = path }
 }
 
+// WithLogger names the logger the client writes its lines to, slog.Default() when none is named.
+func WithLogger(logger *slog.Logger) Option {
+	return func(c *Client) { c.logger = logger }
+}
+
 // New returns a client for an Envoy listener's HTTP control API.
 func New(baseURL string, options ...Option) *Client {
 	client := &Client{
@@ -318,6 +326,9 @@ func New(baseURL string, options ...Option) *Client {
 	}
 	for _, option := range options {
 		option(client)
+	}
+	if client.logger == nil {
+		client.logger = slog.Default()
 	}
 	return client
 }
@@ -433,7 +444,7 @@ func (c *Client) do(route string, build func(shared bool) (*http.Request, error)
 		return response, err
 	}
 	_ = response.Body.Close()
-	slog.Warn("dispatch: the Envoy listener refused Dispatch's account token, so the call is made again on the shared token and carries no role mark",
+	c.logger.Warn("dispatch: the Envoy listener refused Dispatch's account token, so the call is made again on the shared token and carries no role mark",
 		"route", route)
 	if request, err = build(true); err != nil {
 		return nil, err
@@ -906,12 +917,15 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	}
 	// written records that this client finished putting the request on the wire, which is what
 	// separates a listener that went quiet (the envelope may be published) from a connection
-	// that never came up (nothing was). Both surface as the same client-timeout error.
+	// that never came up (nothing was). Both surface as the same client-timeout error. It is
+	// cleared as each request is built, so a retry on the shared token after a 401 is judged by
+	// its own write: the 401 came from the listener's authentication, before any route ran.
 	var written atomic.Bool
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		WroteRequest: func(info httptrace.WroteRequestInfo) { written.Store(info.Err == nil) },
 	})
 	response, err := c.do("POST /v1/messages/send", func(shared bool) (*http.Request, error) {
+		written.Store(false)
 		encoded, err := body(shared)
 		if err != nil {
 			return nil, fmt.Errorf("%w: encode POST /v1/messages/send body: %v", ErrUnavailable, err)
