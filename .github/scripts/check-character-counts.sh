@@ -1339,8 +1339,8 @@ CONTROLS = [
      '\t\t"characters", len(body))\n}\n', ["instance"]),
     ("a shell here-document's text is read, and an apostrophe in it closes nothing", "packages/envoy/scripts/planted-usage.sh",
      "#!/usr/bin/env bash\nusage() {\n  cat >&2 <<'USAGE'\nusage: planted-usage.sh <title>   the gate's title, at most 200 characters\n"
-     "USAGE\n}\nn=$(printf '%s' \"${1:-}\" | wc -c)\necho \"the title is $n characters\"\n",
-     ["instance | cannot judge: a bound", "instance | wc -c counts bytes"]),
+     "  a longer title is cut at character 200\nUSAGE\n}\nn=$(printf '%s' \"${1:-}\" | wc -c)\necho \"the title is $n characters\"\n",
+     ["instance | cannot judge: a bound", "instance | cannot judge: a bound", "instance | wc -c counts bytes"]),
     ("a shell count in a UTF-8 locale the script sets itself is code points", "packages/envoy/scripts/planted-locale.sh",
      "#!/usr/bin/env bash\nexport LC_ALL=C.UTF-8\nname=$1\nprintf 'name: %d characters\\n' \"${#name}\"\n",
      ["code points"]),
