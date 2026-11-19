@@ -66,6 +66,7 @@ import type {
   OpenAsksResponse,
   Priorities,
   Project,
+  ProjectPlans,
   RecordCheckResultInput,
   RelatedCheckInput,
   ResolveAskInput,
@@ -2028,6 +2029,16 @@ export class DispatchClient {
    *  answers with no task; a key Dispatch does not hold is `404 NOT_FOUND`, as the issue read. */
   async listSteps(issue: string): Promise<IssueSteps> {
     return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "steps"]);
+  }
+
+  /** `GET /api/v1/projects/{key}/plans`: each finished issue of the project, newest close first,
+   *  with its plan, each retro's rating, its time and its count of failed steps. `since` and
+   *  `until` bound the close to `[since, until)`, and a bound left out is not sent. */
+  async listProjectPlans(
+    project: string,
+    window: { readonly since?: string | undefined; readonly until?: string | undefined } = {}
+  ): Promise<ProjectPlans> {
+    return this.#json("GET", ["api", "v1", "projects", project, "plans"], undefined, window);
   }
 
   async getIssueReferences(issue: string): Promise<IssueReferences> {
