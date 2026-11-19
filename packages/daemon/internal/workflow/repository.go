@@ -87,7 +87,8 @@ func SettleRetainedRepository(fact intake.DispatchIssue, recorded *record.Issue)
 	return fact, nil
 }
 
-// setRepositoryHint is the end of every note that asks for an issue's repository.
+// setRepositoryHint is the two ways every note that asks for an issue's repository names to set
+// the issue's own.
 const setRepositoryHint = "the issue header's Repository picker, or dispatch issue-update --repo owner/name"
 
 // RefuseRecording says on the Dispatch issue key why Legion did not record it: its repository,
@@ -101,11 +102,13 @@ const setRepositoryHint = "the issue header's Repository picker, or dispatch iss
 // parent's repository, or the project's default, changed) is still recovered.
 //
 // The two notes are the two refusals that stay. An issue whose repository resolves to none is
-// asked for one. An issue whose repository a role App does not reach is told which App and that
-// GitHub answers for the repository neither as installed nor as present, since one answer covers
-// a repository that does not exist and one the App is not installed on, and nothing of that
-// refusal is kept: installing the App, or correcting the name, admits the issue at its next
-// preparation, which is why the note asks for either and for a move back to todo.
+// asked for one: its own, or the default repository of its project (Config.Project), in
+// Dispatch, which resolves the issue to either. An issue whose repository a role App does not
+// reach is told which App and that GitHub answers for the repository neither as installed nor as
+// present, since one answer covers a repository that does not exist and one the App is not
+// installed on, and nothing of that refusal is kept: installing the App, or correcting the name,
+// admits the issue at its next preparation, which is why the note asks for either and for a move
+// back to todo.
 func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved string, refused Resolution) (bool, error) {
 	if refused.Unread {
 		if note := e.cfg.NoteUnread; note != nil {
@@ -113,7 +116,8 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 		}
 		return false, nil
 	}
-	note := "Legion did not admit this issue: " + refused.Refusal + ". Set its repository (" + setRepositoryHint + ") and move it to todo again."
+	note := "Legion did not admit this issue: " + refused.Refusal + ". Set its repository (" + setRepositoryHint + "), or the default repository of project " +
+		e.cfg.Project + ", in Dispatch, and move it to todo again."
 	if refused.LeftOut {
 		note = "Legion did not admit this issue: " + refused.Refusal + ". GitHub answers for " + resolved +
 			" neither as installed nor as present: install the App on it, or correct the repository (" + setRepositoryHint + "), and move the issue to todo again."

@@ -79,7 +79,7 @@ func TestAChildOnARepositoryLegionDoesNotServeIsNotRecordedAndSaysWhy(t *testing
 		name, resolved, note, reason string
 	}{
 		{name: "none", resolved: "",
-			note:   "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.",
+			note:   "Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project LEGION, in Dispatch, and move it to todo again.",
 			reason: "its repository resolves to none"},
 		{name: "left out", resolved: "acme/gadgets",
 			note:   "Legion did not admit this issue: the review App is not installed on acme/gadgets. GitHub answers for acme/gadgets neither as installed nor as present: install the App on it, or correct the repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), and move the issue to todo again.",

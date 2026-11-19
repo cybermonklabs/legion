@@ -621,6 +621,7 @@ The loader checks the list for its shape and for two names of one repository, an
 The daemon reads GitHub for no repository at boot but to fill a record that lacks its repository columns: one read per such record, bounded at 15 s, a read that fails leaving the record for the refresher.
 Once its API serves, it prepares each repository its records name, reading both role Apps' installations on it, its name and default branch, and Dispatch's webhook App on it;
 it prepares a repository again when the first issue on it is admitted and when a launch works a repository the cache set does not hold (no live record names it).
+A boot of a project whose live records name no repository, a fresh install's, logs one line at info, `workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one`, with the project.
 `legion state --json` reports, under `repositories.live`, each repository a live record names with each App's installation (`apps`), why GitHub's last read did not name it (`readError`), and why Dispatch's webhook App is not known to be installed on it (`webhookApp`).
 A repository a role App is not installed on, or whose installation read GitHub does not answer (any failure but a 404), changes no record and is read again, 30 s doubling to 10 min, until GitHub answers;
 one already read as installed keeps that answer while a later read does not answer.

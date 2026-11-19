@@ -3791,7 +3791,7 @@ Each item below names an observation, then what it judges; an item that names no
 - `negative no-repo <KEY>`
 
   `.issues | has(<KEY>)` is `false` (refusing outright, never vacuously passing, when `.issues` is not even an object), Dispatch's own `.resolved_repo` is still `null`, and the **latest** repository note among the messages claiming the daemon's actor (`{kind:"session", id:"legion-daemon:<PROJECT>"}`) is the exact no-repository admission refusal, word for word, with the daemon's outbox marker
-  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:76`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
+  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project <PROJECT>, in Dispatch, and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:119-120`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
   Dispatch takes a bearer session's actor id from the request body (`packages/envoy/internal/dispatch/api/server.go`, `bearerSessionActor`), so the note shows what Dispatch holds, never who posted it;
   what shows the daemon declined the issue is its own state read.
 

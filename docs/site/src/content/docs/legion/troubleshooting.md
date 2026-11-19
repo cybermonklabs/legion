@@ -69,9 +69,11 @@ legion config check --config legion.yaml
 It reads GitHub for no repository at boot but to fill a record that lacks its repository columns,
 one read per such record bounded at 15 seconds, a read that fails leaving the record for the
 daemon to fill later; so a project with no repository, or with no default repository, boots all
-the same. Once the API serves, the daemon prepares each repository its records name: it reads
-both role Apps' installations on it, its name and default branch, and Dispatch's webhook App on
-it.
+the same, and when no live record names a repository it logs one line at info, `workflow: no live
+record of the project names a repository, so the daemon serves no repository until an issue names
+one`, which is no fault. Once the API serves, the daemon prepares each repository its records
+name: it reads both role Apps' installations on it, its name and default branch, and Dispatch's
+webhook App on it.
 
 - **A GitHub App's key is refused.** `prove the <role> App's key by reading its installations: …`:
   GitHub refused the App-level read of that App's installations, so the App's key or its id is
@@ -311,9 +313,10 @@ Check, in order:
    in `legion.yaml`. The issue may name any `owner/name`. An issue
    whose repository resolves to none, or to one a role App is not installed on, is not admitted: the
    daemon says why on the issue (`Legion did not admit this issue: …`), once until the cause
-   changes. Set the issue's repository (the issue header's Repository picker, or
-   `dispatch issue-update --repo owner/name`), or install the missing App, and move the issue to
-   `todo` again. A child of a tree is told the same way, and the architect that owns its parent
+   changes. For one that resolves to none, set the issue's repository (the issue header's
+   Repository picker, or `dispatch issue-update --repo owner/name`), or the project's default
+   repository, in Dispatch; for the other, install the missing App. Then move the issue to `todo`
+   again. A child of a tree is told the same way, and the architect that owns its parent
    (the tree's architect when its parent is not recorded in the tree) gets a `child-not-recorded`
    notice.
 4. **The slots.** When every slot is taken the issue waits its turn:

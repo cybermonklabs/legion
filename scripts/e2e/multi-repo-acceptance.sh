@@ -860,7 +860,7 @@ negative_no_repo() {
   events_file=$(dispatch_events_raw negative-no-repo "$key")
   project=$(issue_project "$key")
   daemon_actor="legion-daemon:$project"
-  local none_note="Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again."
+  local none_note="Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project $project, in Dispatch, and move it to todo again."
   local latest_is_none
   latest_is_none=$(jq --arg actor "$daemon_actor" --arg none "$none_note" '
     [.[] | select(.type=="message.created" and .actor.kind=="session" and .actor.id==$actor

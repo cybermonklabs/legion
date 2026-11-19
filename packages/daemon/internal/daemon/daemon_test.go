@@ -1203,6 +1203,17 @@ func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubA
 		t.Fatal(err)
 	}
 	root := cfg.Project + "-1"
+	// The schema is brought forward before the tree is seeded, as boots does: the daemon's own boot
+	// migrates the store only after this, and this may be the first test of the run to touch it.
+	st, err := store.Open(context.Background(), cfg.PostgresDSN)
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	_, err = st.Migrate(context.Background())
+	st.Close()
+	if err != nil {
+		t.Fatalf("migrate the store: %v", err)
+	}
 	seedWorkflowTree(t, cfg.PostgresDSN, project, record.Issue{Key: root, Repo: repo, DefaultBranch: "main", GitHubRepo: repo,
 		Project: cfg.Project, Tree: root, Title: "a tree on " + repo, Phase: phase.Implementing, Generation: 1, Status: "in_progress",
 		DispatchStatus: "in_progress", HandedOver: true, Rank: "A"})
@@ -1354,6 +1365,40 @@ func TestNoBootWarningNamesTheTrailerSettingOrARename(t *testing.T) {
 			t.Errorf("WARN line %s names the trailer setting or a rename, want none", line)
 		}
 	}
+}
+
+// servesNoRepositoryLine is the phrase of the boot's line for a project whose live records name no
+// repository (workflowRuntime.connect).
+const servesNoRepositoryLine = "the daemon serves no repository until an issue names one"
+
+// A boot of a project with no live record logs one INFO line that says the daemon serves no
+// repository until an issue names one, naming the project and no mapping, and a boot over one
+// live record, a tree running on acme/widgets (bootOverALiveTree), does not log it
+// (dispatch://INFRA-4401 check a-go, item 11). Controls: with the line deleted, the first case
+// finds no such line; with the line logged whatever the live records name, the second finds one.
+func TestABootWithNoLiveRecordSaysItServesNoRepository(t *testing.T) {
+	t.Run("no live record", func(t *testing.T) {
+		cfg := workflowConfig(t, workflowNATS(t))
+		var logged syncBuffer
+		o := fakeRuntime(fake.NewRuntime(), &built{})
+		o.workflowTokens = &workflowTokenRecorder{}
+		startDaemonLogging(t, cfg, o, slog.New(slog.NewJSONHandler(&logged, nil)))
+		lines := loggedLines(t, logged.String(), servesNoRepositoryLine)
+		if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["project"] != cfg.Project {
+			t.Fatalf("lines saying %q = %v, want one at INFO naming project %s\nlog:\n%s", servesNoRepositoryLine, lines, cfg.Project, logged.String())
+		}
+		if line := strings.ToLower(fmt.Sprint(lines[0])); strings.Contains(line, "mapp") {
+			t.Fatalf("the line %v names a mapping, want none", lines[0])
+		}
+	})
+
+	t.Run("one live record", func(t *testing.T) {
+		var logged syncBuffer
+		bootOverALiveTree(t, "acme/widgets", &workflowTokenRecorder{}, repositoriesGitHub(t), slog.New(slog.NewJSONHandler(&logged, nil)))
+		if lines := loggedLines(t, logged.String(), servesNoRepositoryLine); len(lines) != 0 {
+			t.Fatalf("lines saying %q = %v, want none: a live record names acme/widgets", servesNoRepositoryLine, lines)
+		}
+	})
 }
 
 // The workflow has to assemble every integration boundary before opening its API. The order in

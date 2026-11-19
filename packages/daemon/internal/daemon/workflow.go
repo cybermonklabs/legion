@@ -837,6 +837,12 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		w.conn.Store(nil)
 		return err
 	}
+	// servesNone is whether the live records the boot just read (heardAtBoot) name no repository,
+	// as a fresh install's do: the daemon then serves none until an issue names one, and says so
+	// once, at info, for an operator to read (dispatch://INFRA-4401 A2). It says it once the
+	// consumers are open, so an attempt that fails after the read, whose next attempt reads the
+	// records again, says nothing.
+	servesNone := len(w.repositories.liveNames()) == 0
 	w.consumers, err = intake.OpenConsumers(ctx, js, w.pool, intake.ConsumerSpec{
 		Project: cfg.Project, Repositories: heard, Renames: cfg.RepositoryRenames,
 		AckWait: cfg.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
@@ -847,6 +853,10 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		conn.Close()
 		w.conn.Store(nil)
 		return natsauth.WithLastError(err, conn)
+	}
+	if servesNone {
+		w.log.Info("workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one",
+			"project", cfg.Project)
 	}
 	w.bootID = fmt.Sprintf("%d", time.Now().UnixNano())
 	return nil

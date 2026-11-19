@@ -6941,6 +6941,8 @@ each issue's pod (every role of it alike) and the image probe's.
   **Upgrade order:** Dispatch first (it resolves each issue's repository), then set the old `projects.<KEY>.repo` as the project's default repository in Dispatch, then delete the key and start this daemon;
   its first boot fills every record written before the record carried its repository from Dispatch's resolution, and leaves, naming it in the log, each record that Dispatch resolves to none, or to another repository than the one of the issue's pull request, whose launches are refused until it is filled.
 
+- **A project with no live record** boots and serves all the same, and its boot logs one line at info, `workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one`, with the project.
+
 - **`runtime.kubernetes.pod`** has four keys.
   `env` is variables set in the agent's container.
   `volumes` are each one `secret`, `config_map`, `projected`, `persistent_volume_claim` (a claim of the daemon's namespace, by `name`) or `nfs` (`server` and `path`) source, never an inline `csi` volume ([Network shares](#network-shares));

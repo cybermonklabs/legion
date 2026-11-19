@@ -45,9 +45,12 @@ one with no record. The boot reads GitHub for no repository but to fill a record
 repository columns: one read per such record, bounded at 15 seconds, and a read that fails leaves
 the record for the daemon to fill later. It proves each role App's key with GitHub's read of that
 App's installations: a refusal of that read stops the boot and names the App, and an App
-installed on no account boots, with one log line that says so. Once the API serves, the daemon
-prepares each repository its records name. It also prepares a repository when the first issue on
-it is admitted, and when a launch works a repository that no live record names. To prepare a
+installed on no account boots, with one log line that says so. A boot of a project whose live
+records name no repository, a fresh install's, logs one line at info: `workflow: no live record
+of the project names a repository, so the daemon serves no repository until an issue names one`.
+Once the API serves, the daemon prepares each repository its records name. It also prepares a
+repository when the first issue on it is admitted, and when a launch works a repository that no
+live record names. To prepare a
 repository is to read both role Apps' installations on it, its name and default branch as GitHub
 has them, and Dispatch's webhook App on it, and then to hear its GitHub events and, under
 `runtime: kubernetes`, to keep its cache.
