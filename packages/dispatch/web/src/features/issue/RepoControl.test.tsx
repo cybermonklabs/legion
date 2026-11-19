@@ -1,9 +1,15 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import {
+  defaultScheduler,
+  notifyManager,
+  QueryClient,
+  QueryClientProvider,
+  useQuery,
+} from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of the project's mappings, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { Profiler, type ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
@@ -121,7 +127,14 @@ function CachedControl(): ReactNode {
 function renderControl(
   own: { repo: string | null; resolvedRepo: string | null },
   mapped: RepoProject[] = mappings,
-  { failFirstRead = false }: { failFirstRead?: boolean } = {}
+  {
+    failFirstRead = false,
+    onCommit,
+  }: {
+    failFirstRead?: boolean;
+    /** Called at each commit React makes of the control, after it changed the DOM. */
+    onCommit?: () => void;
+  } = {}
 ) {
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue(mapped);
   if (failFirstRead) {
@@ -151,9 +164,16 @@ function renderControl(
     { ...summary, repo: own.repo, resolved_repo: own.resolvedRepo },
   ]);
   const user = userEvent.setup();
+  const control = <CachedControl />;
   const view = render(
     <QueryClientProvider client={queryClient}>
-      <CachedControl />
+      {onCommit === undefined ? (
+        control
+      ) : (
+        <Profiler id="RepoControl" onRender={onCommit}>
+          {control}
+        </Profiler>
+      )}
     </QueryClientProvider>
   );
   return {
@@ -175,6 +195,35 @@ function box(): HTMLInputElement {
 function suggestions(): string[] {
   const list = document.getElementById(box().getAttribute("list") ?? "");
   return Array.from(list?.querySelectorAll("option") ?? []).map((option) => option.value);
+}
+
+/** Records what the box shows at each commit React makes of it from `start()` on, one entry for
+ *  each change, and `(none)` while no box is drawn: each value a frame painted then draws. */
+function commitsShown(): { onCommit: () => void; shown: string[]; start: () => void } {
+  const shown: string[] = [];
+  let recording = false;
+  return {
+    onCommit: () => {
+      if (!recording) return;
+      const drawn = document.querySelector<HTMLInputElement>(
+        'input[aria-label="Repository of CORE-1"]'
+      );
+      const value = drawn?.value ?? "(none)";
+      if (shown.at(-1) !== value) shown.push(value);
+    },
+    shown,
+    start: () => {
+      recording = true;
+    },
+  };
+}
+
+/** Puts back TanStack Query's own scheduler, which tells the listeners of a cache a task after
+ *  the cache changes (`setTimeout(0)`), as it does in the browser, in place of the synchronous one
+ *  `setup.ts` installs. The function it returns installs the synchronous one again. */
+function tellListenersATaskLater(): () => void {
+  notifyManager.setScheduler(defaultScheduler);
+  return () => notifyManager.setScheduler((callback) => callback());
 }
 
 /** Puts `repo` in the box and leaves it, which is what writes it; `""` empties the box. */
@@ -321,6 +370,86 @@ test("RepoControl sends the clear alone when a repository was typed first", asyn
     expect(box().value).toBe("");
     expect(patchIssue.mock.calls.map(([, patch]) => patch)).toEqual([{ repo: null }]);
   } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// From the press that writes it, the box shows the written value and never the repository it
+// replaces. The press lets the draft go at once. The write puts its value on the issue's cache a
+// microtask later, as it joins the issue's line (`useIssueFieldWrite`), and TanStack Query tells
+// the cache's listeners a task after that. React commits between the two, and a browser can paint
+// a frame there (`e2e/project.e2e.ts`, "picker keeps a pick on screen: the repository on the issue
+// page"). So each row records the box's value at each commit, with TanStack's own scheduler, and
+// holds the save until the write's own value is on the page.
+test("RepoControl shows the repository Enter writes from the press on, never the one it replaces", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const commits = commitsShown();
+  const { queryClient, unmount, user } = renderControl(
+    { repo: "acme/widgets", resolvedRepo: "acme/widgets" },
+    mappings,
+    { onCommit: commits.onCommit }
+  );
+  let synchronous = () => {};
+  try {
+    await user.clear(box());
+    await user.click(box());
+    await user.paste("acme/gadgets");
+    synchronous = tellListenersATaskLater();
+    commits.start();
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: "acme/gadgets" }, keyedAttempt)
+    );
+    // The write's own value is on the page: the issue resolves to it.
+    await waitFor(() => expect(box()).toHaveAccessibleDescription("acme/gadgets"));
+    synchronous();
+    await act(async () => {
+      save.resolve({ ...issue, repo: "acme/gadgets", resolved_repo: "acme/gadgets", last_seq: 2 });
+      await save.promise;
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.last_seq).toBe(2)
+    );
+    expect(commits.shown).toEqual(["acme/gadgets"]);
+  } finally {
+    synchronous();
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+test("RepoControl shows the box empty from the clear control's press on, never the repository it clears", async () => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const commits = commitsShown();
+  const { unmount, user } = renderControl(
+    { repo: "acme/gadgets", resolvedRepo: "acme/gadgets" },
+    mappings,
+    { onCommit: commits.onCommit }
+  );
+  const synchronous = tellListenersATaskLater();
+  try {
+    commits.start();
+    await user.click(screen.getByRole("button", { name: "Clear the repository of CORE-1" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { repo: null }, keyedAttempt)
+    );
+    // The write's own value is on the page: the issue shows the repository it showed before, as
+    // one it inherits, until the answer names the one it inherits.
+    await waitFor(() =>
+      expect(box()).toHaveAccessibleDescription("acme/gadgets, inherited or the project's default")
+    );
+    synchronous();
+    await act(async () => {
+      save.resolve({ ...issue, repo: null, resolved_repo: "acme/widgets" });
+      await save.promise;
+    });
+    await waitFor(() => expect(box().placeholder).toBe("acme/widgets"));
+    expect(commits.shown).toEqual([""]);
+  } finally {
+    synchronous();
     unmount();
     patchIssue.mockRestore();
   }
