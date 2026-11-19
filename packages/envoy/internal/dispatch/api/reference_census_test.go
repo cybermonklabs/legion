@@ -110,7 +110,7 @@ var referenceDispositions = map[string]referenceDisposition{
 	"component_facts.project_key":               {ownColumn, "the component's project"},
 	"components.project_key":                    {ownColumn, "the component's project"},
 	"decision_keeps.artifact_id":                {ownColumn, "the kept decision's document"},
-	"delivery_pull_requests.issue_key":          {filteredReference, "the issue a pull request is credited to, read by the Delivery timeline as an open viewer: deliveryIssueFacts binds ProjectClause on the issue"},
+	"delivery_pull_requests.issue_key":          {filteredReference, "the issue a pull request is credited to: the Delivery timeline and measures show a pull request only to a reader who sees that issue, read beside each issue's facts under ProjectClause (deliveryIssueFacts), and one that names no issue to an open viewer alone (readDeliveryRows)"},
 	"delivery_pull_requests.sessions":           {deploymentColumn, "a pull request's own sessions, which the Delivery timeline and measures (class project) name to whoever is shown that pull request: a reader who sees its issue, or an open viewer for one that names no issue (readDeliveryRows)"},
 	"delivery_session_group_members.session_id": {deploymentColumn, "the sessions of a Delivery session group, which the timeline and measures (class project) answer only in a group whose every session passes SessionClause for the reader (groupsShown)"},
 	"design_gates.artifact_id":                  {filteredReference, "a document id the write stores unread: issueDesignGatesStatement leaves out a gate naming a document its reader does not see"},
