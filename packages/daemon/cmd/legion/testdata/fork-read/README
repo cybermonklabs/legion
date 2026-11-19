@@ -1,7 +1,7 @@
 GitHub's answers to `GET /repos/<owner>/<name>`, as `curl --include` prints them (the status line,
 the headers and the body, with CRLF line ends). The credential helper's fork read
 (gitcredential_fork.go) reads them, and the tests of gitcredential_test.go serve them from a
-stand-in curl.
+stand-in curl; gh_notfound_test.go serves not-found.http as the leak guard's curl read's 404.
 
 This repository is public, so no file here carries an outside person's login or the company's
 name, and this file names the captured repositories by what they are rather than by their names.

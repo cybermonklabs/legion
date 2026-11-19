@@ -31,6 +31,11 @@ import (
 // init containers do.
 const testMainEnv = "LEGION_CMD_TEST_MAIN"
 
+// testCurlEnv names, to this package's test binary run as `legion` (TestMain), the stand-in curl
+// the leak guard's curl reads run (leakguardCurl), so a test of `legion gh` in a process of its
+// own reaches no network.
+const testCurlEnv = "LEGION_CMD_TEST_CURL"
+
 func TestMain(m *testing.M) {
 	// An operator's NATS nkey seed, or either seed's _FILE pointer, reaches no test here and no
 	// run of this binary as `legion`: a test that means to hand one over sets it itself. They are
@@ -45,6 +50,12 @@ func TestMain(m *testing.M) {
 		// (ghCheckAt). Only this test binary reads the variable; the legion binary has none.
 		if proven := os.Getenv(testProvenCheckEnv); proven != "" {
 			ghReadsProvenCheck.sha256 = proven
+		}
+		// A test's stand-in curl for the guard's curl reads, which reach no network. Only this
+		// test binary reads the variable; the legion binary has none, and its guards run the
+		// system's own curl.
+		if curl := os.Getenv(testCurlEnv); curl != "" {
+			leakguardCurl = curl
 		}
 		// The environment these tests hand gh beside ghChildEnviron's allowlist
 		// (testGhChildEnviron); the legion binary has no such hook.

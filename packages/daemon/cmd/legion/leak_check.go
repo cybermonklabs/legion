@@ -82,7 +82,7 @@ func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) i
 	if err != nil {
 		return leakCheckReport(ctx, stderr, "", &leakguard.SetupFailure{What: what, Why: "the repository the hook runs in could not be read", Err: err})
 	}
-	guard := leakguard.New(leakguard.Options{})
+	guard := leakguard.New(leakguard.Options{Curl: leakguardCurl})
 	return leakCheckReport(ctx, stderr, "", guard.Push(ctx, leakguard.PushRequest{
 		Dir:     dir,
 		Remote:  remote,
@@ -103,7 +103,7 @@ func runLeakCheckText(ctx context.Context, args []string, stderr io.Writer) int 
 	if err != nil {
 		return leakCheckReport(ctx, stderr, kind, &leakguard.SetupFailure{What: kind, Why: "the text could not be read", Err: err})
 	}
-	guard := leakguard.New(leakguard.Options{})
+	guard := leakguard.New(leakguard.Options{Curl: leakguardCurl})
 	return leakCheckReport(ctx, stderr, kind, guard.Text(ctx, leakguard.TextRequest{Text: string(text)}))
 }
 
