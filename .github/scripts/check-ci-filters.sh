@@ -21,9 +21,8 @@
 #     of a go command it starts, and each file it reads through `..`;
 #   * the module files of each go command's workspace: go.work, go.work.sum and every bound
 #     module's go.mod and go.sum (`go env GOWORK`, `go work edit -json`);
-#   * for a claimed go command this check does not reduce (below), and for every Run of an exact
-#     entry whose step no longer holds its pinned script, every Go file of the repository and
-#     every file under a Go module's directory;
+#   * for a claimed go command this check does not reduce (below), every Go file of the
+#     repository and every file under a Go module's directory;
 #   * the static reads of the job's other steps: actions, the Bun install, Biome, scripts, fixtures.
 # Those globs are expanded over the repository's files (tracked, and untracked ones git does not
 # ignore, so an uncommitted new file counts and a build output does not) and each file is held to
@@ -68,10 +67,12 @@
 #      in the called file, which runs them inside the caller's own run, so the steps of every one
 #      of those files are read here and each refusal names the file the step is in,
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
-#      job no longer has, a RULES source file that is gone, or a why citing a step the job no
-#      longer has. A gate's step is looked for in the file that gate names - ci.yaml, or the
-#      workflow it calls that holds that job's steps - and a why's in the file its citation
-#      names, so a step that moved between the two fails here until the table says where it went,
+#      job no longer has, a step its exact entry pins whose run: script or directory is not the
+#      entry's, or whose env, shell, container or job could move what it compiles (below), a
+#      RULES source file that is gone, or a why citing a step the job no longer has. A gate's
+#      step is looked for in the file that gate names - ci.yaml, or the workflow it calls that
+#      holds that job's steps - and a why's in the file its citation names, so a step that moved
+#      between the two fails here until the table says where it went,
 #   6. a go command that fails or a first-party package go list cannot load, since its closure
 #      is then unknown, and a `!` pattern under `some` or a brace in a gate's filter,
 #   7. a CI_OK_SELECTED_BY in ci.yaml's env that is not exactly {job: the output its if: tests}
@@ -345,27 +346,52 @@
 # on the step and no defaults.run.shell on the job or the workflow, no container: on the job, no
 # name outside ENV_ALLOWED (test configuration go never reads; GO*, CGO_*, BASH_ENV, ENV, HOME,
 # XDG_CONFIG_HOME and PATH are outside it) in the workflow's, job's or step's env or in front of
-# the command itself, no step of the job writing $GITHUB_ENV or $GITHUB_PATH or running
-# `go env -w` on a line of its script that is not a comment (each reaches every later go command
-# unseen), and the step's working directory (its own, else the job's or workflow's defaults.run,
-# else the root) joined with the command's own `go -C` the Run's. A -race line's closure is the
-# one `go list -race` lists, so its Run says race too. A script_run is held exact instead: the
-# script's line holding its text must be that text alone and uncontinued, under such an env,
-# shell and container (the job's and every one of its steps') and such a job; the script's
-# variables are the Run author's to read, and anything appended to that line falls to everything.
+# the command itself, no step of the job up to and including its own writing $GITHUB_ENV or
+# $GITHUB_PATH or running `go env -w` on a line of its script that is not a comment (each reaches
+# every later go command unseen, and a write after the step reaches none of its), and the step's
+# working directory (its own, else the job's or workflow's defaults.run, else the root) joined
+# with the command's own `go -C` the Run's. A -race line's closure is the one `go list -race`
+# lists, so its Run says race too. A script_run is held exact instead: the script's line holding
+# its text must be that text alone and uncontinued, under such an env, shell and container (the
+# job's, and those of its steps up to the last one whose run: names the script - by its path from
+# the root or from the step's directory, at the start of a line or after a space, a quote, an `=`,
+# a `(` or a backtick, as `./<path>`, or after a `/` that ends a variable (`$NAME/`), a `}` or a
+# `)`, so `"$GITHUB_WORKSPACE/<path>"`, `${{ github.workspace }}/<path>`, `$(<path> ...)` and
+# `$(git rev-parse --show-toplevel)/<path>` name it, while a `/` after any other text ends a
+# directory of another path and `tools/<path>` names another script - or of all of them where it
+# names the script nowhere, since it may start the script some way this check does not see, each
+# job of a workflow it calls read the same way) and such a job; the script's variables are the
+# Run author's to read, and anything appended to that line falls to everything.
 # A step whose go commands are in no such form can be an exact entry instead: it pins the step's
 # whole run: script (compared as text after trailing whitespace, nothing parsed) and directory,
 # and lists Runs that stand for what the script compiles. While the step holds exactly that, under
-# such an env, shell, container and job, its go lines are claimed and the Runs' closures checked;
-# any difference makes every one of its Runs fall to everything. Any other claimed command - an
-# assignment of a name outside ENV_ALLOWED such as GOFLAGS or GOOS, another flag, a pipe, a
-# quote, a substitution, a cd, another line in
-# its step - counts as reading every Go file of the repository, every file under a Go module's
-# directory (each directory holding a go.mod: testdata, embedded files and all) and every go.mod,
-# go.sum, go.work and go.work.sum, and fails naming the command unless its filter selects all of
-# them. So a cd, a `go -C` naming another directory than the Run's or a step in one can only
-# widen what it reads. It fails wide, never narrow: a new evasion is answered by falling to
-# everything, not by more parsing.
+# such an env, shell, container and job, its go lines are claimed and the Runs' closures checked.
+# A step whose script or directory differs fails, naming the file, the job, the step and the
+# first line that differs, or both directories; where all that differs on that line is an
+# anchored -run or -skip list (`'^(Name|Name)$'`), it names each test the step's -run leaves out
+# or adds, or its -skip no longer skips or also skips. The pin is also the table's word for which
+# tests the step runs, and ci_job_reads.py builds several pins from one list: TEXT_CHECK_TESTS
+# writes the text-check step's -run and is the set envoy-go's step of what the race build cannot
+# run leaves out, so a test that list names and the step drops runs in no job, and one the step
+# names and the list does not runs in both. Falling to everything, which is what a step off its
+# pin once did, says nothing where the filter already selects every Go file, as text_checks'
+# does. For the same reason a pinned step fails, naming what does it, when its env, shell,
+# container or job could move what it compiles or which tests it runs: an env of the step, the
+# job or the workflow naming anything outside ENV_ALLOWED, a step of the job before it writing
+# $GITHUB_ENV or $GITHUB_PATH or running `go env -w` (a write in its own script is the pin's to
+# hold, and a write after it reaches none of its commands), a shell: or defaults.run.shell, or a
+# container: - `GOFLAGS: -skip=^TestOnlyTheBrokerInsertsEvents$` in the guard step's env would
+# skip that test though its -run names it, and its pin would still match. Put such a setting on
+# the step's own script line instead, where the pin holds it and the entry's Runs can say it. A
+# name with which go compiles the same files and runs the same tests, such as GOMAXPROCS, may join
+# ENV_ALLOWED; until it does, it refuses the step. Any other claimed command - an assignment of a
+# name outside ENV_ALLOWED such as GOFLAGS or GOOS, another flag, a pipe, a quote, a substitution,
+# a cd, another line in its step - counts as reading every Go file of the repository, every file
+# under a Go module's directory (each directory holding a go.mod: testdata, embedded files and
+# all) and every go.mod, go.sum, go.work and go.work.sum, and fails naming the command unless its
+# filter selects all of them. So a cd, a `go -C` naming another directory than the Run's or a step
+# in one can only widen what it reads. It fails wide, never narrow: a new evasion is answered by
+# falling to everything, not by more parsing.
 #
 # What it reads, and what it does not: ci.yaml's own steps and those of the jobs of a local
 # workflow one of its jobs calls (their run: text, shell, working directory and env: blocks),
@@ -414,8 +440,8 @@
 #                    .github/scripts/check-ci-filters.sh write
 # CI runs it in ci.yaml's ci-filters job, and its tests in ci.yaml's test job.
 #
-# No Go setting of the caller's changes the answer. Before it runs Go the engine drops every
-# variable the go command reads but those that say where it keeps or fetches files, and the
+# No Go setting of the caller's changes the engine's answer. Before it runs Go the engine drops
+# every variable the go command reads but those that say where it keeps or fetches files, and the
 # user's `go env -w` file with them (GOENV=off: ci_filter_coverage.go_environment), and it starts
 # from the go this script's own PATH resolves, which this script hands it (CI_FILTERS_GO), since
 # the python3 below may be a version manager's shim that gives the engine a GOROOT and a PATH of
@@ -439,8 +465,19 @@
 # build constraint that names an architecture names amd64 and arm64 together (`(amd64 ||
 # arm64)`), no first-party file name carries an architecture, and none is constrained by cgo or
 # imports "C" (a search of every tracked .go file for those names and constraints when this was
-# written). So run it bare, from any shell on any machine, and read its output by grepping for
-# the problem rather than by its last line.
+# written). So run it bare, from any shell on any machine, but the one below, and read its output
+# by grepping for the problem rather than by its last line.
+#
+# The one exception is a caller's GOTOOLCHAIN=local with a go older than go.work's first on PATH
+# (mise's go1.27.0 on a dev box). go_build_tags.py reads each module's build tags before the
+# engine runs, and its go list runs in the caller's environment, so it stops the check there:
+# `go.work requires go >= 1.27.3 (running go 1.27.0; GOTOOLCHAIN=local)`. A caller's GOROOT alone
+# changes nothing. Run it on the binary of the toolchain go.work pins instead, and it answers as
+# CI does. A Legion worker pod's go is such an older go, a bootstrap that switches to a toolchain
+# in the module cache, so run it the same way there:
+#   v=$(sed -n 's/^go //p' go.work)
+#   tc=$(env -u GOROOT go env GOMODCACHE)/golang.org/toolchain@v0.0.1-go$v.$(go env GOHOSTOS)-$(go env GOHOSTARCH)/bin
+#   test -x "$tc/go" && env -u GOROOT PATH="$tc:$PATH" GOTOOLCHAIN=local .github/scripts/check-ci-filters.sh
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

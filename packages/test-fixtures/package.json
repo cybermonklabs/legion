@@ -9,6 +9,14 @@
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"
     },
+    "./fake-clock": {
+      "types": "./src/fake-clock.ts",
+      "bun": "./src/fake-clock.ts"
+    },
+    "./fixture-secret": {
+      "types": "./src/fixture-secret.ts",
+      "bun": "./src/fixture-secret.ts"
+    },
     "./host-tools": {
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"

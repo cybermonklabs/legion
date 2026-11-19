@@ -7,6 +7,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -71,9 +73,16 @@ func TestMainRefusesToStartInAClusterWithoutItsRanges(t *testing.T) {
 // TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem: with ranges that hold
 // KUBERNETES_SERVICE_HOST the broker starts, and a CONNECT through its proxy port, with the proxy
 // password of a real grant, is refused for an address inside one of those ranges before anything
-// is dialled. The control is the same password's CONNECT to the host the grant's entry binds,
-// which the proxy takes over. The address inside the range is a documentation address no service
-// answers: a proxy that did not refuse it would dial it and answer nothing within the deadline.
+// is dialled. The address inside the range is a documentation address no service answers: a
+// proxy that did not refuse it would dial it and answer nothing within the deadline.
+//
+// The control is the same password's CONNECT to the host the grant's entry binds, which the proxy
+// takes over: it answers 200, and inside that tunnel a TLS handshake for the host, trusting the
+// broker's airlock authority and nothing else, completes. Only the proxy's own decrypting
+// takeover holds a certificate of that authority, so the control fails for a proxy that tunnels
+// the bound host instead, whatever answers at the address the host resolves to: a service there
+// shows a certificate of its own, and with no service there the tunnel's dial answers nothing
+// within the deadline.
 func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 	const (
 		podAudience  = "example-broker-pod"
@@ -99,7 +108,11 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 		{"name": "`+testSecretsPrefix+`airlock-token", "kms_key_id": "`+testSecretsKMSKeyARN+`",
 		 "tags": {"owner": "`+service+`", "tier": "agent"}, "value": "the-real-airlock-token"}
 	]}`)
-	broker := startBroker(t, brokerOptions{Env: append(airlockEnv(t),
+	// The airlock's settings are airlockEnv's, so a setting added there reaches this broker too;
+	// the control below reads the authority it trusts from the same list.
+	airlock := airlockEnv(t)
+	certFile := envSetting(t, airlock, "BROKER_AIRLOCK_CA_CERT_FILE")
+	broker := startBroker(t, brokerOptions{Env: append(airlock,
 		"BROKER_DATABASE_URL="+storetest.URL(t),
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
@@ -129,12 +142,28 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 		t.Fatal("the release carries no proxy password")
 	}
 
-	status, body := connectThrough(t, proxyAddr, password, net.JoinHostPort(insideRange, "443"))
+	_, status, body := connectThrough(t, proxyAddr, password, net.JoinHostPort(insideRange, "443"))
 	if status != http.StatusForbidden || !strings.Contains(body, "inside BROKER_AIRLOCK_CLUSTER_RANGES, the broker cluster's own addresses") {
 		t.Fatalf("CONNECT %s through the broker's proxy = %d %q; want 403 naming BROKER_AIRLOCK_CLUSTER_RANGES", insideRange, status, body)
 	}
-	if status, body := connectThrough(t, proxyAddr, password, net.JoinHostPort(boundHost, "443")); status != http.StatusOK {
+
+	// The control, as a released command's client makes it: the broker's airlock authority is
+	// the one thing it trusts.
+	anchor := x509.NewCertPool()
+	certificate, err := os.ReadFile(certFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !anchor.AppendCertsFromPEM(certificate) {
+		t.Fatalf("the airlock authority's certificate did not parse: %s", certFile)
+	}
+	tunnel, status, body := connectThrough(t, proxyAddr, password, net.JoinHostPort(boundHost, "443"))
+	if status != http.StatusOK {
 		t.Fatalf("control: CONNECT %s, the bound host, through the broker's proxy = %d %q; want 200", boundHost, status, body)
+	}
+	decrypted := tls.Client(tunnel, &tls.Config{ServerName: boundHost, RootCAs: anchor, MinVersion: tls.VersionTLS12})
+	if err := decrypted.Handshake(); err != nil {
+		t.Fatalf("control: the TLS handshake for %s inside its CONNECT, trusting the airlock's authority alone: %v; want it to complete, as the proxy's own takeover of a bound host does", boundHost, err)
 	}
 }
 
@@ -157,17 +186,31 @@ func TestMainOutsideAClusterStartsWithoutTheRanges(t *testing.T) {
 	requireHealthy(t, broker.Addr)
 }
 
+// envSetting is the value env, a broker environment as startBroker takes one, gives key, and
+// fails t when env sets it nowhere.
+func envSetting(t *testing.T, env []string, key string) string {
+	t.Helper()
+	for _, setting := range env {
+		if value, ok := strings.CutPrefix(setting, key+"="); ok {
+			return value
+		}
+	}
+	t.Fatalf("the environment sets no %s: %v", key, env)
+	return ""
+}
+
 // connectThrough writes one CONNECT for target to the proxy at proxyAddr with password as its
-// proxy password, and answers the status and, for any answer but 200 (whose body is the tunnel),
-// the body. No answer within ten seconds fails t: a proxy that is still dialling an address no
-// service answers has not refused it.
-func connectThrough(t *testing.T, proxyAddr, password, target string) (int, string) {
+// proxy password. For a 200 it answers the tunnel, open until t ends and read through the reader
+// the answer was read with, and the status; for any other answer, no tunnel, the status and the
+// body. No answer within ten seconds fails t: a proxy that is still dialling an address no
+// service answers has not refused it. Those ten seconds are the tunnel's deadline too.
+func connectThrough(t *testing.T, proxyAddr, password, target string) (net.Conn, int, string) {
 	t.Helper()
 	conn, err := net.Dial("tcp", proxyAddr)
 	if err != nil {
 		t.Fatalf("dial the broker's proxy port: %v", err)
 	}
-	defer conn.Close()
+	t.Cleanup(func() { conn.Close() })
 	if err := conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
@@ -175,20 +218,31 @@ func connectThrough(t *testing.T, proxyAddr, password, target string) (int, stri
 	if _, err := conn.Write([]byte("CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\nProxy-Authorization: Basic " + credential + "\r\n\r\n")); err != nil {
 		t.Fatalf("write the CONNECT: %v", err)
 	}
-	answer, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect})
+	reader := bufio.NewReader(conn)
+	answer, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
 	if err != nil {
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			t.Fatalf("CONNECT %s: no answer within 10s; the proxy is dialling it rather than refusing it", target)
 		}
 		t.Fatalf("read the answer to CONNECT %s: %v", target, err)
 	}
-	defer answer.Body.Close()
 	if answer.StatusCode == http.StatusOK {
-		return answer.StatusCode, ""
+		return readerConn{Conn: conn, reader: reader}, answer.StatusCode, ""
 	}
+	defer answer.Body.Close()
 	body, err := io.ReadAll(answer.Body)
 	if err != nil {
 		t.Fatalf("read the refusal of CONNECT %s: %v", target, err)
 	}
-	return answer.StatusCode, string(body)
+	conn.Close()
+	return nil, answer.StatusCode, string(body)
 }
+
+// readerConn is a tunnel read through the reader its CONNECT's answer was read with, so a byte
+// the proxy sent after that answer, which the reader may already hold, is not lost.
+type readerConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c readerConn) Read(p []byte) (int, error) { return c.reader.Read(p) }

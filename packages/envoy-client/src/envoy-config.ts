@@ -150,6 +150,9 @@ const EnvoySectionSchema = z.strictObject({
   natsUrls: z.array(z.string().trim().min(1, "must not be empty")).optional(),
   token: z.string().optional(),
   natsSeed: z.string().optional(),
+  // `broker` or `none`, which `envoySettings` reads (`NATS_AUTH_VAR`); another value turns off
+  // inbound messages alone, naming it, rather than the whole file.
+  natsAuth: z.string().optional(),
 });
 
 // A top-level `natsUrls` is refused before this schema runs (`parseFile`): it belongs in

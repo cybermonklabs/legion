@@ -34,15 +34,24 @@ import (
 // its ready, at the claim's current generation, on the session the claim keeps under its role.
 func readyClaimOf(t *testing.T, sup *supervisor, token claim.Token, role claim.Role) {
 	t.Helper()
+	readyClaimAs(t, sup, token, role, "ses-"+string(role))
+}
+
+// readyClaimAs is readyClaimOf on session, whose file is named for it: the daemon holds a session's
+// id and its file's path and name to the first claim of the project that recorded them
+// (supervise's holdRecorded), so a test with two claims of one role names the second's session
+// itself, and so its file.
+func readyClaimAs(t *testing.T, sup *supervisor, token claim.Token, role claim.Role, session string) {
+	t.Helper()
 	machine, ok := sup.Machine(token)
 	if !ok {
 		t.Fatalf("no machine for %s", token)
 	}
 	generation := machine.Claim().Generation
-	session := "ses-" + string(role)
+	file := "/tmp/" + strings.TrimPrefix(session, "ses-") + ".jsonl"
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: generation},
-		supervise.RequestRegister{Claim: token, Generation: generation, Session: session, SessionFile: "/tmp/" + string(role) + ".jsonl"},
+		supervise.RequestRegister{Claim: token, Generation: generation, Session: session, SessionFile: file},
 		supervise.RequestReady{Claim: token, Generation: generation, Session: session},
 	} {
 		if err := machine.Handle(context.Background(), ev); err != nil {
@@ -53,6 +62,12 @@ func readyClaimOf(t *testing.T, sup *supervisor, token claim.Token, role claim.R
 
 // launchedClaim creates role's claim on issue of tree, launches it and makes its agent ready.
 func launchedClaim(t *testing.T, sup *supervisor, tree, issue string, role claim.Role) claim.Token {
+	t.Helper()
+	return launchedClaimAs(t, sup, tree, issue, role, "ses-"+string(role))
+}
+
+// launchedClaimAs is launchedClaim with its agent registering session (readyClaimAs).
+func launchedClaimAs(t *testing.T, sup *supervisor, tree, issue string, role claim.Role, session string) claim.Token {
 	t.Helper()
 	token := mustClaimToken(t, issue, role)
 	machine, _, err := sup.Create(context.Background(), supervise.Claim{
@@ -65,7 +80,7 @@ func launchedClaim(t *testing.T, sup *supervisor, tree, issue string, role claim
 	if err := machine.Handle(context.Background(), supervise.RequestSpawn{Claim: token}); err != nil {
 		t.Fatalf("spawn %s: %v", token, err)
 	}
-	readyClaimOf(t, sup, token, role)
+	readyClaimAs(t, sup, token, role, session)
 	return token
 }
 

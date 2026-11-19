@@ -28,7 +28,8 @@ afterEach(async () => {
   for (const dir of scratch.splice(0)) await rm(dir, { recursive: true, force: true })
 })
 
-/** A scratch directory to put sockets in, short enough that the path stays under the bound. */
+/** A scratch directory to put sockets in, made where a mod socket under it stays inside its bound
+ *  (`modSocketScratch`). */
 async function directory(): Promise<string> {
   const dir = await modSocketScratch("mod-")
   scratch.push(dir)

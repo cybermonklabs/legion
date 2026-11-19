@@ -109,7 +109,9 @@ test("renders one row per artifact with no compare controls", async () => {
 test("a closed issue's Artifacts tab refuses a new document and an upload before a file is picked", async () => {
   const user = userEvent.setup();
   const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, true);
-  const pick = spyOn(HTMLInputElement.prototype, "click");
+  // Spied on HTMLElement, the prototype that owns the method: spying on HTMLInputElement would
+  // leave an own property behind that shadows every later spy on HTMLElement.
+  const pick = spyOn(HTMLElement.prototype, "click");
   try {
     await screen.findByTestId("artifact-diagram-png");
     const upload = screen.getByRole("button", { name: "Upload" });

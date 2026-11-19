@@ -3,10 +3,13 @@ import { existsSync } from "node:fs"
 import { cp, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, isAbsolute, join, resolve } from "node:path"
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import ts from "typescript"
 import { assertPinnedBun, BUNDLE_ENTRYPOINTS, buildBundles } from "../scripts/build"
 
 const packageRoot = resolve(import.meta.dir, "..")
+/** The Dispatch token the bundle is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp")
 // A pull request never commits dist/ (main's rebuild workflow does), so every test here reads one
 // fresh build of this tree rather than whatever dist/ the checkout holds.
 let distDirectory = ""
@@ -124,7 +127,7 @@ test("with Envoy off the bundle still writes the session title the dispatch comm
         DISPATCH_STATE_DIR: join(scratch, "dispatch-state"),
         // Dispatch on, with no Envoy section: Envoy is off.
         DISPATCH_URL: "http://127.0.0.1:9",
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN,
         ENVOY_SESSION_TITLE: "off but named",
       },
       stdin: "ignore",
@@ -166,7 +169,7 @@ test("the bundle stamps nothing with Dispatch off, or under the QA override ENVO
         CLAUDE_CODE_SESSION_ID: "ses-claude",
         ENVOY_SESSION_ID: "ses-override",
         DISPATCH_URL: "http://127.0.0.1:9",
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN,
       }),
     ).toBe(0)
     expect(existsSync(join(scratch, "dispatch-state", "sessions"))).toBe(false)
@@ -185,7 +188,7 @@ test("with Envoy off and no session id the bundle still serves the Envoy-off ser
         PATH: process.env["PATH"] ?? "",
         HOME: scratch,
         DISPATCH_URL: "http://127.0.0.1:9",
-        DISPATCH_TOKEN: "test-token",
+        DISPATCH_TOKEN,
       },
       stdin: "ignore",
       stdout: "pipe",

@@ -10,8 +10,11 @@
 // broker is asked anything.
 
 import { afterEach, expect, test } from "bun:test";
+import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { importDpopKey } from "../dpop";
@@ -27,6 +30,7 @@ import { personIdentity } from "../person-identity";
 import { poolIdentity } from "../pool-identity";
 import { projectedToken } from "../projected-token";
 import { BrokerTokenClient } from "../token-client";
+import { TradeRetryingError } from "../token-errors";
 import {
   ACTOR_TOKEN_TYPE_MACHINE,
   SUBJECT_TOKEN_TYPE_GOOGLE,
@@ -34,15 +38,16 @@ import {
 } from "../wire";
 import { accepted, refusalOf, stubBroker } from "./stub";
 
-const EXTERNAL_TOKEN = "the.credential.this.machine.holds";
-const FEDERATED_TOKEN = "federated-access-token";
-const MINTED_TOKEN = "google.identity.token.minted.for.the.pool";
+const EXTERNAL_TOKEN = fixtureSecret("external");
+const FEDERATED_TOKEN = fixtureSecret("fed");
+const MINTED_TOKEN = fixtureSecret("minted");
 const POOL_AUDIENCE =
   "//iam.googleapis.com/projects/000000000000/locations/global/workloadIdentityPools/example-pool/providers/example-provider";
 const SERVICE_ACCOUNT = "example-fleet@example-project.iam.gserviceaccount.com";
 const CLIENT_ID = "example-machine-client-id";
 const PERSON = "ada@example.com";
 const SIGNIN_CLIENT_ID = "example-device-client";
+const SIGNIN_CLIENT_SECRET = fixtureSecret("client");
 
 const makeDirectory = temporaryDirectories("pool-identity");
 
@@ -114,7 +119,7 @@ async function externalCredential(): Promise<string> {
 /** The pool source over the two stand-ins, federating this machine's projected token. */
 async function poolAt(sts: string, iam: string) {
   return poolIdentity({
-    subject: projectedToken(await externalCredential()),
+    subject: projectedToken(await externalCredential(), "AGENT_SECRETS_MACHINE_TOKEN_FILE"),
     audience: POOL_AUDIENCE,
     serviceAccount: SERVICE_ACCOUNT,
     tokenAudience: CLIENT_ID,
@@ -175,17 +180,44 @@ test("the pool answers the token generateIdToken minted, as a machine's Google i
   });
 });
 
-test("a security token service that refuses is an error naming it, its status and its reason", async () => {
-  const reason =
-    '{"error":"invalid_grant","error_description":"the subject token is not this provider\'s"}';
+// Google's answer is named by its status and its error code alone, never its body: a service, or
+// anything at its URL, can echo the token it was sent there (#4140, P-f).
+test("a security token service that refuses is an error naming it, its status and its code", async () => {
+  const reason = JSON.stringify({
+    error: "invalid_grant",
+    error_description: `the subject token ${EXTERNAL_TOKEN} is not this provider's`,
+  });
   const sts = stubService(() => ({ status: 400, body: reason }));
   const iam = stubService(minting);
   const refusal = await refusalOf(async () => (await poolAt(sts.url, iam.url)).read());
   expect(refusal?.message).toBe(
-    `trade this machine's credential at the security token service ${sts.url}/v1/token: HTTP 400: ${reason}`
+    `trade this machine's credential at the security token service ${sts.url}/v1/token: HTTP 400 invalid_grant`
   );
-  expect(refusal?.message).not.toContain(EXTERNAL_TOKEN);
+  expect(Bun.inspect(refusal)).not.toContain(EXTERNAL_TOKEN);
   // Nothing is minted with no federated token.
+  expect(iam.posted).toHaveLength(0);
+});
+
+// A 307 or 308 in front of the security token service would send the POST, the subject token in
+// its body, on to another origin. Google's services answer no redirect, so the call follows none:
+// the redirect is the refusal, and its target is asked nothing (the review of 81d860a8f7, P1).
+test("a redirect from the security token service is refused, and its target is asked nothing", async () => {
+  const elsewhere = stubService(federating);
+  const moving = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () =>
+      new Response(null, { status: 307, headers: { Location: `${elsewhere.url}/v1/token` } }),
+  });
+  stops.push(() => moving.stop(true));
+  const iam = stubService(minting);
+  const refusal = await refusalOf(async () =>
+    (await poolAt(`http://127.0.0.1:${moving.port}`, iam.url)).read()
+  );
+  expect(refusal?.message).toBe(
+    `trade this machine's credential at the security token service http://127.0.0.1:${moving.port}/v1/token: HTTP 307`
+  );
+  expect(elsewhere.posted).toHaveLength(0);
   expect(iam.posted).toHaveLength(0);
 });
 
@@ -199,15 +231,21 @@ test("a security token service that answers no access_token is an error naming i
   expect(iam.posted).toHaveLength(0);
 });
 
-test("generateIdToken refusing is an error naming it, its status and its reason", async () => {
-  const reason =
-    '{"error":{"code":403,"message":"Permission iam.serviceAccounts.getOpenIdToken denied"}}';
+test("generateIdToken refusing is an error naming it, its status and its code", async () => {
+  const reason = JSON.stringify({
+    error: {
+      code: 403,
+      message: `Permission iam.serviceAccounts.getOpenIdToken denied for ${FEDERATED_TOKEN}`,
+      status: "PERMISSION_DENIED",
+    },
+  });
   const sts = stubService(federating);
   const iam = stubService(() => ({ status: 403, body: reason }));
   const refusal = await refusalOf(async () => (await poolAt(sts.url, iam.url)).read());
   expect(refusal?.message).toBe(
-    `mint this machine's identity token at ${iam.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403: ${reason}`
+    `mint this machine's identity token at ${iam.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403 PERMISSION_DENIED`
   );
+  expect(Bun.inspect(refusal)).not.toContain(FEDERATED_TOKEN);
   expect(refusal?.message).not.toContain(FEDERATED_TOKEN);
 });
 
@@ -230,12 +268,53 @@ test("an answer that is not JSON is named without its text, which could be a tok
   expect(refusal?.message).not.toContain(FEDERATED_TOKEN);
 });
 
+// Each service is named as every client names a URL (`urlForText`): a plain URL by itself, the
+// mint as the request built on IAM Credentials' plain base (`requestForText`), and a URL that
+// carries user info by its fixed phrase alone, no part of it.
+test("the security token service and IAM Credentials are named only where their URL is plain", async () => {
+  const password = fixtureSecret("pw");
+  const withUser = (url: string) => url.replace("http://", `http://operator:${password}@`);
+  const unanswering = stubService(() => ({ body: { token_type: "Bearer", expires_in: 3600 } }));
+  const sts = stubService(federating);
+  const iam = stubService(() => ({ status: 403, body: '{"error":{"code":403}}' }));
+  const empty = stubService(() => ({ body: {} }));
+  const refusals = [
+    await refusalOf(async () => (await poolAt(withUser(unanswering.url), iam.url)).read()),
+    await refusalOf(async () => (await poolAt(sts.url, withUser(iam.url))).read()),
+    await refusalOf(async () => (await poolAt(sts.url, withUser(empty.url))).read()),
+  ];
+  expect(refusals.map((refusal) => refusal?.message)).toEqual([
+    `the security token service securityTokenServiceUrl ${URL_NOT_PRINTED} answered no access_token`,
+    `mint this machine's identity token at iamCredentialsUrl ${URL_NOT_PRINTED}: HTTP 403`,
+    `generateIdToken at iamCredentialsUrl ${URL_NOT_PRINTED} answered no token`,
+  ]);
+  for (const refusal of refusals) expect(Bun.inspect(refusal)).not.toContain(password);
+});
+
+// A request that got no answer is named by its error's class, since the runtime's message repeats
+// the host it was handed, and no error keeps another as its cause.
+test("a service that does not answer is named by the class of the failure, with no cause", async () => {
+  const host = `${randomBytes(9).toString("hex")}.invalid`;
+  const iam = stubService(minting);
+  const refusal = await refusalOf(async () => (await poolAt(`http://${host}`, iam.url)).read());
+  expect(refusal?.message).toBe(
+    `trade this machine's credential at the security token service http://${host}/v1/token: no answer: getaddrinfo ENOTFOUND`
+  );
+  expect(refusal?.cause).toBeUndefined();
+  const sts = stubService(federating);
+  const lost = await refusalOf(async () => (await poolAt(sts.url, "http://127.0.0.1:1")).read());
+  expect(lost?.message).toBe(
+    `mint this machine's identity token at http://127.0.0.1:1/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: no answer: ECONNREFUSED`
+  );
+  expect(lost?.cause).toBeUndefined();
+});
+
 test("an external credential that cannot be read stops the pool before either service is asked", async () => {
   const sts = stubService(federating);
   const iam = stubService(minting);
   const missing = join(makeDirectory(), "absent");
   const source = poolIdentity({
-    subject: projectedToken(missing),
+    subject: projectedToken(missing, "AGENT_SECRETS_MACHINE_TOKEN_FILE"),
     audience: POOL_AUDIENCE,
     serviceAccount: SERVICE_ACCOUNT,
     tokenAudience: CLIENT_ID,
@@ -243,9 +322,10 @@ test("an external credential that cannot be read stops the pool before either se
     iamCredentialsUrl: iam.url,
   });
   const refusal = await refusalOf(() => source.read());
-  expect(refusal?.message).toStartWith(
-    `read the credential the workload identity pool federates: read the projected service-account token ${missing}: `
+  expect(refusal?.message).toBe(
+    "read the credential the workload identity pool federates: read the projected service-account token AGENT_SECRETS_MACHINE_TOKEN_FILE names: ENOENT"
   );
+  expect(refusal?.message).not.toContain(missing);
   expect(sts.posted).toHaveLength(0);
   expect(iam.posted).toHaveLength(0);
 });
@@ -292,10 +372,11 @@ async function personOnPoolMachine(sts: string, iam: string, brokerUrl: string) 
     subject: personIdentity(record, {
       issuer: issuer.url,
       clientId: SIGNIN_CLIENT_ID,
-      clientSecret: "example-device-client-not-a-secret",
+      clientSecret: SIGNIN_CLIENT_SECRET,
     }),
     actor: await poolAt(sts, iam),
     session: "ses_01a9",
+    log: () => {},
   });
   return { client, issuer };
 }
@@ -315,15 +396,20 @@ test("a person's trade on a pool machine shows the broker the minted token as th
   expect(form?.get("actor_token_type")).toBe(ACTOR_TOKEN_TYPE_MACHINE);
 });
 
+// An identity source's failure is traded again on the retry loop's long schedule, as the Go
+// client trades again on every failure but the broker's permanent refusals, so a caller is told it
+// at its deadline, in the source's own words (`TradeRetryingError`).
 test("with the security token service refusing, a person's trade fails naming it and the broker is asked nothing", async () => {
   const sts = stubService(() => ({ status: 400, body: '{"error":"invalid_grant"}' }));
   const iam = stubService(minting);
   const broker = stubBroker(() => ({ body: accepted("never", 600) }));
   stops.push(broker.stop);
   const { client } = await personOnPoolMachine(sts.url, iam.url, broker.url);
-  const refusal = await refusalOf(() => client.token());
+  stops.push(() => client.close());
+  const refusal = await refusalOf(() => client.token(AbortSignal.timeout(1_000)));
+  expect(refusal).toBeInstanceOf(TradeRetryingError);
   expect(refusal?.message).toContain(
-    `the security token service ${sts.url}/v1/token: HTTP 400: {"error":"invalid_grant"}`
+    `the security token service ${sts.url}/v1/token: HTTP 400 invalid_grant`
   );
   expect(broker.trades).toHaveLength(0);
   expect(iam.posted).toHaveLength(0);
@@ -336,9 +422,11 @@ test("with generateIdToken refusing, a person's trade fails naming it and the br
   const broker = stubBroker(() => ({ body: accepted("never", 600) }));
   stops.push(broker.stop);
   const { client } = await personOnPoolMachine(sts.url, iam.url, broker.url);
-  const refusal = await refusalOf(() => client.token());
+  stops.push(() => client.close());
+  const refusal = await refusalOf(() => client.token(AbortSignal.timeout(1_000)));
+  expect(refusal).toBeInstanceOf(TradeRetryingError);
   expect(refusal?.message).toContain(
-    `mint this machine's identity token at ${iam.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403: ${reason}`
+    `mint this machine's identity token at ${iam.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403`
   );
   // The security token service answered and generateIdToken refused: no trade reaches the broker
   // without the machine token that vouches for the person.

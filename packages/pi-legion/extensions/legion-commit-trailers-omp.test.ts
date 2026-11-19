@@ -18,6 +18,7 @@ import {
   toolResultsIn,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { jjBinary } from "@legion/test-fixtures/version-control-tools";
 
 // On the real Oh My Pi: the `task` subagent of a Legion role pane makes a jj commit, and the
@@ -48,6 +49,10 @@ type Role = (typeof ROLES)[number];
  * that none of the three roles works. */
 const TREE = "TRAILERS-1";
 const ISSUE = "TRAILERS-2";
+
+/** The registration secret the stand-in daemon answers, and the boot token the pane starts with. */
+const REGISTRATION_SECRET = fixtureSecret("reg");
+const BOOT_TOKEN = fixtureSecret("boot");
 
 /**
  * The text that marks the assignment of the daemon, which the case sends as the RPC prompt. Each
@@ -203,7 +208,7 @@ async function startRolePane(role: Role): Promise<RolePane> {
         issue: ISSUE,
         role,
         generation: 1,
-        secret: "trailers-secret",
+        secret: REGISTRATION_SECRET,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -260,7 +265,7 @@ async function startRolePane(role: Role): Promise<RolePane> {
         LEGION_ISSUE: ISSUE,
         LEGION_GENERATION: "1",
         LEGION_PROJECT: "trailers",
-        LEGION_BOOT_TOKEN: "trailers-boot",
+        LEGION_BOOT_TOKEN: BOOT_TOKEN,
         LEGION_STATE_DIR: state,
         LEGION_WORKSPACE: workspace,
         // The git identity that the daemon puts on each pane (runtime.GitIdentity), so the jj of
