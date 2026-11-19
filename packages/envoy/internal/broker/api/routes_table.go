@@ -262,6 +262,20 @@ func routes() []apiRoute {
 		// Revoke an enrollment made under the caller's machine credential's operator, or a pod
 		// enrollment the caller's own machine credential made.
 		{http.MethodDelete, "/v1/enrollments/{id}", launcherAuth((*server).deleteEnrollment)},
+		// Answer which pod enrollments the caller's account launched still carry something for the
+		// named sessions, so a Legion daemon frees a session id it holds only once the answer is
+		// empty. The body names 1 to 4096 session ids of 1 to 255 bytes each (400
+		// INVALID_SESSION_IDS otherwise, as for a body that is no such object), read one id at a time
+		// and refused at the entry past 4096. Its cap is the longest list those bounds allow with
+		// every byte of every id escaped as \u00XX, about 6 MiB, in place of the 1 MiB of every other
+		// JSON route (413 REQUEST_TOO_LARGE past it). It answers each pod enrollment of one of the ids
+		// that the next enrollment of that id under a login of the caller's account could take from:
+		// a live one whatever it holds, a dormant one while it holds a live grant or a pending
+		// request, and never one ended for good, nor one a login of another account launched,
+		// another daemon's pods of the same id and pod account among them. A credential whose login
+		// names no account, one a person approved through a code, is 403 SERVICE_LOGIN_REQUIRED
+		// before its body is read.
+		{http.MethodPost, "/v1/enrollments/carried", launcherAuth((*server).carriedEnrollments)},
 		// Log a service in with its own projected Kubernetes ServiceAccount token, which no person
 		// approves: answers its launcher credential's id and expiry.
 		{http.MethodPost, "/v1/launcher-credentials/token", public((*server).tokenLogin)},
@@ -296,22 +310,25 @@ func routes() []apiRoute {
 		{http.MethodGet, "/v1/enrollments/self", sessionAuth((*server).readSelf)},
 		// Request secrets: the policy grants or denies them at once, or a person must approve them.
 		{http.MethodPost, "/v1/requests", sessionAuth((*server).createRequest)},
-		// Read one of the calling session's requests; with ?wait=N (whole seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided or once N seconds pass.
+		// Read a request the calling session's owner made: its person, its Legion claim or its
+		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided or once N seconds pass.
 		{http.MethodGet, "/v1/requests/{id}", sessionAuth((*server).readRequest)},
-		// Cancel one of the calling session's pending requests.
+		// Cancel a pending request the calling session's owner made, by the same rule as the read.
 		{http.MethodPost, "/v1/requests/{id}/cancel", sessionAuth((*server).cancelRequest)},
 		// Release a live grant's values to the session that holds it.
 		{http.MethodPost, "/v1/grants/{id}/values", sessionAuth((*server).grantValues)},
 		// End a grant the calling session holds.
 		{http.MethodPost, "/v1/grants/{id}/revoke", sessionAuth((*server).revokeGrant)},
-		// List the undecided requests and machine logins the named person decides, each with its
-		// state, pending or expired, and its deadline, and each secret request with the broker's
-		// own page where that person decides it. With no ?state=, it is every record still pending
-		// by what is stored, newest first, an overdue one included until the expiry sweep ends it.
-		// Each ?state=pending or ?state=expired asks for that state: the records a decision may
-		// still settle, and the records whose deadline passed before anybody decided them that
-		// nobody has dismissed, before the sweep and after it, the pending ones first and each
-		// state newest first. Any other state is 400 STATE_INPUT.
+		// List the undecided requests and machine logins the named person is asked to decide, each
+		// with its state, pending or expired, and its deadline, and each secret request with the
+		// broker's own page where it is decided. A request for a shared secret is listed for the
+		// person responsible for the agent that made it, or for everyone when no person is. With
+		// no ?state=, it is every record still pending by what is stored, newest first, an overdue
+		// one included until the expiry sweep ends it. Each ?state=pending or ?state=expired asks
+		// for that state: the records a decision may still settle, and the records whose deadline
+		// passed before anybody decided them that nobody has dismissed, before the sweep and after
+		// it, the pending ones first and each state newest first. Any other state is 400
+		// STATE_INPUT.
 		{http.MethodGet, "/v1/pending", accountAuth(relaysDecisions, (*server).listPending)},
 		// Approve a pending machine login as the named person, who must type its code: the broker
 		// takes the person's name on the caller's word, from a listed service's ServiceAccount

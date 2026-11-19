@@ -100,7 +100,7 @@ answers `request is already decided`), and the broker logs one JSON line, here w
 out:
 
 ```json
-{"time":"<time>","severity":"INFO","message":"broker sweeper: ended an enrollment whose lease lapsed","enrollment_id":"edd9a18c-41ff-46f9-8a15-bddb30f0abc3","kind":"session","runtime_id":"example-box-1","slot":"","lease_expired_at":"2026-10-03T03:39:03.386Z","grants_revoked":1,"requests_cancelled":1,"left_dormant":false}
+{"time":"<time>","severity":"INFO","message":"broker sweeper: ended an enrollment whose lease lapsed","enrollment_id":"edd9a18c-41ff-46f9-8a15-bddb30f0abc3","kind":"session","runtime_id":"example-box-1","slot":"","lease_expired_at":"2026-10-03T03:39:03.386Z","grants_revoked":1,"requests_cancelled":1,"left_dormant":false,"handed_to":""}
 ```
 
 A lapsed lease cannot be renewed: to use the box again, start over from step 1 with a new key.

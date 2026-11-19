@@ -16,6 +16,7 @@ import {
 } from "@legion/contracts"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
 import { type AgentStreamRunner, startAgentStream } from "../src/agent-stream-runner"
+import { sessionAdmission } from "../src/envoy-channel-server"
 import type { ModLink } from "../src/mod-link"
 import { FakeNats } from "./channel-session-harness"
 
@@ -131,7 +132,7 @@ interface Running {
   readonly frames: (session: string) => AgentStreamFrame[]
 }
 
-function running(): Running {
+function running(admitted?: (session: string) => Promise<void>): Running {
   const nats = new FakeNats()
   const mod = fakeLink()
   const warnings: string[] = []
@@ -143,6 +144,7 @@ function running(): Running {
     observe: (event) => void observed.push(event),
     sessionId: SESSION,
     warn: (text) => void warnings.push(text),
+    ...(admitted === undefined ? {} : { admitted }),
   })
   return {
     answered: (reply) => {
@@ -290,6 +292,75 @@ test("a clear moves the control subject, and the new id replays nothing from bef
     .flatMap((frame) => (frame.kind === "message" ? [frame.message] : []))
   expect(conversation.map((message) => message.parts)).toEqual([
     [{ text: "after the clear", type: "text" }],
+  ])
+  live.runner.stop()
+})
+
+// Under a broker token the connection is admitted as one session at a time, and the server refuses
+// and closes a subscribe to a subject the session it is admitted as may not take. These run the
+// channel server's own `sessionAdmission`, which `admit`s each id when its move lands.
+test("a clear takes the new id's control subject only once the connection is admitted as it", async () => {
+  const admission = sessionAdmission(SESSION)
+  const live = running(admission.admitted)
+  expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(SESSION)])
+
+  live.mod.moveSession(CLEARED)
+  await settle()
+  // The old id's subject went at once; the new id's waits for the move.
+  expect(live.nats.unsubscribed).toContain(agentStreamControlSubject(SESSION))
+  expect([...live.nats.subscriptions.keys()]).toEqual([])
+
+  admission.admit(CLEARED)
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(CLEARED)])
+  await live.control(CLEARED, watchRequest)
+  await live.control(CLEARED, replayRequest, "_INBOX.admitted")
+  expect(live.answered("_INBOX.admitted")?.session_id).toBe(CLEARED)
+  live.runner.stop()
+})
+
+test("a second clear before the first id is admitted takes only the latest id's subject", async () => {
+  // The live view hears of both `/clear`s at once; the server adopts the second only after the
+  // first one's move has landed, so the first id is admitted after the live view asked about the
+  // second (the deep review of dfa2ea1f59, M1).
+  const admission = sessionAdmission(SESSION)
+  const live = running(admission.admitted)
+  live.mod.moveSession(CLEARED)
+  await settle()
+  live.mod.moveSession("ses_cleared_again")
+  await settle()
+  // The first id's admission comes too late: the session is the second id's now.
+  admission.admit(CLEARED)
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([])
+  admission.admit("ses_cleared_again")
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([
+    agentStreamControlSubject("ses_cleared_again"),
+  ])
+  live.runner.stop()
+})
+
+test("an admission that lands for an id the session has left takes nothing", async () => {
+  // An `admitted` that settles every wait it handed out, the stale one included: the runner takes
+  // only the id it is on now.
+  const waits = new Map<string, PromiseWithResolvers<void>>()
+  const live = running((session) => {
+    const wait = Promise.withResolvers<void>()
+    waits.set(session, wait)
+    return wait.promise
+  })
+  live.mod.moveSession(CLEARED)
+  await settle()
+  live.mod.moveSession("ses_cleared_again")
+  await settle()
+  waits.get(CLEARED)?.resolve()
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([])
+  waits.get("ses_cleared_again")?.resolve()
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([
+    agentStreamControlSubject("ses_cleared_again"),
   ])
   live.runner.stop()
 })

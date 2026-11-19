@@ -311,14 +311,15 @@ func legionMountPaths(exchange bool) []string {
 var roleNamespacePaths = []string{"/dev/shm", "/run/lock", "/tmp", "/var/tmp"}
 
 // roleReplacedPaths are the paths each role's namespace replaces with a filesystem of its own and
-// carries no mount back onto: role-init's privateDevices mounts a new devpts instance at /dev/pts,
-// binds that instance's ptmx over /dev/ptmx, and mounts its own IPC namespace's mqueue at
-// /dev/mqueue, and prepareRoleNamespace mounts the role's own /proc last of all. An operator's
-// mount at, under or above one would vanish from every role, so CheckPod refuses every one, where
-// it refuses only a mount at or above a roleNamespacePaths entry, whose mounts role-init carries
-// back. role-init's other mounts are guarded elsewhere: its binds under launcher.FixedRoot and its
-// covers of RolesDir and HomeMountsDir are legionMountPaths, and its home overlay carries every
-// operator mount under the home back (homeMountsView), xdgStateHome refusing one at or above it.
+// carries no mount back onto: role-init's privateTerminals mounts a new devpts instance at
+// /dev/pts and binds that instance's ptmx over /dev/ptmx, privateQueues mounts its own IPC
+// namespace's mqueue at /dev/mqueue, and prepareRoleNamespace mounts the role's own /proc last of
+// all. An operator's mount at, under or above one would vanish from every role, so CheckPod
+// refuses every one, where it refuses only a mount at or above a roleNamespacePaths entry, whose
+// mounts role-init carries back. role-init's other mounts are guarded elsewhere: its binds under
+// launcher.FixedRoot and its covers of RolesDir and HomeMountsDir are legionMountPaths, and its
+// home overlay carries every operator mount under the home back (homeMountsView), xdgStateHome
+// refusing one at or above it.
 var roleReplacedPaths = []string{"/dev/mqueue", "/dev/ptmx", "/dev/pts", "/proc"}
 
 // launch is one relaunch's inputs, checked and resolved before anything touches the cluster.
@@ -1656,6 +1657,11 @@ var gitConfigPairs = [][2]string{
 	{"core.fsmonitor", ""},
 	{"core.hooksPath", "/dev/null"},
 }
+
+// GitConfigPairs is gitConfigPairs, the git settings every process of a pod gets, for `legion
+// gh`, which hands the git gh runs a caller's GIT_CONFIG pair only where it is one of these, key
+// and value alike (cmd/legion's ghChildGitConfig).
+func GitConfigPairs() [][2]string { return slices.Clone(gitConfigPairs) }
 
 // gitConfigEnv is gitConfigPairs as GIT_CONFIG_COUNT, GIT_CONFIG_KEY_<n> and GIT_CONFIG_VALUE_<n>,
 // which git reads after every configuration file, the repository's own `.git/config` among them,
