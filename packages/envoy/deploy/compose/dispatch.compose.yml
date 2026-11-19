@@ -49,6 +49,12 @@ services:
       DISPATCH_NATS_DISABLED: ${DISPATCH_NATS_DISABLED:-}
       ENVOY_URL: ${ENVOY_URL:-http://127.0.0.1:9020}
       ENVOY_TOKEN: ${ENVOY_TOKEN:-}
+      # Role routes need Dispatch's own identity at the listener: on Google Cloud the listener's
+      # ENVOY_OIDC_GOOGLE_AUDIENCE here, elsewhere a service-account token file mounted below and
+      # named here. With neither, every message or mention for a role: route is refused, its
+      # attempt naming these settings (deploy/README.md, "Dispatch's identity at the Envoy listener").
+      ENVOY_ACCOUNT_GOOGLE_AUDIENCE: ${ENVOY_ACCOUNT_GOOGLE_AUDIENCE:-}
+      ENVOY_ACCOUNT_TOKEN_FILE: ${ENVOY_ACCOUNT_TOKEN_FILE:-}
       # Optional boot seed for mappings absent from the dashboard. Stored
       # repository mappings are authoritative; DISPATCH_DEFAULT_PROJECT catches
       # external repositories with no stored mapping.

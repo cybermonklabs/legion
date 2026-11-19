@@ -6,6 +6,13 @@ listener serves `127.0.0.1:9020` for local session registration and webhook ingr
 serves `127.0.0.1:8766` by default for the SPA, Google sign-in through a Cognito sign-in pool or
 with Google directly, and the native Dispatch API.
 
+**Role routes need Dispatch's identity.** Dispatch sends a message or mention for a `role:` route
+only on an identity of its own that the listener verifies: off Google Cloud, set
+`ENVOY_ACCOUNT_TOKEN_FILE` to its service-account token for the listener's audience; on Google
+Cloud, set `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` to the listener's `ENVOY_OIDC_GOOGLE_AUDIENCE`. Without
+either, every such send is refused, and its attempt records why. See
+[Dispatch's identity at the Envoy listener](#dispatchs-identity-at-the-envoy-listener).
+
 ## Host configuration lives in `compose/.env`
 
 Docker Compose reads `compose/.env` next to the compose files on every
@@ -259,8 +266,9 @@ The Dispatch service reads its public browser origin and NATS URLs from
 | `DISPATCH_DEFAULT_PROJECT` | no | Native Dispatch project for external repositories without a stored mapping. |
 | `DISPATCH_NATS_DISABLED` | no | Set to `1` to run database and live-socket paths without NATS. |
 | `ENVOY_URL` | no | Envoy listener base URL for live agent titles; defaults to `http://127.0.0.1:9020` (set it when `ENVOY_LISTENER_PORT` changes). |
-| `ENVOY_TOKEN` | conditional | Matching Listener API bearer token when `ENVOY_API_TOKEN` protects the listener. Beside `ENVOY_ACCOUNT_TOKEN_FILE` it is sent only on a call the listener refused `401` on the account token, with no role mark. |
-| `ENVOY_ACCOUNT_TOKEN_FILE` | no | File holding Dispatch's own projected Kubernetes service-account token for the listener's audience, presented on every listener call in `ENVOY_TOKEN`'s place and read at each call (a token whose own expiry is under ten seconds away is not presented). With it set, a message or mention for a `role:` route carries its role, which the listener takes from the principal `ENVOY_DISPATCH_PRINCIPAL` names alone, so the session that takes the role from the one Dispatch sent to receives the message and may answer it. |
+| `ENVOY_TOKEN` | conditional | Matching Listener API bearer token when `ENVOY_API_TOKEN` protects the listener. Beside Dispatch's identity (`ENVOY_ACCOUNT_TOKEN_FILE` or `ENVOY_ACCOUNT_GOOGLE_AUDIENCE`) it is sent only on a call with no role mark that the listener refused `401` on that identity twice. A send for a `role:` route is never made on it. |
+| `ENVOY_ACCOUNT_TOKEN_FILE` | conditional | File holding Dispatch's own service-account token for the listener's audience, presented on every listener call in `ENVOY_TOKEN`'s place and read at each call, and once more after a `401` (a token whose own expiry is under ten seconds away is not presented). With it set, a message or mention for a `role:` route carries its role, which the listener takes from the principal `ENVOY_DISPATCH_PRINCIPAL` names alone, so the session that takes the role from the one Dispatch sent to receives the message and may answer it. Set it or `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` for role routes to work. |
+| `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` | conditional | On Google Cloud: the audience of the identity token Dispatch's machine's service account presents in `ENVOY_TOKEN`'s place, the listener's `ENVOY_OIDC_GOOGLE_AUDIENCE` (with that account's address in the listener's `ENVOY_OIDC_GOOGLE_ACCOUNTS` and its `ENVOY_DISPATCH_PRINCIPAL`). The metadata server mints the token. A machine no metadata server answers for has no identity, and role routes are refused. Not with `ENVOY_ACCOUNT_TOKEN_FILE`: both refuse startup. |
 | `DISPATCH_OIDC_ISSUER` | conditional | OIDC issuer whose projected service-account tokens authenticate as agents beside `DISPATCH_AGENT_TOKEN`. Set with `DISPATCH_OIDC_AUDIENCE` or not at all; half the pair refuses to boot naming the missing one. An issuer that does not answer discovery refuses no boot: Dispatch starts and serves, discovers the issuer in the background, and until then answers a JWT-shaped bearer `503 OIDC_ISSUER_UNAVAILABLE` (`/healthz` reports `service_tokens` false) while every other credential is served. |
 | `DISPATCH_OIDC_AUDIENCE` | conditional | Audience those tokens must carry (`dispatch`). Set with `DISPATCH_OIDC_ISSUER` or not at all. |
 | `DISPATCH_URL` | no | Host-adapter override for the Dispatch base URL; use with `DISPATCH_TOKEN`. |
@@ -269,6 +277,24 @@ The Dispatch service reads its public browser origin and NATS URLs from
 | `DISPATCH_INSECURE_COOKIE` | HTTP | Set to `1` whenever browsers reach Dispatch over `http://` (the tailnet deployment); leave unset behind an HTTPS terminator. |
 
 The Dispatch signing material is a named volume; the database is external.
+
+## Dispatch's identity at the Envoy listener
+
+The listener takes the role a send is for (its role mark) from Dispatch's own verified identity
+alone, and refuses it from the shared `ENVOY_TOKEN`. A send marked with its role reaches the
+session that takes the role from the one Dispatch sent to; an unmarked one would not. So
+Dispatch sends a message or mention for a `role:` route only on its identity, and with none it
+refuses the send: the attempt fails at once, and its recorded error names these settings.
+
+- **On Google Cloud:** set Dispatch's `ENVOY_ACCOUNT_GOOGLE_AUDIENCE` to the listener's
+  `ENVOY_OIDC_GOOGLE_AUDIENCE`, put the address of Dispatch's VM service account in the listener's
+  `ENVOY_OIDC_GOOGLE_ACCOUNTS`, and set the listener's `ENVOY_DISPATCH_PRINCIPAL` to that address.
+- **Elsewhere:** give Dispatch a service-account token from an issuer the listener verifies
+  (`ENVOY_OIDC_ISSUER` and `ENVOY_OIDC_AUDIENCE`), in the file `ENVOY_ACCOUNT_TOKEN_FILE` names,
+  rewritten before it expires, and set the listener's `ENVOY_DISPATCH_PRINCIPAL` to its subject
+  (`system:serviceaccount:<namespace>:<name>` for a Kubernetes token).
+
+Messages and mentions to a `session:` route need neither.
 
 ## Backups and restore
 
