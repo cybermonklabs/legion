@@ -84,7 +84,7 @@ Every answer is one `slack_post` call:
 - `channel` is the mention's `channel_id`.
 - `thread_ts` is the mention's `thread_ts`, or its `ts` when it has none. Either keeps the reply in
   the thread the mention opened or joined, never at the channel's top level.
-- `text` is what you say, at most 4,000 characters, written as `skill://dispatch-writing-specs`'s "Rules for
+- `text` is what you say, at most 4,000 UTF-16 code units, written as `skill://dispatch-writing-specs`'s "Rules for
   the text" say. Address the author as `<@user_id>` (by `bot_name` when a bot posted the mention
   with no `user_id`) and give every issue as its key, its title and its Dispatch link exactly as
   `dispatch` printed it (the `Link:` line of `dispatch read`, the link on a `Created` line or a

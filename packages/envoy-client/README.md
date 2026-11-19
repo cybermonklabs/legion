@@ -743,9 +743,9 @@ trades that person, as the Go client does:
 - The DPoP key is the sign-in's box key. So the broker records one sign-in for the box, and a
   revoke of that sign-in stops the session's trades.
 - The session name is the caller's own session, else `signin-<person>-<thumbprint>`, where
-  `<thumbprint>` is the first 12 characters of the box key's thumbprint (Go's `SessionFor`). It
-  is never `AGENT_SECRETS_SESSION`: the machine trades under that name, and the broker gives a
-  name to one identity only.
+  `<thumbprint>` is the first 12 characters of the box key's base64url SHA-256 thumbprint (Go's
+  `SessionFor`). It is never `AGENT_SECRETS_SESSION`: the machine trades under that name, and the
+  broker gives a name to one identity only.
 - The projects the token names are the ones `AGENT_SECRETS_PROJECTS` lists, project keys separated
   by spaces (`tradeProjects`). The broker names them only when Dispatch says the person may see
   each one, and refuses the trade naming the first they may not see. A person who signs in is of
@@ -867,8 +867,8 @@ the model reads: the result, one `- picture: <path>` line per image (written und
 directory), the follow notice the first time a call follows an ask, and every refusal. It exits 0
 on success, 1 when Dispatch or AskGate refused the call, and 2 on a usage error. A usage error
 includes every refusal of the flags or arguments before any request, and a corrupted `state.json`.
-Under Claude Code the whole output stays under 25,000 characters: the result text is cut to fit,
-the full text written to a file the output names, and the picture lines and follow notice kept.
+Under Claude Code the whole output is at most 25,000 UTF-16 code units: the result text is cut to
+fit, the full text written to a file the output names, and the picture lines and follow notice kept.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so.
 

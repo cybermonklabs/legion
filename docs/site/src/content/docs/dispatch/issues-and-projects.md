@@ -201,7 +201,7 @@ reads **not running**.
 
 ## Creating an issue
 
-Press `c` anywhere. Pick the project, type a title of up to 1,000 characters, and optionally the
+Press `c` anywhere. Pick the project, type a title of up to 1,000 UTF-16 code units, and optionally the
 first line of the spec. A short moment after you stop typing the title, Dispatch lists the items
 it already holds on the same subject — issues, asks, comments, messages and documents — each a
 link that opens in a new tab, so your draft stays as you left it. When it searched and found

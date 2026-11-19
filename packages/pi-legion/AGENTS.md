@@ -811,7 +811,7 @@ alone can never reach it). A value that is not an integer of that minimum is one
 default.
 
 The state, the count, whether the architect was told, and the head of what the worker last said
-(`lastMessage`, at most the 500 characters the notice quotes) are appended to the transcript
+(`lastMessage`, at most the 500 UTF-16 code units the notice quotes) are appended to the transcript
 (`legion-phase-stall` entries) and restored at `session_start`, so a worker relaunched with
 `--resume` keeps them, and the notice its resume reminder earns still names its last words. The
 machine, the runner and the four numbers live once, in

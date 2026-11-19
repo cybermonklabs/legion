@@ -1800,7 +1800,7 @@ One sibling may wait on another, but a child cannot wait on its parent and a par
 Artifact targets are addressed by `ref_key`, artifact sources by uuid; each arm has the index its `to`/`from` predicate needs.
 `GET /api/v1/references?to=|from=` reads the view;
 `envoy-dispatch rebuild-refs` reparses every source and reconciles the index (the text is the truth), deleting edges whose source no longer exists, marks every document, comment, message and ask owed a block index (below), and refuses to run without `dispatch.server_url`.
-A document mention's backlink excerpt - the innermost block holding the target's first mention, its id the `#b-<id>` jump and its markdown cut to 480 characters - is stored on the `refs` row (`excerpt_block_id`, `excerpt_text`, `excerpt_version`, migration 0092) when the mention is indexed, cut from a render of the version's tree that the write already makes:
+A document mention's backlink excerpt - the innermost block holding the target's first mention, its id the `#b-<id>` jump and its markdown cut to 480 code points - is stored on the `refs` row (`excerpt_block_id`, `excerpt_text`, `excerpt_version`, migration 0092) when the mention is indexed, cut from a render of the version's tree that the write already makes:
 every renderer of a version's tree takes the block offsets from its own render (`pmdoc.RenderWithBlockOffsets`;
 `renderTreeWithOffsets`, `documentMarkdownWithOffsets`), and a `docs.renderedTree` carries the tree, the markdown and the offsets together to `docs.indexDocument` (`writeVersionTx`, and an upload's and a seeded spec's `docs.Service.IndexDocumentReferences`, which take the transaction's recorded rendering from the ledger), which indexes the version's references, excerpts and blocks from one `text.ExtractAt` of its markdown, so the route reads no document and no write renders its tree for the excerpts (LEGION-531).
 An edit, a named version, a seed, a rebuild and a settlement render the tree once;
@@ -2842,7 +2842,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - The quote a refresh reads is the first contiguous run of the row's mark (`pmdoc.FindMark`), so text written inside an anchor must carry its mark.
   Two marks of one type may cover one character (two readers' comments, suggestions or asks:
-  the record marks declare `excludes: ''`), so `pmdoc.MarkSpans` and `FindMark` match a run by the mark's type and id, never by the first mark of the type on it, and the server stores a record mark under y-prosemirror's overlapping-mark key shape `<type>--<8 characters>` (`pmdoc.markAttributeKey`, with its own digest), which both readers strip.
+  the record marks declare `excludes: ''`), so `pmdoc.MarkSpans` and `FindMark` match a run by the mark's type and id, never by the first mark of the type on it, and the server stores a record mark under y-prosemirror's overlapping-mark key shape `<type>--<8 base64 characters>` (`pmdoc.markAttributeKey`, with its own digest), which both readers strip.
   A `replace` through the edit route, and the text an accepted suggestion writes inline or into code, takes every comment, suggestion and ask mark that covers all of the text it replaces (`pmdoc.AnchorMarksCovering`, the accepted suggestion's own mark excepted):
   replacing a word, the first or last word, or the whole quote leaves the anchor over the new text, and the refreshed quote is its whole current extent.
   A replace that runs past an anchor's edge rewrote text outside it too, so that anchor keeps only the text the replace left alone, and one covering the whole anchor and more orphans it.
@@ -3632,7 +3632,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The check covers every parameter, field and member a request carries, including ones no handler reads.
   A new reader of caller text goes through one of these.
 
-- Listener message APIs preserve the human `message` as a one-line `payload_summary` of at most 160 characters;
+- Listener message APIs preserve the human `message` as a one-line `payload_summary` of at most 160 code points;
   when it differs, the complete message is `payload`.
   A supplied `payload` for `/v1/messages/publish` wins over the derived value.
 
@@ -5744,7 +5744,7 @@ The session is the caller's own claim, like `actor` on a write, so this keeps a 
 Direct-conversation text also reaches every authenticated caller through that caller's `events` view on `/ws/live`; nothing in Dispatch restricts it by session.
 The command sends the host's session id.
 
-Messages thread: `in_reply_to` names a message in the same conversation - a message of the same issue, or, for `POST /api/v1/agents/{session_id}/messages`, an issue-less message whose thread root targets that same session (400 `MESSAGE_INPUT` otherwise) - and the reply's event and delivery frame carry `reply_body`, the parent's first 160 characters, or, for a reply that names a block of its parent (`in_reply_to_block`), that block's first 160.
+Messages thread: `in_reply_to` names a message in the same conversation - a message of the same issue, or, for `POST /api/v1/agents/{session_id}/messages`, an issue-less message whose thread root targets that same session (400 `MESSAGE_INPUT` otherwise) - and the reply's event and delivery frame carry `reply_body`, the parent's first 160 code points, or, for a reply that names a block of its parent (`in_reply_to_block`), that block's first 160.
 A reply is recorded as `message.answered`;
 the broker's `Notify` treats it exactly like `message.created` (quiet when the payload has a `target`, else the user-actor rule), so a human's reply on a plain agent message wakes the issue's route and the parent message's author (`notifications.agent.<session>`, correlated `re:` the parent with `reply_body`) instead of being recorded silently.
 A human's reply that names no `target` inherits the thread's:
@@ -6386,7 +6386,7 @@ a secret scheduled for deletion (AWS `DeletedDate`, GCP `expire_time`) is one th
 and the value check comes after every other reason, so a secret refused for a tag or its key is logged for that (`secrets.Local` gives a secret created without a value no version, as Secrets Manager does);
 a secret with no current value that is `Listing.Unfilled` (it carries `secrets.CreateLabel`, the label `agent-secrets secret create` puts on a secret it makes before its value, and holds no version at all) and whose listing's `Created` (AWS `CreatedDate`, GCP `create_time`; `secrets.Local` answers `LocalSecret.CreatedAt` and nothing when it is unset) is less than `policy.PendingValueWindow` (10 minutes, the time that create reads the value before it discards the secret) old is `policy.ReasonPendingValue`, a create still waiting for its value, and any other secret with no current value, an older one or one whose listing names no creation time among them, is `ReasonNoCurrentValue`;
 an owner tag naming a service is refused as malformed unless `Loader.Services` lists it, which `cmd/broker` fills with the distinct services of `BROKER_SERVICES` and `BROKER_VM_SERVICES` together (`serviceNames`);
-and `Loader.secretName` asks `Store.ValidName` whether a name can exist in the store at all (Secrets Manager's 512-character limit;
+and `Loader.secretName` asks `Store.ValidName` whether a name can exist in the store at all (Secrets Manager's 512-character limit on its ASCII names;
 Secret Manager's 255-character `[A-Za-z0-9_-]` id), so no lookup is made for one that cannot.
 `secrets.GCP` counts against Secret Manager's 600-a-minute per-project read quota for every call but `AccessSecretVersion` (`TestGCPReadQuotaCost` pins a `List` at 1+N, a `Describe` at 2, a `Read` at 1), so `Current.RefreshOne` anchors a reread only when it changed the live answer, and `NewGCPClient` retries `UNAVAILABLE` (not `RESOURCE_EXHAUSTED`) on `ListSecrets`, `GetSecret` and `GetSecretVersion`.
 `secrets.GCP` opens Secret Manager under Application Default Credentials (`NewGCPClient`:
@@ -6425,7 +6425,7 @@ The list narrows who may ask and bounds no grant by itself.
 `requesters-not-owner` again refuses a service entry on a secret the deployment binds to a `dev-<name>` account, at either tier, since such a token is one person's own;
 `scopes-type` refuses a `scopes` tag on any type but `google-service-account`, and `admin-tier` and `admin-requesters` refuse an admin secret that is not human tier or that names no requesters.
 `policy.TagScopes` and `policy.ParseScopes` are the one statement of which OAuth scopes a `google-service-account` secret's token carries: scope names separated by white space, each the part of a Google scope after `https://www.googleapis.com/auth/` and held to `^[a-z0-9][a-z0-9._-]*$`, answered sorted and each once (a comma is refused `ErrScopesComma`, a list naming no scope `ErrScopesMissing`, an entry that is no scope name `ErrScopesEntry`, a whole scope URL among them, and a name given twice `ErrScopesDuplicate`, each logged `scopes-malformed`), which the loader and `agent-secrets secret` create and retag all apply, and `Secret.ScopeURLs` puts the prefix back for the minter.
-The tag holds short names because the AWS store keeps its annotations as AWS tags and an AWS tag value holds at most 256 characters, which five whole scope URLs are longer than;
+The tag holds short names because the AWS store keeps its annotations as AWS tags and an AWS tag value holds at most 256 Unicode characters, which five whole scope URLs are longer than;
 a secret carrying none mints `cloud-platform` alone, as every token of this type did before the tag existed, and a changed list reaches the token at the next release, since the minter reads the snapshot the release checked.
 `policy.TagAdmin` marks a secret whose grant is an administrator's, `"true"` its only value and anything else `admin-malformed`:
 the broker cannot tell such a secret from its type, an admin console password and a personal API key both being stored strings, so the program that declares the secret says so, and the rules above then hold it to human tier, a requesters list and an hour's cap.

@@ -117,9 +117,9 @@ read it**. A *group* is where the text is stored. The report gives every class, 
 group, every group's total, the requests the pass made and how long it took.
 
 `--check-no-stored-text FILE...` is the guard that keeps production's words out of the repository.
-It refuses a file that holds, run together with its whitespace collapsed, the first 64 characters
-of any paragraph of any text the census read, and names the text it came from; it exits 1 on a hit
-and 0 on none. It reads the corpus and nothing else, so it needs a pass to have been run.
+It refuses a file that holds, run together with its whitespace collapsed, the first 64 UTF-16 code
+units of any paragraph of any text the census read, and names the text it came from; it exits 1 on
+a hit and 0 on none. It reads the corpus and nothing else, so it needs a pass to have been run.
 
 `__tests__/display-read-census.test.ts` holds the classing to
 `__fixtures__/display-read-census.json`: ten texts written for the purpose, eight of them with the

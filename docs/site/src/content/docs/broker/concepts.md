@@ -399,7 +399,7 @@ marked with tags or annotations:
   (`cloud-platform bigquery`). A secret without it mints the `cloud-platform` scope alone, which
   is what every such secret minted before the tag existed, and a changed list reaches the token
   at the next release. The names are the short ones because an AWS tag value holds at most 256
-  characters, which five whole scope URLs are longer than. A comma, a list naming no scope, a
+  Unicode characters, which five whole scope URLs are longer than. A comma, a list naming no scope, a
   whole scope URL, a name with a capital letter, and a name given twice are each refused
   `scopes-malformed`. Set it with `agent-secrets secret create|retag --scopes "<scope> <scope>"`.
 - **`admin`** is optional, and `true` is its only value; anything else is refused
@@ -566,7 +566,7 @@ a list. A secret with no list writes the same bytes into the digest that it alwa
 ## Requests and grants
 
 A session asks for one or more secrets by name in a **request**, signed with its key and carrying a
-reason of at most 400 characters; a request that reaches a person must carry one.
+reason of at most 400 characters (Unicode code points); a request that reaches a person must carry one.
 The broker evaluates every name
 (`packages/envoy/internal/broker/requests/machine_state.go`):
 

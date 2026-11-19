@@ -80,8 +80,8 @@ Dispatch message (step 5) is for a finished retro only.
 4. **Update the PR body**, per `skill://legion-retro/references/pr-body-content.md`,
    when the repository derives body lines from changed paths.
 5. **Post one Dispatch message on the issue**, the record of the retro that the architect reads.
-   No `gh issue` write: Legion issues live on Dispatch. The body is at most 32,000 characters,
-   Dispatch's message limit, and ends with your attribution footer:
+   No `gh issue` write: Legion issues live on Dispatch. The body is at most 32,000 UTF-16 code
+   units, the longest body a Dispatch event carries whole, and ends with your attribution footer:
 
    ```bash
    dispatch message --issue '<KEY>' --body-file - <<'EOF'

@@ -255,9 +255,9 @@ and decides there, the only gate on such an issue.
   this pull request does not touch. A base frozen for others to stack on is
   never rewritten (*A wrong pushed commit* in
   `skill://legion-worker/references/conflicts-and-rewrites.md`); the `Chain` line records it.
-- **GitHub refuses a pull request body over 65,536 characters.** Each verification round links its
-  evidence (the run, the comment) rather than inlining it once the body passes about 48,000
-  characters; a `Check` line keeps its evidence in the result on Dispatch and links the rest.
+- **GitHub refuses a pull request body past its limit of 65,536.** Each verification round links its
+  evidence (the run, the comment) rather than inlining it once the body passes about 48,000 by the
+  same count; a `Check` line keeps its evidence in the result on Dispatch and links the rest.
 
 ## When no surface reaches the changed path
 

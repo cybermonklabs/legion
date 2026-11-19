@@ -273,7 +273,7 @@ prompt, a skill, or the issue you work on. There is no list to browse and nothin
   call the broker's store under whatever cloud credential the environment gives them, and the
   store's IAM decides what each may read and write.
 - Slack's read methods go through `curl` under this client. Every post to Slack stays a `slack_post`
-  call, which holds the reply to one thread, to 4,000 characters and to one send.
+  call, which holds the reply to one thread, to 4,000 UTF-16 code units and to one send.
 
 ## Before you say that a service is out of reach
 

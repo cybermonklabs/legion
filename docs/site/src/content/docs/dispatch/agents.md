@@ -338,7 +338,7 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   One command runs for a session at a time, and a second while one is running is answered naming
   the command it is waiting on.
   A command is stopped after two minutes with what it printed kept, and output longer than 8,000
-  characters is cut, with a line saying so.
+  UTF-16 code units is cut, with a line saying so.
   A **BTW** runs nothing: the session answers it.
 - **Send** works while the agent is in the middle of a turn, and while earlier messages of yours
   are still on their way or were refused. Each press sends at once, as its own message, and the

@@ -111,7 +111,7 @@ once to every session enrolled with it: the Legion daemon's pods, its controller
 every agent session on a machine logged in to the broker. The app needs the
 `chat:write` bot scope and must be added to each channel it answers in. A request still waiting
 for approval, or denied, posts nothing, and the tool says which; Slack's own refusal comes back as
-Slack's error code, such as `not_in_channel`. A reply is at most 4,000 characters, and the tool
+Slack's error code, such as `not_in_channel`. A reply is at most 4,000 UTF-16 code units, and the tool
 sends each one once, since a post whose answer was lost may already be in the thread. A session
 posts into any channel the app has been added to: the tool does not know which project a channel
 belongs to.

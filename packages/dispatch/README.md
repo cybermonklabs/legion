@@ -377,11 +377,12 @@ a comment or message reply that names a block (`--reply-to <comment>#b-b2`,
 move, reword, split, deletion and restore over `PATCH /api/v1/comments/{id}` with carried ids, and
 a body holding block HTML read back byte for byte (A13); and a link pinned to a comment's block that
 reads `changed`, then `removed` (A15). It also reads the bounds the server owns and no client
-carries: a comment and a message of 48,000 characters taken and read back whole, a paragraph of
-32,001 characters refused by name, and `dispatch limits` (A8); a passage only at the end of a block
-longer than 32,000 characters found by meaning and a one-line ask option found by its text, each
-hit naming the block (A9, skipped with one `SKIP:` line on a server with no embedder); and a
-question of 2,001 characters taken by `dispatch ask` and by a document's decision block (A14).
+carries: a comment and a message of 48,000 ASCII characters taken and read back whole, a paragraph
+of 32,001 ASCII characters refused by name, and `dispatch limits` (A8); a passage only at the end
+of a block longer than 32,000 ASCII characters found by meaning and a one-line ask option found by
+its text, each hit naming the block (A9, skipped with one `SKIP:` line on a server with no
+embedder); and a question of 2,001 ASCII characters taken by `dispatch ask` and by a document's
+decision block (A14).
 Each passing check prints `PASS: <section> <what>`; the first
 failure prints `FAIL: <section> <what>: <observed>` and exits 1. Its inputs:
 

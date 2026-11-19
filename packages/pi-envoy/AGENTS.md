@@ -287,8 +287,7 @@ A `!` whose session is no longer the one open here (`sessionOpen`: this instance
 the host's live one) runs nothing either, and is answered saying so: a `/new`, a `/resume` or a
 move with no event for it put the host on another conversation between the accept and the
 command, and running it then would run it in that conversation's directory.
-What it printed goes three ways, each cut at 8,000
-characters with a line saying it was
+What it printed goes three ways, each cut at 8,000 UTF-16 code units with a line saying it was
 cut, and each carrying the output in a fenced code block whose fence is longer than the longest
 run of backticks in it, since all three surfaces read the text as Markdown and the fence is also
 what marks where the output ends: one user message frame through `AgentStreamPublisher.record`
@@ -1171,7 +1170,7 @@ starting with the list's first line (`SESSION_ANSWERS_MARKER`, the failure line 
 decided too: this copy reads nothing for it and moves that list where its own would go. A
 person's own message quoting the marker is never moved, and a list quoted anywhere else is
 conversation and never switches the list off.
-Bounds, all in the shared module: under 8,000 characters (at most 7,999) for the whole message, items newest first as a
+Bounds, all in the shared module: under 8,000 UTF-16 code units (at most 7,999) for the whole message, items newest first as a
 strict prefix with a left-out line naming `dispatch answers`; one read in flight per session and
 Dispatch URL for the whole process, the parent's and every subagent's requests joining it; each
 read waits at most `SESSION_ANSWERS_DEADLINE_MS` (800 ms), then gives the last list read from
@@ -1235,7 +1234,7 @@ neither pays up to `OPEN_ASKS_TIMEOUT_MS` for an answer nothing reads.
 period runs one **silent self-check**: one side turn — the host's one-shot, tool-free model call
 over a snapshot of the conversation, the same channel a targeted Dispatch BTW uses. The check uses
 the open-asks snapshot it reads to name the session's own open asks in the prompt: the first line of
-at most five questions, each truncated to about 120 characters, followed by `+N more`; with none
+at most five questions, each truncated to at most 120 UTF-16 code units, followed by `+N more`; with none
 it says the session has none, not that Dispatch has none, since another session's open ask can
 cover the wait. Every Unicode line separator ends that displayed first line, and other C0/C1
 controls become spaces, so a listed ask cannot add prompt lines. The one prompt asks whether the

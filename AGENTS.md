@@ -836,7 +836,7 @@ Each item below names a task and where its code is, then notes on it.
 
 - **Strict mode** — `strict: true` in tsconfig
 
-- **Biome** — double quotes, semicolons, ES5 trailing commas, 100 char width
+- **Biome** — double quotes, semicolons, ES5 trailing commas, a line width of 100
 
 - **Imports** — `node:` prefix for builtins, `type` keyword for type-only imports
 

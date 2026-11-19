@@ -196,7 +196,7 @@ source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 $ agent-secrets DEMO_READ_TOKEN -- printenv DEMO_READ_TOKEN
 agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 demo-read-token-value
-$ agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- sh -c 'echo "deploying with a ${#DEMO_API_KEY}-character key"'
+$ agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- sh -c 'echo "deploying with a key ${#DEMO_API_KEY} long"'
 ```
 
 Every line about a secret names where it came from: the broker this stack runs, and the kind of
@@ -213,7 +213,7 @@ in as `ada@example.com` with no page to fill in, and brings you back to the requ
 covers the page), and the command runs:
 
 ```console
-deploying with a 18-character key
+deploying with a key 18 long
 ```
 
 A request has two ids: the request id `agent-secrets` prints and takes, and the record id the
@@ -493,9 +493,9 @@ after one release of `DEMO_GITHUB_APP` to the pod session the banner's enrolment
 ```console
 $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
 {"mode":"fail-once","repository":""}
-$ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP --github-owner acme-org --github-token -- sh -c 'printf "%s characters, starting %s\n" "${#DEMO_GITHUB_APP}" "${DEMO_GITHUB_APP%%_*}"'
+$ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP --github-owner acme-org --github-token -- sh -c 'printf "%s long, starting %s\n" "${#DEMO_GITHUB_APP}" "${DEMO_GITHUB_APP%%_*}"'
 agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
-22 characters, starting ghs
+22 long, starting ghs
 $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'
 broker_policy_store_reads_total{read="describe"} 6
 broker_policy_store_reads_total{read="list"} 6
@@ -583,14 +583,14 @@ dev-airlock: ready.
 Paste these exports into a second shell, as above, and check that `type agent-secrets` names the
 stack's `bin/`. The rules file binds `AIRLOCK_DEMO_TOKEN` to the stand-in service S,
 `s.airlock.test`, and names no headers for it, so its value travels in `authorization`, the one
-header an entry with none takes. The command gets a placeholder of 58 characters in place of the
+header an entry with none takes. The command gets a placeholder of 58 ASCII characters in place of the
 value, and its `HTTPS_PROXY` names the proxy front with that grant's proxy password, so the
 command's call to S goes through the broker:
 
 ```console
-$ agent-secrets AIRLOCK_DEMO_TOKEN --reason 'read the example service behind the airlock' -- sh -c 'printf "AIRLOCK_DEMO_TOKEN: %s characters, starting %s\n" "${#AIRLOCK_DEMO_TOKEN}" "${AIRLOCK_DEMO_TOKEN%%-*}"; printf "Authorization: Bearer %s" "$AIRLOCK_DEMO_TOKEN" | curl -sS https://s.airlock.test/read -H @-'
+$ agent-secrets AIRLOCK_DEMO_TOKEN --reason 'read the example service behind the airlock' -- sh -c 'printf "AIRLOCK_DEMO_TOKEN: %s long, starting %s\n" "${#AIRLOCK_DEMO_TOKEN}" "${AIRLOCK_DEMO_TOKEN%%-*}"; printf "Authorization: Bearer %s" "$AIRLOCK_DEMO_TOKEN" | curl -sS https://s.airlock.test/read -H @-'
 agent-secrets: AIRLOCK_DEMO_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
-AIRLOCK_DEMO_TOKEN: 58 characters, starting agent
+AIRLOCK_DEMO_TOKEN: 58 long, starting agent
 the s stand-in answered
 ```
 

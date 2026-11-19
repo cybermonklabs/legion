@@ -653,7 +653,7 @@ What each part is for:
   Legion reads that value for its content as well as its name, and refuses a member the agent's
   OpenTelemetry detector would throw on: one that does not split on `=` into one key and one
   value, one with an empty key, one whose key or value does not percent-decode or runs past 255
-  characters once decoded, and one naming `legion.issue`, `legion.role` or `legion.arms`, which
+  UTF-16 code units once decoded, and one naming `legion.issue`, `legion.role` or `legion.arms`, which
   Legion writes itself. The refusal names that one member and what is wrong with it, never the
   rest of your value, and `legion config check` gives boot's verdict before a restart.
   One such member would cost a launch every attribute of the variable, your own
