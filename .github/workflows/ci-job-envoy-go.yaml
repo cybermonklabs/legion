@@ -41,11 +41,12 @@ jobs:
     # runs strictly fewer packages than the 35 minutes it measured before the race lane's left it
     # and so cannot exceed that, the store-form count's own 5 is 46 (two packages, which go test
     # starts at once with -p at least 2, so its -timeout bounds the step); after that step's
-    # seconds, the database skip count's own timeout-minutes of 25 is 67 (its -timeout bounds each
+    # seconds, the skip counter's test's own timeout-minutes of 15 is 56; after that step's 15 at
+    # most, the database skip count's own timeout-minutes of 30 is 86 (its -timeout bounds each
     # package, not the step, so the step has a limit of its own, and its comment below says why
-    # 25); after that step's measured 6 minutes, natslive's default 10 and the bus matrix's own 5
-    # are 63, and the integration step's 5 is less.
-    timeout-minutes: 70
+    # 30); after that step's 30 at most, natslive's default 10 and the bus matrix's own 5 are 101,
+    # and the integration step's 5 is less.
+    timeout-minutes: 105
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -146,12 +147,12 @@ jobs:
       # packages starts no job with a database. The pattern is built in
       # .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built from, so
       # what this step leaves out and what the other jobs run cannot drift apart. The broker's
-      # packages, internal/broker and everything under it, are left out too: the database-skips
-      # step below runs them with -json and fails on a failed test as on a skipped one, so this step
-      # ran each of them a second time (DATABASE_SKIPS_TREE in ci_job_reads.py). What is left is the
-      # rest of the module, the two longest packages of it (the API's and the documents service's)
-      # now among the ones the lane runs, so its 20 minutes are ample. The two tests of the web
-      # app's display-tree fixture are skipped:
+      # packages, internal/broker and everything under it, and its command, cmd/broker, are left
+      # out too: the database-skips step below runs them with -json and fails on a failed test as
+      # on a skipped one, so this step ran each of them a second time (DATABASE_SKIPS_PKGS in
+      # ci_job_reads.py). What is left is the rest of the module, the two longest packages of it
+      # (the API's and the documents service's) now among the ones the lane runs, so its 20
+      # minutes are ample. The two tests of the web app's display-tree fixture are skipped:
       # without `--check` TestWebDisplayFixture writes the committed fixture rather than checking
       # it, so a run here would ask nothing of it, and
       # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it
@@ -159,7 +160,7 @@ jobs:
       # are built from the same list.
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/cmd/broker$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the
@@ -173,20 +174,36 @@ jobs:
       # neither package, reads aws=0 and fails, as the verification's check c8 requires.
       - name: Count the store-form rows on each backend
         run: packages/envoy/scripts/backend-count.sh ./cmd/agent-secrets/ ./internal/broker/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
+      # The step below is the one skip counter of the module's database-backed packages, which
+      # envoy-go-race-api runs the Dispatch API through too, so its own test runs first:
+      # packages/envoy/scripts/database-skips.test.sh plants a skipped test in
+      # ./internal/broker/api/, ./cmd/broker/ and ./internal/dispatch/api/ through a Go overlay and
+      # holds the counter to count it; holds it to database_skips=UNKNOWN with a variable unset
+      # and on a report that shows no run (no test of its packages ran, or one package's did not);
+      # holds it to failing on a failed test; holds its --timeout to ending a test binary; and
+      # holds a copy of it with one line of its expected-skip table deleted, in a temporary
+      # checkout of this commit, to counting that test's skip. Each control stands beside a run
+      # the counter passes, and each run is narrowed with -run to the tests it is about.
+      - name: Test the database skip counter
+        timeout-minutes: 15
+        run: packages/envoy/scripts/database-skips.test.sh
       # c8 also asks that the database broker suites run with BROKER_TEST_DATABASE_URL set and that
       # none skips. go test reports a skip as a pass, so this step is where the broker's packages
-      # run: it runs ./internal/broker/... with -json, which the unit step above leaves out, fails
-      # on a failed test, and fails on any skipped test there, FuzzAirlock and
-      # TestModelAgreesOnHostShapes apart (each needs a built Lean model of the airlock, and the
-      # airlock-lean job runs both). A report it cannot read prints database_skips=UNKNOWN and fails
-      # too. database-skips.sh's -timeout of 15 minutes bounds each package's test binary, and the
-      # packages run several at a time, so one that starts late ends up to 15 minutes after its own
-      # start: the step's own limit of 25 minutes leaves a package that starts within the first 10
-      # its whole -timeout, and so its dump. Measured on a loaded dev box on 2026-11-16: 331 s for
-      # the whole step, the slowest package, internal/broker/helper, 329 s.
+      # and its command run: it runs ./internal/broker/... and ./cmd/broker/ with -json, which the
+      # unit step above leaves out, fails on a failed test, and fails on any skipped test there
+      # but the airlock's model comparisons, which the script's EXPECTED_SKIPS names (each needs a
+      # built Lean model of the airlock, and the airlock-lean job runs them). A report that shows
+      # no run prints database_skips=UNKNOWN and fails too. Its --timeout 20m is
+      # the -timeout the unit step gave cmd/broker before the package moved here, so no package's
+      # limit falls: cmd/broker took 580 s in the unit step in CI on 2026-11-18 (job
+      # 135007706189), and the broker's packages had 15 minutes here. That -timeout bounds each
+      # package's test binary, and the packages run several at a time, so one that starts late
+      # ends up to 20 minutes after its own start: the step's own limit of 30 minutes leaves a
+      # package that starts within the first 10 its whole -timeout, and so its dump. Measured in
+      # that same job, before cmd/broker joined this step: 355 s for the step.
       - name: Count the database broker suites' skips
-        timeout-minutes: 25
-        run: packages/envoy/scripts/database-skips.sh
+        timeout-minutes: 30
+        run: packages/envoy/scripts/database-skips.sh --timeout 20m
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.
       - name: Vet agentloop's live proof (no model call)

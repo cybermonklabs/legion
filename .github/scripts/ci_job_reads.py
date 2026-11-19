@@ -1510,30 +1510,68 @@ LISTENERWIRE_STEP = "Test the listener's wire package, its clients and wirecheck
 LISTENERWIRE_PKGS = [f"./{p}/" for p in LISTENERWIRE_PACKAGES]
 LISTENERWIRE_TEXT = "go test -count=1 " + " ".join(LISTENERWIRE_PKGS)
 
-# The broker's packages, internal/broker and every package under it, which envoy-go's step
-# "Count the database broker suites' skips" runs with `go test -json` through
-# packages/envoy/scripts/database-skips.sh, and fails on a failed test as on a skipped one. The
-# unit step leaves them out: it ran each of them a second time in the same job, with the same
-# database, about 645 s of package time on a merge-group run of 2026-11-17 (job 133989142856),
-# internal/broker/helper alone 326 s.
+# The packages envoy-go's step "Count the database broker suites' skips" runs with `go test -json`
+# through packages/envoy/scripts/database-skips.sh, its default table (DEFAULT_PACKAGES there):
+# the broker's tree, internal/broker and every package under it, and its command, cmd/broker.
+# That step fails on a failed test as on a skipped one. The unit step leaves them out: it ran
+# each of them a second time in the same job, with the same database, about 645 s of package
+# time on a merge-group run of 2026-11-17 (job 133989142856), internal/broker/helper alone 326 s;
+# cmd/broker took 580 s of the unit step on 2026-11-18 (job 135007706189).
+# hold_database_skips_packages() below refuses a script whose table is not this list.
 DATABASE_SKIPS_TREE = "internal/broker"
+DATABASE_SKIPS_COMMAND = "cmd/broker"
+DATABASE_SKIPS_PKGS = [f"./{DATABASE_SKIPS_TREE}/...", f"./{DATABASE_SKIPS_COMMAND}/"]
 DATABASE_SKIPS_STEP = "Count the database broker suites' skips"
 DATABASE_SKIPS_SCRIPT = "packages/envoy/scripts/database-skips.sh"
+# The -timeout of envoy-go's unit step, which the count step passes the counter too: cmd/broker
+# ran under it in the unit step before it moved to the count, so its limit does not fall.
+UNIT_TEST_TIMEOUT = "20m"
+DATABASE_SKIPS_RUN = f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT}"
+# The counter's own test, which envoy-go runs before the count: its five controls run the counter
+# on these three packages, one at a time, each narrowed to its planted and expected tests.
+DATABASE_SKIPS_TEST_STEP = "Test the database skip counter"
+DATABASE_SKIPS_TEST = "packages/envoy/scripts/database-skips.test.sh"
+DATABASE_SKIPS_TEST_PKGS = ["./internal/broker/api/", "./cmd/broker/", "./internal/dispatch/api/"]
+
+
+def hold_database_skips_packages():
+    """Refuse a database-skips.sh whose default table is not DATABASE_SKIPS_PKGS. The counting
+    step's Run claims that closure and the unit step leaves exactly those packages out, so a
+    package the script added without this list would run twice in the job, and one it dropped
+    would run in no step of it, with every check green."""
+    found = re.findall(r"^DEFAULT_PACKAGES=\((.*)\)$", Path(DATABASE_SKIPS_SCRIPT).read_text(), re.M)
+    if found != [" ".join(DATABASE_SKIPS_PKGS)]:
+        raise ValueError(f"{DATABASE_SKIPS_SCRIPT}'s DEFAULT_PACKAGES is {found}, and DATABASE_SKIPS_PKGS here is "
+                         f"{DATABASE_SKIPS_PKGS}: make them one list, which the unit step leaves out and the "
+                         f"database-skips step runs")
+
+
+hold_database_skips_packages()
 
 # The unit step runs the module less six things: the lane's packages, which the three race jobs
 # run under the detector, internal/integration, which envoy-go's integration step runs, the text
 # checks, which the text-check job runs, the architecture-note and spec-file packages and
 # LISTENERWIRE_PACKAGES (listenerwire and internal/wirecheck), which envoy-go-checks runs, and the
-# broker's tree, which envoy-go's database-skips step runs. Its `grep -Ev` is `/integration`, then
-# the text checks, then those packages, each the package alone, then the broker's tree, then, in
-# the lane's own order, each package in the form go list's import paths need - a tree matching the
-# package and everything under it, any other the package alone.
+# broker's tree and command, which envoy-go's database-skips step runs. Its `grep -Ev` is
+# `/integration`, then the text checks, then those packages, each the package alone, then the
+# broker's tree and its command, then, in the lane's own order, each package in the form go
+# list's import paths need - a tree matching the package and everything under it, any other the
+# package alone.
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
     + [f"/{p}$" for p in NOTE_AND_SPEC_PACKAGES + LISTENERWIRE_PACKAGES]
-    + [f"/{DATABASE_SKIPS_TREE}($|/)"]
+    + [f"/{DATABASE_SKIPS_TREE}($|/)", f"/{DATABASE_SKIPS_COMMAND}$"]
     + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
+
+# envoy-go-race-api's step runs its package through database-skips.sh, which counts the skips of
+# that same run, so the package's contract tests, which skip without BROKER_TEST_DATABASE_URL, and
+# the rest, which skip without DISPATCH_TEST_DATABASE_URL, cannot skip unseen in a step that runs
+# without -v. Its text is built from the lane's declaration: the race job's packages, and its
+# -timeout as the counter's --timeout.
+RACE_API = RACE_JOBS["envoy-go-race-api"]
+RACE_API_SCRIPT = ("scripts/database-skips.sh --var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL "
+                   f"--race --timeout {RACE_API.timeout} " + " ".join(race_pkgs(RACE_API)))
 
 
 # ---------------------------------------------------------------- the web app's display fixture
@@ -1573,7 +1611,7 @@ if re.search(UNIT_TEST_PATTERN, f"/{WEB_FIXTURE_PACKAGE}"):
                      f"`grep -Ev` takes out, so that step does not run them and the -skip below skips nothing; "
                      f"name the step that runs that package now and move the -skip to it")
 UNIT_TEST_SCRIPT = (f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
-                    f"xargs go test -count=1 -timeout 20m -skip {WEB_FIXTURE_PATTERN}")
+                    f"xargs go test -count=1 -timeout {UNIT_TEST_TIMEOUT} -skip {WEB_FIXTURE_PATTERN}")
 
 
 def hold_web_fixture_tests():
@@ -2221,6 +2259,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),
         (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its two-steps case reads this file's own go test line, the wrapper one"),
         (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its two-steps case reads this file's own go test line, the GODEBUG one"),
+        (".github/workflows/ci-job-envoy-go.yaml", "its audited-step case reads this file's step that runs database-skips.sh"),
+        (".github/workflows/ci-job-envoy-go-race-api.yaml", "its audited-step case reads this file's step that runs database-skips.sh with arguments"),
         ("packages/envoy/scripts/database-skips.sh", "its last case hashes this script, the one AUDITED_SCRIPTS reads"),
         (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
     ]),
@@ -2828,11 +2868,20 @@ GATES = [
             (ENVOY, packages_kept(ENVOY, UNIT_TEST_PATTERN),
              "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps", {}),
         ]),
-        # The broker's tree, which database-skips.sh runs with `go test -json` from packages/envoy
-        # and the unit step leaves out (DATABASE_SKIPS_TREE).
-        pinned_step("envoy-go", DATABASE_SKIPS_STEP, ".", DATABASE_SKIPS_SCRIPT, [
-            (ENVOY, [f"./{DATABASE_SKIPS_TREE}/..."],
-             "packages/envoy/scripts/database-skips.sh's go test -json of the broker's packages", {}),
+        # The counter's test: its controls run database-skips.sh on DATABASE_SKIPS_TEST_PKGS, one
+        # at a time, from packages/envoy (and the API package once more from a temporary checkout
+        # of the same commit, which compiles the same files). Each run's -run moves no closure -
+        # the whole package compiles whichever tests it selects - so each Run is the plain go test
+        # of its package, which is why this job reads everything the API's tests read.
+        pinned_step("envoy-go", DATABASE_SKIPS_TEST_STEP, ".", DATABASE_SKIPS_TEST, [
+            (ENVOY, DATABASE_SKIPS_TEST_PKGS,
+             "packages/envoy/scripts/database-skips.test.sh's runs of the counter on each package", {}),
+        ]),
+        # The broker's tree and its command, which database-skips.sh runs with `go test -json` from
+        # packages/envoy and the unit step leaves out (DATABASE_SKIPS_PKGS).
+        pinned_step("envoy-go", DATABASE_SKIPS_STEP, ".", DATABASE_SKIPS_RUN, [
+            (ENVOY, DATABASE_SKIPS_PKGS,
+             f"packages/envoy/scripts/database-skips.sh's go test -json -timeout {UNIT_TEST_TIMEOUT} of the broker's packages and command", {}),
         ]),
         # Only what the natslive tag adds, one package at a time: the rig's own matrix, and the
         # one test of internal/bus that needs a real server image. The rest of internal/testnats
@@ -2846,6 +2895,9 @@ GATES = [
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
         (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
+        (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', DATABASE_SKIPS_STEP)} runs it, and "
+                                f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
+        (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
     ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")),
 
     # envoy-go's fast half: its format and generated-code checks, the shell-script tests,
@@ -3019,16 +3071,23 @@ GATES = [
     ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod")),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
-    # envoy-go unit step and its plain companion are built from too. envoy-go-race-docs is the one
-    # whose step is not race_step's text: it runs the package under .github/scripts/race_memory.py
+    # envoy-go unit step and its plain companion are built from too. Two steps are not race_step's
+    # text, and each gate pins its whole line: envoy-go-race-api's runs its package through
+    # database-skips.sh (RACE_API_SCRIPT), which counts that run's skips, and envoy-go-race-docs'
+    # runs the package under .github/scripts/race_memory.py
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
          reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
-    gate("envoy_go_race_api", "envoy-go-race-api",
-         runs=[race_step(RACE_JOBS["envoy-go-race-api"]), ceiling_run("envoy-go-race-api")],
-         reads=ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
+    gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
+        pinned_step("envoy-go-race-api", RACE_API.step, ENVOY, RACE_API_SCRIPT, [
+            (ENVOY, race_pkgs(RACE_API),
+             f"{DATABASE_SKIPS_SCRIPT}'s go test -json -race -timeout {RACE_API.timeout} of the package", {"race": True}),
+        ]),
+    ], reads=reads(
+        (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go-race-api', RACE_API.step)} runs the package through it"),
+    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
@@ -3447,8 +3506,9 @@ TAG_RUNS = [
     TagRun("dispatch_two_builds_go", TWO_BUILDS_SAME_JOB, TWO_BUILDS_SAME_STEP, "envoy_go", "envoy-go",
            f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",
            job_file(TWO_BUILDS_JOB)),
+    # envoy-go's unit step leaves /cmd/broker$ out, since its database-skips step runs it.
     TagRun("broker_multiprocess", "broker-multiprocess", BROKER_MP_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/broker's untagged tests",
+           f"envoy-go's \"{DATABASE_SKIPS_STEP}\" runs ./cmd/broker's untagged tests",
            job_file("broker-multiprocess")),
     # envoy-go's unit step leaves /cmd/listener$ out, since the lane runs it under the detector.
     TagRun("listener_server_change", "listener-server-change", SOAK_STEP, "envoy_go_race", "envoy-go-race",
