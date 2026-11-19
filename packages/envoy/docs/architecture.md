@@ -517,7 +517,9 @@ the previous holder's subject
 from the acknowledgement floor of its session consumer on (or the floor the listener recorded when
 it deleted that consumer, or, with neither, from an hour before the claim, on the sweep's next
 pass), and copies each role message of that role stored less than an hour before the claim or
-after it to the role's kept lane: one whose topic is the
+after it to the role's kept lane. A record that found its previous holder holding the role again
+writes when it did (at most every fifteen minutes), and counts that hour from then instead, since
+the holder read its messages until then. A role message is one whose topic is the
 role's, or whose `role` field names it. The copy is the envelope without the forward mark, under
 the kept message id followed by `:frame:` and the frame's stream sequence, so two copies of one
 frame are stored once and no copy is dropped as a repeat of an earlier kept copy of the same
