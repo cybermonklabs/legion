@@ -64,14 +64,17 @@ type Config struct {
 	// only an issue pod's container does (RolesDir set). The deployment asks for it with
 	// `runtime.kubernetes.test_postgres`.
 	TestPostgres bool
-	// MicroVM says the pod runs in a GKE Sandbox microVM rather than under gVisor (--microvm). It
-	// comes from the pod as built, never from the daemon's acknowledgement, whose settings are the
-	// configuration of the moment: a pod kept since its issue moved to the other sandbox still
-	// runs where it was built.
+	// MicroVM says the pod runs in a GKE Sandbox microVM rather than under gVisor (--microvm), in
+	// either form: the daemon renders it on a microVM issue pod's container and on the project
+	// controller's pod where the project's sandbox is a microVM. It decides the pod's memory watch
+	// (runsGuest). It comes from the pod as built, never from the daemon's acknowledgement, whose
+	// settings are the configuration of the moment: a pod kept since its issue, or its project,
+	// moved to the other sandbox still runs where it was built.
 	MicroVM bool
 	// Metadata has this launcher serve the pod-local metadata endpoint (metadata.go), which only a
-	// microVM issue pod's container does (MicroVM and RolesDir set): a microVM's pod does not reach
-	// the node's metadata server. The deployment asks for it with
+	// microVM pod's container does (MicroVM set), in either form: a microVM issue pod's roles
+	// container and a microVM controller pod's, since a microVM's pod does not reach the node's
+	// metadata server. The deployment asks for it with
 	// `runtime.kubernetes.sandbox.microvm.metadata`.
 	Metadata       *MetadataConfig
 	Stdout, Stderr io.Writer
@@ -139,13 +142,25 @@ func Run(ctx context.Context, cfg Config) error {
 		go reapOrphans(ctx, exits, managers, pids)
 	}
 	if cfg.RolesDir == "" {
-		// The controller pod's memory guard (INFRA-3531), before the role's first connection, so
-		// the container is guarded while the daemon is away; only a launcher that is the
-		// container's first process runs one, as only that one runs the reaper above, and any
-		// other logs a line instead (serveMemoryGuard). Run returns once its loop has, as the roles
-		// form's below does.
+		// The controller pod's memory watch, before the role's first connection, so the container
+		// is watched while the daemon is away: the guard under gVisor (INFRA-3531), the guest
+		// watch in a microVM (INFRA-4567). Only a launcher that is the container's first process
+		// runs one, as only that one runs the reaper above, and any other logs a line instead
+		// (serveMemoryGuard). Run returns once its loop has, as the roles form's below does.
 		memory := serveMemoryGuard(ctx, cfg, managers, pids)
+		// A microVM controller pod's metadata endpoint, before the role's first connection, so
+		// the role's first generation finds it listening and is told its address only once it
+		// listens (metadataEnv), as the roles form's below. Its lines are the role's own
+		// (manager.logf), since this form has no roles log, and its server is waited on before
+		// Run returns, as the memory watch is.
+		var metadata <-chan struct{}
+		if cfg.Metadata != nil {
+			metadata, managers[0].metadataAddress = serveMetadata(ctx, cfg, managers[0].logf)
+		}
 		err := managers[0].serveUntil(ctx, address)
+		if metadata != nil {
+			<-metadata
+		}
 		<-memory
 		return err
 	}
@@ -314,8 +329,9 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	// The guard runs by the newest acknowledgement of any role, and an acknowledgement that
 	// carries no settings turns it off: that is how a daemon built before the guard answers, and
 	// how a deployment that turned the guard off does. A connection that merely drops keeps the
-	// settings in force. A microVM pod's launcher holds no guard (serveMemoryGuard), so no
-	// acknowledgement's settings reach anything there.
+	// settings in force. A microVM pod's launcher, the controller's as an issue pod's, holds no
+	// guard (serveMemoryGuard), so the settings the daemon still sends the controller's reach
+	// nothing there.
 	if m.memoryGuard != nil {
 		m.memoryGuard.Apply(ack.MemoryGuard)
 	}
@@ -340,9 +356,11 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	m.reportRestore()
 	// The kill reports of this role's processes go on this connection from here, after its state,
 	// or are dropped where the daemon behind it may not know them: a gVisor pod's launcher sends
-	// them where the acknowledgement carried guard settings, and a microVM pod's where it carried
-	// KernelKills, whatever MemoryGuard says, since a daemon that sends guard settings and no
-	// KernelKills would tell a role of the kernel's kill in the guard's words.
+	// them where the acknowledgement carried guard settings, and a microVM pod's, the controller's
+	// as an issue pod's (runsGuest), where it carried KernelKills, whatever MemoryGuard says, since
+	// a daemon that sends guard settings and no KernelKills, as one from before the controller's
+	// pod ran in a microVM answers the controller, would tell a role of the kernel's kill in the
+	// guard's words.
 	carried := ack.MemoryGuard != nil
 	if m.cfg.runsGuest() {
 		carried = ack.KernelKills
@@ -437,10 +455,11 @@ func (c Config) validateSessionDatabase() error {
 		namedFlag{"--session-user", c.SessionDatabase.User})
 }
 
-// validateMetadata refuses the metadata endpoint anywhere but in a microVM issue pod's container,
-// and named in part: the pool and the identity provider together make the token exchange's
-// audience. A gVisor pod reaches the node's metadata server, which the endpoint would shadow, and
-// the controller's pod is never a microVM's.
+// validateMetadata refuses the metadata endpoint anywhere but in a microVM pod's container, and
+// named in part: the pool and the identity provider together make the token exchange's audience.
+// A gVisor pod reaches the node's metadata server, which the endpoint would shadow. Either form
+// serves it with --microvm: a microVM issue pod's roles container, and the controller's pod, which
+// the daemon renders in a microVM where the project's sandbox is one.
 func (c Config) validateMetadata() error {
 	if c.Metadata == nil {
 		return nil
@@ -450,21 +469,20 @@ func (c Config) validateMetadata() error {
 		namedFlag{"--metadata-identity-provider", c.Metadata.IdentityProvider}); err != nil {
 		return err
 	}
-	switch {
-	case !c.MicroVM:
+	if !c.MicroVM {
 		return errors.New("launcher: the metadata endpoint serves a microVM's pod: it needs --microvm")
-	case c.RolesDir == "":
-		return errors.New("launcher: the metadata endpoint is an issue pod's container: it needs --roles-dir")
 	}
 	return nil
 }
 
-// runsGuest is whether this launcher's memory watch is the guest watch rather than the guard: an
-// issue pod's launcher in a microVM (MicroVM with RolesDir). The controller's pod is never a
-// microVM's, since the daemon renders --microvm on an issue pod's container alone, so the
-// controller's form runs the guard whatever MicroVM says (serveMemoryGuard) and sends its kill
-// reports where the acknowledgement carried guard settings (serve), as the guard's rule is.
-func (c Config) runsGuest() bool { return c.MicroVM && c.RolesDir != "" }
+// runsGuest is whether this launcher's memory watch is the guest watch rather than the guard: the
+// launcher of a microVM's pod (MicroVM), in either form. The daemon renders --microvm on a microVM
+// issue pod's container and on the controller's pod where the project's sandbox is a microVM, so
+// a microVM controller pod's launcher runs the guest watch over controllerClassifier
+// (serveMemoryGuard) and sends its kill reports where the acknowledgement carried KernelKills
+// (serve), as a microVM issue pod's does: the daemon sets KernelKills on the controller's
+// acknowledgement too, beside its guard settings (runtime/sandbox's launcherHelloAck).
+func (c Config) runsGuest() bool { return c.MicroVM }
 
 // namedFlag is one flag of a setting that several flags name together, and its value.
 type namedFlag struct{ flag, value string }
@@ -586,8 +604,8 @@ type manager struct {
 	// memoryGuard is the pod's one memory guard, which every role manager of an issue pod's
 	// container shares and the controller pod's one manager holds alone: each connection's
 	// acknowledgement hands it the daemon's settings (serve). It is nil in a launcher that is not
-	// its container's first process, which runs none, and in a microVM issue pod's launcher,
-	// which runs the guest watch instead (serveMemoryGuard).
+	// its container's first process, which runs none, and in a microVM pod's launcher, an issue
+	// pod's or the controller's, which runs the guest watch instead (serveMemoryGuard).
 	memoryGuard *memoryguard.Guard
 	// memoryKills are the reports of this role's processes stopped for memory that no connection
 	// has carried yet, oldest first, at most maxWaitingMemoryKills (queueMemoryKill). reportWriter
