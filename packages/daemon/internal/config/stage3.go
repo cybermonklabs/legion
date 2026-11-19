@@ -645,11 +645,11 @@ func daemonEnvironment() []string {
 // commandError is a configured command's failure: how it ended (its exit, or the signal that ended
 // it, procgroup.Ended) and the stderr its run kept, or that it could not run at all.
 func commandError(field string, err error) error {
-	end := procgroup.Ended(err)
 	var ended *exec.ExitError
-	if !errors.As(err, &ended) || (end.Exited == nil && end.Signal == "") {
+	if !errors.As(err, &ended) {
 		return fmt.Errorf("%s could not run: %w", field, err)
 	}
+	end := procgroup.Ended(err)
 	if stderr := strings.TrimSpace(string(ended.Stderr)); stderr != "" {
 		return fmt.Errorf("%s failed (%s): %s", field, end, stderr)
 	}

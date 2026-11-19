@@ -760,7 +760,9 @@ func checkedResult(argv []string, result Result, err error) (Result, error) {
 // runFailure is a run that answered no status of its own, as an error naming the command: `run
 // <argv>: <err>`, and beneath it the stderr the command wrote when a signal ended it
 // (procgroup.Said). The runner leaves that stderr out of its own error, so a caller whose command
-// can echo a credential scrubs result.Stderr before it reaches here (transferWithRetries).
+// can echo a credential scrubs result.Stderr before it reaches here, as Fetch's transfers
+// (transferWithRetries), the shared clone's steps (cloneSteps.runIn) and its fetch
+// (ensureFetchConfiguration) do.
 func runFailure(argv []string, result Result, err error) error {
 	return fmt.Errorf("run %s: %w", strings.Join(argv, " "), procgroup.Said(err, result.Stderr))
 }

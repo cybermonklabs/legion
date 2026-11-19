@@ -221,7 +221,7 @@ func (s *shim) startRenewer(enrollmentID string) {
 				if s.loop.Err() != nil {
 					return
 				}
-				if end := procgroup.Ended(err); end.Exited != nil && end.Exited.ExitCode() == permanentRenewExitCode {
+				if procgroup.Ended(err).ExitedWith(permanentRenewExitCode) {
 					s.log.Printf("[worker-shim] agent-secrets: renewer permanently refused for enrollment %s (exit %d): %q; not restarting", enrollmentID, permanentRenewExitCode, tail.Last())
 					return
 				}

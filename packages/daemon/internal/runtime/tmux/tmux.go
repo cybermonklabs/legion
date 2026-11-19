@@ -515,14 +515,12 @@ func failed(res result) string {
 	return fmt.Sprintf(" failed (exit %d)%s", res.exitCode, failure(res))
 }
 
-// exited is failed for a message that says what the client exited with: ` exited 3: <stderr>`,
-// ` was ended by signal: killed: <stderr>`, or ` timed out after 10s`.
+// exited is failed for a message that says what the client exited with: ` exited 3: <stderr>`, or,
+// for a client with no exit of its own, failed's ` was ended by signal: killed: <stderr>` or
+// ` timed out after 10s`.
 func exited(res result) string {
-	switch {
-	case res.timedOut > 0:
-		return fmt.Sprintf(" timed out after %s", res.timedOut)
-	case res.signal != "":
-		return fmt.Sprintf(" was ended by %s%s", res.signal, failure(res))
+	if res.timedOut > 0 || res.signal != "" {
+		return failed(res)
 	}
 	return fmt.Sprintf(" exited %d%s", res.exitCode, failure(res))
 }

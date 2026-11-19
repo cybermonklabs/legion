@@ -233,14 +233,14 @@ func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, re
 	}
 	if err != nil {
 		end := procgroup.Ended(err)
-		if end.Exited == nil && end.Signal == "" {
+		if !end.Ran() {
 			return nil, fmt.Errorf("%s could not run: %w", field, err)
 		}
 		failed := fmt.Errorf("%s failed (%s)", field, end)
 		if message := strings.TrimSpace(stderr.String()); message != "" {
 			failed = fmt.Errorf("%s failed (%s): %s", field, end, message)
 		}
-		if end.Exited != nil && end.Exited.ExitCode() == exitPending {
+		if end.ExitedWith(exitPending) {
 			return nil, &TransientError{Err: failed}
 		}
 		return nil, failed

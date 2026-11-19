@@ -197,6 +197,18 @@ func (e Ending) String() string {
 	return e.Signal
 }
 
+// Ran is whether the command reached an end of its own: an exit or a signal's death. A run's error
+// that says neither (a start that failed) is false.
+func (e Ending) Ran() bool {
+	return e.Exited != nil || e.Signal != ""
+}
+
+// ExitedWith is whether the command exited with code, an exit of its own: a signal's death, whose
+// ExitCode answers -1, never is.
+func (e Ending) ExitedWith(code int) bool {
+	return e.Exited != nil && e.Exited.ExitCode() == code
+}
+
 // Ended reads err, the error a command's run answered, as how the command ended. Both of the
 // Ending's fields are empty for any err that says neither: nil, a start that failed,
 // exec.ErrWaitDelay. Code that reads a status or a signal out of a run's error reads it here, so

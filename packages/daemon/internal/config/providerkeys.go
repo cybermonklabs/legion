@@ -160,7 +160,7 @@ func runSecretsGet(key ProviderKey, flag string, env []string) ([]byte, error) {
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
 		end := procgroup.Ended(err)
-		if end.Exited == nil && end.Signal == "" {
+		if !end.Ran() {
 			return nil, fmt.Errorf("provider_keys.%s: could not run secrets %s: %w", key.Env, strings.Join(args, " "), err)
 		}
 		detail := ""

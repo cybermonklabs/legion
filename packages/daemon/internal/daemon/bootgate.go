@@ -871,12 +871,12 @@ func (g pluginGate) writeProbe(pattern string, source []byte) (string, string, e
 	return dir, probe, nil
 }
 
-// ran is one probe command's run: its exit code (-1 when killed), the signal that ended it when
-// one did (signal: killed), its stderr, its stdout, stderr and stdout together, the tail of stderr
-// a refusal quotes, and whether the budget killed it.
+// ran is one probe command's run: its exit code (-1 when killed), how it ended (procgroup.Ended:
+// its exit, or the signal that ended it), its stderr, its stdout, stderr and stdout together, the
+// tail of stderr a refusal quotes, and whether the budget killed it.
 type ran struct {
 	exit                   int
-	signal                 string
+	end                    procgroup.Ending
 	stderr, stdout, output string
 	tail                   string
 	timedOut               bool
@@ -884,10 +884,11 @@ type ran struct {
 }
 
 // ending is how the probe's command ended, as a message's parenthesis names it: `exit 3`, or the
-// signal that ended it, which left it no status.
+// signal that ended it, which left it no status (procgroup.Ending.String); `exit N` from the
+// status read when the run's error said neither.
 func (r ran) ending() string {
-	if r.signal != "" {
-		return r.signal
+	if r.end.Ran() {
+		return r.end.String()
 	}
 	return fmt.Sprintf("exit %d", r.exit)
 }
@@ -895,8 +896,8 @@ func (r ran) ending() string {
 // ended is how the probe's command ended, as a message's verb says it: `exited 3`, or `was ended
 // by signal: killed`.
 func (r ran) ended() string {
-	if r.signal != "" {
-		return "was ended by " + r.signal
+	if r.end.Signal != "" {
+		return "was ended by " + r.end.Signal
 	}
 	return fmt.Sprintf("exited %d", r.exit)
 }
@@ -967,7 +968,7 @@ func (g pluginGate) run(ctx context.Context, script string, args ...string) (ran
 	}
 	return ran{
 		exit:     cmd.ProcessState.ExitCode(),
-		signal:   end.Signal,
+		end:      end,
 		stderr:   stderr.String(),
 		stdout:   stdout.String(),
 		output:   stderr.String() + "\n" + stdout.String(),

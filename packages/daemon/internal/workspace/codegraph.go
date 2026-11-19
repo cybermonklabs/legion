@@ -22,16 +22,16 @@ import (
 
 // codegraphTimeout bounds each codegraph invocation independently. The warm-up runs only in the
 // background, so nothing waits on it; a first index of a large repository (tens of thousands of
-// files) takes longer than Provision's own command budget. codegraphStopGrace is how long a
-// codegraph child whose context ended has to leave on its SIGTERM before it is killed and the
-// invocation returns: a shim's warm-up ends with the shim's Oh My Pi (WarmCodegraphIndex), and the
-// shim waits on it inside the role's stop grace (internal/shim's Config.StopGrace, the pod's
-// terminationGracePeriodSeconds, `worker_stop_timeout_seconds`, 10 s by default), so this grace is
-// well inside what is left of that once the agent's own grace is spent; CodeGraph 1.5.0 leaves
-// within about two seconds of a SIGTERM, its SQLite closed. codegraphTimeout is a variable so that
-// a test can shorten it.
+// files) takes longer than Provision's own command budget. It is a variable so that a test can
+// shorten it.
 var codegraphTimeout = 30 * time.Minute
 
+// codegraphStopGrace is how long a codegraph child whose context ended has to leave on its SIGTERM
+// before it is killed and the invocation returns: a shim's warm-up ends with the shim's Oh My Pi
+// (WarmCodegraphIndex), and the shim waits on it inside the role's stop grace (internal/shim's
+// Config.StopGrace, the pod's terminationGracePeriodSeconds, `worker_stop_timeout_seconds`, 10 s
+// by default), so this grace is well inside what is left of that once the agent's own grace is
+// spent; CodeGraph 1.5.0 leaves within about two seconds of a SIGTERM, its SQLite closed.
 const codegraphStopGrace = 2 * time.Second
 
 // codegraphEmptyLockGrace is how long an empty `.codegraph/codegraph.lock` still counts as held,

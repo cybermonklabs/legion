@@ -186,6 +186,34 @@ func TestATmuxClientThatFailsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) 
 			t.Errorf("tmux ran %q, want %q: the window the marker could not own is left open", calls, want)
 		}
 	})
+	// The launch's context ends during the marker, and the kill of the window it opened is then
+	// ended by a signal: the kill still runs, and the launch error says the window may still run.
+	t.Run("a kill of the opened window a signal ended, its launch's context gone", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		var calls []string
+		r := &Runtime{socket: "legion-test", run: func(ctx context.Context, argv []string) (result, error) {
+			if ctx.Err() != nil {
+				return result{}, ctx.Err()
+			}
+			command := verb(argv)
+			calls = append(calls, command)
+			switch command {
+			case "new-window":
+				return result{stdout: "@7 %9 4242\n"}, nil
+			case "set-option":
+				cancel()
+				return result{}, context.Canceled
+			}
+			return result{exitCode: -1, signal: "signal: killed", stderr: "lost server"}, nil
+		}}
+		_, err := r.openWindowIn(ctx, "tree", []string{"true"}, false)
+		if want := "kill window @7, which the failed launch opened: tmux was ended by signal: killed: lost server"; err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("openWindowIn = %v, want it to say %q", err, want)
+		}
+		if want := []string{"new-window", "set-option", "kill-window"}; !slices.Equal(calls, want) {
+			t.Errorf("tmux ran %q, want %q: the kill must run once the launch's context ended", calls, want)
+		}
+	})
 	t.Run("select-layout after a split", func(t *testing.T) {
 		var calls []string
 		var logs strings.Builder
@@ -196,6 +224,22 @@ func TestATmuxClientThatFailsAfterThePaneOpensLeavesNoUnownedPane(t *testing.T) 
 		}
 		if !strings.Contains(logs.String(), "select-layout failed after a split") || !strings.Contains(logs.String(), "signal: killed") {
 			t.Errorf("logged %q, want the select-layout failure with its signal", logs.String())
+		}
+	})
+	t.Run("select-layout that cannot run after a split", func(t *testing.T) {
+		var logs strings.Builder
+		r := &Runtime{socket: "legion-test", log: slog.New(slog.NewTextHandler(&logs, nil)), run: func(_ context.Context, argv []string) (result, error) {
+			if verb(argv) == "select-layout" {
+				return result{}, context.DeadlineExceeded
+			}
+			return result{stdout: "%9 4242\n"}, nil
+		}}
+		report, err := r.splitWindow(context.Background(), "@7", []string{"true"})
+		if err != nil || report != (paneReport{window: "@7", pane: "%9", pid: 4242}) {
+			t.Errorf("splitWindow = %+v, %v; want the split pane and no error: an error leaves the pane unowned", report, err)
+		}
+		if !strings.Contains(logs.String(), "context deadline exceeded") {
+			t.Errorf("logged %q, want the select-layout failure", logs.String())
 		}
 	})
 }
