@@ -109,9 +109,11 @@ export interface MarkAllRead {
  *
  * The press writes two reads at once - the Inbox's own list and the unread count every badge
  * shares - so the rows are drawn as read and the Type filter's counts, the sidebar's Inbox count
- * and the compact header's Inbox link are all at zero before the server answers. The Agents
- * page's **New replies** badge is the server's own count of unread agent replies, so it drops
- * when the answer lands and the viewer's agent state is read again.
+ * and the compact header's Inbox link are all at zero before the server answers. A read of
+ * either already out at the press is given up, and one asked while the press is out waits for its
+ * answer (`holds`): Dispatch can answer either before it marks the rows, with them still unread.
+ * The Agents page's **New replies** badge is the server's own count of unread agent replies, so
+ * it drops when the answer lands and the viewer's agent state is read again.
  *
  * The Dismissed view has no press of its own: it holds what the reader has already dealt with, so
  * the Inbox passes no read mark there and nothing is offered (`asOf`).
@@ -142,6 +144,7 @@ export function useMarkAllRead({
     rows.some((row) => row.kind === "thread" && marksThread(row.thread, body));
 
   const write = useKeyedWrite<InboxReadResponse, InboxReadRequest, MarkAllRollback>({
+    holds: () => [threadsKey, countKey],
     inline: true,
     label: () => "Inbox marked read",
     onError: (_error, _input, rollback) => {

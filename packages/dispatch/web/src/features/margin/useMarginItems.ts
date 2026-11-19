@@ -537,6 +537,9 @@ export function useMarginItems(
   const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue<{
     previous: Comment[] | undefined;
   }>({
+    // A read of the comments asked while an action is out waits for its answer: Dispatch can
+    // answer it before it takes the action, with the comment as it was.
+    holds: () => [commentsQueryKey],
     onError: (_error, _input, context) => {
       queryClient.setQueryData(commentsQueryKey, context?.previous);
       void queryClient.invalidateQueries({ queryKey: commentsQueryKey });

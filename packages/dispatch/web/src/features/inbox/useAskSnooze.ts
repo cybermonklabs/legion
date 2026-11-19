@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { api, askSnoozeRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
+import { holdBackReads } from "../../api/query-client";
 import type { InboxRow } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
@@ -33,8 +34,11 @@ export interface AskSnoozeWrite {
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
-  // The row says why its snooze was refused, where the reader pressed it.
+  // The row says why its snooze was refused, where the reader pressed it. A read of the Inbox
+  // asked while the snooze is out waits for its answer: Dispatch can answer it before it takes
+  // the snooze, with the row's moment from before the press.
   const mutation = useKeyedWrite({
+    holds: () => [inboxKey],
     write: (until: string | null, bounds) =>
       until === null
         ? api.unsnoozeAsk(askId, bounds)
@@ -94,7 +98,8 @@ export interface AskSnoozeManyWrite {
  * and tried until Dispatch decides it, so a transport failure is tried again rather than counted a
  * refusal, and each settles on its own: a refusal rolls back that row alone - to the moment it had
  * before, not to null, which would un-snooze a row that was already deferred - and the ones the
- * server took stay where they landed.
+ * server took stay where they landed. A read of the Inbox asked while the set is out waits until
+ * the last of them is decided, as the single snooze's does.
  */
 export function useAskSnoozeMany(): AskSnoozeManyWrite {
   const queryClient = useQueryClient();
@@ -110,39 +115,46 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
       // id, so this is where that stays true rather than a case to handle.
       const writeOf = ids.map((id) => ({ id, request: askSnoozeRequest(id, until) }));
       setPending((count) => count + 1);
-      await queryClient.cancelQueries({ queryKey: inboxKey });
-      const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
-      const marked = new Set(ids);
-      queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) => (marked.has(row.id) ? { ...row, snoozed_until: until } : row))
-      );
-      const results = await Promise.allSettled(
-        writeOf.map(({ id, request }) =>
-          writes.run({
-            detail: null,
-            inline: true,
-            kind: plainWrite,
-            label: "Ask snoozed",
-            presentation: "indicator",
-            request,
-            target: `ask-snooze:${id}`,
-          })
-        )
-      );
-      const failed = ids.flatMap((askId, index) => {
-        const result = results[index];
-        if (result === undefined || result.status !== "rejected") return [];
-        const reason: unknown = result.reason;
-        return [{ askId, reason: reason instanceof Error ? reason.message : String(reason) }];
-      });
-      const refused = new Set(failed.map(({ askId }) => askId));
-      for (const [key, data] of refused.size === 0 ? [] : previous) {
-        const before = new Map((data ?? []).map((row) => [row.id, row.snoozed_until]));
-        queryClient.setQueryData<InboxRow[]>(key, (current) =>
-          current?.map((row) =>
-            refused.has(row.id) ? { ...row, snoozed_until: before.get(row.id) ?? null } : row
+      const release = holdBackReads(queryClient, [inboxKey]);
+      let failed: AskSnoozeFailure[];
+      try {
+        await queryClient.cancelQueries({ queryKey: inboxKey });
+        const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
+        const marked = new Set(ids);
+        queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
+          current?.map((row) => (marked.has(row.id) ? { ...row, snoozed_until: until } : row))
+        );
+        const results = await Promise.allSettled(
+          writeOf.map(({ id, request }) =>
+            writes.run({
+              detail: null,
+              inline: true,
+              kind: plainWrite,
+              label: "Ask snoozed",
+              presentation: "indicator",
+              request,
+              target: `ask-snooze:${id}`,
+            })
           )
         );
+        failed = ids.flatMap((askId, index) => {
+          const result = results[index];
+          if (result === undefined || result.status !== "rejected") return [];
+          const reason: unknown = result.reason;
+          return [{ askId, reason: reason instanceof Error ? reason.message : String(reason) }];
+        });
+        const refused = new Set(failed.map(({ askId }) => askId));
+        for (const [key, data] of refused.size === 0 ? [] : previous) {
+          const before = new Map((data ?? []).map((row) => [row.id, row.snoozed_until]));
+          queryClient.setQueryData<InboxRow[]>(key, (current) =>
+            current?.map((row) =>
+              refused.has(row.id) ? { ...row, snoozed_until: before.get(row.id) ?? null } : row
+            )
+          );
+        }
+      } finally {
+        // Whatever happens above: a hold left on would keep every read of the Inbox waiting.
+        release();
       }
       void queryClient.invalidateQueries({ queryKey: inboxKey });
       setPending((count) => count - 1);

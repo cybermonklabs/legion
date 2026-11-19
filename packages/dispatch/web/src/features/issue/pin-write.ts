@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 
 import { ApiError, api, type WriteBounds } from "../../api/client";
-import { replaceQueryData } from "../../api/query-client";
+import { holdBackReads, replaceQueryData } from "../../api/query-client";
 import type { UserIssueState, UserState } from "../../api/types";
 import { type Shape, shape } from "../writes/write-storage";
 import { defineWriteKind, isLive, ofKind, type Writes, writesOf } from "../writes/write-store";
@@ -113,7 +113,10 @@ const pinWrite = defineWriteKind<PinWrite>({
 
 /** Pins or unpins one item of `issueKey` for the viewer: applied to the page's state at once and
  *  written behind every pin of that issue still out. The operation may be derived from the stored
- *  `dismissed` list at the moment of the write, which is what a toggle needs. */
+ *  `dismissed` list at the moment of the write, which is what a toggle needs. A read of the state
+ *  already out is given up, and one asked while the pin is out waits until the pin is decided
+ *  (`holdBackReads`): Dispatch can answer either before it takes the pin, with the item as it
+ *  was. */
 export function writePin(
   client: QueryClient,
   issueKey: string,
@@ -132,6 +135,7 @@ export function writePin(
     };
   });
   if (applied === undefined) return;
+  const release = holdBackReads(client, [["user-state"]]);
   const detail = { issueKey, operation: applied };
   writesOf(client)
     .run({
@@ -142,7 +146,8 @@ export function writePin(
       target: `pin:${issueKey}`,
       write: pinAttempt(detail),
     })
-    .catch(() => {});
+    .catch(() => {})
+    .finally(release);
 }
 
 /** Forgets every issue state a pin answer left: the unit-test preload, between tests. */

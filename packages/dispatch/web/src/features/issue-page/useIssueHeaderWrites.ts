@@ -178,6 +178,9 @@ export function useIssueHeaderWrites(
   const drafts = useIssueDrafts(issue, updateIssue);
   const pinGuard = useSubmitGuard();
   const pin = useKeyedWrite({
+    // A read of the state asked while the pin is out could be answered before Dispatch takes it,
+    // with the pin as it was: it waits for the answer.
+    holds: () => [userStateQuery().queryKey],
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
     write: (pinned: boolean, bounds) => api.putIssueState(issue.key, { pinned }, bounds),
     onSettled: () => {

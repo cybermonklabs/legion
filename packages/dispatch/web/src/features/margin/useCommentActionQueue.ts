@@ -1,3 +1,4 @@
+import type { QueryKey } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
 import { api, apiErrorCodeIn, apiErrorMessage, type WriteBounds } from "../../api/client";
@@ -36,6 +37,9 @@ function actionFailure(id: string, error: Error): CommentActionFailure {
 }
 
 interface CommentActionQueueOptions<TContext> {
+  /** The queries `onMutate`'s optimistic value stands in, whose reads wait for the action's
+   *  answer (`KeyedWriteOptions.holds`). */
+  holds?(input: CommentActionInput): readonly QueryKey[];
   onError?(error: Error, input: CommentActionInput, context: TContext | undefined): void;
   onMutate?(input: CommentActionInput): TContext | Promise<TContext>;
   /** The server took `input`; the next queued action starts after this. */
@@ -63,6 +67,7 @@ function submitCommentAction({ id, kind }: CommentActionInput, bounds: WriteBoun
  * clears that pending work so the reader can correct or retry the failed action explicitly.
  */
 export function useCommentActionQueue<TContext = undefined>({
+  holds,
   onError,
   onMutate,
   onSuccess,
@@ -76,6 +81,7 @@ export function useCommentActionQueue<TContext = undefined>({
     // The card that offered the action shows its refusal (`CommentActionFailure`).
     inline: true,
     label: ({ kind }) => ACTION_LABELS[kind],
+    holds,
     write: submitCommentAction,
     onError,
     onMutate,

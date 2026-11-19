@@ -114,8 +114,11 @@ export function LegionDaemonsSection(): ReactNode {
   const [failedAction, setFailedAction] = useState<FailedAction>();
   const legion = useLegionDaemons();
   const daemonKey = (named: string) => legionDaemonQuery(named).queryKey;
-  // Both writes show their refusal under the form, with the row they changed put back.
+  // Both writes show their refusal under the form, with the row they changed put back. A read of
+  // the project asked while either is out waits for its answer: Dispatch can answer it before it
+  // takes the write, with the row from before the press.
   const saveDaemon = useKeyedWrite<LegionSetting, DaemonInput, PreviousDaemon>({
+    holds: ({ project: named }) => [daemonKey(named)],
     write: ({ project: named, state_url: url }, bounds) => api.putLegionDaemon(named, url, bounds),
     inline: true,
     label: ({ project: named }) => `${named}'s Legion daemon`,
@@ -157,6 +160,7 @@ export function LegionDaemonsSection(): ReactNode {
       queryClient.invalidateQueries({ queryKey: daemonKey(variables.project) }),
   });
   const removeDaemon = useKeyedWrite<void, string, PreviousDaemon>({
+    holds: (named) => [daemonKey(named)],
     write: (named: string, bounds) => api.deleteLegionDaemon(named, bounds),
     inline: true,
     label: (named) => `${named}'s Legion daemon removed`,

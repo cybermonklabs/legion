@@ -1,11 +1,17 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
+import {
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+  QueryObserver,
+} from "@tanstack/react-query";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keptTab } from "../../__tests__/kept-sends-harness";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import { SEND_DEADLINE_MS, SendStoppedError } from "./keyed-write";
 import { useKeyedWrite } from "./useKeyedWrite";
 import { writesOf } from "./write-store";
@@ -147,5 +153,120 @@ test("a write pressed offline is attempted and goes late", async () => {
     hook.unmount();
     answerAsk.mockRestore();
     realClock();
+  }
+});
+
+/** A write whose optimistic value stands in `["things"]` (`holds`), under Dispatch's own client,
+ *  with a read of that query mounted: what each request of the read answered, in order, and the
+ *  answer the test gives the write. */
+function renderHeldWrite() {
+  const client = new DispatchQueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const server = { value: "before" };
+  const reads: string[] = [];
+  const stopReading = new QueryObserver(client, {
+    queryFn: () => {
+      reads.push(server.value);
+      return Promise.resolve(server.value);
+    },
+    queryKey: ["things"],
+  }).subscribe(() => {});
+  const answer = Promise.withResolvers<string>();
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const hook = renderHook(
+    () =>
+      useKeyedWrite<string, void, { previous: string | undefined }>({
+        holds: () => [["things"]],
+        inline: true,
+        label: () => "A thing",
+        onError: (_error, _variables, context) => {
+          client.setQueryData(["things"], context?.previous);
+        },
+        onMutate: () => {
+          const previous = client.getQueryData<string>(["things"]);
+          client.setQueryData(["things"], "optimistic");
+          return { previous };
+        },
+        onSuccess: (data) => {
+          client.setQueryData(["things"], data);
+        },
+        // TanStack waits for this before the write stops being pending: a hold kept until then
+        // would keep this read waiting for the write, and the write for this read.
+        onSettled: () => client.invalidateQueries({ queryKey: ["things"] }),
+        write: () => answer.promise,
+      }),
+    { wrapper }
+  );
+  return { answer, client, hook, reads, server, stopReading };
+}
+
+/** Waits long enough for a read that is not held to have asked. */
+function aMoment(): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, 20);
+  return promise;
+}
+
+// A read asked while an optimistic write is out could be answered before Dispatch takes the
+// write, and would put back the value the press replaced. It waits for the write's answer, which
+// it then reads; the write still settles though its `onSettled` reads the query again.
+test("a write that holds its query keeps a read asked while it is out until its answer is in", async () => {
+  const tab = keptTab();
+  const { answer, client, hook, reads, server, stopReading } = renderHeldWrite();
+  try {
+    await waitFor(() => expect(reads).toEqual(["before"]));
+    act(() => hook.result.current.mutate());
+    await waitFor(() => expect(client.getQueryData<string>(["things"])).toBe("optimistic"));
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: ["things"] });
+      await aMoment();
+    });
+    expect(reads).toEqual(["before"]);
+    expect(client.getQueryData<string>(["things"])).toBe("optimistic");
+
+    server.value = "after";
+    await act(async () => {
+      answer.resolve("after");
+      await aMoment();
+    });
+    await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
+    expect(reads.length).toBeGreaterThan(1);
+    expect(reads.slice(1).every((read) => read === "after")).toBe(true);
+    expect(client.getQueryData<string>(["things"])).toBe("after");
+  } finally {
+    hook.unmount();
+    stopReading();
+    tab.close();
+  }
+});
+
+// A refused write puts the value from before the press back, and the reads it held then go.
+test("a write that holds its query lets the reads it held go once its refusal is rolled back", async () => {
+  const tab = keptTab();
+  const { answer, client, hook, reads, stopReading } = renderHeldWrite();
+  try {
+    await waitFor(() => expect(reads).toEqual(["before"]));
+    act(() => hook.result.current.mutate());
+    await act(async () => {
+      void client.invalidateQueries({ queryKey: ["things"] });
+      await aMoment();
+    });
+    expect(reads).toEqual(["before"]);
+
+    await act(async () => {
+      answer.reject(verdict);
+      await aMoment();
+    });
+    await waitFor(() => expect(hook.result.current.isError).toBe(true));
+    expect(reads.length).toBeGreaterThan(1);
+    expect(client.getQueryData<string>(["things"])).toBe("before");
+  } finally {
+    hook.unmount();
+    stopReading();
+    tab.close();
   }
 });

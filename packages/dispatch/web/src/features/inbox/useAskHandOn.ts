@@ -36,8 +36,11 @@ export interface AskHandOnWrite {
 export function useAskHandOn(ask: Ask): AskHandOnWrite {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
-  // The card says why its hand-on was refused, where the reader pressed it.
+  // The card says why its hand-on was refused, where the reader pressed it. A read of the Inbox
+  // asked while the hand-on is out waits for its answer: Dispatch can answer it before it takes
+  // the hand-on, with the person from before the press.
   const mutation = useKeyedWrite({
+    holds: () => [inboxKey],
     write: (askedOf: string, bounds) => api.handAskTo(ask.id, askedOf, bounds),
     inline: true,
     label: (askedOf) => `Ask handed to ${askedOf}`,

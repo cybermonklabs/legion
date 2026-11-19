@@ -1,9 +1,10 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryObserver, skipToken } from "@tanstack/react-query";
+import { QueryClient, QueryObserver, skipToken } from "@tanstack/react-query";
 
 import { ApiError, createApiClient, isRetryableQueryError } from "./client";
 import {
   DispatchQueryClient,
+  holdBackReads,
   QUERY_RETRY_DELAY_MS,
   queryRetry,
   queryRetryDelay,
@@ -126,6 +127,143 @@ test("a value put over a query's reads is there at once and stays over a read as
     expect(queryClient.getQueryData<string>(["user-agent-state"])).toBe("after");
   } finally {
     unsubscribe();
+  }
+});
+
+// An optimistic write stands in its query until its answer is in. A read asked after the write
+// but answered before the server took it would put back the state the write replaced, so the read
+// waits: it asks once the hold ends, and reads what the write left.
+test("a read asked while a write holds its query asks only once the hold ends", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("before");
+  const observer = new QueryObserver(queryClient, {
+    queryFn: server.queryFn,
+    queryKey: ["issues", "pinned"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    server.answer();
+    await settle();
+    expect(queryClient.getQueryData<string>(["issues", "pinned"])).toBe("before");
+
+    // The hold names a prefix of the query's key, as a filter does.
+    const release = holdBackReads(queryClient, [["issues"]]);
+    queryClient.setQueryData(["issues", "pinned"], "optimistic");
+    void queryClient.invalidateQueries({ queryKey: ["issues", "pinned"] });
+    await settle();
+    expect(server.requests()).toBe(1);
+    expect(queryClient.getQueryData<string>(["issues", "pinned"])).toBe("optimistic");
+
+    server.write("after");
+    release();
+    // Ended once; a second call ends nothing more.
+    release();
+    await settle();
+    expect(server.requests()).toBe(2);
+    server.answer();
+    await settle();
+    expect(queryClient.getQueryData<string>(["issues", "pinned"])).toBe("after");
+  } finally {
+    unsubscribe();
+  }
+});
+
+// A hold is on the queries it names alone, and on each until its own end: a read of another query
+// goes at once, and one of a query two writes hold asks once both have ended.
+test("a hold keeps back only the reads it names, and each until the last hold on it ends", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const inbox = heldServer("rows");
+  const state = heldServer("pins");
+  const unsubscribe = [
+    new QueryObserver(queryClient, { queryFn: inbox.queryFn, queryKey: ["inbox"] }).subscribe(
+      () => {}
+    ),
+    new QueryObserver(queryClient, { queryFn: state.queryFn, queryKey: ["user-state"] }).subscribe(
+      () => {}
+    ),
+  ];
+  try {
+    await settle();
+    inbox.answer();
+    state.answer();
+    await settle();
+
+    const first = holdBackReads(queryClient, [["user-state"]]);
+    const second = holdBackReads(queryClient, [["user-state"], ["inbox", "elsewhere"]]);
+    void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+    void queryClient.invalidateQueries({ queryKey: ["user-state"] });
+    await settle();
+    expect(inbox.requests()).toBe(2);
+    expect(state.requests()).toBe(1);
+
+    first();
+    await settle();
+    expect(state.requests()).toBe(1);
+    second();
+    await settle();
+    expect(state.requests()).toBe(2);
+  } finally {
+    for (const stop of unsubscribe) stop();
+  }
+});
+
+// The write's own answer lands while the read it holds is still waiting: `replaceQueryData`
+// cancels that read, which has asked nothing, and the answer stays. What the read was asked for -
+// news of another change, here the other issue's - is not lost: the query is read again once the
+// hold ends, after the answer, and the read asked then has both.
+test("a held read the write's answer gives up is asked again once the hold ends", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("before");
+  const observer = new QueryObserver(queryClient, {
+    queryFn: server.queryFn,
+    queryKey: ["user-state"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    server.answer();
+    await settle();
+
+    const release = holdBackReads(queryClient, [["user-state"]]);
+    void queryClient.invalidateQueries({ queryKey: ["user-state"] });
+    await settle();
+    server.write("answer and the other issue's news");
+    replaceQueryData<string>(queryClient, ["user-state"], "answer");
+    await settle();
+    expect(server.requests()).toBe(1);
+    expect(queryClient.getQueryData<string>(["user-state"])).toBe("answer");
+
+    release();
+    await settle();
+    expect(server.requests()).toBe(2);
+    server.answer();
+    await settle();
+    expect(queryClient.getQueryData<string>(["user-state"])).toBe(
+      "answer and the other issue's news"
+    );
+  } finally {
+    unsubscribe();
+  }
+});
+
+// Holding reads back is the Dispatch client's: a plain TanStack client, as most unit tests build,
+// lets a held read go.
+test("a plain query client lets a held read ask at once", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("before");
+  const observer = new QueryObserver(queryClient, {
+    queryFn: server.queryFn,
+    queryKey: ["user-state"],
+  });
+  const release = holdBackReads(queryClient, [["user-state"]]);
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    expect(server.requests()).toBe(1);
+  } finally {
+    unsubscribe();
+    release();
   }
 });
 

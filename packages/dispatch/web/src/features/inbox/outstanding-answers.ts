@@ -59,8 +59,9 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables> {
   readonly label: (variables: TVariables) => string;
   readonly write: (variables: TVariables, bounds: WriteBounds) => Promise<TData>;
   /** Whether this write takes the ask's row out of the Inbox and holds the ask: false for one
-   *  that leaves both alone. Read once, as the write goes, so a refusal restores exactly what
-   *  that press took out. Every write does by default. */
+   *  that leaves both alone. Read as the write goes - for its hold on the Inbox's reads, then for
+   *  the removal, in the one step - so a refusal restores exactly what that press took out. Every
+   *  write does by default. */
   readonly removesRow?: () => boolean;
   /** Called after the row is back, so a refusal the surface reads is read on the restored list. */
   readonly onError?: (error: Error, variables: TVariables, before: InboxRowsBefore) => void;
@@ -82,7 +83,9 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables> {
  * what the reader wrote, so the shell's indicator carries the write only while it is out. The
  * hold lasts the same `pending || failed` liveness the snooze reports its own write by
  * (`SnoozeControl`), let go when the server decides the answer, when the form is reset, and when
- * the card goes.
+ * the card goes. A write that takes the row out holds the Inbox's reads until its answer is in
+ * (`holds`): one asked meanwhile could be answered before Dispatch takes the answer, with the
+ * row still in it.
  */
 export function useOutstandingAnswerWrite<TData, TVariables>({
   askId,
@@ -99,6 +102,7 @@ export function useOutstandingAnswerWrite<TData, TVariables>({
 > {
   const queryClient = useQueryClient();
   const mutation = useKeyedWrite<TData, TVariables, InboxRowsBefore>({
+    holds: () => (removesRow === undefined || removesRow() ? [inboxQuery().queryKey] : []),
     inline: true,
     label,
     write,

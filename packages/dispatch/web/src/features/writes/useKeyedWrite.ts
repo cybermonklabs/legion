@@ -1,5 +1,7 @@
 import {
   type DefaultError,
+  type MutationFunctionContext,
+  type QueryKey,
   type UseMutationOptions,
   type UseMutationResult,
   useMutation,
@@ -7,6 +9,7 @@ import {
 import { useCallback, useRef, useState } from "react";
 
 import type { WriteBounds, WriteRequest } from "../../api/client";
+import { holdBackReads } from "../../api/query-client";
 import { newSendKey } from "../../lib/send-key";
 import { retriesUnderItsKey } from "./keyed-write";
 import { plainWrite, useWrites } from "./write-store";
@@ -31,6 +34,11 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   /** Whether the write ends the person's session (a sign-out): a lapse of that session lands it
    *  rather than holding it for the next sign-in (`WriteSpec.endsWithSession`). */
   readonly endsWithSession?: boolean;
+  /** The queries this write's optimistic value stands in, whose reads that start from the press
+   *  wait until its answer or its refusal is in (`holdBackReads`): the press's `onMutate` writes
+   *  that value, and its `onSuccess` or `onError` puts the answer or the rollback in its place
+   *  before the hold ends. */
+  readonly holds?: (variables: TVariables) => readonly QueryKey[];
 } & KeyedWriteMade<TData, TVariables>;
 
 /** How a write is made: by an attempt of its own (`write`, under the bounds the store gives it:
@@ -68,6 +76,16 @@ export interface UnansweredLanding<TVariables> {
   readonly at: number;
 }
 
+/** The end of each press's hold on the reads it writes over (`KeyedWriteOptions.holds`), by the
+ *  context TanStack makes for that press's run and hands to each of its callbacks. */
+const pressHolds = new WeakMap<MutationFunctionContext, () => void>();
+
+/** Ends the hold `press` keeps, if it keeps one still. */
+function endHold(press: MutationFunctionContext): void {
+  pressHolds.get(press)?.();
+  pressHolds.delete(press);
+}
+
 /** `useMutation`'s result, with the one "made, but Dispatch lost its answer" state every create
  *  form shows (`LandedWithoutAnswer`): the last press that landed with `null`, until the next
  *  press starts or the form lets it go (`forgetUnanswered`, on an edit). */
@@ -94,11 +112,15 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
  * browser says it is online (`networkMode: "always"`): the write's own tries wait out a network
  * that is down, and a mutation TanStack paused offline would make none, never go late and never
  * offer Stop trying. A press that lands with no answer is kept as `unanswered` for the surface
- * to say so, until the next press or `forgetUnanswered`.
+ * to say so, until the next press or `forgetUnanswered`. A write given `holds` holds back the
+ * reads of those queries from its press until its answer or refusal is in: TanStack counts the
+ * write as pending until its `onSettled` has run, which may itself read those queries again, so
+ * the hold ends as `onSuccess` or `onError` returns rather than when the write settles.
  */
 export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   endsWithSession,
   file,
+  holds,
   inline,
   label,
   request,
@@ -117,6 +139,38 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   const forgetUnanswered = useCallback(() => setUnanswered(undefined), []);
   const mutation = useMutation({
     ...options,
+    ...(holds === undefined
+      ? {}
+      : {
+          onMutate: (variables: TVariables, press: MutationFunctionContext) => {
+            pressHolds.set(press, holdBackReads(press.client, holds(variables)));
+            return options.onMutate?.(variables, press) as TContext | Promise<TContext>;
+          },
+          onSuccess: (
+            data: TData | null,
+            variables: TVariables,
+            context: TContext,
+            press: MutationFunctionContext
+          ) => {
+            try {
+              return options.onSuccess?.(data, variables, context, press);
+            } finally {
+              endHold(press);
+            }
+          },
+          onError: (
+            error: DefaultError,
+            variables: TVariables,
+            context: TContext | undefined,
+            press: MutationFunctionContext
+          ) => {
+            try {
+              return options.onError?.(error, variables, context, press);
+            } finally {
+              endHold(press);
+            }
+          },
+        }),
     mutationFn: (variables: TVariables) => {
       const again = stopped.current;
       stopped.current = undefined;

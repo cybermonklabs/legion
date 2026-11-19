@@ -1,7 +1,9 @@
 import {
   type DefaultError,
   type DefaultedQueryObserverOptions,
+  hashKey,
   notifyManager,
+  partialMatchKey,
   type Query,
   QueryClient,
   type QueryFunction,
@@ -70,7 +72,8 @@ export function queryRetryDelay(
  * ends on the answer composed after the write, and the first request is not left running on the
  * server with its answer thrown away. Calls for one query while it waits share that one follow-up
  * fetch. Every mutation's own `invalidateQueries` call keeps its shape. It also tells whoever
- * listens each time a query calls its function (`onAttempt`).
+ * listens each time a query calls its function (`onAttempt`), and holds back a read that a write's
+ * optimistic value stands in for until that write's answer is in (`holdBackReads`).
  */
 export class DispatchQueryClient extends QueryClient {
   readonly #attempts = new Set<(queryHash: string) => void>();
@@ -88,10 +91,11 @@ export class DispatchQueryClient extends QueryClient {
   };
 
   /** TanStack's defaults, with the query's function wrapped so that each call of it tells
-   *  `onAttempt`'s listeners first; the wrapper hands the function its context and returns what
-   *  the function returns, and a listener that throws fails no read. `skipToken`, an absent
-   *  function and a wrapped one are left as they are. Each observer's render passes a function
-   *  of its own, so a wrapper is made for each call rather than kept. */
+   *  `onAttempt`'s listeners first, and then waits while a write holds the query's reads
+   *  (`holdBackReads`); the wrapper hands the function its context and returns what the function
+   *  returns, and a listener that throws fails no read. `skipToken`, an absent function and a
+   *  wrapped one are left as they are. Each observer's render passes a function of its own, so a
+   *  wrapper is made for each call rather than kept. */
   override defaultQueryOptions<
     TQueryFnData = unknown,
     TError = DefaultError,
@@ -117,7 +121,9 @@ export class DispatchQueryClient extends QueryClient {
           });
         }
       }
-      return queryFn(context);
+      const holds = readHolds.get(this);
+      if (holds === undefined || !holdsRead(holds, context.queryKey)) return queryFn(context);
+      return holdEnded(holds, context).then(() => queryFn(context));
     };
     this.#told.add(telling);
     // A fresh object is the parent's own copy, which no caller holds yet.
@@ -199,4 +205,88 @@ export function replaceQueryData<T>(
 ): T | undefined {
   void client.cancelQueries({ exact: true, queryKey });
   return client.setQueryData<T>(queryKey, updater);
+}
+
+/** The holds a client's writes keep on its reads (`holdBackReads`): the query keys each names,
+ *  the reads waiting for one to end, and the queries whose held read was given up while it
+ *  waited, by their keys' hashes. */
+interface ReadHolds {
+  readonly held: Set<readonly QueryKey[]>;
+  readonly waiting: Set<() => void>;
+  readonly givenUp: Map<string, QueryKey>;
+}
+
+const readHolds = new WeakMap<QueryClient, ReadHolds>();
+
+/** Whether one of `holds` names the query `queryKey`: as a filter's `queryKey` does, a key names
+ *  every query it is a prefix of. */
+function holdsRead(holds: ReadHolds, queryKey: QueryKey): boolean {
+  for (const keys of holds.held) {
+    if (keys.some((key) => partialMatchKey(queryKey, key))) return true;
+  }
+  return false;
+}
+
+/** Resolves once no hold names the read's query; rejects if the read is cancelled first, and
+ *  notes its query to be read again once no hold names it (`holdBackReads`). */
+function holdEnded(
+  holds: ReadHolds,
+  context: { readonly queryKey: QueryKey; readonly signal: AbortSignal }
+): Promise<void> {
+  // Read only here: once a fetch reads its signal, query-core cancels it when the last observer
+  // unmounts, which a read that is not held has no reason to invite (`projectIssuesQuery`).
+  const { signal } = context;
+  const ended = Promise.withResolvers<void>();
+  const stop = () => {
+    holds.waiting.delete(check);
+    signal.removeEventListener("abort", abort);
+  };
+  const abort = () => {
+    stop();
+    holds.givenUp.set(hashKey(context.queryKey), context.queryKey);
+    ended.reject(signal.reason);
+  };
+  const check = () => {
+    if (holdsRead(holds, context.queryKey)) return;
+    stop();
+    ended.resolve();
+  };
+  holds.waiting.add(check);
+  signal.addEventListener("abort", abort);
+  return ended.promise;
+}
+
+/**
+ * Holds back every read of the queries `queryKeys` name - each key, as a filter's `queryKey`
+ * does, every query it is a prefix of - that starts from now until the function this answers is
+ * called: what a write keeps while its optimistic value stands in those queries and its answer
+ * is not in. A read that started after the optimistic write and reached Dispatch before the
+ * write did would answer the state the write replaces, and put it back over the optimistic value
+ * while the write is still out; held, it asks once the answer is in, as `projectIssuesQuery`
+ * waits for the board's moves. A read already out when the hold starts is not held: the write
+ * cancels it (`replaceQueryData`). The write's answer, put in over the reads still out, cancels a
+ * held read too, though it has asked nothing yet, and what it was asked for - news of another
+ * change, a view mounting - would go unread: such a query is read again once no hold names it,
+ * if anything still shows it. `DispatchQueryClient` holds a read back in its query's function,
+ * after `onAttempt` is told, so a plain `QueryClient` lets every read go. The function this
+ * answers ends the hold once; called again, it does nothing.
+ */
+export function holdBackReads(client: QueryClient, queryKeys: readonly QueryKey[]): () => void {
+  let holds = readHolds.get(client);
+  if (holds === undefined) {
+    holds = { givenUp: new Map(), held: new Set(), waiting: new Set() };
+    readHolds.set(client, holds);
+  }
+  const ours = holds;
+  const keys = [...queryKeys];
+  ours.held.add(keys);
+  return () => {
+    if (!ours.held.delete(keys)) return;
+    for (const check of [...ours.waiting]) check();
+    for (const [hash, queryKey] of ours.givenUp) {
+      if (holdsRead(ours, queryKey)) continue;
+      ours.givenUp.delete(hash);
+      void client.invalidateQueries({ exact: true, queryKey, refetchType: "active" });
+    }
+  };
 }
