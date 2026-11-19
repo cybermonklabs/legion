@@ -51,16 +51,18 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 	}
 }
 
-// A phase's end and a hook's prompt publish with keep (publishKeptToRole), and a kept copy waits
-// on the role's kept lane for the role's next live holder, which is the unheld session's process
-// while it lives. So the gate holds a kept publish as it holds every other (outbox.publishKept,
-// the merge of cybermonklabs/legion#4088 into #4220): to a claim that records a session it does
-// not hold, neither row publishes anything, kept or not, and each finishes undelivered. To a
-// claim holding its own session, each is published with keep as before (R9).
+// A hook's prompt publishes with keep (publishKeptToRole), and a kept copy waits on the role's
+// kept lane for the role's next live holder, which is the unheld session's process while it lives.
+// So the gate holds a kept publish as it holds every other (outbox.publishKept, the merge of
+// cybermonklabs/legion#4088 into #4220): to a claim that records a session it does not hold, a
+// hook prompt publishes nothing, kept or not, and finishes undelivered. To a claim holding its own
+// session, it is published with keep as before (R9). One hook prompt to each claim stands in for
+// the kept rows, since a hook prompt is the one kind publishKeptToRole publishes
+// (dispatch://INFRA-4374 removed the phase-ended message, the other).
 //
 // The control (the pull request records the run): publishKeptToRole calling the publisher's
-// PublishKept directly, as #4088 wrote it, publishes both rows to the claim whose session
-// another claim holds.
+// PublishKept directly, as #4088 wrote it, publishes the row to the claim whose session another
+// claim holds as well.
 func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *testing.T) {
 	ctx := context.Background()
 	_, publisher, runner := heldTopicsRig(t, heldTopicsOptions{launched: true}, []supervise.Claim{
@@ -69,25 +71,21 @@ func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *tes
 	}, "ses_942")
 	held, unheld := mustClaimToken(t, "LEGION-941", claim.RoleTester), mustClaimToken(t, "LEGION-942", claim.RoleTester)
 
-	ended := record.PhaseEnded{Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing, Reason: "the head conflicts with main"}
 	hook := record.HookPrompt{Hook: "back-to-implementing", Role: claim.RoleTester, From: phase.Testing, To: phase.Implementing,
 		Count: 1, Counts: map[string]int{"testing-implementing": 1}, Prompt: "Read the tester's thread before you write anything."}
-	id := int64(80)
-	for _, issue := range []string{"LEGION-942", "LEGION-941"} {
-		for _, payload := range []record.OutboxPayload{ended, hook} {
-			row := mustOutboxRow(t, issue, payload, time.Now())
-			row.ID, id = id, id+1
-			if err := runner.execute(ctx, row); err != nil {
-				t.Fatalf("execute %s's %T row: %v", issue, payload, err)
-			}
+	for i, issue := range []string{"LEGION-942", "LEGION-941"} {
+		row := mustOutboxRow(t, issue, hook, time.Now())
+		row.ID = int64(80 + i)
+		if err := runner.execute(ctx, row); err != nil {
+			t.Fatalf("execute %s's hook prompt row: %v", issue, err)
 		}
 	}
 	publisher.mu.Lock()
 	published := slices.Clone(publisher.publish)
 	publisher.mu.Unlock()
 	want := notify.RoleTopicPrefix + string(held)
-	if len(published) != 2 {
-		t.Fatalf("published %d messages, want 2, both to %s: %s records a session another claim holds, so nothing goes to its role, kept or not: %+v",
+	if len(published) != 1 {
+		t.Fatalf("published %d messages, want 1, to %s: %s records a session another claim holds, so nothing goes to its role, kept or not: %+v",
 			len(published), want, unheld, published)
 	}
 	for _, p := range published {

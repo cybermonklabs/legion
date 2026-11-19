@@ -60,9 +60,10 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
+      # The Go half's database. The browser half runs on a Postgres of its own, which the harness
+      # starts per step (e2e/harness-postgres.ts) from the same image digest the service runs, so
+      # the service's pull is that step's too.
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      # The browser half's own database, which its rows truncate.
-      DATABASE_URL: postgres://postgres:ci@localhost:5432/dispatch_cross_build?sslmode=disable
       # The first-rollout build's commit, the release tagged legion-envoy-v30.20.2. That tag is
       # lightweight and no ruleset protects it, so it can move: the commit is the pin.
       # firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go holds the same
@@ -204,13 +205,27 @@ jobs:
         timeout-minutes: 4
         run: bunx playwright install chromium
         working-directory: packages/dispatch
+      # The stack's connection limit, read outside the browser steps, where
+      # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS), as
+      # dispatch-browser.yaml's multiprocess job reads it, for the reason that job's head gives:
+      # each browser step below runs on the harness's own Postgres, whose commits do not wait for
+      # the runner's disk, rather than on the service, which keeps crash safety on.
+      - name: Read the connections the two-build stack's Postgres must allow
+        id: connections
+        timeout-minutes: 2
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
       - name: Browser-test each build's page against the other build's server
         # B is the previous build, which serves on the socket the harness holds for it, as A does,
         # so this step names no port for it.
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
         run: |
-          psql "postgres://postgres:ci@localhost:5432/postgres" -c 'create database dispatch_cross_build'
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           DISPATCH_E2E_BINARY_B="$DISPATCH_PREVIOUS_BUILD/envoy-dispatch" \
             DISPATCH_E2E_WEB_DIST_B="$DISPATCH_PREVIOUS_BUILD/web" \
             bun run e2e:multiprocess -- cross-build.multiprocess
@@ -222,15 +237,14 @@ jobs:
       # versions are equal. The step tells the spec this is the first-rollout run with
       # DISPATCH_E2E_FIRST_ROLLOUT_COMMIT: the spec fails unless B is that commit and the registry
       # reads version 0 while B is live, and pageWritable then reads each direction's rule from the
-      # registry. The database is made again, so this run starts from what the step above started
-      # from.
+      # registry. Its Postgres is a new one the harness starts, so this run starts from what the
+      # step above started from.
       - name: Browser-test each build's page against the first-rollout build's server
         env:
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: |
-          psql "postgres://postgres:ci@localhost:5432/postgres" \
-            -c 'drop database dispatch_cross_build with (force)' \
-            -c 'create database dispatch_cross_build'
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           DISPATCH_E2E_BINARY_B="$DISPATCH_FIRST_ROLLOUT_BUILD/envoy-dispatch" \
             DISPATCH_E2E_WEB_DIST_B="$DISPATCH_FIRST_ROLLOUT_BUILD/web" \
             DISPATCH_E2E_FIRST_ROLLOUT_COMMIT="$FIRST_ROLLOUT_COMMIT" \

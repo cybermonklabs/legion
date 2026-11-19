@@ -26,7 +26,8 @@ run pay for the rest, each of which has the wall time for them.
 
 A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 gives: `services:` is a job-level key and a composite action's step keys do not include
-timeout-minutes, and this file needs both. That is also why the shard and alone jobs repeat
+timeout-minutes, and this file needs the second, on its steps; no job of it holds `services:` since
+its two-process and embedder jobs' Postgres became the harness's own. That is also why the shard and alone jobs repeat
 their step lists rather than sharing one - they are kept textually identical where they are the
 same, so a reader can diff them.
 
@@ -725,10 +726,25 @@ second build of the dashboard, which is what a rolling release puts in front of 
 runs only the *.multiprocess.e2e.ts specs, in Chromium, in a job of its own so the default
 suite's job does not wait on a second Vite build and two more servers.
 
+That Postgres is the harness's own, a `docker run` of the image the job's "Pull the multiprocess stack's Postgres image" step pulls, per Playwright run
+(e2e/harness-postgres.ts), as the visual job's is, and not a `services:` container. The
+harness starts its servers with crash safety off, so no commit waits for the runner's disk.
+With it on, merge-group run 44456291758 (job 135332117623) failed here: the disk stopped
+answering for about 5 s, the read mark a closed page left in flight could neither commit nor
+be cancelled, and the next row's reset could not lock `user_document_reads` within its 5 s. A
+service can be given those three settings too, with `alter system` and a reload, as
+docs-site.yaml's is; this job takes the harness's server rather than a second copy of its
+settings, and that server loads the stall library below as it starts, which a service,
+started before any step has built the library, could do only after a restart. The suite's
+row e2e/read-marker-disk-stall.multiprocess.e2e.ts stalls the disk on purpose, through the
+library the harness preloads where DISPATCH_E2E_PG_STALL_DIR names a directory
+(e2e/disk-stall.ts), and holds this job to the same reset.
+
 ## The two-process job's measured steps and its budgets
 
-The budgets, this job's `timeout-minutes` and the three on its steps, are measured: GitHub's jobs API over
-the 397 of the newest 400 ci.yaml runs that could be read, created between
+The budgets of the install, dashboard and sign-in steps, and the job's `timeout-minutes` from them, are
+measured (the connections step's is the floor, as the end of this section says): GitHub's
+jobs API over the 397 of the newest 400 ci.yaml runs that could be read, created between
 2026-11-05T04:52:45Z and 2026-11-05T21:06:27Z (268 pull_request, 120 merge_group, 12
 push), over the 335 jobs of this name that concluded success. That window is before
 cybermonklabs/legion#2771 took ci.yaml's push trigger away, which is why it holds push runs
@@ -747,7 +763,16 @@ file's head; this job states only what it measured and what that rule gives here
 for the sign-in step, and 4 min for the install step, for the reason
 .github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is gives.
 The job budget is the sum of its step budgets plus the measured maximum of every step
-without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min. With budgets on the steps, the
+without one, rounded up: 4 + 4 + 2 min plus 135 s = 13 min, until the job's Postgres moved
+from a `services:` container to the harness's own (.github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs says why). That added
+two steps: the image's pull, which has no budget and counts at the 120 s the visual job
+counts its pull of the same digest at (the time a browser step spent before its stack's
+first output on the run that found the need; the pull took 13 s in run 44480885813), and the
+connections read, which takes the two-minute floor until runs of it are measured. 4 + 4 +
+2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min. The dashboard step now also starts
+the stack's container and builds the stall library, and its four runs since took 118 s,
+114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
+the 202 s its 4 min derives from. With budgets on the steps, the
 `if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
 
 The move into this workflow changed none of that: the job runs the same steps on the same
@@ -789,8 +814,9 @@ apt source, which it carried only because that source's index intermittently fai
 `apt-get update`.
 
 The fonts are not needed: this job's specs are every *.multiprocess.e2e.ts there is --
-coedit, signin and two-builds today (`multiprocessSpecs` in e2e/playwright.config.ts
-matches them by that suffix, so a new one joins without an edit here) -- and they run
+coedit, cross-build, read-marker-disk-stall, signin and two-builds today
+(`multiprocessSpecs` in e2e/playwright.config.ts matches them by that suffix, so a new
+one joins without an edit here) -- and they run
 headless Chromium and compare no screenshot (none holds `toHaveScreenshot` or
 `toMatchSnapshot`), and fonts-liberation and fonts-noto-color-emoji are on the image
 already. A row that later needs CJK or Thai glyphs would fail visibly.
@@ -811,11 +837,38 @@ image that carries the browsers, which took their restores and ci-caches.yaml's
 browsers job with them (dispatch://INFRA-1443). This job stays on the runner, because
 nothing can make it launch another engine, and so keeps this one download.
 
+## Why the two-process job pulls its stack's Postgres image
+
+The image the harness starts each Playwright run's Postgres from, pulled here so the
+browser steps of its job after it do not pay for it inside their own budgets, as the visual job pulls
+it. The digest is the browser steps', written three times, and the three must stay the
+same: a pull of another digest leaves the browser step to pull its own. Each new step's
+name carries the lane, as the embedder job's build step's does, for the reason
+.github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name gives.
+
+## Why the two-process job reads its stack's connection limit in a step of its own
+
+The stack's connection limit, read outside the browser steps' budgets, where
+e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS), as the
+visual job reads it. Two processes fit in it: it is testlimits.ServerConnections, sized
+for four.
+
+## What the two-process dashboard step runs against
+
+Builds the dashboard twice (A's and B's, with distinct build ids) and runs the
+multiprocess specs through the round-robin proxy, against one Postgres the harness
+starts from the image the "Pull the multiprocess stack's Postgres image" step pulls. DISPATCH_E2E_PG_STALL_DIR is the directory the
+harness builds e2e/fsync-stall.c into and preloads into that server, which
+e2e/read-marker-disk-stall.multiprocess.e2e.ts needs: on GitHub Actions
+(GITHUB_ACTIONS=true) the row fails without it, and elsewhere, an agent's shell
+included, it is skipped. The runner's own cc builds it.
+
 ## What the sign-in row across two processes reads
 
 Both processes sign people in through the dev OIDC issuer (DISPATCH_E2E_SIGNIN=oidc,
 e2e/harness-signin.ts), and its one spec starts a sign-in on A and completes it on B. The
 step before built the dashboard; B serves A's build, which this spec does not tell apart.
+Its Postgres is a second one the harness starts from the same image.
 
 ## Why the two-process job's upload runs on failure alone
 
@@ -849,7 +902,11 @@ multiprocess job's measured steps, which are the same steps on the same machine:
 step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The job
 budget is those two plus that job's measured 135 s maximum for every step without one,
 rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
-their own, as this file's head requires.
+their own, as this file's head requires. Its Postgres then moved from a `services:`
+container to the harness's own, for the reason .github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs gives, which
+added that job's two steps for it at that job's figures: the pull at 120 s and the
+connections read at its two-minute floor. 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s
+-> 15 min.
 
 ## Why the embedder job builds contracts
 

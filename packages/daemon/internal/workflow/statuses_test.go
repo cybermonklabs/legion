@@ -115,7 +115,7 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 		told := reviewStuckNotices(t, pool)
-		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded; commit statuses: "ci" failure, "deploy" success. The daemon reads no ruleset`
+		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded; commit statuses: "ci" failure, "deploy" success. The daemon reads the base's rules only on a conflicting read`
 		if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
 			t.Fatalf("review-stuck notices %+v, want one reading %q", told, want)
 		}
@@ -136,7 +136,7 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 		apply("blocked", intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", HeadSHA: headTwo,
 			Mergeable: record.MergeabilityMergeable, MergeState: record.MergeStateBlocked})
 		told := reviewStuckNotices(t, pool)
-		want := "GitHub reported on head " + headTwo + `: "unit tests" succeeded. The daemon reads no ruleset`
+		want := "GitHub reported on head " + headTwo + `: "unit tests" succeeded. The daemon reads the base's rules only on a conflicting read`
 		if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
 			t.Fatalf("review-stuck notices %+v, want one reading %q and naming no status of %s", told, want, headOne)
 		}
@@ -153,7 +153,7 @@ func TestTheStuckNoticeNamesStatusesOfTheCurrentHeadAlone(t *testing.T) {
 		apply("approve", intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "approved", CommitID: headOne,
 			HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("ship it", headOne)})
 		told := reviewStuckNotices(t, pool)
-		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded. The daemon reads no ruleset`
+		want := "GitHub reported on head " + headOne + `: "unit tests" succeeded. The daemon reads the base's rules only on a conflicting read`
 		if len(told) != 1 || !strings.Contains(told[0].Reason, want) {
 			t.Fatalf("review-stuck notices %+v, want one reading %q and naming no status of %s", told, want, earlier)
 		}
