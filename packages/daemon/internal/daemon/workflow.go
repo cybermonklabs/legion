@@ -429,11 +429,14 @@ func proveAppKeys(ctx context.Context, apps appauth.OwnerInstallations, installe
 // the record carried its repository (backfillRepositories, which leaves a record it cannot fill
 // for the refresher), then the deployment's design-gate steps queued for the project's Dispatch
 // row (queueGatedStepsPublish) and the recorded gate of every issue Dispatch has not closed queued
-// for its own (queueRecordedGatesPublish). It reads GitHub for a repository only to fill a record
-// that lacks its repository columns, one read per such record bounded by installReadAttempt
-// (backfillRead), a read that fails leaving the record for the refresher; the preparation of the
+// for its own (queueRecordedGatesPublish). The key proof under the App's JWT mints no token for an
+// owner. It reads GitHub for a repository only to fill a record that lacks its repository columns,
+// one read per such record bounded by installReadAttempt (backfillRead), which mints the token that
+// read needs, a read that fails leaving the record for the refresher; the preparation of the
 // repositories the records name is the refresher's first job, once the API serves
-// (prepareAtStart), so no other read of GitHub for a repository can stop or slow the boot.
+// (prepareAtStart), beside the boot, so no other read of GitHub for a repository here can stop or
+// slow the boot. The boot's one-time rename pass, which runs after this (renameAtBoot), reads
+// GitHub for a configured pair only while a stored row still names the pair's `from`.
 //
 // hookPrompts are the words boot read for every hook whose `prompt_file` names a file, by hook
 // name (readBoot): the engine is given each hook's words, never a path.

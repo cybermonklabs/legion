@@ -862,3 +862,138 @@ func TestAGitHubRedirectOfAPairsOldNameShowsItsTransfer(t *testing.T) {
 		t.Fatalf("GitHub was asked %v, want no read of the installation its redirect names", asked)
 	}
 }
+
+// transferredGitHub is a GitHub after the transfer of INFRA's pair, read through real App
+// credentials (the implement App id 1 and the review App id 2), so that every request a reader of
+// the pair makes reaches it and is kept, as "<method> <path>": neither App is installed under the
+// pair's `from` (404) and both are under its `to` (installation 77); the implement App's token for
+// the `to` owner is minted through the installations' discovery, the installation's permissions
+// read, its exchange and the reads of the App's bot identity (GET /app, GET /users/<bot>); and GET
+// /repos/cybermonklabs/legion names the repository, at main.
+type transferredGitHub struct {
+	apps  *appauth.Manager
+	url   string
+	mu    sync.Mutex
+	asked []string
+}
+
+func newTransferredGitHub(t *testing.T) *transferredGitHub {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privatePEM := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	github := &transferredGitHub{}
+	server := githubtest.Serve(t, githubtest.Spec{
+		Record: func(r *http.Request) {
+			github.mu.Lock()
+			defer github.mu.Unlock()
+			github.asked = append(github.asked, r.Method+" "+r.URL.Path)
+		},
+		Handle: func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/" + renameFrom + "/installation":
+				w.WriteHeader(http.StatusNotFound)
+				fmt.Fprint(w, `{"message":"Not Found"}`)
+			case "/repos/" + renameTo + "/installation":
+				fmt.Fprint(w, `{"id":77}`)
+			case "/app/installations":
+				fmt.Fprint(w, `[{"id":77,"account":{"login":"`+ghrepo.MustParse(renameTo).Owner()+`"}}]`)
+			case "/app/installations/77":
+				fmt.Fprint(w, `{"id":77,"permissions":{"actions":"write","checks":"write","contents":"write","metadata":"read","pull_requests":"write","statuses":"write","workflows":"write"}}`)
+			case "/app/installations/77/access_tokens":
+				mintedToken(w, "installation-token", exchangeBody(t, r))
+			case "/app":
+				fmt.Fprintf(w, `{"slug":"legion-test-%s"}`, jwtIssuer(t, r))
+			case "/users/legion-test-1[bot]", "/users/legion-test-2[bot]":
+				fmt.Fprint(w, `{"id":42}`)
+			case "/repos/" + renameTo:
+				fmt.Fprint(w, `{"full_name":"`+renameTo+`","default_branch":"main"}`)
+			default:
+				githubtest.Unexpected(t, w, r)
+			}
+		},
+	})
+	github.url = server.URL
+	github.apps = appauth.New(config.GitHubApps{
+		Implement: config.GitHubApp{AppID: "1", PrivateKey: privatePEM},
+		Review:    config.GitHubApp{AppID: "2", PrivateKey: privatePEM},
+	}, appauth.Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
+	return github
+}
+
+// take is each request g was sent since the last take, in the order they came.
+func (g *transferredGitHub) take() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	asked := g.asked
+	g.asked = nil
+	return asked
+}
+
+// The rename pass sends GitHub no request for a pair that no stored row names (dispatch://INFRA-4401
+// A2 and A10, check a-go, item 10): it reads each pair's rows first, and asks GitHub whether the
+// pair's transfer has happened only where a row still names its `from`. Each pass here runs on a
+// workflow runtime of its own, as a process boots it, with no background loop running and a
+// repository state that holds no answer (renameRuntime), and every request it could make for the
+// pair — both role Apps' installation reads of both names, the mint of the implement App's token
+// for the `to` owner and the read of the `to`'s name and default branch — reaches one stand-in
+// GitHub, which counts it (transferredGitHub). Where the project's rows name the pair's `to` and
+// another repository, but not its `from`, the boot's pass (renameAtBoot) and the end of both
+// issues' pods (podEndsOn) send it nothing and log no line of a pair left, and the boot still logs
+// each table's line, nothing left on the `from`. Once a row names the `from`, the boot's pass reads
+// the pair, and writes it. Control: with the pair decided before its rows are read (run asking
+// transferred before candidates), the boot's pass and the pod end each send GitHub the pair's
+// reads.
+func TestTheRenamePassSendsGitHubNoRequestForAPairNoRowNames(t *testing.T) {
+	ctx := context.Background()
+	github := newTransferredGitHub(t)
+	pool := isolatedOutboxPool(t)
+	seedRenameRecords(t, pool, "LEGION", renameSeed{key: "LEGION-1", repo: renameTo, branch: "legion/LEGION-1", check: true, note: true},
+		renameSeed{key: "LEGION-2", repo: "acme/widgets"})
+	rt := fake.NewRuntime()
+	process := func(logged *syncBuffer) *workflowRuntime {
+		w := renameRuntime(t, pool, github.apps, github.url, logged)
+		w.defaultBranches = newDefaultBranches(github.apps, w.repositories, github.url, defaultBranchTTL, time.Now)
+		return w
+	}
+
+	var boot syncBuffer
+	process(&boot).renameAtBoot(ctx, rt)
+	if asked := github.take(); len(asked) != 0 {
+		t.Errorf("the boot's rename pass sent GitHub %v, want no request: no row names %s", asked, renameFrom)
+	}
+	if left := renameLines(t, boot.String(), renameLeftLine); len(left) != 0 {
+		t.Errorf("the boot's lines of a pair left = %+v, want none: no row names %s", left, renameFrom)
+	}
+	want := map[string]renameTableTally{"issues": {}, "pull_requests": {}, "production_checks": {}, "repo_notes": {}}
+	if got := renameTables(t, boot.String()); !reflect.DeepEqual(got, want) {
+		t.Errorf("the boot's table lines = %+v, want each table's, nothing written and nothing left", got)
+	}
+
+	var podEnd syncBuffer
+	process(&podEnd).podEndsOn(rt)(ctx, []string{"LEGION-1", "LEGION-2"})
+	if asked := github.take(); len(asked) != 0 {
+		t.Errorf("the pod end's rename pass sent GitHub %v, want no request: no row of its issues names %s", asked, renameFrom)
+	}
+	if lines := renameLines(t, podEnd.String(), renameLeftLine); len(lines) != 0 {
+		t.Errorf("the pod end's lines of a pair left = %+v, want none", lines)
+	}
+	if lines := renameLines(t, podEnd.String(), renameTableLine); len(lines) != 0 {
+		t.Errorf("the pod end's table lines = %+v, want none: no row of its issues names %s", lines, renameFrom)
+	}
+
+	seedRenameRecords(t, pool, "LEGION", renameSeed{key: "LEGION-3", repo: renameFrom})
+	var next syncBuffer
+	process(&next).renameAtBoot(ctx, rt)
+	asked := github.take()
+	for _, read := range []string{"GET /repos/" + renameFrom + "/installation", "GET /repos/" + renameTo + "/installation", "GET /repos/" + renameTo} {
+		if !slices.Contains(asked, read) {
+			t.Errorf("the next boot's rename pass sent GitHub %v, want %s among them: LEGION-3 names %s", asked, read, renameFrom)
+		}
+	}
+	if names := storedRepositoryNames(t, pool, "LEGION-3"); !namedAll(names, renameTo) {
+		t.Errorf("LEGION-3's stored names after the next boot = %v, want each on %s", names, renameTo)
+	}
+}

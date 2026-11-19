@@ -45,7 +45,9 @@ const (
 // record rewritten then would address a repository GitHub does not hold yet, which nothing could
 // undo, since the pass matches only the `from`. So the pass writes a pair only once GitHub shows
 // that the transfer has happened (transferred), and leaves every other pair as it is, with one
-// line saying why, for a later pass to write.
+// line saying why, for a later pass to write. It asks that of a pair only while a row of the
+// issues it runs over still names the pair's `from` (run), so a pass with nothing to write has no
+// transfer to prove and reads nothing of GitHub.
 //
 // Each issue is written in one transaction of its own, under the lock every fact applies under
 // (intake.SerializeFacts), so no fact applies with a copy of the issue read before the pass wrote
@@ -60,7 +62,8 @@ type renamePass struct {
 	renames ghrepo.Renames
 	// transferred is whether GitHub shows pair's transfer (workflowRuntime.renameTransfer):
 	// GitHub's spelling of the pair's `to`, which the pass writes, and otherwise why the pair is
-	// left as it is, "" where it is not.
+	// left as it is, "" where it is not. run asks it only of a pair whose `from` a row it read
+	// still names (candidates).
 	transferred func(ctx context.Context, pair ghrepo.Rename) (to ghrepo.Repository, left string)
 	// keep is the live-pod rule: why issue's rows are left as they are, "" for none, asked with
 	// each spelling of the old name its rows hold and the pair's own (workspace.Location keeps
@@ -147,12 +150,15 @@ type renameTally struct {
 }
 
 // run runs the pass over every issue of the project whose rows name a pair's `from`, or over keys
-// alone when keys is not nil, and answers whether it wrote a row. Each pair is decided before its
-// rows are read (transferred): a pair whose transfer GitHub shows is written in GitHub's spelling
-// of its `to`, and every other pair is left as it is, with one line naming it and why
-// (renameLeftLine). It logs that line, and one line per table (renameTableLine), whenever it runs
-// at boot, and at the end of a pod only where the pod's issues named a `from`, so that every pod
-// end after the stored names are rewritten logs nothing.
+// alone when keys is not nil, and answers whether it wrote a row. Each pair's rows are read first
+// (candidates), and a pair is decided (transferred) only where a row of them still names its
+// `from`, at boot and at the end of a pod alike: for a pair no row names, the pass sends GitHub no
+// request and logs no line of its own, so once no row names a pair's `from`, no pass reads GitHub
+// for that pair. A pair whose transfer GitHub shows is written in GitHub's spelling of its `to`,
+// and every other pair is left as it is, with one line naming it and why (renameLeftLine). It logs
+// one line per table (renameTableLine) whenever it runs at boot, and at the end of a pod only
+// where the pod's issues named a `from`, so that every pod end after the stored names are
+// rewritten logs nothing.
 func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
 	pairs := p.renames.Pairs()
 	if len(pairs) == 0 {
@@ -165,15 +171,6 @@ func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
 	named := false
 	for _, pair := range pairs {
 		from := pair.From.String()
-		to, left := p.transferred(ctx, pair)
-		if ctx.Err() != nil {
-			return wrote
-		}
-		leave := func() { p.log.Warn(renameLeftLine, "from", from, "to", pair.To.String(), "reason", left) }
-		if left != "" && keys == nil {
-			leave()
-			continue
-		}
 		candidates, err := p.candidates(ctx, from, keys)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -182,11 +179,16 @@ func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
 			p.log.Warn(renameUnreadLine, "from", from, "to", pair.To.String(), "error", err)
 			continue
 		}
-		named = named || len(candidates) > 0
+		if len(candidates) == 0 {
+			continue
+		}
+		named = true
+		to, left := p.transferred(ctx, pair)
+		if ctx.Err() != nil {
+			return wrote
+		}
 		if left != "" {
-			if len(candidates) > 0 {
-				leave()
-			}
+			p.log.Warn(renameLeftLine, "from", from, "to", pair.To.String(), "reason", left)
 			continue
 		}
 		for _, candidate := range candidates {
@@ -305,25 +307,26 @@ func (w *workflowRuntime) renamePass(keep renameKeep) renamePass {
 }
 
 // renameTransfer is whether GitHub shows that pair's transfer has happened, the rename pass's
-// question of each pair before it reads the pair's rows (renamePass.transferred): both role Apps
-// answered installed on the pair's `to` and neither on its `from`, each name read under its own
-// name and following no redirect (readInstallations), which is the rename rule's own question
-// (servesLocked) once GitHub has answered both. The answers are the repository state's where it
-// holds them (entryOf); a name it holds no answer for yet — at boot, where the pass runs before the
-// refresher's first read of the pairs — the pass reads itself and keeps in the state as the
-// refresher would (readPairNames).
+// question of a pair once it has read the pair's rows and a row still names the pair's `from`
+// (renamePass.transferred, which run asks of no other pair): both role Apps answered installed on
+// the pair's `to` and neither on its `from`, each name read under its own name and following no
+// redirect (readInstallations), which is the rename rule's own question (servesLocked) once GitHub
+// has answered both. The answers are the repository state's where it holds them (entryOf); a name
+// it holds no answer for yet — at boot, where the pass runs before the refresher's first read of
+// the pairs — the pass reads itself and keeps in the state as the refresher would (readPairNames).
 //
 // It answers GitHub's spelling of the `to`, which the pass writes on every column: a record's
 // GitHub spelling is what GitHub intake builds its case-sensitive subjects from
 // (record.Issue.GitHubRepo), and a pair compares names without case, so `legion.yaml` may spell the
 // `to` as nothing publishes under. The spelling is the one the state records for the `to`
-// (recordRepository), else GitHub's read of its name and default branch (defaultBranches.Named),
-// bounded by installReadAttempt.
+// (recordRepository), else GitHub's read of its name and default branch (readName), which mints an
+// implement App token for the `to` owner.
 //
 // Otherwise it answers why the pair is left as it is: a read that did not answer, a role App not
 // installed on the `to`, one still installed on the `from` — a pair configured before its transfer
 // — or a read of the `to`'s name that did not answer or named another repository. A later pass
-// asks again: the next pod end, of what the state holds then, or the next boot.
+// asks again: the end of a pod whose issue's rows name the `from`, of what the state holds then,
+// or the next boot.
 func (w *workflowRuntime) renameTransfer(ctx context.Context, pair ghrepo.Rename) (ghrepo.Repository, string) {
 	var unread []ghrepo.Repository
 	for _, name := range []ghrepo.Repository{pair.From, pair.To} {
@@ -352,12 +355,10 @@ func (w *workflowRuntime) renameTransfer(ctx context.Context, pair ghrepo.Rename
 	}
 	spelled := to.recorded.Name
 	if !strings.EqualFold(spelled.String(), pair.To.String()) {
-		attempt, cancel := context.WithTimeout(ctx, installReadAttempt)
-		read, err := w.defaultBranches.Named(attempt, pair.To)
-		cancel()
+		read, why, _ := w.readName(ctx, pair.To)
 		switch {
-		case err != nil:
-			return ghrepo.Repository{}, fmt.Sprintf("the name and default branch of %s could not be read: %v", pair.To, err)
+		case why != "":
+			return ghrepo.Repository{}, why
 		case !strings.EqualFold(read.Name.String(), pair.To.String()):
 			return ghrepo.Repository{}, fmt.Sprintf("GitHub names %s as %s, another repository", pair.To, read.Name)
 		}
@@ -367,19 +368,16 @@ func (w *workflowRuntime) renameTransfer(ctx context.Context, pair ghrepo.Rename
 }
 
 // stillInstalledOn is the sentence naming each role App GitHub answered is installed on from, a
-// configured pair's `from`, where a transfer leaves none: "the implement and review Apps are still
-// installed on sjawhar/legion", or one App alone.
+// configured pair's `from`, where a transfer leaves none (appauth.AppsAre): "the implement and
+// review Apps are still installed on sjawhar/legion", or one App alone.
 func stillInstalledOn(apps appInstallations, from string) string {
-	var installed []string
+	var installed []appauth.AppRole
 	for _, role := range appauth.Roles {
 		if apps.of(role).installed {
-			installed = append(installed, string(role))
+			installed = append(installed, role)
 		}
 	}
-	if len(installed) == 1 {
-		return "the " + installed[0] + " App is still installed on " + from
-	}
-	return "the " + strings.Join(installed, " and ") + " Apps are still installed on " + from
+	return appauth.AppsAre(installed, "still installed on "+from)
 }
 
 // renameAtBoot runs the rename pass over every issue of the project at boot, under rt's live-pod

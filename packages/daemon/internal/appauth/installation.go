@@ -28,16 +28,24 @@ var _ Installations = (*Manager)(nil)
 // NotInstalledOn is the sentence naming missing, the role Apps GitHub answered are not installed
 // on repo, in the words the daemon refuses an admission with and legion state shows: "the review
 // App is not installed on acme/gadgets", or "the implement and review Apps are not installed on
-// acme/gadgets" for both. missing holds one role at least.
+// acme/gadgets" for both (AppsAre). missing holds one role at least.
 func NotInstalledOn(missing []AppRole, repo string) string {
-	if len(missing) == 1 {
-		return "the " + string(missing[0]) + " App is not installed on " + repo
+	return AppsAre(missing, "not installed on "+repo)
+}
+
+// AppsAre is the sentence saying of roles, each a role App, what predicate says of them: "the
+// review App is <predicate>", or "the implement and review Apps are <predicate>" for both. It
+// builds NotInstalledOn's sentence and the daemon's rename pass's of the Apps still installed on a
+// configured pair's old name ("still installed on sjawhar/legion"). roles holds one role at least.
+func AppsAre(roles []AppRole, predicate string) string {
+	if len(roles) == 1 {
+		return "the " + string(roles[0]) + " App is " + predicate
 	}
-	names := make([]string, 0, len(missing))
-	for _, role := range missing {
+	names := make([]string, 0, len(roles))
+	for _, role := range roles {
 		names = append(names, string(role))
 	}
-	return "the " + strings.Join(names, " and ") + " Apps are not installed on " + repo
+	return "the " + strings.Join(names, " and ") + " Apps are " + predicate
 }
 
 // Logins answers each GitHub App's bot login under the App's own JWT, which needs no installation

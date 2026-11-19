@@ -41,16 +41,22 @@ answer, when a role App is not installed on the repository, or when GitHub does 
 read, that launch is refused too, naming the cause. The daemon stays up in each case.
 
 The daemon boots for any project: one with no repository, one with no default repository, and
-one with no record. The boot reads GitHub for no repository but to fill a record that lacks its
-repository columns: one read per such record, bounded at 15 seconds, and a read that fails leaves
-the record for the daemon to fill later. It proves each role App's key with GitHub's read of that
-App's installations: a refusal of that read stops the boot and names the App, and an App
-installed on no account boots, with one log line that says so. A boot of a project whose live
+one with no record. The boot proves each role App's key with GitHub's read of that App's
+installations: a refusal of that read stops the boot and names the App, and an App installed on no
+account boots, with one log line that says so. The key proof under the App's JWT mints no token
+for an owner; every other step of the boot that reads GitHub or writes a cache's credential mints
+the token that step needs.
+One such step fills a record that lacks its repository columns: one read per such record, bounded
+at 15 seconds, and a read that fails leaves the record for the daemon to fill later. The one-time
+rename pass of `repository_renames` (below) reads GitHub for a pair only while a stored row still
+names the pair's `from`: then it reads both role Apps' installations on the pair's two names and,
+where the daemon holds no spelling of the `to`, GitHub's spelling of it; once no row names a
+pair's `from`, the pass reads nothing of GitHub for that pair. A boot of a project whose live
 records name no repository, a fresh install's, logs one line at info: `workflow: no live record
 of the project names a repository, so the daemon serves no repository until an issue names one`.
-Once the API serves, the daemon prepares each repository its records name. It also prepares a
-repository when the first issue on it is admitted, and when a launch works a repository that no
-live record names. To prepare a
+Once the API serves, the daemon prepares each repository its records name, beside the boot. It
+also prepares a repository when the first issue on it is admitted, and when a launch works a
+repository that no live record names. To prepare a
 repository is to read both role Apps' installations on it, its name and default branch as GitHub
 has them, and Dispatch's webhook App on it, and then to hear its GitHub events and, under
 `runtime: kubernetes`, to keep its cache.

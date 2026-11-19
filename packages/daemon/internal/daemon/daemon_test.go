@@ -1196,8 +1196,10 @@ func liveTreeBoard(t *testing.T, project string) string {
 // running in implementing on repo (seedWorkflowTree), with tokens, GitHub's REST API at githubAPI
 // and logging to log. It answers the root's key, the running daemon and the state's entry for repo
 // once that entry carries what the refresher's preparation of the records' repositories kept (its
-// Apps or its read error): the boot itself reads GitHub for no repository, and the preparation
-// runs once the API serves (prepareAtStart, INFRA-4401 D4).
+// Apps or its read error): the boot itself reads GitHub for no repository here, since the record
+// carries its repository columns and no `repository_renames` pair is configured (so neither the
+// backfill nor the rename pass reads one), and the preparation runs once the API serves
+// (prepareAtStart, INFRA-4401 D4).
 func bootOverALiveTree(t *testing.T, repo string, tokens appauth.Source, githubAPI string, log *slog.Logger) (string, *daemon, api.LiveRepositoryView) {
 	t.Helper()
 	cfg := workflowConfigOn(t, workflowNATS(t), liveTreeBoard)
@@ -1459,10 +1461,10 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// The boot mints no App token: it proves each App's key by reading its installations
-	// (proveAppKeys), and the project's records name no repository to read.
+	// This boot mints no App token: the key proof under the App's JWT mints no token for an owner
+	// (proveAppKeys), and the project's records name no repository for another step to read.
 	if got := tokens.Roles(); len(got) != 0 {
-		t.Fatalf("App token roles = %v, want none: the boot mints no token", got)
+		t.Fatalf("App token roles = %v, want none: the key proof under the App's JWT mints no token for an owner, and no record names a repository", got)
 	}
 	want := []string{"prompts", "store", "config", "appauth", "launcher", "intake", "admission", "outbox", "api"}
 	var got []string

@@ -548,17 +548,19 @@ var installReadRetry = bootprobe.Retry{Initial: 30 * time.Second, Max: 10 * time
 // (defaultHoldWarnEvery), by which a hold that has not released is a fault worth naming.
 var recoveryHoldBound = defaultHoldWarnEvery
 
-// installReadAttempt bounds one read of GitHub or Dispatch a preparation makes: as long as any one
-// GitHub call the boot waits for (appMintAttempt), so a GitHub that answers slowly is still
-// answered for, while a read GitHub has not answered by then is a read that did not answer, and a
-// repository GitHub hangs on is read again later rather than holding up the rest. It bounds each
-// installation read (readInstallations), each webhook App check (checkWebhookAppOn), each
-// preparation's read of a repository's name and default branch (prepareName, whichever caller
-// prepares: the refresher, a launch or an admission), an admission's read again of the default
-// branch of a repository an entry records issues on (prepareUnrecorded), and each read of a
-// record's repository for its backfill (backfillRead). Nothing bounds a preparation as a whole:
-// repositoryReads repositories are prepared at once, so a preparation of n repositories, four
-// reads each, takes at most ceil(n / repositoryReads) × 4 of these.
+// installReadAttempt bounds one read of GitHub or Dispatch a preparation or the rename pass makes:
+// as long as any one GitHub call the boot waits for (appMintAttempt), so a GitHub that answers
+// slowly is still answered for, while a read GitHub has not answered by then is a read that did
+// not answer, and a repository GitHub hangs on is read again later rather than holding up the
+// rest. It bounds each installation read (readInstallations), each webhook App check
+// (checkWebhookAppOn), each read of a repository's name and default branch (readName) that a
+// preparation makes (prepareName, whichever caller prepares: the refresher, a launch or an
+// admission) or the rename pass makes of a configured pair's `to` (renameTransfer), an
+// admission's read again of the default branch of a repository an entry records issues on
+// (prepareUnrecorded), and each read of a record's repository for its backfill (backfillRead).
+// Nothing bounds a preparation as a whole: repositoryReads repositories are prepared at once, so a
+// preparation of n repositories, four reads each, takes at most ceil(n / repositoryReads) × 4 of
+// these.
 var installReadAttempt = 15 * time.Second
 
 // repositoryReads is how many repositories the refresher prepares at once.
@@ -629,11 +631,11 @@ func (a nameAnswer) refusal() string {
 //
 //  1. both role Apps' installations on under (readInstallations);
 //  2. once both reads answered, installed or not, the name and default branch of named as GitHub
-//     has them (defaultBranches.Named, which reads the repository GitHub holds named under and
-//     keeps its read, and its TTL, under named itself), bounded by installReadAttempt. A read
-//     GitHub's rate limit refused is served on the default branch a record of the project holds for
-//     named, where branches is set and a record holds one (holdLimited); one not so served is a
-//     read that did not answer, and is answered as limited for the caller's own rule;
+//     has them (readName: defaultBranches.Named, which reads the repository GitHub holds named
+//     under and keeps its read, and its TTL, under named itself), bounded by installReadAttempt.
+//     A read GitHub's rate limit refused is served on the default branch a record of the project
+//     holds for named, where branches is set and a record holds one (holdLimited); one not so
+//     served is a read that did not answer, and is answered as limited for the caller's own rule;
 //  3. once both role Apps answered installed and GitHub named the repository, Dispatch's webhook
 //     App on under (checkWebhookAppOn), spelled as GitHub spells it where GitHub named it under
 //     that name, which is the spelling the record keeps and legion state shows;
@@ -651,20 +653,18 @@ func (w *workflowRuntime) prepareName(ctx context.Context, under, named ghrepo.R
 		answer.missing = apps.missing()
 	}
 	if unread == "" && named != (ghrepo.Repository{}) {
-		attempt, cancel := context.WithTimeout(ctx, installReadAttempt)
-		read, err := w.defaultBranches.Named(attempt, named)
-		cancel()
+		read, readError, err := w.readName(ctx, named)
 		if limit, wait, limited := defaultBranchLimit(err); limited {
 			refused := limitedRead{repo: named, answer: limit, err: err, wait: wait, until: w.defaultBranches.now().Add(wait)}
 			answer.limited = &refused
 			if branches != nil {
 				if held, ok, holdErr := w.holdLimited(refused, branches); holdErr == nil && ok {
-					read, err, answer.limited = held, nil, nil
+					read, readError, answer.limited = held, "", nil
 				}
 			}
 		}
-		if err != nil {
-			answer.readError = fmt.Sprintf("the name and default branch of %s could not be read: %v", named, err)
+		if readError != "" {
+			answer.readError = readError
 		} else {
 			answer.read = read
 			if len(answer.missing) == 0 {
@@ -681,6 +681,21 @@ func (w *workflowRuntime) prepareName(ctx context.Context, under, named ghrepo.R
 	}
 	answer.changed = w.repositories.keepRead(under, apps, answer.readError)
 	return answer, nil
+}
+
+// readName is GitHub's name and default branch of repo (defaultBranches.Named), one read bounded
+// by installReadAttempt, as a preparation (prepareName) and the rename pass (renameTransfer) read
+// it: the read where it answered, and otherwise why it did not, in the words legion state and the
+// rename pass's line name it with, beside the read's own error for the caller's rule of a rate
+// limit (defaultBranchLimit).
+func (w *workflowRuntime) readName(ctx context.Context, repo ghrepo.Repository) (read ghbranch.Repository, unread string, err error) {
+	attempt, cancel := context.WithTimeout(ctx, installReadAttempt)
+	defer cancel()
+	read, err = w.defaultBranches.Named(attempt, repo)
+	if err != nil {
+		unread = fmt.Sprintf("the name and default branch of %s could not be read: %v", repo, err)
+	}
+	return read, unread, err
 }
 
 // prepareLive is the preparation of repo, a repository a record names or a launch works: the one
