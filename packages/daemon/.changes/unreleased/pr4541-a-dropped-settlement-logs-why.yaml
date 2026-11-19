@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The daemon logs one line for each checks settlement it drops before it applies it, with the
+  reason: `intake: a checks settlement was dropped: the decoder refused it` (with the field),
+  `workflow: a checks settlement was dropped: no pull request is recorded for it`,
+  `workflow: a checks settlement stands for no head the record holds` (with the recorded head and
+  whether a head run is open), and `workflow: a checks settlement of the head was not applied`
+  (with the fence's classification, stale or conflict). Each line names the settlement's head,
+  generation and snapshot, and the daemon writes it once for each settlement. A settlement
+  delivered again after it applied logs nothing.
