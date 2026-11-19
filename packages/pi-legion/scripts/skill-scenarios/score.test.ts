@@ -1,11 +1,11 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
-import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { gitBinary } from "@legion/test-fixtures/version-control-tools";
+import { memoryDirectory } from "../../test/memory-root";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
@@ -13,48 +13,11 @@ import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 // score reports it as a rig error and leaves it out of the pass counts. An agent that got a turn and
 // then did nothing the scenario asks is a failure.
 
-/**
- * The root this file's world is made under: `/dev/shm` where `/proc/self/mountinfo` shows a tmpfs
- * mounted there, read-write and without `noexec`, and `tmpdir()` otherwise, or when the file cannot
- * be read. The last mount at `/dev/shm` in the file is the one a path there reaches. The staging
- * hook below makes 626 directories and writes 3,726 files (1.35 MB): run alone in a 2-CPU cgroup,
- * that took 47,248 ms on a dev box's shared disk and 483 ms on `/dev/shm`, where Bun gives a hook
- * 5 s. `noexec` is refused because `score.ts runs` executes the git link this file puts in `bin`.
- * #4034's `memoryRoot` (`@legion/test-fixtures/temporary-directories`) makes this same choice and
- * replaces this function: whichever of the two pull requests lands second makes that swap.
- */
-function memoryRoot(): string {
-  let lines: string[];
-  try {
-    lines = readFileSync("/proc/self/mountinfo", "utf8").split("\n");
-  } catch {
-    return tmpdir();
-  }
-  let found: { fstype: string; options: string[] } | undefined;
-  for (const line of lines) {
-    // <id> <parent> <major:minor> <root> <mount point> <mount options> [optional fields...] - <fstype> <source> <super options>
-    const fields = line.split(" ");
-    const separator = fields.indexOf("-", 6);
-    if (fields[4] !== "/dev/shm" || separator < 0) continue;
-    found = { fstype: fields[separator + 1] ?? "", options: (fields[5] ?? "").split(",") };
-  }
-  const writable = found?.options.includes("rw") === true && !found.options.includes("noexec");
-  return found?.fstype === "tmpfs" && writable ? "/dev/shm" : tmpdir();
-}
-
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
-// temporaryDirectory reserves its path under tmpdir() at its call and takes no root here, so TMPDIR
-// names the memory root for that one call and is put back before anything else runs: the fixture
-// still makes the directory in its beforeAll and removes it in its afterAll.
-const work = (() => {
-  const restore = captureEnvironment(["TMPDIR"]);
-  process.env.TMPDIR = memoryRoot();
-  try {
-    return temporaryDirectory("skill-scenarios-score");
-  } finally {
-    restore();
-  }
-})();
+// On the memory root (test/memory-root.ts): the staging hook below makes 626 directories and writes
+// 3,726 files (1.35 MB), which took 47,248 ms on a dev box's shared disk alone in a 2-CPU cgroup
+// and 483 ms on /dev/shm, where Bun gives a hook 5 s.
+const work = memoryDirectory("skill-scenarios-score");
 const runs = path.join(work, "runs");
 // The repository the pushed-code run below is cloned from. Reserved here, above the hook that
 // drains the stagings: Bun runs a scope's `beforeAll` hooks in the order they were registered,
