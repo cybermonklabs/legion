@@ -1404,6 +1404,91 @@ func TestLoadTakesOneAccountInBothServiceLists(t *testing.T) {
 	}
 }
 
+// The accounts the session account pair tests pair: the shared account a deployment's pods ran
+// as, the project's own account it moves them to, and a third. Each pair below is written with
+// its later account first in sorted order, so a reader that sorted a pair would be caught.
+const (
+	sharedWorkerAccount  = "system:serviceaccount:example-ns:shared-worker"
+	projectWorkerAccount = "system:serviceaccount:example-ns:project-worker"
+	otherWorkerAccount   = "system:serviceaccount:example-ns:other-worker"
+)
+
+// TestSessionAccountPairsAreRead pins BROKER_SESSION_ACCOUNT_PAIRS: whitespace-separated
+// <account>=<account> entries, each read as its two accounts in the order written and the pairs
+// in the order given, since cmd/broker logs the pairs as the operator wrote them; an account in
+// two pairs, which is a deployment moving one shared account's pods to two accounts, or moving
+// them on again; and no pair at all when the setting is unset, empty or white space only, which
+// is the broker that takes no name from anyone.
+func TestSessionAccountPairsAreRead(t *testing.T) {
+	for _, value := range []string{"", " \t\n "} {
+		e := validEnv()
+		e["BROKER_SESSION_ACCOUNT_PAIRS"] = value
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatalf("Load(BROKER_SESSION_ACCOUNT_PAIRS=%q) = %v, want no refusal", value, err)
+		}
+		if cfg.SessionAccountPairs != nil {
+			t.Errorf("SessionAccountPairs with BROKER_SESSION_ACCOUNT_PAIRS=%q = %v, want nil", value, cfg.SessionAccountPairs)
+		}
+	}
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SessionAccountPairs != nil {
+		t.Errorf("SessionAccountPairs = %v, want nil when BROKER_SESSION_ACCOUNT_PAIRS is unset", cfg.SessionAccountPairs)
+	}
+
+	e := validEnv()
+	e["BROKER_SESSION_ACCOUNT_PAIRS"] = sharedWorkerAccount + "=" + projectWorkerAccount
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	if want := [][2]string{{sharedWorkerAccount, projectWorkerAccount}}; !slices.Equal(cfg.SessionAccountPairs, want) {
+		t.Errorf("SessionAccountPairs with one pair = %v, want %v, its two accounts in the order written", cfg.SessionAccountPairs, want)
+	}
+
+	e = validEnv()
+	e["BROKER_SESSION_ACCOUNT_PAIRS"] = " " + sharedWorkerAccount + "=" + projectWorkerAccount + "\n\t" + projectWorkerAccount + "=" + otherWorkerAccount + " "
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatalf("Load(two pairs sharing an account) = %v, want no refusal: an account may be in several pairs", err)
+	}
+	want := [][2]string{{sharedWorkerAccount, projectWorkerAccount}, {projectWorkerAccount, otherWorkerAccount}}
+	if !slices.Equal(cfg.SessionAccountPairs, want) {
+		t.Errorf("SessionAccountPairs with two pairs sharing an account = %v, want %v, in the order given", cfg.SessionAccountPairs, want)
+	}
+}
+
+// TestSessionAccountPairsRefuseABadEntry pins BROKER_SESSION_ACCOUNT_PAIRS' refusals, one row per
+// kind: an entry that is not two accounts joined by one "=", an account that is not a
+// ServiceAccount subject or is a namespace's default account, an account paired with itself, and
+// a pair given twice, as written or reversed. Each bad entry follows a good pair, so the reader
+// refuses whichever entry is bad and not only the first, and each refusal stops the start naming
+// the setting and the bad entry as written, so the operator reads which one to fix, and says
+// which kind of mistake it is.
+func TestSessionAccountPairsRefuseABadEntry(t *testing.T) {
+	const good = sharedWorkerAccount + "=" + projectWorkerAccount
+	for _, row := range []struct{ name, entry, reason string }{
+		{"no =", otherWorkerAccount, "<account>=<account>"},
+		{"two =", projectWorkerAccount + "=" + otherWorkerAccount + "=" + sharedWorkerAccount, "<account>=<account>"},
+		{"an empty first side", "=" + otherWorkerAccount, "<account>=<account>"},
+		{"an empty second side", otherWorkerAccount + "=", "<account>=<account>"},
+		{"a side that is not an account subject", projectWorkerAccount + "=other-worker", "must name system:serviceaccount:<namespace>:<name>"},
+		{"a namespace's default account", projectWorkerAccount + "=system:serviceaccount:example-ns:default", "default service account"},
+		{"an account paired with itself", otherWorkerAccount + "=" + otherWorkerAccount, "with itself"},
+		{"the same pair repeated", good, "again"},
+		{"the reversed pair repeated", projectWorkerAccount + "=" + sharedWorkerAccount, "again"},
+	} {
+		e := validEnv()
+		e["BROKER_SESSION_ACCOUNT_PAIRS"] = good + " " + row.entry
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_SESSION_ACCOUNT_PAIRS") || !strings.Contains(err.Error(), strconv.Quote(row.entry)) ||
+			!strings.Contains(err.Error(), row.reason) {
+			t.Errorf("BROKER_SESSION_ACCOUNT_PAIRS with %s, %q: err = %v, want a refusal naming the setting, the entry and %q", row.name, row.entry, err, row.reason)
+		}
+	}
+}
+
 // TestLoadRefusesTheRulesFileVariables pins that a deployment still configured for the rules file
 // refuses to start naming the variable, rather than running with its rules silently ignored. The
 // reason names both halves of what replaced it: the tags each secret's owner and tier come from,

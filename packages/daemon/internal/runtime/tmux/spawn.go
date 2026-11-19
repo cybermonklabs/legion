@@ -645,8 +645,10 @@ func (r *Runtime) writeGitHubCredential(spec runtime.SpawnSpec, credential launc
 	case credential.noOwner:
 		// A project with no GitHub owner to mint for still runs its controller, with gh acting
 		// as nobody, as `legion controller start` and the sandbox runtime do there: its gh
-		// directory empty, so no token an earlier launch wrote outlives this one.
-		if err := emptyGitHubBundle(credential.root); err != nil {
+		// directory, which GH_CONFIG_DIR still names so no gh configuration elsewhere is read in
+		// its place, is left an empty 0700 directory (ghconfig.EmptyBundle), so no token an
+		// earlier launch wrote outlives this one.
+		if err := ghconfig.EmptyBundle(credential.root); err != nil {
 			return "", fmt.Errorf("spawn %s: empty the github credential: %w", spec.Claim, err)
 		}
 		r.log.Info("tmux runtime: no GitHub owner to act for; the controller's gh acts as nobody", "claim", spec.Claim)

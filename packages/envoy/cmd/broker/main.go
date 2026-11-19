@@ -474,7 +474,9 @@ func main() {
 	// things that name a session: the token exchange, at every token it mints, and an
 	// enrollment, at every session it enrols (enroll.Service.Sessions). So a name a session
 	// writes its Dispatch tokens under and the name its grant follows have one holder, and a
-	// name another principal holds is refused either way.
+	// name another principal holds is refused either way, unless that principal is an account
+	// BROKER_SESSION_ACCOUNT_PAIRS pairs with the claimant's, which takes it either way but for a
+	// name the configuration fixes (below).
 	enr.Sessions = oauthStore
 	// On serving, not ctx, for the same reason the policy's own loads are: this runs after the
 	// bind above, so a SIGTERM arriving here finds a pod the load balancer may already be sending
@@ -537,6 +539,27 @@ func main() {
 	} else {
 		slog.Info("token exchange", "state", "on", "kubernetes", cfg.ExchangeK8sAudience != "", "github", cfg.ExchangeGitHubIssuer != "",
 			"accounts", len(cfg.ExchangeAccounts), "read_accounts", len(cfg.ExchangeReadAccounts), "workflows", len(cfg.ExchangeWorkflows), "machines", len(cfg.ExchangeGoogleAccounts))
+	}
+	// Every claim on a session name, the exchange's and an enrollment's alike, is BindSession's,
+	// and it reads two things off the store: the pairs of BROKER_SESSION_ACCOUNT_PAIRS, either of
+	// whose accounts takes a name the other holds, set here, and the names the exchange's entries
+	// fix, which no pair takes, set by oauth.New below from the policy it is composed with. Both
+	// are set before srv.Serve below hands the store its first request, and nothing writes them
+	// after, so the handlers read them with no lock.
+	paired := make([][2]string, len(cfg.SessionAccountPairs))
+	for i, pair := range cfg.SessionAccountPairs {
+		paired[i] = [2]string{exchange.AccountPrincipal(pair[0]), exchange.AccountPrincipal(pair[1])}
+	}
+	oauthStore.SetSessionPairs(paired)
+	if len(cfg.SessionAccountPairs) == 0 {
+		slog.Info("session account pairs", "state", "off",
+			"detail", "BROKER_SESSION_ACCOUNT_PAIRS is unset, so an account is refused a session name another account holds")
+	} else {
+		written := make([]string, len(cfg.SessionAccountPairs))
+		for i, pair := range cfg.SessionAccountPairs {
+			written[i] = pair[0] + "=" + pair[1]
+		}
+		slog.Info("session account pairs", "state", "on", "pairs", strings.Join(written, " "))
 	}
 	// verification_uri is Dispatch's machine-login page, where the person types the code. With
 	// no page (BROKER_MACHINE_LOGIN_URL unset) the provider composes no device grant at all:
