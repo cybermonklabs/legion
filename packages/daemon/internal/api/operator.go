@@ -741,7 +741,7 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	if recorded.Phase == phase.Held {
 		fact = intake.RetryOrEscalate{Issue: c.Issue, Decision: intake.RetryDecision}
 	}
-	result, err := intake.ApplyFact(r.Context(), s.pool, "api", requestFactID("operator/retry"), fact, s.handlers...)
+	result, err := s.apply(r.Context(), "api", requestFactID("operator/retry"), fact)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: apply the operator's retry of a phase", "claim", token, "issue", c.Issue)
 		return http.StatusInternalServerError, fmt.Sprintf("could not retry %s's phase %s: %v", c.Issue, working, err), true

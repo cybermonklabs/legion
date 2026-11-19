@@ -276,7 +276,7 @@ type site struct {
 	sentinels []string // the messages of the errors.Is targets of the case clause around it
 	bodyType  string   // readJSON's: the request body's type
 	respType  string   // writeJSON's: the response body's type, "" when refgen cannot name it; a refusal writer's, the body it answers beyond code and error
-	query     string   // r.URL.Query().Get's: the query parameter
+	query     string   // r.URL.Query().Get's, or r.URL.Query()[name]'s for a repeated one: the query parameter
 	guards    []guard  // the boolean conditions it runs under
 	at        string
 }
@@ -397,6 +397,17 @@ func (g *graph) collect(file *ast.File, body ast.Node, params *ast.FieldList) fu
 			return true
 		}
 		stack = append(stack, n)
+		// r.URL.Query()["name"] reads a query parameter a route takes more than once, which no Get
+		// call names, so the route's page lists it from the index instead.
+		if ix, ok := n.(*ast.IndexExpr); ok && isQueryCall(ix.X) {
+			if name, ok := strLit(ix.Index); ok {
+				info.sites = append(info.sites, site{
+					kind: siteCall, call: ix.X.(*ast.CallExpr), query: name, at: g.src.at(ix),
+					sentinels: g.caseSentinels(file, stack), guards: siteGuards(stack),
+				})
+			}
+			return true
+		}
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true

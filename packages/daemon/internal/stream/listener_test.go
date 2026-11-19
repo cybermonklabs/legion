@@ -650,3 +650,39 @@ func TestAHello2WithAMalformedIdentityIsRefused(t *testing.T) {
 		t.Fatalf("log = %q", lines)
 	}
 }
+
+// A mark a consumer asks for (Drain) comes behind every event the listener had queued when it was
+// asked for, and before every event queued after: the hello of a connection registered before the
+// call, then the mark, then the answer of a frame sent after it. What the consumer closes is what
+// the asker waits on. An ended listener queues no mark, and its answer is closed at once.
+func TestADrainMarkFollowsEveryEventQueuedBeforeIt(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := dial(t, h.listener.Addr())
+	p.hello(testToken)
+	p.expect(shimwire.TypeHelloAck)
+	done := h.listener.Drain(testClaim)
+	if got := h.next(); got != (Hello{Claim: testClaim, Generation: testGeneration}) {
+		t.Fatalf("first event = %#v, want the hello queued before the mark", got)
+	}
+	mark, ok := h.next().(Drained)
+	if !ok || mark.Claim != testClaim {
+		t.Fatalf("second event = %#v, want the mark of %s", mark, testClaim)
+	}
+	select {
+	case <-done:
+		t.Fatal("the mark's answer is closed before its consumer handled it")
+	default:
+	}
+	close(mark.Done)
+	<-done
+	p.send(shimwire.Raw{Type: "message_end", JSON: []byte(`{"type":"message_end","message":{"role":"assistant","provider":"second","model":"second-model"}}`)})
+	if got := h.next(); got != (Answered{Claim: testClaim, Provider: "second", Model: "second-model", Generation: testGeneration}) {
+		t.Fatalf("third event = %#v, want the answer read after the mark", got)
+	}
+	h.stop()
+	select {
+	case <-h.listener.Drain(testClaim):
+	default:
+		t.Fatal("an ended listener's mark is not answered at once")
+	}
+}

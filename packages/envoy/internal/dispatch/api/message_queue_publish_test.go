@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // INFRA-3740: a targeted message to a session that neither the listener's registry nor its
@@ -74,7 +75,7 @@ type listenerSendBody struct {
 // with the ids and the time it mints fresh taken from got, so the two compare field by field.
 func (body listenerSendBody) storedBy(t *testing.T, got contracts.Envelope) contracts.Envelope {
 	t.Helper()
-	expectsReply, err := contracts.ParseExpectsReply(body.ExpectsReply)
+	expectsReply, err := listenerwire.ParseExpectsReply(body.ExpectsReply)
 	if err != nil {
 		t.Fatalf("the send's expects_reply %s: %v", body.ExpectsReply, err)
 	}

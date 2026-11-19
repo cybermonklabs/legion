@@ -4,7 +4,8 @@ package githubapp
 // holds a commit at all, and the reads a recorded check result is placed by — whether a
 // commit sits on a branch, a repository's default branch, and the conditional reads of an open
 // pull request's head a background pass fills Envoy's listener records in from (its check runs,
-// its check suites, the repository's open pull requests and the repository's own identity).
+// its check suites, its commit statuses, the repository's open pull requests and the repository's
+// own identity).
 // Each answers "Dispatch cannot see this repository" through CheckRepositoryResponse, the one
 // rule that says what unreadable means — delivery's own read of the pull requests GitHub names
 // for a commit (github_prs.go, through readGitHubPage's bounded retry) classifies its answer by
@@ -44,8 +45,8 @@ func (c *Client) readRepositoryJSON(ctx context.Context, token, path, repoFull s
 // text before the JSON around it. Sixteen MiB is that bound with room over it, derived from
 // GitHub's own caps and a full page — not measured against any repository. A head whose answer
 // is past it is no failure of the pass that reads it: the pass skips that head, counts it and
-// logs it (cireconcile's headFailed). The other three reads are far smaller (a page of 100
-// pull requests is well under it) and share it, since one bound is one thing to reason about.
+// logs it (cireconcile's headFailed). The other reads are far smaller (a page of 100 pull
+// requests is well under it) and share it, since one bound is one thing to reason about.
 const pollResponseLimit = 16 << 20
 
 // objectsPerPage is the page size the polled reads ask GitHub for, its own maximum: a head with
@@ -227,10 +228,10 @@ func pageNumber(page int) int {
 	return page
 }
 
-// ObjectPage is one page of a conditional read of GitHub check objects: the objects as
-// contracts.GithubCIObservation takes them, the answer's ETag, whether GitHub answered 304 Not
-// Modified (Objects is then empty), and whether the page was full, so a caller knows another
-// page may follow.
+// ObjectPage is one page of a conditional read of GitHub check objects or commit statuses: the
+// objects as contracts.GithubCIObservation or contracts.GithubStatusObservation takes them, the
+// answer's ETag, whether GitHub answered 304 Not Modified (Objects is then empty), and whether the
+// page was full, so a caller knows another page may follow.
 type ObjectPage struct {
 	Objects     []map[string]any
 	ETag        string
@@ -280,14 +281,39 @@ func (c *Client) CommitCheckSuites(ctx context.Context, token, owner, repo, sha 
 	})
 }
 
-// readObjectPage reads one page of a commit's check objects: path is the page's whole API path,
-// and objects decodes the answer GitHub sends, {"total_count":n,"<key>":[…]}, into the objects
-// under the one key that listing carries. The caller passes that decode rather than the key's
-// name, so a listing nobody has written a decode for cannot be asked for at all, where a name
-// this function chose a field by could answer no objects and no error. Each decode takes the
+// CommitStatuses reads page page (1-based) of GET
+// /repos/{owner}/{repo}/commits/{sha}/status?per_page=100, conditional on etag: GitHub's combined
+// status of the commit, whose statuses list holds the newest status of each context. Only that
+// list is decoded, each status as GitHub lists it (context, state, created_at, target_url,
+// description); the combined state beside it is GitHub's verdict over those statuses, which no
+// caller reads. A token without Commit statuses is answered 403, which is ErrRepositoryUnreadable
+// as every 403 here is.
+func (c *Client) CommitStatuses(ctx context.Context, token, owner, repo, sha string, page int, etag string) (ObjectPage, error) {
+	if c == nil {
+		return ObjectPage{}, ErrNoAppKey
+	}
+	repoFull := owner + "/" + repo
+	path := repoPath(owner, repo) + "/commits/" + url.PathEscape(sha) +
+		"/status?per_page=" + strconv.Itoa(objectsPerPage) + "&page=" + strconv.Itoa(pageNumber(page))
+	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body []byte) ([]map[string]any, error) {
+		var answer struct {
+			Statuses []map[string]any `json:"statuses"`
+		}
+		if err := json.Unmarshal(body, &answer); err != nil {
+			return nil, fmt.Errorf("decode the statuses of %s: %w", repoFull, err)
+		}
+		return answer.Statuses, nil
+	})
+}
+
+// readObjectPage reads one page of a commit's check objects or commit statuses: path is the page's
+// whole API path, and objects decodes the answer GitHub sends, {"total_count":n,"<key>":[…]}, into
+// the objects under the one key that listing carries. The caller passes that decode rather than
+// the key's name, so a listing nobody has written a decode for cannot be asked for at all, where a
+// name this function chose a field by could answer no objects and no error. Each decode takes the
 // objects alone into maps, as the webhook's own bodies reach contracts.GithubCIObservation:
-// total_count is GitHub's count of the whole list, which the page size and Full already say
-// what a caller needs of.
+// total_count is GitHub's count of the whole list, which the page size and Full already say what
+// a caller needs of.
 func (c *Client) readObjectPage(ctx context.Context, token, path, repoFull, etag string, objects func([]byte) ([]map[string]any, error)) (ObjectPage, error) {
 	body, status, answerETag, err := c.readConditionalRepositoryJSON(ctx, token, path, repoFull, etag)
 	if err != nil {

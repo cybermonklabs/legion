@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // keptPublishAnswer is the publish route's 202 for a role message it kept: the envelope as it was
@@ -273,7 +274,7 @@ func TestAPublishWithKeepFalseToALapsedClaimIsRefusedAndKeepsNothing(t *testing.
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("publish with keep: false to a lapsed claim: status %d, body %s; want 404 with nothing kept", recorder.Code, recorder.Body.String())
 	}
-	var refusal roleHolderError
+	var refusal listenerwire.RoleRefusal
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}

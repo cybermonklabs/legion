@@ -168,7 +168,8 @@ const timeFormat = "2006-01-02T15:04:05.999999999Z07:00"
 // registration that minted it; the credential routes check that again after their GitHub await. A
 // claim grant whose claim speaks another plugin contract than the daemon's is refused the
 // stale-caller 409 here, once every other check has passed: every grant-bearing route takes its
-// claim caller's staleness from this one place.
+// claim caller's staleness from this one place. A claim grant it takes notes its claim as the
+// request's requester (noteRequester), whose stream apply waits for.
 //
 // A controller grant is returned here without consulting the controller record at all (LEGION-164):
 // its own staleness is refused at mint (controllerSessionGrant -> refuseIfStaleController), grants
@@ -200,6 +201,7 @@ func (s *server) redeem(w http.ResponseWriter, r *http.Request, id string) (cred
 	if s.refuseIfStaleClaimFailure(w, r, machine.Claim()) {
 		return credential.Grant{}, false
 	}
+	noteRequester(r.Context(), grant.Claim)
 	return grant, true
 }
 

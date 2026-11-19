@@ -1970,9 +1970,10 @@ type AskAnsweredEventPayload struct {
 // blocked_by, external_links; for issue.created every field the new issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
-// assignee moved, whose Inbox rows the write can move (api.issueWriteThreadLogins): for a close
-// or a reopen every login with a Replies row on one of the issue's open asks
-// (events.IssueThreadLogins), for an assignee move the assignee the issue was taken from and the
+// assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
+// or a reopen every login with a Replies row on one of the issue's open asks, read by the
+// event's own insert, after the ask writes the transaction queued before it
+// (events.IssueLoginsOf), for an assignee move the assignee the issue was taken from and the
 // one it was given to, for the two together the sorted union of both, and for any other status
 // move []. Each is absent from an event written before them.
 //
@@ -2004,6 +2005,15 @@ func NewIssueEventPayload(issue Issue, changes ReferenceChanges) IssueEventPaylo
 		Issue:                   issue,
 		ReferenceChangesPayload: NewReferenceChangesPayload(changes),
 	}
+}
+
+// WithOwnerLastSeq is the payload carrying seq as the issue's last_seq. An issue event's payload
+// holds the issue row as the event leaves it, and the event's own sequence is what that row's
+// last_seq becomes when it is appended, so the append derives both from one expression
+// (events.Broker.QueueAppend) and no writer counts the events queued before its own.
+func (p IssueEventPayload) WithOwnerLastSeq(seq int) any {
+	p.LastSeq = seq
+	return p
 }
 
 // AskEditEventPayload is the full edited ask plus its prior mutable content, the actor who made
@@ -2063,7 +2073,7 @@ type BlockInvalidEventPayload struct {
 }
 
 // AskOption is an answer choice. ID is the id of the block this option is stored as - the part
-// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.IndexAskParts) - which every read that shows
+// `dispatch://<key>/ask/<ask id>#b-<id>` names (refs.PlanAskParts) - which every read that shows
 // an ask's options carries (api.attachAskPartIDs) and no write accepts: a caller that sends an
 // option back as it read it has its id emptied (api.validateAskOptions). Absent on a write's own
 // response and while the ask's parts are not indexed yet.
@@ -3138,6 +3148,52 @@ type HandoffRecordedEventPayload struct {
 	HandoffID string `json:"handoff_id"`
 	Phase     string `json:"phase"`
 	Version   int    `json:"version"`
+}
+
+// StepRecord is one run of one step of an issue's workflow, as the Legion daemon wrote it at the
+// run's start and at its end (PUT /api/v1/issues/{key}/steps/{id}) and as the read of the issue
+// lists it. Task is the plan's task, `default` for an issue whose owner gave no plan; Step is the
+// step's place in the task from 1, and 0 for a retro and a merge, which Kind tells apart. Type is
+// "" for those two kinds, Agent the claim token of the role that ran it ("" for a merge GitHub
+// made), Session the claim's session and Model `<provider>/<model>`, or the model alone where the
+// agent named no provider, each "" where the daemon knew none. Generation is the issue's run, and
+// Attempt, which no write stores, the place of this run among the issue's runs of the same task,
+// step and kind, from 1. Result is passed, failed or stopped, "" while the run still runs;
+// ReturnedTo is the place a failed or stopped run returned its task to, 0 being the retro's and
+// the merge's place, and Report the handoff its ending role named, each null where the run has
+// none.
+type StepRecord struct {
+	ID         string     `json:"id"`
+	Issue      string     `json:"issue"`
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind" enum:"step,retro,merge"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Session    string     `json:"session"`
+	Model      string     `json:"model"`
+	Generation int64      `json:"generation"`
+	Attempt    int        `json:"attempt"`
+	StartedAt  *time.Time `json:"started_at"`
+	EndedAt    *time.Time `json:"ended_at"`
+	Result     string     `json:"result" enum:",passed,failed,stopped"`
+	ReturnedTo *int       `json:"returned_to"`
+	Report     *string    `json:"report"`
+}
+
+// StepTask is one task of an issue with every run of its steps, in the order they ran.
+type StepTask struct {
+	Task  string       `json:"task"`
+	Steps []StepRecord `json:"steps"`
+}
+
+// IssueSteps is GET /api/v1/issues/{key}/steps: every run of every step of the issue, task by
+// task in the order of each task's first run. An issue Legion never ran answers no task; a key no
+// issue carries answers 404 NOT_FOUND, and no IssueSteps.
+type IssueSteps struct {
+	Issue string     `json:"issue"`
+	Tasks []StepTask `json:"tasks"`
 }
 
 // ReferencedBy identifies a post or artifact that mentions an artifact.

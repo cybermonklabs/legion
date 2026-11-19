@@ -1,11 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"math/rand/v2"
 	"net/http"
@@ -20,6 +17,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/loadtest/listenerclient"
 )
 
 // The Verified Linux spec loop's own sessions (-unit-starts), beside the step's flat -sessions
@@ -362,43 +361,13 @@ type natsSub struct{ sub *nats.Subscription }
 
 func (s natsSub) unsubscribe() error { return s.sub.Unsubscribe() }
 
-// loopListener is one loop session's listener: the endpoint it registers, heartbeats,
-// unsubscribes and publishes on, with the run's listener bearer.
-type loopListener struct {
-	url, token string
-	client     *http.Client
-}
-
-func newLoopListener(url, token string) *loopListener {
-	return &loopListener{url: url, token: token, client: &http.Client{Timeout: loopCallTimeout}}
-}
-
-// post sends body as JSON to path and reads the answer; a non-2xx answer is an error naming the
-// endpoint and route it came from, the status and what the listener said, as the registrar's
-// registration names its status and answer (registrar.register). Five endpoints and three routes
-// share this one refusal, and the log lines that print it carry only the session id, so the URL
-// is what attributes a 401 to one of them.
-func (l *loopListener) post(ctx context.Context, path string, body any) ([]byte, error) {
-	data, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", l.url+path, bytes.NewReader(data))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+l.token)
-	resp, err := l.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode/100 != 2 {
-		return b, fmt.Errorf("%s: %d %s", l.url+path, resp.StatusCode, trunc(b))
-	}
-	return b, nil
+// newLoopListener is one loop session's listener: the endpoint it registers, heartbeats,
+// unsubscribes and publishes on, with the run's listener bearer. A refusal names the endpoint and
+// route it came from, the status and what the listener said (listenerclient.Refusal): five
+// endpoints and three routes share it, and the log lines that print it carry only the session id,
+// so the URL is what attributes a 401 to one of them.
+func newLoopListener(url, token string) *listenerclient.Client {
+	return &listenerclient.Client{URL: url, Token: token, HTTP: &http.Client{Timeout: loopCallTimeout}}
 }
 
 // loopRelay is one loop session's consumer delivery: the epoch it registers with, its resume
@@ -421,24 +390,23 @@ func newLoopRelay(id string, nonce int64) *loopRelay {
 
 // delivery is the session's registration delivery field: consumer delivery, its epoch, and its
 // resume point once it has one, as the pi plugin sends at every registration.
-func (r *loopRelay) delivery() map[string]any {
-	d := map[string]any{"consumer": true, "epoch": r.epoch}
+func (r *loopRelay) delivery() *listenerwire.SubscribeDelivery {
+	d := &listenerwire.SubscribeDelivery{Consumer: true, Epoch: r.epoch}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.stream != "" && r.written > 0 {
-		d["resume"] = map[string]any{"stream_id": r.stream, "seq": r.written}
+		d.Resume = &listenerwire.SubscribeResume{StreamID: r.stream, Seq: new(r.written)}
 	}
 	return d
 }
 
 // answered reads a registration's answer: a consumer answer naming another stream than its
-// resume point starts that point again on the new stream. An answer naming no consumer leaves
-// the resume point as it is and nothing else: the listener answers consumer or refuses the
-// registration, since a session takes its messages from its own consumer and nothing else
-// (relay.go).
-func (r *loopRelay) answered(body []byte) {
-	var ans registerAnswer
-	if json.Unmarshal(body, &ans) != nil || ans.Delivery == nil {
+// resume point starts that point again on the new stream. An answer naming no consumer, or one
+// that did not decode (nil), leaves the resume point as it is and nothing else: the listener
+// answers consumer or refuses the registration, since a session takes its messages from its own
+// consumer and nothing else (relay.go).
+func (r *loopRelay) answered(ans *listenerwire.SubscribeResponse) {
+	if ans == nil || ans.Delivery == nil {
 		return
 	}
 	if ans.Delivery.Mode != sessionDeliveryConsumer || ans.Delivery.StreamID == "" {
@@ -479,7 +447,7 @@ func (r *loopRelay) wrote(stream string, seq uint64) {
 type loopSession struct {
 	class    string
 	id       string
-	listener *loopListener
+	listener *listenerclient.Client
 	conn     int
 	issues   []string
 	topics   []string
@@ -492,10 +460,9 @@ type loopSession struct {
 // fields is the session's registration with the listener, as the pi plugin sends it: its
 // directory, title, the topics it follows and, since every loop session asks for consumer
 // delivery, its delivery field (relay.go).
-func (s *loopSession) fields() map[string]any {
-	return map[string]any{"session_id": s.id, "dir": "/work/" + s.id, "title": "load " + s.id,
-		"topics": s.topics, "port": 0, "self_subscribed": true, "driving": s.class == deliveryClassDriver,
-		"capabilities": []string{}, "delivery": s.relay.delivery()}
+func (s *loopSession) fields() listenerwire.SubscribeRequest {
+	return listenerwire.SubscribeRequest{SessionID: s.id, Dir: "/work/" + s.id, Title: "load " + s.id,
+		Topics: s.topics, SelfSubscribed: true, Capabilities: []string{}, Delivery: s.relay.delivery()}
 }
 
 // loopSessions is the spec loop's session population: the unit sessions the schedule starts and
@@ -509,7 +476,7 @@ type loopSessions struct {
 	// receipts is the step's own collector: a loop session's receipts carry its session id, so
 	// the join counts them by class (delivery.go).
 	receipts  *collector[receipt]
-	listeners []*loopListener
+	listeners []*listenerclient.Client
 	placer    *unitPlacer
 	exit      string
 	// heartbeat is how often a live session re-registers, loopHeartbeat in a run; a test that
@@ -667,7 +634,7 @@ func (lp *loopSessions) run(ctx context.Context, s *loopSession, end time.Time) 
 	defer func() { _ = sub.unsubscribe() }()
 
 	w.SubSent = time.Now().UnixNano()
-	answer, err := s.listener.post(ctx, "/v1/interests/subscribe", s.fields())
+	answer, err := s.listener.Subscribe(ctx, s.fields())
 	if err != nil {
 		lp.failedStart(s, fmt.Errorf("subscribe: %w", err))
 		return
@@ -733,7 +700,7 @@ func (lp *loopSessions) heartbeatUntil(ctx context.Context, s *loopSession, end 
 		case <-stop:
 			return true
 		case <-beat.C:
-			answer, err := s.listener.post(ctx, "/v1/interests/subscribe", s.fields())
+			answer, err := s.listener.Subscribe(ctx, s.fields())
 			if err == nil {
 				s.relay.answered(answer)
 				continue
@@ -750,9 +717,11 @@ func (lp *loopSessions) heartbeatUntil(ctx context.Context, s *loopSession, end 
 // follows that topic and is delivered the message by its own consumer, so a unit's stop is
 // itself traffic the step measures.
 func (lp *loopSessions) publishExit(ctx context.Context, s *loopSession) {
-	body := map[string]any{"topic": lp.exit, "message": "unit session " + s.id + " is stopping",
-		"source": "agent", "source_session": s.id}
-	if _, err := s.listener.post(ctx, "/v1/messages/publish", body); err != nil {
+	exit := listenerwire.PublishRequest{
+		MessageBody: listenerwire.MessageBody{Source: "agent", SourceSession: s.id, Message: "unit session " + s.id + " is stopping"},
+		Topic:       lp.exit,
+	}
+	if err := s.listener.Publish(ctx, exit); err != nil {
 		if n := lp.exitErrors.Add(1); n <= loopLogLimit && ctx.Err() == nil {
 			lp.lg.Printf("loop sessions: %s exit message: %v", s.id, err)
 		}
@@ -765,17 +734,7 @@ func (lp *loopSessions) publishExit(ctx context.Context, s *loopSession) {
 // deregistration route, and the registry drops a session 300 s after its last write. It answers
 // the topics the listener says it removed.
 func (lp *loopSessions) unsubscribe(ctx context.Context, s *loopSession) ([]string, error) {
-	body, err := s.listener.post(ctx, "/v1/interests/unsubscribe", map[string]any{"session_id": s.id, "topics": s.topics})
-	if err != nil {
-		return nil, err
-	}
-	var answer struct {
-		Removed []string `json:"removed"`
-	}
-	if json.Unmarshal(body, &answer) != nil {
-		return nil, fmt.Errorf("unreadable answer: %s", trunc(body))
-	}
-	return answer.Removed, nil
+	return s.listener.Unsubscribe(ctx, listenerwire.UnsubscribeRequest{SessionID: s.id, Topics: s.topics})
 }
 
 // frames takes the session's relay frames: it answers received at once, counts the first frame of

@@ -240,7 +240,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil)
+	m := newRequestMachine(cfg, nil, nil, nil, nil, airlock.Rules{}, "", nil, nil)
 	want := map[string]string{
 		"system:serviceaccount:example:example-sa": "example-service",
 		"system:serviceaccount:example:another-sa": "example-service",
@@ -1073,8 +1073,8 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		// The broker logs a refusal as a JSON string in its error field, so a quotation mark
 		// inside it comes out escaped; these rows look for the parts around it.
 		"an entry the airlock refuses": {
-			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": []}]}`),
-			want: []string{"secrets[0]", "DEEL_API_KEY", "no host"},
+			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "judge": 1800}]}`),
+			want: []string{"secrets[0]", "DEEL_API_KEY", "1800", "900"},
 		},
 		// An entry whose name is not of the policy's form matches no release, so the file
 		// would hold back nothing of the secret a reviewer read it as covering.

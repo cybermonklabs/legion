@@ -522,7 +522,7 @@ type liveWritePauseQuery struct {
 // there; the routes it does not list rest on this rule alone. Two things that look like the same
 // fault and are not: a write answers the row it wrote, so POST /artifacts/{id}/reviews, POST
 // .../versions/{number}/reviews and POST .../plan-reviews name model.ArtifactReview while the
-// GET beside them names []artifactReviewRead - the handlers write what docs.WriteReview
+// GET beside them names []artifactReviewRead - the handlers write what docs.QueueReview
 // returned, and the dashboard draws the read rather than the write's answer (ApprovalChip.tsx
 // invalidates and refetches); and a model that carries its own tree field needs no shaped read
 // at all, which is why model.MyAnswersResponse, model.MyRepliesResponse and
@@ -744,9 +744,13 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: issueRoleHolders{}, Request: issueRoleHoldersInput{},
 	},
 	"GET /api/v1/issues/{key}/role-holders": {Status: http.StatusOK, Response: issueRoleHolders{}},
-	"GET /api/v1/handoffs/{id}":             {Status: http.StatusOK, Response: model.Handoff{}},
-	"GET /api/v1/messages/{id}":             {Status: http.StatusOK, Response: messageRead{}},
-	"GET /api/v1/messages/{id}/blocks":      {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"PUT /api/v1/issues/{key}/steps/{id}": {
+		Status: http.StatusOK, Response: model.StepRecord{}, Request: stepRecordInput{},
+	},
+	"GET /api/v1/issues/{key}/steps":   {Status: http.StatusOK, Response: model.IssueSteps{}},
+	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
+	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
+	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -1001,6 +1005,11 @@ var routeShapes = map[string]routeShape{
 		// POST /v1/credential-requests/{record}/deny (agentsecrets.Client.Deny), which answers
 		// the terminal state rather than a credential.
 		Status: http.StatusOK, Response: wire.StateResponse{}, Request: credentialDecisionInput{}, OptionalRequest: true,
+	},
+	"POST /api/v1/credential-requests/{id}/dismiss": {
+		// POST /v1/credential-requests/{record}/dismiss (agentsecrets.Client.Dismiss). Dispatch
+		// reads no body: the one field the broker takes, the approver, is the caller.
+		Status: http.StatusOK, Response: wire.DismissResponse{},
 	},
 	"POST /api/v1/credential-requests/machine-lookup": {
 		// POST /v1/machine-logins/lookup (agentsecrets.Client.MachineLookup). Dispatch forwards

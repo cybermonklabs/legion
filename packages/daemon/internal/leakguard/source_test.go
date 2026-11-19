@@ -449,7 +449,7 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 				githubtest.Unexpected(t, w, r)
 				return
 			}
-			http.Redirect(w, r, "http://"+downloads+"/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/"+theTag, http.StatusFound)
+			http.Redirect(w, r, "http://"+downloads+"/example-org/deployment/legacy.tar.gz/refs/tags/"+theTag, http.StatusFound)
 		}})
 	dialer := &net.Dialer{}
 	transport := &http.Transport{DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
