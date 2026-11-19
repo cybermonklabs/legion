@@ -146,12 +146,15 @@ type window struct {
 	// deadline, when not nil, is the moment the window's sends stop writing (WindowUntil).
 	deadline func() time.Time
 
-	// pinning guards conn, js and reconnects while the first send pins them (pin); they never
-	// change after it.
+	// pinning guards conn, js, reconnects and status while the first send pins them (pin); they
+	// never change after it. It is held only to read and set them: no wait for a connection and no
+	// read of nats.go's state is made under it.
 	pinning    sync.Mutex
 	conn       *nats.Conn
 	js         nats.JetStreamContext
 	reconnects uint64
+	// status reads conn's status within statusReadLockWait (boundedStatusReader), for pin's check.
+	status *boundedStatusReader
 }
 
 func (w *window) PublishAsync(item contracts.Envelope) <-chan error {
@@ -204,24 +207,72 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 // pin pins the window to the client's connection at its first send, waiting up to wait for the
 // client to have one, and at every later one answers ErrUnavailable unless that connection is
 // still connected and has not reconnected.
+//
+// It holds pinning only to read and to set the pin. The wait for a connection is made with it
+// released, and ends at wait whatever nats.go is doing (Bounded): nats.go holds its connection lock
+// through a reconnect's dial and handshake, which ensureConnWithContext's read of the connection
+// waits for. The check of a pinned connection reads it through the window's status reader, which
+// waits for that lock at most statusReadLockWait, and a read kept waiting longer is the connection
+// in a reconnect, so this send answers ErrUnavailable within that bound. Every other send of the
+// window takes pinning at once and answers the same, where before each waited, behind the one
+// before it, for the handshake to end.
 func (w *window) pin(wait time.Duration) error {
 	w.pinning.Lock()
-	defer w.pinning.Unlock()
-	if w.conn == nil {
-		ctx, cancel := context.WithTimeout(context.Background(), wait)
-		defer cancel()
-		if err := w.client.ensureConnWithContext(ctx); err != nil {
-			return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
+	status := w.status
+	w.pinning.Unlock()
+	if status == nil {
+		pinned, err := w.pinFirst(wait)
+		if err != nil {
+			return err
 		}
-		w.client.mu.Lock()
-		w.conn, w.js = w.client.Conn, w.client.js
-		w.client.mu.Unlock()
-		w.reconnects = w.conn.Stats().Reconnects
+		if pinned {
+			return nil
+		}
+		// Another send pinned the window while this one waited: this send checks that pin.
+		w.pinning.Lock()
+		status = w.status
+		w.pinning.Unlock()
 	}
-	if !w.current() {
+	if up, reconnects := status.connectedNow(); !up || reconnects != w.reconnects {
 		return fmt.Errorf("bus: %w: the window's connection was lost or reconnected since its first send", ErrUnavailable)
 	}
 	return nil
+}
+
+// pinFirst waits up to wait for the client to have a connection, with pinning released, and pins
+// the window to it unless another send pinned it first, in which case pinned is false. A
+// connection the status reader does not read connected is not pinned: it was lost, or went into a
+// reconnect, as the wait ended.
+func (w *window) pinFirst(wait time.Duration) (pinned bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	defer cancel()
+	type connection struct {
+		conn *nats.Conn
+		js   nats.JetStreamContext
+	}
+	got, _, err := Bounded(ctx, func() (connection, error) {
+		if err := w.client.ensureConnWithContext(ctx); err != nil {
+			return connection{}, err
+		}
+		w.client.mu.Lock()
+		defer w.client.mu.Unlock()
+		return connection{conn: w.client.Conn, js: w.client.js}, nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
+	}
+	status := newBoundedStatusReader(got.conn)
+	up, reconnects := status.connectedNow()
+	if !up {
+		return false, fmt.Errorf("bus: %w: the client's connection was lost before the window pinned it", ErrUnavailable)
+	}
+	w.pinning.Lock()
+	defer w.pinning.Unlock()
+	if w.status != nil {
+		return false, nil
+	}
+	w.conn, w.js, w.reconnects, w.status = got.conn, got.js, reconnects, status
+	return true, nil
 }
 
 // expired answers ErrWindowDeadline once the window's deadline has passed, and nil before it or

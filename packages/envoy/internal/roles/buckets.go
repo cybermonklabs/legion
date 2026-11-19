@@ -62,11 +62,18 @@ func NewBuckets(client JetStream, windows Windows) *Buckets {
 }
 
 // bucket returns the handle of bucket on the client's current connection, opening it when it is
-// not open on that connection yet.
-func (b *Buckets) bucket(name string) (bus.KeyValue, error) {
+// not open on that connection yet, within ctx and at most readTimeout.
+//
+// b.mu guards the handles alone, and the open is made with it released: the open sends a
+// STREAM.INFO, which waits for nats.go's connection lock, and nats.go holds that lock through a
+// reconnect's dial and handshake. Held across the open, b.mu kept every other read of Buckets
+// waiting behind that handshake, past its own caller's bound, since the open's request took no
+// context and so outlived the read that made it. Two reads that both find a handle missing each
+// open one, and the first to finish keeps its handle; an open is one read of the bucket's stream
+// and leaves nothing behind.
+func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error) {
 	js := b.client.JS()
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if js != b.js {
 		b.js, b.roles, b.sessions = js, nil, nil
 	}
@@ -75,13 +82,22 @@ func (b *Buckets) bucket(name string) (bus.KeyValue, error) {
 		handle = &b.sessions
 	}
 	if *handle != nil {
-		return **handle, nil
+		kv := **handle
+		b.mu.Unlock()
+		return kv, nil
 	}
-	kv, err := bus.OpenKeyValue(context.Background(), b.client.Connection(), js, name)
+	b.mu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, readTimeout)
+	defer cancel()
+	kv, err := bus.OpenKeyValue(ctx, b.client.Connection(), js, name)
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
-	*handle = &kv
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if js == b.js && *handle == nil {
+		*handle = &kv
+	}
 	return kv, nil
 }
 
@@ -103,7 +119,7 @@ func within[T any](ctx context.Context, what string, read func() (T, error)) (T,
 // role.
 func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, error) {
 	return within(ctx, "read role "+role+"'s claim", func() (store.RoleClaim, error) {
-		kv, err := b.bucket(bus.RoleClaimBucket)
+		kv, err := b.bucket(ctx, bus.RoleClaimBucket)
 		if errors.Is(err, nats.ErrBucketNotFound) {
 			return store.RoleClaim{}, nil
 		}
@@ -133,7 +149,7 @@ func (b *Buckets) RoleClaim(ctx context.Context, role string) (store.RoleClaim, 
 // record stands for the session. Any other error is a read that did not answer.
 func (b *Buckets) Holder(ctx context.Context, sessionID string) (session.SessionEntry, error) {
 	entry, err := within(ctx, "read session "+sessionID, func() (nats.KeyValueEntry, error) {
-		kv, err := b.bucket(bus.SessionBucket)
+		kv, err := b.bucket(ctx, bus.SessionBucket)
 		if err != nil {
 			return nil, err
 		}
