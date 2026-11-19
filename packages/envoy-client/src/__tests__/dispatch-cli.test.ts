@@ -773,9 +773,9 @@ describe("the dispatch CLI", () => {
     ];
     const refusal = [
       "dispatch result was not called: 3 problems",
-      '- --run - sends the one character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.',
-      '- --observed - sends the one character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.',
-      '- --negative-control - sends the one character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --run - sends the one ASCII character "-". --run-file <path> reads --run from a file, and --run-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --observed - sends the one ASCII character "-". --observed-file <path> reads --observed from a file, and --observed-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --negative-control - sends the one ASCII character "-". --negative-control-file <path> reads --negative-control from a file, and --negative-control-file - reads it from stdin. One flag of a call may read stdin.',
       "- Example: dispatch result --issue DSP-1 --check k1 --role implementer --verdict pass --commit 1111111111111111111111111111111111111111",
       "",
     ].join("\n");
@@ -792,7 +792,7 @@ describe("the dispatch CLI", () => {
       code: 2,
       stdout: [
         "dispatch issue was not called: 1 problem",
-        '- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
+        '- --title - sends the one ASCII character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
         "- Example: dispatch issue --project DSP --title 'Native workspace'",
         "",
       ].join("\n"),
@@ -810,7 +810,7 @@ describe("the dispatch CLI", () => {
     const lines = stdout.split("\n");
     expect(lines.slice(0, 3)).toEqual([
       "dispatch issue was not called: 2 problems",
-      '- --title - sends the one character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
+      '- --title - sends the one ASCII character "-". --title-file <path> reads --title from a file, and --title-file - reads it from stdin. One flag of a call may read stdin.',
       "- unknown flag --titel",
     ]);
     expect(lines[3]).toStartWith("- Allowed flags: --project, ");

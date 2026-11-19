@@ -1537,11 +1537,11 @@ grep -qF ': 32001 of at most 32000' "$work/out" ||
 pass A8 "a paragraph of 32,001 ASCII characters is refused, naming the block and the bound"
 
 run A8 "dispatch limits" limits
-grep -qE '^One block of a body[^:]*: [0-9,]+ characters' "$work/out" ||
+grep -qE '^One block of a body[^:]*: [0-9,]+ UTF-16 code units' "$work/out" ||
   fail A8 "dispatch limits prints the block bound" "$(<"$work/out")"
 grep -qE '^Blocks in one body: [0-9,]+\.$' "$work/out" ||
   fail A8 "dispatch limits prints how many blocks a body may hold" "$(<"$work/out")"
-grep -qE "^An ask's question and its options together: [0-9,]+ characters" "$work/out" ||
+grep -qE "^An ask's question and its options together: [0-9,]+ UTF-16 code units" "$work/out" ||
   fail A8 "dispatch limits prints the ask bound" "$(<"$work/out")"
 pass A8 "dispatch limits prints the bounds the server holds a write to"
 

@@ -323,7 +323,7 @@ describe("exportJjSessionAttribution", () => {
     ["a value holding a single quote", "ACME-7'"],
     ["a value holding a backslash", "ACME\\-7"],
     ["a value holding a newline", "ACME-7\nDispatch: OTHER-1"],
-    ["a project part over ten characters", "ABCDEFGHIJK-7"],
+    ["a project part over ten ASCII characters", "ABCDEFGHIJK-7"],
     ["a lowercase key", "acme-7"],
   ])("writes the session line alone for %s", async (_name, issueKey) => {
     const dir = await stateDir();

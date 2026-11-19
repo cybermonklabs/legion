@@ -296,7 +296,7 @@ test("the agent's undo of an accidental edit to an approved spec makes that appr
   }
 });
 
-test("an undo one character away from the approved spec leaves its approval stale", async ({
+test("an undo one ASCII character away from the approved spec leaves its approval stale", async ({
   browser,
 }) => {
   const issue = await approveThenChange("The plan.", 0);

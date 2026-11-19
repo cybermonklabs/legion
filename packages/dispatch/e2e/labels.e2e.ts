@@ -137,7 +137,7 @@ test("the label controls keep touch-sized targets and the filtered list fits the
   }
 });
 
-test("eight thirty-character labels scroll inside the header's details line without widening the page", async ({
+test("eight thirty-character ASCII labels scroll inside the header's details line without widening the page", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
