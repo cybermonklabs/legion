@@ -158,11 +158,14 @@ func PersonClause(loginExpr, viewerParam string) string {
 		PersonSeesProjectSQL("("+loginExpr+")", "(select person_kind.member_kind from people person_kind where person_kind.email = ("+loginExpr+"))", "seen")))
 }
 
-// SessionClause passes a session, by id, when it is the viewer's own; to an open viewer, unless it
-// acted in a project the viewer does not see (session_projects), so an open member reads no
-// session of a private project it is not on, whatever else the session did; and to any other
-// viewer, when it acted in a project the viewer sees. A deployment that holds no private project
-// skips the open viewer's read: every project is public and the open viewer sees each one (R9).
+// SessionClause passes a session, by id, when it is the viewer's own; to any other viewer, never
+// when it acted in a private project the viewer does not see (a session_projects pair), whatever
+// else it did, and otherwise to an open viewer, and to a viewer that is not open when it acted in a
+// project the viewer sees. So an open member reads no session of a private project it is not on,
+// and neither does a restricted member or a credential that lists projects, though the session
+// acted in one of theirs too. A deployment that holds no private project skips the read of the
+// private pairs: every project is public, the open viewer sees each one, and no pair is of a
+// private project (R9).
 //
 // session_projects places every session in the projects it acted in only once
 // `envoy-dispatch backfill-session-projects` has written session_projects_filled's row: migration
@@ -181,15 +184,25 @@ func SessionClause(sessionExpr, viewerParam string) string {
 		or (not %[3]s and exists (
 			select 1 from session_projects acted
 			where acted.session_id = (%[1]s) and (%[4]s::jsonb->'sees') ? acted.project_key
-			offset 0)))`,
+			offset 0)
+			and (not %[5]s or not exists (
+				select 1 from session_projects unseen
+				join projects hidden on hidden.key = unseen.project_key and hidden.visibility = 'private'
+				where unseen.session_id = (%[1]s) and not ((%[4]s::jsonb->'sees') ? unseen.project_key)
+				offset 0))))`,
 		sessionExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam, ViewerFlag(viewerParam, "private")))
 }
 
-// RoleClause passes a role, by name, to an open viewer; to any other viewer, when the session that
-// holds the role now (its held_by tuple not retracted since) passes SessionClause.
+// RoleClause passes a role, by name, to an open viewer unless a session that holds it now (its
+// held_by tuple not retracted since) does not pass SessionClause; to any other viewer, when a
+// session that holds it now passes SessionClause. So a role held by a session of a private project
+// the viewer does not see reaches no viewer that may not read that session. A deployment that
+// holds no private project skips the open viewer's read of the holders: SessionClause then passes
+// every session to it (R9).
 func RoleClause(roleExpr, viewerParam string) string {
-	return clause("RoleClause", fmt.Sprintf(`(%[2]s or %[3]s
-		or exists (
+	session := SessionClause("holder.to_id", viewerParam)
+	holder := func(condition string) string {
+		return fmt.Sprintf(`exists (
 			select 1 from graph_tuples holder
 			where holder.from_kind = 'role' and holder.from_id = (%[1]s) and holder.kind = 'held_by'
 				and holder.to_kind = 'session' and holder.asserted
@@ -199,9 +212,14 @@ func RoleClause(roleExpr, viewerParam string) string {
 						and later.kind = holder.kind and later.to_kind = holder.to_kind
 						and later.to_id = holder.to_id and later.seq > holder.seq
 					offset 0)
-				and %[4]s
-			offset 0))`,
-		roleExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), SessionClause("holder.to_id", viewerParam)))
+				and %[2]s
+			offset 0)`, roleExpr, condition)
+	}
+	return clause("RoleClause", fmt.Sprintf(`(%[1]s
+		or (%[2]s and (not %[3]s or not %[4]s))
+		or %[5]s)`,
+		ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), ViewerFlag(viewerParam, "private"),
+		holder("not "+session), holder(session)))
 }
 
 // PartyClause passes a conversation that belongs to no project, by its parties ("person:<login>",

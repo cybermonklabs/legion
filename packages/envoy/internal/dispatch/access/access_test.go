@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"slices"
 	"strings"
@@ -284,14 +285,40 @@ func nullable(value string) any {
 	return value
 }
 
+// The callers TestTheClausesOverTheSeededCallers reads the clauses for, by their names in
+// seededCallers: alice, carol's token that lists no project and the shared token, three open
+// viewers that do not see PRIV; carol in the browser, an open viewer that sees PRIV; bob, the
+// restricted member PRIV names; and carol's token that lists PRIV.
+const (
+	byAlice         = "alice"
+	byBob           = "bob"
+	byCarol         = "carol"
+	byCarolPriv     = "carol's token naming PRIV"
+	byCarolUnlisted = "carol's token naming no project"
+	byShared        = "the shared agent token"
+)
+
+// passes is a probe's answer for each caller: true for each caller it names, false for every other.
+func passes(callers ...string) map[string]bool {
+	answers := map[string]bool{}
+	for _, caller := range callers {
+		answers[caller] = true
+	}
+	return answers
+}
+
 // TestTheClausesOverTheSeededCallers: the clauses a read binds answer each seeded viewer as the
-// rule says. A project row passes ProjectClause when the viewer sees it. A person, a role and a
-// direct conversation of no session pass for an open viewer; a session passes for an open viewer
-// unless it acted in a project the viewer does not see (ses_priv, to alice), so neither it nor a
-// conversation it is a party to reaches her; for a restricted viewer or one that lists projects, a
-// person passes when it sees a project the viewer sees or is the viewer, a session when it acted in
-// such a project or is the viewer's own, a role when its holder session passes, and a conversation
-// when the viewer is one of its parties.
+// rule says. A project row passes ProjectClause when the viewer sees it. A person and a direct
+// conversation of no session pass for an open viewer. A session passes for the viewer's own and
+// the server's; for any other viewer, never when it acted in a private project the viewer does not
+// see (a session_projects pair: ses_priv and ses_both to the open viewers that do not see PRIV,
+// ses_priv_other, which acted in PRIV and in OTHER, to every caller here), and otherwise for an
+// open viewer, and for a restricted viewer or one that lists projects when it acted in a project
+// the viewer sees. A role passes for an open viewer unless a session that holds it now does not
+// pass (priv-architect, held by ses_priv), and for any other viewer when a session that holds it
+// now passes. For a restricted viewer or one that lists projects, a person passes when it sees a
+// project the viewer sees or is the viewer, and a conversation when the viewer is one of its
+// parties.
 func TestTheClausesOverTheSeededCallers(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
@@ -299,7 +326,8 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 	// the pairs (TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished holds the unfilled one).
 	if _, err := database.Pool.Exec(ctx, `
 		insert into session_projects_filled default values;
-		insert into session_projects (session_id, project_key) values ('ses_priv', 'PRIV'), ('ses_pub', 'PUB'), ('ses_both', 'PUB'), ('ses_both', 'PRIV');
+		insert into session_projects (session_id, project_key) values ('ses_priv', 'PRIV'), ('ses_pub', 'PUB'), ('ses_both', 'PUB'), ('ses_both', 'PRIV'),
+			('ses_priv_other', 'PRIV'), ('ses_priv_other', 'OTHER');
 		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event) values
 			('role', 'priv-architect', 'held_by', 'session', 'ses_priv', now(), '{}', 0),
 			('role', 'pub-architect', 'held_by', 'session', 'ses_priv', now() - interval '1 hour', '{}', 0);
@@ -310,27 +338,36 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed sessions and roles: %v", err)
 	}
-	callers := map[string]model.Actor{
-		"alice": cookie(alice), "bob": cookie(bob), "carol's token naming PRIV": personalToken(carol, "PRIV"),
+	callers := map[string]model.Actor{}
+	for _, caller := range seededCallers() {
+		switch caller.name {
+		case byAlice, byBob, byCarol, byCarolPriv, byCarolUnlisted, byShared:
+			callers[caller.name] = caller.actor
+		}
 	}
+	if len(callers) != 6 {
+		t.Fatalf("seededCallers names %d of the six callers this test reads: %v", len(callers), slices.Collect(maps.Keys(callers)))
+	}
+	everyone := passes(byAlice, byBob, byCarol, byCarolPriv, byCarolUnlisted, byShared)
 	type probe struct {
 		name, sql string
 		arg       any
 		want      map[string]bool
 	}
 	probes := []probe{
-		{"ProjectClause PRIV", ProjectClause("$2", "$1"), "PRIV", map[string]bool{"alice": false, "bob": true, "carol's token naming PRIV": true}},
-		{"ProjectClause PUB", ProjectClause("$2", "$1"), "PUB", map[string]bool{"alice": true, "bob": false, "carol's token naming PRIV": false}},
-		{"PersonClause carol", PersonClause("$2", "$1"), carol, map[string]bool{"alice": true, "bob": true, "carol's token naming PRIV": true}},
-		{"PersonClause alice", PersonClause("$2", "$1"), alice, map[string]bool{"alice": true, "bob": false, "carol's token naming PRIV": false}},
-		{"PersonClause bob himself", PersonClause("$2", "$1"), bob, map[string]bool{"alice": true, "bob": true, "carol's token naming PRIV": true}},
-		{"SessionClause ses_priv", SessionClause("$2", "$1"), "ses_priv", map[string]bool{"alice": false, "bob": true, "carol's token naming PRIV": true}},
-		{"SessionClause ses_pub", SessionClause("$2", "$1"), "ses_pub", map[string]bool{"alice": true, "bob": false, "carol's token naming PRIV": false}},
-		{"SessionClause ses_both", SessionClause("$2", "$1"), "ses_both", map[string]bool{"alice": false, "bob": true, "carol's token naming PRIV": true}},
-		{"RoleClause priv-architect", RoleClause("$2", "$1"), "priv-architect", map[string]bool{"alice": true, "bob": true, "carol's token naming PRIV": true}},
-		{"RoleClause pub-architect", RoleClause("$2", "$1"), "pub-architect", map[string]bool{"alice": true, "bob": false, "carol's token naming PRIV": false}},
-		{"PartyClause bob and ses_pub", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_pub"}, map[string]bool{"alice": true, "bob": true, "carol's token naming PRIV": false}},
-		{"PartyClause carol and ses_priv", PartyClause("$2", "$1"), []string{"person:" + carol, "session:ses_priv"}, map[string]bool{"alice": false, "bob": false, "carol's token naming PRIV": true}},
+		{"ProjectClause PRIV", ProjectClause("$2", "$1"), "PRIV", passes(byBob, byCarol, byCarolPriv)},
+		{"ProjectClause PUB", ProjectClause("$2", "$1"), "PUB", passes(byAlice, byCarol, byCarolUnlisted, byShared)},
+		{"PersonClause carol", PersonClause("$2", "$1"), carol, everyone},
+		{"PersonClause alice", PersonClause("$2", "$1"), alice, passes(byAlice, byCarol, byCarolUnlisted, byShared)},
+		{"PersonClause bob himself", PersonClause("$2", "$1"), bob, everyone},
+		{"SessionClause ses_priv", SessionClause("$2", "$1"), "ses_priv", passes(byBob, byCarol, byCarolPriv)},
+		{"SessionClause ses_pub", SessionClause("$2", "$1"), "ses_pub", passes(byAlice, byCarol, byCarolUnlisted, byShared)},
+		{"SessionClause ses_both", SessionClause("$2", "$1"), "ses_both", passes(byBob, byCarol, byCarolPriv)},
+		{"SessionClause ses_priv_other", SessionClause("$2", "$1"), "ses_priv_other", passes()},
+		{"RoleClause priv-architect", RoleClause("$2", "$1"), "priv-architect", passes(byBob, byCarol, byCarolPriv)},
+		{"RoleClause pub-architect", RoleClause("$2", "$1"), "pub-architect", passes(byAlice, byCarol, byCarolUnlisted, byShared)},
+		{"PartyClause bob and ses_pub", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_pub"}, passes(byAlice, byBob, byCarol, byCarolUnlisted, byShared)},
+		{"PartyClause carol and ses_priv", PartyClause("$2", "$1"), []string{"person:" + carol, "session:ses_priv"}, passes(byCarol, byCarolPriv, byCarolUnlisted)},
 	}
 	for name, actor := range callers {
 		viewer, err := Resolve(ctx, database.Pool, actor)
