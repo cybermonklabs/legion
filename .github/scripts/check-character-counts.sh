@@ -22,8 +22,9 @@
 #     its comments, as prose a person or a model reads.
 #
 # A count beside the word is a hit: "%d characters", "2,000 characters", "%d-character",
-# "${n} chars", "at character %d", "chars=%d". "char" and "chars" are the same word. A hit
-# passes when one of these holds:
+# "${n} chars", "at character %d", "chars=%d", and a constant's name written as the count
+# ("SEARCH_QUERY_MAX characters"). "char" and "chars" are the same word. A hit passes when one
+# of these holds:
 #
 #   names its unit   the 40 characters after the word, inside its sentence, name UTF-16 or code
 #                    units or points: "32,000 characters (UTF-16 units)" tells the truth.
@@ -100,9 +101,12 @@ WORD = r"(?:[Cc]haracters?|[Cc]hars?)\b"
 HAS_WORD = re.compile(WORD)
 VERB = r"%(?:\[\d+\])?[-+ #0]*\d*(?:\.\d+)?[dvs]"
 NUMBER = r"(?<![\w.+\-])\d[\d,]*(?<!,)"
+# A constant's name written in the text as the count ("at most SEARCH_QUERY_MAX characters"): its
+# value is a bound the text does not show, so it is judged as one.
+NAMED = r"`?(?<![\w.$])[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+`?(?![\w(])"
 SLOT = "\x00"
-CODE_COUNT = rf"\x00\d+\x00|{VERB}|{NUMBER}"
-PROSE_COUNT = rf"\$\{{[^{{}}\n]*\}}|\$\([^()\n]*\)|\{{[^{{}}\n]*\}}|\$#?\w+|{VERB}|{NUMBER}"
+CODE_COUNT = rf"\x00\d+\x00|{VERB}|{NUMBER}|{NAMED}"
+PROSE_COUNT = rf"\$\{{[^{{}}\n]*\}}|\$\([^()\n]*\)|\{{[^{{}}\n]*\}}|\$#?\w+|{VERB}|{NUMBER}|{NAMED}"
 
 
 def hit_pattern(count: str) -> re.Pattern:
@@ -1362,6 +1366,12 @@ CONTROLS = [
     ("a count in prose fires, and one naming its unit stays quiet", "packages/pi-envoy/extensions/planted/rules.md",
      "A rewritten question is at most\n2,000 characters, Dispatch's limit.\n\n"
      "A block is at most 32,000 characters (UTF-16 code units).\n", ["instance", "names its unit"]),
+    ("a constant's name as the count fires in a literal; an acronym before the word is no count",
+     "packages/dispatch/web/src/planted/Named.test.tsx",
+     'test("the filter writes at most SEARCH_QUERY_MAX characters into the URL", () => {});\n'
+     'test("HTML characters and UTF8 characters are no count", () => {});\n', ["instance | cannot judge: a bound"]),
+    ("a constant's name in backticks as the count fires in prose", "packages/dispatch/planted/NAMED.md",
+     "The answer is cut to `ANSWER_PREVIEW_CHARS` characters at a word.\n", ["instance"]),
     ("a count in a workflow's YAML fires", ".github/workflows/planted.yaml",
      "jobs:\n  a:\n    steps:\n      - run: echo \"title is $(printf '%s' \"$T\" | wc -c) characters\"\n", ["instance"]),
     ("chars is the word", "packages/pi-legion/scripts/planted/score.ts",
