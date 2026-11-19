@@ -104,9 +104,10 @@ RUN go mod download
 # .dockerignore leaves out what no image compiles: test files, internal/integration,
 # internal/smoke, deploy, infra (the envoy-infra module) and the changelog fragments.
 COPY packages/envoy ./
-# The Go contracts file is generated from packages/contracts/schemas; never
+# The Go contracts files are generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go
+COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listenerwire/envelope_generated.go
 
 # /out/THIRD_PARTY_NOTICES, the image's /usr/share/doc/legion/THIRD_PARTY_NOTICES: the licenses of
 # the Go modules the four binaries below compile in (with the build's CGO_ENABLED and the image's

@@ -718,11 +718,25 @@ func waitOutDebt(ctx context.Context, wait time.Duration, renewal *claimRenewal,
 // by meaning, so it needs no vector, and a model service may refuse it outright (Azure AI
 // Foundry's deployment answers HTTP 500 to an empty input, which bisection would confirm as the
 // row's own failure and dead-letter). The queue settles its row with no model call
-// (scanPending, settleDeadNothingToEmbed), and the coverage pass and report leave the item out
-// (searchableItems).
+// (scanPending, settleDeadNothingToEmbed), and the coverage pass (issueItems) and the report
+// (somethingToEmbed, its negation) leave the item out.
 func nothingToEmbed(expr string) string {
-	return "(" + expr + " !~ '[^[:space:]]')"
+	return "(" + expr + " !~ " + somethingToEmbedPattern + ")"
 }
+
+// somethingToEmbed renders nothingToEmbed's negation over expr: a text holding a character other
+// than white space, an item the coverage report counts. It is written as `~` rather than as `not`
+// nothingToEmbed, and with no parentheses (`~` binds tighter than and, or and not), because the
+// report repeats it inside the predicates of the two indexes it reads the window kinds from
+// (windowEmbedded, windowUnembedded) in the very words their migrations wrote, and in its test of
+// an issue's text.
+func somethingToEmbed(expr string) string {
+	return expr + " ~ " + somethingToEmbedPattern
+}
+
+// somethingToEmbedPattern is the one pattern nothingToEmbed and somethingToEmbed test a text
+// against: a character that is not white space.
+const somethingToEmbedPattern = `'[^[:space:]]'`
 
 // settledNothingToEmbed is the SET clause that settles a row whose text has nothing to embed, as
 // commitEmbeddings would commit it but with no vector: embedded at its current text

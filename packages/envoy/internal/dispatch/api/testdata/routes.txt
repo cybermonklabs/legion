@@ -60,6 +60,7 @@ GET /api/v1/credential-requests any
 POST /api/v1/credential-requests/machine-lookup any
 POST /api/v1/credential-requests/{id}/approve any
 POST /api/v1/credential-requests/{id}/deny any
+POST /api/v1/credential-requests/{id}/dismiss any
 GET /api/v1/credentials/capabilities any
 GET /api/v1/dashboard/builds any
 GET /api/v1/delivery/measures any

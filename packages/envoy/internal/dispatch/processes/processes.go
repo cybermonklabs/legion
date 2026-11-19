@@ -16,7 +16,12 @@
 //
 // Each row also records what the decisions over the fleet read (migration 20261101030537): the
 // document schema numbers the process reads and creates, which the document socket's admission
-// takes (docs.Service.authorize), its embedder's identity, and whether it stores files in a bucket.
+// takes (docs.Service.authorize), its embedder's identity, and whether it stores files in a bucket;
+// and the owner lock protocol it serialises an owner's writers by (migration 20261115100924),
+// which every owner lock's fleet read takes (store.LockOwner): a row at 0 counts there until it is
+// deregistered or pruned (store.OwnerLockLegacyWindow, PruneAge), and its insert, an earlier
+// build's registration or the return of its lapsed row, takes the owner lock gate (migration
+// 20261115200014).
 package processes
 
 import (
@@ -47,7 +52,9 @@ var (
 	LiveWindow = 15 * time.Second
 	// PruneAge is how old a heartbeat must be before the prune loop deletes its row: a process
 	// that died without deregistering (killed, out of memory, its node lost) leaves its row
-	// behind, and long past LiveWindow nothing reads it.
+	// behind, and long past LiveWindow nothing reads it but the owner lock's fleet read, which
+	// counts a row of an earlier build until it is pruned (store.OwnerLockLegacyWindow, the same
+	// ten minutes).
 	PruneAge = 10 * time.Minute
 	// PruneInterval is the prune loop's period, and the period of its lease (duty.Exclusive).
 	PruneInterval = time.Minute
@@ -315,6 +322,11 @@ func tryRegister(ctx context.Context, pool *pgxpool.Pool, id string, instance In
 // not share instance's (keySetsShared) and writes nothing; when each shares, it writes id's row as
 // instance, or, where the row is there already (a lapsed heartbeat, Registration.renew), stamps its
 // heartbeat. The second result is a failure to reach a decision. The caller commits.
+//
+// The row names this build's owner lock protocol, store.OwnerLockProtocol, which no Instance
+// carries: the column's default, 0, is an earlier build's, whose insert takes the owner lock gate
+// and stamps the earlier build's mark (migration 20261115200014), which a registration of this
+// build must never do.
 func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusal error, err error) {
 	live, err := Live(ctx, tx)
 	if err != nil {
@@ -331,11 +343,12 @@ func admit(ctx context.Context, tx pgx.Tx, id string, instance Instance) (refusa
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into server_processes (instance, commit, dashboard_build, signing_keys,
-			schema_version, schema_creatable, embedder_identity, file_store)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
+			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		on conflict (instance) do update set heartbeat_at = now()`,
 		id, instance.Commit, instance.DashboardBuild, instance.SigningKeys,
-		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore); err != nil {
+		instance.SchemaVersion, instance.SchemaCreatable, instance.EmbedderIdentity, instance.FileStore,
+		store.OwnerLockProtocol); err != nil {
 		return nil, err
 	}
 	return nil, nil

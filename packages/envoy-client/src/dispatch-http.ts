@@ -1217,9 +1217,11 @@ export class DispatchClient {
   }
 
   /** `GET /api/v1/credential-requests?approver=me`: the credential requests the caller may
-   *  decide, relayed from the secrets broker, or null from a Dispatch that has no broker
-   *  configured, which is an ordinary deployment rather than a failure. `me` is the only approver
-   *  the route takes. It needs the same `person` scope the Inbox does. */
+   *  decide, then the expired ones nobody has dismissed (each row's `state`, `pending` or
+   *  `expired`; none from an older broker, which is pending), relayed from the secrets broker, or
+   *  null from a Dispatch that has no broker configured, which is an ordinary deployment rather
+   *  than a failure. `me` is the only approver the route takes. It needs the same `person` scope
+   *  the Inbox does. */
   async credentialPending(): Promise<CredentialPendingResponse | null> {
     return this.#json("GET", ["api", "v1", "credential-requests"], undefined, { approver: "me" });
   }

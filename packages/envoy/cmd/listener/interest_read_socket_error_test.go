@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // brokenPipeReadKV is an interest bucket whose reads fail with the raw socket error nats.go v1.50.0
@@ -101,7 +102,7 @@ func TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering(t *testing
 		if recorder.Code != http.StatusServiceUnavailable {
 			t.Fatalf("GET /v1/registry/%s with the interest read failing on a broken pipe: status %d, body %s; want 503", missed, recorder.Code, recorder.Body.String())
 		}
-		var refusal apiError
+		var refusal listenerwire.APIError
 		if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 			t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 		}
@@ -118,7 +119,7 @@ func TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering(t *testing
 			t.Fatalf("GET /v1/sessions with the interest read failing on a broken pipe: status %d, body %s; want the 200 the copies answer, since the listing reads no record",
 				recorder.Code, recorder.Body.String())
 		}
-		var rows []sessionInfo
+		var rows []listenerwire.SessionInfo
 		if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 			t.Fatalf("decode the session list %s: %v", recorder.Body.String(), err)
 		}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/envlisting"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 )
 
@@ -336,18 +337,20 @@ func TestProbeImageRunsTheThreeProbesUnderTheImagesEnvironment(t *testing.T) {
 			t.Errorf("the %s probe file %s outlived the probe: %v", kind, probe, err)
 		}
 	}
+	// Each variable is read whole, by name (envlisting): a listing also holds PWD and TMPDIR,
+	// whose values can contain any text, and env can print any variable first.
 	for _, kind := range []string{"agents", "load", "session"} {
-		probeEnv := f.read(t, kind+".env.1")
+		probeEnv := envlisting.Vars(f.read(t, kind+".env.1"))
 		for name, value := range env {
-			if !strings.Contains(probeEnv, name+"="+value+"\n") {
+			if got, set := probeEnv[name]; !set || got != value {
 				t.Errorf("the %s probe ran without the image's %s=%s", kind, name, value)
 			}
 		}
 	}
-	if sessionEnv := f.read(t, "session.env.1"); !strings.Contains(sessionEnv, "OMP_SESSION_STORAGE=legion-launch-probe\n") {
-		t.Error("the session-storage probe ran without OMP_SESSION_STORAGE=legion-launch-probe")
+	if got := envlisting.Vars(f.read(t, "session.env.1"))["OMP_SESSION_STORAGE"]; got != "legion-launch-probe" {
+		t.Errorf("the session-storage probe ran with OMP_SESSION_STORAGE=%q, want legion-launch-probe", got)
 	}
-	if strings.Contains(f.read(t, "agents.env.1"), "OMP_SESSION_STORAGE=") {
+	if _, set := envlisting.Vars(f.read(t, "agents.env.1"))["OMP_SESSION_STORAGE"]; set {
 		t.Error("the pi.agents probe ran with the session-storage probe's variable")
 	}
 }

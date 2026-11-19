@@ -60,11 +60,12 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 
 // pullRequestNews says whether the write of after over before is news of the pull request: the
 // daemon's judgement of it changed (classify.JudgementChanged — its head, the head it checked,
-// its failing and cancelled checks, its check runs, and the settlement fence those were read
-// from), its head run opened or closed, the pushes it is still holding changed, or one of the
-// facts GitHub reports about the pull request itself changed: its state, the branch it merges
-// into, the newest deciding review, GitHub's mergeability verdict and the merge state beside it,
-// the head the daemon holds conflicting, and the merge commit.
+// its failing and cancelled checks, its check runs, the commit statuses of the head it checked,
+// and the settlement fence those were read from), its head run opened or closed, the pushes it is
+// still holding changed, or one of the facts GitHub reports about the pull request itself
+// changed: its state, the branch it merges into, the newest deciding review, GitHub's
+// mergeability verdict and the merge state beside it, the head the daemon holds conflicting, and
+// the merge commit.
 //
 // GitHub's merge state is named for the reason its mergeability is, and the two are read from
 // one answer: the state says whether GitHub would merge this head now, which the tri-state
