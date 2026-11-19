@@ -1,4 +1,4 @@
--- 20261118012235_document_client_ids.up.sql
+-- 20261119074834_document_client_ids.up.sql
 -- The Yjs client ids of a live document and the person each belongs to. A browser's update names
 -- the client its edits are under, and before this table nothing tied a client id to anyone: a
 -- signed-in person could write under another's id at the clock that person typed next, and the
