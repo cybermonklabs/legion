@@ -40,13 +40,9 @@ import (
 // upstream dialer is a plain TCP dial of the test database.
 type idleRigPods struct {
 	t *testing.T
-	// address is the worker stream every launcher dials, tcp://host:port, where launch is unset.
-	address func() string
-	// launch, which a caller may set after newIdleRigPods and before any pod is Ready, is how the
-	// launchers of a pod run, as the caller reads it off that pod's own command: the worker
-	// stream they dial and whether they run as a microVM pod's (launcher.Config's Connect and
-	// MicroVM), or ok false where none of them may start. Unset, every launcher dials address,
-	// MicroVM false.
+	// launch is how the launchers of a pod run, asked when the pod is Ready: the worker stream
+	// they dial and whether they run as a microVM pod's (launcher.Config's Connect and MicroVM),
+	// or ok false where none of them may start.
 	launch func(pod, podUID string) (connect string, microVM, ok bool)
 	// session is the Cloud SQL session database the launchers proxy to, and dial is its upstream.
 	session ompsessions.Database
@@ -90,7 +86,7 @@ func (processes *idleRigPodProcesses) run(f func(ctx context.Context)) {
 	}()
 }
 
-func newIdleRigPods(t *testing.T, address func() string, session ompsessions.Database, dial func(ctx context.Context, account string) (sessionproxy.Dialer, error)) *idleRigPods {
+func newIdleRigPods(t *testing.T, launch func(pod, podUID string) (connect string, microVM, ok bool), session ompsessions.Database, dial func(ctx context.Context, account string) (sessionproxy.Dialer, error)) *idleRigPods {
 	t.Helper()
 	// Each launcher's private directory is a numbered subdirectory of this root, and the unix
 	// socket of a generation's session database proxy is `<dir>/g<n>/.s.PGSQL.5432`. A unix
@@ -103,27 +99,21 @@ func newIdleRigPods(t *testing.T, address func() string, session ompsessions.Dat
 	// privateDir runs on the fake Kubernetes server's goroutine, where a t.Fatalf would stop
 	// that goroutine alone and leave the test to run to its deadline.
 	root := testtmp.Dir(t, filepath.Join("999", shimwire.GenerationDir(999), ompsessions.SocketName))
-	p := &idleRigPods{t: t, address: address, session: session, dial: dial,
+	p := &idleRigPods{t: t, launch: launch, session: session, dial: dial,
 		running: map[string]*idleRigPodProcesses{}, logs: &syncBuffer{}, started: map[string]int{},
 		dirRoot: root}
 	t.Cleanup(p.stopAll)
 	return p
 }
 
-// podReady starts a launcher for each role of the pod, with that role's own launcher token and,
-// where launch is set, the stream and MicroVM it answers for the pod; a pod it refuses gets no
-// launcher and counts no start. Before each launcher starts, record is handed its role, its
-// private directory and the pod's processes, beside which record may run its own
-// (idleRigPodProcesses.run).
+// podReady starts a launcher for each role of the pod, with that role's own launcher token and
+// the stream and MicroVM launch answers for the pod; a pod launch refuses gets no launcher and
+// counts no start. Before each launcher starts, record is handed its role, its private directory
+// and the pod's processes, beside which record may run its own (idleRigPodProcesses.run).
 func (p *idleRigPods) podReady(pod, podUID string, roles map[string]string, record func(role, dir string, processes *idleRigPodProcesses)) {
-	connect, microVM := "", false
-	if p.launch == nil {
-		connect = p.address()
-	} else {
-		var ok bool
-		if connect, microVM, ok = p.launch(pod, podUID); !ok {
-			return
-		}
+	connect, microVM, ok := p.launch(pod, podUID)
+	if !ok {
+		return
 	}
 	p.mu.Lock()
 	if _, live := p.running[pod]; live {

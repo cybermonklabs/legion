@@ -3841,7 +3841,7 @@ So a change of an issue's sandbox, through `canary_issues` or `type`, opens an u
 The round names the drift `sandbox null, now {…}` for a pod that moves into a microVM, and `sandbox {…}, now null` for one that moves back.
 A change of `microvm.compute_class`, `microvm.storage_class` or `microvm.metadata` opens a round on each microVM issue pod alone.
 With `microvm.storage_class` left out, the microVM issue pods take `storage_class`, so a change of `storage_class` opens a round on each microVM issue pod, and still on no gVisor pod.
-The controller's pod is in no round: its launch compares the pod's recorded shape with the shape that launch would build (`launch.shapeKey` and `relaunch`, `relaunch.go`).
+The controller's pod is in no round: its launch compares the pod's recorded shape with the shape that launch would build (`launch.shapeKey`, `drift.go`, and `relaunch`, `relaunch.go`).
 A daemon boot re-adopts a running controller pod and replaces nothing, whatever its shape.
 A launch that installs nothing replaces a live controller pod whose shape differs, so the controller moves into a microVM, or back into gVisor, at its first such launch after a change of `type`: when its process ends, or when the operator suspends and resumes its claim (below).
 A launch that installs a stale-plugin pair replaces it only where its image differs (`podImageDrift`, [Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)), and the fresh pod is built in the sandbox `type` names.

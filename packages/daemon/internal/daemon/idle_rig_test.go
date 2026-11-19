@@ -179,7 +179,8 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 	rig := &idleWakeRig{t: t, cfg: cfg, board: board, pool: pool, natsURL: natsURL, js: workflowJetStream(t, natsURL),
 		kube: newIssueSandboxAPI(), agents: newIdleRigAgents(t, pool), listener: listener,
 		records: record.NewStore(), project: project, logs: &syncBuffer{}, built: &built{}}
-	rig.pods = newIdleRigPods(t, rig.address, cfg.Runtime.Kubernetes.SessionStore.Database,
+	rig.pods = newIdleRigPods(t, func(string, string) (string, bool, bool) { return rig.address(), false, true },
+		cfg.Runtime.Kubernetes.SessionStore.Database,
 		func(context.Context, string) (sessionproxy.Dialer, error) {
 			return idleRigDialer{address: idleRigHostPort(t, pool)}, nil
 		})

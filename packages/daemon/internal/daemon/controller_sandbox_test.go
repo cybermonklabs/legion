@@ -566,8 +566,8 @@ func (r *controllerSandboxRig) await(what string, condition func() bool) {
 }
 
 // diagnose is where the controller stood when a wait gave up: its claim as the daemon lists it,
-// its Sandbox and pod as the cluster holds them, every launcher started and every generation's
-// stand-in. The logs are printed once the test has failed (printLogsOnFailure).
+// its Sandbox and pod as the cluster holds them, how many times its pod's launcher was started and
+// every generation's stand-in. The logs are printed once the test has failed (printLogsOnFailure).
 func (r *controllerSandboxRig) diagnose() string {
 	claimLine := "not listed"
 	request, err := http.NewRequest(http.MethodGet, r.d.base+"/legion/v1/operator/claims", nil)
@@ -592,8 +592,8 @@ func (r *controllerSandboxRig) diagnose() string {
 		claimLine = "unread: " + err.Error()
 	}
 	pod, live := r.kube.controllerSandboxPodOf(r.name)
-	return fmt.Sprintf("the controller's claim is %s; its Sandbox %s is %s, its pod %q (live %t); launchers started: %s; stand-ins: %s",
-		claimLine, r.name, r.kube.mode(r.name), pod.uid, live, r.pods.startedLine(), r.pods.shimsLine())
+	return fmt.Sprintf("the controller's claim is %s; its Sandbox %s is %s, its pod %q (live %t); launchers started: %d; stand-ins: %s",
+		claimLine, r.name, r.kube.mode(r.name), pod.uid, live, r.pods.launchers.starts(r.name), r.pods.shimsLine())
 }
 
 // printLogsOnFailure prints the end of the daemon's log and of the launchers' once the test has
@@ -619,7 +619,7 @@ func controllerSandboxTail(text string, n int) string {
 }
 
 // requirePlaced fails the test unless pod is the controller's pod setting renders
-// (controllerSandboxSetting.placement), and a launcher was started for it.
+// (controllerSandboxSetting.placement).
 func (r *controllerSandboxRig) requirePlaced(pod controllerSandboxPodSeen, setting controllerSandboxSetting) {
 	r.t.Helper()
 	want := setting.placement()
@@ -639,9 +639,6 @@ func (r *controllerSandboxRig) requirePlaced(pod controllerSandboxPodSeen, setti
 	}
 	if flagged := slices.Contains(pod.command(), controllerSandboxMicroVMFlag); flagged != want.microVM {
 		r.t.Errorf("the controller's pod %s runs %q, --microvm %t, want %t (%s)", pod.uid, pod.command(), flagged, want.microVM, setting.name)
-	}
-	if !r.pods.launched(pod.uid) {
-		r.t.Errorf("no launcher was started for the controller's pod %s, want one (%s); launchers started: %s", pod.uid, setting.name, r.pods.startedLine())
 	}
 	member, err := pod.shapeSandbox()
 	if err != nil {
@@ -767,22 +764,19 @@ type controllerSandboxPods struct {
 	daemonURL string
 	pool      *store.Pool
 
-	mu sync.Mutex
-	// started is the uid of every pod a launcher was started for, in order.
-	started []string
-	shims   map[uint64]*controllerSandboxShim
+	mu    sync.Mutex
+	shims map[uint64]*controllerSandboxShim
 }
 
 // newControllerSandboxPods is the controller's part over launchers of its own, whose launch is
-// the controller's: each launcher dials the stream its pod's own command names, so the launchers
-// are given no address of the rig's.
+// the controller's (launch): each launcher dials the stream its pod's own command names, not one
+// of the rig's. The part is made first, so that its launch is the one its launchers are made with.
 func newControllerSandboxPods(t *testing.T, kube *issueSandboxAPI, tools, daemonURL string, pool *store.Pool, session ompsessions.Database,
 	dial func(ctx context.Context, account string) (sessionproxy.Dialer, error),
 ) *controllerSandboxPods {
 	t.Helper()
-	p := &controllerSandboxPods{launchers: newIdleRigPods(t, nil, session, dial), kube: kube, tools: tools, daemonURL: daemonURL, pool: pool,
-		shims: map[uint64]*controllerSandboxShim{}}
-	p.launchers.launch = p.launch
+	p := &controllerSandboxPods{kube: kube, tools: tools, daemonURL: daemonURL, pool: pool, shims: map[uint64]*controllerSandboxShim{}}
+	p.launchers = newIdleRigPods(t, p.launch, session, dial)
 	return p
 }
 
@@ -793,8 +787,10 @@ func (p *controllerSandboxPods) logf(format string, args ...any) {
 
 // podReady starts the pod's launcher with the controller's launcher token
 // (idleRigPods.podReady), and beside it the watch that gives each of its generations a shim. It
-// runs on the fake cluster's controller goroutine, off the API's lock, so it fails nothing
-// itself.
+// runs on the fake cluster's controller goroutine, off the API's lock, where a t.Fatalf would
+// stop that goroutine alone: a pod it starts no launcher for is logged (logf), and a private
+// directory idleRigPods.podReady cannot make fails the test through t.Errorf, which is safe off
+// the test's goroutine.
 func (p *controllerSandboxPods) podReady(pod, uid string, roles map[string]string) {
 	role := string(claim.RoleController)
 	token := roles[role]
@@ -803,9 +799,6 @@ func (p *controllerSandboxPods) podReady(pod, uid string, roles map[string]strin
 		return
 	}
 	p.launchers.podReady(pod, uid, map[string]string{role: token}, func(_, dir string, processes *idleRigPodProcesses) {
-		p.mu.Lock()
-		p.started = append(p.started, uid)
-		p.mu.Unlock()
 		processes.run(func(ctx context.Context) { p.watchGenerations(ctx, processes, dir) })
 	})
 }
@@ -888,20 +881,6 @@ func (p *controllerSandboxPods) die(generation uint64) error {
 		return fmt.Errorf("tell the controller's generation %d to die: %w", generation, err)
 	}
 	return nil
-}
-
-// launched is whether a launcher was started for the pod uid.
-func (p *controllerSandboxPods) launched(uid string) bool {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return slices.Contains(p.started, uid)
-}
-
-// startedLine is the uid of every pod a launcher was started for, for a failure to name.
-func (p *controllerSandboxPods) startedLine() string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return "[" + strings.Join(p.started, ", ") + "]"
 }
 
 // controllerSandboxShimState is what a generation's shim has done: how many of its hellos a
