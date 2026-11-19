@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -283,6 +284,195 @@ func TestLogWholeLogsNothingOfATextFarSideErrorKeepsWhole(t *testing.T) {
 		LogWhole(slog.New(slog.NewJSONHandler(&buf, nil)), "outbox: the row's error", text)
 		if buf.Len() != 0 {
 			t.Fatalf("LogWhole of %d runes logged %.200q, want nothing", utf8.RuneCountInString(text), buf.String())
+		}
+	}
+}
+
+// sample is a value of every shape Strings reads into: a string and a named string, a struct, a
+// slice of structs, a map, a pointer, an interface, an array, bytes, and an unexported string.
+type sample struct {
+	Title    string
+	Kind     sampleKind
+	Inner    sampleInner
+	Runs     []sampleInner
+	Labels   map[string]string
+	Parent   *sampleInner
+	Observed any
+	Heads    [2]string
+	Body     json.RawMessage
+	Bundle   []byte
+	seen     string
+}
+
+type sampleInner struct {
+	Name string
+	Tags []string
+}
+
+type sampleKind string
+
+// dirtySample is a sample holding a NUL or an invalid byte in every string Strings reaches, and
+// in its bytes and its unexported field, which it leaves as they are. Each call makes a new one,
+// so a test can hold the value it gave Strings beside the one it began as.
+func dirtySample() sample {
+	return sample{
+		Title:    "root\x00title",
+		Kind:     "kind\x00",
+		Inner:    sampleInner{Name: "unit\x00tests", Tags: []string{"tag\xff"}},
+		Runs:     []sampleInner{{Name: "lint"}, {Name: "unit\x00"}},
+		Labels:   map[string]string{"key\x00": "value\x00", "kept": "as is"},
+		Parent:   &sampleInner{Name: "parent\x00"},
+		Observed: sampleInner{Name: "a\xffb"},
+		Heads:    [2]string{"head\x00", "kept"},
+		Body:     json.RawMessage("\"a\x00\""),
+		Bundle:   []byte{0, 0xff},
+		seen:     "seen\x00",
+	}
+}
+
+func TestStringsReplacesEachNULAndInvalidByteItReachesWithAReplacementCharacter(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		given, want sample
+	}{
+		{name: "a nested struct",
+			given: sample{Inner: sampleInner{Name: "unit\x00tests", Tags: []string{"tag\x00"}}},
+			want:  sample{Inner: sampleInner{Name: "unit\uFFFDtests", Tags: []string{"tag\uFFFD"}}}},
+		{name: "a slice of structs",
+			given: sample{Runs: []sampleInner{{Name: "lint"}, {Name: "unit\x00"}}},
+			want:  sample{Runs: []sampleInner{{Name: "lint"}, {Name: "unit\uFFFD"}}}},
+		{name: "a map with a NUL key and value",
+			given: sample{Labels: map[string]string{"key\x00": "value\x00", "kept": "as is"}},
+			want:  sample{Labels: map[string]string{"key\uFFFD": "value\uFFFD", "kept": "as is"}}},
+		{name: "two keys the rule makes one keep the value of the greater original key",
+			given: sample{Labels: map[string]string{"a\x00": "of the NUL", "a\uFFFD": "of U+FFFD", "b\xff": "of 0xff", "b\uFFFD": "of U+FFFD"}},
+			want:  sample{Labels: map[string]string{"a\uFFFD": "of U+FFFD", "b\uFFFD": "of 0xff"}}},
+		{name: "a pointer",
+			given: sample{Parent: &sampleInner{Name: "parent\x00"}},
+			want:  sample{Parent: &sampleInner{Name: "parent\uFFFD"}}},
+		{name: "an interface field holding a struct",
+			given: sample{Observed: sampleInner{Name: "a\xffb"}},
+			want:  sample{Observed: sampleInner{Name: "a\uFFFDb"}}},
+		{name: "an interface field holding a pointer to a string",
+			given: sample{Observed: func() *string { s := "x\x00"; return &s }()},
+			want:  sample{Observed: func() *string { s := "x\uFFFD"; return &s }()}},
+		{name: "an array",
+			given: sample{Heads: [2]string{"head\x00", "kept"}},
+			want:  sample{Heads: [2]string{"head\uFFFD", "kept"}}},
+		{name: "a string and a named string",
+			given: sample{Title: "root\x00title", Kind: "kind\x00"},
+			want:  sample{Title: "root\uFFFDtitle", Kind: "kind\uFFFD"}},
+		{name: "bytes and an unexported field kept as they are",
+			given: sample{Title: "\x00", Body: json.RawMessage("\"a\x00\""), Bundle: []byte{0, 0xff}, seen: "seen\x00"},
+			want:  sample{Title: "\uFFFD", Body: json.RawMessage("\"a\x00\""), Bundle: []byte{0, 0xff}, seen: "seen\x00"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Strings(tc.given)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Strings(%#v) = %#v, want %#v", tc.given, got, tc.want)
+			}
+			if again := Strings(got); !reflect.DeepEqual(again, got) {
+				t.Fatalf("Strings(%#v) = %#v, want the value kept as the rule left it", got, again)
+			}
+		})
+	}
+	if got := Strings("a\x00b"); got != "a\uFFFDb" {
+		t.Fatalf("Strings of a string = %q, want %q", got, "a\uFFFDb")
+	}
+	var fact any = sample{Title: "root\x00title"}
+	if got := Strings(fact); !reflect.DeepEqual(got, any(sample{Title: "root\uFFFDtitle"})) {
+		t.Fatalf("Strings of an interface holding a sample = %#v, want the sample cleaned", got)
+	}
+	if got := Strings[any](nil); got != nil {
+		t.Fatalf("Strings of a nil interface = %#v, want nil", got)
+	}
+}
+
+func TestStringsReturnsAValueHoldingNoNULAsItIsWithItsOwnSlicesMapsAndPointers(t *testing.T) {
+	clean := sample{
+		Title: "root title", Kind: "kind",
+		Inner:    sampleInner{Name: "unit tests", Tags: []string{"tag"}},
+		Runs:     []sampleInner{{Name: "lint"}, {Name: "unit"}},
+		Labels:   map[string]string{"key": "value"},
+		Parent:   &sampleInner{Name: "parent", Tags: []string{"p"}},
+		Observed: &sampleInner{Name: "observed"},
+		Heads:    [2]string{"head", "kept"},
+		Body:     json.RawMessage(`"a\u0000"`),
+		Bundle:   []byte{0, 0xff},
+		seen:     "seen\x00",
+	}
+	shares := func(t *testing.T, got sample, what string) {
+		t.Helper()
+		if &got.Inner.Tags[0] != &clean.Inner.Tags[0] || &got.Runs[0] != &clean.Runs[0] || got.Parent != clean.Parent ||
+			got.Observed.(*sampleInner) != clean.Observed.(*sampleInner) || &got.Bundle[0] != &clean.Bundle[0] || &got.Body[0] != &clean.Body[0] ||
+			reflect.ValueOf(got.Labels).UnsafePointer() != reflect.ValueOf(clean.Labels).UnsafePointer() {
+			t.Fatalf("Strings of %s = %#v, want each slice, map and pointer of %#v itself", what, got, clean)
+		}
+	}
+
+	got := Strings(clean)
+	if !reflect.DeepEqual(got, clean) {
+		t.Fatalf("Strings(%#v) = %#v, want the value as it is", clean, got)
+	}
+	shares(t, got, "a value holding no NUL")
+	var fact any = clean
+	shares(t, Strings(fact).(sample), "an interface holding a value with no NUL")
+
+	// Only the path to the string the rule changes is copied.
+	dirty := clean
+	dirty.Title = "root\x00title"
+	got = Strings(dirty)
+	if got.Title != "root\uFFFDtitle" {
+		t.Fatalf("Strings(%#v).Title = %q, want %q", dirty, got.Title, "root\uFFFDtitle")
+	}
+	shares(t, got, "a value whose title holds a NUL")
+}
+
+func TestStringsLeavesTheCallersValueHoldingItsNULs(t *testing.T) {
+	given := dirtySample()
+	got := Strings(given)
+	if !reflect.DeepEqual(given, dirtySample()) {
+		t.Fatalf("Strings wrote into the value it was given: it is %#v, want %#v", given, dirtySample())
+	}
+	want := sample{
+		Title:    "root\uFFFDtitle",
+		Kind:     "kind\uFFFD",
+		Inner:    sampleInner{Name: "unit\uFFFDtests", Tags: []string{"tag\uFFFD"}},
+		Runs:     []sampleInner{{Name: "lint"}, {Name: "unit\uFFFD"}},
+		Labels:   map[string]string{"key\uFFFD": "value\uFFFD", "kept": "as is"},
+		Parent:   &sampleInner{Name: "parent\uFFFD"},
+		Observed: sampleInner{Name: "a\uFFFDb"},
+		Heads:    [2]string{"head\uFFFD", "kept"},
+		Body:     json.RawMessage("\"a\x00\""),
+		Bundle:   []byte{0, 0xff},
+		seen:     "seen\x00",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Strings(%#v) = %#v, want %#v", dirtySample(), got, want)
+	}
+}
+
+// node is a value that can point to itself.
+type node struct {
+	Name string
+	Next *node
+}
+
+func TestStringsEndsAtItsDepthBoundOnACycleOfPointersHoldingNUL(t *testing.T) {
+	cycle := &node{Name: "loop\x00"}
+	cycle.Next = cycle
+	got := Strings(cycle)
+	if got == cycle || got.Name != "loop\uFFFD" || cycle.Name != "loop\x00" {
+		t.Fatalf("Strings of a cycle holding a NUL = %p named %q, the cycle %p named %q; want a copy named %q and the cycle as it was",
+			got, got.Name, cycle, cycle.Name, "loop\uFFFD")
+	}
+	steps := 0
+	for at := got; at != cycle; at = at.Next {
+		if at.Name != "loop\uFFFD" {
+			t.Fatalf("the copy %d pointers from its start is named %q, want %q", steps, at.Name, "loop\uFFFD")
+		}
+		if steps++; steps > maxDepth {
+			t.Fatalf("the copy runs on past %d pointers, want it to end at the cycle itself within its depth bound", maxDepth)
 		}
 	}
 }

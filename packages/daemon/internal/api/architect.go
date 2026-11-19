@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // EmptyResponse is every accepted mutating route whose caller needs no result beyond success.
@@ -960,7 +961,9 @@ func (s *server) waveRelease(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, child := range children {
-			parent := intake.ObservedIssue(child.view).Parent
+			// Dispatch's parent is compared with the tree's records, so it is taken as the store
+			// would keep it (storetext.Text).
+			parent := storetext.Text(intake.ObservedIssue(child.view).Parent)
 			if ancestor := record.AcceptedAncestorIn(members, grant.Tree, child.view.Key, parent); ancestor != "" {
 				writeFailure(w, http.StatusConflict, "CHILD_UNDER_ACCEPTED_PARENT", childUnderAcceptedParent(child.view.Key, ancestor, "release it again"))
 				return
@@ -1202,7 +1205,8 @@ func (s *server) releaseOutcome(ctx context.Context, children []releasedChild) (
 			started = append(started, child.view.Key)
 		case runsPhase(after):
 		default:
-			if unfinished := blockers.UnfinishedOf(rows, child.view.BlockedBy); len(unfinished) > 0 {
+			// The mirror's rows are keyed as the store keeps the keys (storetext.Strings).
+			if unfinished := blockers.UnfinishedOf(rows, storetext.Strings(child.view.BlockedBy)); len(unfinished) > 0 {
 				held = append(held, HeldChild{Issue: child.view.Key, BlockedBy: unfinished})
 			}
 		}

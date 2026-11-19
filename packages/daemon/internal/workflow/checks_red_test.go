@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A CI settlement moves no issue, in any phase (dispatch://INFRA-714/spec R1): a failed check is
@@ -111,6 +112,55 @@ func TestASettlementThatSaysNothingNewTellsNobodyAgain(t *testing.T) {
 			t.Fatalf("after settlement %d the issue is in %s, want testing", i+1, got)
 		}
 		assertRoleMessages(t, pool, "LEGION-208", messages)
+	}
+}
+
+// A check run's name is CI's own text, so it can hold a NUL, which the store keeps as U+FFFD in
+// the head run's step. The listener redelivers a settlement under a new event id, and a head run
+// takes a redelivery as no step (classify's redundantSettlement), so that the redeliveries do not
+// use up the run's bound of steps: the redelivery of a settlement whose check name holds a NUL is
+// the same settlement as the step the store kept of it, and adds none.
+func TestARedeliveredSettlementWhoseCheckNameHoldsNULAddsNoStepToTheHeadRun(t *testing.T) {
+	const dev = "legion-implementer[bot]"
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
+		Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208",
+		HeadSHA: "head-c", HeadUpdatedAt: lateApplied, CheckedHead: "head-c", Failing: []string{}, CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+	facts, engine := store.NewPool(pool), testEngine(config.DesignGateRootIssues, nil)
+	settlement := settledRunsAt("head-d", 1, []record.AttemptRun{{Name: "unit\x00tests", ID: 7}}, "unit\x00tests")
+	steps := func(after string) []record.RunStep {
+		t.Helper()
+		var pr *record.PullRequest
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			var err error
+			pr, err = record.NewStore().PullRequest(t.Context(), tx, "LEGION-208")
+			return err
+		})
+		if pr == nil || pr.Run == nil {
+			t.Fatalf("after %s the pull request holds no open head run: %+v", after, pr)
+		}
+		return pr.Run.Steps
+	}
+
+	// The head arrives before the push that moved it, which opens a head run the settlement is a
+	// step of.
+	for i, fact := range []intake.Fact{namedSync("head-c", "head-d", dev, lateApplied.Add(time.Minute)), settlement} {
+		if result, err := intake.ApplyFact(context.Background(), facts, "github", fmt.Sprintf("delivery-%d", i), fact, engine, admissionStub{}); err != nil || result.Refusal != nil {
+			t.Fatalf("apply %T = %+v, %v; want it applied", fact, result.Refusal, err)
+		}
+	}
+	settled := steps("the settlement")
+	if last := settled[len(settled)-1]; last.Settlement == nil || len(last.Settlement.CheckRuns) != 1 || last.Settlement.CheckRuns[0].Name != "unit\uFFFDtests" {
+		t.Fatalf("the head run's last step is %+v, want the settlement of %q, as the store keeps its name", last, "unit\uFFFDtests")
+	}
+	if result, err := intake.ApplyFact(context.Background(), facts, "github", "redelivery", settlement, engine, admissionStub{}); err != nil || result.Refusal != nil {
+		t.Fatalf("apply the redelivered settlement = %+v, %v; want it applied", result.Refusal, err)
+	}
+	if redelivered := steps("the redelivery"); len(redelivered) != len(settled) {
+		t.Fatalf("the redelivery left the head run %d steps, want the %d it had: %+v", len(redelivered), len(settled), redelivered)
 	}
 }
 

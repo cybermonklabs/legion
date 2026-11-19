@@ -3147,7 +3147,10 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 		}
 		issue.Ancestry = chain
 	}
-	if !reread || recorded != nil && (issue.Parent == parentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
+	// The record holds what the store kept of a parent and a chain, so Dispatch's are compared as
+	// the store would keep them (storetext.Text, storetext.Strings); the walk itself reads Dispatch
+	// by the keys as Dispatch gave them.
+	if !reread || recorded != nil && (storetext.Text(issue.Parent) == parentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
 		return issue, nil
 	}
 	var roots []record.Issue
@@ -3169,7 +3172,7 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 				"root", root.Key, "event", issue.Key, "ancestry", root.Ancestry, "error", err)
 			continue
 		}
-		if slices.Equal(chain, root.Ancestry) {
+		if slices.Equal(storetext.Strings(chain), root.Ancestry) {
 			continue
 		}
 		if issue.Reread == nil {

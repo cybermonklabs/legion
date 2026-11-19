@@ -2338,13 +2338,16 @@ func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uin
 }
 
 // fenceRequest is the fence on an agent's own request: it must come from the claim's current
-// generation, and — once the claim has recorded a session — from that session.
+// generation, and — once the claim has recorded a session — from that session. The claim holds
+// its session as the store keeps it (register), the same before a restart and after one, so the
+// request's session is compared as the store would keep it (storetext.Text): an agent whose
+// session id holds a NUL is still the claim's own agent once the claim is read back.
 func (m *Machine) fenceRequest(request string, generation uint64, session string) (bool, error) {
 	if generation != m.claim.Generation {
 		return false, fmt.Errorf("%s for %s at generation %d, the claim is at %d: %w",
 			request, m.claim.Token, generation, m.claim.Generation, claim.StaleGeneration)
 	}
-	if m.claim.Session != "" && session != m.claim.Session {
+	if m.claim.Session != "" && storetext.Text(session) != m.claim.Session {
 		return false, fmt.Errorf("%s for %s as session %q, the claim resumes %q: %w",
 			request, m.claim.Token, session, m.claim.Session, claim.SameAgentRefusal)
 	}

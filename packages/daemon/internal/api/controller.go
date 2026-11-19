@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -408,8 +409,10 @@ func (s *server) controllerSessionGrant(w http.ResponseWriter, r *http.Request, 
 // controllerSessionRegistered is the one authentication of a controller session against its
 // record: the current capability's registration, naming this session, whose secret hashes to the
 // recorded one. controllerSessionGrant and refuseIfStaleControllerSession both authenticate by it.
+// The record holds the session as the store keeps it, so the caller's is compared as the store
+// would keep it (storetext.Text): a session id holding a NUL is stored with U+FFFD in its place.
 func controllerSessionRegistered(stored controller.Record, session, secret string) bool {
-	return stored.Registered() && stored.Session == session &&
+	return stored.Registered() && stored.Session == storetext.Text(session) &&
 		subtle.ConstantTimeCompare(stored.SecretHash, capabilityHash(secret)) == 1
 }
 

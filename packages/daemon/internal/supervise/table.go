@@ -2308,7 +2308,9 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 	return m.revive(ctx, exemptWake(ev), nil)
 }
 
-// register records the session the agent became. The boot intervals end
+// register records the session the agent became, as the store keeps it (storetext.Text), so the
+// claim in memory names the session its stored copy names and a restart reads back: a session id
+// or a session file holding a NUL is stored with U+FFFD in its place. The boot intervals end
 // with the registration, but not the deadline: it is armed again at its base bound, and only the
 // agent's ready ends it. A registration whose answer never reached its agent leaves a claim no
 // ready will ever come for, and from here that looks exactly like an agent slow to boot. A
@@ -2316,7 +2318,7 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 // (staleRegistration): the agent that just registered is not the one that relaunch starts.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
-	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
+	m.claim.Session, m.claim.SessionFile = storetext.Text(r.Session), storetext.Text(r.SessionFile)
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract
 	if r.PluginContract == m.deps.PluginContract {
@@ -2342,7 +2344,7 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 // daemon's is relaunched at once and refused the same way register's is (staleRegistration).
 func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
-	m.claim.SessionFile = r.SessionFile
+	m.claim.SessionFile = storetext.Text(r.SessionFile)
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract
 	if r.PluginContract == m.deps.PluginContract {
@@ -2550,10 +2552,11 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 // the claim next, for a phase worker the workflow's own start of its phase, spawns a fresh agent
 // rather than resuming the turns the operator asked to leave behind. The comparison runs under
 // the machine lock, so a decision that changed the claim since an operator saw it cannot clear a
-// later session.
+// later session. The claim holds its session as the store keeps it (register), so the session
+// the operator names is compared as the store would keep it (storetext.Text).
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
-	if request.Session != m.claim.Session {
+	if storetext.Text(request.Session) != m.claim.Session {
 		return &RefusedError{Request: "forget-session", Err: fmt.Errorf(
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
 		)}

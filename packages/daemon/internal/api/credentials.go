@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -119,12 +120,15 @@ func (s *server) claimGrant(w http.ResponseWriter, r *http.Request, req GrantReq
 
 // claimForGrant finds the claim session, tree and issue name and authenticates it with secret, as
 // the claim form of the grants route does; the lenient identity read of an undecodable grants
-// body (grantIdentityCheck) uses it too.
+// body (grantIdentityCheck) uses it too. A claim holds its session as the store keeps it
+// (supervise's register), so the caller's is compared as the store would keep it
+// (storetext.Text).
 func (s *server) claimForGrant(ctx context.Context, sessionID, secret, tree, issue string) (*supervise.Machine, bool, error) {
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		return nil, false, err
 	}
+	sessionID = storetext.Text(sessionID)
 	for _, current := range claims {
 		if current.Session != sessionID || current.Tree != tree || current.Issue != issue {
 			continue
