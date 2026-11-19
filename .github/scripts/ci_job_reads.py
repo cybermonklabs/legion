@@ -2100,20 +2100,12 @@ LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, hol
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
-# stands for the command it compiles.
+# stands for the command it compiles. EDITED_MIGRATIONS_BASE, which the step runs first, picks the
+# base and starts no go command.
 EDITED_MIGRATIONS_STEP = "Check that no migration a database may have run is edited without its replaces line"
+EDITED_MIGRATIONS_BASE = ".github/scripts/edited-migrations-base.sh"
 EDITED_MIGRATIONS_SCRIPT = "\n".join([
-    'if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then',
-    '  if [ -z "$MIGRATION_BASE" ]; then',
-    '    echo "::error::this workflow_dispatch run names no migration-base, so the check cannot tell which commits it lands; main-bypass-check.yaml passes the commit main pointed at before the push"',
-    '    exit 2',
-    '  fi',
-    '  git fetch --no-tags --depth=1 origin "$MIGRATION_BASE"',
-    '  base=$MIGRATION_BASE',
-    'else',
-    '  git fetch --no-tags --depth=2 origin "$GITHUB_SHA"',
-    '  base=$(git rev-parse HEAD^1)',
-    'fi',
+    f'base=$(../../{EDITED_MIGRATIONS_BASE})',
     'go build -o "$RUNNER_TEMP/edited-migrations" ./internal/pgmigrate/cmd/edited-migrations',
     '"$RUNNER_TEMP/edited-migrations" --base "$base"',
 ])
@@ -2361,6 +2353,10 @@ SCRIPT_TEST_GATES = [
         (".github/workflows/main-bypass-check.yaml",
          "main-bypass-check.test.sh:198-210 holds every run: step of the workflow to a shell with pipefail, and "
          ":216-227 holds the decision's HEAD_SHA and HEAD_MESSAGE to the push payload's head"),
+    ]),
+    harness("edited_migrations_base_test", "Test the edited-migrations check's choice of base (fixture git remotes; no GitHub)",
+            f"{SCRIPTS}/edited-migrations-base.test.sh", [
+        (EDITED_MIGRATIONS_BASE, "the script under test"),
     ]),
     harness("dispatch_browser_latest_blobs_test", "Test the browser lane's blob attempt selection",
             f"{SCRIPTS}/dispatch-browser-latest-blobs.test.sh", [
@@ -3173,6 +3169,7 @@ GATES = [
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} and "
          f"{at('envoy-go-checks', './.github/actions/spec-check')}: "
          ".github/actions/architecture-check/check.sh:60 and .github/actions/spec-check/check.sh:62 run it"),
+        (EDITED_MIGRATIONS_BASE, f"{at('envoy-go-checks', EDITED_MIGRATIONS_STEP)} runs it for the base it compares with"),
         # The step judges the action's default path, .dispatch/spec, which holds no file on main;
         # the read names .dispatch whole because a read that matches no file is refused, and the
         # envoy_go_checks filter names .dispatch whole too.
