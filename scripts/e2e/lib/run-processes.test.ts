@@ -544,3 +544,44 @@ stop_marked_processes "$work" 1; echo "status $?"`
     expect(state(stranger)).toBe("S");
   }
 );
+
+test.skipIf(skip)(
+  "stop_marked_processes with a grace leaves running the children of a stranger that took the pid of a process below a marked one",
+  async () => {
+    // The marked bash's child, which carries no mark, is read and printed; then its pid passes to
+    // a stranger before its own children are read: proc_children answers, for that pid, an
+    // unmarked process of this user that no process of the run started, which names the pid as its
+    // parent, and from then on the pid's start reads one more, the stranger's. A walk that held the
+    // child only to its pid number took the stranger's child and SIGKILLed it after the grace.
+    const work = join(dir, "reused-parent");
+    mkdirSync(work);
+    const strangers = spawn(["sleep", "60"], { cwd: dir });
+    await untilRunning(strangers, "sleep");
+    const marked = Bun.spawn(
+      ownGroup([
+        "bash",
+        "-c",
+        "env -u LEGION_E2E_RUN sleep 300 </dev/null >/dev/null 2>&1 & echo $!; wait",
+      ]),
+      { cwd: dir, env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work }, stdout: "pipe" }
+    );
+    started.push(marked.pid);
+    const said = await marked.stdout.getReader().read();
+    const child = Number(new TextDecoder().decode(said.value).trim());
+    started.push(child);
+    const r = harness(
+      work,
+      `eval "real_$(declare -f proc_children)"
+eval "real_$(declare -f proc_start)"
+eval "real_$(declare -f proc_parent)"
+proc_children() { if [ "$1" = ${child} ]; then : >"$work/reused"; echo ${strangers}; else real_proc_children "$1"; fi; }
+proc_start() { if [ "$1" = ${child} ] && [ -e "$work/reused" ]; then echo "$(($(real_proc_start "$1") + 1))"; else real_proc_start "$1"; fi; }
+proc_parent() { if [ "$1" = ${strangers} ]; then echo ${child}; else real_proc_parent "$1"; fi; }
+stop_marked_processes "$work" 1; echo "status $?"`
+    );
+    expect(r.err).toBe("");
+    expect(r.out).toBe("status 0\n");
+    expect(await gone(marked.pid)).toBe(true);
+    expect(state(strangers)).toBe("S");
+  }
+);

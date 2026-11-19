@@ -241,21 +241,27 @@ names_dir() {
   return 1
 }
 
-# proc_descendants PID prints `PID START` for every process below PID, children first, then theirs:
-# each read from its parent's own /proc entry (proc_children) with its start time (proc_start), so a
-# later signal can hold it to the process the read saw. Below PID the parents are running, and one
-# can reap a child between the read of its children and the read of that child's start, so a pid
-# is taken only while its parent is still the process the read came from and its start reads the
-# same before and after that check: a pid the kernel gave to another process in between, a
-# stranger's, is left out. A process that ends during the read is left out.
+# proc_descendants PID [START] prints `PID START` for every process below PID, children first, then
+# theirs: each read from its parent's own /proc entry (proc_children) with its start time
+# (proc_start), so a later signal can hold it to the process the read saw. Below a stopped PID the
+# parents run, and one can reap a child, whose pid a stranger can then take, at any point of the
+# walk. So each parent is held to its process, not to its pid: with START, PID's start must read
+# START before its children are read and again after each child's parent check, or the walk below
+# PID ends there; each child is taken only while its parent is PID, with its start the same before
+# and after that check, and its own children are walked held to that start. A stranger that took a
+# reaped pid, and the stranger's children, are left out. A process that ends during the read is left
+# out. Without START, PID itself is not checked: a caller that has PID stopped passes its start all
+# the same.
 proc_descendants() {
-  local child start
-  for child in $(proc_children "$1"); do
+  local parent=$1 held=${2:-} child start
+  [ -z "$held" ] || [ "$(proc_start "$parent")" = "$held" ] || return 0
+  for child in $(proc_children "$parent"); do
     start=$(proc_start "$child")
     [ -n "$start" ] || continue
-    [ "$(proc_parent "$child")" = "$1" ] && [ "$(proc_start "$child")" = "$start" ] || continue
+    [ "$(proc_parent "$child")" = "$parent" ] && [ "$(proc_start "$child")" = "$start" ] || continue
+    [ -z "$held" ] || [ "$(proc_start "$parent")" = "$held" ] || return 0
     printf '%s %s\n' "$child" "$start"
-    proc_descendants "$child"
+    proc_descendants "$child" "$start"
   done
 }
 
@@ -383,8 +389,9 @@ marked_processes() {
 # My Pi in the middle of a token refresh gets the time to write the rotated token back to the
 # operator's database before it goes, where a plain SIGKILL could leave it a refresh token that is
 # already spent. Each one's children are read while it is stopped for its TERM, and theirs below,
-# under running parents, each held to its parent and its start (proc_descendants), so a child it
-# leaves behind when it exits is still ended, by its own start time. A process still alive after
+# under running parents, each parent held to its start and each child to its parent and its own
+# start (proc_descendants), so a child it leaves behind when it exits is still ended, by its own
+# start time, and a stranger that took a reaped pid below is not. A process still alive after
 # GRACE, or every one with no GRACE, is ended with its tree. It prints why and fails with 2 when the
 # run's processes could not be read, having signalled nothing.
 stop_marked_processes() {
@@ -398,7 +405,7 @@ stop_marked_processes() {
   if [ "$grace" -gt 0 ]; then
     while read -r pid start; do
       freeze_if "$pid" "$start" STOP names_dir "$dir" "${run_marks[@]}" || continue
-      mapfile -t -O "${#below[@]}" below < <(proc_descendants "$pid")
+      mapfile -t -O "${#below[@]}" below < <(proc_descendants "$pid" "$start")
       kill -TERM "$pid" 2>/dev/null || true
       kill -CONT "$pid" 2>/dev/null || true
       sent+=("$pid $start")

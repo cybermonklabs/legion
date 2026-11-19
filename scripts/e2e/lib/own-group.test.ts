@@ -18,10 +18,21 @@ afterEach(() => {
 });
 
 // The shell's view of what it was handed: its traps on SIGPIPE and SIGXFSZ (`trap -p` names an
-// ignored signal as `trap -- ''`), LC_CTYPE, the kernel's ignored and blocked masks, a digest of its
-// whole environment, whether it leads its own group, and its parent.
+// ignored signal as `trap -- ''`), LC_CTYPE, its blocked and ignored signals, a digest of its whole
+// environment, whether it leads its own group, and its parent. The signals are read by a perl the
+// shell starts, which inherits both through its exec: the blocked set through sigprocmask and the
+// ignored ones as %SIG's IGNORE. /proc/<pid>/status is no source, since a Legion pod's kernel
+// (4.19.0-gvisor) writes no Sig* line there, and the row would compare nothing.
+const signals = `use Config; use POSIX ();
+my $set = POSIX::SigSet->new;
+POSIX::sigprocmask(POSIX::SIG_BLOCK(), undef, $set) or die "sigprocmask: $!\\n";
+my @num = split " ", $Config{sig_num};
+my %seen;
+my @blocked = grep { $_ > 0 && $set->ismember($_) && !$seen{$_}++ } @num;
+print "blocked ", join(",", sort { $a <=> $b } @blocked), "\\n";
+print "ignored ", join(",", grep { ($SIG{$_} // "") eq "IGNORE" } sort keys %SIG), "\\n";`;
 const probe = `trap -p PIPE; trap -p XFSZ; printf 'LC_CTYPE=%s\\n' "\${LC_CTYPE-unset}"
-grep -E '^Sig(Ign|Blk)' /proc/$$/status; printf 'environment %s\\n' "$(env | sort | cksum)"
+perl -e "$1"; printf 'environment %s\\n' "$(env | sort | cksum)"
 read -r s </proc/$$/stat; s=\${s##*) }; set -- $s
 printf 'leads its group %s\\nparent %s\\n' "$([ "$3" = $$ ] && echo yes || echo no)" "$2"`;
 
@@ -29,16 +40,22 @@ test.skipIf(skip)(
   "ownGroup's process leads a group of its own, with the runner as its parent, and gets the dispositions and the environment a plain start gets",
   () => {
     const env = { PATH: process.env.PATH ?? "" };
-    const plain = Bun.spawnSync(["bash", "-c", probe], { env });
-    const wrapped = Bun.spawnSync(ownGroup(["bash", "-c", probe]), { env });
+    const plain = Bun.spawnSync(["bash", "-c", probe, "probe", signals], { env });
+    const wrapped = Bun.spawnSync(ownGroup(["bash", "-c", probe, "probe", signals]), { env });
     expect(plain.stderr.toString()).toBe("");
     expect(wrapped.stderr.toString()).toBe("");
     const lines = (out: Buffer) => out.toString().trimEnd().split("\n");
     const [plainOut, wrappedOut] = [lines(plain.stdout), lines(wrapped.stdout)];
     expect(wrappedOut.slice(-2)).toEqual(["leads its group yes", `parent ${process.pid}`]);
     expect(plainOut.slice(-2)).toEqual(["leads its group no", `parent ${process.pid}`]);
+    // Both read the signals: a row that read nothing would compare nothing.
+    for (const out of [plainOut, wrappedOut]) {
+      expect(out.filter((line) => /^blocked [0-9,]*$/.test(line))).toHaveLength(1);
+      expect(out.filter((line) => /^ignored [A-Z0-9,]*$/.test(line))).toHaveLength(1);
+    }
     // Everything else the same, line for line: no trap on SIGPIPE or SIGXFSZ that the plain start
-    // has not, no LC_CTYPE it was not given, the same masks and the same environment.
+    // has not, no LC_CTYPE it was not given, the same blocked and ignored signals and the same
+    // environment.
     expect(wrappedOut.slice(0, -2)).toEqual(plainOut.slice(0, -2));
     expect(wrappedOut).not.toContain("trap -- '' SIGPIPE");
     expect(wrappedOut).toContain("LC_CTYPE=unset");

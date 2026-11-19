@@ -6043,8 +6043,9 @@ gVisor's commit 553528ee1034 (2026-10-07) sends them only when the group becomes
 A group whose parent, the runner, is in another group of the same session is not orphaned while the runner runs.
 A session of its own (`setsid`, or `Bun.spawn`'s `detached`) is the wrong tool: its group is orphaned from the start.
 `untilRunning(pid, program)` resolves once `pid` runs `program` (its `/proc/<pid>/exe`), and fails naming both and what the pid ran instead when it does not within 10 s, the bound of `lib/claude-backend-guards.test.ts`'s `await_child`: a sweep row waits on it, since a sweep that stopped the perl before its `setpgrp` would stop a member of the runner's own group.
-`lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, signal masks and environment as a plain one, and that `untilRunning` fails at its bound naming the pid and the program.
-`lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts` and the skill-scenario rig's sweep rows use `ownGroup`, and skip by name where the host has no perl
+`lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, blocked and ignored signals and environment as a plain one, and that `untilRunning` fails at its bound naming the pid and the program.
+It reads the signals through a perl the shell starts (`sigprocmask` and `%SIG`), not `/proc/<pid>/status`, which a Legion pod's kernel writes no `Sig*` line to, and it fails where either shell's read prints no line.
+`lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts`, the skill-scenario rig's sweep rows and `packages/pi-legion/scripts/skill-scenarios/rig-isolation.test.ts` use `ownGroup`, and skip by name where the host has no perl
 
 ## lib/arg-max-force.sh
 
@@ -6086,7 +6087,7 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
 
   is whether PID can name one process the run started, refusing with a printed line 0 however spelled, 1, a negative or non-numeric value, the calling shell and its process group's leader
 
-- `stop_tree PID [PARENT]`, `proc_descendants PID`, `kill_frozen PID`
+- `stop_tree PID [PARENT]`, `proc_descendants PID [START]`, `kill_frozen PID`
 
   `stop_tree` stops a background loop with every process under it:
   it freezes the loop, stops each child the same way, then kills the loop, so the `kubectl`, `jq` or `sleep` the loop was waiting on goes with it.
@@ -6094,7 +6095,7 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
   `kill -STOP 0` would freeze the whole driver and a later `kill -KILL 0` end it.
   It and the refusal read only the `/proc` entries of the processes they ask about (`proc_parent`, `proc_group` and `proc_children`), never every process of the machine as `ps -p` and `pgrep -P` do.
   Stage 3's and Stage 4b's watchers are stopped with it.
-  `proc_descendants` prints `PID START` for every process below PID, each taken only while its parent is still the process its read came from and its start reads the same before and after that check, so a pid reused by a stranger under a running parent is left out.
+  `proc_descendants` prints `PID START` for every process below PID, each parent held to its process and not to its pid: with START, the parent's start must read START before its children are read and again after each child's parent check, and each child, taken only while its parent is that pid and its start reads the same before and after the check, has its own children walked held to its start; so a stranger that took a reaped pid under a running parent, and the stranger's children, are left out.
   `kill_frozen` ends a process a caller has stopped and held to its start and its mark (`freeze_if … STOP`) with every process under it, each child through `stop_tree` held to it as the parent, without reading its own parent again: a parent that exits after the freeze cannot leave it stopped and alive.
   The run's sweep and the skill-scenario rig's `stop_env_processes` end each frozen process with it
 
@@ -6123,7 +6124,7 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
 
   are a stage proof's run's own processes and its sweep: each process that carries `LEGION_E2E_RUN=DIR`, which the run exports after its transcript starts, or the `XDG_CONFIG_HOME` under DIR that a daemon pane carries, its environment built from the daemon's allow-list (`paneEnvAllowList`, `packages/daemon/internal/runtime/tmux/environment.go`).
   `marked_processes` refuses an empty DIR and a run that has not marked itself.
-  `stop_marked_processes` stops each through `freeze_if`, so a pid that passed to another process since gets no signal, and then ends it with everything under it (`kill_frozen`), so a child that cleared its environment goes with it; with GRACE it gives each SIGTERM and GRACE seconds first, and what each had started, its children read while it was stopped for the TERM and theirs under running parents, each held to its parent and its start (`proc_descendants`), is ended by its own start time if it outlives the process that started it.
+  `stop_marked_processes` stops each through `freeze_if`, so a pid that passed to another process since gets no signal, and then ends it with everything under it (`kill_frozen`), so a child that cleared its environment goes with it; with GRACE it gives each SIGTERM and GRACE seconds first, and what each had started, its children read while it was stopped for the TERM and theirs under running parents, each parent held to its start (`proc_descendants`), is ended by its own start time if it outlives the process that started it.
   Every stage proof's sweep is this one, and a start that clears its environment (`env -i`) names `LEGION_E2E_RUN` itself.
   A fork of the driver that execs nothing, a background subshell or function such as a `pane_watcher`, carries the driver's environment from the driver's own exec, without the mark, so no sweep sees it: each is stopped by the pid it had when it started (the list is in `run_marks`'s comment)
 
