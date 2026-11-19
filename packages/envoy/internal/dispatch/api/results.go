@@ -216,6 +216,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// else happened.
 	s.readThroughPullRequests(r.Context(), check.IssueKey, written.result.CommitSHA, checkRepo)
 	s.publish(r.Context(), written.event)
+	s.storeDisplayTrees(r.Context(), written.result.ID, written.result.Observed)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{
 		// The check as the transaction that wrote the row saw it, which after a redo is not the
 		// one resolveCheck read: the line names the `when` the result was judged by.
@@ -479,6 +480,13 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// Each result's observed text is registered for its tree once no check's results are replaced
+	// any more (deriveCIResults), since what is registered is a pointer into the row.
+	for index := range checks {
+		for result := range checks[index].Results {
+			trees.text(&checks[index].Results[result].ObservedTree, checks[index].Results[result].Observed)
+		}
 	}
 	// Every head GitHub has to be asked for is learned before the first check is answered, so
 	// two `before_merge` checks of one issue name one list of bases and not two

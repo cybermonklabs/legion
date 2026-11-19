@@ -56,7 +56,7 @@ const (
 
 // DefaultNarrowingChecks bounds, per enrollment, the checks that reach GitHub: five at once,
 // refilled one every twelve seconds. A refused request writes no row, so the guards inside
-// Create's transaction (lockPendingNames, pendingRequest) never see it, and a caller in a loop
+// Create's transaction (lockPendingNames, pendingRequests) never see it, and a caller in a loop
 // could otherwise drive the App into a rate limit at GitHub, which would turn the check off for
 // everybody. Five lets a caller correct its flags a few times in a minute; past it the GitHub
 // part is skipped and the request goes to its approver, which is what it did before this check

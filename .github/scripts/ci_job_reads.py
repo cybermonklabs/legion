@@ -9,11 +9,13 @@ header says what is proved).
             (pinned_step): its whole run: script and directory, and the Runs that stand for what
             it compiles. The check fails when a run: step of a ci.yaml job - or of a job of a
             local workflow that job calls, whose steps it reads the same way - starts a go
-            command no Run or exact entry claims, and when a pin's text is gone, so the table
-            cannot drift from ci.yaml silently. A claimed command the check does not reduce (check-ci-filters.sh's
-            header says which it does), and every Run of an exact entry whose step no longer holds
-            its script, counts as reading every Go file of the repository and every file under a
-            Go module's directory; a script's pin is its whole line.
+            command no Run or exact entry claims, when a pin's text is gone, and when a step an
+            exact entry pins runs another script or directory, or under an env, shell, container
+            or job that could move what it compiles, naming the step and what differs, so the
+            table cannot drift from ci.yaml silently. A claimed command the check does not reduce
+            (check-ci-filters.sh's header says which it does) counts as reading every Go file of
+            the repository and every file under a Go module's directory; a script's pin is its
+            whole line.
   RULES     a source file -> what it does when a test run compiles it: a go command it starts (a
             Run, whose closure is added) or a file it reads outside its package (a Read). A
             _test.go file counts when go list lists it in a tested package under the job's tags;
@@ -292,7 +294,9 @@ def setup_bun(job, workflow=""):
 
 
 def bun_job(job, workflow=""):
-    """setup_bun and a frozen `bun install`. No Bun configuration file and no .npmrc anywhere."""
+    """setup_bun and a frozen `bun install`. No .npmrc anywhere, and one Bun configuration file,
+    packages/dispatch/bunfig.toml, which holds `[test]` alone and so changes no install: an
+    install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
     install = at(job, "bun install --frozen-lockfile", workflow)
     return setup_bun(job, workflow) + reads(
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-60)"),
@@ -2018,6 +2022,25 @@ STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
+# The check that no migration a database may have run is edited without its replaces line: a
+# script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
+# stands for the command it compiles.
+EDITED_MIGRATIONS_STEP = "Check that no migration a database may have run is edited without its replaces line"
+EDITED_MIGRATIONS_SCRIPT = "\n".join([
+    'if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then',
+    '  if [ -z "$MIGRATION_BASE" ]; then',
+    '    echo "::error::this workflow_dispatch run names no migration-base, so the check cannot tell which commits it lands; main-bypass-check.yaml passes the commit main pointed at before the push"',
+    '    exit 2',
+    '  fi',
+    '  git fetch --no-tags --depth=1 origin "$MIGRATION_BASE"',
+    '  base=$MIGRATION_BASE',
+    'else',
+    '  git fetch --no-tags --depth=2 origin "$GITHUB_SHA"',
+    '  base=$(git rev-parse HEAD^1)',
+    'fi',
+    'go build -o "$RUNNER_TEMP/edited-migrations" ./internal/pgmigrate/cmd/edited-migrations',
+    '"$RUNNER_TEMP/edited-migrations" --base "$base"',
+])
 SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
@@ -2274,13 +2297,13 @@ SCRIPT_TEST_GATES = [
         ("scripts/priorities-seed-check.sh", "the script under test (scripts/priorities-seed-check.test.sh:14 names it)"),
     ], lib=False),
     harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
-        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:76-78)"),
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:80-82)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
-        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2432 imports this table to derive the plain step's -run lists"),
-        ("AGENTS.md", "check-ci-filters.test.sh:2876-2911 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:2818 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:3262-3297 holds the guide's slow-suite list to the jobs the full-ci label gates"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
     ]),
@@ -2621,7 +2644,11 @@ GATES = [
                                       "third-party packages its manifest names and @legion/contracts"),
         (CONTRACTS_SRC, "packages/broker-client/src/token-client.ts imports @legion/contracts/trailing-slash"),
         (TEST_FIXTURES_SRC, "packages/broker-client/src/__tests__ import @legion/test-fixtures"),
-        (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts:84 reads the Go package's own corpus by relative path (CORPUS_PATH :27-29) - that file itself, never a copy, so the two clients are held to one wire"),
+        (f"{ENVOY}/internal/brokertoken/testdata/connection-proof-go.json", "packages/broker-client/src/__tests__/dpop.test.ts reads the Go signer's committed connection proof and verifies it with jose"),
+        (f"{ENVOY}/internal/brokertoken/testdata/connection-proof-ts.json", "packages/broker-client/src/__tests__/dpop.test.ts reads this signer's committed connection proof and holds it to the signer's claim names"),
+        (f"{ENVOY}/internal/broker/oauth/testdata/refusal-descriptions.json", "packages/broker-client/src/__tests__/refusal-corpus.test.ts reads the broker's refusal texts as its OAuth library writes them, which internal/broker/oauth's refusal-corpus test writes"),
+        (f"{ENVOY}/internal/broker/oauth/testdata/refusal-codes.json", "packages/broker-client/src/__tests__/refusal-corpus.test.ts reads the OAuth codes the broker's library writes, which internal/broker/oauth's refusal-corpus test writes, and holds LIBRARY_OAUTH_ERROR_CODES to them"),
+        (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts reads the Go package's own corpus by relative path (CORPUS_PATH) - that file itself, never a copy, so the two clients are held to one wire; refusal-corpus.test.ts reads it for the broker's own refusal codes"),
     ) + bun_job("broker-client")),
 
     gate("envoy_client", "envoy-client", reads=reads(
@@ -2980,6 +3007,11 @@ GATES = [
                          "go run ./cmd/spec-check guard, which builds the command and runs it over the "
                          "repository root", {"mode": "build"}),
                     ]),
+        pinned_step("envoy-go-checks", EDITED_MIGRATIONS_STEP, ENVOY, EDITED_MIGRATIONS_SCRIPT, [
+            (ENVOY, ["./internal/pgmigrate/cmd/edited-migrations"],
+             "go build of ./internal/pgmigrate/cmd/edited-migrations, whose binary the step then runs to "
+             "compare each store's migrations with the base's", {"mode": "build"}),
+        ]),
         # One linux build of the listener per architecture the loop reads from the target list.
         pinned_step("envoy-go-checks", PACK_STEP, ENVOY, PACK_SCRIPT, [
             (ENVOY, ["./cmd/listener"], f"GOOS=linux GOARCH={arch} go build ./cmd/listener",
@@ -3341,6 +3373,11 @@ GATES = [
                    f"the packages that rig hands buildGoBinaries, run by "
                    f"{at(STALL, 'Design-gate advice of the real CLI against a real Dispatch')}",
                    ENVOY, ["./cmd/dispatch"], mode="build"),
+        script_run("packages/envoy-client/src/__tests__/nats-credential.test.ts",
+                   'packages: ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"],',
+                   f"the packages that test hands buildGoBinaries, run by "
+                   f"{at(STALL, 'Broker credential tests on a hub behind the auth service')}",
+                   ENVOY, ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"], mode="build"),
         ceiling_run(STALL),
     ], reads=reads(
         ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),

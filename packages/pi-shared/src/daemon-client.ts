@@ -34,6 +34,7 @@ import {
 } from "@legion/contracts/legion-api";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { messageFor } from "@legion/envoy-client/errors";
+import { bodyForText } from "@legion/envoy-client/excerpt";
 import type { z } from "zod";
 
 /**
@@ -387,8 +388,9 @@ function parseBody<T>(
   let json: unknown;
   try {
     json = JSON.parse(body);
-  } catch (error) {
-    return { problem: `not JSON (${messageFor(error)})` };
+  } catch {
+    // The parser's message quotes the word it stopped at, which whatever answered chose.
+    return { problem: "not JSON" };
   }
   const parsed = schema.safeParse(json);
   if (parsed.success) return { value: parsed.data };
@@ -434,12 +436,15 @@ export function createLegionDaemonClient(
         refusal.value.error
       );
     }
+    // A body that is not the daemon's refusal was written by something in its place, which can
+    // echo the request back: it is named in one redacted line (`bodyForText`), never whole. The
+    // daemon's own calls carry no bearer, so only an `Authorization` or `Bearer` value is redacted.
     throw new LegionDaemonApiError(
       method,
       path,
       response.status,
       undefined,
-      `${JSON.stringify(text)} is not the daemon's refusal shape (${refusal.problem})`
+      bodyForText(text, "", "the daemon's refusal shape")
     );
   };
 

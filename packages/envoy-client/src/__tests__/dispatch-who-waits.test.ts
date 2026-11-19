@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
 import { readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -22,6 +23,9 @@ import { forgetKeyedLayerMemory } from "../dispatch-http";
 // answers, driven through `runDispatchCli`, with a temporary state directory per row.
 
 const makeDirectory = temporaryDirectories("dispatch-who-waits");
+
+/** The Dispatch bearer each command is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 /** The repository root, from this file's own path rather than the working directory, which bun
  *  sets to the package when the check runs `cd packages/envoy-client && bun test`. */
@@ -215,7 +219,7 @@ async function run(argv: readonly string[]): Promise<{
     {
       HOME: stateDir,
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: TOKEN,
       DISPATCH_STATE_DIR: stateDir,
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "ses-1",

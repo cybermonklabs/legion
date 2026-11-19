@@ -450,20 +450,31 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a pane whose process is gone resumes its own transcript's arming, and comes back no earlier than it says",
   async () => {
-    /** When the resumed life's long turn must stop pinging the gateway. */
-    let until = 0;
+    // The resumed life's long turn keeps asking the gateway, every two seconds, until the
+    // stronger model has answered once past the restored due time, and stops at the request after
+    // that. So whether the return came is read from the turns the life made, and never raced
+    // against a fixed stop: a fixed stop two seconds past the due time could fall before the
+    // life's first request past it on a loaded box, ending the run on the weaker model with
+    // nothing wrong behind it. `giveUpAt` bounds a life that never comes back, which the
+    // assertions below then fail on. Before the relaunch both are unset, so the first life's
+    // turns end at once.
+    let dueBy = Number.POSITIVE_INFINITY;
+    let giveUpAt = 0;
+    let cameBack = false;
     const pane = await fallbackPane({
       cooldownMs: RESUME_COOLDOWN_MS,
       // The second assignment is a tool-call turn: its own entries carry the arming written at
       // the end of the refused turn to disk, which is where the resumed life reads it.
       prompt: ["Start FALL-1.", "Note that."],
-      answer: (_model, nth) => {
+      answer: (model, nth) => {
         if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
         if (nth === 2) return replies([call("bash", { command: "echo noted" })], `msg_${nth}`);
         if (nth === 3) return replies([{ type: "text", text: "Noted." }], `msg_${nth}`);
-        return Date.now() < until
-          ? replies([sleeps(2)], `ping_${nth}`)
-          : replies([{ type: "text", text: "Done." }], `msg_${nth}`);
+        const done = cameBack || Date.now() >= giveUpAt;
+        if (model === "strong-model" && Date.now() >= dueBy) cameBack = true;
+        return done
+          ? replies([{ type: "text", text: "Done." }], `msg_${nth}`)
+          : replies([sleeps(2)], `ping_${nth}`);
       },
     });
 
@@ -475,7 +486,8 @@ test.skipIf(skip)(
 
     // The daemon relaunches the worker: a fresh process whose only memory of the fallback is the
     // transcript it resumes.
-    until = dueAt + 2 * 1_000;
+    dueBy = dueAt;
+    giveUpAt = dueAt + 4 * RESUME_COOLDOWN_MS;
     await pane.resume([], "Carry on after the relaunch.");
 
     const resumed = pane.served.slice(firstLife);
