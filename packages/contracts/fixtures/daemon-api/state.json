@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 152,
-    "caller": 152
+    "daemon": 167,
+    "caller": 167
   },
   "admission": {
     "cap": 5,
@@ -783,14 +783,16 @@
     }
   ],
   "repositories": {
-    "owners": [
-      "acme",
-      "zeta"
-    ],
-    "mapped": [
+    "live": [
+      {
+        "repo": "acme/gadgets",
+        "apps": {
+          "implement": true,
+          "review": false
+        }
+      },
       {
         "repo": "acme/widgets",
-        "default": true,
         "apps": {
           "implement": true,
           "review": true
@@ -807,12 +809,24 @@
         }
       },
       {
+        "repo": "sjawhar/legion",
+        "servedAs": "cybermonklabs/legion",
+        "apps": {
+          "implement": true,
+          "review": true
+        }
+      },
+      {
+        "repo": "zeta/archive",
+        "readError": "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"
+      },
+      {
         "repo": "zeta/tools",
-        "default": false,
         "apps": {
           "implement": true,
           "review": true
         },
+        "webhookApp": "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
         "cache": {
           "repo": "zeta/tools",
           "sandbox": "legion-legion-cache-zeta-tools-1b2c3d4e",
@@ -820,26 +834,6 @@
           "reason": "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
           "ready": false
         }
-      }
-    ],
-    "refused": [
-      {
-        "repo": "acme/gadgets",
-        "reason": "the review App is not installed on acme/gadgets",
-        "apps": {
-          "implement": true,
-          "review": false
-        }
-      },
-      {
-        "repo": "zeta/archive",
-        "reason": "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"
-      }
-    ],
-    "withoutWebhookApp": [
-      {
-        "repo": "zeta/tools",
-        "reason": "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
       }
     ],
     "caches": [

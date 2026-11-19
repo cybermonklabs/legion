@@ -3761,7 +3761,7 @@ Each item below names an observation, then what it judges; an item that names no
 - `cache <issue> <pod> [container]`
 
   the named pod's `legion.dev/issue` label matches the issue (refusing an unrelated pod outright), its fetch container's log (`kubectl logs`, default container `workspace-fetch`) carries the producer's exact, anchored cache-stream-with-delta success line (`packages/daemon/cmd/legion/workspace_fetch.go:83`, the form `workspace_fetch_test.go:572` pins
-  — a whole-line match, not a loose substring), and `.repositories.mapped[] | select(.repo==<repo>) | .cache.ready` is `true`
+  — a whole-line match, not a loose substring), and `.repositories.live[] | select(.repo==<repo>) | .cache.ready` is `true`
 
 - `negative pr-in-x before|after <run id>? <T child>`
 

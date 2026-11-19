@@ -667,7 +667,7 @@ cache_check() {
   state_file=$(state_raw cache)
   repo=$(jq -r --arg k "$key" '.issues[$k].repo // "none"' "$state_file")
   [ "$repo" != "none" ] || ok=0
-  ready=$(jq -r --arg r "$repo" '.repositories.mapped[] | select((.repo|ascii_downcase)==($r|ascii_downcase)) | .cache.ready' "$state_file")
+  ready=$(jq -r --arg r "$repo" '.repositories.live[] | select((.repo|ascii_downcase)==($r|ascii_downcase)) | .cache.ready' "$state_file")
   [ "$ready" = true ] || ok=0
   summary cache "issue: $key
 pod: $pod ($container)

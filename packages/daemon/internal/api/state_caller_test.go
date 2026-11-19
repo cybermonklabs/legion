@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -374,6 +375,36 @@ func withoutAnswerKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withRepositoriesAt152 is a state body whose `repositories` block is written in the shape contract
+// 152 gave it from the body's own `live` entries and `caches`, which is what a caller below
+// repositoriesLiveContract is served of a state (api's withoutRepositoriesLive). It serves the
+// table below as withoutQuietKeys does: a row's baseline is the full state with exactly what that
+// row's own contract holds back changed in it. Where each entry goes in that shape is read by
+// TestTheRepositoriesBlockIsNarrowedBelowItsContract against a block written out by hand, and not
+// here, which reads the shape from the same writer the route reads it from.
+func withRepositoriesAt152(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]json.RawMessage
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	var block RepositoriesView
+	if err := json.Unmarshal(served["repositories"], &block); err != nil {
+		t.Fatalf("decode the state's repositories %s: %v", served["repositories"], err)
+	}
+	block.narrowed = true
+	narrowed, err := json.Marshal(block)
+	if err != nil {
+		t.Fatalf("encode the repositories %+v in contract 152's shape: %v", block, err)
+	}
+	served["repositories"] = narrowed
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s with its repositories in contract 152's shape: %v", body, err)
+	}
+	return encoded
+}
+
 // A plugin below supervise.PodUpdateContract reads the state with a schema that knows no
 // `updateRound` or `updateHead` and refuses the whole body for either, which is every legion
 // tool call of a worker the update round is still serving (read_record, handoff_complete). The
@@ -385,7 +416,8 @@ func withoutAnswerKeys(t *testing.T, body []byte) []byte {
 // each issue's two entry numbers, the issues the record holds in the workflow, each issue's
 // tree quiet time, what each reviewing issue's round waits on from GitHub, each issue's
 // experiment assignments and the two times of each issue's entry task among the keys it is
-// served without, since such a pod is below every row of stateNarrowings. The measure of a tree
+// served without, and its repositories block in the shape contract 152 gave it, since such a pod
+// is below every row of stateNarrowings. The measure of a tree
 // that has stopped is read in finer grain by quiet_time_test.go, and the two times by
 // architect_handshake_test.go. A pod at this contract, and a caller in no pod — the operator's
 // `legion state`, whose open-rounds line reads both fields, whose queue line reads those wakes
@@ -452,6 +484,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// that added them), so a pod at it or above is served them and every older pod is not.
 		// The three leave together (withoutEntryTimes), so one column answers for all of them.
 		times bool
+		// repos is whether the caller is served the repositories block this contract writes,
+		// `live` beside `caches` (repositoriesLiveContract), so a pod at it or above is served
+		// that block and every older pod the block in contract 152's shape, from the same entries.
+		repos bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -487,14 +523,19 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The band from mergeWaitContract to below assignmentsContract: `mergeWait` is served
 		// too, and the assignments and every key a later row adds are still held back.
 		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
-		// The band from assignmentsContract to below entryTimesContract, the last band under the
-		// declared contract: the assignments are served too, and the entry times and the
-		// architect-stalled arms are held back, at the band's foot and at its top alike.
+		// The band from assignmentsContract to below entryTimesContract: the assignments are
+		// served too, and the entry times and the architect-stalled arms are held back, at the
+		// band's foot and at its top alike.
 		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
+		// The band from entryTimesContract to below repositoriesLiveContract, the last band under
+		// the declared contract: the entry times are served too, and the repositories block is
+		// served in contract 152's shape, at the band's foot and at its top alike.
+		{name: "a pod at entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
+		{name: "a pod just below repositoriesLiveContract", remote: statePodAddr + ":41000", claims: podClaims(repositoriesLiveContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, repos: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, repos: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, repos: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -547,6 +588,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.times {
 					want = withoutEntryTimeKeys(t, want)
 				}
+				if !tc.repos {
+					want = withRepositoriesAt152(t, want)
+				}
 				if unmarked(t, body) != unmarked(t, want) {
 					t.Fatalf("state = %s, want the state as this row's contract is served it, %s", body, want)
 				}
@@ -588,13 +632,15 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `treeMovedAt` and `quietHours` (withoutQuietTime), with what each reviewing issue's
 			// round waits on from GitHub gone, the object contract 133 added (withoutMergeWait),
 			// with each issue's `assignments` gone, the experiment answers contract 141 added
-			// (withoutAssignments), and with each issue's `entryQueuedAt`, `entryConfirmedAt` and
-			// `architectStalls` gone, the three keys entryTimesContract added (withoutEntryTimes).
+			// (withoutAssignments), with each issue's `entryQueuedAt`, `entryConfirmedAt` and
+			// `architectStalls` gone, the three keys entryTimesContract added (withoutEntryTimes),
+			// and with the repositories block in contract 152's shape, the block
+			// repositoriesLiveContract replaced (withoutRepositoriesLive).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
 			// this fixture stands no member of that kind.
 			var want, got map[string]any
-			if err := json.Unmarshal(full, &want); err != nil {
+			if err := json.Unmarshal(withRepositoriesAt152(t, full), &want); err != nil {
 				t.Fatal(err)
 			}
 			if !tc.wakes {
@@ -796,5 +842,200 @@ func TestTheStateServedToAPodAContractBehindLeavesTheNextCallersStateWhole(t *te
 	}
 	if !strings.Contains(string(operator), `"updateRound"`) || !strings.Contains(string(operator), `"updateHead"`) {
 		t.Fatalf("the operator after it was served %s, want the update rounds the source answered", operator)
+	}
+}
+
+// repositoriesServed is the `repositories` block of a state body, and its keys, sorted. The keys
+// are read apart because they alone say which shape a caller was served: the reader of contract
+// 152 requires `owners`, `mapped`, `refused` and `withoutWebhookApp` beside `caches` and knows no
+// `live`, which is all this contract's block holds beside `caches`.
+func repositoriesServed(t *testing.T, body []byte) ([]string, json.RawMessage) {
+	t.Helper()
+	var state map[string]json.RawMessage
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	var keyed map[string]json.RawMessage
+	if err := json.Unmarshal(state["repositories"], &keyed); err != nil {
+		t.Fatalf("decode the state's repositories %s: %v", state["repositories"], err)
+	}
+	return slices.Sorted(maps.Keys(keyed)), state["repositories"]
+}
+
+// sameJSON is whether got and want encode one JSON value, whatever the spacing and the key order
+// of either.
+func sameJSON(t *testing.T, got []byte, want any) bool {
+	t.Helper()
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("encode %+v: %v", want, err)
+	}
+	var gotValue, wantValue any
+	if err := json.Unmarshal(got, &gotValue); err != nil {
+		t.Fatalf("decode %s: %v", got, err)
+	}
+	if err := json.Unmarshal(encoded, &wantValue); err != nil {
+		t.Fatalf("decode %s: %v", encoded, err)
+	}
+	return reflect.DeepEqual(gotValue, wantValue)
+}
+
+// populatedRepositoriesAt152 is populatedState's repositories block as a caller below
+// repositoriesLiveContract is served it, written out by hand from the fixture's five entries
+// rather than by the writer under test: owners and mapped are the three both role Apps are
+// installed on, sjawhar/legion under the name its pair serves it as, cybermonklabs/legion, and
+// every `default` false; refused is acme/gadgets, for the review App GitHub answered is not
+// installed on it, and zeta/archive, for its read GitHub did not answer, each under its own name;
+// withoutWebhookApp is zeta/tools; and caches is the fixture's own.
+func populatedRepositoriesAt152(t *testing.T) repositoriesAt152 {
+	t.Helper()
+	block := populatedState(t).Repositories
+	entry := func(repo string) LiveRepositoryView {
+		for _, live := range block.Live {
+			if live.Repo == repo {
+				return live
+			}
+		}
+		t.Fatalf("the fixture's repositories %+v name no %s; this test proves nothing", block.Live, repo)
+		return LiveRepositoryView{}
+	}
+	both := AppInstallationsView{Implement: true, Review: true}
+	return repositoriesAt152{
+		Owners: []string{"acme", "cybermonklabs", "zeta"},
+		Mapped: []servedRepositoryAt152{
+			{Repo: "acme/widgets", Apps: both, Cache: entry("acme/widgets").Cache},
+			{Repo: "cybermonklabs/legion", Apps: both},
+			{Repo: "zeta/tools", Apps: both, Cache: entry("zeta/tools").Cache},
+		},
+		Refused: []refusedRepositoryAt152{
+			{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
+			{Repo: "zeta/archive", Reason: entry("zeta/archive").ReadError},
+		},
+		WithoutWebhookApp: []webhookAppGapAt152{{Repo: "zeta/tools", Reason: entry("zeta/tools").WebhookApp}},
+		Caches:            block.Caches,
+	}
+}
+
+// The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
+// whose claims record a contract below repositoriesLiveContract is served the repositories block
+// in the shape contract 152 gave it, since that pod's plugin reads the block with a schema that
+// requires `owners`, `mapped`, `refused` and `withoutWebhookApp` and knows no `live`, and would
+// refuse the whole state for the block this contract writes. That block is written from the same
+// entries (populatedRepositoriesAt152 says where each goes). A pod at this contract, a pod whose
+// claims record no contract at all, and a caller the daemon cannot place in a pod — the
+// operator's `legion state` and `legion controller start` — are served `live` and `caches` alone,
+// the entries as the source answered them.
+//
+// The control is the property put back: with repositoriesLiveContract's row taken out of
+// stateNarrowings, each row of a pod below the contract fails here, served `live` and none of the
+// four keys its reader requires.
+func TestTheRepositoriesBlockIsNarrowedBelowItsContract(t *testing.T) {
+	full := populatedState(t).Repositories
+	if len(full.Live) == 0 || len(full.Caches) == 0 {
+		t.Fatalf("the fixture's repositories %+v name no live repository or no cache; this test proves nothing", full)
+	}
+	narrowed := populatedRepositoriesAt152(t)
+	if len(narrowed.Mapped) == 0 || len(narrowed.Refused) == 0 || len(narrowed.WithoutWebhookApp) == 0 {
+		t.Fatalf("the fixture's repositories %+v leave one of contract 152's lists empty; this test proves nothing", full)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		remote string
+		claims []supervise.Claim
+		live   bool
+	}{
+		{name: "a pod whose plugin is the contract before this one", remote: statePodAddr + ":41000", claims: podClaims(repositoriesLiveContract - 1)},
+		{name: "a pod at contract 152, whose schema of the block this one replaced", remote: statePodAddr + ":41000", claims: podClaims(152)},
+		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
+		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(repositoriesLiveContract - 1)},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(repositoriesLiveContract), live: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), live: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(repositoriesLiveContract - 1), live: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			keys, block := repositoriesServed(t, stateFrom(t, populatedState(t), tc.remote, tc.claims))
+			if !tc.live {
+				if want := []string{"caches", "mapped", "owners", "refused", "withoutWebhookApp"}; !slices.Equal(keys, want) {
+					t.Fatalf("the repositories block %s carries the keys %q, want contract 152's %q", block, keys, want)
+				}
+				if !sameJSON(t, block, narrowed) {
+					t.Fatalf("the repositories block %s, want contract 152's shape of the fixture's entries, %+v", block, narrowed)
+				}
+				return
+			}
+			if want := []string{"caches", "live"}; !slices.Equal(keys, want) {
+				t.Fatalf("the repositories block %s carries the keys %q, want %q", block, keys, want)
+			}
+			if !sameJSON(t, block, full) {
+				t.Fatalf("the repositories block %s, want the fixture's %+v", block, full)
+			}
+		})
+	}
+
+	// Each reason contract 152's `refused` gives, on entries the fixture does not hold: GitHub's
+	// answer not come yet, the Apps not installed on the name the entry is served under (both of
+	// them, here, on a pair's other name), and the entry's read error, which comes before the
+	// missing App; and an entry both Apps are installed on is mapped whatever read error it
+	// carries, as the narrowed block's own rule has it.
+	t.Run("each refused entry says why, and an entry both Apps are installed on is mapped", func(t *testing.T) {
+		state := populatedState(t)
+		state.Repositories = RepositoriesView{Live: []LiveRepositoryView{
+			{Repo: "acme/fresh"},
+			{Repo: "acme/stale", ReadError: "the name and default branch of acme/stale could not be read: GitHub answered 502", Apps: &AppInstallationsView{Implement: true, Review: true}},
+			{Repo: "sjawhar/moved", ServedAs: "cybermonklabs/moved", Apps: &AppInstallationsView{}},
+			{Repo: "zeta/gone", ReadError: "GitHub answered 404 for zeta/gone", Apps: &AppInstallationsView{Review: true}},
+		}}
+		_, block := repositoriesServed(t, stateFrom(t, state, statePodAddr+":41000", podClaims(repositoriesLiveContract-1)))
+		want := repositoriesAt152{
+			Owners: []string{"acme"},
+			Mapped: []servedRepositoryAt152{{Repo: "acme/stale", Apps: AppInstallationsView{Implement: true, Review: true}}},
+			Refused: []refusedRepositoryAt152{
+				{Repo: "acme/fresh", Reason: "GitHub has not answered for it yet"},
+				{Repo: "sjawhar/moved", Reason: "the implement and review Apps are not installed on cybermonklabs/moved", Apps: &AppInstallationsView{}},
+				{Repo: "zeta/gone", Reason: "GitHub answered 404 for zeta/gone", Apps: &AppInstallationsView{Review: true}},
+			},
+			WithoutWebhookApp: []webhookAppGapAt152{},
+			Caches:            []CacheView{},
+		}
+		if !sameJSON(t, block, want) {
+			t.Fatalf("the repositories block %s, want %+v", block, want)
+		}
+	})
+}
+
+// The body a pod before the contract is served is a copy: the next caller of the same daemon, at
+// this contract, is served the repositories block as the source answered it, `live` and all.
+//
+// The control is a narrowing that marks the source's own block rather than the copy it serves (the
+// block held by pointer, say): the operator after the pod is then served contract 152's shape, and
+// this fails.
+func TestTheStateServedToAPodBeforeTheRepositoriesContractLeavesTheNextCallersStateWhole(t *testing.T) {
+	handler := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
+
+	behind := stateAsked(t, handler, statePodAddr+":41000")
+	operator := stateAsked(t, handler, "192.0.2.1:41000")
+
+	if keys, block := repositoriesServed(t, behind); slices.Contains(keys, "live") {
+		t.Fatalf("the pod before the contract was served the repositories %s, want contract 152's shape", block)
+	}
+	if keys, block := repositoriesServed(t, operator); !slices.Equal(keys, []string{"caches", "live"}) || !sameJSON(t, block, populatedState(t).Repositories) {
+		t.Fatalf("the operator after it was served the repositories %s, want the entries the source answered", block)
+	}
+}
+
+// repositoriesLiveContract is the contract whose entry in version.go changed the block, and this
+// daemon's own contract is never below it: a caller at this contract is served `live`. The control
+// is either number moved: a constant left at 152, or renumbered without its entry, fails the
+// first check, and a DaemonAPIVersion renumbered below it fails the second.
+func TestTheRepositoriesContractIsTheContractThatChangedTheBlock(t *testing.T) {
+	const changedTheBlock = 167
+	if repositoriesLiveContract != changedTheBlock {
+		t.Fatalf("repositoriesLiveContract = %d, want %d, the contract whose entry in version.go made the block `live` and `caches`",
+			repositoriesLiveContract, changedTheBlock)
+	}
+	if repositoriesLiveContract > DaemonAPIVersion {
+		t.Fatalf("repositoriesLiveContract = %d, above DaemonAPIVersion %d: no caller could be served `live`",
+			repositoriesLiveContract, DaemonAPIVersion)
 	}
 }

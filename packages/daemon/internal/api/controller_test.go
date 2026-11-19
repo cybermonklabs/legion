@@ -129,9 +129,7 @@ func newControllerCredentialHarness(t *testing.T, tokens appauth.Source, launche
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil), ControllerLaunched: launched,
-		Tokens: tokens, GitHubRepositories: func() []ghrepo.Repository {
-			return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")}
-		},
+		Tokens: tokens, Served: servesOneOf(ghrepo.MustParse("sjawhar/legion"), ghrepo.MustParse("acme/widgets")),
 	}).Handler
 	return h
 }
@@ -567,10 +565,8 @@ func TestControllerGitHubCredentialAnswersTheOwnersTheReviewAppIsInstalledOn(t *
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
 		Controller: h.store, Grants: credential.New(nil),
-		Tokens: installedTokens{refusingTokens: refusingTokens{owner: "acme"}, installed: []string{"acme", "cybermonklabs"}},
-		GitHubRepositories: func() []ghrepo.Repository {
-			return []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")}
-		},
+		Tokens:            installedTokens{refusingTokens: refusingTokens{owner: "acme"}, installed: []string{"acme", "cybermonklabs"}},
+		Served:            servesOneOf(ghrepo.MustParse("cybermonklabs/legion")),
 		RepositoryRenames: transferredLegion,
 	}).Handler
 	served := h.controllerGitHubCredential(h.mintedSecret())
@@ -607,7 +603,7 @@ func TestControllerGitHubCredentialWithoutAnOwner(t *testing.T) {
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
-		Controller: h.store, Grants: credential.New(nil), Tokens: uninstalledTokens{}, GitHubRepositories: func() []ghrepo.Repository { return nil },
+		Controller: h.store, Grants: credential.New(nil), Tokens: uninstalledTokens{},
 	}).Handler
 	secret := h.mintedSecret()
 	wantFailure(t, h.controllerGitHubCredential(secret), http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED")

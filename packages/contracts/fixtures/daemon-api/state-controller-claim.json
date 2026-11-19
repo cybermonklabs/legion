@@ -193,10 +193,7 @@
   },
   "capabilities": [],
   "repositories": {
-    "owners": [],
-    "mapped": [],
-    "refused": [],
-    "withoutWebhookApp": [],
+    "live": [],
     "caches": []
   },
   "settings": {

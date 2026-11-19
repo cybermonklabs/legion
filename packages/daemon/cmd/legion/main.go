@@ -233,8 +233,8 @@ func pluginsLine(cfg config.Config) string {
 // `resources:` line names those pods as Burstable (capabilities.Deployment.BurstableLine);
 // a file that sets no lower request prints none, its pods all Guaranteed. Then, when the image
 // probe's attempt budget is derived above slow_command_timeout_seconds (daemon.ProbeBudget), one
-// plain line names the derived bound and why; then one names the repository cache every mapped
-// repository gets, as the file settles it;
+// plain line names the derived bound and why; then one names the repository cache each repository
+// a live record names gets, as the file settles it;
 // then a last plain line names the plugin pair this daemon would install for a stale-plugin
 // relaunch — the file's or the binary's — or, with neither, the gap, and, when worker_backends
 // runs any role on Claude Code, one sentence more saying that such a role's plugin is the image's
@@ -287,7 +287,7 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, line)
 		}
 		cache := cfg.Runtime.Kubernetes.RepositoryCache
-		fmt.Fprintf(stdout, "repository cache: a %s volume per mapped repository, fetched from GitHub every %d minutes, kept %d hours after its repository leaves the mapping; its container reserves cpu %s, memory %s, ephemeral storage %s under %s\n",
+		fmt.Fprintf(stdout, "repository cache: a %s volume for each repository a live record names, fetched from GitHub every %d minutes, kept %d hours after no live record names it; its container reserves cpu %s, memory %s, ephemeral storage %s under %s\n",
 			cache.Volume, cache.RefreshMinutes, cache.RetainHours, reservedUnder(cache.Resources.CPURequest, cache.Resources.CPU),
 			reservedUnder(cache.Resources.MemoryRequest, cache.Resources.Memory), cache.Resources.EphemeralStorageRequest, cache.Resources.EphemeralStorage)
 		fmt.Fprintln(stdout, pluginsLine(cfg))
@@ -518,7 +518,7 @@ func stopLegion(configPath string, stdout, stderr io.Writer) int {
 func newStateCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "state",
-		Short: "print the daemon's state: admission, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag (--json for all of it)",
+		Short: "print the daemon's state: admission, issues, pending Dispatch status writes, claims nothing will wake, the live records' repositories GitHub did not read or a GitHub App is missing from, the durable consumers' lag (--json for all of it)",
 		Args:  configOnly,
 	}
 	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
@@ -581,7 +581,10 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	if wakes := wakesWaitingSummary(state.WakesWaiting); wakes != "" {
 		fmt.Fprintln(stdout, wakes)
 	}
-	for _, line := range webhookAppLines(state.Repositories.WithoutWebhookApp) {
+	for _, line := range repositoryLines(state.Repositories.Live) {
+		fmt.Fprintln(stdout, line)
+	}
+	for _, line := range webhookAppLines(state.Repositories.Live) {
 		fmt.Fprintln(stdout, line)
 	}
 	for _, line := range consumerLines(state.Consumers, state.Daemon.StartedAt, time.Now()) {
@@ -1362,17 +1365,46 @@ func strandedSuspenders(ctx context.Context, op operator, stranded []api.Strande
 	return api.SuspendersOfOperatorClaims(list.Claims)
 }
 
-// webhookAppLines are the lines an operator reads for the served repositories Dispatch's GitHub App
-// is not known to be installed on (api.RepositoriesView.WithoutWebhookApp): GitHub sends Legion no
-// event of such a repository. One line per repository with why, in the state's order; with none
-// the one line says so.
-func webhookAppLines(gaps []api.WebhookAppGapView) []string {
-	if len(gaps) == 0 {
-		return []string{"webhook App missing: none"}
+// repositoryLines are the lines an operator reads for the repositories the live records name
+// (api.RepositoriesView.Live) that GitHub's last read did not name or a role App is not installed
+// on: one line per such repository, in the state's order, with why — its readError, the Apps
+// GitHub answered are not installed on it (api.LiveRepositoryView.NotInstalled), or both — and
+// the name it is served under where that is the other name of its configured pair. A repository
+// with neither, one GitHub has not yet answered among them, has no line.
+func repositoryLines(live []api.LiveRepositoryView) []string {
+	var lines []string
+	for _, repo := range live {
+		var why []string
+		for _, reason := range []string{repo.ReadError, repo.NotInstalled()} {
+			if reason != "" {
+				why = append(why, reason)
+			}
+		}
+		if len(why) == 0 {
+			continue
+		}
+		name := repo.Repo
+		if repo.ServedAs != "" {
+			name += " (served as " + repo.ServedAs + ")"
+		}
+		lines = append(lines, "repository "+name+": "+strings.Join(why, "; "))
 	}
-	lines := make([]string, len(gaps))
-	for i, gap := range gaps {
-		lines[i] = "webhook App missing on " + gap.Repo + ": " + gap.Reason
+	return lines
+}
+
+// webhookAppLines are the lines an operator reads for the repositories the live records name that
+// Dispatch's GitHub App is not known to be installed on (api.LiveRepositoryView.WebhookApp): GitHub
+// sends Legion no event of such a repository. One line per repository with why, in the state's
+// order; with none the one line says so.
+func webhookAppLines(live []api.LiveRepositoryView) []string {
+	var lines []string
+	for _, repo := range live {
+		if repo.WebhookApp != "" {
+			lines = append(lines, "webhook App missing on "+repo.Repo+": "+repo.WebhookApp)
+		}
+	}
+	if len(lines) == 0 {
+		return []string{"webhook App missing: none"}
 	}
 	return lines
 }

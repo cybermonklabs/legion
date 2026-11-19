@@ -542,10 +542,7 @@ const MOVED_ON = {
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    owners: ["acme"],
-    mapped: [{ repo: "acme/widgets", default: true }],
-    refused: [],
-    withoutWebhookApp: [],
+    live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
     caches: [],
   },
   settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },

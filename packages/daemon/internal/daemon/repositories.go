@@ -86,12 +86,14 @@ type repositories struct {
 	entries map[string]*repositoryEntry
 	// live is each repository a live issue record of the project names, by its lowercased
 	// <owner>/<name>, as the record keeps GitHub's spelling of it (record.Issue.GitHubRepo): what
-	// legion state reports (view), and what the refresher reads again while its answer is bad
-	// (badLive). It is read from the records where the repository caches' set is, at the boot and
-	// at every read of the live records (workflowRuntime.refreshCacheRepositories), and added to
-	// at each recording (hearRecorded). It is not kept in the entries: a restart empties them
-	// while the records still name the repositories their trees work in, and an entry holds a
-	// read for the repository of an issue Legion never records.
+	// the refresher reads again while its answer is bad (badLive) and what a read of the live
+	// records compares with the set before it (uncheckedLive). It is read from the records where
+	// the repository caches' set is, at the boot and at every read of the live records
+	// (workflowRuntime.refreshCacheRepositories), and added to at each recording (hearRecorded).
+	// legion state does not read it: the state lists the repositories of its own read of the
+	// records (view), so its list and its issues come from one snapshot. It is not kept in the
+	// entries: a restart empties them while the records still name the repositories their trees
+	// work in, and an entry holds a read for the repository of an issue Legion never records.
 	live map[string]ghrepo.Repository
 }
 
@@ -437,124 +439,54 @@ func (r *repositories) uncheckedLive(before map[string]ghrepo.Repository) []ghre
 	return unchecked
 }
 
-// liveRepository is one repository a live record names, as legion state reports it: repo, the name
-// the live records keep it under; servedAs, the name the rename rule serves it under where that is
-// the other name of its configured pair, and zero otherwise; from the served name's own entry, each
-// role App's installation once GitHub answered both reads (apps, nil before), readError and
-// webhookApp; and cache, its repository cache where the Kubernetes runtime has made one, nil
-// otherwise (none under tmux).
-type liveRepository struct {
-	repo, servedAs ghrepo.Repository
-	apps           *api.AppInstallationsView
-	readError      string
-	webhookApp     string
-	cache          *sandbox.CacheStatus
-}
-
-// liveRepositories is each repository of live, the repositories the project's live records name,
-// once each and sorted by its lowercased <owner>/<name>, as legion state reports it
-// (liveRepository), with the cache of caches that names it, matched whatever the case; and the
-// rest of caches, each cache of a repository no live record names, kept until its retention ends
-// (workflowRuntime.cacheRepositories). It reads the entries alone and performs no I/O.
-func (r *repositories) liveRepositories(live []ghrepo.Repository, caches []sandbox.CacheStatus) ([]liveRepository, []sandbox.CacheStatus) {
+// view is the state's repositories block (api.RepositoriesView) over live, the repositories the
+// live records of the state's own read name (source.State): one entry for each, once each and
+// sorted by its lowercased <owner>/<name>, under the name the records keep it under; the name the
+// rename rule serves it under, where that is the other name of its configured pair; from the
+// served name's own entry, each role App's installation once GitHub answered both reads,
+// readError and webhookApp; and its repository cache from caches, matched whatever the case,
+// where the Kubernetes runtime has made one. The rest of caches, each cache of a repository no
+// live record names, kept until its retention ends (workflowRuntime.cacheRepositories), is the
+// block's caches. It reads the entries alone and performs no I/O.
+func (r *repositories) view(live []ghrepo.Repository, caches []sandbox.CacheStatus) api.RepositoriesView {
 	byRepo := make(map[string]sandbox.CacheStatus, len(caches))
 	for _, cache := range caches {
 		byRepo[strings.ToLower(cache.Repo.String())] = cache
 	}
-	named := make(map[string]liveRepository, len(live))
+	named := make(map[string]api.LiveRepositoryView, len(live))
 	r.mu.RLock()
 	for _, repo := range live {
 		key := strings.ToLower(repo.String())
 		if _, held := named[key]; held {
 			continue
 		}
-		entry := liveRepository{repo: repo}
+		entry := api.LiveRepositoryView{Repo: repo.String()}
 		served := r.renames.Serving(repo, r.servesLocked)
 		if served != repo {
-			entry.servedAs = served
+			entry.ServedAs = served.String()
 		}
 		if held := r.entries[strings.ToLower(served.String())]; held != nil {
 			if held.answered() {
-				entry.apps = &api.AppInstallationsView{Implement: held.implement.installed, Review: held.review.installed}
+				entry.Apps = &api.AppInstallationsView{Implement: held.implement.installed, Review: held.review.installed}
 			}
-			entry.readError, entry.webhookApp = held.readError, held.webhookApp
+			entry.ReadError, entry.WebhookApp = held.readError, held.webhookApp
 		}
 		named[key] = entry
 	}
 	r.mu.RUnlock()
-	repos := make([]liveRepository, 0, len(named))
+	view := api.RepositoriesView{Live: make([]api.LiveRepositoryView, 0, len(named))}
 	for _, key := range slices.Sorted(maps.Keys(named)) {
 		entry := named[key]
 		if cache, held := byRepo[key]; held {
-			entry.cache = &cache
+			entry.Cache = new(cacheView(cache))
 			delete(byRepo, key)
 		}
-		repos = append(repos, entry)
+		view.Live = append(view.Live, entry)
 	}
-	var rest []sandbox.CacheStatus
 	for _, cache := range caches {
 		if _, unnamed := byRepo[strings.ToLower(cache.Repo.String())]; unnamed {
-			rest = append(rest, cache)
+			view.Caches = append(view.Caches, cacheView(cache))
 		}
-	}
-	return repos, rest
-}
-
-// view is what the daemon serves as its state's repositories, written from the repositories the
-// live records name as the set holds them now (liveRepositories) in the block's api shape
-// (narrowedView).
-func (r *repositories) view(caches []sandbox.CacheStatus) api.RepositoriesView {
-	return narrowedView(r.liveRepositories(slices.Collect(maps.Values(r.liveNames())), caches))
-}
-
-// narrowedView is live and rest, the live repositories and the caches of the repositories no live
-// record names (liveRepositories), in the repositories block's older shape: owners, the owner of
-// the name each repository both role Apps are installed on is served under, lowercased, once each
-// and sorted; mapped, each of those repositories under its served name, with its Apps and its
-// cache, and never a default, which the daemon no longer knows; refused, each other repository,
-// with why — its readError, the role App that is not installed on it, or GitHub's answer not come
-// yet — and its Apps where GitHub answered both; withoutWebhookApp, each repository Dispatch's
-// webhook App is not known to be installed on, with why; and caches, the rest.
-func narrowedView(live []liveRepository, rest []sandbox.CacheStatus) api.RepositoriesView {
-	view := api.RepositoriesView{}
-	var owners []string
-	for _, repo := range live {
-		served := repo.repo
-		if !repo.servedAs.IsZero() {
-			served = repo.servedAs
-		}
-		if repo.webhookApp != "" {
-			view.WithoutWebhookApp = append(view.WithoutWebhookApp, api.WebhookAppGapView{Repo: repo.repo.String(), Reason: repo.webhookApp})
-		}
-		if repo.apps != nil && repo.apps.Implement && repo.apps.Review {
-			owners = append(owners, strings.ToLower(served.Owner()))
-			entry := api.MappedRepositoryView{Repo: served.String(), Apps: *repo.apps}
-			if repo.cache != nil {
-				entry.Cache = new(cacheView(*repo.cache))
-			}
-			view.Mapped = append(view.Mapped, entry)
-			continue
-		}
-		reason := "GitHub has not answered for it yet"
-		switch {
-		case repo.readError != "":
-			reason = repo.readError
-		case repo.apps != nil:
-			var missing []appauth.AppRole
-			if !repo.apps.Implement {
-				missing = append(missing, appauth.Implement)
-			}
-			if !repo.apps.Review {
-				missing = append(missing, appauth.Review)
-			}
-			reason = notInstalled(missing, served)
-		}
-		view.Refused = append(view.Refused, api.RefusedRepositoryView{Repo: repo.repo.String(), Reason: reason, Apps: repo.apps})
-	}
-	slices.Sort(owners)
-	view.Owners = slices.Compact(owners)
-	for _, cache := range rest {
-		view.Caches = append(view.Caches, cacheView(cache))
 	}
 	return view
 }
@@ -2120,15 +2052,33 @@ func (w *workflowRuntime) cacheRepositories() []ghrepo.Repository {
 // (workLaunched), until the next read.
 //
 // The same read gives the repository state the repositories the live records name
-// (repositories.setLive), which legion state reports: the two are one read of the records, so the
-// state names a repository for exactly as long as the runtime keeps its cache as a live one's, and
-// a daemon that boots over a live tree reports its repository from the records alone, before any
-// event of it.
+// (repositories.setLive), which the refresher reads again while their answers are bad (badLive).
+// legion state reads the live records itself, in the state's own snapshot (source.State), and
+// names their repositories by the same rule (liveRecordRepositories), so a daemon that boots over
+// a live tree reports its repository from the records alone, before any event of it.
 func (w *workflowRuntime) refreshCacheRepositories(ctx context.Context, tx pgx.Tx) error {
 	issues, err := w.records.LiveIssues(ctx, tx, w.dispatchProject)
 	if err != nil {
 		return fmt.Errorf("read the repositories the project's live records name for the repository caches: %w", err)
 	}
+	live, err := liveRecordRepositories(issues)
+	if err != nil {
+		return err
+	}
+	w.cacheReposMu.Lock()
+	w.storeCacheRepositories(live)
+	w.cacheReposMu.Unlock()
+	w.repositories.setLive(live)
+	return nil
+}
+
+// liveRecordRepositories is the repository each of issues, the project's live records, names, once
+// each by its lowercased <owner>/<name>, as the record keeps GitHub's spelling of it
+// (record.Issue.GitHubRepo); a record that keeps none names nothing, and one whose spelling is no
+// <owner>/<name> refuses the read, naming the issue. It is the one reading of the live records
+// that the cache set, the repository state's live set (refreshCacheRepositories) and legion
+// state's repositories block (source.State) each take.
+func liveRecordRepositories(issues []record.Issue) (map[string]ghrepo.Repository, error) {
 	live := map[string]ghrepo.Repository{}
 	for _, issue := range issues {
 		if issue.GitHubRepo == "" {
@@ -2139,15 +2089,11 @@ func (w *workflowRuntime) refreshCacheRepositories(ctx context.Context, tx pgx.T
 		}
 		repo, err := ghrepo.Parse("GitHub's spelling of the repository of "+issue.Key, issue.GitHubRepo)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		live[strings.ToLower(repo.String())] = repo
 	}
-	w.cacheReposMu.Lock()
-	w.storeCacheRepositories(live)
-	w.cacheReposMu.Unlock()
-	w.repositories.setLive(live)
-	return nil
+	return live, nil
 }
 
 // cacheRepository adds repo to the cache set, for a record that first names it or a launch that

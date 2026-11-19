@@ -630,15 +630,13 @@ describe("cache: pod binding and the producer's exact, anchored success line", (
       },
     },
     repositories: {
-      owners: [],
-      mapped: [
+      live: [
         {
           repo: "acme/widgets",
-          default: true,
+          apps: { implement: true, review: true },
           cache: { repo: "acme/widgets", sandbox: "s", state: "ready", ready: true },
         },
       ],
-      refused: [],
       caches: [],
     },
   });

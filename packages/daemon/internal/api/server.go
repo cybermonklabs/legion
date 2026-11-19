@@ -830,10 +830,13 @@ func statementBound(bound time.Duration) int64 {
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
 // GitHub, is served it without `mergeWait` (withoutMergeWait); a caller below
 // assignmentsContract, the contract that added the experiment answers each issue runs under, is
-// served every issue without `assignments` (withoutAssignments); and a caller below
+// served every issue without `assignments` (withoutAssignments); a caller below
 // entryTimesContract, the contract that added the two times of the task that entry was queued
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
-// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes).
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
+// below repositoriesLiveContract, the contract that made the repositories block the repositories
+// the live records name, is served that block in the shape contract 152 gave it, written from
+// the same entries (withoutRepositoriesLive).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -841,7 +844,10 @@ func statementBound(bound time.Duration) int64 {
 // before the contract that added a key refuses it whether or not it names anything, and with no
 // retired entry under `strandedClaims`. Every later reader takes each key a row of
 // stateNarrowings strips as optional for exactly these bodies, and
-// `packages/contracts/src/legion-api.ts` marks each one so. Any other
+// `packages/contracts/src/legion-api.ts` marks each one so, with one exception: the
+// repositories block a caller below repositoriesLiveContract is served is a block of an older
+// shape rather than this one with a key taken out, and no reader at or above that contract is
+// ever served it. Any other
 // caller — a pod at this contract, the operator's `legion state`, a tmux pane — is served the
 // state as this contract writes it.
 //
@@ -933,10 +939,14 @@ type stateNarrowing struct {
 // and doing nothing; a caller between the lowest and the middle one keeps the field with its
 // `place` and its `length` alone, which no word of `kind` is left in; and a caller below only
 // the highest keeps every field but that one word. A later row that takes something out of a
-// field an earlier row drops whole is sound on those same terms; one that puts a key back, or
-// reads what an earlier row left, is not, and this table is the wrong shape for it. The order is
-// kept beyond that so a reader of this table and a reader of version.go walk the contracts the
-// same way.
+// field an earlier row drops whole is sound on those same terms, and so is one that writes one
+// block in an older shape for an older caller where no other row touches that block:
+// repositoriesLiveContract's row writes `repositories` as contract 152 gave it, keys this
+// contract no longer writes among them, from the entries of that block alone, and no other row
+// takes anything out of that block or reads it. A row that reads what an earlier row left, or
+// puts back a key another row takes out, is not sound on those terms, and this table is the
+// wrong shape for it. The order is kept beyond that so a reader of this table and a reader of
+// version.go walk the contracts the same way.
 var stateNarrowings = []stateNarrowing{
 	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead"},
 	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt"},
@@ -962,6 +972,8 @@ var stateNarrowings = []stateNarrowing{
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
+	{repositoriesLiveContract, carriesRepositoriesLive, withoutRepositoriesLive, "repositories.live, served as " +
+		"contract 152's owners, mapped, refused and withoutWebhookApp"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1144,6 +1156,16 @@ const assignmentsContract = 141
 // it with no row of stateNarrowings between the two, so a caller in a pod at or above
 // assignmentsContract and below this contract is served `assignments` and not these three keys.
 const entryTimesContract = 146
+
+// repositoriesLiveContract is the daemon contract that made the state's `repositories` block the
+// repositories the project's live records name (version.go's 167, dispatch://INFRA-4401): `live`,
+// one entry per repository with what GitHub and Dispatch answered of it, beside `caches`, in
+// place of `owners`, `mapped`, `refused` and `withoutWebhookApp`. A plugin before it reads the
+// block with the schema of contract 152, which requires those four keys, so the block this
+// contract writes refuses that plugin's whole state, as surely as a key a strict reader does not
+// name. That caller is served the block in contract 152's shape, written from the same entries
+// (withoutRepositoriesLive), and every other caller the block this contract writes.
+const repositoriesLiveContract = 167
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1600,6 +1622,23 @@ func withoutWakesWaiting(state State) State {
 // carries neither key.
 func withoutClaimsToRefresh(state State) State {
 	state.ClaimsToRefresh, state.claimsToRefreshHidden = 0, true
+	return state
+}
+
+// carriesRepositoriesLive is whether state carries the block repositoriesLiveContract gave
+// `repositories`: `live` beside `caches`. It carries that block whatever the daemon holds, since
+// the state writes `live` on every body, empty rather than null (RepositoriesView.MarshalJSON),
+// and contract 152's schema refuses the block for the four keys it lacks whatever `live` names.
+// So this is true of every state the route writes; it is asked beside the other rows' questions
+// all the same, because stateFor puts the same question to every row of stateNarrowings.
+func carriesRepositoriesLive(State) bool { return true }
+
+// withoutRepositoriesLive is state with its `repositories` block in the shape contract 152 gave
+// it, written from the block's own entries (RepositoriesView.at152): the one change
+// repositoriesLiveContract made to this route. The flag is set on a value of the state's own and
+// the entries are read and never written, so the state the source answered is left as it was.
+func withoutRepositoriesLive(state State) State {
+	state.Repositories.narrowed = true
 	return state
 }
 

@@ -2213,4 +2213,37 @@ package api
 // entry's own 152 were both outside it.
 // Read main's own number and every open pull request's again at the next forward merge rather
 // than from this line.)
-const DaemonAPIVersion = 152
+//
+// 167: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
+// block of `GET /legion/v1/state` becomes the repositories the project's live records name, read
+// in the state's own snapshot. The block is `{live, caches}`. `live` holds one entry for each
+// repository a live record names, under the name the records keep, sorted by its lowercased
+// `<owner>/<name>`: `repo`; `servedAs`, the other name of its configured pair where the rename
+// rule serves it under that one; `apps`, each role App's installation on the name it is served
+// under, once GitHub answered both reads; `readError`, why GitHub's last read did not name it;
+// `webhookApp`, why Dispatch's webhook App is not known to be installed on it; and `cache`, its
+// repository cache under the Kubernetes runtime; each but `repo` absent until it holds something.
+// `caches` is unchanged: the caches of repositories no live record names. `owners`, `mapped`,
+// `refused` and `withoutWebhookApp` are gone, and with them each entry's `default`, which the
+// daemon no longer knows. A plugin of 152 reads the block with a schema that requires those four
+// keys and would refuse the whole state without them, so a caller in a pod whose claims record a
+// contract below 167 is served the block in 152's shape, written from the same entries (api's
+// repositoriesLiveContract and withoutRepositoriesLive): `owners` and `mapped` are the entries
+// both role Apps are installed on, under the name each is served under, every `default` false;
+// `refused` is each other entry with its `readError`, the App not installed on it, or "GitHub has
+// not answered for it yet"; and `withoutWebhookApp` is each entry with a `webhookApp`. A caller the
+// daemon cannot place in a pod — the operator's `legion state`, `legion controller start`, a tmux
+// pane — is served the new block whatever its plugin, and the boot gate and `legion probe-image`
+// keep a tmux pane's plugin at this contract. `packages/contracts/src/legion-api.ts` mirrors the
+// new block, and the fixture `state-narrowed-repositories.json` is the body a pod at 166 is served.
+// (This change takes 167, the lowest number above main's 152 that no open pull request declares:
+// a census of `const DaemonAPIVersion` at refs/pull/<n>/head over all 230 open pull requests of
+// this repository, taken at 2026-11-19T00:00:15Z, reads above main's 152: 153 (#4115), 154
+// (#3659), 155 (#4273), 156 (#4065), 157 (#3993), 158 (#4251, #4261, #4269 and #4290), 159 (#4175,
+// #4412 and #4429), 160 (#3519), 161 (#4173, #4180, #4193 and #4259), 162 (#2230 and #3712), 163
+// (#4049), 164 (#4017), 165 (#4392) and 166 (#4432), with nothing above. Each of those numbers is
+// the number that head declared at that reading and no head's for good. Read main's own number and
+// every open pull request's again at the next forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 167

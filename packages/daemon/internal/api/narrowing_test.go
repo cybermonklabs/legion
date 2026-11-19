@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -236,26 +237,43 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// told what it lost: a caller one contract below the highest row stands below that row
 	// alone, so the log holds that row's line and nothing else. This subtest does not catch a
 	// strip applied beside the loop, because it reads both its expectation and its answer from
-	// stateNarrowings; the subtest below, which names the line as a literal, is what catches
+	// stateNarrowings; the subtests below, which name their lines as literals, are what catch
 	// that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
-		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
+		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(repositoriesLiveContract-1))
 
-		if bytes.Contains(body, []byte(`"assignments"`)) {
-			t.Errorf("the body served to a pod below %d carries `assignments`, the field that contract added: %s",
-				assignmentsContract, body)
+		if keys, block := repositoriesServed(t, body); slices.Contains(keys, "live") {
+			t.Errorf("the body served to a pod below %d carries `repositories.live`, the block that contract wrote: %s",
+				repositoriesLiveContract, block)
 		}
-		want := narrowingsExpected(assignmentsContract - 1)
+		want := narrowingsExpected(repositoriesLiveContract - 1)
 		if len(narrowings) != len(want) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
-				len(narrowings), assignmentsContract-1, len(want), narrowings)
+				len(narrowings), repositoriesLiveContract-1, len(want), narrowings)
 		}
 		for i, line := range narrowings {
 			if line.Dropped != want[i] {
 				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
-					i, assignmentsContract-1, line.Dropped, want[i])
+					i, repositoriesLiveContract-1, line.Dropped, want[i])
 			}
 		}
+	})
+
+	// The repositories line is named as a literal for the reason the assignments line below is:
+	// take the row out of stateNarrowings and write the older block beside the loop as an `if` of
+	// its own, and every subtest that reads the table loses its expectation with its answer, so the
+	// body is still narrowed, no line is written and only this one fails.
+	t.Run("the repositories narrowing names its own keys in the log", func(t *testing.T) {
+		const dropped = "repositories.live, served as contract 152's owners, mapped, refused and withoutWebhookApp"
+		_, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(repositoriesLiveContract-1))
+
+		for _, line := range narrowings {
+			if line.Dropped == dropped {
+				return
+			}
+		}
+		t.Fatalf("a caller at %d was served no line saying it dropped %q; the daemon wrote %+v",
+			repositoriesLiveContract-1, dropped, narrowings)
 	})
 
 	// The assignments line is named here as a literal rather than read from stateNarrowings,

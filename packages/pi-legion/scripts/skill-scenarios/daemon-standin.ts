@@ -99,10 +99,7 @@ const STATE = LegionStateResponse.parse({
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    owners: ["sjawhar"],
-    mapped: [{ repo: "sjawhar/legion-smoke", default: true }],
-    refused: [],
-    withoutWebhookApp: [],
+    live: [{ repo: "sjawhar/legion-smoke", apps: { implement: true, review: true } }],
     caches: [],
   },
   settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },

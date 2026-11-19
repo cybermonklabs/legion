@@ -300,7 +300,7 @@ export function makeStateBody(overrides: Record<string, unknown> = {}): string {
     pendingStatusWrites: [],
     strandedClaims: [],
     capabilities: [],
-    repositories: { owners: [], mapped: [], refused: [], caches: [] },
+    repositories: { live: [], caches: [] },
     ...overrides,
   });
 }

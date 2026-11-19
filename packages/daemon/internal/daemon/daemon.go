@@ -2999,11 +2999,22 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	}
 	state.Capabilities = api.CapabilityStatesOf(s.deployment().Report())
 	if s.repositories != nil {
+		// The repositories the block lists are those of the live records this same transaction
+		// reads, so the list and the issues the body shows agree by construction rather than
+		// trailing a record committed since the refresher's last read of the records.
+		issues, err := s.records.LiveIssues(ctx, tx, s.project)
+		if err != nil {
+			return api.State{}, nil, err
+		}
+		live, err := liveRecordRepositories(issues)
+		if err != nil {
+			return api.State{}, nil, err
+		}
 		var caches []sandbox.CacheStatus
 		if s.caches != nil {
 			caches = s.caches()
 		}
-		state.Repositories = s.repositories.view(caches)
+		state.Repositories = s.repositories.view(slices.Collect(maps.Values(live)), caches)
 	}
 	return state, claims, nil
 }
