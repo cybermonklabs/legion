@@ -647,7 +647,8 @@ refused with a usage line, and `envoy-broker` with no argument serves. `end-sess
 `versions` read the broker's settings and sign in to its database as the server does, and bind no
 listener, so either runs in any one-off process of the image that has what the serving broker has:
 
-- the serving broker's `BROKER_DATABASE_URL`, with whatever else it signs in to the database with:
+- a route to the broker's database, such as any proxy the broker's pods reach it through, and the
+  serving broker's `BROKER_DATABASE_URL`, with whatever else it signs in to the database with:
   where that URL is an RDS IAM one, the AWS identity the broker mints its tokens from, through the
   AWS SDK's default credential chain; where it signs in by password and the URL holds none, the
   password from `PGPASSWORD` or a passfile;
@@ -655,11 +656,11 @@ listener, so either runs in any one-off process of the image that has what the s
   (`BROKER_SECRETS_STORE`, `BROKER_SECRETS_PREFIX` and that store's key setting), which every
   process of the image requires;
 - `BROKER_SIGNIN=off`, in place of the serving broker's sign-in: neither subcommand signs anyone
-  in. `BROKER_SIGNIN=off` refuses to start beside any sign-in setting, so leave unset the four of
-  the sign-in client, `BROKER_SIGNIN_SESSION_SECONDS` and `BROKER_SIGNIN_DEVICE_AUDIENCE`, and
-  the judge's five (`BROKER_JUDGE_MODEL_URL`, `BROKER_JUDGE_MODEL`,
-  `BROKER_JUDGE_MODEL_AUDIENCE`, `BROKER_JUDGE_DISPATCH_URL` and
-  `BROKER_JUDGE_DISPATCH_TOKEN_FILE`), which a broker that signs no one in never runs.
+  in. `BROKER_SIGNIN=off` refuses to start beside any sign-in or judge setting, so leave unset the
+  four of the sign-in client, `BROKER_SIGNIN_SESSION_SECONDS` and `BROKER_SIGNIN_DEVICE_AUDIENCE`,
+  and the judge's six (`BROKER_JUDGE_MODEL_URL`, `BROKER_JUDGE_MODEL`,
+  `BROKER_JUDGE_MODEL_PROTOCOL`, `BROKER_JUDGE_MODEL_AUDIENCE`, `BROKER_JUDGE_DISPATCH_URL` and
+  `BROKER_JUDGE_DISPATCH_TOKEN_FILE`), since a broker that signs no one in runs no judge.
 
 Take those from wherever your deployment keeps them, and run the subcommand wherever it lets you
 run a one-off process of the image: an exec into a broker pod,
