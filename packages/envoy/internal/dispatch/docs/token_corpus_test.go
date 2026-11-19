@@ -138,7 +138,7 @@ func tokenCorpusRead(doc *crdt.Doc) (read *documentRead, tree *pmdoc.Node, err e
 			read, tree, err = nil, nil, fmt.Errorf("panic: %v", recovered)
 		}
 	}()
-	fold, err := foldLoaded("corpus", LoadedDocument{Doc: doc})
+	fold, err := foldLoaded("corpus", fragmentName, LoadedDocument{Doc: doc})
 	if fold.treeErr != nil {
 		return nil, nil, fold.treeErr
 	}

@@ -11,41 +11,35 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The four documents of LEGION-208 the step binding sorts between: the issue's primary document,
-// its Verification document, its decisions document under the role Dispatch now gives it, and a
-// decisions document stored before that role existed, which only its slug names. notesDoc is a
-// document of the issue that is none of them.
+// The documents of LEGION-208 the step binding sorts between: the issue's primary document and its
+// Verification document. notesDoc is a document of the issue that is neither.
 const (
-	specDoc          = "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093"
-	verificationDoc  = "4a6b8c0d-2e4f-4a6b-8c0d-2e4f6a8b0c1d"
-	decisionsRoleDoc = "7c1e3a5b-9d2f-4b6a-8e0c-1d3f5a7b9c2e"
-	decisionsSlugDoc = "0544d460-0931-4374-b20b-790408519edd"
-	notesDoc         = "1f2e3d4c-5b6a-4798-9c0d-2e4f6a8b0c1e"
+	specDoc         = "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093"
+	verificationDoc = "4a6b8c0d-2e4f-4a6b-8c0d-2e4f6a8b0c1d"
+	notesDoc        = "1f2e3d4c-5b6a-4798-9c0d-2e4f6a8b0c1e"
 )
 
-// gateStepDocuments is the four documents and the plain one as Dispatch answers them, each on
-// LEGION-208. The fake calls a document with neither a role nor a slug the issue's primary
-// document (statusRecorder.Approval).
+// gateStepDocuments is the documents as Dispatch answers them, each on LEGION-208. The fake calls
+// a document with no role the issue's primary document unless the case names it secondary
+// (statusRecorder.Approval), as notesDoc is.
 func gateStepDocuments() map[string]dispatch.Approval {
 	return map[string]dispatch.Approval{
-		specDoc:          {State: "none", LatestVersion: 4},
-		verificationDoc:  {State: "none", LatestVersion: 4, Role: dispatch.ArtifactRoleVerification, Slug: "verification-md"},
-		decisionsRoleDoc: {State: "none", LatestVersion: 4, Role: dispatch.ArtifactRoleDecisions, Slug: dispatch.DecisionsSlug},
-		decisionsSlugDoc: {State: "none", LatestVersion: 4, Slug: dispatch.DecisionsSlug},
-		notesDoc:         {State: "none", LatestVersion: 4, Slug: "notes-md"},
+		specDoc:         {State: "none", LatestVersion: 4},
+		verificationDoc: {State: "none", LatestVersion: 4, Role: dispatch.ArtifactRoleVerification},
+		notesDoc:        {State: "none", LatestVersion: 4},
 	}
 }
 
 // register_gate records one step of the deployment's design gate, and each step records one
 // document of the issue: the spec step its primary document, the criteria step its Verification
-// document, the decisions step its decisions document, by the role Dispatch gives it or, for a
-// document stored before that role existed, by its slug.
+// document. A call naming the `decisions` step, as a plugin of an earlier release may, is refused
+// as a step the deployment does not gate, since no deployment gates it (config's readDesignSteps).
 //
 // The registrations a deployment takes and the ones it refuses are driven together, so a build
 // that refuses every registration fails on the accepted arms and one that takes any document for
 // any step fails on the refused ones.
 func TestRegisterGateStepRefusals(t *testing.T) {
-	all := []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec}
+	all := []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}
 	for _, tc := range []struct {
 		name     string
 		steps    []record.DesignStep
@@ -60,8 +54,6 @@ func TestRegisterGateStepRefusals(t *testing.T) {
 	}{
 		{name: "the spec step takes the issue's primary document", steps: all, step: "spec", document: specDoc, want: record.DesignStepSpec},
 		{name: "the criteria step takes the Verification document", steps: all, step: "criteria", document: verificationDoc, want: record.DesignStepCriteria},
-		{name: "the decisions step takes the document Dispatch gave the role", steps: all, step: "decisions", document: decisionsRoleDoc, want: record.DesignStepDecisions},
-		{name: "the decisions step takes a document stored before the role, by its slug", steps: all, step: "decisions", document: decisionsSlugDoc, want: record.DesignStepDecisions},
 		{
 			name:  "a deployment gating one step takes a call that names none",
 			steps: []record.DesignStep{record.DesignStepCriteria}, document: verificationDoc, want: record.DesignStepCriteria,
@@ -71,12 +63,12 @@ func TestRegisterGateStepRefusals(t *testing.T) {
 			// nor the document it names decides anything: the registration records the spec step
 			// and the workflow opens it at once.
 			name:  "a deployment gating no step records the spec step, whatever the call names",
-			steps: []record.DesignStep{}, step: "decisions", document: notesDoc, want: record.DesignStepSpec,
+			steps: []record.DesignStep{}, step: "criteria", document: notesDoc, want: record.DesignStepSpec,
 		},
 		{
 			name:  "a deployment gating several steps needs the call to name one",
 			steps: all, document: specDoc,
-			code: "GATE_STEP_REQUIRED", status: http.StatusBadRequest, says: []string{"decisions, criteria, spec"},
+			code: "GATE_STEP_REQUIRED", status: http.StatusBadRequest, says: []string{"criteria, spec"},
 		},
 		{
 			name:  "a step the deployment does not gate",
@@ -94,14 +86,20 @@ func TestRegisterGateStepRefusals(t *testing.T) {
 			code: "GATE_STEP_DOCUMENT_MISMATCH", status: http.StatusConflict, says: []string{"criteria", "the issue's Verification document"},
 		},
 		{
-			name:  "the decisions step on a document that is neither",
+			name:  "the criteria step on a document that is neither",
+			steps: all, step: "criteria", document: notesDoc,
+			code: "GATE_STEP_DOCUMENT_MISMATCH", status: http.StatusConflict, says: []string{"criteria", "the issue's Verification document"},
+		},
+		{
+			name:  "the decisions step, which is gone",
 			steps: all, step: "decisions", document: notesDoc,
-			code: "GATE_STEP_DOCUMENT_MISMATCH", status: http.StatusConflict, says: []string{"decisions", "the issue's decisions document"},
+			code: "GATE_STEP_NOT_CONFIGURED", status: http.StatusConflict, says: []string{"decisions", "criteria, spec"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, facts, statuses := newArchitectHarnessGating(t, tc.steps, nil, nil)
 			statuses.approvals = gateStepDocuments()
+			statuses.secondary = map[string]bool{notesDoc: true}
 			statuses.documents = map[string]string{}
 			for id := range statuses.approvals {
 				statuses.documents[id] = "LEGION-208"

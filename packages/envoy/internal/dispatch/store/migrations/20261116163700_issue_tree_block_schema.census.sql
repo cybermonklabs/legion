@@ -1,0 +1,12 @@
+-- This migration writes the type nodes of the store alone: it moves the `supertag` node
+-- `criterion` to a block type, writes six `attribute` nodes, widens the attribute node
+-- plan_task/needs, sets the version on the block-type supertag nodes, and appends the tuples that
+-- state each value, and the retraction of the scope plan_task/needs no longer carries. Its ground
+-- is dispatch://INFRA-1149's R7: "A supertag write ships as a migration, in the same release as
+-- the binary that handles it. It passes the pre-apply census." No route or command writes a node
+-- of either kind (requireNoRouteOrCommandWritesAType in cmd/dispatch/supertag_nodes_test.go), so
+-- every row it rewrites is a type node an earlier migration wrote, and it states every value it
+-- gives or takes from one. It refuses no row and rewrites no row a person or an agent wrote, and
+-- it reads no existing row of another table. The number of existing rows this migration would
+-- refuse or rewrite is therefore 0.
+select 0;

@@ -273,7 +273,13 @@ test("changing a decision block's answer rewrites the block in the document", as
       { intervals: [50, 50, 100, 200, 500] }
     )
     .toBe(true);
-  const documentText = async () => (await getArtifactText(issue.primary_artifact_id)).markdown;
+  // The text routes answer the decision's answer in their asks, read from the ask; their markdown
+  // holds none of it.
+  const shipAnswer = async () => {
+    const text = await getArtifactText(issue.primary_artifact_id);
+    expect(text.markdown).not.toMatch(/\s(state|answered_by|answered_at|selected|answer)="/);
+    return text.asks?.find((entry) => entry.block_id === "ship-decision");
+  };
 
   const alice = await asUser(browser, "alice");
   try {
@@ -288,10 +294,10 @@ test("changing a decision block's answer rewrites the block in the document", as
     await hosted.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect(block).toContainText("Answered by alice");
 
-    await expect.poll(documentText).toContain('selected="[&#x22;Ship&#x22;]"');
-    const first = await documentText();
-    expect(first).toContain('answer="Release tonight."');
-    const firstAnsweredAt = /answered_at="([^"]+)"/.exec(first)?.[1];
+    await expect.poll(async () => (await shipAnswer())?.selected).toEqual(["Ship"]);
+    const first = await shipAnswer();
+    expect(first?.answer).toBe("Release tonight.");
+    const firstAnsweredAt = first?.answered_at;
     expect(firstAnsweredAt).toBeDefined();
 
     // The compact card shows the note the change seeds, so it is cleared on purpose, not sent
@@ -306,10 +312,10 @@ test("changing a decision block's answer rewrites the block in the document", as
     );
     await expect(block.getByText("Show 1 earlier answer")).toBeVisible();
 
-    await expect.poll(documentText).toContain('selected="[&#x22;Hold&#x22;]"');
-    const second = await documentText();
-    expect(second).not.toMatch(/\sanswer="/);
-    const secondAnsweredAt = /answered_at="([^"]+)"/.exec(second)?.[1];
+    await expect.poll(async () => (await shipAnswer())?.selected).toEqual(["Hold"]);
+    const second = await shipAnswer();
+    expect(second?.answer).toBeUndefined();
+    const secondAnsweredAt = second?.answered_at;
     expect(secondAnsweredAt).toBeDefined();
     expect(Date.parse(secondAnsweredAt ?? "")).toBeGreaterThan(Date.parse(firstAnsweredAt ?? ""));
   } finally {

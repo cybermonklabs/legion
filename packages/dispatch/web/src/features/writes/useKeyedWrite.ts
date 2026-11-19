@@ -31,6 +31,9 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   /** Whether the write ends the person's session (a sign-out): a lapse of that session lands it
    *  rather than holding it for the next sign-in (`WriteSpec.endsWithSession`). */
   readonly endsWithSession?: boolean;
+  /** The issue the write changes where its request's path does not name it
+   *  (`WriteSpec.issue`). */
+  readonly issue?: string;
 } & KeyedWriteMade<TData, TVariables>;
 
 /** How a write is made: by an attempt of its own (`write`, under the bounds the store gives it:
@@ -100,6 +103,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   endsWithSession,
   file,
   inline,
+  issue,
   label,
   request,
   target,
@@ -128,6 +132,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
         endsWithSession,
         file: file?.(variables),
         inline: typeof inline === "function" ? inline(variables) : inline,
+        issue,
         key,
         kind: plainWrite,
         label: label(variables),

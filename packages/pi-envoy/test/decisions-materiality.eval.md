@@ -3,7 +3,7 @@
 This is a text-output check for `skills/dispatch-writing-specs/SKILL.md`, not a
 model call in CI. The co-located skill guards check the packaged rule; this check
 asks a fresh agent to use it. It covers the failure where a spec writer gave each
-design detail its own decision section.
+design detail its own `decision` block.
 
 ## Run
 
@@ -23,8 +23,8 @@ Do not tune the text on this case and then report it as held-out evidence.
 ## Task
 
 ```text
-Prepare spec.md and decisions.md for ACME-42, which recovers an agent's task after
-a provider error. Return both complete Markdown documents, labeled by filename.
+Prepare spec.md for ACME-42, which recovers an agent's task after a provider
+error. Return the complete Markdown document, labeled by filename.
 This is an offline draft: do not call tools, request approval or post anything.
 The research and source checks are complete. Use only the facts below.
 
@@ -57,33 +57,36 @@ must check retry after an error, reset after three refusals, and work recovery.
 
 All conditions must hold:
 
-- `decisions.md` has exactly four active `##` sections: reuse the existing state
-  machine, retry policy, session reset policy, and preserving uncommitted work.
-  Equivalent headings and order are fine; there is no word-count target.
-- Neither presentation choice has a decision section or is bundled into another
+- The spec's `## Decisions` part has exactly four `:::decision` blocks: reuse the
+  existing state machine, retry policy, session reset policy, and preserving
+  uncommitted work. Equivalent first lines and order are fine; there is no
+  word-count target. No other document records a decision.
+- Neither presentation choice has a decision block or is bundled into another
   decision as an extra rationale. Each remains ordinary spec content: a requirement,
   design or check line, even when it came from an answered ask. Repeating a choice
   across those spec parts is normal and does not fail this check.
-- Each decision gives its reason and links the supplied spec block. The session
-  policy also links its answered ask; the title's ask remains in its spec line.
+- Each decision block gives its reason and sets `shaped` to the supplied spec
+  block. The session policy's block also sets `from_ask` to its answered ask; the
+  title's ask remains in its spec line.
 - There are no invented choices, open asks or approval requests, and the spec
   still includes the three requested acceptance checks.
 
-An empty decisions document, a plan to write one, or removing the presentation
-choices entirely fails. A provider or harness error is not a scored trial.
+An empty `## Decisions` part, a plan to write one, a separate decisions document,
+or removing the presentation choices entirely fails. A provider or harness error is
+not a scored trial.
 
 ## Held-out transfer task
 
 Freeze this case before testing a revised instruction. It transfers the same
 failure to a different design; it is not another observed production incident.
-Use the same run protocol and pass bar, with exactly three material sections and
-the three supplied export checks instead of the recovery sections and checks.
+Use the same run protocol and pass bar, with exactly three material decision blocks
+and the three supplied export checks instead of the recovery blocks and checks.
 
 ```text
-Prepare spec.md and decisions.md for ACME-43, an audit-log export. Return both
-complete Markdown documents, labeled by filename. This is an offline draft:
-do not call tools, request approval or post anything. Research and source checks
-are complete. Use only the facts below; there are no open questions.
+Prepare spec.md for ACME-43, an audit-log export. Return the complete Markdown
+document, labeled by filename. This is an offline draft: do not call tools,
+request approval or post anything. Research and source checks are complete.
+Use only the facts below; there are no open questions.
 
 Operators currently copy log rows by hand, which loses rows and can expose
 message text. The export must give them a complete file without message bodies.

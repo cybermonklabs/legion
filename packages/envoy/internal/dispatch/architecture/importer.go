@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -610,7 +611,11 @@ func heldElsewhere(ctx context.Context, tx pgx.Tx, source model.ArchitectureSour
 // project writes the snapshot, replaces the source's own components and their
 // dependency edges, records when each was made and last changed, and updates
 // the source row — one transaction, so a reader never sees a half-projected
-// model. Every other source's components stay.
+// model. Every other source's components stay. Under the source rows it locked
+// and before the rows it replaces, it states the components in the store
+// (stateComponents): each component's node, its part_of and its depends_on, and
+// each component it drops gone; each row it writes names its component's node
+// (dispatch://INFRA-1253 R9).
 func (i *Importer) project(
 	ctx context.Context,
 	source loadedSource,
@@ -645,28 +650,47 @@ func (i *Importer) project(
 
 	// The snapshot is immutable per commit: a re-import of the same commit
 	// (the duplicate key) keeps the stored files and reuses the row, so the
-	// only visible effect is a refreshed last_sync_at.
+	// only visible effect is a refreshed last_sync_at. Both reads answer the
+	// transaction's now(), the time the import dates what it states, which is
+	// the imported_at a new snapshot takes and so the time graph_edges' arm over
+	// the rows that name no node dates the same edges.
 	var snapshotID int64
+	var importedAt time.Time
 	err = tx.QueryRow(ctx, `
 		insert into architecture_snapshots (project_key, commit, files)
 		values ($1, $2, $3)
 		on conflict (project_key, commit) do nothing
-		returning id
-	`, source.Project, commit, encoded).Scan(&snapshotID)
+		returning id, now()
+	`, source.Project, commit, encoded).Scan(&snapshotID, &importedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx,
-			`select id from architecture_snapshots where project_key = $1 and commit = $2`,
-			source.Project, commit).Scan(&snapshotID)
+			`select id, now() from architecture_snapshots where project_key = $1 and commit = $2`,
+			source.Project, commit).Scan(&snapshotID, &importedAt)
 	}
 	if err != nil {
 		return model.ArchitectureSource{}, fmt.Errorf("record architecture snapshot: %w", err)
 	}
 
+	// The source's components as they stand, before the delete: the ones the import drops are
+	// stated gone, with every relation they held ended (stateComponents).
+	rows, err := tx.Query(ctx, `select id from components where project_key = $1 and source_id = $2 order by id`, source.Project, source.ID)
+	if err != nil {
+		return model.ArchitectureSource{}, fmt.Errorf("read the source's components: %w", err)
+	}
+	previous, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return model.ArchitectureSource{}, fmt.Errorf("read the source's components: %w", err)
+	}
+	marks, err := stateComponents(ctx, tx, source.Project, parsed, previous, importedAt)
+	if err != nil {
+		return model.ArchitectureSource{}, err
+	}
 	if _, err := tx.Exec(ctx, `delete from components where project_key = $1 and source_id = $2`, source.Project, source.ID); err != nil {
 		return model.ArchitectureSource{}, fmt.Errorf("retire previous components: %w", err)
 	}
 	// Both projections travel as one batch per table: the per-row INSERTs are unchanged, so
-	// a failure still names the component or edge that caused it.
+	// a failure still names the component or edge that caused it. Each row names the node the
+	// import stated of it, where it stated one (marks).
 	components := &pgx.Batch{}
 	for _, component := range parsed.Components {
 		var parent *string
@@ -677,10 +701,15 @@ func (i *Importer) project(
 		if paths == nil {
 			paths = []string{}
 		}
+		var nodeKind, nodeAddress *string
+		if marks[component.ID] {
+			kind, address := graphstore.KindComponent, graphstore.ComponentAddress(source.Project, component.ID)
+			nodeKind, nodeAddress = &kind, &address
+		}
 		components.Queue(`
-			insert into components (project_key, id, title, prose, parent, external, paths, snapshot_id, source_id)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		`, source.Project, component.ID, component.Title, component.Prose, parent, component.External, paths, snapshotID, source.ID)
+			insert into components (project_key, id, title, prose, parent, external, paths, snapshot_id, source_id, node_kind, node_address)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`, source.Project, component.ID, component.Title, component.Prose, parent, component.External, paths, snapshotID, source.ID, nodeKind, nodeAddress)
 	}
 	if err := execBatch(ctx, tx, components, func(index int) string {
 		return "project component " + parsed.Components[index].ID
@@ -691,11 +720,19 @@ func (i *Importer) project(
 	var edges [][2]string
 	for _, component := range parsed.Components {
 		for _, dependency := range component.DependsOn {
+			// A dependency names its component's node where the import stated its depends_on:
+			// the component's own row names that node and the far end is inside the address
+			// bound (stateComponents).
+			var nodeKind, nodeAddress *string
+			if marks[component.ID] && graphstore.AddressFits(graphstore.ComponentAddress(source.Project, dependency)) {
+				kind, address := graphstore.KindComponent, graphstore.ComponentAddress(source.Project, component.ID)
+				nodeKind, nodeAddress = &kind, &address
+			}
 			dependencies.Queue(`
-				insert into component_depends (project_key, from_id, to_id)
-				values ($1, $2, $3)
+				insert into component_depends (project_key, from_id, to_id, node_kind, node_address)
+				values ($1, $2, $3, $4, $5)
 				on conflict do nothing
-			`, source.Project, component.ID, dependency)
+			`, source.Project, component.ID, dependency, nodeKind, nodeAddress)
 			edges = append(edges, [2]string{component.ID, dependency})
 		}
 	}
@@ -744,6 +781,126 @@ func (i *Importer) project(
 	}
 	i.storeComponentTrees(ctx, source.Project, parsed)
 	return updated, nil
+}
+
+// stateComponents states in the store, in the import's transaction, what an import of parsed
+// makes of project's components (dispatch://INFRA-1253 R9), and answers, by component id, which
+// components the store now holds as the import projects them, whose rows name their node. Each
+// such component is its node (graphstore.ComponentNode), restated live; its part_of names its
+// parent component, or nothing for a component with none; and its depends_on names each component
+// it depends on. Each relation is stated as what moved against what the node holds now
+// (graphstore.SetChanges), so a parent the import moves retracts the one before it, a dependency
+// it drops is retracted, and a re-import of an unchanged model appends nothing. Each of previous,
+// the source's components before the import, that parsed no longer holds is stated gone, with
+// each relation it held retracted (retiredComponents). It reads graph_tuples to state only what
+// moved, as an issue's relations are read before they are written (api's stateIssueRelations),
+// and writes nothing it read into the rows: those are the model's.
+//
+// A component whose address, or whose parent's, is past the store's bound
+// (graphstore.MaxAddressBytes) is no node of the store: nothing is stated of it and its row names
+// no node, so graph_edges' arm over the rows that name none answers it, and so is a dependency on
+// such a component.
+//
+// It runs under the row locks of every source of the project (lockProjectSources), which every
+// writer of a component's node takes first - an import, a source's removal and the backfill - and
+// before the rows it replaces, so it is the import's one node write: the nodes in ascending (kind,
+// id) and every tuple after them, at the sentinel, the import appending its event only when the
+// source's state moved.
+func stateComponents(ctx context.Context, tx pgx.Tx, project string, parsed notes.Model, previous []string, at time.Time) (map[string]bool, error) {
+	marks := map[string]bool{}
+	addresses := make([]string, 0, len(parsed.Components)+len(previous))
+	for _, component := range parsed.Components {
+		address := graphstore.ComponentAddress(project, component.ID)
+		if !graphstore.AddressFits(address) ||
+			(component.Parent != "" && !graphstore.AddressFits(graphstore.ComponentAddress(project, component.Parent))) {
+			continue
+		}
+		marks[component.ID] = true
+		addresses = append(addresses, address)
+	}
+	var dropped []string
+	for _, id := range previous {
+		if !slices.ContainsFunc(parsed.Components, func(component notes.Component) bool { return component.ID == id }) {
+			dropped = append(dropped, id)
+			addresses = append(addresses, graphstore.ComponentAddress(project, id))
+		}
+	}
+	held, err := graphstore.ComponentRelations(ctx, tx, addresses)
+	if err != nil {
+		return nil, err
+	}
+	nodes, tuples := retiredComponents(project, dropped, held, SystemActor, at)
+	for _, component := range parsed.Components {
+		if !marks[component.ID] {
+			continue
+		}
+		address := graphstore.ComponentAddress(project, component.ID)
+		nodes = append(nodes, graphstore.ComponentNode(project, component.ID, SystemActor, at))
+		state := func(kind string) func(to string, asserted bool) graphstore.Tuple {
+			return func(to string, asserted bool) graphstore.Tuple {
+				return graphstore.ComponentRelation(graphstore.KindComponent, address, kind, to, asserted, SystemActor, at)
+			}
+		}
+		var parent []string
+		if component.Parent != "" {
+			parent = []string{graphstore.ComponentAddress(project, component.Parent)}
+		}
+		tuples = append(tuples, graphstore.SetChanges(held[address], graphstore.TuplePartOf, parent, state(graphstore.TuplePartOf))...)
+		dependsOn := make([]string, 0, len(component.DependsOn))
+		for _, dependency := range component.DependsOn {
+			if target := graphstore.ComponentAddress(project, dependency); graphstore.AddressFits(target) {
+				dependsOn = append(dependsOn, target)
+			}
+		}
+		tuples = append(tuples, graphstore.SetChanges(held[address], graphstore.TupleDependsOn, dependsOn, state(graphstore.TupleDependsOn))...)
+	}
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		return nil, fmt.Errorf("state the components of %s: %w", project, err)
+	}
+	return marks, nil
+}
+
+// retiredComponents is what the store states of each component of project ids that no source
+// projects any more: its node gone (graphstore.ComponentGone), and a retraction of every part_of
+// and depends_on its node holds now, held, signed by who and dated at. A component past the
+// store's bound is no node of it, and nothing is stated of it.
+func retiredComponents(project string, ids []string, held map[string][]graphstore.Tuple, who model.Actor, at time.Time) ([]graphstore.Node, []graphstore.Tuple) {
+	var nodes []graphstore.Node
+	var tuples []graphstore.Tuple
+	for _, id := range ids {
+		address := graphstore.ComponentAddress(project, id)
+		if !graphstore.AddressFits(address) {
+			continue
+		}
+		nodes = append(nodes, graphstore.ComponentGone(project, id, who, at))
+		for _, tuple := range held[address] {
+			tuples = append(tuples, graphstore.ComponentRelation(graphstore.KindComponent, address, tuple.Kind, tuple.ToID, false, who, at))
+		}
+	}
+	return nodes, tuples
+}
+
+// RetireComponents states gone, in tx, the node of each component of project ids, the components
+// of a source its removal is about to delete (api's deleteArchitectureSource, whose delete of the
+// source row takes them and their dependencies by the foreign keys' cascade), with every part_of
+// and depends_on each holds retracted, signed by who and dated at, at the sentinel
+// (retiredComponents). The caller holds the source's row, which every writer of a component's node
+// takes first, and deletes the rows after it, so the nodes are written before the rows that named
+// them go. It reads graph_tuples to retract only what each node holds.
+func RetireComponents(ctx context.Context, tx pgx.Tx, project string, ids []string, who model.Actor, at time.Time) error {
+	addresses := make([]string, len(ids))
+	for index, id := range ids {
+		addresses[index] = graphstore.ComponentAddress(project, id)
+	}
+	held, err := graphstore.ComponentRelations(ctx, tx, addresses)
+	if err != nil {
+		return err
+	}
+	nodes, tuples := retiredComponents(project, ids, held, who, at)
+	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+		return fmt.Errorf("state the removed components of %s gone: %w", project, err)
+	}
+	return nil
 }
 
 // storeComponentTrees stores the display tree of every component's prose, now that the import's

@@ -77,7 +77,7 @@ func TestMarkdownPastTheElementLimitIsRefusedBeforeItIsBuilt(t *testing.T) {
 			parse func(string, *WriteBudget) error
 		}{
 			{"document", func(markdown string, budget *WriteBudget) error {
-				_, err := parseForWrite(markdown, nil, true, budget)
+				_, err := parseForWrite(markdown, nil, true, "", budget)
 				return err
 			}},
 			{"fragment", func(markdown string, budget *WriteBudget) error {
@@ -358,14 +358,17 @@ func TestEveryNodeOfTheSchemaWeighsWhatItMakes(t *testing.T) {
 		"requirement":         {repeated(":::requirement{}\n:::\n\n"), repeated(":::requirement{}\nr\n:::\n\n")},
 		"plan_task":           {repeated(":::plan_task{}\n:::\n\n"), repeated(":::plan_task{}\nt\n:::\n\n")},
 		"check":               {repeated(":::check{}\n:::\n\n"), repeated(":::check{}\nc\n:::\n\n")},
+		"decision":            {repeated(":::decision{}\n:::\n\n"), repeated(":::decision{}\nd\n:::\n\n")},
+		"reading":             {repeated("::::decision{}\nd\n\n:::reading{}\nr\n:::\n::::\n\n")},
+		"criterion":           {repeated(":::criterion{}\n:::\n\n"), repeated(":::criterion{}\nc\n:::\n\n")},
 	}
 	oneADocument := map[string]bool{"doc": true, "frontmatter": true}
 	types := typedBlockNames()
-	for typeName := range active.nodes {
+	for typeName := range active.Load().nodes {
 		types = append(types, typeName)
 	}
 	for typeName := range oneADocument {
-		if !active.nodes[typeName] {
+		if !active.Load().nodes[typeName] {
 			t.Errorf("%s is no node type of the schema", typeName)
 		}
 	}

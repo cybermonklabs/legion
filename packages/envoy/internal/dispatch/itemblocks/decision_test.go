@@ -10,26 +10,26 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// decisionRefusal is the refusal a body is answered with for the decision block its block at
+// decisionRefusal is the refusal a body is answered with for the ask block its block at
 // position, of type blockType, holds: the message spelled out here, so the wording DecisionBlock
 // writes is read back against a text this test holds and not against the same format string.
 func decisionRefusal(field string, position int, blockType string) string {
-	return fmt.Sprintf("%s block %d (%s) holds a decision block, which nobody can answer where it stands: "+
-		"ask the question in the issue's own document, as a decision block there, or open an ask with "+
-		"`dispatch ask`; to show a decision block as an example, put it in a fenced code block",
+	return fmt.Sprintf("%s block %d (%s) holds an ask block, which nobody can answer where it stands: "+
+		"ask the question in the issue's own document, as an ask block there, or open an ask with "+
+		"`dispatch ask`; to show an ask block as an example, put it in a fenced code block",
 		field, position, blockType)
 }
 
-// theQuestion is the words a decision block holds: a question and two options.
+// theQuestion is the words an ask block holds: a question and two options.
 const theQuestion = "Which transport should we expose?\n\n- REST: the platform's own\n- gRPC: streaming"
 
-// theAsk is a decision block as a writer writes one: theQuestion inside an `ask` directive.
+// theAsk is an ask block as a writer writes one: theQuestion inside an `ask` directive.
 const theAsk = ":::ask{urgency=\"med\"}\n" + theQuestion + "\n:::"
 
-// A decision block is refused wherever it stands in the body, since the reader draws a card for an
+// An ask block is refused wherever it stands in the body, since the reader draws a card for an
 // `ask` node at any depth: at the top, inside a quote, inside a list item and inside a callout.
 // The refusal names the top-level block that holds it, counted as the bound's refusals count, and
-// that block's own type, which is "ask" only where the decision block stands at the top.
+// that block's own type, which is "ask" only where the ask block stands at the top.
 func TestCheckRefusesADecisionBlockWhereverItStands(t *testing.T) {
 	for _, test := range []struct {
 		name, body, blockType string
@@ -102,27 +102,27 @@ func TestCheckRefusesADecisionBlockWhereverItStands(t *testing.T) {
 // The refusal a reader is answered with, spelled out whole for the body the spec names: a callout
 // at the third block of a body whose field is "body".
 func TestTheDecisionBlockRefusalReadsAsWritten(t *testing.T) {
-	const want = "body block 3 (callout) holds a decision block, which nobody can answer where it stands: " +
-		"ask the question in the issue's own document, as a decision block there, or open an ask with " +
-		"`dispatch ask`; to show a decision block as an example, put it in a fenced code block"
+	const want = "body block 3 (callout) holds an ask block, which nobody can answer where it stands: " +
+		"ask the question in the issue's own document, as an ask block there, or open an ask with " +
+		"`dispatch ask`; to show an ask block as an example, put it in a fenced code block"
 	err := &DecisionBlock{Field: "body", Position: 3, Type: "callout"}
 	if err.Error() != want {
 		t.Fatalf("DecisionBlock.Error() = %q, want %q", err.Error(), want)
 	}
 	body := "Lead text.\n\nMore lead text.\n\n:::callout{kind=\"note\" title=\"Decide\"}\nA note.\n\n" + theAsk + "\n:::\n"
-	requireRefusal(t, "a callout holding a decision block at the third block", body, want)
+	requireRefusal(t, "a callout holding an ask block at the third block", body, want)
 }
 
-// A body holding the text of a decision block inside a fenced code block is stored: the fence is
+// A body holding the text of an ask block inside a fenced code block is stored: the fence is
 // how a writer shows the block as an example, and the reader opens no `ask` on a line of code. So
-// is a body the parser refuses that holds no decision block at all, such as a container directive
+// is a body the parser refuses that holds no ask block at all, such as a container directive
 // no block type claims. A refused parse stores nothing by itself: every refused body holding a
 // line the reader opens an `ask` container on is refused for it, whatever that ask holds
 // (decisionRefusalRows).
 func TestCheckStoresABodyTheReaderDrawsNoCardFor(t *testing.T) {
 	for _, test := range []struct{ name, body string }{
 		{
-			name: "a fenced code block holding a decision block's text",
+			name: "a fenced code block holding an ask block's text",
 			body: "Write it so:\n\n```\n" + theAsk + "\n```\n",
 		},
 		{
@@ -136,11 +136,11 @@ func TestCheckStoresABodyTheReaderDrawsNoCardFor(t *testing.T) {
 	}
 }
 
-// A body that holds a decision block and breaks a bound as well is refused for the bound, in the
-// bound's own words and under the bound's own code: the decision block is read after both bounds.
+// A body that holds an ask block and breaks a bound as well is refused for the bound, in the
+// bound's own words and under the bound's own code: the ask block is read after both bounds.
 func TestCheckRefusesABodyOverABoundForTheBound(t *testing.T) {
 	overTheBlock := theAsk + "\n\n" + strings.Repeat("x", contracts.DispatchBlockUnits+1)
-	err := requireRefusal(t, "a decision block beside a block one character over", overTheBlock,
+	err := requireRefusal(t, "an ask block beside a block one character over", overTheBlock,
 		"body block 2 (paragraph) is 1 characters over the 32000-character block limit (32001/32000)")
 	var capExceeded *CapExceeded
 	if !errors.As(err, &capExceeded) {
@@ -152,12 +152,12 @@ func TestCheckRefusesABodyOverABoundForTheBound(t *testing.T) {
 
 	// The parser weighs a block at three of the 65,536 elements it reads, so no body of more
 	// blocks than a body may hold parses at all: its blocks are the blank-line fallback's, where
-	// the one-line ask is one block. The decision block it holds is one the reader draws a card
+	// the one-line ask is one block. The ask block it holds is one the reader draws a card
 	// for, and the count is still what the body is refused for, since both bounds are answered
 	// before the card is looked for at all.
 	overTheCount := ":::ask{urgency=\"med\"}\nWhich transport should we expose?\n:::\n\n" +
 		paragraphBody(contracts.DispatchItemBlocks, 1)
-	err = requireRefusal(t, "a decision block beside one block too many", overTheCount,
+	err = requireRefusal(t, "an ask block beside one block too many", overTheCount,
 		"body is 1 blocks over the 32768-block limit (32769/32768)")
 	var countExceeded *CountExceeded
 	if !errors.As(err, &countExceeded) {
@@ -175,14 +175,14 @@ func benchmarkBody(inner string) string {
 		":::callout{kind=\"note\" title=\"Context\"}\n" + inner + "\n:::\n"
 }
 
-// BenchmarkCheck shows that Check parses the body once: over a body holding a decision block and
+// BenchmarkCheck shows that Check parses the body once: over a body holding an ask block and
 // over a clean body alike it costs about what the one parse beneath it costs, the parse each pair
 // measures beside it, rather than twice that, because Split and Check share the package's single
-// parse (split). The clean body carries the decision block's text as a question and a list, so
+// parse (split). The clean body carries the ask block's text as a question and a list, so
 // the two bodies give the parser the same words to read.
 func BenchmarkCheck(b *testing.B) {
 	for _, body := range []struct{ name, text string }{
-		{name: "a body holding a decision block", text: benchmarkBody(theAsk)},
+		{name: "a body holding an ask block", text: benchmarkBody(theAsk)},
 		{name: "a clean body", text: benchmarkBody(theQuestion)},
 	} {
 		b.Run(body.name+"/one parse", func(b *testing.B) {
@@ -199,7 +199,7 @@ func BenchmarkCheck(b *testing.B) {
 		})
 	}
 	if err := Check("body", benchmarkBody(theAsk)); err == nil {
-		b.Fatal("the body holding a decision block passed")
+		b.Fatal("the body holding an ask block passed")
 	}
 	if err := Check("body", benchmarkBody(theQuestion)); err != nil {
 		b.Fatalf("the clean body was refused: %v", err)

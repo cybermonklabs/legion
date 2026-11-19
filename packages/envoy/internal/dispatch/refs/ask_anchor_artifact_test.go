@@ -53,7 +53,7 @@ func TestAskNodeAnswersOverAnAnchorArtifactIDThatDoesNotCast(t *testing.T) {
 	canonical := insertAnchoredReferenceAsk(t, tx, "00000000-0000-4000-8000-0000000000a1", "CORE-1", specID, nil)
 	uncastable := insertAnchoredReferenceAsk(t, tx, "00000000-0000-4000-8000-0000000000a2", "CORE-1", "not-a-uuid", &blockID)
 
-	node, found, err := Node(ctx, tx, "ask", canonical, false)
+	node, found, err := Node(ctx, tx, model.Actor{}, "ask", canonical, false)
 	if err != nil || !found {
 		t.Fatalf("read the canonically anchored ask node: found=%t err=%v", found, err)
 	}
@@ -65,7 +65,7 @@ func TestAskNodeAnswersOverAnAnchorArtifactIDThatDoesNotCast(t *testing.T) {
 		t.Fatalf("canonically anchored ask parent version = %v, want the anchored version 1", node.ParentVersion)
 	}
 
-	node, found, err = Node(ctx, tx, "ask", uncastable, false)
+	node, found, err = Node(ctx, tx, model.Actor{}, "ask", uncastable, false)
 	if err != nil || !found {
 		t.Fatalf("read the ask whose anchor artifact_id does not cast: found=%t err=%v", found, err)
 	}

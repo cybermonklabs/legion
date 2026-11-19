@@ -159,14 +159,13 @@ The ordering, which this rule needs and does not change:
 
 The `Design gate steps` sentence of your `Legion addressing` line names the steps this deployment
 gates, in the order it gates them, each in backticks: ``Design gate steps: `spec`.``,
-``Design gate steps: `decisions`, `criteria`.``, or `Design gate steps: none.` A sub-architect on
+``Design gate steps: `criteria`.``, or `Design gate steps: none.` A sub-architect on
 a child issue has no such sentence and never runs the gate.
 
 Each step is one document of the root issue, and the daemon keeps one gate record for each step:
 
 | Step | The document it records |
 | --- | --- |
-| `decisions` | the issue's decisions document (`decisions.md`) |
 | `criteria` | its Verification document (`verification.md`) |
 | `spec` | its primary document |
 
@@ -185,7 +184,7 @@ your decomposition filed before step 4, since the gate's opening starts the root
 phase unless the root waits on another issue, an open child under it or a `blocked_by` link to an
 issue that is not `done`. One approval request covers the `criteria`
 and the `spec` step together (step 4), and each of them is registered on its own document
-(step 5); the `decisions` step is a request of its own.
+(step 5).
 
 1. Extend the primary document in place:
 
@@ -220,13 +219,6 @@ and the `spec` step together (step 4), and each of them is registered on its own
    is refused `NO_VERIFICATION_DOCUMENT`, and one whose Verification document has no settled
    version `NO_VERSION`.
 
-   The `decisions` step is a request of its own, since `--include-verification` is for the issue's
-   spec alone and any other document is refused `NOT_SPEC_DOCUMENT`:
-
-   ```bash
-   dispatch request-approval --issue <root issue> --artifact decisions.md --summary '<what the human is approving> Reviews: <gap result>, <claim result>; <what they do not show>.'
-   ```
-
    `--summary` says in one to three sentences what the human is approving and nothing else (no
    commentary and no open question), then one sentence with both reviews' results and what they do
    not show, for example `Reviews: no open gap, 14 of 14 claims verified; neither shows that the
@@ -238,7 +230,7 @@ and the `spec` step together (step 4), and each of them is registered on its own
    legion({
      op: "register_gate",
      issue: "<root issue>",
-     step: "<decisions|criteria|spec>", // the step this document is for
+     step: "<criteria|spec>", // the step this document is for
      artifactId: "<UUID>", // that step's document id, which the request printed
      version: <N>, // the version the human is asked to approve
    })
@@ -336,32 +328,29 @@ reason, and answer it in the spec if the latest version does not already.
 Each step's approval is pinned to the version of the document that step records: a new version of
 that document closes that step again, with no wake to say so; you know from your own edit, or
 from the `artifact.version` event on your issue. One step closing holds the tree's work whatever
-the other steps stand at. The exceptions are the version a human's own answer to a decision block
-writes when that answer is the whole change since the version they approved, and a version whose
-text is exactly that of the version they approved, with no decision block in it decided
-since, such as an accidental edit undone exactly: for either, Dispatch records an `approved`
-review in their name at the new version and emits `artifact.approved`, and the daemon reopens the
-gate and sends `design-approved`. Undo an accidental edit of an approved root spec exactly. When
-the spec then reads Approved at the new version, request nothing; when it does not (a block in
-it was decided since), request approval again with steps 3 to 5.
+the other steps stand at. The exceptions are a version whose text is exactly that of the version
+they approved, with no decision block in it decided since, such as an accidental edit undone
+exactly, and a version whose every change is one Dispatch carries an approval over (a reading, a
+server-owned attribute of a decision block, or the write of Dispatch's decisions step): for either,
+Dispatch records an `approved` review in their name at the new version and emits
+`artifact.approved`, and the daemon reopens the gate and sends `design-approved`. Undo an
+accidental edit of an approved root spec exactly. When the spec then reads Approved at the new
+version, request nothing; when it does not (a block in it was decided since), request approval
+again with steps 3 to 5.
 
 So edit an approved root spec only when its Summary, a requirement it marks, a check of its
 Verification document, the tree's scope or a settled decision changes. Such a change is a point
 the human has not agreed to: put the problem behind it to them as its own decision block, with
-its evidence, at the end of the section it changes, and add nothing else. If you edit the block before
-the human answers, the gate closes like any new version, but their answer still carries the approval
-to the version it writes. Once they have answered:
+its evidence, at the end of the section it changes, and add nothing else. That version closes the
+gate, and their answer writes no version and carries no approval. Once they have answered:
 
-- When the answer is the whole change, request nothing: the document's chip reads Approved at the
-  new version and the `design-approved` the daemon sent opens nothing new. Carry on; release no
-  child because of it.
 - When the answer changes the Summary, a requirement, a check or the tree's scope, rewrite that
-  text and repeat steps 3 to 5 on the new version, with a one-sentence `--summary` naming what
+  text.
+- Then repeat steps 3 to 5 on the newest version, with a one-sentence `--summary` naming what
   changed since the earlier approval, then the reviews' sentence (the card shows `Approved at
-  version N on <date> by <who>.`, and its `Show diff` control carries the detail). The rewrite
-  closes the gate until they approve. Release no further child until the `design-approved` after
-  it; work already in flight, including what the daemon started at the answer, continues through
-  its merge.
+  version N on <date> by <who>.`, and its `Show diff` control carries the detail). The gate stays
+  closed until they approve. Release no further child until the `design-approved` after it; work
+  already in flight continues through its merge.
 
 A settled decision is the human's. A plan that would overturn one goes back to the planner with the
 decision kept, unless the planner brings evidence the human did not weigh that would change it

@@ -35,12 +35,15 @@ import {
 import { reachable, routeOf, unreachable } from "./reachability";
 
 import type {
+  Actor,
   ArtifactVersionContent,
   ArtifactVersionText,
   AuthenticatedUser,
   CreateArtifactInput,
+  Decision,
   DispatchEvent,
   DispatchUser,
+  DisplayTree,
   DuplicateCandidate,
   IDCandidate,
   IssueAskThreadRow,
@@ -727,6 +730,87 @@ function watchBody(response: Response, arrived: () => void): Response {
   });
 }
 
+/**
+ * One node of the issue's tree read (`getIssueTree`). The route is the model's, which the
+ * OpenAPI document does not hold yet, so its answer is named here from the prose of the model's
+ * contract, by the prose's own names where it gives one; this and the two types below move onto
+ * the generated contract once the model pushes it.
+ */
+export interface IssueTreeNode {
+  /** The node's own id: a block's id, an ask's, a comment's, a message's, a child issue's key. */
+  id: string;
+  /** The node's kind: a block type of the block schema, or `ask`, `comment`, `message`, `issue`. */
+  supertag: string;
+  /** The parent's id: the nearest ancestor the reader may see, the issue at worst; null for the
+   *  issue itself. */
+  parent: string | null;
+  /** The node's place among its siblings, compared byte by byte; null for a sibling that has
+   *  none (an ask, a comment, a message, a lens, a risk), which comes after the ranked ones. */
+  rank: string | null;
+  /** Every author of the node's first version, whoever made it first ahead of the rest; an empty
+   *  list where none is recorded. A row that draws one name draws the first. */
+  author: Actor[];
+  state: "live" | "proposed" | "overtaken" | "settled";
+  visibility: "project" | "author";
+  /** When the node was made (RFC 3339), kept through a move. */
+  made_at: string;
+  attributes: Record<string, unknown>;
+  text: string;
+  /** The server's reading of `text`, sent because this client asks every read for its display
+   *  trees (`Dispatch-Trees`, in `answered`). */
+  text_tree?: DisplayTree;
+  /** On a typed block of a role document: that document's id and slug, and the block's place in
+   *  it as the document's blocks read places it. */
+  document?: { artifact_id: string; slug: string; position: number };
+  /** The key of the issue the node belongs to, where that is not the issue read. */
+  issue?: string;
+  /** On a view's node: whether the view's query took it, or it is there as context. */
+  mark?: "query" | "context";
+  /** On a view's node: its parent's id, kind and first line, so a row names that parent with no
+   *  read of its own. */
+  parent_line?: { id: string; supertag: string; line: string };
+  /** On a decision node: what the decisions read answers for that decision
+   *  (`model.Decision`), by the same names and values: `kept` is the Keep that stands, or null,
+   *  and each link names the node it reaches. Who decided is no member: it is a `decided_by`
+   *  tuple, with the person node it names as context. */
+  text_sha256?: Decision["text_sha256"];
+  kind?: Decision["kind"];
+  unsure?: Decision["unsure"];
+  replaced?: Decision["replaced"];
+  waiting_review?: Decision["waiting_review"];
+  changed_version?: Decision["changed_version"];
+  changed_at?: Decision["changed_at"];
+  kept?: Decision["kept"];
+  asks?: Decision["asks"];
+  links?: Decision["links"];
+}
+
+/** One tuple of the tree read (`serves`, `shaped`, `needs` and the rest), between two nodes the
+ *  answer holds. */
+export interface IssueTreeTuple {
+  kind: string;
+  from: string;
+  to: string;
+}
+
+/** One page of the tree read (`getIssueTree`), or of one of its views. */
+export interface IssueTreeAnswer {
+  /** The page's nodes in the walk's order: a parent before its children, siblings by rank. */
+  nodes: IssueTreeNode[];
+  /** Every tuple whose near end is one of the page's nodes. */
+  tuples: IssueTreeTuple[];
+  /** Whether the issue's documents have become nodes of the issue's own tree. */
+  converted: boolean;
+  /** The id of the issue's own tree artifact; null while the issue has not converted. */
+  tree: string | null;
+  /** The ancestor issue whose requirements this issue is a view of; null where it holds its own. */
+  view_of: string | null;
+  /** While `converted` is false, the ids of the issue's spec, plan and Verification documents. */
+  documents?: { spec?: string; plan?: string; verification?: string };
+  /** What the next page's read sends as its `cursor`; null on the last page. */
+  cursor: string | null;
+}
+
 export class DispatchApiClient {
   /** `upload` is the transport of a multipart form; left out, it goes by `fetchImpl`, which
    *  reports no upload progress, so an upload's deadline then runs from its send. `wait` is how
@@ -1191,6 +1275,20 @@ export class DispatchApiClient {
     return this.json<DispatchEvent[]>(routeUrl("/api/v1/issues/{key}/events", { key }, query));
   }
 
+  /** `GET /api/v1/issues/{key}/tree`: one page of the issue's tree, or of one of its views
+   *  (`view`), from the node `cursor` names on (`IssueTreeAnswer.cursor`). The route is the
+   *  model's, which the document does not hold yet, so its answer's shape is named here
+   *  (`IssueTreeAnswer`) and it goes through `json` with `routeUrl`, as the events read does;
+   *  both move onto the generated contract once the document holds the route. A caller passes the
+   *  `signal` of the read it is still interested in, so a read given up ends its page in flight. */
+  async getIssueTree(
+    key: string,
+    query: { cursor?: string; view?: "spec" | "verification" | "plan" } = {},
+    init: { signal?: AbortSignal } = {}
+  ): Promise<IssueTreeAnswer> {
+    return this.json<IssueTreeAnswer>(routeUrl("/api/v1/issues/{key}/tree", { key }, query), init);
+  }
+
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
    *  document order, each with the commits and branches its results are compared with, whether a
    *  pass of it stands, and every result recorded against it from any issue, newest first, each
@@ -1307,6 +1405,12 @@ export class DispatchApiClient {
    *  one page at a time. Needs the `person` scope. */
   listMyAnswers(page: Query<"/api/v1/me/answers", "get">) {
     return this.read("/api/v1/me/answers", {}, page);
+  }
+
+  /** `GET /api/v1/people/{login}/nodes`: one person's page — what they wrote and what reached
+   *  them, newest first, one page at a time. Needs the `person` scope. */
+  listPersonNodes(login: string, page: Query<"/api/v1/people/{login}/nodes", "get">) {
+    return this.read("/api/v1/people/{login}/nodes", { login }, page);
   }
 
   /** `GET /api/v1/me/replies`: the threads the signed-in person is reading, newest write first.
@@ -1543,13 +1647,19 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/blocks", { id });
   }
 
-  /** An issue's decision records: its decisions.md, the open questions its spec holds, and each
-   *  decision with the spec blocks it shaped. */
+  /** The block schema this Dispatch installed, and beside it the lens catalogue (`lens_kinds`):
+   *  each kind by id, with its address, its words and the standard of its first source. */
+  getBlockSchema() {
+    return this.read("/api/v1/schema/blocks", {});
+  }
+
+  /** An issue's decision records: its decision nodes and asks (`entries`), the open questions
+   *  its spec holds, and each decision with the spec nodes it shaped. */
   getIssueDecisions(key: string) {
     return this.read("/api/v1/issues/{key}/decisions", { key });
   }
 
-  /** Record that the caller agrees with the decision that heading block opens, as the text they
+  /** Record that the caller agrees with the decision at that block, as the text they
    *  read: `textSha256` is the decision's own `text_sha256`, and a decision that changed since
    *  is `409 DECISION_CHANGED`. */
   keepDecision(id: string, blockId: string, textSha256: string, bounds: WriteBounds) {
@@ -1669,6 +1779,12 @@ export class DispatchApiClient {
    *  which a document's read otherwise leaves out. */
   getReferences(reference: string, options: { kind?: string } = {}) {
     return this.read("/api/v1/references", {}, { kind: options.kind, to: reference });
+  }
+
+  /** The lenses invoked on the node `on` names, by its `dispatch://` address, and each chain of
+   *  triggered lenses they stand in; a node that is gone or hidden is `404 NOT_FOUND`. */
+  getLenses(on: string) {
+    return this.read("/api/v1/lenses", {}, { on });
   }
 
   /** The question map of the document one reference source's text belongs to: every question

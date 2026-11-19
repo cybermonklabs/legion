@@ -100,6 +100,9 @@ export interface KeptWrite {
    *  `load` hands back: the release before this one wrote no such field, and `load` is the one
    *  place that converts a missing one (`KeptEntry`), so nowhere else is absence a case. */
   readonly carried: WriteMethod | null;
+  /** The issue the write changes (`WriteBase.issue`), or `null` for none. An entry written before
+   *  the field existed holds none, and a reload names the issue of its request's path instead. */
+  readonly issue?: string | null;
   readonly detail: unknown;
 }
 
@@ -201,6 +204,7 @@ type KeptEntry = Omit<KeptWrite, "carried"> & {
 const keptEntryShape = shape.record({
   carried: shape.optional(shape.nullable(shape.oneOf(...WRITE_METHODS))),
   detail: shape.unknown,
+  issue: shape.optional(shape.nullable(shape.string)),
   key: shape.string,
   kind: shape.string,
   label: shape.string,

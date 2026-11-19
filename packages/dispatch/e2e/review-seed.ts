@@ -27,10 +27,16 @@ import { sql } from "./psql";
 import type { ReviewSeed } from "./review-routes";
 import { seedWorkspace, workspaceSessions } from "./workspace";
 
-/** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
- *  and the Spec tab draws beside the block it shaped. */
+/** The decision a `decision` block of the issue records, which the Decisions tab lists under the
+ *  reader's review and the Spec tab draws beside the block it shaped. */
 const DECISION = "Seed one corpus for both review layers";
 const REASON = "Chosen so a scan and a shot read the same page.";
+
+/** The person `/people/:login` is opened on: the login `seedWorkspace()` makes every human
+ *  write of this corpus as (`e2e/workspace.ts`'s `alice`, which is also `e2e/api.ts`'s default
+ *  author), and the login both layers sign in as (`withAlice`, `e2e/users.ts`). Her page is
+ *  therefore the comments she wrote here, drawn as rows rather than as the empty state. */
+const PERSON = "alice";
 
 /** A `serves` pointer is refused unless it names a `requirement` block that exists, and
  *  `seedWorkspace`'s spec carries none. Rather than edit `e2e/workspace.ts`, whose spec every
@@ -157,9 +163,12 @@ Each page is read once it is drawn.
 
   const specId = (await getIssue(issue)).primary_artifact_id ?? "";
   const shaped = await blockId(specId, "One command, a seeded corpus, a signed-in browser.");
+  // The decision's words cite the block it shaped as well as its `shaped` attribute tying them:
+  // a decision card draws its words, so the card beside the spec draws that block's own words,
+  // which `e2e/review-routes.ts`'s `issue-spec` row waits on to know the reference graph answered.
   await createIssueArtifact(issue, {
-    content: `## ${DECISION}\n\n${REASON} Shapes dispatch://${issue}/spec#b-${shaped}.\n`,
-    name: "decisions.md",
+    content: `:::decision{#d1 shaped="dispatch://${issue}/spec#b-${shaped}"}\n### ${DECISION}\n\n${REASON} Shapes dispatch://${issue}/spec#b-${shaped}.\n:::\n`,
+    name: "choices.md",
   });
 
   // The priority `/priorities` lists and `/priorities/:id` opens, and the work under it. The
@@ -187,6 +196,7 @@ Each page is read once it is drawn.
     // The machine of the first seeded session, read from the registry this seed wrote rather
     // than named again here, so a rename in e2e/workspace.ts moves this page's URL with it.
     machine: firstMachine(),
+    person: PERSON,
     pipelineAt: PIPELINE_AT,
     // The id the create answered, which is this title written as a slug: read back rather than
     // spelled again here, so the rule that derives it stays the server's.

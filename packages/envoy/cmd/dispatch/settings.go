@@ -206,6 +206,8 @@ var settings = []setting{
 		Description: "Set to `1` so the server builds no embedder whatever `DISPATCH_EMBEDDER` and the AWS SDK's own variables would have built: meaning search answers keyword-only and says so, and the embedding queue does nothing, for an end-to-end test process whose AWS variables address a file store rather than a model service. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_RECONCILE_AT_START", Required: "no",
 		Description: "Set to `1` so a test process runs the delivery reconcile's first pass as it starts, rather than at a random moment within its first 5 minutes, for an end-to-end test that must see a pass inside its window. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_HOLD_DECISIONS_STEP", Required: "no",
+		Description: "Set to `1` so a test process runs no phase of the decisions step - the backfill of the asks and ask followers the release before wrote, and the catch-up of what a process of another build writes - at boot or on its tick, so a test driver's own command (`envoy-dispatch backfill-graph-store`) makes the first move. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", Required: "no",
 		Description: "Set to `1` so a test process runs the architecture import's first pass as it starts, rather than at a random moment within its first 5 minutes, for an end-to-end test that must see a pass inside its window. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_CI_RECONCILE_INTERVAL", Default: "`5m`", Required: "no",

@@ -180,7 +180,9 @@ func typedDefinitionRefusal(definition *extensionast.Footnote) error {
 // refuses, or whose type or attributes the schema does not declare, and otherwise keeps its
 // attributes' values, defaults included, on the directive. A type, an attribute or an enum value
 // the manifest does not name is ErrUnknownElement as well, as the reader of a stored tree refuses
-// it: a stored version's markdown is a rendering, and a newer build's names what it knows.
+// it: a stored version's markdown is a rendering, and a newer build's names what it knows. An
+// attribute the markdown never carries (BlockAttributeSchema.InMarkdown) is dropped, whatever it
+// says: no rendering writes one, so its value is the writer's claim and never the server's.
 func typedDirectiveRefusal(directive *typedDirective) error {
 	if !directive.Closed && directive.Parent().Kind() == ast.KindDocument {
 		return fmt.Errorf("%w: typed block %q is unclosed at document level", ErrSchema, directive.Name)
@@ -201,7 +203,11 @@ func typedDirectiveRefusal(directive *typedDirective) error {
 			values[name] = raw
 			continue
 		}
-		value, err := parseTypedAttributeValue(typ.Attributes.Get(name), raw)
+		definition := typ.Attributes.Get(name)
+		if !definition.InMarkdown() {
+			continue
+		}
+		value, err := parseTypedAttributeValue(name, definition, raw)
 		if err != nil {
 			return fmt.Errorf("%w: typed block %q attribute %q: %w", ErrSchema, directive.Name, name, err)
 		}

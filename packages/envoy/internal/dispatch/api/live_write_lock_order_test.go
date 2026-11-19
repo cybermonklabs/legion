@@ -273,7 +273,7 @@ func (d *engagingDocs) ApplyOps(ctx context.Context, artifactID string, ops []mo
 	return d.API.ApplyOps(ctx, artifactID, ops, actor, precondition)
 }
 
-func (d *engagingDocs) MarkQuote(ctx context.Context, artifactID string, mark docs.MarkSpec, quote string, occurrence *int) (docs.Anchored, error) {
+func (d *engagingDocs) MarkQuote(ctx context.Context, artifactID string, mark docs.MarkSpec, quote string, scope *docs.QuoteScope) (docs.Anchored, error) {
 	d.engage()
-	return d.API.MarkQuote(ctx, artifactID, mark, quote, occurrence)
+	return d.API.MarkQuote(ctx, artifactID, mark, quote, scope)
 }

@@ -95,6 +95,14 @@ export const issueQuery = (key: string | undefined) =>
       olderIssue(next, cached) ? cached : replaceEqualDeep(cached, next),
   });
 
+/** The issue page's tree read's key (`GET /api/v1/issues/{key}/tree`), each view of the tree
+ *  under it (`["issue-tree", key, view]`). It is not under `["issue", key]`, so a write that
+ *  refreshes the issue's key by prefix does not reach it; every event of the issue names it
+ *  (`event-refresh.ts`). */
+export function issueTreeKey(key: string): readonly ["issue-tree", string] {
+  return ["issue-tree", key];
+}
+
 /** What each requirement of the issue's spec lacks (`GET /api/v1/issues/{key}/coverage`), which
  *  the Spec tab draws beside the requirement. It hangs under the issue's own key for the
  *  reader's sake, not for its invalidation: every issue target in `event-refresh` is `exact`,
@@ -548,6 +556,19 @@ export const deliverySettingsQuery = () =>
     queryKey: ["delivery-settings"],
     queryFn: () => api.getDeliverySettings(),
   });
+
+/** Where the next page of an offset-paged list starts, for an infinite query's
+ *  `getNextPageParam`: after the rows this page answered, and nowhere once those reach the
+ *  total the answer carries. `GET /api/v1/me/answers` and `GET /api/v1/people/{login}/nodes`
+ *  both answer that shape (api.myAnswersQuery), so both pages read their next page from here. */
+export const nextOffsetPage = (last: {
+  offset: number;
+  rows?: readonly unknown[] | null;
+  total: number;
+}): number | undefined => {
+  const read = last.offset + (last.rows ?? []).length;
+  return read < last.total ? read : undefined;
+};
 
 /** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
  *  project is its own entry: the Settings page's Legion section reads one entry per project

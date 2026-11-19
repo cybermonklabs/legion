@@ -1,3 +1,12 @@
+//go:build !race
+
+// This file measures the heap a document read holds, which the race build must not compile: the
+// detector's shadow memory and instrumented allocations change what the Go heap holds, so the
+// measurement says nothing about the read (upload_memory_test.go's rule). The envoy-go job runs
+// it without the detector. Measured: the ask-block shape's read holds 3,780,400 B in the plain
+// build, and two race runs in CI of trees whose plain builds hold that same figure read
+// 3,900,384 B and 3,990,560 B, which turned a ratio of 1.00 into 0.97 and 0.95.
+
 package docs
 
 import (
@@ -14,7 +23,8 @@ import (
 // it is within a stated factor of the heap the read holds: a table whose header cells are long,
 // which every cell's position points into; a wide table, whose row's cells every cell's position
 // shares; a table of many rows, whose block lists every block it holds; a deep document, whose
-// every block's path repeats the blocks above it; and prose, a block a line. The weight may fall
+// every block's path repeats the blocks above it; prose, a block a line; and a document of ask
+// blocks, whose read keeps the tree it was rendered from (documentRead.tree). The weight may fall
 // short of the heap only by the allocator's rounding, which it does not model: an object past 32
 // KiB takes whole 8 KiB pages (minWeightToHeap). It counts a string at each part of the read that
 // holds it, a part several share once, and a map's slots at the load the map holds just after it
@@ -28,6 +38,7 @@ func TestADocumentReadWeighsAboutTheHeapItHolds(t *testing.T) {
 		{"a table of many rows", manyRowTable()},
 		{"a deep document", strings.Repeat("> ", 90) + "deep\n"},
 		{"prose", prose()},
+		{"ask blocks", askBlocks()},
 	} {
 		t.Run(shape.name, func(t *testing.T) {
 			read, held := heldByDocumentRead(t, shape.markdown)
@@ -74,7 +85,7 @@ func buildTestDocumentRead(t *testing.T, markdown string) *documentRead {
 	if err := crdt.ApplyUpdateV1(doc, state, nil); err != nil {
 		t.Fatalf("decode the stored state: %v", err)
 	}
-	fold, err := foldLoaded("artifact", LoadedDocument{Doc: doc, Stamp: DocumentStamp{Version: 1, Row: "1"}})
+	fold, err := foldLoaded("artifact", fragmentName, LoadedDocument{Doc: doc, Stamp: DocumentStamp{Version: 1, Row: "1"}})
 	if fold.treeErr != nil {
 		t.Fatalf("read the tree: %v", fold.treeErr)
 	}
@@ -105,6 +116,15 @@ func prose() string {
 	var b strings.Builder
 	for index := range 1_000 {
 		fmt.Fprintf(&b, "## Heading %d\n\nA paragraph of prose under heading %d.\n\n", index, index)
+	}
+	return b.String()
+}
+
+// askBlocks is five hundred ask blocks, each a question and two options.
+func askBlocks() string {
+	var b strings.Builder
+	for index := range 500 {
+		fmt.Fprintf(&b, ":::ask{#ask-%d urgency=\"med\" multiple=\"false\"}\nWhich way does part %d go?\n\n- East: The quiet one.\n- West: The busy one.\n:::\n\n", index, index)
 	}
 	return b.String()
 }

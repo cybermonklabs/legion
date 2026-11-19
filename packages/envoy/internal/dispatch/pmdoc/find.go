@@ -198,6 +198,50 @@ func (f *QuoteFinder) Find(quote string, occurrence, near *int) (Range, error) {
 	return f.choose(quote, matches, occurrence, near)
 }
 
+// QuoteBlockError is a quote asked for inside one block (QuoteFinder.FindInBlock) where the
+// document holds no block of that id (Held false), or the block it holds matches the quote nowhere
+// (Held true). It is a miss of the quote, so it answers ErrTargetNotFound too.
+type QuoteBlockError struct {
+	BlockID string
+	Held    bool
+}
+
+func (e *QuoteBlockError) Error() string {
+	if !e.Held {
+		return fmt.Sprintf("%s: the document holds no block %q", ErrTargetNotFound, e.BlockID)
+	}
+	return fmt.Sprintf("%s: block %q does not hold the quote", ErrTargetNotFound, e.BlockID)
+}
+
+func (e *QuoteBlockError) Unwrap() error { return ErrTargetNotFound }
+
+// FindInBlock is Find over the matches of quote that lie inside the block carrying blockID alone,
+// filtered to that block's range before it chooses among them: occurrence counts those matches in
+// document order, and with no occurrence the one match inside the block is taken however many the
+// rest of the document holds, so text written above the block moves nothing. A document with no
+// block of that id, or whose block matches the quote nowhere, is a QuoteBlockError; an occurrence
+// past the block's matches is Find's miss, counting the block's matches.
+func (f *QuoteFinder) FindInBlock(quote, blockID string, occurrence *int) (Range, error) {
+	matches, err := f.matches(quote)
+	if err != nil {
+		return Range{}, err
+	}
+	_, block, held := findBlock(f.doc, blockID)
+	if !held {
+		return Range{}, &QuoteBlockError{BlockID: blockID}
+	}
+	inside := matches[:0]
+	for _, match := range matches {
+		if match.From >= block.From && match.To <= block.To {
+			inside = append(inside, match)
+		}
+	}
+	if len(inside) == 0 {
+		return Range{}, &QuoteBlockError{BlockID: blockID, Held: true}
+	}
+	return f.choose(quote, inside, occurrence, nil)
+}
+
 // FindListItem answers a quote that opens with a list item's marker (ParseListItemQuote) by the
 // items it selects (listItemQuoteMatches), choosing among them as Find chooses among a quote's
 // matches; a quote that selects no item is Find's miss. Only a document edit asks it, after Find
@@ -1322,7 +1366,7 @@ func (w *MarkWriter) Mark(txn *crdt.Transaction, r Range, mark Mark) error {
 	if txn == nil || w.frag == nil || r.From >= r.To {
 		return fmt.Errorf("%w: invalid mark range", ErrSchema)
 	}
-	if !active.marks[mark.Type] {
+	if !active.Load().marks[mark.Type] {
 		return fmt.Errorf("%w: mark %q", ErrSchema, mark.Type)
 	}
 	if err := attrNestingError("mark", mark.Type, mark.Attrs, maxMarkAttrNesting); err != nil {
@@ -1518,7 +1562,7 @@ func Unmark(txn *crdt.Transaction, frag *crdt.YXmlFragment, markType, id string)
 	if txn == nil || frag == nil {
 		return fmt.Errorf("%w: Unmark requires transaction and fragment", ErrSchema)
 	}
-	if !active.marks[markType] {
+	if !active.Load().marks[markType] {
 		return fmt.Errorf("%w: mark %q", ErrSchema, markType)
 	}
 

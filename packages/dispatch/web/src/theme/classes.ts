@@ -891,6 +891,7 @@ export const pageKindBullet = {
   context: "bg-page-hair",
   decision: "bg-page-decision",
   issue: "bg-page-issue",
+  lens: "bg-page-lens",
   person: "bg-page-person",
   question: "bg-page-question",
   statement: "bg-page-statement",
@@ -903,6 +904,7 @@ export const pageKindTag = {
   context: "text-page-quiet",
   decision: "text-page-decision",
   issue: "text-page-issue",
+  lens: "text-page-lens",
   person: "text-page-ink",
   question: "text-page-question",
   statement: "text-page-statement",
@@ -932,8 +934,8 @@ export const pageStateText = {
  * kind's colour, filled while pressed (`.ck`), and on a phone they are drawn only while the
  * caret is in the box. Every word in it says what it is, so the colours repeat what is written
  * (R6). A phone here is a window 760 px wide or narrower, the prototype's breakpoint; Tailwind
- * builds `max-[761px]:` as a width under 761 px, so it holds 760 px (decision 72 of
- * dispatch://INFRA-1196/artifact/part-decisions-md).
+ * builds `max-[761px]:` as a width under 761 px, so it holds 760 px, as the issue page's design
+ * decided.
  */
 export const pageComposer = {
   answering:
@@ -998,6 +1000,8 @@ for (const ground of ["page-paper", "page-pane"] as const) {
 }
 registerText("page-paper text on page-ink", pageColor("page-paper"), pageColor("page-ink"));
 registerText("page-ink text on page-mark", pageColor("page-ink"), pageColor("page-mark"));
+// A check's command in a node's body: the muted grey on the mark grey (`NodeFacts.tsx`).
+registerText("page-muted text on page-mark", pageColor("page-muted"), pageColor("page-mark"));
 // A row's twisty is a control's shape on the marked row's ground (WCAG 1.4.11).
 registerText("page-quiet twisty on page-mark", pageColor("page-quiet"), pageColor("page-mark"), 3);
 // Each kind's colour as the words of its tag on the paper, and on the tint drawn behind it.

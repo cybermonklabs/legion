@@ -121,7 +121,7 @@ describe("formatZodIssues", () => {
       })
     ).toEqual([
       'unknown field "replace" in --ops-json[0]; allowed: op, find, with, occurrence, markdown, ' +
-        "after, before, block, index, type, attributes",
+        "after, before, into, block, index, type, attributes",
     ]);
   });
 

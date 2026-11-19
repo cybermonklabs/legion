@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -50,14 +51,21 @@ type Rebuild struct {
 // payload, but StoredExcerpts hides it until the row has a current excerpt_version.
 //
 // A document's blocks and the mentions they hold are cut from its tree too, so the rebuild marks
-// every document owed a block index (document_block_versions.version null), which the block-index
-// reconciliation (docs.Service.RunBlockIndexReconciliation) indexes. It marks every comment and
-// message, direct messages included, and every ask owed a block index of its own blocks too
-// (owed_at, a missing state row inserted owed), and owed its embedding windows with it
-// (windows_owed_at, ItemsOwedWindows), so the same reconciliation re-reads each item's blocks,
-// an ask's parts included, and the mentions each holds with this build's parser and grammar,
-// and writes the windows those blocks stand in. It leaves block_grammar_owed alone: it has
-// just re-read every comment, ask and issue message with this build's grammar itself.
+// every document owed a block index, which the block-index reconciliation
+// (docs.Service.RunBlockIndexReconciliation) indexes. It sets both marks such a debt of this build
+// carries, as docs' oweDocumentIndex does for one document: document_block_versions.version null,
+// which every release drains, and store_owed_at, this build's own (migration 20261116221539),
+// which the release before this one neither reads nor clears. A pod of that release may drain the
+// null version first and write each document's new rows with no node, and the second mark brings
+// this build's pass to the document after it (IndexBlocks). A mark a document already holds keeps
+// its time.
+//
+// It marks every comment and message, direct messages included, and every ask owed a block index
+// of its own blocks too (owed_at, a missing state row inserted owed), and owed its embedding
+// windows with it (windows_owed_at, ItemsOwedWindows), so the same reconciliation re-reads each
+// item's blocks, an ask's parts included, and the mentions each holds with this build's parser and
+// grammar, and writes the windows those blocks stand in. It leaves block_grammar_owed alone: it
+// has just re-read every comment, ask and issue message with this build's grammar itself.
 //
 // It clears the re-index queue (refs_grammar_owed) for every source it re-indexes: each source's
 // own row goes in that source's transaction (replaceRefs), and the `scope` rows, which owe a
@@ -118,8 +126,9 @@ func RebuildAll(ctx context.Context, pool Pool, serverURL string) (Rebuild, erro
 	}
 	report.Orphans = int(orphans.RowsAffected())
 	owed, err := pool.Exec(ctx, `
-		insert into document_block_versions (artifact_id) select id from artifacts where kind = 'doc'
-		on conflict (artifact_id) do update set version = null
+		insert into document_block_versions (artifact_id, store_owed_at) select id, now() from artifacts where kind = 'doc'
+		on conflict (artifact_id) do update set version = null,
+			store_owed_at = coalesce(document_block_versions.store_owed_at, excluded.store_owed_at)
 	`)
 	if err != nil {
 		return report, fmt.Errorf("mark every document owed a block index: %w", err)
@@ -169,12 +178,21 @@ func loadSourceIDs(ctx context.Context, pool Pool, query string) ([]string, erro
 // read, losing the edit's own index until something re-indexes that source (INFRA-3285). The
 // lock is taken before the read and the read is a statement after it, so a write committed while
 // the rebuild waited is the text it indexes; it is an advisory lock, so it assigns no transaction
-// id, and the edges are planned under it and written last as one batch (replaceRefs). The
+// id, and the edges are planned under it and written last as one batch (PlanReplace,
+// Replacement.Queue). The
 // re-index paths beside this one take the same lock through the same read, for the same reason
 // (ReindexOwed and ReindexScopeSource below). The lock is one owner at a time, held for the
 // length of that source's own transaction, so a rebuild still never holds every owner: making the
 // rebuild one transaction instead would order it against every writer at once and hold every
 // owner for the length of the pass, which is minutes on a large database.
+//
+// A document's reconcile states the edges it moves in the node and tuple store in the same
+// transaction, right after the batch that writes its refs rows (Replacement.ArtifactMentions): a
+// mentions tuple to each target it inserts and a retraction to each it deletes, dated at its rows'
+// own created_at, the transaction's now(), and signed by the first author of the document's newest
+// version (DocumentMentioning). The rebuild appends no event, so each is appended at the sentinel
+// and an assertion keeps its row's source_seq, none, as its legacy_source_seq (graphstore.Caused
+// with NoEvent).
 func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL string) (bool, error) {
 	read, err := sourceRead(fromKind, fromID)
 	if err != nil {
@@ -191,8 +209,30 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 		return false, err
 	}
 	located := NewReader(ctx, tx, fromKind, fromID, serverURL).Mentions(body)
-	if _, err := replaceRefs(ctx, tx, fromKind, fromID, text.Refs(located), nil); err != nil {
+	replacement, err := PlanReplace(ctx, tx, fromKind, fromID, text.Refs(located), nil)
+	if err != nil {
 		return false, err
+	}
+	var mentions []graphstore.UncausedTuple
+	if fromKind == graphstore.KindArtifact {
+		record, held, err := DocumentMentioning(ctx, tx, fromID)
+		if err != nil {
+			return false, err
+		}
+		if held {
+			if mentions, err = replacement.ArtifactMentions(ctx, tx, record); err != nil {
+				return false, err
+			}
+		}
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		replacement.Queue(b)
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	if err := graphstore.Caused(ctx, tx, graphstore.Uncaused{Tuples: mentions}, graphstore.NoEvent); err != nil {
+		return false, fmt.Errorf("state the references of document %s: %w", fromID, err)
 	}
 	return true, tx.Commit(ctx)
 }

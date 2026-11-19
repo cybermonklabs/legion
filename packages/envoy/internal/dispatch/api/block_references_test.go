@@ -5,11 +5,13 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -85,12 +87,15 @@ type indexedBlock struct {
 	ChangedVersion int
 }
 
-// readIndexedBlocks is the document's block nodes by block id, and each one's changed_at.
+// readIndexedBlocks is the document's block nodes by block id, and each one's changed_at, read
+// where the block index keeps them, in the room the document is edited in
+// (refs.DocumentRoomBlocksSQL): a block's node is the ref_key of the artifact keying its row, '#'
+// and its id.
 func readIndexedBlocks(t *testing.T, database *store.Store, artifactID string) (map[string]indexedBlock, map[string]time.Time) {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
 		select d.block_id, d.node_id, a.ref_key, d.type, d.excerpt, d.changed_version, d.changed_at
-		from document_blocks d join artifacts a on a.id = d.artifact_id where d.artifact_id = $1
+		from document_blocks d join artifacts a on a.id = d.artifact_id where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+`
 	`, artifactID)
 	if err != nil {
 		t.Fatalf("read document_blocks: %v", err)
@@ -115,11 +120,12 @@ func readIndexedBlocks(t *testing.T, database *store.Store, artifactID string) (
 	return blocks, changedAt
 }
 
-// readBlockTexts is the text each block's row at version records: nil for a block it deleted.
+// readBlockTexts is the text each block's row at version records: nil for a block it deleted. The
+// rows are read where the block index keeps them (refs.DocumentRoomTextsSQL).
 func readBlockTexts(t *testing.T, database *store.Store, artifactID string, version int) map[string]*string {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
-		select block_id, text from document_block_texts where artifact_id = $1 and version = $2
+		select t.block_id, t.text from document_block_texts t where `+refs.DocumentRoomTextsSQL("t", "$1::uuid")+` and t.version = $2
 	`, artifactID, version)
 	if err != nil {
 		t.Fatalf("read document_block_texts: %v", err)
@@ -147,11 +153,13 @@ type blockRefRow struct {
 	SourceSeq                             *int64
 }
 
+// readBlockRefs is the block_refs rows of the document's blocks, read where the block index keeps
+// them (refs.DocumentRoomBlocksSQL).
 func readBlockRefs(t *testing.T, database *store.Store, artifactID string) []blockRefRow {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
-		select block_id, from_node, to_kind, to_id, kind, created_version, created_at, source_seq
-		from block_refs where artifact_id = $1 order by block_id, to_kind, to_id, kind
+		select b.block_id, b.from_node, b.to_kind, b.to_id, b.kind, b.created_version, b.created_at, b.source_seq
+		from block_refs b where `+refs.DocumentRoomBlocksSQL("b", "$1::uuid")+` order by b.block_id, b.to_kind, b.to_id, b.kind
 	`, artifactID)
 	if err != nil {
 		t.Fatalf("read block_refs: %v", err)
@@ -209,6 +217,8 @@ func TestAVersionIndexesItsBlocksAndTheMentionsInThem(t *testing.T) {
 	callout := ":::callout{#ship_it kind=\"note\" title=\"\"}\nShip it.\n:::"
 	issue := createSpecIssue(t, handler, "CORE", callout+"\n\nOther paragraph.\n")
 	spec := issue.PrimaryArtifactID
+	// The spec is a document of its issue's room, whose tree keys its blocks' rows and nodes.
+	room := readDecisionDocument(t, database, issue.Key, "spec")
 
 	ids := blockIDsByText(t, handler, spec)
 	inner, other := ids["Ship it."], ids["Other paragraph."]
@@ -247,8 +257,8 @@ func TestAVersionIndexesItsBlocksAndTheMentionsInThem(t *testing.T) {
 	// The callout holds the paragraph that cites the issue, but the paragraph is the innermost
 	// block holding the mention: the callout itself writes no edge.
 	wantPairs := []blockRefRow{
-		{BlockID: inner, FromNode: issue.Key + "/spec#" + inner, ToKind: "issue", ToID: target.Key, Kind: "mentions"},
-		{BlockID: other, FromNode: issue.Key + "/spec#" + other, ToKind: "issue", ToID: target.Key, Kind: "mentions"},
+		{BlockID: inner, FromNode: room.address(inner), ToKind: "issue", ToID: target.Key, Kind: "mentions"},
+		{BlockID: other, FromNode: room.address(other), ToKind: "issue", ToID: target.Key, Kind: "mentions"},
 	}
 	if inner > other {
 		wantPairs[0], wantPairs[1] = wantPairs[1], wantPairs[0]
@@ -459,7 +469,8 @@ func TestReferencesToABlockListOnlyLinksNamingIt(t *testing.T) {
 	createReferenceAPIProject(t, handler, "CORE")
 	issue, blockRef := createShipItSpec(t, handler, "CORE")
 	specRef := "dispatch://" + issue.Key + "/spec"
-	nodeID := issue.Key + "/spec#ship_it"
+	// The spec is a document of its issue's room, whose tree keys the block's node.
+	nodeID := readDecisionDocument(t, database, issue.Key, "spec").address("ship_it")
 	citesBlock := createReferenceAPIComment(t, handler, issue.Key, "Decided in "+blockRef+".")
 	citesSpec := createReferenceAPIComment(t, handler, issue.Key, "See "+specRef+".")
 
@@ -472,6 +483,7 @@ func TestReferencesToABlockListOnlyLinksNamingIt(t *testing.T) {
 		Document: specRef, ChangedVersion: 1, Text: shipIt("Ship it."),
 		MadeBy: alice, MadeAt: &changedAt, ChangedBy: alice, ChangedAt: &changedAt,
 		Parent: &model.NodeParent{Kind: "artifact", ID: issue.PrimaryArtifactID, Ref: specRef}, ParentVersion: new(1),
+		State: graphstore.StateLive, Visibility: graphstore.VisibilityProject,
 	}
 	// Version 1 made the block and last changed it: both times are its.
 	normalizeAt(t, "block node made_at", &toBlock.Node.MadeAt, &changedAt)
@@ -531,9 +543,11 @@ func TestReferencesToADeletedBlockAnswer404AndReturnWithTheBlock(t *testing.T) {
 	}
 }
 
-// R7: a document's own links are listed once each, from the block holding it.
+// R7: a document's own links are listed once each, from the block holding it. The spec is a
+// document of its issue's room, which keys its blocks' rows and nodes under the room's tree, so
+// the holding block is the room's node of the spec's paragraph, a block of the spec.
 func TestReferencesFromADocumentNameTheBlockHoldingEachLink(t *testing.T) {
-	handler, _ := blockIndexHandler(t)
+	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	target := createReferenceAPIIssue(t, handler, "CORE")
 	paragraph := "The plan cites dispatch://" + target.Key + " here."
@@ -544,7 +558,12 @@ func TestReferencesFromADocumentNameTheBlockHoldingEachLink(t *testing.T) {
 	if len(edges) != 1 || edges[0].Node.Kind != "issue" || edges[0].Node.ID != target.Key {
 		t.Fatalf("links of the spec = %#v, want its one mention of %s", edges, target.Key)
 	}
-	if block := edges[0].Block; paragraphID == "" || block == nil || block.Kind != "block" || block.BlockID != paragraphID || block.ID != issue.Key+"/spec#"+paragraphID {
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	if spec.room == spec.id {
+		t.Fatalf("the spec of %s is its own room, want it converted into its issue's room", issue.Key)
+	}
+	if block := edges[0].Block; paragraphID == "" || block == nil || block.Kind != "block" || block.BlockID != paragraphID ||
+		block.ID != spec.address(paragraphID) || block.Document != "dispatch://"+issue.Key+"/spec" {
 		t.Fatalf("block holding the link = %#v, want the paragraph %q", block, paragraphID)
 	}
 }
@@ -590,6 +609,63 @@ func TestBacklinkCountsCountEachCitingBlock(t *testing.T) {
 	}
 }
 
+// An issue born converted is made with its tree, the room its documents are fragments of, and
+// its decisions query node beside its spec, and each of the three is attached to it. Neither the
+// tree nor the query is a document anyone attached, and the issue read's documents leave both
+// out, so the issue's backlink count and its Referenced-by list leave them out too: a new issue
+// is referenced by its spec alone, as an issue was before its documents shared a room. A document
+// uploaded to it later is attached to it as any document is, and raises both by one.
+func TestAnIssuesBacklinksLeaveOutItsTreeAndItsDecisionsQuery(t *testing.T) {
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	var trees, queries int
+	if err := database.Pool.QueryRow(t.Context(), `
+		select count(*) filter (where a.kind = 'tree' and exists (select 1 from issue_trees tree where tree.artifact_id = a.id)),
+		       count(*) filter (where `+refs.DecisionsQuerySQL("a")+`)
+		from artifacts a where a.issue_key = $1
+	`, issue.Key).Scan(&trees, &queries); err != nil || trees != 1 || queries != 1 {
+		t.Fatalf("%s holds %d trees and %d decisions queries (%v), want one of each, as an issue born converted is made", issue.Key, trees, queries, err)
+	}
+	// The issue's own reference, as the graph read names its node, which the list is read at.
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	node, found, err := refs.Node(t.Context(), database.Pool, alice, "issue", issue.Key, false)
+	if err != nil || !found {
+		t.Fatalf("read the node of %s: found=%v err=%v", issue.Key, found, err)
+	}
+
+	requireListed := func(stage string, want ...string) {
+		t.Helper()
+		requireIssueBacklinkCount(t, handler, issue.Key, len(want))
+		counts, err := refs.BacklinkCounts(t.Context(), database.Pool, alice, "issue", []string{issue.Key}, nil)
+		if err != nil || counts[issue.Key] != len(want) {
+			t.Fatalf("%s: refs.BacklinkCounts of %s = %v (%v), want %d", stage, issue.Key, counts, err, len(want))
+		}
+		var listed []string
+		for _, edge := range graphEdges(t, handler, url.Values{"to": {node.Ref}}).Edges {
+			if edge.Kind != "attached_to" || edge.Node.Kind != "artifact" {
+				t.Fatalf("%s: %s lists a %s edge from a %s, want only the documents attached to it", stage, issue.Key, edge.Kind, edge.Node.Kind)
+			}
+			listed = append(listed, edge.Node.ID)
+		}
+		slices.Sort(listed)
+		slices.Sort(want)
+		if !slices.Equal(listed, want) {
+			t.Fatalf("%s: %s is referenced by %v, want %v", stage, issue.Key, listed, want)
+		}
+	}
+	requireListed("a new issue", issue.PrimaryArtifactID)
+
+	uploaded := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{"name": "notes.md"}, "notes.md", "text/markdown", []byte("Notes.\n"), "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload a document: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	notes := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, uploaded).Artifact.ID
+	requireListed("a document uploaded to it", issue.PrimaryArtifactID, notes)
+}
+
 // Contract item 11: the older references route loses no source. A document that cites only a
 // block of the spec, and a comment that cites the block and the spec, each reference the spec
 // once; the citing document's outgoing link is the block, carrying the spec as its document.
@@ -615,16 +691,87 @@ func TestArtifactReferencesKeepADocumentThatCitesOnlyABlock(t *testing.T) {
 	}
 }
 
+// A project document's mention of a block of an issue's spec, written at the spec's own address,
+// is the document's outgoing link to that block, carrying the spec as its document, while the
+// spec is a document of its issue's room: the room's tree keys the block's row and node, and the
+// read resolves the address to that node (refs.Outgoing, refs.ResolvedBlockSQL) and takes the
+// block's document from the room (refs.BlockDocumentSQL), never the tree.
+func TestAnOutgoingMentionOfABlockOfAnIssueRoomCarriesItsDocument(t *testing.T) {
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue, blockRef := createShipItSpec(t, handler, "CORE")
+	if spec := readDecisionDocument(t, database, issue.Key, "spec"); spec.room == spec.id {
+		t.Fatalf("the spec of %s is its own room, want it converted into its issue's room", issue.Key)
+	}
+	notes := createProjectDocument(t, handler, "CORE", "Notes", "Decision: "+blockRef+"\n")
+
+	outgoing := decodeBody[model.ArtifactReferences](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+notes.ID+"/references", nil, "alice")).Outgoing
+	if len(outgoing) != 1 || outgoing[0].Kind != "block" || outgoing[0].ToID != issue.Key+"/spec#ship_it" ||
+		outgoing[0].Artifact == nil || outgoing[0].Artifact.ID != issue.PrimaryArtifactID {
+		t.Fatalf("notes outgoing = %#v, want the block ship_it carrying the spec", outgoing)
+	}
+}
+
+// A document of an issue room is among a document's references as itself, and its own outgoing
+// references are the mentions its blocks hold: the room's index writes the references of the
+// room's whole text under the room's tree, which belongs to no one document of the room, and
+// holds each mention in a block of the fragment it is written in. The citing spec mentions the
+// cited spec and one of its blocks at the cited spec's own address, which resolves to the cited
+// room's node.
+//
+// The control is the read of the room's own references: the cited spec lists the citing room's
+// tree as its citer, and the citing spec lists no outgoing reference, its room's being its tree's.
+func TestAConvertedDocumentsReferencesAreItsBlocksNotItsRoomsTree(t *testing.T) {
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	cited, blockRef := createShipItSpec(t, handler, "CORE")
+	citing := createSpecIssue(t, handler, "CORE", "Built on dispatch://"+cited.Key+"/spec.\n\nAs decided in "+blockRef+".\n")
+	for _, issue := range []model.Issue{cited, citing} {
+		if spec := readDecisionDocument(t, database, issue.Key, "spec"); spec.room == spec.id {
+			t.Fatalf("the spec of %s is its own room, want it converted into its issue's room", issue.Key)
+		}
+	}
+	referencesOf := func(artifactID string) model.ArtifactReferences {
+		t.Helper()
+		return decodeBody[model.ArtifactReferences](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/references", nil, "alice"))
+	}
+
+	var sources [][2]string
+	for _, reference := range referencesOf(cited.PrimaryArtifactID).ReferencedBy {
+		sources = append(sources, [2]string{reference.Kind, reference.ID})
+	}
+	if want := [][2]string{{"artifact", citing.PrimaryArtifactID}}; !reflect.DeepEqual(sources, want) {
+		t.Fatalf("the cited spec's referenced_by = %v, want the citing spec %v alone", sources, want)
+	}
+
+	var outgoing []string
+	for _, reference := range referencesOf(citing.PrimaryArtifactID).Outgoing {
+		owner := ""
+		if reference.Artifact != nil {
+			owner = reference.Artifact.ID
+		}
+		outgoing = append(outgoing, reference.Kind+" "+reference.ToID+" "+owner)
+	}
+	if want := []string{
+		"artifact " + cited.Key + "/spec " + cited.PrimaryArtifactID,
+		"block " + cited.Key + "/spec#ship_it " + cited.PrimaryArtifactID,
+	}; !reflect.DeepEqual(outgoing, want) {
+		t.Fatalf("the citing spec's outgoing = %q, want %q", outgoing, want)
+	}
+}
+
 // R6, A10: every block GET …/blocks lists is a node part_of its document, and no other is.
 func TestEveryBlockIsPartOfItsDocument(t *testing.T) {
-	handler, _ := blockIndexHandler(t)
+	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "# Plan\n\n"+shipIt("Ship it.")+"\n\n- First item\n- Second item\n\nClosing paragraph.\n")
 	specRef := "dispatch://" + issue.Key + "/spec"
 
+	// The spec is a document of its issue's room, whose tree keys its blocks' nodes.
+	room := readDecisionDocument(t, database, issue.Key, "spec")
 	want := map[string]bool{}
 	for _, id := range blockIDsByText(t, handler, issue.PrimaryArtifactID) {
-		want[issue.Key+"/spec#"+id] = true
+		want[room.address(id)] = true
 	}
 	got := map[string]bool{}
 	for _, edge := range graphEdges(t, handler, url.Values{"to": {specRef}, "kind": {"part_of"}}).Edges {
@@ -673,12 +820,15 @@ func TestALinkInAListItemStartsAtTheItemsParagraph(t *testing.T) {
 // and outgoing list, the citing issue's closure and the block links between the two documents;
 // restoring the block with its id brings every one back.
 func TestADeletedBlockLeavesEveryListAndReturnsWithItsID(t *testing.T) {
-	handler, _ := blockIndexHandler(t)
+	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
 	createReferenceAPIProject(t, handler, "OPS")
 	core, blockRef := createShipItSpec(t, handler, "CORE")
 	specRef := "dispatch://" + core.Key + "/spec"
-	nodeID := core.Key + "/spec#ship_it"
+	// The spec is a document of its issue's room: the notes write the block at the spec's address,
+	// which resolves to the room's node, keyed by the room's tree.
+	written := core.Key + "/spec#ship_it"
+	nodeID := readDecisionDocument(t, database, core.Key, "spec").address("ship_it")
 	ops := createReferenceAPIIssue(t, handler, "OPS")
 	uploaded := multipartRequest(t, handler, "/api/v1/issues/"+ops.Key+"/artifacts", map[string]string{"name": "notes.md"}, "notes.md", "text/markdown", []byte("Decision: "+blockRef+"\n"), "alice")
 	if uploaded.Code != http.StatusCreated {
@@ -721,7 +871,7 @@ func TestADeletedBlockLeavesEveryListAndReturnsWithItsID(t *testing.T) {
 			t.Fatalf("%s: links of the notes to the block = %d, want %d", stage, toBlock, want)
 		}
 		outgoing := decodeBody[model.ArtifactReferences](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+notes.ID+"/references", nil, "alice")).Outgoing
-		if len(outgoing) != want || listed && (outgoing[0].ToID != nodeID || outgoing[0].Artifact == nil || outgoing[0].Artifact.ID != core.PrimaryArtifactID) {
+		if len(outgoing) != want || listed && (outgoing[0].ToID != written || outgoing[0].Artifact == nil || outgoing[0].Artifact.ID != core.PrimaryArtifactID) {
 			t.Fatalf("%s: notes outgoing = %#v, want %d entries for the block", stage, outgoing, want)
 		}
 		response := issueReferencesRequest(t, handler, ops.Key, "")
@@ -828,7 +978,8 @@ func TestAPinnedReferenceWhoseTextReturnedIsUnchanged(t *testing.T) {
 // A2, pinned: a reference pinned to a version that held a block deleted since still shows that
 // version's text and says which version removed it, with no link, since the graph lists none to a
 // deleted block; the unpinned reference answers 404. Restored with its id, the block reads as its
-// text compares again.
+// text compares again. The spec is a document of its issue's room, whose tree keys the block's
+// node, which the pinned read names.
 func TestAPinnedReferenceToADeletedBlockSaysItWasRemoved(t *testing.T) {
 	handler, database := blockIndexHandler(t)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -846,11 +997,12 @@ func TestAPinnedReferenceToADeletedBlockSaysItWasRemoved(t *testing.T) {
 	alice := []model.Actor{{Kind: "user", ID: "alice", Proven: true}}
 	madeAt, removedAt := versionOf(t, database, issue.PrimaryArtifactID, 1).CreatedAt, versionOf(t, database, issue.PrimaryArtifactID, deleted.Number).CreatedAt
 	// Version 1 made the block, the deletion is its last change, and version 2, the latest indexed
-	// before it, is the last that held it.
+	// before it, is the last that held it. The index pass that deleted it stated its node gone.
 	want := model.GraphNode{
-		Kind: "block", ID: issue.Key + "/spec#ship_it", BlockID: "ship_it", IssueKey: &issueKey, Project: "CORE", Ref: blockRef, Document: specRef,
+		Kind: "block", ID: readDecisionDocument(t, database, issue.Key, "spec").address("ship_it"), BlockID: "ship_it", IssueKey: &issueKey, Project: "CORE", Ref: blockRef, Document: specRef,
 		MadeBy: alice, MadeAt: &madeAt, ChangedBy: alice, ChangedAt: &removedAt,
 		Parent: &model.NodeParent{Kind: "artifact", ID: issue.PrimaryArtifactID, Ref: specRef}, ParentVersion: new(deleted.Number - 1),
+		State: graphstore.StateGone, Visibility: graphstore.VisibilityProject,
 		Pin: &model.BlockPin{Version: 2, Ref: blockRef + "@v2", Text: shipIt("Ship it now."), State: "removed", RemovedVersion: deleted.Number},
 	}
 	got := decodeBody[model.GraphReferences](t, response).Node

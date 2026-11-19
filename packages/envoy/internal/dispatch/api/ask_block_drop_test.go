@@ -10,9 +10,9 @@ import (
 )
 
 // openAsksQueryText is the statement the dropped-ask refusals read the open asks with
-// (docs.openAskBlocks), by a run of its text no other statement holds, so a counter says whether a
-// batch read the open asks of a document at all.
-const openAsksQueryText = "block_artifact_id = $1 and state = 'open'"
+// (docs.openAskBlocksIn), by a run of its text no other statement holds, so a counter says whether
+// a batch read the open asks of a document at all.
+const openAsksQueryText = "and k.state = 'open' and k.block_id is not null"
 
 // refuseEdit sends ops to the document and returns the refusal's body, failing the test when the
 // route took the edit instead.
@@ -37,7 +37,7 @@ func refuseEdit(t *testing.T, handler http.Handler, artifactID string, ops []map
 // typed block.
 func TestAnEditDroppingABlockAnOpenAskPointsAtIsRefused(t *testing.T) {
 	handler, _ := blockAskHandler(t)
-	issue, askID := seedBlockAsk(t, handler, "Dropped decision block", "decision", transportAsk, "Which transport?")
+	issue, askID := seedBlockAsk(t, handler, "Dropped ask block", "decision", transportAsk, "Which transport?")
 	before := documentMarkdown(t, handler, issue.PrimaryArtifactID)
 	versions := len(documentVersions(t, handler, issue.PrimaryArtifactID))
 
@@ -64,7 +64,7 @@ func TestAnEditDroppingABlockAnOpenAskPointsAtIsRefused(t *testing.T) {
 // stays open.
 func TestAReplaceRewritingTheBlockOfAnOpenAskUnderItsOwnIDIsRefused(t *testing.T) {
 	handler, _ := blockAskHandler(t)
-	issue, askID := seedBlockAsk(t, handler, "Rewritten decision block", "decision", transportAsk, "Which transport?")
+	issue, askID := seedBlockAsk(t, handler, "Rewritten ask block", "decision", transportAsk, "Which transport?")
 	before := documentMarkdown(t, handler, issue.PrimaryArtifactID)
 
 	refusal := refuseEdit(t, handler, issue.PrimaryArtifactID, []map[string]any{{
@@ -83,7 +83,7 @@ func TestAReplaceRewritingTheBlockOfAnOpenAskUnderItsOwnIDIsRefused(t *testing.T
 	}
 }
 
-// R5, the other half: a decision block a `replace` writes opens its ask, as the same text through
+// R5, the other half: an ask block a `replace` writes opens its ask, as the same text through
 // an `insert` does. Settlement opens the ask after the edit commits, so each half waits for the
 // block to be indexed and then reads the issue's asks.
 func TestAReplaceWritingAnAskBlockOpensItsAskAsAnInsertDoes(t *testing.T) {

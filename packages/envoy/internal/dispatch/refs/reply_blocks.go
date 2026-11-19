@@ -153,16 +153,23 @@ func (r ItemRepair) Block(blockID string) (nodeID, excerpt string, found bool) {
 
 // CurrentItemBlock is block blockID of comment, message or ask itemID while a current revision of
 // the item holds it: its node id and stored excerpt. found is false when the item holds no such
-// block now, a removed one included.
-func CurrentItemBlock(ctx context.Context, q Queryer, kind ItemKind, itemID, blockID string) (nodeID, excerpt string, found bool, err error) {
+// block now, a removed one included, and when who may not see the item the block is part of,
+// which is then answered as a block the item does not hold.
+//
+// The visibility read is of the item's own node - the comment, the message or the ask - and not
+// of a node of the block's own kind: a block's text is its item's text, and the store holds a
+// node for the item (graphstore.KindComment), where no writer makes a `comment_block`,
+// `message_block` or `ask_block` node, so a test over one of those always passed.
+func CurrentItemBlock(ctx context.Context, q Queryer, who model.Actor, kind ItemKind, itemID, blockID string) (nodeID, excerpt string, found bool, err error) {
 	tables, err := kind.tables()
 	if err != nil {
 		return "", "", false, err
 	}
 	err = q.QueryRow(ctx, `
-		select node_id, excerpt from `+tables.blocks+`
-		where `+tables.item+` = $1::uuid and block_id = $2 and position is not null
-	`, itemID, blockID).Scan(&nodeID, &excerpt)
+		select b.node_id, b.excerpt from `+tables.blocks+` b
+		where b.`+tables.item+` = $1::uuid and b.block_id = $2 and b.position is not null
+		  and `+VisibleKind(string(kind), "b."+tables.item+"::text", "$3")+`
+	`, itemID, blockID, VisibilityArg(who)).Scan(&nodeID, &excerpt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", false, nil
 	}
@@ -191,7 +198,11 @@ func ItemBlockRef(kind ItemKind, issueKey *string, project, slug, itemID, blockI
 // issue alone, so a message reply needs neither project nor slug, and a direct message's block
 // has no reference. Text is the block's stored excerpt, which a removal keeps, so a removed
 // block reads the last text it held.
-func ReplyBlocks(ctx context.Context, q Queryer, kind ItemKind, replyIDs []string) (map[string]*model.ReplyBlock, error) {
+//
+// It answers for who: a block of an item who may not see is answered as no block, so the reply
+// that names it reads as one that names none, and neither the block's id nor its text is
+// answered. That test is of the item's own node, as CurrentItemBlock's is.
+func ReplyBlocks(ctx context.Context, q Queryer, who model.Actor, kind ItemKind, replyIDs []string) (map[string]*model.ReplyBlock, error) {
 	blocks := make(map[string]*model.ReplyBlock)
 	if len(replyIDs) == 0 {
 		return blocks, nil
@@ -212,8 +223,9 @@ func ReplyBlocks(ctx context.Context, q Queryer, kind ItemKind, replyIDs []strin
 		       r.issue_key, ` + owner + `
 		from ` + replies.items + ` r
 		join ` + tables.blocks + ` b on b.node_id = r.replies_to_block` + joins + `
-		where r.id = any($1::uuid[]) and r.replies_to_block is not null`
-	rows, err := q.Query(ctx, query, replyIDs)
+		where r.id = any($1::uuid[]) and r.replies_to_block is not null
+		  and ` + VisibleKind(string(kind), "b."+tables.item+"::text", "$2")
+	rows, err := q.Query(ctx, query, replyIDs, VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("read the blocks %s replies name: %w", kind, err)
 	}

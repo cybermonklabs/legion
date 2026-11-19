@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -204,9 +205,37 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+15 {
-		t.Fatalf("test hooks add fifteen routes: got %d, want %d", got, len(routes)+15)
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+len(testHookRoutes) {
+		t.Fatalf("test hooks add %d routes: got %d, want %d", len(testHookRoutes), got, len(routes)+len(testHookRoutes))
 	}
+	if hooks, named := slices.Sorted(maps.Keys(openAPIHookRoutes())), slices.Sorted(slices.Values(testHookRoutes)); !slices.Equal(hooks, named) {
+		t.Fatalf("the table mounts the test hooks\n\t%s\nwant the ones testHookRoutes names\n\t%s",
+			strings.Join(hooks, "\n\t"), strings.Join(named, "\n\t"))
+	}
+}
+
+// testHookRoutes is every row the table mounts only with Deps.TestHooksEnabled, each named, in the
+// table's order: the fifteen main mounts and the ask-attributes hook this branch adds, which reads
+// the attributes of a live tree's ask blocks. A count alone is one number two branches that each
+// add a hook are both wrong about; a hook added or dropped on either side is a line here, which
+// such a merge holds the union of.
+var testHookRoutes = []string{
+	"POST /api/v1/live/_test/disconnect",
+	"POST /api/v1/live/_test/rotate",
+	"POST /api/v1/artifacts/_test/quiesce",
+	"POST /api/v1/artifacts/{id}/_test/outside-schema",
+	"POST /api/v1/artifacts/{id}/_test/newer-content",
+	"POST /api/v1/agents/{session_id}/stream/_test/publish",
+	"GET /api/v1/artifacts/_test/rooms",
+	"GET /api/v1/artifacts/{id}/_test/ask-attributes",
+	"GET /api/v1/artifacts/{id}/_test/room-counters",
+	"POST /api/v1/artifacts/{id}/_test/hold-persistence",
+	"PUT /api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
+	"GET /api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
+	"DELETE /api/v1/artifacts/{id}/_test/live-write-pauses/{point}",
+	"POST /api/v1/writes/_test/slow",
+	"POST /api/v1/settings/new-issue/_test",
+	"GET /api/v1/messages/_test/queued",
 }
 
 // The Inbox route's description states the rule the person a question reaches is resolved by —
@@ -380,6 +409,7 @@ func routeProbePath(pattern string) string {
 		{"{id}", "00000000-0000-0000-0000-000000000001"},
 		{"{session_id}", "s1"},
 		{"{block_id}", "b1"},
+		{"{login}", "alice"},
 		{"{owner}", "owner"},
 		{"{repo}", "repo"},
 		{"{slug}", "spec"},
@@ -555,6 +585,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"POST /api/v1/me/agent-tokens",
 		"DELETE /api/v1/me/agent-tokens/{id}",
 		"GET /api/v1/users",
+		// A person's own page is no older row either: it reads what one person wrote and what
+		// reached them, so a credential that proves no person has no business on it.
+		"GET /api/v1/people/{login}/nodes",
 		"GET /api/v1/issues/{key}/subscribers",
 		"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 		"GET /api/v1/inbox",

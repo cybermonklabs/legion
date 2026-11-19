@@ -1907,6 +1907,15 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_HOLD_DECISIONS_STEP": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"}); !boot.HoldDecisionsStep {
+				t.Error("DISPATCH_TEST_HOLD_DECISIONS_STEP=1: HoldDecisionsStep false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_DECISIONS_STEP": "true"}); boot.HoldDecisionsStep {
+				t.Error("DISPATCH_TEST_HOLD_DECISIONS_STEP=true: HoldDecisionsStep true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.ArchitectureImportAtStart {
 				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START unset: ArchitectureImportAtStart true")

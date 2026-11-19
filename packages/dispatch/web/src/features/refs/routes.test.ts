@@ -688,24 +688,26 @@ test("the plan tab owns its path, its reference and its short form", () => {
   ).toEqual(route);
 });
 
-// The Decisions tab is a view of the issue's decisions.md: its page is the tab's own route, and
-// the reference it names, as every reader of a dashboard URL reads it, is that document.
-test("the decisions tab owns its path and names the issue's decisions.md", () => {
+// The Decisions tab reads the issue's decision nodes: its page is the tab's own route, and the
+// reference it names, `dispatch://CORE-1/decisions`, is the issue's Decisions page, whatever its
+// fragment. No reader names a decisions document.
+test("the decisions tab owns its path and its reference names the issue's Decisions page", () => {
   const route = { key: "CORE-1", kind: "decisions" as const };
-  const document = { key: "CORE-1", kind: "artifact" as const, slug: "decisions-md" };
 
   expect(parseIssuePath("/issues/CORE-1/decisions")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/decisions"));
   expect(issueTabForRoute(route, undefined)).toBe("decisions");
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/artifact/decisions-md");
+  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/decisions");
+  expect(parseDispatchReference("dispatch://CORE-1/decisions")).toEqual(route);
+  expect(buildReferencePath(route)).toBe(browserPath("issues/CORE-1/decisions"));
   expect(shortForm(route)).toBe("CORE-1 decisions");
   for (const read of [referenceRouteFromHref, nodeRouteFromHref]) {
     expect(read("https://dispatch.test/issues/CORE-1/decisions", "https://dispatch.test")).toEqual(
-      document
+      route
     );
     expect(
       read("https://dispatch.test/issues/CORE-1/decisions#b-x", "https://dispatch.test")
-    ).toEqual(document);
+    ).toEqual(route);
   }
 });
 

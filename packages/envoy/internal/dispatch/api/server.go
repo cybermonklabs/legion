@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -439,6 +440,19 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
+	// beforeCommentCommit runs on a comment write's own request, once the comment, its node and
+	// every event it appended are written and before its transaction commits, with those events;
+	// its error stands in for the commit failing, so the route answers it and rolls the write
+	// back. Only a test sets it: it is how a case holds a write open after its events are
+	// appended, to read whether any of them reaches a subscriber before the commit, and how it
+	// ends one in a rollback.
+	beforeCommentCommit func(ctx context.Context, events []model.Event) error
+	// betweenPersonPageReads runs on a person page's request once the route has decided it
+	// answers 200 and before it lists the rows (listPersonNodes), inside the transaction both
+	// reads share; nil, which every server the deployment builds leaves it, runs nothing. Only a
+	// test sets it: it is how a case commits a write between the decision and the list, to read
+	// that the list answers the snapshot the decision read.
+	betweenPersonPageReads func()
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -839,13 +853,24 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 // (keyedReplays), nil for a row that has none.
 func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
 	handler := route.Handler
-	if keyedMethod(route.Method) {
+	keyed := keyedMethod(route.Method)
+	if keyed {
 		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
 	}
 	if route.Method+" "+route.Pattern == issueUploadRoute {
 		handler = s.refuseUploadToAClosedIssue(handler)
 	}
 	if route.Method != http.MethodGet {
+		// A write made for a run of the command bar: the one reader of its header, inside the
+		// checks below, so a caller they refuse is told that first, and outside the keyed
+		// layer and the upload's spool, so a run it refuses claims no key and costs no body
+		// (withinGoingRun). A refused request whose key already holds an answer still reaches
+		// the keyed layer, which answers it from that key alone and never runs its handler
+		// (answerRefusedRun): so a retry after its run ended reads the write it made, and no
+		// handler runs a write for a run this check did not admit. Inside the keyed layer the
+		// replay would come first by itself, but a refused run would then claim its key, and
+		// the same intent sent again without the header would be answered the key reused.
+		handler = s.withinGoingRun(handler, keyed)
 		// Outside the keyed layer and the upload's spool, so a write to another project's
 		// object, into another session's own rows, or by a credential that names no person
 		// claims no idempotency key and costs no body (withinProjectScope,
@@ -1275,10 +1300,33 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
 		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
-		// brokerTokenActor set, since the credential, not the body, named this session.
+		// brokerTokenActor set, with or without an owner, since the credential, not the body,
+		// named this session.
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
+		}
+		// The credential itself proved this session, and for a token the broker scoped to a
+		// person it proved whose session it is too (brokerTokenActor sets Owner from the token
+		// and never from a body). That pair is what R14 calls "a session the server itself
+		// proved theirs", and the store ties the two with an alias_of tuple on the next write
+		// (graphstore.aliases). The act names the session the credential proved, exactly as
+		// actingPerson names the agent that acted for a person, and is SessionProven for the same
+		// reason actingPerson's is: the credential, not the request, named that session. The
+		// actor's kind and id are left as they were, so every stored author, every event and
+		// every reader keeps the shape it has.
+		//
+		// A session named in a request body earns none of this: the branch below, which every
+		// credential that proves no session of its own takes, records the session the caller
+		// asked for, no act and no Proven mark, because an actor that merely claims a session
+		// proves nothing about whose it is (R14).
+		if actor.Owner != nil && *actor.Owner != "" && authenticated.Credential != nil &&
+			authenticated.Credential.Session == authenticated.ID {
+			actor.Act = &model.ActorAct{
+				Session:       authenticated.ID,
+				SessionProven: true,
+				Scopes:        authenticated.Credential.Scopes,
+			}
 		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
 		return actor, nil
@@ -1296,7 +1344,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// No Credential: this actor is one a handler records and compares, and a stored actor
 		// was decoded from JSON, which carries none (model.Actor.Recorded). A layer that needs
 		// the request's own credential reads it from optionalActor (callerHoldsScope).
-		// Not Proven: the body named this session and the credential proved none.
+		// Not Proven, whatever the body says: the body named this session and the credential
+		// proved none.
 	}, nil
 }
 
@@ -1599,7 +1648,7 @@ func countExceededError(code, field string, count, limit int) *apiError {
 // blockBoundError is what a route answers an itemblocks.Check with: nil where the body broke no
 // rule, else the refusal the typed error words, under the code that rule is refused by. A bound
 // broken (itemblocks.CapExceeded names the block, itemblocks.CountExceeded the count) carries
-// CAP_EXCEEDED, the code every cap refusal carries; a body holding a decision block
+// CAP_EXCEEDED, the code every cap refusal carries; a body holding an ask block
 // (itemblocks.DecisionBlock) carries DECISION_BLOCK_IN_BODY, since what it is refused for is
 // what it holds rather than how long it is. Every route that checks a body calls this one
 // helper, so a route added later cannot word the same refusal differently.
@@ -1767,6 +1816,22 @@ func encodeJSON(value any) ([]byte, error) {
 
 func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) (model.Event, error) {
 	return s.deps.Events.Append(ctx, tx, event)
+}
+
+// appendCausingEvent is appendEvent for an event that causes a write of the node and tuple store
+// made before it existed (graphstore.Uncaused): the event's append and the append of what that
+// write stated under it, in one batch, the second naming the event's id as the id sequence left it
+// (graphstore.LatestEvent). A route that writes as it goes pays one statement for the two, as
+// it paid for the event alone.
+func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
+	var appended model.Event
+	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := s.deps.Events.QueueAppend(b, event, func(written model.Event) { appended = written }); err != nil {
+			return err
+		}
+		return graphstore.QueueCaused(ctx, b, stated, graphstore.LatestEvent)
+	})
+	return appended, err
 }
 
 // publish hands each event to the broker and then stores the display trees of the stored texts
