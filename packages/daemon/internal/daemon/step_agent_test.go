@@ -71,6 +71,40 @@ func TestTheDaemonReadsAStepsAgentFromItsClaimsMachine(t *testing.T) {
 	}
 }
 
+// A claim recording a session another claim recorded first, as a claim the boot could not suspend
+// does, has no session named on its step's record (stepAgent, plan E's t-e-54): the record shows
+// Dispatch who works the step, and that session is not this claim's, as the role-holder
+// publication leaves it out. A claim holding its own session is named as before.
+//
+// The control (the pull request records the run): stepAgent with no hold check names ses_taken.
+func TestAStepsAgentNamesNoSessionItsClaimDoesNotHold(t *testing.T) {
+	ctx := context.Background()
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	holder := mustClaimToken(t, "LEGION-943", claim.RoleImplementer)
+	if _, err := sup.deps.Store.HoldSessions(ctx, "legion", holder, supervise.RecordedHolds("ses_taken", "")); err != nil {
+		t.Fatalf("hold ses_taken for %s, the claim that recorded it first: %v", holder, err)
+	}
+	w := &workflowRuntime{log: quietLogger()}
+	w.attach(&supervision{supervisor: sup, log: quietLogger()})
+	for _, c := range []struct {
+		role    claim.Role
+		session string
+		want    workflow.StepAgent
+	}{
+		{claim.RoleTester, "ses_taken", workflow.StepAgent{}},
+		{claim.RoleReviewer, "ses_own", workflow.StepAgent{Session: "ses_own"}},
+	} {
+		token := mustClaimToken(t, "LEGION-208", c.role)
+		if _, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208",
+			Role: c.role, State: supervise.StateWorking, Session: c.session, Generation: 1}, ""); err != nil {
+			t.Fatalf("create the %s's claim: %v", c.role, err)
+		}
+		if got := w.stepAgent(token); got != c.want {
+			t.Fatalf("the step agent of the %s recording %s = %+v, want %+v", c.role, c.session, got, c.want)
+		}
+	}
+}
+
 // An answer whose model no store can keep reaches the daemon as an Answered that names no model
 // (stream.Conn's answeredBy), and the daemon reads it as the claim's last answer like any other: the
 // record of the step names the session and no model, never the model that answered before it.
@@ -122,10 +156,12 @@ func TestAStepsAgentLeavesOutTextOutsideTheForm(t *testing.T) {
 		name, session, model string
 		want                 workflow.StepAgent
 	}{
-		{"both inside the form", "ses_planner", "first/first-model", workflow.StepAgent{Session: "ses_planner", Model: "first/first-model"}},
-		{"a model with a newline", "ses_planner", "first/model\ndefault 9 step forged", workflow.StepAgent{Session: "ses_planner"}},
-		{"a model with spaces", "ses_planner", "first/model with spaces", workflow.StepAgent{Session: "ses_planner"}},
-		{"a model over the bound", "ses_planner", "first/" + strings.Repeat("m", 123), workflow.StepAgent{Session: "ses_planner"}},
+		// Each row's claim records a session of its own: a session another claim recorded first is
+		// held to that claim, and its record would name none (TestAStepsAgentNamesNoSessionItsClaimDoesNotHold).
+		{"both inside the form", "ses_planner_1", "first/first-model", workflow.StepAgent{Session: "ses_planner_1", Model: "first/first-model"}},
+		{"a model with a newline", "ses_planner_2", "first/model\ndefault 9 step forged", workflow.StepAgent{Session: "ses_planner_2"}},
+		{"a model with spaces", "ses_planner_3", "first/model with spaces", workflow.StepAgent{Session: "ses_planner_3"}},
+		{"a model over the bound", "ses_planner_4", "first/" + strings.Repeat("m", 123), workflow.StepAgent{Session: "ses_planner_4"}},
 		{"a session with a space", "ses planner", "first/first-model", workflow.StepAgent{Model: "first/first-model"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

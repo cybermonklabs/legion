@@ -705,6 +705,13 @@ func (w *workflowRuntime) stepAgent(token claim.Token) workflow.StepAgent {
 	if machine.View().Session != session {
 		model = ""
 	}
+	// A session the claim does not hold, as one the boot could not suspend records, is another
+	// claim's or no claim's (plan E's t-e-54), so the record names none, as the role-holder
+	// publication leaves it out (record.LiveRoleHolders). HoldsItsSession takes no machine lock;
+	// a claim holding its session costs no store call once the machine has admitted it.
+	if session != "" && machine.HoldsItsSession(context.Background()) != nil {
+		session = ""
+	}
 	return workflow.StepAgent{Session: w.agentText(token, "session", session), Model: w.agentText(token, "model", model)}
 }
 
