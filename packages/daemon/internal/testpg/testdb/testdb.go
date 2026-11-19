@@ -1,7 +1,8 @@
 // Package testdb gives a test a Postgres database of its own on the devbox and CI Postgres that
-// LEGION_TEST_PG_DSN names, dropped when the test ends, so no test sees another's rows, and a way
-// to reach it across a network's delay (Delayed). A test is skipped without it: there is nothing
-// to run against.
+// LEGION_TEST_PG_DSN names, dropped when the test ends, so no test sees another's rows; ways to
+// reach it across a network's delay (Delayed) or through a proxy that holds or cuts a commit's
+// reply (CommitFaults); and a pool whose transactions are cancelled between two statements
+// (CancelAfterScan). A test is skipped without that Postgres: there is nothing to run against.
 //
 // Database is an empty database. A test that needs the daemon's schema takes internal/testpg's
 // Clone or CloneStore instead, which copy a template that package migrated once.
@@ -11,10 +12,11 @@
 // RunDatabaseFor wherever it reads the DSN. The two mechanisms compose, and a package that needs
 // both nests them (internal/daemon's TestMain).
 //
-// This package imports nothing of this module, and nothing added here may: migrating the template
-// needs internal/store, so internal/testpg imports it, and a test binary of internal/store that
-// imported internal/testpg back would be a cycle. Keeping the schema-free half apart is what lets
-// internal/store's own tests take the same fixture every other package's tests take.
+// This package imports no package of this module except internal/testwait, which imports none,
+// and nothing added here may import another: migrating the template needs internal/store, so
+// internal/testpg imports it, and a test binary of internal/store that imported internal/testpg
+// back would be a cycle. Keeping the schema-free half apart is what lets internal/store's own
+// tests take the same fixture every other package's tests take.
 //
 // DatabaseURL is the one rewrite of LEGION_TEST_PG_DSN a test binary of this module makes, and
 // its own comment says which callers make that rewrite and what it refuses. RandomName is
@@ -128,9 +130,9 @@ type Execer interface {
 // one server whose test login holds neither privilege, so the refusal is waited out for 30
 // seconds; any other error is the caller's at once (dispatch://INFRA-714 round six).
 //
-// It lives here rather than in internal/testpg because this package imports nothing of the
-// module, so every package's tests can take it — internal/store's among them, whose own tests
-// cannot import internal/testpg at all.
+// It lives here rather than in internal/testpg because this package imports no package of the
+// module except internal/testwait, which imports none, so every package's tests can take it —
+// internal/store's among them, whose own tests cannot import internal/testpg at all.
 func Drop(ctx context.Context, admin Execer, name string) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for attempt := 0; ; attempt++ {
@@ -167,9 +169,10 @@ func RandomName(prefix string) (string, error) {
 // URL keeps dsn's query. Every database a test binary of this module names from
 // LEGION_TEST_PG_DSN is named here — create above, internal/testpg's prepare and Clone, and the
 // live proofs' takeOwnDatabase (internal/daemon/live_agent_proof_test.go) — so one place reads
-// each rewrite back, and no caller checks itself. Delayed's proxy URL is the one other rewrite
-// of a DSN this package makes, and it takes the same check (rewriteDSN below). dsn is what
-// LEGION_TEST_PG_DSN holds, which every caller read from that variable, and a refusal names it.
+// each rewrite back, and no caller checks itself. The proxy URLs of Delayed and CommitFaults are
+// the other rewrites of a DSN this package makes, and they take the same check (rewriteDSN
+// below). dsn is what LEGION_TEST_PG_DSN holds, which every caller read from that variable, and a
+// refusal names it.
 //
 // A rewrite pgx reads another host, port or user from than dsn is refused, and so is one pgx
 // reads another database from than database. Go's net/url ends the user name at the last `@` and
@@ -197,8 +200,8 @@ func DatabaseURL(dsn, database string) (string, error) {
 }
 
 // rewrite is what a caller of rewriteDSN changes about the DSN it was given: the database the
-// rewrite must name (DatabaseURL), or the address it must send the connection to (Delayed). A
-// field left empty is one the rewrite keeps.
+// rewrite must name (DatabaseURL), or the address it must send the connection to (Delayed,
+// CommitFaults). A field left empty is one the rewrite keeps.
 type rewrite struct {
 	database string
 	host     string
