@@ -3,9 +3,9 @@
 //
 // The store takes only valid UTF-8. On the UTF8 server encoding the daemon runs, PostgreSQL
 // refuses a NUL (U+0000) and any byte that encoding cannot read, such as a lone 0xff, in a text
-// value (SQLSTATE 22021), and a jsonb value refuses a \u0000 escape and a surrogate escape that is
-// not half of a pair as well (22P05). Much of what the daemon stores comes from outside it — a
-// GitHub event, a Dispatch event, a worker's tool output, a far side's error — so it cannot be
+// value (SQLSTATE 22021), and a jsonb value refuses a \u0000 escape (22P05) and a surrogate escape
+// that is not half of a pair (22P02) as well. Much of what the daemon stores comes from outside
+// it — a GitHub event, a Dispatch event, a worker's tool output, a far side's error — so it cannot be
 // refused at its source, and a write that fails on it fails the whole fact. A NUL comes even from
 // a far side that answers in JSON: the `error` Oh My Pi gives a refused prompt is decoded, and a
 // \u0000 escape in it becomes a NUL byte in the daemon's string. The rule makes such text storable

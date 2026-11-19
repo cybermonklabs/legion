@@ -2,7 +2,8 @@ package store
 
 // The store's text rule, measured against the PostgreSQL LEGION_TEST_PG_DSN names: on the UTF8
 // server encoding a text value refuses a NUL and a byte that is not UTF-8 (SQLSTATE 22021), and a
-// jsonb value refuses a \u0000 escape and a surrogate escape that is not half of a pair (22P05).
+// jsonb value refuses a \u0000 escape (22P05) and a surrogate escape that is not half of a pair
+// (22P02).
 // Every way a statement reaches the daemon's pool stores each of them as U+FFFD instead, whatever
 // Go shape the value has, and stores every other value as it was written.
 
