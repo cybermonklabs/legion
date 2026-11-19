@@ -638,13 +638,15 @@ EOF
 # shellcheck disable=SC2329 # stop_env_processes, which the exit traps run, runs it
 run_env_pids() { procs_naming "$1" SKILL_SCENARIO_RUN; }
 
-# stop_env_processes DIR stops, with stop_tree, each process run_env_pids DIR finds and everything
-# under it, a child that dropped the variable included. Each is first frozen and read again, and
-# stopped only while it is still the process the walk read (its start time) and still names the run
-# (freeze_if and names_dir, scripts/e2e/lib/process-tree.sh): a pid that ended and passed to another
-# process of this user between the walk and the stop is thawed and left. When run_env_pids could
-# not read the machine's environments it says so, and this says it stopped nothing and returns, so
-# the exit handler that runs it goes on with the rest of its cleanup.
+# stop_env_processes DIR ends each process run_env_pids DIR finds and everything under it, a child
+# that dropped the variable included. Each is first frozen and read again, and ended only while it
+# is still the process the walk read (its start time) and still names the run (freeze_if and
+# names_dir, scripts/e2e/lib/process-tree.sh): a pid that ended and passed to another process of
+# this user between the walk and the stop is thawed and left. A frozen one is then ended with its
+# tree (kill_frozen), its own parent not read again, so a parent that exits after the freeze cannot
+# leave it stopped and alive. When run_env_pids could not read the machine's environments it says
+# so, and this says it stopped nothing and returns, so the exit handler that runs it goes on with
+# the rest of its cleanup.
 # shellcheck disable=SC2329 # the exit traps run it
 stop_env_processes() {
   local pid start pairs
@@ -655,7 +657,7 @@ stop_env_processes() {
   while read -r pid start; do
     [ -n "$pid" ] || continue
     freeze_if "$pid" "$start" STOP names_dir "$1" SKILL_SCENARIO_RUN || continue
-    stop_tree "$pid" "$(proc_parent "$pid")"
+    kill_frozen "$pid"
   done <<<"$pairs"
 }
 

@@ -28,11 +28,12 @@ const guards = [
 
 const dir = temporaryDirectory("claude-backend-guards-test");
 // The stand-in processes are copies of two real programs, and sh runs one wrapper, so a host
-// without any of the three has nothing to start and every row here is skipped.
+// without any of the three has nothing to start and every row here is skipped, as on a host without
+// perl, which starts every harness in a group of its own (ownGroup, lib/own-group.ts).
 // The gate is given every name: it walks each one and names the missing ones in its warning.
 // `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
 const found = new Map(["bash", "sleep", "sh"].map((name) => [name, hostTool(name)] as const));
-const skip = skipWithout("bash", "sleep", "sh");
+const skip = skipWithout("bash", "sleep", "sh", "perl");
 // Only the unreadable-environment case needs an interpreter.
 const withoutPython = skipWithout("python3");
 function tool(name: string): string {
@@ -97,7 +98,8 @@ beforeAll(() => {
 // once that child is running EXE (its /proc/<pid>/exe), not merely once it exists: a forked child
 // carries its parent's command line until it execs, and a guard asked about it then answers for the
 // parent. Every process spawn started goes, with everything below it, when BODY ends (stop_tree,
-// lib/rig.sh, which signals a process only while its parent is the one it was started under).
+// lib/process-tree.sh, which signals a process only while its parent is the one it was started
+// under).
 function run(body: string, vars: Record<string, string> = {}) {
   const prelude = `set -Eeuo pipefail
 root=${JSON.stringify(root)} evidence=$SCRATCH timeout_hook=

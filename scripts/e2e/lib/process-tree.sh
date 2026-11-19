@@ -159,8 +159,9 @@ env_has() {
 # env_length PID NAME prints the length in bytes of the first value PID's environment gives NAME, and
 # 0 when it gives none, and fails with 2 when the environment cannot be read (env_of): a check of a
 # secret's presence reads its length without the value ever standing in a variable of its caller.
+# The count is in the C locale (a local LC_ALL), so a value of multibyte characters counts its bytes.
 env_length() {
-  local - entry
+  local - entry LC_ALL=C
   local -a entries=()
   set +x
   { mapfile -d '' -t entries <"/proc/$1/environ"; } 2>/dev/null && [ "${#entries[@]}" -gt 0 ] || return 2
@@ -192,7 +193,9 @@ incarnation_pid() {
 # freeze_if PID START SIGNAL [CHECK…] signals PID with SIGNAL only while it is still the process
 # that started at START (proc_start) and CHECK, a command given PID as its last word, succeeds. It
 # reads both before it sends anything, and sends nothing to a pid that fails either: a process of
-# this user's that took a pid the walk read gets no signal at all. Then it stops PID (SIGSTOP), so
+# this user's that took a pid the walk read gets no signal, unless the pid passes to it between
+# that first read and the SIGSTOP below, a window no read closes without a pidfd; then it gets the
+# SIGSTOP, the second read finds the mismatch, and it is thawed. Then it stops PID (SIGSTOP), so
 # the process cannot end and its pid pass to another between the check and the signal, reads both
 # again, signals, and thaws it (SIGCONT) unless SIGNAL is KILL or STOP. On a mismatch at the second
 # read it sends nothing more, and thaws PID only when this stop is what stopped it: a process that
@@ -240,16 +243,31 @@ names_dir() {
 
 # proc_descendants PID prints `PID START` for every process below PID, children first, then theirs:
 # each read from its parent's own /proc entry (proc_children) with its start time (proc_start), so a
-# later signal can hold it to the process the read saw. A process that ends during the read is left
-# out.
+# later signal can hold it to the process the read saw. Below PID the parents are running, and one
+# can reap a child between the read of its children and the read of that child's start, so a pid
+# is taken only while its parent is still the process the read came from and its start reads the
+# same before and after that check: a pid the kernel gave to another process in between, a
+# stranger's, is left out. A process that ends during the read is left out.
 proc_descendants() {
   local child start
   for child in $(proc_children "$1"); do
     start=$(proc_start "$child")
     [ -n "$start" ] || continue
+    [ "$(proc_parent "$child")" = "$1" ] && [ "$(proc_start "$child")" = "$start" ] || continue
     printf '%s %s\n' "$child" "$start"
     proc_descendants "$child"
   done
+}
+
+# kill_frozen PID ends PID, which the caller has stopped and held to its start time and its mark
+# (freeze_if … STOP), with every process under it: each child goes with its own tree (stop_tree,
+# held to PID as its parent, which a stopped PID cannot lose), then PID itself (SIGKILL). PID's own
+# parent is not read: it can exit and leave PID to another between two reads, and a stop_tree held
+# to the parent read first would then leave PID stopped and alive.
+kill_frozen() {
+  local pid=$1 child
+  for child in $(proc_children "$pid"); do stop_tree "$child" "$pid"; done
+  kill -KILL "$pid" 2>/dev/null || true
 }
 
 # stop_tree PID [PARENT] stops PID and every process under it. A watcher is a loop whose kubectl, jq
@@ -358,16 +376,17 @@ marked_processes() {
 
 # stop_marked_processes DIR [GRACE] ends every process of the run under DIR (marked_processes), with
 # everything under each, and no other: each is stopped only through freeze_if, while it is the
-# process the walk read and still carries the run's mark, and then ended with its tree (stop_tree),
-# so a child that cleared its environment, and so carries no mark, goes with the process that
-# started it. A pid the kernel gave to another process since gets no signal. GRACE, in seconds
-# (default 0), gives each SIGTERM first and that long for all of them to exit: a pane's Oh My Pi in
-# the middle of a token refresh gets the time to write the rotated token back to the operator's
-# database before it goes, where a plain SIGKILL could leave it a refresh token that is already
-# spent. What each had started is read while it is stopped for its TERM, so a child it leaves behind
-# when it exits is still ended, by its own start time. A process still alive after GRACE, or every
-# one with no GRACE, is ended with its tree. It prints why and fails with 2 when the run's processes
-# could not be read, having signalled nothing.
+# process the walk read and still carries the run's mark, and then ended with its tree
+# (kill_frozen), so a child that cleared its environment, and so carries no mark, goes with the
+# process that started it. A pid the kernel gave to another process since gets no signal. GRACE, in
+# seconds (default 0), gives each SIGTERM first and that long for all of them to exit: a pane's Oh
+# My Pi in the middle of a token refresh gets the time to write the rotated token back to the
+# operator's database before it goes, where a plain SIGKILL could leave it a refresh token that is
+# already spent. Each one's children are read while it is stopped for its TERM, and theirs below,
+# under running parents, each held to its parent and its start (proc_descendants), so a child it
+# leaves behind when it exits is still ended, by its own start time. A process still alive after
+# GRACE, or every one with no GRACE, is ended with its tree. It prints why and fails with 2 when the
+# run's processes could not be read, having signalled nothing.
 stop_marked_processes() {
   local dir=$1 grace=${2:-0} pairs pid start i entry
   local -a sent=() alive=() below=()
@@ -399,7 +418,7 @@ stop_marked_processes() {
   while read -r pid start; do
     [ -n "$pid" ] || continue
     freeze_if "$pid" "$start" STOP names_dir "$dir" "${run_marks[@]}" || continue
-    stop_tree "$pid" "$(proc_parent "$pid")"
+    kill_frozen "$pid"
   done <<<"$pairs"
   for entry in ${below[@]+"${below[@]}"}; do
     freeze_if "${entry%% *}" "${entry#* }" KILL || true

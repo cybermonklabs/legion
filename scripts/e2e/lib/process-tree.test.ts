@@ -16,7 +16,8 @@ import { scriptFunctions } from "./script-functions";
 const rig = join(import.meta.dir, "rig.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("process-tree-test");
-const skip = skipWithout("bash", "sleep", "sh");
+// perl: run starts every harness through ownGroup (lib/own-group.ts).
+const skip = skipWithout("bash", "sleep", "sh", "perl");
 const program = join(dir, "program");
 // esc is TEXT as a regular expression that matches it alone.
 const esc = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -347,8 +348,8 @@ echo "none: status $st: \${why%%:*}"
   }
 );
 
-// The rig helpers' process-scan rows: signalable and stop_tree (lib/rig.sh), the proc_* reads they
-// use (lib/process-tree.sh) and the failure note of parked-decision-devbox.sh's
+// The rig helpers' process-scan rows: signalable and stop_tree (lib/process-tree.sh), the proc_*
+// reads they use (lib/process-tree.sh) and the failure note of parked-decision-devbox.sh's
 // wait_for_run_processes each read only the /proc entries of the processes they ask about. Each row
 // puts a stand-in for ps, pgrep and pkill first on PATH that logs every call and runs nothing: those
 // read every process on the machine (procps-ng's `ps -p` included), so a helper that still calls one
@@ -381,7 +382,11 @@ if signalable $$ 2>/dev/null; then echo "signalable took this shell"; else echo 
 read -r stat </proc/$$/stat
 read -r -a fields <<<"\${stat##*) }"
 leader=\${fields[2]}
-if [ "$leader" = $$ ] || ! signalable "$leader" 2>/dev/null; then echo "its group's leader: refused"; else echo "signalable took the group leader $leader"; fi
+# The harness leads its own group (ownGroup), so signalable is asked from a child bash, which runs in
+# the harness's group without leading it, as a driver runs in the group of the shell that started
+# it, a CI step's or a pod's bash tool's. The child says so when it leads its group itself, which
+# would make the question vacuous.
+bash -c '. "$1"; g=$(proc_group $$); if [ "$g" = $$ ]; then echo "the child leads its own group"; elif signalable "$g" 2>/dev/null; then echo "signalable took the group leader $g"; else echo "its group'"'"'s leader: refused"; fi' - "$root/scripts/e2e/lib/process-tree.sh"
 stop_tree "$g" 1
 sleep 1
 read -r stat </proc/"$g"/stat

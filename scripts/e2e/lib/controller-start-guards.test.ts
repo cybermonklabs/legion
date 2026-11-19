@@ -18,7 +18,8 @@ const controllerOmp = scriptFunctions(join(import.meta.dir, "..", "controller-st
 const rig = join(import.meta.dir, "rig.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("controller-start-guards-test");
-const skip = skipWithout("bash", "sleep", "sh", "env");
+// perl: run starts every harness in a group of its own (ownGroup, lib/own-group.ts).
+const skip = skipWithout("bash", "sleep", "sh", "env", "perl");
 const work = join(dir, "work");
 const bin = join(dir, "bin");
 beforeAll(() => {
@@ -39,7 +40,7 @@ beforeAll(() => {
 // start_cli EXE VAR=VALUE… starts the legion stand-in, whose `sh -c` child runs EXE under env with
 // VAR=VALUE… appended to its environment, sets cli to the stand-in's pid and omp to EXE's once EXE
 // runs, and fails the run when it never does. Each stand-in is stopped with everything under it when
-// BODY ends, its start failed or not (stop_tree, lib/rig.sh).
+// BODY ends, its start failed or not (stop_tree, lib/process-tree.sh).
 function run(body: string) {
   const script = `set -Eeuo pipefail
 trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR

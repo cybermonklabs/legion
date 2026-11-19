@@ -12,7 +12,7 @@ import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
-import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
+import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -544,7 +544,9 @@ describe("next_run", () => {
 // for the exit handlers' stop_env_processes. It walks every process's environment, so a machine
 // whose /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its
 // arguments: past about 80,000 processes grep could not start, and the run had nothing to stop.
-describe("run_env_pids and stop_env_processes", () => {
+// perl: each row's processes and harness start through ownGroup (scripts/e2e/lib/own-group.ts).
+const withoutPerl = skipWithout("perl");
+describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   const force = path.join(root, "scripts/e2e/lib/arg-max-force.sh");
   const processTree = path.join(root, "scripts/e2e/lib/process-tree.sh");
   const start = (pid: number) =>
@@ -554,6 +556,8 @@ describe("run_env_pids and stop_env_processes", () => {
   // Each row's run process and its harness shell run in process groups of their own (ownGroup,
   // scripts/e2e/lib/own-group.ts): stop_env_processes stops what it ends, and a stopped member of
   // the test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
+  // A row that sweeps waits until its run process runs sleep (untilRunning), and so leads its own
+  // group, before it sweeps.
   const runProcess = (dir: string) =>
     Bun.spawn(ownGroup(["sleep", "60"]), {
       env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: path.join(dir, "run-1") },
@@ -596,6 +600,7 @@ describe("run_env_pids and stop_env_processes", () => {
   test("stops a process of the run only while it is the one the walk read: another start time leaves it running", async () => {
     const dir = freshDir("env-stop");
     const run = runProcess(dir);
+    await untilRunning(run.pid, "sleep");
     try {
       const rig = path.join(root, "scripts/e2e/lib/rig.sh");
       const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
@@ -615,6 +620,28 @@ describe("run_env_pids and stop_env_processes", () => {
         [dir]
       );
       expect(own).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
+      expect(await run.exited).not.toBe(0);
+      expect(run.signalCode).toBe("SIGKILL");
+    } finally {
+      run.kill("SIGKILL");
+    }
+  });
+
+  // Catches: a stop of a frozen process held to the parent read before the freeze, which leaves it
+  // stopped and alive when the parent exits between the two reads. proc_parent answers the real
+  // parent on its first read of the process and pid 1 after, as a parent that exited does.
+  test("ends a process of the run it froze even where its parent reads otherwise the second time", async () => {
+    const dir = freshDir("env-reparented");
+    const run = runProcess(dir);
+    await untilRunning(run.pid, "sleep");
+    try {
+      const rig = path.join(root, "scripts/e2e/lib/rig.sh");
+      const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}\n${fn("run_env_pids")}`;
+      const shadow = `eval "real_$(declare -f proc_parent)"\nproc_parent() { if [ "$1" != ${run.pid} ]; then real_proc_parent "$1"; elif [ -e "$work/read-once" ]; then echo 1; else : >"$work/read-once"; real_proc_parent "$1"; fi; }`;
+      const swept = groupBash(`${prelude}\n${shadow}\nstop_env_processes "$1"; echo "status $?"`, [
+        dir,
+      ]);
+      expect(swept).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
       expect(await run.exited).not.toBe(0);
       expect(run.signalCode).toBe("SIGKILL");
     } finally {

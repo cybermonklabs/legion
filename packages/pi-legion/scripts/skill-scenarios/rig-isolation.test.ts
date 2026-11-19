@@ -245,13 +245,13 @@ let python = "";
 
 /** Runs the rig, in a process group of its own, and returns its exit status and its stderr.
  *
- * The rig stops its own tree before it exits (stop_tree, scripts/e2e/lib/rig.sh), and a process
- * group that is orphaned — one no member's parent watches from another group of the same session —
- * has the kernel send SIGHUP and SIGCONT to every member the moment it is orphaned with a stopped
- * member in it. Where a Legion worker runs this suite each shell command is a session leader, so
- * bun's own group is orphaned: a rig sharing it hangs the test runner up, and `bun test` dies of
- * that SIGHUP (status 129) before printing any totals. Bun.spawn leaves its child in bun's own
- * group, so the rig needs a parent that moves it out of it.
+ * The rig stops its own tree before it exits (stop_tree, scripts/e2e/lib/process-tree.sh), and a
+ * process group that is orphaned — one no member's parent watches from another group of the same
+ * session — has the kernel send SIGHUP and SIGCONT to every member the moment it is orphaned with a
+ * stopped member in it. Where a Legion worker runs this suite each shell command is a session
+ * leader, so bun's own group is orphaned: a rig sharing it hangs the test runner up, and `bun test`
+ * dies of that SIGHUP (status 129) before printing any totals. Bun.spawn leaves its child in bun's
+ * own group, so the rig needs a parent that moves it out of it.
  *
  * A session of its own is the wrong tool: a setsid child leads its session, so the one parent
  * outside its group is in another session, which the orphan test does not count, and the group is

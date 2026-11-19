@@ -539,7 +539,7 @@ pool_two_pods_per_instance() {
 # Prints nothing when there is none, when the cluster cannot be read, or when its jq itself fails
 # (guarded, never the ERR trap: set -E inherits it into a command substitution, so an unguarded
 # failure here would print a FAIL line from inside a check this hook is trying to end BLOCKED;
-# stop_tree's read of a process's children in lib/rig.sh is guarded the same way).
+# stop_tree's read of a process's children in lib/process-tree.sh is guarded the same way).
 limit_pending() {
   kubectl --context "$operator" -n "$namespace" --request-timeout=20s get pods -l "legion.dev/project=$run_label,$1" -o json >"$work/limit-pods.json" || return 0
   kubectl --context "$operator" -n "$namespace" --request-timeout=20s get events --field-selector involvedObject.kind=Pod -o json >"$work/limit-events.json" || return 0

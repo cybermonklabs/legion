@@ -6001,15 +6001,6 @@ Each item below names a function, then what it does.
   TERM, then KILL after 10 s; best effort, so a failed cleanup never hides the check that failed.
   An empty PID does nothing; a PID that cannot name one process of the run (0 however spelled, so any value with a leading zero, 1, a negative or non-numeric value, the calling shell or its process group's leader) is refused with a printed line ([`signalable`](#libprocess-treesh)), since `kill 0` signals the caller's whole process group
 
-- `stop_tree PID [PARENT]` (in [`lib/process-tree.sh`](#libprocess-treesh), which this rig sources)
-
-  stops a background loop with every process under it:
-  it freezes the loop, stops each child the same way, then kills the loop, so the `kubectl`, `jq` or `sleep` the loop was waiting on goes with it.
-  It signals a pid only while its parent is PARENT (default the calling shell), so a pid the watcher left and another process reused is never hit, and refuses the same pids `stop_pid` does:
-  `kill -STOP 0` would freeze the whole driver and a later `kill -KILL 0` end it.
-  It and the refusal read only the `/proc` entries of the processes they ask about ([`proc_parent`, `proc_group` and `proc_children`](#libprocess-treesh)), never every process of the machine as `ps -p` and `pgrep -P` do.
-  Stage 3's and Stage 4b's watchers are stopped with it
-
 - `run_processes`
 
   prints the pid of every process of the run still alive: each that carries the run's mark ([`marked_processes`](#libprocess-treesh)), which the run exports as `LEGION_E2E_RUN=$work` right after its transcript starts, or a daemon pane's `XDG_CONFIG_HOME` under `$work`.
@@ -6043,11 +6034,17 @@ Every process a row signals, and every harness shell, runs in a process group of
 
 ## lib/own-group.ts
 
-`ownGroup(argv)` is `argv` run as the leader of a process group of its own inside the test runner's session, with the runner as its parent: a `python3` that calls `setpgid(0, 0)` and then execs `argv`, so the pid `Bun.spawn` returns is `argv`'s own.
-A row that stops a process (SIGSTOP, through `stop_tree`, `freeze_if` or a sweep of [`lib/process-tree.sh`](#libprocess-treesh)) must not stop a member of the runner's own group: where that group is orphaned, as in a Legion pod, whose bash tool starts each command as the leader of a session of its own, gVisor before release-20261012.0 sent SIGHUP and SIGCONT to an orphaned group with a stopped member whenever another member exited (gVisor's 553528ee1034 sends them only when the group becomes orphaned, as Linux does), and `bun test` died of that SIGHUP without naming a row.
+`ownGroup(argv)` is `argv` run as the leader of a process group of its own inside the test runner's session, with the runner as its parent: a `perl` that calls `setpgrp(0, 0)` (setpgid) and then execs `argv`, so the pid `Bun.spawn` returns is `argv`'s own.
+perl changes nothing else `argv` gets: no signal disposition and no environment variable.
+A `python3` in its place ignored SIGPIPE and SIGXFSZ and, in a C locale, coerced `LC_CTYPE`, and its exec handed all three on, so a row ran with SIGPIPE ignored where the rigs do not.
+A row that stops a process (SIGSTOP, through `stop_tree`, `freeze_if` or a sweep of [`lib/process-tree.sh`](#libprocess-treesh)) must not stop a member of the runner's own group: where that group is orphaned, as in a Legion pod, whose bash tool starts each command as the leader of a session of its own, gVisor sends SIGHUP and SIGCONT to an orphaned group with a stopped member whenever another member exits, and `bun test` dies of that SIGHUP without naming a row.
+A Legion pod (`4.19.0-gvisor`) still did so when measured on 2026-11-18.
+gVisor's commit 553528ee1034 (2026-10-07) sends them only when the group becomes orphaned, as Linux does: under runsc release-20260928.0 a stopped member of an orphaned group got SIGHUP when another member exited, and under release-20261012.0 and release-20261116.0 it did not.
 A group whose parent, the runner, is in another group of the same session is not orphaned while the runner runs.
 A session of its own (`setsid`, or `Bun.spawn`'s `detached`) is the wrong tool: its group is orphaned from the start.
-`lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts` and the skill-scenario rig's sweep rows use it
+`untilRunning(pid, program)` resolves once `pid` runs `program` (its `/proc/<pid>/exe`), and fails naming both and what the pid ran instead when it does not within 10 s, the bound of `lib/claude-backend-guards.test.ts`'s `await_child`: a sweep row waits on it, since a sweep that stopped the perl before its `setpgrp` would stop a member of the runner's own group.
+`lib/own-group.test.ts` holds that a wrapped shell leads its own group under the runner and has the same traps, signal masks and environment as a plain one, and that `untilRunning` fails at its bound naming the pid and the program.
+`lib/run-processes.test.ts`, `lib/process-tree.test.ts`, `lib/claude-backend-guards.test.ts`, `lib/controller-start-guards.test.ts` and the skill-scenario rig's sweep rows use `ownGroup`, and skip by name where the host has no perl
 
 ## lib/arg-max-force.sh
 
@@ -6077,7 +6074,7 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
   print PID's parent, its process group, and each of its children, one a line, from that process's own `/proc/PID/stat` (read past its last `) `, since a command name may hold both) and every thread's `/proc/PID/task/*/children`.
   None reads every process of the machine, as procps-ng's `ps -p` and `pgrep -P` do: one `ps -o args= -p PID` opened `/proc/<pid>/stat` 12,564 times at about 13,000 processes.
   Each prints nothing for a process that is gone; a host with no `/proc` asks `ps` and `pgrep`.
-  [`signalable`](#libprocess-treesh), `stop_pid` and `stop_tree` ([`lib/rig.sh`](#librigsh)) and the skill-scenario rig's `stop_env_processes` use them.
+  [`signalable`](#libprocess-treesh), `stop_tree` (below), `stop_pid` ([`lib/rig.sh`](#librigsh)) and the skill-scenario rig's `stop_env_processes` use them.
   `proc_children` asks `pgrep` as well where a process's `task/<tid>/children` file is missing (a kernel built without `CONFIG_PROC_CHILDREN`), so `stop_tree` never leaves the children of such a process running
 
 - `proc_start PID`
@@ -6088,6 +6085,18 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
 - `signalable PID`
 
   is whether PID can name one process the run started, refusing with a printed line 0 however spelled, 1, a negative or non-numeric value, the calling shell and its process group's leader
+
+- `stop_tree PID [PARENT]`, `proc_descendants PID`, `kill_frozen PID`
+
+  `stop_tree` stops a background loop with every process under it:
+  it freezes the loop, stops each child the same way, then kills the loop, so the `kubectl`, `jq` or `sleep` the loop was waiting on goes with it.
+  It signals a pid only while its parent is PARENT (default the calling shell), so a pid the watcher left and another process reused is never hit, and refuses the same pids `stop_pid` does:
+  `kill -STOP 0` would freeze the whole driver and a later `kill -KILL 0` end it.
+  It and the refusal read only the `/proc` entries of the processes they ask about (`proc_parent`, `proc_group` and `proc_children`), never every process of the machine as `ps -p` and `pgrep -P` do.
+  Stage 3's and Stage 4b's watchers are stopped with it.
+  `proc_descendants` prints `PID START` for every process below PID, each taken only while its parent is still the process its read came from and its start reads the same before and after that check, so a pid reused by a stranger under a running parent is left out.
+  `kill_frozen` ends a process a caller has stopped and held to its start and its mark (`freeze_if … STOP`) with every process under it, each child through `stop_tree` held to it as the parent, without reading its own parent again: a parent that exits after the freeze cannot leave it stopped and alive.
+  The run's sweep and the skill-scenario rig's `stop_env_processes` end each frozen process with it
 
 - `incarnation_pid INCARNATION`
 
@@ -6114,7 +6123,7 @@ Its walks of every process (`procs_naming`) hand the entries to `grep` through `
 
   are a stage proof's run's own processes and its sweep: each process that carries `LEGION_E2E_RUN=DIR`, which the run exports after its transcript starts, or the `XDG_CONFIG_HOME` under DIR that a daemon pane carries, its environment built from the daemon's allow-list (`paneEnvAllowList`, `packages/daemon/internal/runtime/tmux/environment.go`).
   `marked_processes` refuses an empty DIR and a run that has not marked itself.
-  `stop_marked_processes` stops each through `freeze_if`, so a pid that passed to another process since gets no signal, and then ends it with everything under it (`stop_tree`), so a child that cleared its environment goes with it; with GRACE it gives each SIGTERM and GRACE seconds first, and what each had started, read while it was stopped for the TERM, is ended by its own start time if it outlives the process that started it.
+  `stop_marked_processes` stops each through `freeze_if`, so a pid that passed to another process since gets no signal, and then ends it with everything under it (`kill_frozen`), so a child that cleared its environment goes with it; with GRACE it gives each SIGTERM and GRACE seconds first, and what each had started, its children read while it was stopped for the TERM and theirs under running parents, each held to its parent and its start (`proc_descendants`), is ended by its own start time if it outlives the process that started it.
   Every stage proof's sweep is this one, and a start that clears its environment (`env -i`) names `LEGION_E2E_RUN` itself.
   A fork of the driver that execs nothing, a background subshell or function such as a `pane_watcher`, carries the driver's environment from the driver's own exec, without the mark, so no sweep sees it: each is stopped by the pid it had when it started (the list is in `run_marks`'s comment)
 
@@ -6170,7 +6179,7 @@ the pid file names the process the command execs into and nothing once it ends; 
 `launched` finds a program below `bash` and `sh -c`, and beside a helper child of its parent, which `child_of` refuses as two children, and refuses two matches, none, and a tree where only another program runs;
 and the processes of the rows that start a line or a helper are gone when they end;
 and `first_native` takes the first program itself on PATH, in a directory whose name holds a space, past a script and a mise shim.
-Its process-scan rows put a `ps`, `pgrep` and `pkill` on `PATH` that log each call and run nothing: `signalable` refuses the calling shell and its group's leader, `stop_tree` leaves a process whose parent is not the one it is given and then ends a parent and its two children, the cleanup wait's failure names each survivor that runs with its command line and none that has ended, and none of them starts any of the three.
+Its process-scan rows put a `ps`, `pgrep` and `pkill` on `PATH` that log each call and run nothing: `signalable` refuses the calling shell and, asked from a child shell that does not lead its group, that group's leader, `stop_tree` leaves a process whose parent is not the one it is given and then ends a parent and its two children, the cleanup wait's failure names each survivor that runs with its command line and none that has ended, and none of them starts any of the three.
 Where `strace` is on the host, a traced row holds that they open no other process's `/proc` entry, list no directory but the asked processes' `task` directories, and read no other `/proc` file than `/proc/stat` and bash's own `/proc/self/maps`; against the helpers before them each row fails.
 `lib/claude-backend-guards.test.ts` finds a pane's Claude Code under its bridge when its path holds a space and when it runs under another name, which the lookup by `argv[0]` before it did not;
 answers nothing while the bridge's child is still the bridge's own fork, the first wrapper of a chain of two (bash) or the second (sh), and then names the program the chain ends in;
